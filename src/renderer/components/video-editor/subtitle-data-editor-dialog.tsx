@@ -1,0 +1,225 @@
+import { useState, useCallback, useMemo } from 'react';
+import { AlertCircle, HelpCircle } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/renderer/components/ui/dialog';
+import { Button } from '@/renderer/components/ui/button';
+import { Textarea } from '@/renderer/components/ui/textarea';
+import { Label } from '@/renderer/components/ui/label';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/renderer/components/ui/tooltip';
+import { validateSubtitleData } from '@/types/subtitle';
+import type { SubtitleData } from '@/types/subtitle';
+
+interface SubtitleDataEditorDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initialData: SubtitleData | null;
+  videoDuration: number;
+  onSave: (data: SubtitleData) => Promise<{ success: boolean; error?: string }>;
+}
+
+const EXAMPLE_SUBTITLE_DATA = JSON.stringify(
+  {
+    segments: [
+      { start: 0.0, end: 2.5, text: 'Hello, welcome to this video.' },
+      { start: 2.5, end: 5.0, text: 'Today we will learn about subtitles.' },
+      { start: 5.0, end: 8.0, text: 'Each segment has a start and end time.' },
+    ],
+    meta: {
+      generatedAt: '2024-01-01T00:00:00.000Z',
+      language: 'en',
+      model: 'manual',
+    },
+  },
+  null,
+  2
+);
+
+function generateTemplate(videoDuration: number): string {
+  return JSON.stringify(
+    {
+      segments: [
+        {
+          start: 0.0,
+          end: Math.min(3.0, videoDuration),
+          text: 'Your subtitle text here',
+        },
+      ],
+      meta: {
+        generatedAt: new Date().toISOString(),
+        language: 'en',
+        model: 'manual',
+      },
+    },
+    null,
+    2
+  );
+}
+
+export default function SubtitleDataEditorDialog({
+  open,
+  onOpenChange,
+  initialData,
+  videoDuration,
+  onSave,
+}: SubtitleDataEditorDialogProps) {
+  const defaultValue = useMemo(() => {
+    if (initialData) {
+      return JSON.stringify(initialData, null, 2);
+    }
+    return generateTemplate(videoDuration);
+  }, [initialData, videoDuration]);
+
+  const [value, setValue] = useState(defaultValue);
+  const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleValueChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setValue(e.target.value);
+      setError(null);
+    },
+    []
+  );
+
+  const handleSave = useCallback(async () => {
+    try {
+      const parsed = JSON.parse(value);
+      const validation = validateSubtitleData(parsed);
+
+      if (!validation.valid) {
+        setError(validation.error ?? 'Invalid subtitle data');
+        return;
+      }
+
+      setIsSaving(true);
+      const result = await onSave(validation.data!);
+
+      if (!result.success) {
+        setError(result.error ?? 'Failed to save');
+        return;
+      }
+
+      onOpenChange(false);
+    } catch (e) {
+      setError(e instanceof SyntaxError ? 'Invalid JSON syntax' : String(e));
+    } finally {
+      setIsSaving(false);
+    }
+  }, [value, onSave, onOpenChange]);
+
+  const handleLoadExample = useCallback(() => {
+    setValue(EXAMPLE_SUBTITLE_DATA);
+    setError(null);
+  }, []);
+
+  const handleLoadTemplate = useCallback(() => {
+    setValue(generateTemplate(videoDuration));
+    setError(null);
+  }, [videoDuration]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Edit Subtitle Data</DialogTitle>
+          <DialogDescription>
+            Manually enter or modify subtitle data in JSON format.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="subtitle-data">Subtitle Data (JSON)</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <HelpCircle className="text-muted-foreground size-4 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs" side="right">
+                  <div className="space-y-2 text-xs">
+                    <p>
+                      <strong>segments:</strong> Array of subtitle segments
+                      with:
+                    </p>
+                    <ul className="ml-4 list-disc">
+                      <li>
+                        <strong>start:</strong> Start time in seconds
+                      </li>
+                      <li>
+                        <strong>end:</strong> End time in seconds
+                      </li>
+                      <li>
+                        <strong>text:</strong> Subtitle text content
+                      </li>
+                      <li>
+                        <strong>words:</strong> Word-level timing (optional)
+                      </li>
+                    </ul>
+                    <p>
+                      <strong>meta:</strong> Metadata including language and
+                      model
+                    </p>
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleLoadTemplate}
+                className="text-xs"
+              >
+                Load Template
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleLoadExample}
+                className="text-xs"
+              >
+                Load Example
+              </Button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1">
+            <Textarea
+              id="subtitle-data"
+              value={value}
+              onChange={handleValueChange}
+              className="h-full min-h-60 resize-none font-mono text-xs"
+              placeholder="Enter subtitle data JSON..."
+            />
+          </div>
+
+          {error && (
+            <div className="bg-destructive/10 text-destructive flex items-center gap-2 rounded-md p-3 text-sm">
+              <AlertCircle className="size-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={isSaving}>
+            {isSaving ? 'Saving...' : 'Save'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

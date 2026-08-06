@@ -1,0 +1,20 @@
+# Dependencies
+node_modules
+
+# Build outputs
+dist
+dist-electron
+build
+
+# Package manager
+bun.lock
+package-lock.json
+yarn.lock
+
+# Misc
+*.log
+.DS_Store
+coverage
+
+# Config files that should maintain specific formatting
+*.json5

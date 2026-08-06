@@ -1,0 +1,281 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.1.0)'
+        required: true
+        type: string
+      notarize:
+        description: 'Notarize the app with Apple'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Validate version format
+        run: |
+          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Error: Version must be in format X.Y.Z (e.g., 1.1.0)"
+            exit 1
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Update package.json version
+        run: |
+          VERSION="${{ inputs.version }}"
+          jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Commit version update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "chore: bump version to ${{ inputs.version }}"
+          git push
+
+      - name: Create and push tag
+        run: |
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+      - name: Generate release notes from commits
+        id: release_notes
+        run: |
+          # Get the previous tag
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            # If no previous tag, get all commits
+            COMMITS=$(git log --pretty=format:"%s" --no-merges)
+          else
+            # Get commits since the previous tag
+            COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"%s" --no-merges)
+          fi
+
+          # Initialize arrays for features and fixes (other commits are internal)
+          FEATURES=""
+          FIXES=""
+
+          # Parse commits and categorize them (only feat: and fix: are public, rest are internal)
+          while IFS= read -r commit; do
+            # Skip empty lines
+            if [ -z "$commit" ]; then
+              continue
+            fi
+            
+            # Check for feature commits (feat: or feature:)
+            if echo "$commit" | grep -qiE "^feat(\(.*\))?:"; then
+              # Extract the message after feat: or feat(scope):
+              MSG=$(echo "$commit" | sed -E 's/^feat(\([^)]*\))?:[[:space:]]*//')
+              # Capitalize first letter
+              MSG="$(echo "${MSG:0:1}" | tr '[:lower:]' '[:upper:]')${MSG:1}"
+              FEATURES="${FEATURES}- ${MSG}\n"
+            # Check for fix commits (fix:)
+            elif echo "$commit" | grep -qiE "^fix(\(.*\))?:"; then
+              # Extract the message after fix: or fix(scope):
+              MSG=$(echo "$commit" | sed -E 's/^fix(\([^)]*\))?:[[:space:]]*//')
+              # Capitalize first letter
+              MSG="$(echo "${MSG:0:1}" | tr '[:lower:]' '[:upper:]')${MSG:1}"
+              FIXES="${FIXES}- ${MSG}\n"
+            fi
+            # All other commits (chore, refactor, docs, etc.) are considered internal and hidden
+          done <<< "$COMMITS"
+
+          # Build the release notes
+          RELEASE_NOTES=""
+
+          if [ -n "$FEATURES" ]; then
+            RELEASE_NOTES="${RELEASE_NOTES}## Features\n${FEATURES}"
+          fi
+
+          if [ -n "$FIXES" ]; then
+            if [ -n "$RELEASE_NOTES" ]; then
+              RELEASE_NOTES="${RELEASE_NOTES}\n"
+            fi
+            RELEASE_NOTES="${RELEASE_NOTES}## Bug Fixes\n${FIXES}"
+          fi
+
+          # If no features or fixes, provide default message
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="No changelog provided"
+          fi
+
+          # Remove trailing newlines and escape for GitHub Actions
+          RELEASE_NOTES=$(echo -e "$RELEASE_NOTES" | sed 's/\\n$//')
+
+          # Write to file for multi-line output
+          echo -e "$RELEASE_NOTES" > release_notes.txt
+
+          echo "Generated release notes:"
+          cat release_notes.txt
+
+      - name: Setup macOS certificates
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+        run: |
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$MACOS_KEYCHAIN_PWD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PWD" build.keychain
+          rm certificate.p12
+
+      - name: Build macOS app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ "${{ inputs.notarize }}" = "true" ]; then
+            bun run build-mac
+          else
+            bun run build-mac:local
+          fi
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: Capty v${{ inputs.version }}
+          body_path: release_notes.txt
+          draft: false
+          prerelease: false
+          files: |
+            release/${{ inputs.version }}/*.dmg
+            release/${{ inputs.version }}/*.zip
+
+      - name: Upload to capty.app
+        env:
+          CAPTY_RELEASE_SECRET: ${{ secrets.CAPTY_RELEASE_SECRET }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          RELEASE_NOTES=$(cat release_notes.txt)
+
+          DMG_NAME="Capty-${VERSION}-universal.dmg"
+          DMG_PATH="release/${VERSION}/${DMG_NAME}"
+          ZIP_NAME="Capty-${VERSION}-universal-mac.zip"
+          ZIP_PATH="release/${VERSION}/${ZIP_NAME}"
+
+          # Calculate SHA512 hash of the DMG file (base64 encoded, as electron-builder expects)
+          echo "Calculating SHA512 hash of ${DMG_PATH}..."
+          DMG_SHA512=$(shasum -a 512 "${DMG_PATH}" | awk '{print $1}' | xxd -r -p | base64)
+          echo "DMG SHA512 (base64): ${DMG_SHA512}"
+          DMG_SIZE=$(stat -f%z "${DMG_PATH}")
+          echo "DMG size: ${DMG_SIZE}"
+
+          # Calculate SHA512 hash of the ZIP file (required for macOS auto-update)
+          echo "Calculating SHA512 hash of ${ZIP_PATH}..."
+          ZIP_SHA512=$(shasum -a 512 "${ZIP_PATH}" | awk '{print $1}' | xxd -r -p | base64)
+          echo "ZIP SHA512 (base64): ${ZIP_SHA512}"
+          ZIP_SIZE=$(stat -f%z "${ZIP_PATH}")
+          echo "ZIP size: ${ZIP_SIZE}"
+
+          # Get the asset IDs from GitHub API
+          echo "Fetching release assets from GitHub..."
+          RELEASE_DATA=$(gh api repos/${{ github.repository }}/releases/tags/v${VERSION})
+
+          DMG_ASSET_ID=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name == \"${DMG_NAME}\") | .id")
+          ZIP_ASSET_ID=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name == \"${ZIP_NAME}\") | .id")
+
+          if [ -z "$DMG_ASSET_ID" ] || [ "$DMG_ASSET_ID" = "null" ]; then
+            echo "Error: Could not find asset ${DMG_NAME} in release v${VERSION}"
+            echo "Available assets:"
+            echo "$RELEASE_DATA" | jq -r '.assets[].name'
+            exit 1
+          fi
+
+          if [ -z "$ZIP_ASSET_ID" ] || [ "$ZIP_ASSET_ID" = "null" ]; then
+            echo "Error: Could not find asset ${ZIP_NAME} in release v${VERSION}"
+            echo "Available assets:"
+            echo "$RELEASE_DATA" | jq -r '.assets[].name'
+            exit 1
+          fi
+
+          # GitHub API asset URL format
+          DMG_URL="https://api.github.com/repos/${{ github.repository }}/releases/assets/${DMG_ASSET_ID}"
+          ZIP_URL="https://api.github.com/repos/${{ github.repository }}/releases/assets/${ZIP_ASSET_ID}"
+
+          echo "Found DMG asset ID: $DMG_ASSET_ID"
+          echo "Found ZIP asset ID: $ZIP_ASSET_ID"
+          echo "Notifying capty.app to download releases..."
+
+          # Escape release notes for JSON
+          RELEASE_NOTES_ESCAPED=$(echo "$RELEASE_NOTES" | jq -Rs .)
+
+          # Build JSON payload
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "secret": "${CAPTY_RELEASE_SECRET}",
+            "version": "${VERSION}",
+            "release_notes": ${RELEASE_NOTES_ESCAPED},
+            "files": [
+              {
+                "url": "${DMG_URL}",
+                "name": "${DMG_NAME}",
+                "platform": "macos",
+                "arch": "universal",
+                "sha512": "${DMG_SHA512}",
+                "size": ${DMG_SIZE}
+              },
+              {
+                "url": "${ZIP_URL}",
+                "name": "${ZIP_NAME}",
+                "platform": "macos",
+                "arch": "universal",
+                "sha512": "${ZIP_SHA512}",
+                "size": ${ZIP_SIZE}
+              }
+            ]
+          }
+          EOF
+          )
+
+          echo "Sending request to capty.app..."
+          echo "Request payload:"
+          echo "$JSON_PAYLOAD" | jq 'del(.secret)' # Print payload without secret
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://capty.app/api/versions" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            --data-raw "$JSON_PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "Response status: $HTTP_CODE"
+          echo "Response body: $BODY"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "Upload successful!"
+          else
+            echo "Upload failed with status $HTTP_CODE"
+            exit 1
+          fi

@@ -1,0 +1,51 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+electron-dist
+release
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+dist-electron/
+opencodetmp/
+
+.env.release
+release_notes.txt
+
+coverage/
+docs/screenstudio/
+
+# Whisper build artifacts
+build-whisper/
+
+internal_release_notes.txt
+
+# Native build artifacts (see CONTRIBUTING.md)
+src/main/binaries/ffmpeg/ffmpeg
+src/main/binaries/whisper/whisper
+src/main/daemon/capty-daemon
+
+# Agent and editor tooling
+.plans/
+.agents/
+.claude/
+skills-lock.json

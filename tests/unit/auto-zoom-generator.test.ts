@@ -1,0 +1,117 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockWriteFile = vi.fn();
+const mockExistsSync = vi.fn();
+const mockLoadCursorData = vi.fn();
+const mockGenerateAutoZoomSegments = vi.fn();
+const mockGetEditorStatePath = vi.fn();
+const mockGetConfig = vi.fn();
+
+vi.mock('fs/promises', () => ({
+  default: {
+    writeFile: mockWriteFile,
+  },
+}));
+
+vi.mock('fs', () => ({
+  existsSync: mockExistsSync,
+}));
+
+vi.mock('../../src/main/capture/video/cursor-data', () => ({
+  loadCursorData: mockLoadCursorData,
+}));
+
+vi.mock('../../src/main/capture/video/auto-zoom', () => ({
+  generateAutoZoomSegments: mockGenerateAutoZoomSegments,
+}));
+
+vi.mock('../../src/main/capture/video/recording-project', () => ({
+  getEditorStatePath: mockGetEditorStatePath,
+}));
+
+vi.mock('@/main/settings', () => ({
+  getConfig: mockGetConfig,
+}));
+
+describe('auto zoom generator', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    mockGetEditorStatePath.mockReturnValue('/project/editor-state.json');
+    mockExistsSync.mockReturnValue(false);
+    mockLoadCursorData.mockResolvedValue({ events: [] });
+    mockGenerateAutoZoomSegments.mockReturnValue([
+      {
+        id: 'zoom-1',
+        startTime: 1,
+        endTime: 2,
+        x: 0.5,
+        y: 0.5,
+        zoomLevel: 2,
+      },
+    ]);
+  });
+
+  it('does not generate auto zoom when recording auto zoom is disabled', async () => {
+    mockGetConfig.mockReturnValue({
+      recording: {
+        autoZoom: false,
+      },
+    });
+
+    const { generateInitialEditorState } =
+      await import('../../src/main/capture/video/auto-zoom-generator');
+
+    const result = await generateInitialEditorState({
+      projectPath: '/project',
+    });
+
+    expect(result).toBe(true);
+    expect(mockGenerateAutoZoomSegments).not.toHaveBeenCalled();
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+
+    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const parsed = JSON.parse(writtenContent as string) as {
+      zoomSegments: unknown[];
+      ui: { sidebarOpen: boolean };
+    };
+    expect(parsed.zoomSegments).toEqual([]);
+    expect(parsed.ui.sidebarOpen).toBe(false);
+  });
+
+  it('generates auto zoom when recording auto zoom is enabled', async () => {
+    mockGetConfig.mockReturnValue({
+      recording: {
+        autoZoom: true,
+      },
+    });
+
+    const { generateInitialEditorState } =
+      await import('../../src/main/capture/video/auto-zoom-generator');
+
+    const result = await generateInitialEditorState({
+      projectPath: '/project',
+    });
+
+    expect(result).toBe(true);
+    expect(mockGenerateAutoZoomSegments).toHaveBeenCalledTimes(1);
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+
+    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const parsed = JSON.parse(writtenContent as string) as {
+      zoomSegments: Array<{ id: string }>;
+      ui: { sidebarOpen: boolean };
+    };
+    expect(parsed.zoomSegments).toEqual([
+      {
+        id: 'zoom-1',
+        startTime: 1,
+        endTime: 2,
+        x: 0.5,
+        y: 0.5,
+        zoomLevel: 2,
+      },
+    ]);
+    expect(parsed.ui.sidebarOpen).toBe(true);
+  });
+});

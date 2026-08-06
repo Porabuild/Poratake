@@ -1,0 +1,133 @@
+// @see - https://www.electron.build/configuration/configuration
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.capty.app",
+  "asar": true,
+  "productName": "Capty",
+  "directories": {
+    "output": "release/${version}"
+  },
+  "extraResources": [
+    "build/*",
+    {
+      "from": "src/main/menu/icons",
+      "to": "menu-icons"
+    },
+    {
+      "from": "src/main/menu/iconTemplate.png",
+      "to": "menu-icons/iconTemplate.png"
+    },
+    {
+      "from": "src/main/menu/iconTemplate@2x.png",
+      "to": "menu-icons/iconTemplate@2x.png"
+    },
+    {
+      "from": "src/main/menu/iconTemplate@3x.png",
+      "to": "menu-icons/iconTemplate@3x.png"
+    },
+    {
+      "from": "src/main/menu/recording/iconTemplate.png",
+      "to": "menu-icons/recording/iconTemplate.png"
+    },
+    {
+      "from": "src/main/menu/recording/iconTemplate@2x.png",
+      "to": "menu-icons/recording/iconTemplate@2x.png"
+    },
+    {
+      "from": "src/main/menu/recording/iconTemplate@3x.png",
+      "to": "menu-icons/recording/iconTemplate@3x.png"
+    },
+    {
+      "from": "src/main/daemon/capty-daemon",
+      "to": "daemon/capty-daemon"
+    },
+    {
+      "from": "src/main/binaries/ffmpeg/ffmpeg",
+      "to": "binaries/ffmpeg/ffmpeg"
+    },
+    {
+      "from": "src/main/binaries/whisper/whisper",
+      "to": "binaries/whisper/whisper"
+    },
+    {
+      "from": "public/sounds",
+      "to": "sounds"
+    }
+  ],
+  "files": [
+    "dist",
+    "dist-electron",
+    "!node_modules/**"
+  ],
+  "publish": {
+    "provider": "github",
+    "owner": "capty-app",
+    "repo": "capty",
+    "private": false
+  },
+  "extraFiles": [
+    "build/**/*"
+  ],
+  "mac": {
+    "extendInfo": {
+      "LSUIElement": true,
+      "NSMicrophoneUsageDescription": "Capty needs microphone access to record voice audio along with screen recordings.",
+      "NSCameraUsageDescription": "Capty needs camera access to record video from your camera.",
+      "NSCameraUseContinuityCameraDeviceType": true,
+      "CFBundleDocumentTypes": [
+        {
+          "CFBundleTypeName": "Capty Recording",
+          "CFBundleTypeExtensions": ["capty"],
+          "CFBundleTypeRole": "Editor",
+          "LSHandlerRank": "Owner",
+          "LSTypeIsPackage": true
+        },
+        {
+          "CFBundleTypeName": "Image",
+          "CFBundleTypeExtensions": [
+            "png",
+            "jpg",
+            "jpeg",
+            "gif",
+            "webp",
+            "bmp",
+            "tiff"
+          ],
+          "CFBundleTypeRole": "Editor",
+          "LSHandlerRank": "Alternate",
+          "LSItemContentTypes": [
+            "public.png",
+            "public.jpeg",
+            "public.gif",
+            "com.compuserve.gif",
+            "org.webmproject.webp",
+            "com.microsoft.bmp",
+            "public.tiff"
+          ]
+        }
+      ],
+      "UTExportedTypeDeclarations": [
+        {
+          "UTTypeIdentifier": "com.capty.recording",
+          "UTTypeConformsTo": ["public.package", "public.composite-content"],
+          "UTTypeDescription": "Capty Recording Project",
+          "UTTypeTagSpecification": {
+            "public.filename-extension": ["capty"]
+          }
+        }
+      ]
+    },
+    "darkModeSupport": true,
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "build/entitlements.mac.dist",
+    "entitlementsInherit": "build/entitlements.mac.dist",
+    "notarize": true,
+    "x64ArchFiles": "Contents/Resources/{native,binaries,daemon}/**/*"
+  },
+  "dmg": {
+    "title": "${productName} ${version}",
+    "icon": "./build/icon.icns",
+    "sign": false
+  }
+}

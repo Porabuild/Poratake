@@ -1,0 +1,92 @@
+import { dialog, BrowserWindow } from 'electron';
+import {
+  openScreenRecordingPreferences,
+  getMicrophoneStatus,
+  requestMicrophonePermission,
+  openMicrophonePreferences,
+} from '@/main/system/permissions.ts';
+
+export async function showRecordingError(error: Error): Promise<void> {
+  const isPermissionError =
+    error.message.includes('permission') ||
+    error.message.includes('TCC') ||
+    error.message.includes('declined');
+
+  const win = BrowserWindow.getFocusedWindow();
+
+  if (isPermissionError) {
+    const options = {
+      type: 'error' as const,
+      title: 'Recording Failed',
+      message: 'Screen recording permission issue detected.',
+      detail:
+        'After an app update, macOS may require you to re-grant screen recording permission.\n\n' +
+        'To fix this:\n' +
+        '1. Open System Settings > Privacy & Security > Screen Recording\n' +
+        '2. Toggle OFF Capty, then toggle it back ON\n' +
+        '3. Restart Capty\n\n' +
+        'If the issue persists, try restarting your Mac.',
+      buttons: ['Open Settings', 'OK'],
+      defaultId: 0,
+    };
+
+    const result = win
+      ? await dialog.showMessageBox(win, options)
+      : await dialog.showMessageBox(options);
+
+    if (result.response === 0) {
+      openScreenRecordingPreferences();
+    }
+  } else {
+    const options = {
+      type: 'error' as const,
+      title: 'Recording Failed',
+      message: 'Failed to start recording.',
+      detail: error.message,
+      buttons: ['OK'],
+    };
+
+    if (win) {
+      await dialog.showMessageBox(win, options);
+    } else {
+      await dialog.showMessageBox(options);
+    }
+  }
+}
+
+export async function checkAndRequestMicrophonePermission(): Promise<boolean> {
+  const micStatus = getMicrophoneStatus();
+
+  if (
+    micStatus === 'not-determined' ||
+    micStatus === 'denied' ||
+    micStatus === 'restricted'
+  ) {
+    const granted = await requestMicrophonePermission();
+    if (!granted) {
+      const options = {
+        type: 'error' as const,
+        title: 'Microphone Permission Required',
+        message: 'Microphone access is not granted.',
+        detail:
+          'To record with microphone, please grant microphone permission in System Settings.\n\n' +
+          'Go to: System Settings > Privacy & Security > Microphone\n' +
+          'Enable access for Capty',
+        buttons: ['Open Settings', 'Cancel'],
+        defaultId: 0,
+      };
+
+      const win = BrowserWindow.getFocusedWindow();
+      const result = win
+        ? await dialog.showMessageBox(win, options)
+        : await dialog.showMessageBox(options);
+
+      if (result.response === 0) {
+        openMicrophonePreferences();
+      }
+      return false;
+    }
+  }
+
+  return true;
+}
