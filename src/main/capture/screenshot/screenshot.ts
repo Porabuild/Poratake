@@ -54,7 +54,7 @@ import {
   captureDisplayToFile,
   captureWindowToFile,
 } from '@/main/capture/screenshot/native-capture';
-import { captureAreaToFile } from '@/main/capture/area-capture';
+import { captureAreaToFile } from '@/main/capture/area-overlay';
 
 export type CaptureMode = 'screen' | 'area' | 'window';
 

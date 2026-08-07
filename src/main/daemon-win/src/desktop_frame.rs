@@ -1,6 +1,8 @@
 use crate::display_color::{hdr_white_scale, ToneMapper};
 use crate::overlay::{monitors, rect_height, rect_width, to_wide, MonitorEntry};
 use std::ffi::c_void;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::ptr::{null, null_mut};
 use std::sync::mpsc::channel;
 use std::sync::{Mutex, OnceLock};
@@ -12,7 +14,7 @@ use windows::Graphics::Capture::{
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{GENERIC_WRITE, HMODULE, HWND, POINT, RECT};
+use windows::Win32::Foundation::{GENERIC_WRITE, HMODULE, HWND, POINT, RECT, RPC_E_CHANGED_MODE};
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0,
     D3D_FEATURE_LEVEL_11_1,
@@ -24,28 +26,29 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{
-    CreateDIBSection, DeleteObject, MonitorFromPoint, MonitorFromWindow, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HMONITOR, MONITOR_DEFAULTTONEAREST,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC,
+    MonitorFromPoint, MonitorFromWindow, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HBITMAP, HMONITOR, MONITOR_DEFAULTTONEAREST, SRCCOPY,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
     IWICBitmapFrameEncode, IWICImagingFactory, WICBitmapEncoderNoCache,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+    CoCreateInstance, CoIncrementMTAUsage, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 
-const FRAME_POOL_SIZE: i32 = 2;
+const FRAME_POOL_SIZE: i32 = 1;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 const BYTES_PER_PIXEL: usize = 4;
 const HDR_BYTES_PER_PIXEL: usize = 8;
+const BMP_HEADER_SIZE: usize = 54;
 
 pub struct DesktopFrame {
     pub bounds: RECT,
@@ -55,29 +58,48 @@ pub struct DesktopFrame {
 }
 
 pub fn capture_monitors() -> Vec<DesktopFrame> {
-    run_isolated(|| {
-        let Ok(device) = CaptureDevice::create() else {
-            return Vec::new();
-        };
-
+    let entries = monitors();
+    let captured = run_isolated(|| {
+        let device = CaptureDevice::create().ok();
         monitors()
             .iter()
-            .filter_map(|monitor| capture_monitor(&device, monitor).ok())
-            .collect()
+            .map(|monitor| {
+                device
+                    .as_ref()
+                    .and_then(|device| capture_monitor(device, monitor).ok())
+            })
+            .collect::<Vec<Option<DesktopFrame>>>()
     })
-    .unwrap_or_default()
+    .unwrap_or_default();
+
+    entries
+        .iter()
+        .zip(captured.into_iter().chain(std::iter::repeat_with(|| None)))
+        .filter_map(|(monitor, frame)| frame.or_else(|| capture_with_gdi(monitor.rect)))
+        .collect()
 }
 
 pub fn capture_rect(bounds: RECT) -> Result<DesktopFrame, String> {
-    run_isolated(move || {
+    let frame = capture_display_frame(bounds)?;
+    crop(&frame, bounds).ok_or_else(|| "The capture area is outside the display bounds".to_string())
+}
+
+pub fn capture_display_frame(bounds: RECT) -> Result<DesktopFrame, String> {
+    let monitor = monitor_for_rect(bounds)
+        .ok_or_else(|| "The capture area is not on a connected display".to_string())?;
+    let monitor_bounds = monitor.rect;
+
+    let captured = run_isolated(move || {
         let device = CaptureDevice::create()?;
-        let monitor = monitor_for_rect(bounds)
-            .ok_or_else(|| "The capture area is not on a connected display".to_string())?;
-        let frame = capture_monitor(&device, &monitor)?;
-        crop(&frame, bounds)
-            .ok_or_else(|| "The capture area is outside the display bounds".to_string())
+        let monitor = monitor_for_rect(monitor_bounds)
+            .ok_or_else(|| "The display is no longer connected".to_string())?;
+        capture_monitor(&device, &monitor)
     })
-    .unwrap_or_else(|| Err("Timed out while capturing the screen".to_string()))
+    .unwrap_or_else(|| Err("Timed out while capturing the screen".to_string()));
+
+    captured.or_else(|error| {
+        capture_with_gdi(monitor_bounds).ok_or(error)
+    })
 }
 
 pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
@@ -106,6 +128,13 @@ pub fn store_frozen(frames: Vec<DesktopFrame>) {
     }
 }
 
+pub fn retain_frozen(frame: DesktopFrame) {
+    if let Ok(mut frozen) = frozen_frames().lock() {
+        frozen.retain(|existing| existing.bounds != frame.bounds);
+        frozen.push(frame);
+    }
+}
+
 pub fn clear_frozen() {
     if let Ok(mut frozen) = frozen_frames().lock() {
         frozen.clear();
@@ -123,20 +152,7 @@ pub fn frozen_rect(bounds: RECT) -> Option<DesktopFrame> {
 }
 
 pub fn to_hbitmap(frame: &DesktopFrame) -> Option<HBITMAP> {
-    let info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: frame.width as i32,
-            biHeight: -(frame.height as i32),
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            biSizeImage: frame.pixels.len() as u32,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
+    let info = bitmap_info(frame.width as i32, frame.height as i32);
     let mut bits: *mut c_void = null_mut();
     let bitmap =
         unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0) }.ok()?;
@@ -155,7 +171,43 @@ pub fn to_hbitmap(frame: &DesktopFrame) -> Option<HBITMAP> {
     Some(bitmap)
 }
 
-pub fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
+pub fn write_image(frame: &DesktopFrame, path: &str) -> Result<(), String> {
+    if path.to_ascii_lowercase().ends_with(".bmp") {
+        return write_bmp(frame, path);
+    }
+
+    write_png(frame, path)
+}
+
+fn write_bmp(frame: &DesktopFrame, path: &str) -> Result<(), String> {
+    let stride = frame.width as usize * BYTES_PER_PIXEL;
+    let image_size = stride * frame.height as usize;
+    let mut file = BufWriter::new(
+        File::create(path).map_err(|error| format!("Failed to create '{path}': {error}"))?,
+    );
+
+    let file_size = (BMP_HEADER_SIZE + image_size) as u32;
+    let mut header = Vec::with_capacity(BMP_HEADER_SIZE);
+    header.extend_from_slice(b"BM");
+    header.extend_from_slice(&file_size.to_le_bytes());
+    header.extend_from_slice(&0u32.to_le_bytes());
+    header.extend_from_slice(&(BMP_HEADER_SIZE as u32).to_le_bytes());
+    header.extend_from_slice(&40u32.to_le_bytes());
+    header.extend_from_slice(&(frame.width as i32).to_le_bytes());
+    header.extend_from_slice(&(-(frame.height as i32)).to_le_bytes());
+    header.extend_from_slice(&1u16.to_le_bytes());
+    header.extend_from_slice(&32u16.to_le_bytes());
+    header.extend_from_slice(&0u32.to_le_bytes());
+    header.extend_from_slice(&(image_size as u32).to_le_bytes());
+    header.extend_from_slice(&[0u8; 16]);
+
+    file.write_all(&header)
+        .and_then(|_| file.write_all(&frame.pixels))
+        .and_then(|_| file.flush())
+        .map_err(|error| format!("Failed to write '{path}': {error}"))
+}
+
+fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
     let _apartment = ImagingApartment::initialize()?;
     let factory: IWICImagingFactory =
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
@@ -243,21 +295,32 @@ impl CaptureDevice {
     }
 }
 
-struct ImagingApartment;
+struct ImagingApartment {
+    owned: bool,
+}
 
 impl ImagingApartment {
     fn initialize() -> Result<Self, String> {
-        unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED)
-                .ok()
-                .map_err(|error| format!("Failed to initialize the image encoder: {error}"))?;
+        let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+
+        if result.is_ok() {
+            return Ok(ImagingApartment { owned: true });
         }
-        Ok(ImagingApartment)
+
+        if result == RPC_E_CHANGED_MODE {
+            return Ok(ImagingApartment { owned: false });
+        }
+
+        Err(format!("Failed to initialize the image encoder: {result:?}"))
     }
 }
 
 impl Drop for ImagingApartment {
     fn drop(&mut self) {
+        if !self.owned {
+            return;
+        }
+
         unsafe {
             CoUninitialize();
         }
@@ -269,17 +332,25 @@ fn frozen_frames() -> &'static Mutex<Vec<DesktopFrame>> {
     FROZEN.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn ensure_multithreaded_apartment() {
+    static APARTMENT: OnceLock<bool> = OnceLock::new();
+
+    APARTMENT.get_or_init(|| unsafe { CoIncrementMTAUsage() }.is_ok());
+}
+
+fn capture_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn run_isolated<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    ensure_multithreaded_apartment();
+
     let (sender, receiver) = channel();
     let worker = std::thread::Builder::new()
         .spawn(move || {
-            let initialized = unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok();
+            let _guard = capture_lock().lock();
             let _ = sender.send(job());
-            if initialized {
-                unsafe {
-                    RoUninitialize();
-                }
-            }
         })
         .ok()?;
 
@@ -366,8 +437,9 @@ fn capture_item(
         })
         .and_then(|frame| read_pixels(device, &frame, white_scale));
 
-    let _ = pool.RemoveFrameArrived(token);
     let _ = session.Close();
+    let _ = pool.RemoveFrameArrived(token);
+    drop(receiver);
     let _ = pool.Close();
 
     let (width, height, pixels) = captured?;
@@ -521,7 +593,7 @@ fn half_to_f32(bits: u16) -> f32 {
     f32::from_bits(sign | value)
 }
 
-fn crop(frame: &DesktopFrame, bounds: RECT) -> Option<DesktopFrame> {
+pub fn crop(frame: &DesktopFrame, bounds: RECT) -> Option<DesktopFrame> {
     let source_width = rect_width(&frame.bounds);
     let source_height = rect_height(&frame.bounds);
     if source_width <= 0 || source_height <= 0 {
@@ -557,6 +629,100 @@ fn crop(frame: &DesktopFrame, bounds: RECT) -> Option<DesktopFrame> {
         height: height as u32,
         pixels,
     })
+}
+
+fn capture_with_gdi(bounds: RECT) -> Option<DesktopFrame> {
+    let width = rect_width(&bounds);
+    let height = rect_height(&bounds);
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+
+    let stride = width as usize * BYTES_PER_PIXEL;
+    let info = bitmap_info(width, height);
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(stride * height as usize).ok()?;
+
+    unsafe {
+        let screen_dc = GetDC(None);
+        if screen_dc.is_invalid() {
+            return None;
+        }
+
+        let memory_dc = CreateCompatibleDC(Some(screen_dc));
+        let mut bits: *mut c_void = null_mut();
+        let bitmap =
+            CreateDIBSection(Some(screen_dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).ok();
+
+        let captured = match (bitmap, bits.is_null()) {
+            (Some(bitmap), false) => {
+                let previous = SelectObject(memory_dc, bitmap.into());
+                let copied = BitBlt(
+                    memory_dc,
+                    0,
+                    0,
+                    width,
+                    height,
+                    Some(screen_dc),
+                    bounds.left,
+                    bounds.top,
+                    SRCCOPY | CAPTUREBLT,
+                )
+                .is_ok();
+
+                if copied {
+                    let _ = GdiFlush();
+                    pixels.extend_from_slice(std::slice::from_raw_parts(
+                        bits as *const u8,
+                        stride * height as usize,
+                    ));
+                }
+
+                SelectObject(memory_dc, previous);
+                let _ = DeleteObject(bitmap.into());
+                copied
+            }
+            (Some(bitmap), true) => {
+                let _ = DeleteObject(bitmap.into());
+                false
+            }
+            _ => false,
+        };
+
+        let _ = DeleteDC(memory_dc);
+        ReleaseDC(None, screen_dc);
+
+        if !captured {
+            return None;
+        }
+    }
+
+    for pixel in pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
+        pixel[3] = u8::MAX;
+    }
+
+    Some(DesktopFrame {
+        bounds,
+        width: width as u32,
+        height: height as u32,
+        pixels,
+    })
+}
+
+fn bitmap_info(width: i32, height: i32) -> BITMAPINFO {
+    BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            biSizeImage: (width * height * BYTES_PER_PIXEL as i32) as u32,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 fn scaled(value: i32, scale: f64) -> i32 {

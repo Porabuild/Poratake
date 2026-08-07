@@ -30,7 +30,6 @@ export interface StartAreaSelectionOptions {
   onCancelled?: () => void;
   showPrompt?: boolean;
   style?: AreaSelectionStyle;
-  autoConfirm?: boolean;
 }
 
 function handleDaemonEvent(
@@ -48,13 +47,6 @@ function handleDaemonEvent(
       pendingAreaSelection = { ...selection, status: 'selected' };
       options?.onSelected?.(pendingAreaSelection);
       options?.onUpdate?.(pendingAreaSelection);
-      if (options?.autoConfirm) {
-        daemon
-          .call('area-selector', 'confirm')
-          .catch(error =>
-            console.error('Failed to confirm area selection:', error)
-          );
-      }
       break;
     case 'updated':
       pendingAreaSelection = { ...selection, status: 'updated' };

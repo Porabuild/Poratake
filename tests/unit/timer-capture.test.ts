@@ -13,7 +13,8 @@ const mockCheckAccessibility = vi.fn();
 const mockDaemonCall = vi.fn();
 const mockDaemonOnEvent = vi.fn();
 const mockDaemonOffEvent = vi.fn();
-const mockSelectAreaRegion = vi.fn();
+const mockSelectAreaWithOverlay = vi.fn();
+const mockReleaseSelection = vi.fn();
 
 vi.mock('electron', () => ({
   screen: {
@@ -21,8 +22,8 @@ vi.mock('electron', () => ({
   },
 }));
 
-vi.mock('@/main/capture/area-capture', () => ({
-  selectAreaRegion: (...a: unknown[]) => mockSelectAreaRegion(...a),
+vi.mock('@/main/capture/area-overlay', () => ({
+  selectAreaWithOverlay: (...a: unknown[]) => mockSelectAreaWithOverlay(...a),
 }));
 
 vi.mock('@/main/settings', () => ({
@@ -202,11 +203,18 @@ describe('timer-capture on Windows', () => {
   const handlers: Array<(e: string, d?: unknown) => void> = [];
 
   const selectedRegion = { x: 110, y: 70, width: 300, height: 200 };
+  const overlaySelection = {
+    display: { id: 1, bounds: { x: 100, y: 50, width: 1920, height: 1080 } },
+    rect: selectedRegion,
+    release: (...a: unknown[]) => mockReleaseSelection(...a),
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockSelectAreaRegion.mockReset();
+    mockSelectAreaWithOverlay.mockReset();
+    mockReleaseSelection.mockReset();
+    mockReleaseSelection.mockResolvedValue(undefined);
     mockCaptureArea.mockReset();
     mockDaemonCall.mockReset();
     handlers.length = 0;
@@ -233,11 +241,11 @@ describe('timer-capture on Windows', () => {
   });
 
   it('captures the selected area after the timer completes', async () => {
-    mockSelectAreaRegion.mockImplementation(async () => {
+    mockSelectAreaWithOverlay.mockImplementation(async () => {
       setTimeout(() => {
         [...handlers].forEach(h => h('timer-control:completed'));
       }, 10);
-      return selectedRegion;
+      return overlaySelection;
     });
     mockCaptureArea.mockResolvedValue('/tmp/shot.png');
 
@@ -260,11 +268,11 @@ describe('timer-capture on Windows', () => {
   }, 10000);
 
   it('skips capture when the timer is cancelled', async () => {
-    mockSelectAreaRegion.mockImplementation(async () => {
+    mockSelectAreaWithOverlay.mockImplementation(async () => {
       setTimeout(() => {
         [...handlers].forEach(h => h('timer-control:cancel'));
       }, 10);
-      return selectedRegion;
+      return overlaySelection;
     });
 
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
@@ -274,7 +282,7 @@ describe('timer-capture on Windows', () => {
   }, 10000);
 
   it('bails out when area selection is cancelled', async () => {
-    mockSelectAreaRegion.mockResolvedValue(null);
+    mockSelectAreaWithOverlay.mockResolvedValue(null);
 
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
     await timerCapture();
@@ -285,7 +293,7 @@ describe('timer-capture on Windows', () => {
 
   it('restores desktop icons after a cancelled selection', async () => {
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
-    mockSelectAreaRegion.mockResolvedValue(null);
+    mockSelectAreaWithOverlay.mockResolvedValue(null);
 
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
     await timerCapture();
@@ -296,7 +304,7 @@ describe('timer-capture on Windows', () => {
 
   it('restores state and desktop icons when area selection fails', async () => {
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
-    mockSelectAreaRegion.mockRejectedValueOnce(
+    mockSelectAreaWithOverlay.mockRejectedValueOnce(
       new Error('capture unavailable')
     );
 
@@ -305,14 +313,14 @@ describe('timer-capture on Windows', () => {
 
     expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
 
-    mockSelectAreaRegion.mockResolvedValueOnce(null);
+    mockSelectAreaWithOverlay.mockResolvedValueOnce(null);
     await timerCapture();
-    expect(mockSelectAreaRegion).toHaveBeenCalledTimes(2);
+    expect(mockSelectAreaWithOverlay).toHaveBeenCalledTimes(2);
   });
 
   it('settles and restores state when the timer control cannot open', async () => {
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
-    mockSelectAreaRegion.mockResolvedValueOnce(selectedRegion);
+    mockSelectAreaWithOverlay.mockResolvedValueOnce(overlaySelection);
     mockDaemonCall.mockImplementation(async (_module, method) => {
       if (method === 'show') {
         throw new Error('timer unavailable');
@@ -327,8 +335,8 @@ describe('timer-capture on Windows', () => {
     expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
     expect(handlers).toHaveLength(0);
 
-    mockSelectAreaRegion.mockResolvedValueOnce(null);
+    mockSelectAreaWithOverlay.mockResolvedValueOnce(null);
     await timerCapture();
-    expect(mockSelectAreaRegion).toHaveBeenCalledTimes(2);
+    expect(mockSelectAreaWithOverlay).toHaveBeenCalledTimes(2);
   });
 });

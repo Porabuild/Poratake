@@ -6,7 +6,7 @@ import {
   cancelAreaSelection,
   hideAreaSelector,
 } from '@/main/capture/area-selector';
-import { selectAreaRegion } from '@/main/capture/area-capture';
+import { selectAreaWithOverlay } from '@/main/capture/area-overlay';
 import { captureArea } from '@/main/capture/screenshot';
 import {
   hideDesktopIcons,
@@ -141,10 +141,13 @@ async function timerCaptureWindows(shouldHideIcons: boolean): Promise<void> {
       await hideDesktopIcons('capture');
     }
 
-    const globalArea = await selectAreaRegion();
-    if (!globalArea) {
+    const selection = await selectAreaWithOverlay();
+    if (!selection) {
       return;
     }
+
+    await selection.release();
+    const globalArea = selection.rect;
 
     const dipPosition = calculateTimerPosition(globalArea);
     const position = screen.dipToScreenPoint({

@@ -11,7 +11,7 @@ import {
 import { daemon } from '@/main/daemon';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import { isMac } from '@/main/utils/platform';
-import { captureAreaToFile } from '@/main/capture/area-capture';
+import { captureAreaToFile } from '@/main/capture/area-overlay';
 
 export default async function captureText(): Promise<void> {
   if (!isFeatureSupported('ocr')) {

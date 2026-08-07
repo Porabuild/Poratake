@@ -8,6 +8,7 @@ import type {
 } from '@/types/settings';
 import type { EditorState } from '@/types/history';
 import type { CapturePreviewParams } from '@/types/capture-preview';
+import type { AreaOverlayParams } from '@/types/area-overlay';
 import { useAccentColor } from '@/renderer/hooks/useAccentColor';
 
 const ScreenshotWindow = lazy(
@@ -26,6 +27,9 @@ const VideoEditorWindow = lazy(
 );
 const CapturePreviewWindow = lazy(
   () => import('@/renderer/windows/capture-preview-window')
+);
+const AreaOverlayWindow = lazy(
+  () => import('@/renderer/windows/area-overlay-window')
 );
 
 interface ScreenshotParams {
@@ -55,12 +59,14 @@ interface LoadEvent {
     | 'onboarding'
     | 'pin'
     | 'video-editor'
-    | 'capture-preview';
+    | 'capture-preview'
+    | 'area-overlay';
   params:
     | ScreenshotParams
     | PinParams
     | VideoEditorParams
     | CapturePreviewParams
+    | AreaOverlayParams
     | Record<string, never>;
 }
 
@@ -155,6 +161,10 @@ function App() {
           <CapturePreviewWindow
             params={windowData.params as CapturePreviewParams}
           />
+        );
+      case 'area-overlay':
+        return (
+          <AreaOverlayWindow params={windowData.params as AreaOverlayParams} />
         );
       default:
         return null;
