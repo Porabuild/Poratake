@@ -2,6 +2,7 @@ import { IpcRenderer } from 'electron';
 
 declare global {
   interface Window {
+    appPlatform: NodeJS.Platform;
     ipcRenderer: {
       on: (
         channel: string,

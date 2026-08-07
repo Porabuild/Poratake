@@ -2,6 +2,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { isProduction } from './env';
+import { isWindows } from './platform';
 
 export function getConfigDir(): string {
   const dirName = isProduction ? 'capty' : 'capty-dev';
@@ -14,12 +15,13 @@ export function getNativeBinaryPath(binaryName: string): string {
     ? 'src/main/daemon'
     : `src/main/binaries/${binaryName}`;
   const prodBasePath = isDaemon ? 'daemon' : `binaries/${binaryName}`;
+  const binaryFileName = isWindows ? `${binaryName}.exe` : binaryName;
 
-  const devPath = path.join(app.getAppPath(), devBasePath, binaryName);
+  const devPath = path.join(app.getAppPath(), devBasePath, binaryFileName);
   const prodPath = path.join(
     process.resourcesPath || '',
     prodBasePath,
-    binaryName
+    binaryFileName
   );
 
   if (fs.existsSync(devPath)) {

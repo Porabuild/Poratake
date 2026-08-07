@@ -114,7 +114,13 @@ describe('recording-actions', () => {
     });
     mockCreateRecordingProject.mockReturnValue('/p/Rec.capty/recording.mov');
     mockStartRecordingWithConfig.mockResolvedValue(undefined);
-    mockStopRecording.mockResolvedValue('/p/Rec.capty/recording.mov');
+    mockEnableCameraProtection.mockResolvedValue(undefined);
+    mockDisableCameraProtection.mockResolvedValue(undefined);
+    mockHideRecordingControl.mockResolvedValue(undefined);
+    mockStopRecording.mockResolvedValue({
+      outputPath: '/p/Rec.capty/recording.mov',
+      duration: 18,
+    });
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
     mockGenerateInitialEditorState.mockResolvedValue(true);
     mockCheckMic.mockResolvedValue(true);
@@ -131,7 +137,7 @@ describe('recording-actions', () => {
       expect(mockAddToHistory).toHaveBeenCalledWith(
         '/p/Rec.capty/recording.mov',
         'video',
-        5
+        18
       );
       expect(mockCreateVideoEditorWindow).toHaveBeenCalled();
       expect(result).toBe('/p/Rec.capty/recording.mov');
@@ -405,7 +411,7 @@ describe('recording-actions', () => {
       expect(mockStartRecordingWithConfig).toHaveBeenCalled();
     });
 
-    it('aborts when mic permission denied', async () => {
+    it('preserves the pending selection when mic permission is denied', async () => {
       mockConfirmAreaSelection.mockResolvedValue({
         status: 'selected',
         x: 0,
@@ -416,7 +422,13 @@ describe('recording-actions', () => {
       mockCheckMic.mockResolvedValue(false);
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording({ micEnabled: true });
+      expect(mockConfirmAreaSelection).not.toHaveBeenCalled();
       expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
+
+      mockCheckMic.mockResolvedValue(true);
+      await m.startPendingRecording({ micEnabled: true });
+      expect(mockConfirmAreaSelection).toHaveBeenCalledTimes(1);
+      expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1);
     });
 
     it('enables camera content protection when camera enabled', async () => {
@@ -430,6 +442,52 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording({ cameraEnabled: true });
       expect(mockEnableCameraProtection).toHaveBeenCalled();
+      expect(
+        mockEnableCameraProtection.mock.invocationCallOrder[0]
+      ).toBeLessThan(mockStartRecordingWithConfig.mock.invocationCallOrder[0]);
+    });
+
+    it('does not start when camera content protection fails', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      mockEnableCameraProtection.mockRejectedValue(
+        new Error('protection failed')
+      );
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording({ cameraEnabled: true });
+      expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
+      expect(mockShowRecordingError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'protection failed' })
+      );
+    });
+
+    it('wires post-start recording failure cleanup', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording({ cameraEnabled: true });
+      const onFailure = mockStartRecordingWithConfig.mock.calls[0][3] as (
+        error: Error
+      ) => Promise<void>;
+
+      await onFailure(new Error('capture failed'));
+
+      expect(mockDisableCameraProtection).toHaveBeenCalled();
+      expect(mockHideRecordingControl).toHaveBeenCalled();
+      expect(mockHideCameraPreview).toHaveBeenCalled();
+      expect(mockShowRecordingError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'capture failed' })
+      );
     });
 
     it('shows error and cleans up on start failure', async () => {

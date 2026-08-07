@@ -1,6 +1,7 @@
 import { daemon } from '@/main/daemon';
 import type { AspectRatio } from '@/types/aspect-ratio';
 import { setAreaSelectorAspectRatio } from '@/main/capture/area-selector';
+import { isFeatureSupported } from '@/main/system/capabilities';
 
 let currentAreaSelection: {
   x: number;
@@ -19,16 +20,23 @@ let onSizeEditorOpenedCallback: (() => void) | null = null;
 let onSizeEditorClosedCallback: (() => void) | null = null;
 let eventCleanup: (() => void) | null = null;
 
-const WINDOW_WIDTH = 288;
+const WINDOW_WIDTH_WITH_RECORDING = 288;
+const WINDOW_WIDTH_WITHOUT_RECORDING = 240;
 const WINDOW_HEIGHT = 48;
 
-function calculateCenteredPosition(area: {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}): { x: number; y: number } {
-  const x = Math.round(area.x + area.width / 2 - WINDOW_WIDTH / 2);
+function calculateCenteredPosition(
+  area: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  },
+  recordingEnabled: boolean
+): { x: number; y: number } {
+  const windowWidth = recordingEnabled
+    ? WINDOW_WIDTH_WITH_RECORDING
+    : WINDOW_WIDTH_WITHOUT_RECORDING;
+  const x = Math.round(area.x + area.width / 2 - windowWidth / 2);
   const y = Math.round(area.y + area.height / 2 - WINDOW_HEIGHT / 2);
   return { x, y };
 }
@@ -114,14 +122,21 @@ export async function showAllInOneControl(area?: {
   currentAreaSelection = area || null;
   setupEventListener();
 
-  const position = area ? calculateCenteredPosition(area) : { x: 100, y: 100 };
+  const recordingEnabled = isFeatureSupported('recording');
+  const position = area
+    ? calculateCenteredPosition(area, recordingEnabled)
+    : { x: 100, y: 100 };
   const params = area
     ? {
         ...position,
         selectionWidth: area.width,
         selectionHeight: area.height,
+        recordingEnabled,
       }
-    : position;
+    : {
+        ...position,
+        recordingEnabled,
+      };
 
   try {
     await daemon.call('all-in-one', 'show', params);
@@ -138,7 +153,10 @@ export async function updateAllInOnePosition(area: {
 }): Promise<void> {
   currentAreaSelection = area;
 
-  const position = calculateCenteredPosition(area);
+  const position = calculateCenteredPosition(
+    area,
+    isFeatureSupported('recording')
+  );
   const params = {
     ...position,
     selectionWidth: area.width,

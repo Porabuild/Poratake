@@ -93,15 +93,45 @@ function StepIndicator({ currentStep, totalSteps }: StepIndicatorProps) {
   );
 }
 
+type OnboardingStep =
+  'welcome' | 'disable-macos-shortcuts' | 'shortcuts' | 'permissions';
+
+function isMacPlatform(): boolean {
+  return window.appPlatform === undefined || window.appPlatform === 'darwin';
+}
+
+function WindowsKeyIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 10 11" className={className} aria-hidden="true">
+      <g transform="matrix(.947 0 0 .949 -.19 .354)" fill="currentColor">
+        <path d="m10.7 5.95v4.85l-5.57-0.87v-3.99z" />
+        <path d="m5.13 1.13 5.57-0.804v4.774h-5.57z" />
+        <path d="m4.39 5.91v3.95l-4.126-0.57v-3.4z" />
+        <path d="m0.261 1.77 4.129-0.57v3.95h-4.127z" />
+      </g>
+    </svg>
+  );
+}
+
+const ONBOARDING_STEPS: OnboardingStep[] = isMacPlatform()
+  ? ['welcome', 'disable-macos-shortcuts', 'shortcuts', 'permissions']
+  : ['welcome', 'shortcuts'];
+
 function WelcomeStep() {
   return (
     <div className="flex flex-col items-center text-center">
       <div className="bg-primary/10 mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full">
-        <Command className="text-primary h-8 w-8" />
+        {isMacPlatform() ? (
+          <Command className="text-primary h-8 w-8" />
+        ) : (
+          <WindowsKeyIcon className="text-primary h-8 w-8" />
+        )}
       </div>
       <h1 className="text-xl font-semibold">Welcome to Capty</h1>
       <p className="text-muted-foreground mt-2 text-sm">
-        Your new screenshot tool for macOS
+        {isMacPlatform()
+          ? 'Your new screenshot tool for macOS'
+          : 'Your new screenshot tool'}
       </p>
 
       <div className="mt-6 space-y-4 text-left">
@@ -110,10 +140,15 @@ function WelcomeStep() {
             <Monitor className="h-5 w-5 text-blue-500" />
           </div>
           <div>
-            <h3 className="font-medium">Lives in Your Menu Bar</h3>
+            <h3 className="font-medium">
+              {isMacPlatform()
+                ? 'Lives in Your Menu Bar'
+                : 'Lives in Your System Tray'}
+            </h3>
             <p className="text-muted-foreground mt-1 text-sm">
-              Capty runs quietly in your menu bar. Click the icon to access all
-              features or use keyboard shortcuts for quick captures.
+              Capty runs quietly in your{' '}
+              {isMacPlatform() ? 'menu bar' : 'system tray'}. Click the icon to
+              access all features or use keyboard shortcuts for quick captures.
             </p>
           </div>
         </div>
@@ -304,7 +339,7 @@ function PermissionsStep({
   );
 }
 
-const TOTAL_STEPS = 4;
+const TOTAL_STEPS = ONBOARDING_STEPS.length;
 
 export default function OnboardingWindow() {
   const [step, setStep] = useState(0);
@@ -396,22 +431,24 @@ export default function OnboardingWindow() {
   };
 
   const isLastStep = step === TOTAL_STEPS - 1;
-  const canProceedOnLastStep = allPermissionsGranted;
+  const currentStep = ONBOARDING_STEPS[step];
+  const canProceedOnLastStep =
+    currentStep === 'permissions' ? allPermissionsGranted : true;
 
   const renderStep = () => {
-    switch (step) {
-      case 0:
+    switch (currentStep) {
+      case 'welcome':
         return <WelcomeStep />;
-      case 1:
+      case 'disable-macos-shortcuts':
         return <DisableMacOSShortcutsStep />;
-      case 2:
+      case 'shortcuts':
         return (
           <ShortcutsStep
             settings={settings}
             onShortcutChange={handleShortcutChange}
           />
         );
-      case 3:
+      case 'permissions':
         return (
           <PermissionsStep
             permissions={permissions}
@@ -426,7 +463,7 @@ export default function OnboardingWindow() {
 
   return (
     <div className="bg-background flex h-screen flex-col">
-      {}
+      {/* Drag strip standing in for the hidden native title bar */}
       <div
         className="h-8 w-full flex-none"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}

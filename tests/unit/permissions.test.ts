@@ -59,6 +59,8 @@ vi.mock('@/main/capture/area-selector', () => ({
 }));
 
 describe('Permissions', () => {
+  const originalPlatform = process.platform;
+
   beforeEach(() => {
     vi.clearAllMocks();
     Object.keys(mockIpcMainHandlers).forEach(
@@ -70,6 +72,8 @@ describe('Permissions', () => {
   });
 
   afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+    vi.resetModules();
     vi.restoreAllMocks();
   });
 
@@ -171,6 +175,20 @@ describe('Permissions', () => {
       const result = await requestMicrophonePermission();
 
       expect(result).toBe(false);
+    });
+
+    it('allows native Windows capture to trigger first microphone access', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      mockSystemPreferences.getMediaAccessStatus.mockReturnValue(
+        'not-determined'
+      );
+
+      const { requestMicrophonePermission } =
+        await import('@/main/system/permissions');
+
+      expect(await requestMicrophonePermission()).toBe(true);
+      expect(mockSystemPreferences.askForMediaAccess).not.toHaveBeenCalled();
     });
   });
 

@@ -4,6 +4,7 @@ import type { AspectRatio } from '@/types/aspect-ratio';
 import { selectDisplay } from '@/main/capture/display-selector';
 import { selectWindow } from '@/main/capture/window-selector';
 import { daemon } from '@/main/daemon';
+import { isWindows } from '@/main/utils/platform';
 
 let pendingAreaSelection: AreaSelection | null = null;
 let eventCleanup: (() => void) | null = null;
@@ -29,6 +30,7 @@ export interface StartAreaSelectionOptions {
   onCancelled?: () => void;
   showPrompt?: boolean;
   style?: AreaSelectionStyle;
+  autoConfirm?: boolean;
 }
 
 function handleDaemonEvent(
@@ -46,6 +48,13 @@ function handleDaemonEvent(
       pendingAreaSelection = { ...selection, status: 'selected' };
       options?.onSelected?.(pendingAreaSelection);
       options?.onUpdate?.(pendingAreaSelection);
+      if (options?.autoConfirm) {
+        daemon
+          .call('area-selector', 'confirm')
+          .catch(error =>
+            console.error('Failed to confirm area selection:', error)
+          );
+      }
       break;
     case 'updated':
       pendingAreaSelection = { ...selection, status: 'updated' };
@@ -175,7 +184,7 @@ export async function startAreaSelection(
     return startDaemonAreaSelector(
       {
         fullscreen: true,
-        displayId: primaryDisplay.id,
+        ...(isWindows ? {} : { displayId: primaryDisplay.id }),
         showPrompt: options?.showPrompt,
         style: options?.style,
       },
@@ -195,11 +204,12 @@ export async function startAreaSelection(
       return null;
     }
 
+    const windowBounds = isWindows
+      ? screen.screenToDipRect(null, windowSelection.bounds)
+      : windowSelection.bounds;
     const displays = screen.getAllDisplays();
-    const windowCenterX =
-      windowSelection.bounds.x + windowSelection.bounds.width / 2;
-    const windowCenterY =
-      windowSelection.bounds.y + windowSelection.bounds.height / 2;
+    const windowCenterX = windowBounds.x + windowBounds.width / 2;
+    const windowCenterY = windowBounds.y + windowBounds.height / 2;
 
     const targetDisplay =
       displays.find(display => {
@@ -214,11 +224,11 @@ export async function startAreaSelection(
 
     return startDaemonAreaSelector(
       {
-        displayId: targetDisplay.id,
-        presetX: windowSelection.bounds.x,
-        presetY: windowSelection.bounds.y,
-        presetWidth: windowSelection.bounds.width,
-        presetHeight: windowSelection.bounds.height,
+        ...(isWindows ? {} : { displayId: targetDisplay.id }),
+        presetX: windowBounds.x,
+        presetY: windowBounds.y,
+        presetWidth: windowBounds.width,
+        presetHeight: windowBounds.height,
         showPrompt: options?.showPrompt,
         style: options?.style,
       },
@@ -245,7 +255,7 @@ export async function startAreaSelection(
 
     return startDaemonAreaSelector(
       {
-        displayId: targetDisplay.id,
+        ...(isWindows ? {} : { displayId: targetDisplay.id }),
         presetX: x,
         presetY: y,
         presetWidth: width,

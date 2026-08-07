@@ -7,19 +7,18 @@ Thanks for your interest in contributing to Capty.
 - Discuss significant changes in an issue first.
 - Keep pull requests focused and small.
 - Follow the existing architecture, structure, and coding standards.
-- Capty targets macOS 15 or later (Intel + Apple Silicon).
+- Capty targets macOS 15 or later (Intel + Apple Silicon) and Windows 10/11 x64.
 
 ## Development Setup
+
+The native binaries are not committed to the repository. Build them once before your first run.
+
+### macOS
 
 ```bash
 xcode-select --install
 brew install nasm pkg-config cmake
 bun install
-```
-
-The native binaries are not committed to the repository. Build them once before your first run:
-
-```bash
 ./scripts/build-daemon.sh
 ./scripts/build-ffmpeg.sh
 ./scripts/build-whisper.sh
@@ -29,13 +28,24 @@ The native binaries are not committed to the repository. Build them once before 
 - `build-ffmpeg.sh` — LGPL-compliant FFmpeg, compiled from source, takes a while
 - `build-whisper.sh` — whisper.cpp, used for transcription
 
+### Windows
+
+Install Bun, Git, the Rust MSVC toolchain with the Windows SDK, CMake with the Visual Studio 2022 C++ toolchain, and MSYS2 UCRT64 with `gcc`, `make`, `nasm`, `pkg-config`, `curl`, and `tar`.
+
+```powershell
+bun install
+bun run build-native-win
+```
+
+`build-native-win` builds the Rust daemon, LGPL-compliant FFmpeg, and whisper.cpp. Create an NSIS installer with `bun run build-win`.
+
 Then start the app:
 
 ```bash
 bun run dev
 ```
 
-Rebuild the daemon whenever you change anything under `src/main/daemon/`.
+Rebuild the daemon whenever you change anything under `src/main/daemon/` on macOS or `src/main/daemon-win/` on Windows. Use `bun run build-daemon-win` for the Windows daemon.
 
 ## Before You Open a Pull Request
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 type ExecCallback = (
   error: Error | null,
@@ -56,6 +56,12 @@ vi.mock('@/main/capture/desktop-icons', () => ({
 
 vi.mock('@/main/daemon', () => ({
   daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
+}));
+
+const mockCaptureAreaToFile = vi.fn();
+
+vi.mock('@/main/capture/area-capture', () => ({
+  captureAreaToFile: (...a: unknown[]) => mockCaptureAreaToFile(...a),
 }));
 
 async function flush(): Promise<void> {
@@ -139,6 +145,59 @@ describe('captureText (OCR)', () => {
     const captureText = (await import('@/main/capture/ocr')).default;
     await captureText();
     await flush();
+    expect(mockHideDesktopIcons).toHaveBeenCalledWith('capture');
+    expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
+  });
+});
+
+describe('captureText (OCR) on Windows', () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: false } });
+    mockIsDesktopIconsSupported.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+  });
+
+  it('captures via the area overlay and recognizes text', async () => {
+    mockCaptureAreaToFile.mockResolvedValue(true);
+    mockFsExistsSync.mockReturnValue(true);
+    mockDaemonCall.mockResolvedValue({ text: 'Windows text' });
+
+    const captureText = (await import('@/main/capture/ocr')).default;
+    await captureText();
+
+    expect(mockExec).not.toHaveBeenCalled();
+    expect(mockDaemonCall).toHaveBeenCalledWith('ocr', 'recognize', {
+      imagePath: expect.stringContaining('capty-ocr-'),
+    });
+    expect(mockClipboardWriteText).toHaveBeenCalledWith('Windows text');
+    expect(mockNotificationShow).toHaveBeenCalled();
+  });
+
+  it('bails out when area selection is cancelled', async () => {
+    mockCaptureAreaToFile.mockResolvedValue(false);
+
+    const captureText = (await import('@/main/capture/ocr')).default;
+    await captureText();
+
+    expect(mockDaemonCall).not.toHaveBeenCalled();
+    expect(mockClipboardWriteText).not.toHaveBeenCalled();
+  });
+
+  it('restores desktop icons even when selection is cancelled', async () => {
+    mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
+    mockCaptureAreaToFile.mockResolvedValue(false);
+
+    const captureText = (await import('@/main/capture/ocr')).default;
+    await captureText();
+
     expect(mockHideDesktopIcons).toHaveBeenCalledWith('capture');
     expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
   });

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
@@ -62,7 +63,7 @@ describe('recording-project', () => {
       const { getRecordingVideoPath } =
         await import('@/main/capture/video/recording-project');
       expect(getRecordingVideoPath('/path/to/Rec.capty')).toBe(
-        '/path/to/Rec.capty/recording.mov'
+        path.join('/path/to/Rec.capty', 'recording.mov')
       );
       expect(getRecordingVideoPath('/path/to/video.mov')).toBe(
         '/path/to/video.mov'
@@ -73,7 +74,7 @@ describe('recording-project', () => {
       const { getSystemAudioPath } =
         await import('@/main/capture/video/recording-project');
       expect(getSystemAudioPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/system.m4a'
+        path.join('/path/to/Rec.capty', 'system.m4a')
       );
       expect(getSystemAudioPath('/path/to/video.mov')).toBe(
         '/path/to/video.system.m4a'
@@ -84,7 +85,7 @@ describe('recording-project', () => {
       const { getMicAudioPath } =
         await import('@/main/capture/video/recording-project');
       expect(getMicAudioPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/mic.m4a'
+        path.join('/path/to/Rec.capty', 'mic.m4a')
       );
       expect(getMicAudioPath('/path/to/video.mov')).toBe(
         '/path/to/video.mic.m4a'
@@ -95,7 +96,7 @@ describe('recording-project', () => {
       const { getCursorPath } =
         await import('@/main/capture/video/recording-project');
       expect(getCursorPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/cursor.json'
+        path.join('/path/to/Rec.capty', 'cursor.json')
       );
       expect(getCursorPath('/path/to/video.mov')).toBe(
         '/path/to/video.cursor.json'
@@ -106,7 +107,7 @@ describe('recording-project', () => {
       const { getCameraVideoPath } =
         await import('@/main/capture/video/recording-project');
       expect(getCameraVideoPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/camera.mov'
+        path.join('/path/to/Rec.capty', 'camera.mov')
       );
       expect(getCameraVideoPath('/path/to/video.mov')).toBe(
         '/path/to/video.camera.mov'
@@ -117,7 +118,7 @@ describe('recording-project', () => {
       const { getCameraMetaPath } =
         await import('@/main/capture/video/recording-project');
       expect(getCameraMetaPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/camera.json'
+        path.join('/path/to/Rec.capty', 'camera.json')
       );
       expect(getCameraMetaPath('/path/to/video.mov')).toBe(
         '/path/to/video.camera.json'
@@ -128,7 +129,7 @@ describe('recording-project', () => {
       const { getKeysPath } =
         await import('@/main/capture/video/recording-project');
       expect(getKeysPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/keys.json'
+        path.join('/path/to/Rec.capty', 'keys.json')
       );
       expect(getKeysPath('/path/to/video.mov')).toBe(
         '/path/to/video.keys.json'
@@ -139,7 +140,7 @@ describe('recording-project', () => {
       const { getEditorStatePath } =
         await import('@/main/capture/video/recording-project');
       expect(getEditorStatePath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/state.json'
+        path.join('/path/to/Rec.capty', 'state.json')
       );
       expect(getEditorStatePath('/path/to/video.mov')).toBeNull();
     });
@@ -148,7 +149,7 @@ describe('recording-project', () => {
       const { getSubtitlePath } =
         await import('@/main/capture/video/recording-project');
       expect(getSubtitlePath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/subtitle.json'
+        path.join('/path/to/Rec.capty', 'subtitle.json')
       );
       expect(getSubtitlePath('/path/to/video.mov')).toBeNull();
     });
@@ -157,7 +158,7 @@ describe('recording-project', () => {
       const { getMusicFolderPath } =
         await import('@/main/capture/video/recording-project');
       expect(getMusicFolderPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/music'
+        path.join('/path/to/Rec.capty', 'music')
       );
       expect(getMusicFolderPath('/path/to/video.mov')).toBeNull();
     });
@@ -179,7 +180,7 @@ describe('recording-project', () => {
       expect(fs.mkdirSync).toHaveBeenCalledWith('/path/to/My.capty', {
         recursive: true,
       });
-      expect(result).toBe('/path/to/My.capty/recording.mov');
+      expect(result).toBe(path.join('/path/to/My.capty', 'recording.mov'));
     });
 
     it('does not call mkdir when folder exists', async () => {
@@ -272,8 +273,8 @@ describe('recording-project', () => {
         await import('@/main/capture/video/recording-project');
       const result = await getProjectFiles('/path/to/My.capty');
       expect(result).toEqual([
-        '/path/to/My.capty/recording.mov',
-        '/path/to/My.capty/cursor.json',
+        path.join('/path/to/My.capty', 'recording.mov'),
+        path.join('/path/to/My.capty', 'cursor.json'),
       ]);
     });
 
@@ -322,7 +323,10 @@ describe('recording-project', () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       const { renameRecordingProject } =
         await import('@/main/capture/video/recording-project');
-      const result = renameRecordingProject('/path/to/My.capty', 'My');
+      const result = renameRecordingProject(
+        path.join('/path/to', 'My.capty'),
+        'My'
+      );
       expect(result.success).toBe(true);
       expect(fs.renameSync).not.toHaveBeenCalled();
     });
@@ -330,7 +334,10 @@ describe('recording-project', () => {
     it('fails when target already exists', async () => {
       const fs = await import('fs');
       vi.mocked(fs.existsSync).mockImplementation((p: unknown) => {
-        return p === '/path/to/My.capty' || p === '/path/to/NewName.capty';
+        return (
+          p === '/path/to/My.capty' ||
+          p === path.join('/path/to', 'NewName.capty')
+        );
       });
       const { renameRecordingProject } =
         await import('@/main/capture/video/recording-project');
@@ -348,11 +355,15 @@ describe('recording-project', () => {
         await import('@/main/capture/video/recording-project');
       const result = renameRecordingProject('/path/to/My.capty', 'NewName');
       expect(result.success).toBe(true);
-      expect(result.newProjectPath).toBe('/path/to/NewName.capty');
-      expect(result.newVideoPath).toBe('/path/to/NewName.capty/recording.mov');
+      expect(result.newProjectPath).toBe(
+        path.join('/path/to', 'NewName.capty')
+      );
+      expect(result.newVideoPath).toBe(
+        path.join('/path/to', 'NewName.capty', 'recording.mov')
+      );
       expect(fs.renameSync).toHaveBeenCalledWith(
         '/path/to/My.capty',
-        '/path/to/NewName.capty'
+        path.join('/path/to', 'NewName.capty')
       );
     });
 
@@ -368,7 +379,9 @@ describe('recording-project', () => {
         'na/me*with?bad'
       );
       expect(result.success).toBe(true);
-      expect(result.newProjectPath).toBe('/path/to/na-me-with-bad.capty');
+      expect(result.newProjectPath).toBe(
+        path.join('/path/to', 'na-me-with-bad.capty')
+      );
     });
 
     it('returns error from renameSync exception', async () => {

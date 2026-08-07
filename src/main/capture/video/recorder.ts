@@ -1,4 +1,4 @@
-import { app } from 'electron';
+import { app, screen } from 'electron';
 import path from 'path';
 import { showRecordingOverlay, hideRecordingOverlay } from './overlay.ts';
 import {
@@ -12,15 +12,60 @@ import { DEFAULT_STORAGE_CONFIG } from '@/types/settings';
 import { createProjectFolder } from './recording-project';
 import {
   PROJECT_EXTENSION,
+  type CompletedRecording,
   type RecorderResponse,
   type RecorderState,
   type RecordingConfig,
 } from '@/types/video';
 import { daemon } from '@/main/daemon';
+import { isWindows } from '@/main/utils/platform';
 
 let recorderState: RecorderState = 'idle';
 let currentRecordingPath: string | null = null;
 let currentDuration = 0;
+let recordingGeneration = 0;
+let activeRecordingErrorListener: {
+  generation: number;
+  handler: (event: string, data: unknown) => void;
+} | null = null;
+
+type RecordingFailureHandler = (error: Error) => void | Promise<void>;
+
+function clearRecordingErrorListener(generation?: number): void {
+  if (
+    !activeRecordingErrorListener ||
+    (generation !== undefined &&
+      activeRecordingErrorListener.generation !== generation)
+  ) {
+    return;
+  }
+
+  daemon.offEvent(activeRecordingErrorListener.handler);
+  activeRecordingErrorListener = null;
+}
+
+async function handleTerminalRecordingError(
+  generation: number,
+  error: Error,
+  onFailure?: RecordingFailureHandler
+): Promise<void> {
+  if (activeRecordingErrorListener?.generation !== generation) {
+    return;
+  }
+
+  clearRecordingErrorListener(generation);
+  recorderState = 'idle';
+  currentRecordingPath = null;
+  currentDuration = 0;
+  hideRecordingTray();
+  await hideRecordingOverlay(true);
+
+  try {
+    await onFailure?.(error);
+  } catch (failureError) {
+    console.error('Failed to handle recording error:', failureError);
+  }
+}
 
 export function getRecordingsDir(): string {
   const config = getConfig();
@@ -91,7 +136,9 @@ export function getCurrentRecordingPath(): string | null {
 
 export async function startRecordingWithConfig(
   config: RecordingConfig,
-  showControl: () => void | Promise<void>
+  showControl: () => void | Promise<void>,
+  hideControl?: () => void | Promise<void>,
+  onFailure?: RecordingFailureHandler
 ): Promise<void> {
   const isAreaRecording =
     config.x !== undefined &&
@@ -100,52 +147,134 @@ export async function startRecordingWithConfig(
     config.height !== undefined;
 
   const isIOSRecording = config.iosDeviceId != null;
+  const recordingBounds = isAreaRecording
+    ? {
+        x: config.x!,
+        y: config.y!,
+        width: config.width!,
+        height: config.height!,
+      }
+    : undefined;
+  const nativeBounds =
+    recordingBounds && isWindows
+      ? screen.dipToScreenRect(null, recordingBounds)
+      : recordingBounds;
 
-  const startPromise = daemon.call<RecorderResponse>(
-    'screen-recorder',
-    'start',
-    {
-      x: config.x,
-      y: config.y,
-      width: config.width,
-      height: config.height,
-      displayId: config.displayId,
-      includeAudio: config.includeAudio ?? true,
-      micEnabled: config.micEnabled ?? false,
-      micDeviceId: config.micDeviceId,
-      micDeviceName: config.micDeviceName,
-      cameraEnabled: config.cameraEnabled ?? false,
-      cameraDeviceId: config.cameraDeviceId,
-      cameraDeviceName: config.cameraDeviceName,
-      keyboardEnabled: config.keyboardEnabled ?? false,
-      frameRate: config.frameRate ?? 60,
-      outputPath: config.outputPath,
-      iosDeviceId: config.iosDeviceId,
-      iosDeviceName: config.iosDeviceName,
-    },
-    60000
-  );
+  clearRecordingErrorListener();
+  const generation = ++recordingGeneration;
+  let startupSettled = false;
+  let rejectTerminalError: (error: Error) => void = () => {};
+  const terminalError = new Promise<never>((_, reject) => {
+    rejectTerminalError = reject;
+  });
+  const errorHandler = (event: string, data: unknown) => {
+    if (
+      event !== 'screen-recorder:error' ||
+      activeRecordingErrorListener?.generation !== generation
+    ) {
+      return;
+    }
 
-  const overlayPromise =
-    isAreaRecording && !isIOSRecording
-      ? showRecordingOverlay(
-          config.x!,
-          config.y!,
-          config.width!,
-          config.height!
+    const details = data as { code?: unknown; message?: unknown } | undefined;
+    const error = new Error(
+      typeof details?.message === 'string'
+        ? details.message
+        : 'Recording failed'
+    ) as Error & { code?: string };
+    if (typeof details?.code === 'string') {
+      error.code = details.code;
+    }
+
+    if (!startupSettled) {
+      rejectTerminalError(error);
+      return;
+    }
+
+    void handleTerminalRecordingError(generation, error, onFailure);
+  };
+  activeRecordingErrorListener = { generation, handler: errorHandler };
+  daemon.onEvent(errorHandler);
+  let pendingStartup: Promise<unknown> | null = null;
+  let pendingControl: Promise<void> | null = null;
+
+  try {
+    const startup = Promise.allSettled([
+      Promise.resolve().then(() =>
+        daemon.call<RecorderResponse>(
+          'screen-recorder',
+          'start',
+          {
+            x: nativeBounds?.x ?? config.x,
+            y: nativeBounds?.y ?? config.y,
+            width: nativeBounds?.width ?? config.width,
+            height: nativeBounds?.height ?? config.height,
+            displayId: config.displayId,
+            includeAudio: config.includeAudio ?? true,
+            micEnabled: config.micEnabled ?? false,
+            micDeviceId: config.micDeviceId,
+            micDeviceName: config.micDeviceName,
+            cameraEnabled: config.cameraEnabled ?? false,
+            cameraDeviceId: config.cameraDeviceId,
+            cameraDeviceName: config.cameraDeviceName,
+            keyboardEnabled: config.keyboardEnabled ?? false,
+            frameRate: config.frameRate ?? 60,
+            outputPath: config.outputPath,
+            iosDeviceId: config.iosDeviceId,
+            iosDeviceName: config.iosDeviceName,
+          },
+          60000
         )
-      : Promise.resolve();
+      ),
+      Promise.resolve().then(() =>
+        nativeBounds && !isIOSRecording
+          ? showRecordingOverlay(
+              nativeBounds.x,
+              nativeBounds.y,
+              nativeBounds.width,
+              nativeBounds.height
+            )
+          : undefined
+      ),
+    ] as const);
+    pendingStartup = startup;
+    const [startResult, overlayResult] = await Promise.race([
+      startup,
+      terminalError,
+    ]);
 
-  const [response] = await Promise.all([startPromise, overlayPromise]);
+    if (startResult.status === 'rejected') {
+      throw startResult.reason;
+    }
+    if (!startResult.value.success) {
+      throw new Error(startResult.value.message || 'Failed to start recording');
+    }
+    if (overlayResult.status === 'rejected') {
+      throw overlayResult.reason;
+    }
 
-  if (!response.success) {
-    throw new Error(response.message || 'Failed to start recording');
+    pendingControl = Promise.resolve().then(showControl);
+    await Promise.race([pendingControl, terminalError]);
+    recorderState = 'recording';
+    currentRecordingPath = config.outputPath;
+    showRecordingTray();
+    startupSettled = true;
+  } catch (error) {
+    clearRecordingErrorListener(generation);
+    await Promise.allSettled([
+      pendingStartup ?? Promise.resolve(),
+      pendingControl ?? Promise.resolve(),
+    ]);
+    await Promise.allSettled([
+      daemon.call('screen-recorder', 'stop', undefined, 60000),
+      hideRecordingOverlay(true),
+      hideControl ? Promise.resolve().then(hideControl) : Promise.resolve(),
+    ]);
+    hideRecordingTray();
+    recorderState = 'idle';
+    currentRecordingPath = null;
+    currentDuration = 0;
+    throw error;
   }
-
-  recorderState = 'recording';
-  currentRecordingPath = config.outputPath;
-  await showControl();
-  showRecordingTray();
 }
 
 export async function pauseRecording(): Promise<void> {
@@ -192,13 +321,15 @@ export async function resumeRecording(): Promise<void> {
 
 export async function stopRecording(
   hideControl: () => void | Promise<void>
-): Promise<string | null> {
+): Promise<CompletedRecording | null> {
   if (!isRecording()) {
     console.log('Not recording, nothing to stop');
     return null;
   }
 
   const outputPath = currentRecordingPath;
+  const fallbackDuration = currentDuration;
+  clearRecordingErrorListener();
   await hideControl();
 
   let response: RecorderResponse | null = null;
@@ -230,12 +361,25 @@ export async function stopRecording(
   }
 
   const finalPath = response?.outputPath || outputPath;
+  if (!finalPath) {
+    return null;
+  }
+
   console.log('Recording saved to:', finalPath);
 
-  return finalPath;
+  return {
+    outputPath: finalPath,
+    cursorPath: response?.cursorPath,
+    cameraPath: response?.cameraPath,
+    keysPath: response?.keysPath,
+    systemAudioPath: response?.systemAudioPath,
+    micAudioPath: response?.micAudioPath,
+    duration: response?.duration ?? fallbackDuration,
+  };
 }
 
 export async function quitRecorder(): Promise<void> {
+  clearRecordingErrorListener();
   await hideRecordingOverlay();
   hideRecordingTray();
 

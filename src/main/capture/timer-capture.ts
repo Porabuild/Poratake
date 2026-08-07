@@ -1,3 +1,4 @@
+import { screen } from 'electron';
 import { getConfig, updateConfig } from '@/main/settings';
 import { daemon } from '@/main/daemon';
 import {
@@ -5,6 +6,7 @@ import {
   cancelAreaSelection,
   hideAreaSelector,
 } from '@/main/capture/area-selector';
+import { selectAreaRegion } from '@/main/capture/area-capture';
 import { captureArea } from '@/main/capture/screenshot';
 import {
   hideDesktopIcons,
@@ -12,6 +14,8 @@ import {
   isSupported as isDesktopIconsSupported,
   checkAccessibilityPermission,
 } from '@/main/capture/desktop-icons';
+import { isFeatureSupported } from '@/main/system/capabilities';
+import { isMac } from '@/main/utils/platform';
 
 const TIMER_DURATION = 5;
 const WINDOW_WIDTH = 140;
@@ -26,12 +30,14 @@ interface TimerControlPosition {
   y: number;
 }
 
-function calculateTimerPosition(area: {
+interface AreaRect {
   x: number;
   y: number;
   width: number;
   height: number;
-}): TimerControlPosition {
+}
+
+function calculateTimerPosition(area: AreaRect): TimerControlPosition {
   const x = Math.round(area.x + area.width / 2 - WINDOW_WIDTH / 2);
   let y = Math.round(area.y - WINDOW_HEIGHT - TIMER_TOP_MARGIN);
 
@@ -65,15 +71,19 @@ function cleanupEventListener(): void {
   eventCleanup = null;
 }
 
-async function showTimerControl(position: TimerControlPosition): Promise<void> {
+async function showTimerControl(
+  position: TimerControlPosition
+): Promise<boolean> {
   try {
     await daemon.call('timer-control', 'show', {
       x: position.x,
       y: position.y,
       duration: TIMER_DURATION,
     });
+    return true;
   } catch (error) {
     console.error('Failed to show timer control:', error);
+    return false;
   }
 }
 
@@ -85,11 +95,31 @@ async function hideTimerControl(): Promise<void> {
   }
 }
 
-export default async function timerCapture(): Promise<void> {
-  if (isTimerActive) {
-    return;
-  }
+function createTimerCompletionWaiter(): {
+  result: Promise<boolean>;
+  cancel: () => void;
+} {
+  let handler: (event: string) => void;
+  const result = new Promise<boolean>(resolve => {
+    handler = (event: string) => {
+      if (event === 'timer-control:completed') {
+        daemon.offEvent(handler);
+        resolve(true);
+      } else if (event === 'timer-control:cancel') {
+        daemon.offEvent(handler);
+        resolve(false);
+      }
+    };
+    daemon.onEvent(handler);
+  });
 
+  return {
+    result,
+    cancel: () => daemon.offEvent(handler),
+  };
+}
+
+function resolveHideIcons(): boolean {
   const config = getConfig();
   let shouldHideIcons =
     config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
@@ -101,10 +131,53 @@ export default async function timerCapture(): Promise<void> {
     });
   }
 
-  if (shouldHideIcons) {
-    await hideDesktopIcons('capture');
-  }
+  return shouldHideIcons;
+}
 
+async function timerCaptureWindows(shouldHideIcons: boolean): Promise<void> {
+  let timerRequested = false;
+  try {
+    if (shouldHideIcons) {
+      await hideDesktopIcons('capture');
+    }
+
+    const globalArea = await selectAreaRegion();
+    if (!globalArea) {
+      return;
+    }
+
+    const dipPosition = calculateTimerPosition(globalArea);
+    const position = screen.dipToScreenPoint({
+      x: dipPosition.x,
+      y: dipPosition.y,
+    });
+
+    const timerCompletion = createTimerCompletionWaiter();
+    timerRequested = true;
+    if (!(await showTimerControl(position))) {
+      timerCompletion.cancel();
+      return;
+    }
+
+    if (!(await timerCompletion.result)) {
+      return;
+    }
+
+    await captureArea({ status: 'confirmed', ...globalArea });
+  } catch (error) {
+    console.error('Timer capture failed:', error);
+  } finally {
+    if (timerRequested) {
+      await hideTimerControl();
+    }
+    if (shouldHideIcons) {
+      await showDesktopIcons('capture');
+    }
+    isTimerActive = false;
+  }
+}
+
+function timerCaptureMac(shouldHideIcons: boolean): Promise<void> {
   return new Promise<void>(resolve => {
     let captured = false;
     let timerCancelled = false;
@@ -152,22 +225,10 @@ export default async function timerCapture(): Promise<void> {
         resolve();
       });
 
+      const timerCompletion = createTimerCompletionWaiter();
       await showTimerControl(position);
 
-      const timerPromise = new Promise<boolean>(timerResolve => {
-        const handler = (event: string) => {
-          if (event === 'timer-control:completed') {
-            daemon.offEvent(handler);
-            timerResolve(true);
-          } else if (event === 'timer-control:cancel') {
-            daemon.offEvent(handler);
-            timerResolve(false);
-          }
-        };
-        daemon.onEvent(handler);
-      });
-
-      const shouldCapture = await timerPromise;
+      const shouldCapture = await timerCompletion.result;
 
       if (!shouldCapture || timerCancelled) {
         await cleanup();
@@ -216,4 +277,26 @@ export default async function timerCapture(): Promise<void> {
       style: 'simple',
     });
   });
+}
+
+export default async function timerCapture(): Promise<void> {
+  if (!isFeatureSupported('timer-capture')) {
+    return;
+  }
+
+  if (isTimerActive) {
+    return;
+  }
+
+  const shouldHideIcons = resolveHideIcons();
+
+  if (isMac) {
+    if (shouldHideIcons) {
+      await hideDesktopIcons('capture');
+    }
+    return timerCaptureMac(shouldHideIcons);
+  }
+
+  isTimerActive = true;
+  return timerCaptureWindows(shouldHideIcons);
 }

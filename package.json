@@ -4,9 +4,15 @@
   "version": "1.14.0",
   "license": "AGPL-3.0-only",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
     "build-mac": "rm -rf ./dist && rm -rf ./dist-electron && tsc && vite build && electron-builder --mac --universal -p never",
     "build-mac:local": "rm -rf ./dist && rm -rf ./dist-electron && tsc && vite build && electron-builder --mac --universal -c.mac.identity=null -p never",
+    "build-win": "bun run build-native-win && node -e \"const fs=require('node:fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('dist-electron',{recursive:true,force:true})\" && tsc && vite build && electron-builder --win -p never",
+    "build-daemon-win": "powershell -ExecutionPolicy Bypass -File scripts/build-daemon-win.ps1",
+    "build-ffmpeg-win": "powershell -ExecutionPolicy Bypass -File scripts/build-ffmpeg-win.ps1",
+    "build-whisper-win": "powershell -ExecutionPolicy Bypass -File scripts/build-whisper-win.ps1",
+    "build-native-win": "bun run build-daemon-win && bun run build-ffmpeg-win && bun run build-whisper-win",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
@@ -15,7 +21,7 @@
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "checks": "bun run lint && bun run format:check && bun run test:run"
+    "checks": "bun run typecheck && bun run lint && bun run format:check && bun run test:run"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.20",

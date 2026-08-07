@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 const mockExistsSync = vi.fn();
 const mockMkdirSync = vi.fn();
@@ -48,27 +49,33 @@ describe('paths extra', () => {
   describe('getPublicAssetPath', () => {
     it('returns dev path when it exists', async () => {
       mockExistsSync.mockImplementation((p: string) =>
-        String(p).includes('/public/')
+        String(p).includes(path.join('/public/'))
       );
       const { getPublicAssetPath } = await import('@/main/utils/paths');
-      expect(getPublicAssetPath('icons/a.png')).toBe('/app/public/icons/a.png');
+      expect(getPublicAssetPath('icons/a.png')).toBe(
+        path.join('/app', 'public', 'icons/a.png')
+      );
     });
 
     it('returns prod path when dev path missing', async () => {
       const originalResourcesPath = process.resourcesPath;
       process.resourcesPath = '/resources';
       mockExistsSync.mockImplementation((p: string) =>
-        String(p).startsWith('/resources/')
+        String(p).startsWith(path.join('/resources/'))
       );
       const { getPublicAssetPath } = await import('@/main/utils/paths');
-      expect(getPublicAssetPath('icons/a.png')).toBe('/resources/icons/a.png');
+      expect(getPublicAssetPath('icons/a.png')).toBe(
+        path.join('/resources', 'icons/a.png')
+      );
       process.resourcesPath = originalResourcesPath;
     });
 
     it('falls back to dev path when neither exists', async () => {
       mockExistsSync.mockReturnValue(false);
       const { getPublicAssetPath } = await import('@/main/utils/paths');
-      expect(getPublicAssetPath('icons/a.png')).toBe('/app/public/icons/a.png');
+      expect(getPublicAssetPath('icons/a.png')).toBe(
+        path.join('/app', 'public', 'icons/a.png')
+      );
     });
   });
 

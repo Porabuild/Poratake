@@ -11,6 +11,10 @@ import { SETTINGS_CATEGORIES } from '@/renderer/components/settings/settings-reg
 const ALL_TABS = SETTINGS_CATEGORIES.map(c => c.id);
 const DEFAULT_TAB = 'general';
 
+function isMacPlatform(): boolean {
+  return window.appPlatform === undefined || window.appPlatform === 'darwin';
+}
+
 export default function SettingsWindow() {
   const [settings, setSettings] = useState<SettingsConfig>(DEFAULT_SETTINGS);
   const [activeTab, setActiveTab] = useState(DEFAULT_TAB);
@@ -115,14 +119,16 @@ export default function SettingsWindow() {
 
   return (
     <div className="bg-background flex h-screen w-full flex-col">
-      <div
-        className="flex h-10 w-full shrink-0 items-center justify-center border-b"
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        <span className="text-muted-foreground text-xs font-medium">
-          Settings
-        </span>
-      </div>
+      {isMacPlatform() && (
+        <div
+          className="flex h-10 w-full shrink-0 items-center justify-center border-b"
+          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        >
+          <span className="text-muted-foreground text-xs font-medium">
+            Settings
+          </span>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <SettingsSidebar

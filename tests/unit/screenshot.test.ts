@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'path';
 import type { SettingsConfig } from '@/types/settings';
 import type { HistoryItem, EditorState } from '@/types/history';
 import type { RectAnnotation, WallpaperSettings } from '@/types/editor';
@@ -214,6 +215,7 @@ const mockKillDisplaySelector = vi.fn();
 
 vi.mock('@/main/capture/display-selector', () => ({
   selectDisplay: () => mockSelectDisplay(),
+  displayFromSelection: vi.fn(),
   killDisplaySelector: () => mockKillDisplaySelector(),
 }));
 
@@ -1203,7 +1205,9 @@ describe('Screenshot Module', () => {
           cmd: string,
           callback: (err: Error | null, stdout: string, stderr: string) => void
         ) => {
-          expect(cmd).toMatch(/\/mock\/Pictures\/Capty\//);
+          expect(cmd).toContain(
+            path.join('/mock/Pictures', 'Capty') + path.sep
+          );
           if (callback) callback(null, '', '');
         }
       );

@@ -1,4 +1,4 @@
-import { dialog, BrowserWindow, shell } from 'electron';
+import { dialog, BrowserWindow, screen, shell } from 'electron';
 import { daemon } from '@/main/daemon';
 import { getConfig, updateConfig } from '@/main/settings';
 import { showCameraPreview, hideCameraPreview } from './camera-preview';
@@ -10,7 +10,10 @@ import {
   restartRecordingAction,
 } from './recording-actions';
 import { pauseRecording, resumeRecording } from './recorder';
-import { checkAndRequestMicrophonePermission } from './permissions';
+import {
+  checkAndRequestMicrophonePermission,
+  showRecordingError,
+} from './permissions';
 import {
   getCameraStatus,
   requestCameraPermission,
@@ -22,6 +25,7 @@ import {
   hideAreaSelector,
   showAreaSelector,
 } from '@/main/capture/area-selector';
+import { isWindows } from '@/main/utils/platform';
 
 async function checkAndRequestCameraPermission(): Promise<boolean> {
   const status = getCameraStatus();
@@ -37,10 +41,13 @@ async function checkAndRequestCameraPermission(): Promise<boolean> {
         type: 'error' as const,
         title: 'Camera Permission Required',
         message: 'Camera access is not granted.',
-        detail:
-          'To record with camera, please grant camera permission in System Settings.\n\n' +
-          'Go to: System Settings > Privacy & Security > Camera\n' +
-          'Enable access for Capty',
+        detail: isWindows
+          ? 'To record with camera, please allow camera access in Windows Settings.\n\n' +
+            'Go to: Settings > Privacy & security > Camera\n' +
+            'Enable access for desktop apps'
+          : 'To record with camera, please grant camera permission in System Settings.\n\n' +
+            'Go to: System Settings > Privacy & Security > Camera\n' +
+            'Enable access for Capty',
         buttons: ['Open Settings', 'Cancel'],
         defaultId: 0,
       };
@@ -80,9 +87,11 @@ export function getCurrentRecordingAreaSelection() {
   return currentAreaSelection;
 }
 
-const WINDOW_WIDTH_PRE_RECORDING = 496;
+const WINDOW_WIDTH_PRE_RECORDING = isWindows ? 420 : 468;
 const WINDOW_WIDTH_RECORDING = 352;
 const WINDOW_HEIGHT = 48;
+const WINDOWS_CAMERA_PREVIEW_SIZE = 270;
+const WINDOWS_CAMERA_PREVIEW_MARGIN = 32;
 
 function getWindowWidth(): number {
   return currentMode === 'pre-recording'
@@ -100,6 +109,13 @@ function calculateCenteredPosition(area: {
   const x = Math.round(area.x + area.width / 2 - windowWidth / 2);
   const y = Math.round(area.y + area.height / 2 - WINDOW_HEIGHT / 2);
   return { x, y };
+}
+
+function toNativePosition(position: { x: number; y: number }): {
+  x: number;
+  y: number;
+} {
+  return isWindows ? screen.dipToScreenPoint(position) : position;
 }
 
 function getRecordingSettings() {
@@ -134,7 +150,19 @@ interface EventData {
 let micMuted: boolean = false;
 let isHandlingStart: boolean = false;
 
+async function reportControlError(error: unknown): Promise<void> {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  console.error('Failed to handle recording control event:', normalized);
+  try {
+    await showRecordingError(normalized);
+  } catch (dialogError) {
+    console.error('Failed to show recording control error:', dialogError);
+  }
+}
+
 async function handleEvent(event: string, data?: EventData): Promise<void> {
+  if (isHandlingStart && currentMode === 'pre-recording') return;
+
   switch (event) {
     case 'recording-control:toggle-system-audio':
       await handleToggleSystemAudio();
@@ -296,18 +324,18 @@ async function handleToggleCamera(): Promise<void> {
     enabled: newCameraEnabled,
   };
 
+  if (newCameraEnabled && updatedCamera) {
+    await showCameraPreview(updatedCamera);
+  } else {
+    hideCameraPreview();
+  }
+
   updateConfig({
     recording: {
       ...config.recording,
       camera: updatedCamera,
     },
   });
-
-  if (newCameraEnabled && updatedCamera) {
-    showCameraPreview(updatedCamera);
-  } else {
-    hideCameraPreview();
-  }
 
   await updateNativeSettings();
 }
@@ -345,14 +373,14 @@ async function handleSelectCamera(
       selectedDeviceName: deviceName,
     };
 
+    await showCameraPreview(updatedCamera);
+
     updateConfig({
       recording: {
         ...config.recording,
         camera: updatedCamera,
       },
     });
-
-    showCameraPreview(updatedCamera);
   }
 
   await updateNativeSettings();
@@ -483,7 +511,7 @@ function setupEventListener(): void {
   if (eventCleanup) return;
 
   const handler = (event: string, data?: unknown) => {
-    handleEvent(event, data as EventData);
+    void handleEvent(event, data as EventData).catch(reportControlError);
   };
 
   daemon.onEvent(handler);
@@ -569,10 +597,44 @@ export function showPreRecordingControl(area?: {
 
   const config = getConfig();
   if (config.recording.camera?.enabled) {
-    showCameraPreview(config.recording.camera);
+    let cameraSettings = config.recording.camera;
+    if (isWindows && area && !cameraSettings.position) {
+      const workArea = screen.getDisplayMatching(area).workArea;
+      cameraSettings = {
+        ...cameraSettings,
+        position: {
+          x:
+            workArea.x +
+            workArea.width -
+            WINDOWS_CAMERA_PREVIEW_SIZE -
+            WINDOWS_CAMERA_PREVIEW_MARGIN,
+          y:
+            workArea.y +
+            workArea.height -
+            WINDOWS_CAMERA_PREVIEW_SIZE -
+            WINDOWS_CAMERA_PREVIEW_MARGIN,
+        },
+      };
+    }
+    void showCameraPreview(cameraSettings).catch(async error => {
+      const current = getConfig();
+      updateConfig({
+        recording: {
+          ...current.recording,
+          camera: {
+            ...current.recording.camera,
+            enabled: false,
+          },
+        },
+      });
+      await updateNativeSettings();
+      await reportControlError(error);
+    });
   }
 
-  const position = area ? calculateCenteredPosition(area) : { x: 100, y: 100 };
+  const position = toNativePosition(
+    area ? calculateCenteredPosition(area) : { x: 100, y: 100 }
+  );
 
   daemon
     .call('recording-control', 'show', {
@@ -582,6 +644,9 @@ export function showPreRecordingControl(area?: {
     })
     .catch(error => {
       console.error('Failed to show recording control:', error);
+      cancelPendingRecording().catch(cancelError => {
+        console.error('Failed to cancel pending recording:', cancelError);
+      });
     });
 }
 
@@ -593,7 +658,7 @@ export function updateRecordingControlPosition(area: {
 }): void {
   currentAreaSelection = area;
 
-  const position = calculateCenteredPosition(area);
+  const position = toNativePosition(calculateCenteredPosition(area));
 
   daemon.call('recording-control', 'update', position).catch(error => {
     console.error('Failed to update recording control position:', error);
@@ -630,6 +695,7 @@ export async function showRecordingControl(): Promise<void> {
     });
   } catch (error) {
     console.error('Failed to switch to recording mode:', error);
+    throw error;
   }
 
   startTimer();

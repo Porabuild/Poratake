@@ -38,20 +38,12 @@
       "to": "menu-icons/recording/iconTemplate@3x.png"
     },
     {
-      "from": "src/main/daemon/capty-daemon",
-      "to": "daemon/capty-daemon"
-    },
-    {
-      "from": "src/main/binaries/ffmpeg/ffmpeg",
-      "to": "binaries/ffmpeg/ffmpeg"
-    },
-    {
-      "from": "src/main/binaries/whisper/whisper",
-      "to": "binaries/whisper/whisper"
-    },
-    {
       "from": "public/sounds",
       "to": "sounds"
+    },
+    {
+      "from": "public/icon.png",
+      "to": "icon.png"
     }
   ],
   "files": [
@@ -69,6 +61,20 @@
     "build/**/*"
   ],
   "mac": {
+    "extraResources": [
+      {
+        "from": "src/main/daemon/capty-daemon",
+        "to": "daemon/capty-daemon"
+      },
+      {
+        "from": "src/main/binaries/ffmpeg/ffmpeg",
+        "to": "binaries/ffmpeg/ffmpeg"
+      },
+      {
+        "from": "src/main/binaries/whisper/whisper",
+        "to": "binaries/whisper/whisper"
+      }
+    ],
     "extendInfo": {
       "LSUIElement": true,
       "NSMicrophoneUsageDescription": "Capty needs microphone access to record voice audio along with screen recordings.",
@@ -129,5 +135,35 @@
     "title": "${productName} ${version}",
     "icon": "./build/icon.icns",
     "sign": false
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "build/icon.ico",
+    "artifactName": "${productName}-${version}-win-${arch}.${ext}",
+    "extraResources": [
+      {
+        "from": "src/main/daemon/capty-daemon.exe",
+        "to": "daemon/capty-daemon.exe"
+      },
+      {
+        "from": "src/main/binaries/ffmpeg/ffmpeg.exe",
+        "to": "binaries/ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "src/main/binaries/whisper/whisper.exe",
+        "to": "binaries/whisper/whisper.exe"
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "deleteAppDataOnUninstall": false
   }
 }

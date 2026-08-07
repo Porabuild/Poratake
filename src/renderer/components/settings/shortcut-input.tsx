@@ -24,7 +24,9 @@ function formatShortcut(shortcut: string, singleKey = false): string {
 function eventToAccelerator(e: KeyboardEvent): string {
   const parts: string[] = [];
 
-  if (e.metaKey) parts.push('Command');
+  if (e.metaKey) {
+    parts.push(window.appPlatform === 'darwin' ? 'Command' : 'Super');
+  }
   if (e.ctrlKey) parts.push('Control');
   if (e.shiftKey) parts.push('Shift');
   if (e.altKey) parts.push('Alt');

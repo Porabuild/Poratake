@@ -40,6 +40,7 @@ export const SCREENSHOT_ITEMS: SettingsItem[] = [
   },
   {
     id: 'screenshot.hideDesktopIcons',
+    feature: 'desktop-icons',
     category: 'screenshot',
     section: 'Capture Mode',
     type: 'switch',
@@ -59,6 +60,7 @@ export const SCREENSHOT_ITEMS: SettingsItem[] = [
   },
   {
     id: 'screenshot.freezeScreen',
+    feature: 'freeze-screen',
     category: 'screenshot',
     section: 'Capture Mode',
     type: 'switch',

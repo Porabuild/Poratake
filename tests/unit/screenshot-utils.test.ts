@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 const mockGetConfig = vi.fn();
 const mockGenerateFilename = vi.fn();
@@ -50,14 +51,18 @@ describe('screenshot utils', () => {
       mockIsValidDirectory.mockReturnValue(false);
       const { getScreenshotsDir } =
         await import('@/main/capture/screenshot/utils');
-      expect(getScreenshotsDir()).toBe('/Users/me/Pictures/Capty');
+      expect(getScreenshotsDir()).toBe(
+        path.join('/Users/me/Pictures', 'Capty')
+      );
     });
 
     it('uses default Pictures/Capty when no custom path', async () => {
       mockGetConfig.mockReturnValue({ storage: {} });
       const { getScreenshotsDir } =
         await import('@/main/capture/screenshot/utils');
-      expect(getScreenshotsDir()).toBe('/Users/me/Pictures/Capty');
+      expect(getScreenshotsDir()).toBe(
+        path.join('/Users/me/Pictures', 'Capty')
+      );
     });
   });
 
@@ -71,7 +76,9 @@ describe('screenshot utils', () => {
       const { generateScreenshotPath } =
         await import('@/main/capture/screenshot/utils');
       const result = generateScreenshotPath();
-      expect(result).toBe('/Users/me/Pictures/Capty/My Screenshot.png');
+      expect(result).toBe(
+        path.join('/Users/me/Pictures', 'Capty', 'My Screenshot.png')
+      );
       expect(mockGenerateFilename).toHaveBeenCalledWith({
         pattern: 'CustomPattern',
         type: 'Screenshot',

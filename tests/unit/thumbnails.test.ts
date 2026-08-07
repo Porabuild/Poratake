@@ -6,12 +6,14 @@ const mockReadFileSync = vi.fn();
 const mockUnlinkSync = vi.fn();
 const mockRenameSync = vi.fn();
 const mockRmSync = vi.fn();
+const mockWriteFileSync = vi.fn();
 
 vi.mock('fs', () => ({
   default: {
     existsSync: (...a: unknown[]) => mockExistsSync(...a),
     mkdirSync: (...a: unknown[]) => mockMkdirSync(...a),
     readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
+    writeFileSync: (...a: unknown[]) => mockWriteFileSync(...a),
     unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
     renameSync: (...a: unknown[]) => mockRenameSync(...a),
     rmSync: (...a: unknown[]) => mockRmSync(...a),
@@ -19,18 +21,22 @@ vi.mock('fs', () => ({
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   mkdirSync: (...a: unknown[]) => mockMkdirSync(...a),
   readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
+  writeFileSync: (...a: unknown[]) => mockWriteFileSync(...a),
   unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
   renameSync: (...a: unknown[]) => mockRenameSync(...a),
   rmSync: (...a: unknown[]) => mockRmSync(...a),
 }));
 
-const mockExecFile = vi.fn();
-vi.mock('child_process', () => ({
-  execFile: (
-    cmd: string,
-    args: string[],
-    cb: (err: Error | null, out?: { stdout: string; stderr: string }) => void
-  ) => mockExecFile(cmd, args, cb),
+const mockResize = vi.fn();
+const mockToJPEG = vi.fn();
+const mockIsEmpty = vi.fn();
+const mockGetSize = vi.fn();
+const mockCreateFromPath = vi.fn();
+
+vi.mock('electron', () => ({
+  nativeImage: {
+    createFromPath: (...a: unknown[]) => mockCreateFromPath(...a),
+  },
 }));
 
 vi.mock('@/main/utils/paths', () => ({
@@ -46,6 +52,17 @@ describe('thumbnails', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+
+    mockIsEmpty.mockReturnValue(false);
+    mockGetSize.mockReturnValue({ width: 1200, height: 800 });
+    mockToJPEG.mockReturnValue(Buffer.from('jpeg'));
+    mockResize.mockImplementation(() => ({ toJPEG: mockToJPEG }));
+    mockCreateFromPath.mockImplementation(() => ({
+      isEmpty: mockIsEmpty,
+      getSize: mockGetSize,
+      resize: mockResize,
+      toJPEG: mockToJPEG,
+    }));
   });
 
   describe('getThumbnail', () => {
@@ -65,7 +82,7 @@ describe('thumbnails', () => {
       expect(result.base64).toBe(Buffer.from('binary').toString('base64'));
     });
 
-    it('generates image thumbnail with sips when not cached', async () => {
+    it('generates image thumbnail with nativeImage when not cached', async () => {
       let existsCallCount = 0;
       mockExistsSync.mockImplementation(() => {
         existsCallCount++;
@@ -75,15 +92,47 @@ describe('thumbnails', () => {
         return true;
       });
       mockReadFileSync.mockReturnValue(Buffer.from('thumb'));
-      mockExecFile.mockImplementation((_c, _a, cb) =>
-        cb(null, { stdout: '', stderr: '' })
-      );
 
       const { getThumbnail } = await import('@/main/utils/thumbnails');
       const result = await getThumbnail('/path/photo.jpg', 'screenshot');
-      expect(mockExecFile).toHaveBeenCalled();
+      expect(mockCreateFromPath).toHaveBeenCalledWith('/path/photo.jpg');
+      expect(mockResize).toHaveBeenCalledWith({ width: 300, quality: 'good' });
+      expect(mockToJPEG).toHaveBeenCalledWith(80);
+      expect(mockWriteFileSync).toHaveBeenCalled();
       expect(result.base64).toBe(Buffer.from('thumb').toString('base64'));
       expect(result.cached).toBe(false);
+    });
+
+    it('skips upscaling when the image is narrower than the thumbnail width', async () => {
+      let existsCallCount = 0;
+      mockExistsSync.mockImplementation(() => {
+        existsCallCount++;
+        if (existsCallCount === 3) return false;
+        return true;
+      });
+      mockGetSize.mockReturnValue({ width: 120, height: 80 });
+      mockReadFileSync.mockReturnValue(Buffer.from('thumb'));
+
+      const { getThumbnail } = await import('@/main/utils/thumbnails');
+      await getThumbnail('/path/small.png', 'screenshot');
+      expect(mockResize).not.toHaveBeenCalled();
+      expect(mockToJPEG).toHaveBeenCalledWith(80);
+    });
+
+    it('returns null when the image cannot be decoded', async () => {
+      let existsCallCount = 0;
+      mockExistsSync.mockImplementation(() => {
+        existsCallCount++;
+        if (existsCallCount === 1) return true;
+        if (existsCallCount === 2) return true;
+        return false;
+      });
+      mockIsEmpty.mockReturnValue(true);
+
+      const { getThumbnail } = await import('@/main/utils/thumbnails');
+      const result = await getThumbnail('/path/broken.png', 'screenshot');
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(result.base64).toBeNull();
     });
 
     it('generates video thumbnail via ffmpeg when not cached', async () => {

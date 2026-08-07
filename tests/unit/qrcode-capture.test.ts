@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 type ExecCallback = (
   error: Error | null,
@@ -58,17 +58,30 @@ vi.mock('@/main/daemon', () => ({
   daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
 }));
 
+const mockCaptureAreaToFile = vi.fn();
+
+vi.mock('@/main/capture/area-capture', () => ({
+  captureAreaToFile: (...a: unknown[]) => mockCaptureAreaToFile(...a),
+}));
+
 async function flush(): Promise<void> {
   await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));
 }
 
 describe('scanQRCode', () => {
+  const originalPlatform = process.platform;
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: false } });
     mockIsDesktopIconsSupported.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
   it('copies detected QR payload', async () => {
@@ -138,5 +151,52 @@ describe('scanQRCode', () => {
     await flush();
     expect(mockHideDesktopIcons).toHaveBeenCalledWith('capture');
     expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
+  });
+});
+
+describe('scanQRCode on Windows', () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: false } });
+    mockIsDesktopIconsSupported.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.doUnmock('@/main/system/capabilities');
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+  });
+
+  it('uses the shared area capture path and daemon detect on win32', async () => {
+    mockCaptureAreaToFile.mockResolvedValue(true);
+    mockDaemonCall.mockResolvedValue({
+      payload: 'https://example.com/windows',
+    });
+
+    const scan = (await import('@/main/capture/qrcode')).default;
+    await scan();
+
+    expect(mockExec).not.toHaveBeenCalled();
+    expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
+      expect.stringContaining('capty-qrcode-')
+    );
+    expect(mockDaemonCall).toHaveBeenCalledWith('qrcode', 'detect', {
+      imagePath: expect.stringContaining('capty-qrcode-'),
+    });
+    expect(mockClipboardWriteText).toHaveBeenCalledWith(
+      'https://example.com/windows'
+    );
+  });
+
+  it('does not call the daemon when area capture is cancelled', async () => {
+    mockCaptureAreaToFile.mockResolvedValue(false);
+
+    const scan = (await import('@/main/capture/qrcode')).default;
+    await scan();
+
+    expect(mockDaemonCall).not.toHaveBeenCalled();
   });
 });

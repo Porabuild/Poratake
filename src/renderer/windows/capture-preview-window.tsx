@@ -15,6 +15,7 @@ import type {
 } from '@/types/capture-preview';
 import { useVideoClipboardExport } from '@/renderer/hooks/use-video-clipboard-export';
 import { useCloudFileUpload } from '@/renderer/hooks/use-cloud-file-upload';
+import { useTransparentBody } from '@/renderer/hooks/use-transparent-body';
 
 const UPLOAD_DONE_DISPLAY_MS = 800;
 
@@ -25,12 +26,14 @@ interface CapturePreviewWindowProps {
 export default function CapturePreviewWindow({
   params,
 }: CapturePreviewWindowProps) {
-  const { contentType, thumbnailBase64, filePath } = params;
+  const { contentType, thumbnailBase64, filePath, acrylic } = params;
   const [isHovered, setIsHovered] = useState(false);
   const [displays, setDisplays] = useState<PreviewDisplayInfo[]>([]);
   const [isDisplayMenuOpen, setIsDisplayMenuOpen] = useState(false);
   const isDeleting = useRef(false);
   const displayMenuRef = useRef<HTMLDivElement>(null);
+
+  useTransparentBody(acrylic);
 
   const { isCopying, isDone, copyProgress, startExport, cancelExport } =
     useVideoClipboardExport(filePath);
@@ -194,6 +197,10 @@ export default function CapturePreviewWindow({
   const showControls =
     (isHovered || isBusy || isDisplayMenuOpen) && !isFinished;
   const hasMultipleDisplays = displays.length > 1;
+  const hoverEffect = acrylic ? 'opacity-0' : 'scale-110 blur-sm brightness-75';
+  const thumbnailClassName = `transition-all duration-200 ${
+    isHovered && !isBusy ? hoverEffect : ''
+  }`;
 
   return (
     <div
@@ -206,16 +213,12 @@ export default function CapturePreviewWindow({
         <img
           src={`data:image/jpeg;base64,${thumbnailBase64}`}
           alt="Preview"
-          className={`h-full w-full object-cover transition-all duration-200 ${
-            isHovered && !isBusy ? 'scale-110 blur-sm brightness-75' : ''
-          }`}
+          className={`h-full w-full object-cover ${thumbnailClassName}`}
           draggable={false}
         />
       ) : (
         <div
-          className={`bg-muted flex h-full w-full items-center justify-center transition-all duration-200 ${
-            isHovered && !isBusy ? 'scale-110 blur-sm brightness-75' : ''
-          }`}
+          className={`bg-muted flex h-full w-full items-center justify-center ${thumbnailClassName}`}
         >
           {contentType === 'video' ? (
             <Film className="text-muted-foreground h-12 w-12" />

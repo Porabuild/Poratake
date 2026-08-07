@@ -194,7 +194,9 @@ export default function TitleBar({
               )}
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Copy (⌘C)</TooltipContent>
+          <TooltipContent>
+            Copy ({formatAccelerator('CommandOrControl+C')})
+          </TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -202,7 +204,9 @@ export default function TitleBar({
               <SaveIcon className="size-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Save (⌘S)</TooltipContent>
+          <TooltipContent>
+            Save ({formatAccelerator('CommandOrControl+S')})
+          </TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>

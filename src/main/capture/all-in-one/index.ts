@@ -23,10 +23,11 @@ import { prewarmOverlay } from '@/main/capture/video/overlay.ts';
 import type { AreaSelection } from '@/types/area.ts';
 import { globalShortcut, screen } from 'electron';
 import { getConfig, updateConfig } from '@/main/settings';
+import { isFeatureSupported } from '@/main/system/capabilities';
 
 export { showAllInOneControl, updateAllInOnePosition, hideAllInOneControl };
 
-const ALL_IN_ONE_SHORTCUTS = ['C', 'Enter', 'R'];
+const SCREENSHOT_SHORTCUTS = ['C', 'Enter'];
 const MIN_SELECTION_SIZE = 20;
 
 type AreaBounds = { x: number; y: number; width: number; height: number };
@@ -69,11 +70,13 @@ function registerAllInOneShortcuts(
   unregisterAllInOneShortcuts();
   globalShortcut.register('C', onScreenshot);
   globalShortcut.register('Enter', onScreenshot);
-  globalShortcut.register('R', onRecord);
+  if (isFeatureSupported('recording')) {
+    globalShortcut.register('R', onRecord);
+  }
 }
 
 function unregisterAllInOneShortcuts(): void {
-  for (const shortcut of ALL_IN_ONE_SHORTCUTS) {
+  for (const shortcut of [...SCREENSHOT_SHORTCUTS, 'R']) {
     globalShortcut.unregister(shortcut);
   }
 }
@@ -187,10 +190,7 @@ async function handleScreenshotAction(): Promise<void> {
   }
 
   unregisterAllInOneShortcuts();
-  cancelAreaSelection();
-  hideAllInOneControl();
-
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await Promise.all([cancelAreaSelection(), hideAllInOneControl()]);
 
   try {
     await captureArea({
@@ -206,6 +206,10 @@ async function handleScreenshotAction(): Promise<void> {
 }
 
 function handleRecordAction(): void {
+  if (!isFeatureSupported('recording')) {
+    return;
+  }
+
   const area = getCurrentAreaSelection();
   if (!area) {
     return;
@@ -283,6 +287,10 @@ function handleCloseAction(): void {
 }
 
 export default async function startAllInOne(): Promise<void> {
+  if (!isFeatureSupported('all-in-one')) {
+    return;
+  }
+
   setAllInOneCallbacks({
     onClose: handleCloseAction,
     onScreenshot: handleScreenshotAction,

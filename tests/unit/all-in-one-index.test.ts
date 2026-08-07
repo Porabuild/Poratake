@@ -21,6 +21,7 @@ const mockGlobalShortcutUnregister = vi.fn();
 const mockGetConfig = vi.fn();
 const mockUpdateConfig = vi.fn();
 const mockGetAllDisplays = vi.fn();
+const mockIsFeatureSupported = vi.fn();
 
 vi.mock('electron', () => ({
   globalShortcut: {
@@ -75,12 +76,17 @@ vi.mock('@/main/settings', () => ({
   updateConfig: (...a: unknown[]) => mockUpdateConfig(...a),
 }));
 
+vi.mock('@/main/system/capabilities', () => ({
+  isFeatureSupported: (...a: unknown[]) => mockIsFeatureSupported(...a),
+}));
+
 describe('all-in-one orchestrator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     mockGetConfig.mockReturnValue({ allInOne: {} });
     mockUpdateAreaSelection.mockResolvedValue(true);
+    mockIsFeatureSupported.mockReturnValue(true);
     mockGetAllDisplays.mockReturnValue([
       { bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
     ]);
@@ -153,6 +159,40 @@ describe('all-in-one orchestrator', () => {
     });
     expect(mockShowAllInOneControl).toHaveBeenCalled();
     expect(mockGlobalShortcutRegister).toHaveBeenCalledTimes(3);
+  });
+
+  it('omits recording actions when recording is unsupported', async () => {
+    mockIsFeatureSupported.mockImplementation(
+      (feature: unknown) => feature === 'all-in-one'
+    );
+    mockStartAreaSelection.mockImplementation(
+      async ({ onSelected }: { onSelected: (s: unknown) => void }) => {
+        onSelected({
+          status: 'selected',
+          x: 10,
+          y: 20,
+          width: 100,
+          height: 100,
+        });
+        return { status: 'selected' };
+      }
+    );
+
+    const { default: startAllInOne, init } =
+      await import('@/main/capture/all-in-one');
+    await startAllInOne();
+    init();
+    const callbacks = mockSetAllInOneCallbacks.mock.calls.at(-1)?.[0] as {
+      onRecord: () => void;
+    };
+    callbacks.onRecord();
+
+    expect(mockGlobalShortcutRegister).toHaveBeenCalledTimes(2);
+    expect(mockGlobalShortcutRegister).not.toHaveBeenCalledWith(
+      'R',
+      expect.any(Function)
+    );
+    expect(mockPrewarmRecorder).not.toHaveBeenCalled();
   });
 
   it('onUpdate forwards bounds to update', async () => {

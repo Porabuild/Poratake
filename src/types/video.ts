@@ -8,7 +8,19 @@ export interface RecorderResponse {
   cursorPath?: string;
   cameraPath?: string;
   keysPath?: string;
+  systemAudioPath?: string;
+  micAudioPath?: string;
   duration?: number;
+}
+
+export interface CompletedRecording {
+  outputPath: string;
+  cursorPath?: string;
+  cameraPath?: string;
+  keysPath?: string;
+  systemAudioPath?: string;
+  micAudioPath?: string;
+  duration: number;
 }
 
 export interface OverlayResponse {

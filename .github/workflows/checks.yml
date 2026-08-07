@@ -26,6 +26,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Typecheck
+        run: bun run typecheck
+
       - name: Lint
         run: bun run lint
 
@@ -34,3 +37,33 @@ jobs:
 
       - name: Tests
         run: bun run test:run
+
+  windows-native:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Tests
+        run: bun run test:run
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src/main/daemon-win/Cargo.toml -- --check
+
+      - name: Test Windows daemon
+        run: cargo test --manifest-path src/main/daemon-win/Cargo.toml
+
+      - name: Build Windows daemon
+        run: bun run build-daemon-win

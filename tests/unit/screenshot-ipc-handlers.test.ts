@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcOn: Record<string, Handler> = {};
@@ -242,7 +243,7 @@ describe('screenshot IPC handlers', () => {
       await registerHandlers();
       await ipcOn['save-screenshot']({ sender: { id: 1, send: vi.fn() } });
       const [opts] = mockShowSaveDialog.mock.calls[0];
-      expect(opts.defaultPath).toBe('/Pictures/Screenshot.png');
+      expect(opts.defaultPath).toBe(path.join('/Pictures', 'Screenshot.png'));
     });
 
     it('defaults to the previously used directory', async () => {
@@ -254,7 +255,9 @@ describe('screenshot IPC handlers', () => {
       await registerHandlers();
       await ipcOn['save-screenshot']({ sender: { id: 1, send: vi.fn() } });
       const [opts] = mockShowSaveDialog.mock.calls[0];
-      expect(opts.defaultPath).toBe('/Users/me/Desktop/Screenshot.png');
+      expect(opts.defaultPath).toBe(
+        path.join('/Users/me/Desktop', 'Screenshot.png')
+      );
     });
 
     it('persists the directory the user saved to', async () => {
@@ -331,7 +334,9 @@ describe('screenshot IPC handlers', () => {
         'jpeg'
       );
       const [opts] = mockShowSaveDialog.mock.calls[0];
-      expect(opts.defaultPath).toBe('/Users/me/Desktop/Screenshot.jpg');
+      expect(opts.defaultPath).toBe(
+        path.join('/Users/me/Desktop', 'Screenshot.jpg')
+      );
     });
 
     it('persists the directory the user saved to', async () => {
@@ -524,6 +529,22 @@ describe('screenshot IPC handlers', () => {
       expect(mockDaemonCall).toHaveBeenCalledWith('print', 'image', {
         imageBase64: 'aGVsbG8=',
       });
+    });
+
+    it('calls the native print module on Windows', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      mockDaemonCall.mockResolvedValue({ success: true });
+
+      try {
+        await registerHandlers();
+        await ipcHandle['screenshot:print']({}, 'aGVsbG8=');
+        expect(mockDaemonCall).toHaveBeenCalledWith('print', 'image', {
+          imageBase64: 'aGVsbG8=',
+        });
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
     });
   });
 

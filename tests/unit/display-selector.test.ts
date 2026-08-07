@@ -1,9 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockDaemonCall = vi.fn();
+const mockScreenToDipRect = vi.fn();
+const mockGetDisplayMatching = vi.fn();
 
 vi.mock('@/main/daemon', () => ({
   daemon: { call: (...args: unknown[]) => mockDaemonCall(...args) },
+}));
+
+vi.mock('electron', () => ({
+  screen: {
+    screenToDipRect: (...args: unknown[]) => mockScreenToDipRect(...args),
+    getDisplayMatching: (...args: unknown[]) => mockGetDisplayMatching(...args),
+  },
 }));
 
 describe('display-selector', () => {
@@ -60,6 +69,41 @@ describe('display-selector', () => {
       expect(mockDaemonCall).toHaveBeenCalledWith('display-selector', 'cancel');
       resolve({ status: 'cancelled' });
       await pending;
+    });
+  });
+
+  describe('displayFromSelection', () => {
+    const originalPlatform = process.platform;
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    });
+
+    it('returns null without bounds or when cancelled', async () => {
+      const { displayFromSelection } =
+        await import('@/main/capture/display-selector');
+      expect(displayFromSelection({ status: 'cancelled' })).toBeNull();
+      expect(
+        displayFromSelection({ status: 'selected', displayNumber: 1 })
+      ).toBeNull();
+    });
+
+    it('maps physical bounds to DIP before matching on Windows', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      const bounds = { x: 0, y: 0, width: 3840, height: 2160 };
+      const dipBounds = { x: 0, y: 0, width: 1920, height: 1080 };
+      const display = { id: 7 };
+      mockScreenToDipRect.mockReturnValue(dipBounds);
+      mockGetDisplayMatching.mockReturnValue(display);
+
+      const { displayFromSelection } =
+        await import('@/main/capture/display-selector');
+      const result = displayFromSelection({ status: 'selected', bounds });
+
+      expect(mockScreenToDipRect).toHaveBeenCalledWith(null, bounds);
+      expect(mockGetDisplayMatching).toHaveBeenCalledWith(dipBounds);
+      expect(result).toBe(display);
     });
   });
 });

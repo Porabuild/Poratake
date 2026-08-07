@@ -41,8 +41,11 @@ internal_release_notes.txt
 
 # Native build artifacts (see CONTRIBUTING.md)
 src/main/binaries/ffmpeg/ffmpeg
+src/main/binaries/ffmpeg/ffmpeg.exe
 src/main/binaries/whisper/whisper
+src/main/binaries/whisper/whisper.exe
 src/main/daemon/capty-daemon
+src/main/daemon/capty-daemon.exe
 
 # Agent and editor tooling
 .plans/
