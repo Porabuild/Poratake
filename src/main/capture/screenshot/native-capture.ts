@@ -3,7 +3,8 @@ import type { Display, Rectangle } from 'electron';
 import { daemon } from '@/main/daemon';
 
 export interface RegionCaptureOptions {
-  frozen?: boolean;
+  cached?: boolean;
+  retain?: boolean;
 }
 
 export async function captureRegionToFile(
@@ -20,7 +21,8 @@ export async function captureRegionToFile(
       width: bounds.width,
       height: bounds.height,
       path: filePath,
-      frozen: options?.frozen ?? false,
+      cached: options?.cached ?? false,
+      retain: options?.retain ?? false,
     });
     return true;
   } catch (error) {
@@ -49,5 +51,13 @@ export async function captureWindowToFile(
   } catch (error) {
     console.error('Window capture failed:', error);
     return false;
+  }
+}
+
+export async function releaseRetainedDisplays(): Promise<void> {
+  try {
+    await daemon.call('screenshot', 'release');
+  } catch (error) {
+    console.error('Failed to release the frozen screen:', error);
   }
 }

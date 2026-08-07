@@ -1,7 +1,8 @@
-use crate::desktop_frame::{capture_rect, capture_window, frozen_rect, write_png, DesktopFrame};
-use crate::protocol::{
-    param_bool, param_i32, param_i64, param_str, respond_error, respond_success, Request,
+use crate::desktop_frame::{
+    capture_display_frame, capture_rect, capture_window, clear_frozen, crop, frozen_rect,
+    retain_frozen, write_image, DesktopFrame,
 };
+use crate::protocol::{param_bool, param_i32, param_i64, param_str, respond_error, respond_success, Request};
 use crate::router::{method_not_found, Module, Reply};
 use serde_json::json;
 use std::ffi::c_void;
@@ -18,6 +19,10 @@ impl Module for ScreenshotModule {
         match request.method.as_str() {
             "capture-area" => capture_area(request),
             "capture-window" => capture_target_window(request),
+            "release" => {
+                clear_frozen();
+                Reply::Now(Ok(Some(json!({ "released": true }))))
+            }
             method => method_not_found(method),
         }
     }
@@ -34,14 +39,26 @@ fn capture_area(request: &Request) -> Reply {
         )));
     };
 
-    let frozen = param_bool(&request.params, "frozen").unwrap_or(false);
+    let cached = param_bool(&request.params, "cached").unwrap_or(false);
+    let retain = param_bool(&request.params, "retain").unwrap_or(false);
     let request_id = request.id.clone();
 
     spawn_capture(request_id, path, move || {
-        frozen
-            .then(|| frozen_rect(bounds))
-            .flatten()
-            .map_or_else(|| capture_rect(bounds), Ok)
+        if cached {
+            if let Some(frame) = frozen_rect(bounds) {
+                return Ok(frame);
+            }
+        }
+
+        if !retain {
+            return capture_rect(bounds);
+        }
+
+        let display = capture_display_frame(bounds)?;
+        let area = crop(&display, bounds)
+            .ok_or_else(|| "The capture area is outside the display bounds".to_string())?;
+        retain_frozen(display);
+        Ok(area)
     })
 }
 
@@ -77,7 +94,7 @@ fn spawn_capture(
             }
         };
 
-        if let Err(message) = write_png(&frame, &path) {
+        if let Err(message) = write_image(&frame, &path) {
             respond_error(&request_id, "CAPTURE_FAILED", &message);
             return;
         }

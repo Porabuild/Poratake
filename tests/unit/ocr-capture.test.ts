@@ -60,7 +60,7 @@ vi.mock('@/main/daemon', () => ({
 
 const mockCaptureAreaToFile = vi.fn();
 
-vi.mock('@/main/capture/area-capture', () => ({
+vi.mock('@/main/capture/area-overlay', () => ({
   captureAreaToFile: (...a: unknown[]) => mockCaptureAreaToFile(...a),
 }));
 

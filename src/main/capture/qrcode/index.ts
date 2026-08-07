@@ -10,7 +10,7 @@ import {
 } from '@/main/capture/desktop-icons';
 import { daemon } from '@/main/daemon';
 import { isFeatureSupported } from '@/main/system/capabilities';
-import { captureAreaToFile } from '@/main/capture/area-capture';
+import { captureAreaToFile } from '@/main/capture/area-overlay';
 import { isMac } from '@/main/utils/platform';
 
 export default async function scanQRCode(): Promise<void> {

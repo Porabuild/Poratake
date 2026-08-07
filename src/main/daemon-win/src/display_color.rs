@@ -13,6 +13,9 @@ const SCRGB_WHITE_NITS: f32 = 80.0;
 const SDR_WHITE_LEVEL_UNIT: f32 = 1000.0;
 const ADVANCED_COLOR_ENABLED: u32 = 0x2;
 const ENCODE_TABLE_SIZE: usize = 4096;
+const LUMA_RED: f32 = 0.2126;
+const LUMA_GREEN: f32 = 0.7152;
+const LUMA_BLUE: f32 = 0.0722;
 
 pub struct ToneMapper {
     white_scale: f32,
@@ -29,15 +32,25 @@ impl ToneMapper {
 
     pub fn map(&self, red: f32, green: f32, blue: f32) -> [u8; 3] {
         let scale = 1.0 / self.white_scale;
+        let red = (red * scale).max(0.0);
+        let green = (green * scale).max(0.0);
+        let blue = (blue * scale).max(0.0);
+        let luminance = LUMA_RED * red + LUMA_GREEN * green + LUMA_BLUE * blue;
+
+        if luminance <= 1.0 {
+            return [self.encode(red), self.encode(green), self.encode(blue)];
+        }
+
+        let gain = 1.0 / luminance;
         [
-            self.encode(red * scale),
-            self.encode(green * scale),
-            self.encode(blue * scale),
+            self.encode(red * gain),
+            self.encode(green * gain),
+            self.encode(blue * gain),
         ]
     }
 
     fn encode(&self, value: f32) -> u8 {
-        let index = (value.clamp(0.0, 1.0) * (ENCODE_TABLE_SIZE - 1) as f32) as usize;
+        let index = (value.clamp(0.0, 1.0) * (ENCODE_TABLE_SIZE - 1) as f32 + 0.5) as usize;
         self.table[index.min(ENCODE_TABLE_SIZE - 1)]
     }
 }
@@ -196,8 +209,33 @@ mod tests {
     }
 
     #[test]
+    fn keeps_the_hue_of_highlights_instead_of_clipping_channels() {
+        let mapper = ToneMapper::new(1.0);
+        let highlight = mapper.map(6.0, 3.0, 0.6);
+
+        assert!(highlight[0] > highlight[1]);
+        assert!(highlight[1] > highlight[2]);
+    }
+
+    #[test]
+    fn leaves_the_whole_sdr_range_untouched() {
+        let mapper = ToneMapper::new(1.0);
+
+        for step in 0..=10 {
+            let value = step as f32 / 10.0;
+            let direct = mapper.map(value, value, value);
+            assert_eq!(direct[0], direct[1]);
+            assert_eq!(direct[1], direct[2]);
+        }
+
+        assert_eq!(mapper.map(1.0, 1.0, 1.0), [255, 255, 255]);
+        assert_eq!(mapper.map(0.2159, 0.2159, 0.2159)[0], 128);
+    }
+
+    #[test]
     fn never_scales_below_sdr_white() {
         let mapper = ToneMapper::new(0.4);
         assert_eq!(mapper.map(1.0, 1.0, 1.0), [255, 255, 255]);
     }
 }
+

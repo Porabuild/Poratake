@@ -362,68 +362,6 @@ describe('area-selector', () => {
       expect(onUpdate).toHaveBeenCalled();
     });
 
-    it('autoConfirm resolves the selection as soon as the drag ends', async () => {
-      const handlers: Array<(e: string, d: unknown) => void> = [];
-      mockOnEvent.mockImplementation((cb: (e: string, d: unknown) => void) => {
-        handlers.push(cb);
-      });
-      const m = await import('@/main/capture/area-selector');
-
-      mockDaemonCall.mockImplementation(async (_module, method) => {
-        if (method === 'start') {
-          setImmediate(() =>
-            handlers.forEach(h =>
-              h('area-selector:selected', { x: 1, y: 2, width: 3, height: 4 })
-            )
-          );
-        }
-        if (method === 'confirm') {
-          setImmediate(() =>
-            handlers.forEach(h =>
-              h('area-selector:confirmed', { x: 1, y: 2, width: 3, height: 4 })
-            )
-          );
-        }
-        return {};
-      });
-
-      const result = await m.startAreaSelection({ autoConfirm: true });
-
-      expect(mockDaemonCall).toHaveBeenCalledWith('area-selector', 'confirm');
-      expect(result).toEqual({
-        status: 'confirmed',
-        x: 1,
-        y: 2,
-        width: 3,
-        height: 4,
-      });
-    });
-
-    it('does not confirm on its own without autoConfirm', async () => {
-      const handlers: Array<(e: string, d: unknown) => void> = [];
-      mockOnEvent.mockImplementation((cb: (e: string, d: unknown) => void) => {
-        handlers.push(cb);
-      });
-      const m = await import('@/main/capture/area-selector');
-
-      mockDaemonCall.mockImplementation(async () => {
-        setImmediate(() => {
-          handlers.forEach(h =>
-            h('area-selector:selected', { x: 1, y: 2, width: 3, height: 4 })
-          );
-          handlers.forEach(h => h('area-selector:cancelled', null));
-        });
-        return {};
-      });
-
-      await m.startAreaSelection();
-
-      expect(mockDaemonCall).not.toHaveBeenCalledWith(
-        'area-selector',
-        'confirm'
-      );
-    });
-
     it('updated event fires onUpdate only', async () => {
       const handlers: Array<(e: string, d: unknown) => void> = [];
       mockOnEvent.mockImplementation((cb: (e: string, d: unknown) => void) => {

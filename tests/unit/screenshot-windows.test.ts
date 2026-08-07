@@ -124,8 +124,9 @@ vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureWindowToFile: (...a: unknown[]) => mockCaptureWindowToFile(...a),
 }));
 
-vi.mock('@/main/capture/area-capture', () => ({
+vi.mock('@/main/capture/area-overlay', () => ({
   captureAreaToFile: (...a: unknown[]) => mockCaptureAreaToFile(...a),
+  selectAreaWithOverlay: vi.fn(),
 }));
 
 const cursorDisplay = {
