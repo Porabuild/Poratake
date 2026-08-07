@@ -1,4 +1,5 @@
 import { systemPreferences, ipcMain, BrowserWindow, shell } from 'electron';
+import { isMac, isWindows } from '@/main/utils/platform';
 
 export function getAccentColor(): string {
   try {
@@ -19,19 +20,19 @@ export function init() {
     shell.openExternal(url);
   });
 
-  if (process.platform === 'darwin') {
-    const notifyAccentColorChange = () => {
-      setTimeout(() => {
-        const newColor = getAccentColor();
-        BrowserWindow.getAllWindows().forEach(window => {
-          window.webContents.send(
-            'system:preferences:accent-color-changed',
-            newColor
-          );
-        });
-      }, 50);
-    };
+  const notifyAccentColorChange = () => {
+    setTimeout(() => {
+      const newColor = getAccentColor();
+      BrowserWindow.getAllWindows().forEach(window => {
+        window.webContents.send(
+          'system:preferences:accent-color-changed',
+          newColor
+        );
+      });
+    }, 50);
+  };
 
+  if (isMac) {
     systemPreferences.subscribeNotification(
       'AppleColorPreferencesChangedNotification',
       notifyAccentColorChange
@@ -40,5 +41,9 @@ export function init() {
       'AppleAquaColorVariantChanged',
       notifyAccentColorChange
     );
+  }
+
+  if (isWindows) {
+    systemPreferences.on('accent-color-changed', notifyAccentColorChange);
   }
 }

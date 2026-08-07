@@ -16,6 +16,7 @@ export const GENERAL_ITEMS: SettingsItem[] = [
   },
   {
     id: 'general.playSound',
+    feature: 'capture-sound',
     category: 'general',
     section: 'Application',
     type: 'switch',

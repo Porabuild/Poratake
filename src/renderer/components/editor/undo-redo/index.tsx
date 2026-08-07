@@ -1,3 +1,4 @@
+import { formatAccelerator } from '@/renderer/utils/shortcuts';
 import { RotateCcw, RotateCw } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import {
@@ -32,7 +33,9 @@ export default function UndoRedoButtons({
             <RotateCcw className="size-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Undo (⌘Z)</TooltipContent>
+        <TooltipContent>
+          Undo ({formatAccelerator('CommandOrControl+Z')})
+        </TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
@@ -45,7 +48,9 @@ export default function UndoRedoButtons({
             <RotateCw className="size-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Redo (⌘⇧Z)</TooltipContent>
+        <TooltipContent>
+          Redo ({formatAccelerator('CommandOrControl+Shift+Z')})
+        </TooltipContent>
       </Tooltip>
     </div>
   );

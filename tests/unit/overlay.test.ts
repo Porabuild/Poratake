@@ -25,11 +25,11 @@ describe('recording overlay', () => {
     });
   });
 
-  it('show survives daemon failure', async () => {
+  it('show propagates daemon failure', async () => {
     mockDaemonCall.mockRejectedValue(new Error('boom'));
     const { showRecordingOverlay } =
       await import('@/main/capture/video/overlay');
-    await expect(showRecordingOverlay(0, 0, 100, 100)).resolves.toBeUndefined();
+    await expect(showRecordingOverlay(0, 0, 100, 100)).rejects.toThrow('boom');
   });
 
   it('hide is a no-op when overlay was never shown', async () => {
@@ -45,6 +45,14 @@ describe('recording overlay', () => {
     await m.showRecordingOverlay(0, 0, 100, 100);
     mockDaemonCall.mockClear();
     await m.hideRecordingOverlay();
+    expect(mockDaemonCall).toHaveBeenCalledWith('recording-overlay', 'hide');
+  });
+
+  it('force hide calls daemon when show did not complete', async () => {
+    mockDaemonCall.mockResolvedValue({});
+    const { hideRecordingOverlay } =
+      await import('@/main/capture/video/overlay');
+    await hideRecordingOverlay(true);
     expect(mockDaemonCall).toHaveBeenCalledWith('recording-overlay', 'hide');
   });
 

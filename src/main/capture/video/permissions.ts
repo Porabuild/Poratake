@@ -5,12 +5,14 @@ import {
   requestMicrophonePermission,
   openMicrophonePreferences,
 } from '@/main/system/permissions.ts';
+import { isMac, isWindows } from '@/main/utils/platform';
 
 export async function showRecordingError(error: Error): Promise<void> {
   const isPermissionError =
-    error.message.includes('permission') ||
-    error.message.includes('TCC') ||
-    error.message.includes('declined');
+    isMac &&
+    (error.message.includes('permission') ||
+      error.message.includes('TCC') ||
+      error.message.includes('declined'));
 
   const win = BrowserWindow.getFocusedWindow();
 
@@ -41,7 +43,7 @@ export async function showRecordingError(error: Error): Promise<void> {
     const options = {
       type: 'error' as const,
       title: 'Recording Failed',
-      message: 'Failed to start recording.',
+      message: 'Recording failed.',
       detail: error.message,
       buttons: ['OK'],
     };
@@ -68,10 +70,13 @@ export async function checkAndRequestMicrophonePermission(): Promise<boolean> {
         type: 'error' as const,
         title: 'Microphone Permission Required',
         message: 'Microphone access is not granted.',
-        detail:
-          'To record with microphone, please grant microphone permission in System Settings.\n\n' +
-          'Go to: System Settings > Privacy & Security > Microphone\n' +
-          'Enable access for Capty',
+        detail: isWindows
+          ? 'To record with microphone, please allow microphone access in Windows Settings.\n\n' +
+            'Go to: Settings > Privacy & security > Microphone\n' +
+            'Enable access for desktop apps'
+          : 'To record with microphone, please grant microphone permission in System Settings.\n\n' +
+            'Go to: System Settings > Privacy & Security > Microphone\n' +
+            'Enable access for Capty',
         buttons: ['Open Settings', 'Cancel'],
         defaultId: 0,
       };

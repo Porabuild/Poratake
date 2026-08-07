@@ -7,6 +7,7 @@ const mockDaemonOnEvent = vi.fn((cb: (e: string, d?: unknown) => void) => {
 });
 const mockDaemonOffEvent = vi.fn();
 const mockSetAspectRatio = vi.fn();
+const mockIsFeatureSupported = vi.fn();
 
 vi.mock('@/main/daemon', () => ({
   daemon: {
@@ -20,12 +21,17 @@ vi.mock('@/main/capture/area-selector', () => ({
   setAreaSelectorAspectRatio: (...a: unknown[]) => mockSetAspectRatio(...a),
 }));
 
+vi.mock('@/main/system/capabilities', () => ({
+  isFeatureSupported: (...a: unknown[]) => mockIsFeatureSupported(...a),
+}));
+
 describe('open-all-in-one', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     onEventHandler = null;
     mockDaemonCall.mockResolvedValue({});
+    mockIsFeatureSupported.mockReturnValue(true);
   });
 
   it('showAllInOneControl calls daemon show with computed position', async () => {
@@ -49,6 +55,20 @@ describe('open-all-in-one', () => {
     expect(mockDaemonCall).toHaveBeenCalledWith('all-in-one', 'show', {
       x: 100,
       y: 100,
+      recordingEnabled: true,
+    });
+  });
+
+  it('centers the narrower control when recording is unavailable', async () => {
+    mockIsFeatureSupported.mockReturnValue(false);
+    const m = await import('@/main/capture/all-in-one/open-all-in-one');
+    await m.showAllInOneControl({ x: 100, y: 100, width: 400, height: 300 });
+    expect(mockDaemonCall).toHaveBeenCalledWith('all-in-one', 'show', {
+      x: 180,
+      y: 226,
+      selectionWidth: 400,
+      selectionHeight: 300,
+      recordingEnabled: false,
     });
   });
 

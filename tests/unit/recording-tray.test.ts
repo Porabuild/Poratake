@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const mockNativeImageCreateFromPath = vi.fn(() => ({}));
+const mockResize = vi.fn(() => ({ resized: true }));
+const mockNativeImageCreateFromPath = vi.fn(() => ({
+  isEmpty: () => false,
+  resize: (...a: unknown[]) => mockResize(...a),
+}));
 const mockStopRecordingAction = vi.fn();
 const mockRebuildTrayMenu = vi.fn();
 
@@ -31,6 +35,10 @@ vi.mock('electron', () => ({
 }));
 
 vi.mock('@/main/utils/env.ts', () => ({ isProduction: false }));
+vi.mock('@/main/utils/platform.ts', () => ({ isWindows: true }));
+vi.mock('@/main/utils/paths.ts', () => ({
+  getPublicAssetPath: (asset: string) => `/public/${asset}`,
+}));
 
 vi.mock('@/main/capture/video', () => ({
   stopRecordingAction: () => mockStopRecordingAction(),
@@ -54,6 +62,10 @@ describe('recording-tray', () => {
     expect(trayInstances[0].setToolTip).toHaveBeenCalledWith(
       'Click to stop recording'
     );
+    expect(mockNativeImageCreateFromPath).toHaveBeenCalledWith(
+      '/public/icon.png'
+    );
+    expect(mockResize).toHaveBeenCalledWith({ width: 16, height: 16 });
   });
 
   it('showRecordingTray is idempotent', async () => {

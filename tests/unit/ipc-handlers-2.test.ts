@@ -61,6 +61,7 @@ describe('settings IPC handlers', () => {
         camera: { enabled: false, position: { x: 0, y: 0 } },
       },
     });
+    mockShowCameraPreview.mockResolvedValue(undefined);
     mockDaemonCall.mockResolvedValue({});
   });
 
@@ -99,6 +100,34 @@ describe('settings IPC handlers', () => {
     registerSettingsIpcHandlers();
     await ipcOn['recording-settings:update']({}, { camera: { enabled: true } });
     expect(mockShowCameraPreview).toHaveBeenCalled();
+  });
+
+  it('rolls back camera state when preview startup fails', async () => {
+    mockGetCameraPreviewPosition.mockResolvedValue(null);
+    mockGetConfig.mockReturnValue({
+      recording: {
+        systemAudio: true,
+        micEnabled: false,
+        camera: { enabled: true, position: { x: 0, y: 0 } },
+      },
+    });
+    mockShowCameraPreview.mockRejectedValue(new Error('camera failed'));
+    const { registerSettingsIpcHandlers } =
+      await import('@/main/capture/video/settings-ipc');
+    registerSettingsIpcHandlers();
+
+    await ipcOn['recording-settings:update']({}, { camera: { enabled: true } });
+
+    expect(mockUpdateConfig).toHaveBeenCalledWith({
+      recording: expect.objectContaining({
+        camera: expect.objectContaining({ enabled: false }),
+      }),
+    });
+    expect(mockDaemonCall).toHaveBeenCalledWith(
+      'recording-control',
+      'updateSettings',
+      expect.objectContaining({ cameraEnabled: false })
+    );
   });
 
   it('recording-settings:update hides camera when disabled', async () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 import type { ChildProcess } from 'child_process';
 
 const mockSpawn = vi.fn();
@@ -90,7 +91,7 @@ describe('ffmpeg gif export', () => {
 
   it('returns error when input file missing', async () => {
     mockExistsSync.mockImplementation((p: string) =>
-      String(p).includes('/binaries/')
+      String(p).includes(path.join('binaries', 'ffmpeg'))
     );
     const { convertMp4ToGif } = await import('@/main/utils/ffmpeg');
     const result = await convertMp4ToGif({

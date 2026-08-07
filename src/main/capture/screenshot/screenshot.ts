@@ -1,5 +1,6 @@
 import { exec } from 'child_process';
-import { selectDisplay } from '../display-selector';
+import { selectDisplay, displayFromSelection } from '../display-selector';
+import { selectWindow } from '../window-selector';
 import {
   screen,
   clipboard,
@@ -11,6 +12,7 @@ import {
   BrowserWindow,
 } from 'electron';
 import fs from 'fs';
+import path from 'path';
 import { getConfig, updateConfig } from '@/main/settings';
 import { daemon } from '@/main/daemon';
 import {
@@ -46,10 +48,139 @@ import { openScreenshotFromHistory } from '@/main/capture/screenshot/open-from-h
 import { createOrShowSettingsWindow } from '@/main/settings';
 import { showCapturePreview } from '@/main/capture/capture-preview';
 import { openScreenshotEditor } from '@/main/capture/screenshot/open-editor';
+import { isMac } from '@/main/utils/platform';
+import { isFeatureSupported } from '@/main/system/capabilities';
+import {
+  captureDisplayToFile,
+  captureWindowToFile,
+} from '@/main/capture/screenshot/native-capture';
+import { captureAreaToFile } from '@/main/capture/area-capture';
 
 export type CaptureMode = 'screen' | 'area' | 'window';
 
+async function withHiddenDesktopIcons<T>(
+  capture: () => Promise<T>
+): Promise<T> {
+  const config = getConfig();
+  const shouldHideIcons =
+    config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
+
+  if (shouldHideIcons) {
+    await hideDesktopIcons('capture');
+  }
+
+  try {
+    return await capture();
+  } finally {
+    if (shouldHideIcons) {
+      await showDesktopIcons('capture');
+    }
+  }
+}
+
+async function finalizeScreenshot(screenshotPath: string): Promise<void> {
+  if (!fs.existsSync(screenshotPath)) {
+    return;
+  }
+
+  const config = getConfig();
+  const historyItem = await addToHistory(screenshotPath);
+
+  if (config.screenshot.captureToClipboard) {
+    const imageBuffer = fs.readFileSync(screenshotPath);
+    const image = nativeImage.createFromBuffer(imageBuffer);
+    clipboard.writeImage(image);
+    return;
+  }
+
+  if (config.screenshot.showPreview) {
+    showCapturePreview(screenshotPath, 'screenshot', historyItem?.id);
+    return;
+  }
+
+  openScreenshotEditor(screenshotPath, historyItem?.id);
+}
+
+async function captureScreenWithDisplaySelector(): Promise<void> {
+  let display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+
+  if (
+    screen.getAllDisplays().length > 1 &&
+    isFeatureSupported('display-selector')
+  ) {
+    try {
+      const selection = await selectDisplay();
+      if (selection.status === 'cancelled') {
+        return;
+      }
+      display = displayFromSelection(selection) ?? display;
+    } catch (error) {
+      console.error('Display selection failed:', error);
+    }
+  }
+
+  const screenshotPath = generateScreenshotPath();
+  const captured = await withHiddenDesktopIcons(() =>
+    captureDisplayToFile(display, screenshotPath)
+  );
+
+  if (!captured) {
+    console.error('Screen capture failed');
+    return;
+  }
+
+  await finalizeScreenshot(screenshotPath);
+}
+
+async function captureWindowWithSelector(): Promise<void> {
+  let selection;
+  try {
+    selection = await selectWindow();
+  } catch (error) {
+    console.error('Window selection failed:', error);
+    return;
+  }
+
+  if (
+    selection.status !== 'selected' ||
+    selection.windowId === undefined ||
+    !selection.bounds
+  ) {
+    return;
+  }
+
+  const screenshotPath = generateScreenshotPath();
+  const captured = await captureWindowToFile(
+    selection.windowId,
+    screenshotPath
+  );
+
+  if (!captured) {
+    console.error('Window capture failed');
+    return;
+  }
+
+  await finalizeScreenshot(screenshotPath);
+}
+
+async function captureAreaWithSelector(): Promise<void> {
+  const screenshotPath = generateScreenshotPath();
+  const captured = await withHiddenDesktopIcons(() =>
+    captureAreaToFile(screenshotPath)
+  );
+
+  if (!captured) {
+    return;
+  }
+
+  await finalizeScreenshot(screenshotPath);
+}
+
 async function captureScreenMode(): Promise<void> {
+  if (!isMac) {
+    return captureScreenWithDisplaySelector();
+  }
+
   const config = getConfig();
   let shouldHideIcons =
     config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
@@ -104,27 +235,15 @@ async function captureScreenMode(): Promise<void> {
       return;
     }
 
-    if (fs.existsSync(screenshotPath)) {
-      const historyItem = await addToHistory(screenshotPath);
-
-      if (config.screenshot.captureToClipboard) {
-        const imageBuffer = fs.readFileSync(screenshotPath);
-        const image = nativeImage.createFromBuffer(imageBuffer);
-        clipboard.writeImage(image);
-        return;
-      }
-
-      if (config.screenshot.showPreview) {
-        showCapturePreview(screenshotPath, 'screenshot', historyItem?.id);
-        return;
-      }
-
-      openScreenshotEditor(screenshotPath, historyItem?.id);
-    }
+    await finalizeScreenshot(screenshotPath);
   });
 }
 
 async function captureWindowMode(): Promise<void> {
+  if (!isMac) {
+    return captureWindowWithSelector();
+  }
+
   const config = getConfig();
   let shouldHideIcons =
     config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
@@ -164,27 +283,15 @@ async function captureWindowMode(): Promise<void> {
       return;
     }
 
-    if (fs.existsSync(screenshotPath)) {
-      const historyItem = await addToHistory(screenshotPath);
-
-      if (config.screenshot.captureToClipboard) {
-        const imageBuffer = fs.readFileSync(screenshotPath);
-        const image = nativeImage.createFromBuffer(imageBuffer);
-        clipboard.writeImage(image);
-        return;
-      }
-
-      if (config.screenshot.showPreview) {
-        showCapturePreview(screenshotPath, 'screenshot', historyItem?.id);
-        return;
-      }
-
-      openScreenshotEditor(screenshotPath, historyItem?.id);
-    }
+    await finalizeScreenshot(screenshotPath);
   });
 }
 
 async function captureAreaMode(): Promise<void> {
+  if (!isMac) {
+    return captureAreaWithSelector();
+  }
+
   const config = getConfig();
   let shouldHideIcons =
     config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
@@ -237,25 +344,7 @@ async function captureAreaMode(): Promise<void> {
         return;
       }
 
-      if (fs.existsSync(screenshotPath)) {
-        const historyItem = await addToHistory(screenshotPath);
-
-        if (config.screenshot.captureToClipboard) {
-          const imageBuffer = fs.readFileSync(screenshotPath);
-          const image = nativeImage.createFromBuffer(imageBuffer);
-          clipboard.writeImage(image);
-          resolve();
-          return;
-        }
-
-        if (config.screenshot.showPreview) {
-          showCapturePreview(screenshotPath, 'screenshot', historyItem?.id);
-          resolve();
-          return;
-        }
-
-        openScreenshotEditor(screenshotPath, historyItem?.id);
-      }
+      await finalizeScreenshot(screenshotPath);
 
       resolve();
     });
@@ -267,6 +356,10 @@ export default async function screenshot(mode: CaptureMode = 'area') {
     case 'screen':
       return captureScreenMode();
     case 'window':
+      if (!isFeatureSupported('screenshot-window')) {
+        console.warn('Window capture is not supported on this platform');
+        return;
+      }
       return captureWindowMode();
     case 'area':
       return captureAreaMode();
@@ -428,6 +521,9 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('screenshot:print', async (_event, imageBase64: string) => {
+    if (!isFeatureSupported('print')) {
+      return;
+    }
     await daemon.call('print', 'image', { imageBase64 });
   });
 
@@ -442,6 +538,30 @@ export function registerIpcHandlers(): void {
     win.hide();
 
     await new Promise(resolve => setTimeout(resolve, 300));
+
+    if (!isMac) {
+      const temporaryPath = path.join(
+        app.getPath('temp'),
+        `capty-editor-${Date.now()}.png`
+      );
+
+      try {
+        const captured = await captureAreaToFile(temporaryPath);
+        if (!captured) {
+          return null;
+        }
+
+        const imageBuffer = fs.readFileSync(temporaryPath);
+        fs.rmSync(temporaryPath, { force: true });
+        return imageBuffer.toString('base64');
+      } catch (error) {
+        console.error('Capture for editor failed:', error);
+        return null;
+      } finally {
+        win.show();
+        win.focus();
+      }
+    }
 
     let command = 'screencapture';
     if (disableSound) {

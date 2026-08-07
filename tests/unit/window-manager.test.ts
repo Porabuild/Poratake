@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 const mockExistsSync = vi.fn();
 const mockShowOpenDialog = vi.fn();
@@ -105,7 +106,9 @@ describe('window-manager', () => {
       const win = m.createVideoEditorWindow('/path/Rec.capty');
       expect(win).toBeDefined();
       const data = m.getWindowData(browserWindows[0].webContents.id);
-      expect(data?.filePath).toBe('/path/Rec.capty/recording.mov');
+      expect(data?.filePath).toBe(
+        path.join('/path/Rec.capty', 'recording.mov')
+      );
     });
   });
 

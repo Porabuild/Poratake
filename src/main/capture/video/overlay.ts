@@ -13,11 +13,12 @@ export async function showRecordingOverlay(
     isVisible = true;
   } catch (error) {
     console.error('Failed to show recording overlay:', error);
+    throw error;
   }
 }
 
-export async function hideRecordingOverlay(): Promise<void> {
-  if (!isVisible) {
+export async function hideRecordingOverlay(force = false): Promise<void> {
+  if (!isVisible && !force) {
     return;
   }
 

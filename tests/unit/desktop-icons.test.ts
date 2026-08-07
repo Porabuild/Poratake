@@ -29,9 +29,17 @@ describe('desktop-icons', () => {
       Object.defineProperty(process, 'platform', { value: original });
     });
 
-    it('returns false on non-darwin', async () => {
+    it('returns true on win32', async () => {
       const original = process.platform;
       Object.defineProperty(process, 'platform', { value: 'win32' });
+      const { isSupported } = await import('@/main/capture/desktop-icons');
+      expect(isSupported()).toBe(true);
+      Object.defineProperty(process, 'platform', { value: original });
+    });
+
+    it('returns false on linux', async () => {
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'linux' });
       const { isSupported } = await import('@/main/capture/desktop-icons');
       expect(isSupported()).toBe(false);
       Object.defineProperty(process, 'platform', { value: original });
@@ -39,6 +47,16 @@ describe('desktop-icons', () => {
   });
 
   describe('checkAccessibilityPermission', () => {
+    it('returns true on Windows without querying system preferences', async () => {
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const { checkAccessibilityPermission } =
+        await import('@/main/capture/desktop-icons');
+      expect(checkAccessibilityPermission(true)).toBe(true);
+      expect(mockIsTrustedAccessibilityClient).not.toHaveBeenCalled();
+      Object.defineProperty(process, 'platform', { value: original });
+    });
+
     it('passes prompt flag through', async () => {
       mockIsTrustedAccessibilityClient.mockReturnValue(true);
       const { checkAccessibilityPermission } =
@@ -70,9 +88,19 @@ describe('desktop-icons', () => {
       Object.defineProperty(process, 'platform', { value: original });
     });
 
-    it('returns false on non-darwin without calling daemon', async () => {
+    it('hides desktop icons via daemon on win32', async () => {
       const original = process.platform;
       Object.defineProperty(process, 'platform', { value: 'win32' });
+      mockDaemonCall.mockResolvedValue({});
+      const { hideDesktopIcons } = await import('@/main/capture/desktop-icons');
+      expect(await hideDesktopIcons('capture')).toBe(true);
+      expect(mockDaemonCall).toHaveBeenCalledWith('desktop-helper', 'hide');
+      Object.defineProperty(process, 'platform', { value: original });
+    });
+
+    it('returns false on unsupported platforms without calling daemon', async () => {
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'linux' });
       const { hideDesktopIcons } = await import('@/main/capture/desktop-icons');
       expect(await hideDesktopIcons('menu')).toBe(false);
       expect(mockDaemonCall).not.toHaveBeenCalled();
@@ -156,9 +184,9 @@ describe('desktop-icons', () => {
       Object.defineProperty(process, 'platform', { value: original });
     });
 
-    it('show on non-darwin returns false', async () => {
+    it('show on unsupported platforms returns false', async () => {
       const original = process.platform;
-      Object.defineProperty(process, 'platform', { value: 'win32' });
+      Object.defineProperty(process, 'platform', { value: 'linux' });
       const { showDesktopIcons } = await import('@/main/capture/desktop-icons');
       expect(await showDesktopIcons('menu')).toBe(false);
       Object.defineProperty(process, 'platform', { value: original });

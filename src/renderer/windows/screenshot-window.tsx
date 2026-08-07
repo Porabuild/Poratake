@@ -1090,7 +1090,7 @@ export default function ScreenshotWindow({
         return;
       }
 
-      if (e.code === 'Backspace' && e.metaKey) {
+      if (e.code === 'Backspace' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         await deleteScreenshotRef.current();
         return;

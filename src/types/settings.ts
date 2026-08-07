@@ -176,7 +176,7 @@ export interface EditorShortcuts {
   wallpaper: string;
 }
 
-export const DEFAULT_UPLOAD_TO_CLOUD_SHORTCUT = 'Command+Shift+U';
+export const DEFAULT_UPLOAD_TO_CLOUD_SHORTCUT = 'CommandOrControl+Shift+U';
 
 export interface EditorActionShortcuts {
   uploadToCloud: string;

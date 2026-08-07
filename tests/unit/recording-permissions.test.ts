@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockShowMessageBox = vi.fn();
 const mockGetFocusedWindow = vi.fn();
@@ -24,10 +24,16 @@ vi.mock('@/main/system/permissions.ts', () => ({
 }));
 
 describe('recording permissions', () => {
+  const originalPlatform = process.platform;
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     mockGetFocusedWindow.mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
   describe('showRecordingError', () => {
@@ -66,9 +72,11 @@ describe('recording permissions', () => {
       const dialogArgs = mockShowMessageBox.mock.calls[0][0] as {
         buttons: string[];
         detail: string;
+        message: string;
       };
       expect(dialogArgs.buttons).toEqual(['OK']);
       expect(dialogArgs.detail).toBe('disk full');
+      expect(dialogArgs.message).toBe('Recording failed.');
     });
 
     it('uses focused window if available', async () => {
@@ -81,6 +89,24 @@ describe('recording permissions', () => {
         { id: 7 },
         expect.any(Object)
       );
+    });
+
+    it('shows the native error instead of macOS permission steps on Windows', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      mockShowMessageBox.mockResolvedValue({ response: 0 });
+
+      const { showRecordingError } =
+        await import('@/main/capture/video/permissions');
+      await showRecordingError(new Error('permission denied'));
+
+      const dialogArgs = mockShowMessageBox.mock.calls[0][0] as {
+        buttons: string[];
+        detail: string;
+      };
+      expect(dialogArgs.buttons).toEqual(['OK']);
+      expect(dialogArgs.detail).toBe('permission denied');
+      expect(mockOpenScreenRecordingPreferences).not.toHaveBeenCalled();
     });
   });
 
@@ -120,6 +146,24 @@ describe('recording permissions', () => {
         await import('@/main/capture/video/permissions');
       expect(await checkAndRequestMicrophonePermission()).toBe(false);
       expect(mockOpenMicPreferences).not.toHaveBeenCalled();
+    });
+
+    it('uses Windows microphone settings guidance', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      mockGetMicStatus.mockReturnValue('denied');
+      mockRequestMicPermission.mockResolvedValue(false);
+      mockShowMessageBox.mockResolvedValue({ response: 1 });
+
+      const { checkAndRequestMicrophonePermission } =
+        await import('@/main/capture/video/permissions');
+      await checkAndRequestMicrophonePermission();
+
+      const dialogArgs = mockShowMessageBox.mock.calls[0][0] as {
+        detail: string;
+      };
+      expect(dialogArgs.detail).toContain('Windows Settings');
+      expect(dialogArgs.detail).toContain('desktop apps');
     });
   });
 });

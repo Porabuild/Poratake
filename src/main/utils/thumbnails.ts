@@ -1,15 +1,13 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import { nativeImage } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { getConfigDir } from './paths';
 import { generateVideoThumbnail } from './ffmpeg';
 
-const execFileAsync = promisify(execFile);
-
 const THUMBNAILS_DIR = path.join(getConfigDir(), 'thumbnails');
 const THUMBNAIL_WIDTH = 300;
+const THUMBNAIL_QUALITY = 80;
 
 function ensureThumbnailsDir(): void {
   if (!fs.existsSync(THUMBNAILS_DIR)) {
@@ -22,25 +20,25 @@ function getThumbnailPath(originalPath: string, ext: string = 'jpg'): string {
   return path.join(THUMBNAILS_DIR, `${hash}.${ext}`);
 }
 
-async function generateImageThumbnail(
+function generateImageThumbnail(
   inputPath: string,
   outputPath: string
-): Promise<boolean> {
+): boolean {
   try {
-    await execFileAsync('sips', [
-      '-Z',
-      String(THUMBNAIL_WIDTH),
-      '--setProperty',
-      'format',
-      'jpeg',
-      '--setProperty',
-      'formatOptions',
-      '80',
-      inputPath,
-      '--out',
-      outputPath,
-    ]);
-    return fs.existsSync(outputPath);
+    const image = nativeImage.createFromPath(inputPath);
+
+    if (image.isEmpty()) {
+      return false;
+    }
+
+    const { width } = image.getSize();
+    const thumbnail =
+      width > THUMBNAIL_WIDTH
+        ? image.resize({ width: THUMBNAIL_WIDTH, quality: 'good' })
+        : image;
+
+    fs.writeFileSync(outputPath, thumbnail.toJPEG(THUMBNAIL_QUALITY));
+    return true;
   } catch (error) {
     console.error('Failed to generate image thumbnail:', error);
     return false;
@@ -82,7 +80,7 @@ export async function getThumbnail(
     });
     success = result.success;
   } else {
-    success = await generateImageThumbnail(originalPath, thumbnailPath);
+    success = generateImageThumbnail(originalPath, thumbnailPath);
   }
 
   if (success && fs.existsSync(thumbnailPath)) {

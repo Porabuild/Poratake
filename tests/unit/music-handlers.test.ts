@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
@@ -293,7 +294,7 @@ describe('music handlers', () => {
         { sender: { id: 1 } },
         { fileName: 'song.mp3' }
       );
-      expect(result).toBe('/p/Rec.capty/music/song.mp3');
+      expect(result).toBe(path.join('/p/Rec.capty/music', 'song.mp3'));
     });
 
     it('returns null when file missing', async () => {

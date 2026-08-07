@@ -1,8 +1,13 @@
 import { systemPreferences } from 'electron';
 import type { DesktopIconsHideSource } from '@/types/desktop-icons';
 import { daemon } from '@/main/daemon';
+import { isMac } from '@/main/utils/platform';
+import { isFeatureSupported } from '@/main/system/capabilities';
 
 export function checkAccessibilityPermission(prompt = false): boolean {
+  if (!isMac) {
+    return true;
+  }
   return systemPreferences.isTrustedAccessibilityClient(prompt);
 }
 
@@ -14,7 +19,7 @@ export function areDesktopIconsHidden(): boolean {
 }
 
 export function isSupported(): boolean {
-  return process.platform === 'darwin';
+  return isFeatureSupported('desktop-icons');
 }
 
 export async function hideDesktopIcons(

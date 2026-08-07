@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
@@ -146,7 +147,10 @@ describe('capture-preview video-export', () => {
         await import('@/main/capture/capture-preview/video-export');
       registerPreviewExportIpc();
       const result = ipcHandle['capture-preview:get-export-output-path']();
-      expect(result).toMatch(/^\/tmp\/capty-clipboard-.*\.mp4$/);
+      const prefix = path
+        .join('/tmp', 'capty-clipboard-')
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      expect(result).toMatch(new RegExp(`^${prefix}.*\\.mp4$`));
     });
   });
 

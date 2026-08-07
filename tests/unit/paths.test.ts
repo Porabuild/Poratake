@@ -68,7 +68,7 @@ describe('Path Utilities', () => {
 
       const { getConfigDir } = await import('@/main/utils/paths');
       const configDir = getConfigDir();
-      expect(configDir).toContain('/custom/home/path');
+      expect(configDir).toContain(path.join('/custom/home/path'));
       expect(mockApp.getPath).toHaveBeenCalledWith('home');
     });
   });
@@ -197,18 +197,17 @@ describe('Path Utilities', () => {
 
   describe('getNativeBinaryPath', () => {
     it('should return dev path when it exists', async () => {
-      mockExistsSync.mockImplementation((p: string) => {
-        if (p === '/mock/app/src/main/binaries/test-binary/test-binary')
-          return true;
-        return false;
-      });
+      const devPath = path.join(
+        '/mock/app',
+        'src/main/binaries/test-binary',
+        'test-binary'
+      );
+      mockExistsSync.mockImplementation((p: string) => p === devPath);
 
       const { getNativeBinaryPath } = await import('@/main/utils/paths');
       const binaryPath = getNativeBinaryPath('test-binary');
 
-      expect(binaryPath).toBe(
-        '/mock/app/src/main/binaries/test-binary/test-binary'
-      );
+      expect(binaryPath).toBe(devPath);
     });
 
     it('should return prod path when dev path does not exist', async () => {
@@ -219,20 +218,17 @@ describe('Path Utilities', () => {
         configurable: true,
       });
 
-      mockExistsSync.mockImplementation((p: string) => {
-        if (p === '/mock/app/src/main/binaries/test-binary/test-binary')
-          return false;
-        if (p === '/mock/resources/binaries/test-binary/test-binary')
-          return true;
-        return false;
-      });
+      const prodPath = path.join(
+        '/mock/resources',
+        'binaries/test-binary',
+        'test-binary'
+      );
+      mockExistsSync.mockImplementation((p: string) => p === prodPath);
 
       const { getNativeBinaryPath } = await import('@/main/utils/paths');
       const binaryPath = getNativeBinaryPath('test-binary');
 
-      expect(binaryPath).toBe(
-        '/mock/resources/binaries/test-binary/test-binary'
-      );
+      expect(binaryPath).toBe(prodPath);
 
       Object.defineProperty(process, 'resourcesPath', {
         value: originalResourcesPath,
@@ -248,7 +244,11 @@ describe('Path Utilities', () => {
       const binaryPath = getNativeBinaryPath('missing-binary');
 
       expect(binaryPath).toBe(
-        '/mock/app/src/main/binaries/missing-binary/missing-binary'
+        path.join(
+          '/mock/app',
+          'src/main/binaries/missing-binary',
+          'missing-binary'
+        )
       );
     });
 
@@ -258,10 +258,10 @@ describe('Path Utilities', () => {
       const { getNativeBinaryPath } = await import('@/main/utils/paths');
 
       expect(getNativeBinaryPath('ffmpeg')).toBe(
-        '/mock/app/src/main/binaries/ffmpeg/ffmpeg'
+        path.join('/mock/app', 'src/main/binaries/ffmpeg', 'ffmpeg')
       );
       expect(getNativeBinaryPath('capty-daemon')).toBe(
-        '/mock/app/src/main/daemon/capty-daemon'
+        path.join('/mock/app', 'src/main/daemon', 'capty-daemon')
       );
     });
   });

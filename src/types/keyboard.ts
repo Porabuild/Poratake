@@ -1,4 +1,7 @@
-export type ModifierKey = 'command' | 'control' | 'option' | 'shift' | 'fn';
+export type ModifierKey =
+  'command' | 'control' | 'option' | 'shift' | 'fn' | 'meta' | 'alt';
+
+export type KeyboardPlatform = 'macos' | 'windows';
 
 export interface KeyboardKeyEvent {
   timestamp: number;
@@ -14,6 +17,7 @@ export interface KeyboardData {
     startTime: string;
     duration: number;
     sampleRate: number;
+    platform?: KeyboardPlatform;
   };
 }
 

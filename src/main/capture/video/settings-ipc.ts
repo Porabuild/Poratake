@@ -25,11 +25,20 @@ export function registerSettingsIpcHandlers(): void {
 
       updateConfig({ recording: settings as RecordingSettings });
 
-      const fullSettings = getConfig().recording;
+      let fullSettings = getConfig().recording;
 
       if (fullSettings.camera) {
         if (fullSettings.camera.enabled) {
-          showCameraPreview(fullSettings.camera);
+          try {
+            await showCameraPreview(fullSettings.camera);
+          } catch (error) {
+            fullSettings = {
+              ...fullSettings,
+              camera: { ...fullSettings.camera, enabled: false },
+            };
+            updateConfig({ recording: fullSettings });
+            console.error('Failed to show camera preview:', error);
+          }
         } else {
           hideCameraPreview();
         }

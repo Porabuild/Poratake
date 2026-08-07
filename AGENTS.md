@@ -2,7 +2,10 @@
 
 ## Supported Platforms
 
-- MacOS 15 or later (Intel + Apple Silicon)
+- MacOS 15 or later (Intel + Apple Silicon) — full feature set
+- Windows 10/11 (x64) — source-build support for full-screen, area, and window screenshots; editor, history, pin, and cloud upload; OCR; QR scanning; desktop icons and wallpaper; timer capture; display and window selectors; freeze screen; scroll capture; all-in-one; print; recording; video editor; and transcription. The screenshot capture sound remains macOS-only. No public Windows release is available yet.
+
+Windows native functionality is provided by the Rust daemon in `src/main/daemon-win/`, which speaks the same JSON-RPC protocol as the macOS Swift daemon. Windows still screenshots go through the daemon's `screenshot` module, which captures with Windows Graphics Capture and tone maps HDR displays using the OS SDR white level; Electron `desktopCapturer` is not used for screenshots because it hands back frames that are already clipped to 8-bit and therefore washed out on HDR. That module is intentionally Windows-only — macOS captures with the `screencapture` CLI — and is the one documented exception to the cross-platform module parity rule below. Gate platform-specific surfaces with `isFeatureSupported()` from `src/main/system/capabilities.ts` or `src/renderer/utils/capabilities.ts`; feature support is defined in `src/types/capabilities.ts`. Build the daemon with `bun run build-daemon-win` or the complete Windows package with `bun run build-win`.
 
 ## Tests
 
@@ -10,7 +13,7 @@ Write tests for new features and bug fixes according to the following configurat
 
 - **Main**: Vitest - Use `bun run test`
 - **Renderer**: Not implemented yet
-- **Coverage**: `bun run coverage` - reports in `coverage/` folder
+- **Coverage**: `bun run test:coverage` - reports in `coverage/` folder
 
 Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config), class-based mocks for constructors, dynamic imports (await import()) after vi.resetModules() to get fresh module instances with updated mocks, and are organized in src/main/**tests**/unit/ or src/main/**tests**/integration/ - run with bun run test
 
@@ -18,7 +21,7 @@ Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config),
 
 - **Formatting**: Use `bun run format` to fix, `bun run format:check` to verify
 - **Linting**: ESLint - Use `bun lint` to make sure no lint errors
-- **All checks**: `bun run checks` runs lint + format check + tests (verify only, no fixing) — same as CI
+- **All checks**: `bun run checks` runs typecheck + lint + format check + tests (verify only, no fixing)
 - **Imports**: Group by external → components → hooks → types → utils. Use `type` for type-only imports (`import type { ToolType }`)
 - **Types**: Store shared types in `src/types/` (accessible to main + renderer). Use discriminated unions for polymorphic data
 - **Naming**: kebab-case (components), camelCase (functions/vars), SCREAMING_SNAKE_CASE (constants like `MACOS_COLORS`)
@@ -68,9 +71,9 @@ Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config),
 - If there is a refactor needed, ask user's opinion first.
 - Avoid creating big files and components. Instead, modularize and break them into smaller pieces.
 - NEVER NEVER NEVER code comment!
-- Native functionality is provided by a unified Swift daemon (`capty-daemon`). Build when finishing the task with `./scripts/build-daemon.sh` for universal architecture (arm64 + x86_64).
+- Native functionality is provided by a unified daemon (`capty-daemon`): Swift on macOS (`src/main/daemon/`, build with `./scripts/build-daemon.sh` for universal arm64 + x86_64) and Rust on Windows (`src/main/daemon-win/`, build with `bun run build-daemon-win`). Both speak the same JSON-RPC protocol over stdin/stdout, and module contracts must stay identical across platforms.
 - The daemon uses JSON-RPC over stdin/stdout.
-- When adding new native modules, add them to `src/main/daemon/Modules/` and register in `main.swift`.
+- When adding new native modules, add them to `src/main/daemon/Modules/` and register in `main.swift` (macOS), and to `src/main/daemon-win/src/modules/` and register in `main.rs` (Windows).
 - When adding assets to the project like images, icons, sounds, etc, make sure you also consider them for production build and packing and notarizing to work on packaged app too.
 - Don't patch symptoms! Fix the root cause of the issues.
 - Use early returns to reduce nesting

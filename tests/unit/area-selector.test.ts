@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockDaemonCall = vi.fn();
 const mockOnEvent = vi.fn();
@@ -7,11 +7,13 @@ const mockSelectDisplay = vi.fn();
 const mockSelectWindow = vi.fn();
 const mockGetAllDisplays = vi.fn();
 const mockGetPrimaryDisplay = vi.fn();
+const mockScreenToDipRect = vi.fn();
 
 vi.mock('electron', () => ({
   screen: {
     getAllDisplays: () => mockGetAllDisplays(),
     getPrimaryDisplay: () => mockGetPrimaryDisplay(),
+    screenToDipRect: (...a: unknown[]) => mockScreenToDipRect(...a),
   },
 }));
 
@@ -32,17 +34,27 @@ vi.mock('@/main/capture/window-selector', () => ({
 }));
 
 describe('area-selector', () => {
+  const originalPlatform = process.platform;
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     mockDaemonCall.mockResolvedValue({});
     mockGetPrimaryDisplay.mockReturnValue({
-      id: 1,
+      id: 987654321,
       bounds: { x: 0, y: 0, width: 1920, height: 1080 },
     });
     mockGetAllDisplays.mockReturnValue([
-      { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
+      {
+        id: 987654321,
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+      },
     ]);
+    mockScreenToDipRect.mockImplementation((_window, bounds) => bounds);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
   describe('hasPendingSelection', () => {
@@ -180,22 +192,39 @@ describe('area-selector', () => {
   }
 
   describe('startAreaSelection display mode', () => {
-    it('uses primary display when only one display', async () => {
+    it('does not pass an Electron display ID to the Windows daemon', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
       fireAllHandlersAfterStart('area-selector:cancelled');
       const m = await import('@/main/capture/area-selector');
       const result = await m.startAreaSelection({ mode: 'display' });
       expect(result).toBeNull();
-      expect(mockDaemonCall).toHaveBeenCalledWith(
-        'area-selector',
-        'start',
-        expect.objectContaining({ fullscreen: true, displayId: 1 })
+      const params = mockDaemonCall.mock.calls[0]?.[2];
+      expect(params).toEqual(expect.objectContaining({ fullscreen: true }));
+      expect(params).not.toHaveProperty('displayId');
+    });
+
+    it('preserves the primary display ID for the macOS daemon', async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      vi.resetModules();
+      fireAllHandlersAfterStart('area-selector:cancelled');
+      const m = await import('@/main/capture/area-selector');
+      await m.startAreaSelection({ mode: 'display' });
+      expect(mockDaemonCall.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({ fullscreen: true, displayId: 987654321 })
       );
     });
 
     it('prompts user when multiple displays present', async () => {
       mockGetAllDisplays.mockReturnValue([
-        { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
-        { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 } },
+        {
+          id: 987654321,
+          bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        },
+        {
+          id: 123456789,
+          bounds: { x: 1920, y: 0, width: 1920, height: 1080 },
+        },
       ]);
       mockSelectDisplay.mockResolvedValue({
         status: 'selected',
@@ -214,8 +243,14 @@ describe('area-selector', () => {
 
     it('returns null when display selection cancelled', async () => {
       mockGetAllDisplays.mockReturnValue([
-        { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
-        { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 } },
+        {
+          id: 987654321,
+          bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        },
+        {
+          id: 123456789,
+          bounds: { x: 1920, y: 0, width: 1920, height: 1080 },
+        },
       ]);
       mockSelectDisplay.mockResolvedValue({ status: 'cancelled' });
       const m = await import('@/main/capture/area-selector');
@@ -238,10 +273,41 @@ describe('area-selector', () => {
       const result = await m.startAreaSelection({ mode: 'window' });
       expect(result).toBeNull();
     });
+
+    it('converts Windows window bounds to DIP for the area selector', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      const physicalBounds = { x: 200, y: 100, width: 1600, height: 900 };
+      const dipBounds = { x: 100, y: 50, width: 800, height: 450 };
+      mockSelectWindow.mockResolvedValue({
+        status: 'selected',
+        bounds: physicalBounds,
+      });
+      mockScreenToDipRect.mockReturnValue(dipBounds);
+      fireAllHandlersAfterStart('area-selector:cancelled');
+
+      const m = await import('@/main/capture/area-selector');
+      await m.startAreaSelection({ mode: 'window' });
+
+      expect(mockScreenToDipRect).toHaveBeenCalledWith(null, physicalBounds);
+      expect(mockDaemonCall).toHaveBeenCalledWith(
+        'area-selector',
+        'start',
+        expect.objectContaining({
+          presetX: 100,
+          presetY: 50,
+          presetWidth: 800,
+          presetHeight: 450,
+        })
+      );
+      expect(mockDaemonCall.mock.calls[0]?.[2]).not.toHaveProperty('displayId');
+    });
   });
 
   describe('startAreaSelection preset', () => {
-    it('starts with preset bounds', async () => {
+    it('uses preset bounds instead of an Electron display ID on Windows', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
       fireAllHandlersAfterStart('area-selector:cancelled');
       const m = await import('@/main/capture/area-selector');
       const result = await m.startAreaSelection({
@@ -258,6 +324,7 @@ describe('area-selector', () => {
           presetHeight: 150,
         })
       );
+      expect(mockDaemonCall.mock.calls[0]?.[2]).not.toHaveProperty('displayId');
     });
   });
 
@@ -293,6 +360,68 @@ describe('area-selector', () => {
       await m.startAreaSelection({ onSelected, onUpdate });
       expect(onSelected).toHaveBeenCalled();
       expect(onUpdate).toHaveBeenCalled();
+    });
+
+    it('autoConfirm resolves the selection as soon as the drag ends', async () => {
+      const handlers: Array<(e: string, d: unknown) => void> = [];
+      mockOnEvent.mockImplementation((cb: (e: string, d: unknown) => void) => {
+        handlers.push(cb);
+      });
+      const m = await import('@/main/capture/area-selector');
+
+      mockDaemonCall.mockImplementation(async (_module, method) => {
+        if (method === 'start') {
+          setImmediate(() =>
+            handlers.forEach(h =>
+              h('area-selector:selected', { x: 1, y: 2, width: 3, height: 4 })
+            )
+          );
+        }
+        if (method === 'confirm') {
+          setImmediate(() =>
+            handlers.forEach(h =>
+              h('area-selector:confirmed', { x: 1, y: 2, width: 3, height: 4 })
+            )
+          );
+        }
+        return {};
+      });
+
+      const result = await m.startAreaSelection({ autoConfirm: true });
+
+      expect(mockDaemonCall).toHaveBeenCalledWith('area-selector', 'confirm');
+      expect(result).toEqual({
+        status: 'confirmed',
+        x: 1,
+        y: 2,
+        width: 3,
+        height: 4,
+      });
+    });
+
+    it('does not confirm on its own without autoConfirm', async () => {
+      const handlers: Array<(e: string, d: unknown) => void> = [];
+      mockOnEvent.mockImplementation((cb: (e: string, d: unknown) => void) => {
+        handlers.push(cb);
+      });
+      const m = await import('@/main/capture/area-selector');
+
+      mockDaemonCall.mockImplementation(async () => {
+        setImmediate(() => {
+          handlers.forEach(h =>
+            h('area-selector:selected', { x: 1, y: 2, width: 3, height: 4 })
+          );
+          handlers.forEach(h => h('area-selector:cancelled', null));
+        });
+        return {};
+      });
+
+      await m.startAreaSelection();
+
+      expect(mockDaemonCall).not.toHaveBeenCalledWith(
+        'area-selector',
+        'confirm'
+      );
     });
 
     it('updated event fires onUpdate only', async () => {

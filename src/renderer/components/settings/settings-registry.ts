@@ -10,6 +10,8 @@ import {
   Info,
 } from 'lucide-react';
 import type { SettingsConfig } from '@/types/settings';
+import type { FeatureId } from '@/types/capabilities';
+import { isFeatureSupported } from '@/renderer/utils/capabilities';
 import { GENERAL_ITEMS } from './registry/general';
 import { SCREENSHOT_ITEMS } from './registry/screenshot';
 import { RECORDING_ITEMS } from './registry/recording';
@@ -23,6 +25,7 @@ export interface SettingsCategory {
   icon: LucideIcon;
   description: string;
   searchable: boolean;
+  feature?: FeatureId;
 }
 
 interface BaseItem {
@@ -32,6 +35,7 @@ interface BaseItem {
   label: string;
   description: string;
   keywords: string[];
+  feature?: FeatureId;
 }
 
 export interface SwitchItem extends BaseItem {
@@ -117,7 +121,7 @@ export type SettingsItem =
   | CloudTestConnectionItem
   | RestHeadersItem;
 
-export const SETTINGS_CATEGORIES: SettingsCategory[] = [
+const ALL_SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
     id: 'general',
     label: 'General',
@@ -138,6 +142,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: Video,
     description: 'Configure video recording behavior',
     searchable: true,
+    feature: 'recording',
   },
   {
     id: 'storage',
@@ -176,6 +181,13 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
   },
 ];
 
+export const SETTINGS_CATEGORIES: SettingsCategory[] =
+  ALL_SETTINGS_CATEGORIES.filter(
+    category => !category.feature || isFeatureSupported(category.feature)
+  );
+
+const SUPPORTED_CATEGORY_IDS = new Set(SETTINGS_CATEGORIES.map(c => c.id));
+
 export const SEARCHABLE_CATEGORIES = SETTINGS_CATEGORIES.filter(
   c => c.searchable
 );
@@ -190,7 +202,11 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
   ...STORAGE_ITEMS,
   ...SHORTCUTS_ITEMS,
   ...CLOUD_ITEMS,
-];
+].filter(
+  item =>
+    SUPPORTED_CATEGORY_IDS.has(item.category) &&
+    (!item.feature || isFeatureSupported(item.feature))
+);
 
 const SECTION_DESCRIPTIONS: Record<string, Record<string, string>> = {
   general: {

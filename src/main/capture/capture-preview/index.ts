@@ -16,6 +16,7 @@ import { createVideoEditorWindow } from '@/main/capture/video/video-editor';
 import { deleteVideo } from '@/main/capture/video/delete-video';
 import * as settings from '@/main/settings';
 import { registerPreviewExportIpc } from './video-export';
+import { supportsAcrylic } from '@/main/utils/platform';
 import {
   animateWindowIn,
   animateWindowMove,
@@ -169,6 +170,7 @@ export async function showCapturePreview(
 
   const targetBounds = { x, y, width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT };
   const initialBounds = getInitialBounds(targetBounds);
+  const acrylic = supportsAcrylic();
 
   const previewWindow = new BrowserWindow({
     width: initialBounds.width,
@@ -177,7 +179,8 @@ export async function showCapturePreview(
     y: initialBounds.y,
     frame: false,
     transparent: false,
-    backgroundColor: '#1e1e1e',
+    backgroundColor: acrylic ? '#00000000' : '#1e1e1e',
+    backgroundMaterial: acrylic ? 'acrylic' : 'none',
     resizable: false,
     movable: true,
     skipTaskbar: true,
@@ -224,6 +227,7 @@ export async function showCapturePreview(
         filePath,
         contentType,
         thumbnailBase64: thumbnailResult.base64,
+        acrylic,
         historyId,
       },
     });

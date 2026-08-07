@@ -260,9 +260,9 @@ describe('Main Process', () => {
       );
     });
 
-    it('should quit app on non-darwin platforms', async () => {
+    it('should quit app on linux', async () => {
       const originalPlatform = process.platform;
-      Object.defineProperty(process, 'platform', { value: 'win32' });
+      Object.defineProperty(process, 'platform', { value: 'linux' });
 
       await import('@/main/main');
 
@@ -273,6 +273,24 @@ describe('Main Process', () => {
       }
 
       expect(mockApp.quit).toHaveBeenCalled();
+
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    });
+
+    it('should not quit app on win32', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+
+      mockApp.quit.mockClear();
+
+      await import('@/main/main');
+
+      const handler = appEventHandlers['window-all-closed'];
+      if (handler) {
+        handler();
+      }
+
+      expect(mockApp.quit).not.toHaveBeenCalled();
 
       Object.defineProperty(process, 'platform', { value: originalPlatform });
     });

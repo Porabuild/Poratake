@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 type ExecCallback = (
   error: Error | null,
@@ -15,6 +15,10 @@ const mockShowCapturePreview = vi.fn();
 const mockOpenScreenshotEditor = vi.fn();
 const mockFsExistsSync = vi.fn();
 const mockFsReadFileSync = vi.fn(() => Buffer.from('image-bytes'));
+const mockCaptureRegionToFile = vi.fn();
+const mockHideDesktopIcons = vi.fn();
+const mockShowDesktopIcons = vi.fn();
+const mockDesktopIconsSupported = vi.fn();
 
 vi.mock('child_process', () => ({
   exec: (cmd: string, cb: ExecCallback) => mockExec(cmd, cb),
@@ -27,6 +31,16 @@ vi.mock('electron', () => ({
   nativeImage: {
     createFromBuffer: (...a: unknown[]) => mockCreateFromBuffer(...a),
   },
+}));
+
+vi.mock('@/main/capture/screenshot/native-capture', () => ({
+  captureRegionToFile: (...a: unknown[]) => mockCaptureRegionToFile(...a),
+}));
+
+vi.mock('@/main/capture/desktop-icons', () => ({
+  hideDesktopIcons: (...a: unknown[]) => mockHideDesktopIcons(...a),
+  showDesktopIcons: (...a: unknown[]) => mockShowDesktopIcons(...a),
+  isSupported: () => mockDesktopIconsSupported(),
 }));
 
 vi.mock('fs', () => ({
@@ -64,8 +78,13 @@ describe('captureArea', () => {
     vi.resetModules();
     mockGetConfig.mockReturnValue({
       general: { playSoundOnScreenshot: true },
-      screenshot: { captureToClipboard: false, showPreview: false },
+      screenshot: {
+        captureToClipboard: false,
+        showPreview: false,
+        hideDesktopIcons: false,
+      },
     });
+    mockDesktopIconsSupported.mockReturnValue(false);
     mockFsExistsSync.mockReturnValue(true);
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
   });
@@ -218,5 +237,116 @@ describe('captureArea', () => {
       { onCaptured }
     );
     expect(onCaptured).toHaveBeenCalled();
+  });
+});
+
+describe('captureArea on Windows', () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    mockGetConfig.mockReturnValue({
+      general: { playSoundOnScreenshot: true },
+      screenshot: {
+        captureToClipboard: false,
+        showPreview: false,
+        hideDesktopIcons: false,
+      },
+    });
+    mockHideDesktopIcons.mockReset();
+    mockShowDesktopIcons.mockReset();
+    mockDesktopIconsSupported.mockReset();
+    mockDesktopIconsSupported.mockReturnValue(false);
+    mockFsExistsSync.mockReturnValue(true);
+    mockAddToHistory.mockResolvedValue({ id: 'h1' });
+    mockCaptureRegionToFile.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+  });
+
+  it('captures the requested region through the daemon', async () => {
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    const result = await captureArea({
+      status: 'confirmed',
+      x: 110,
+      y: 70,
+      width: 300,
+      height: 200,
+    });
+
+    expect(mockExec).not.toHaveBeenCalled();
+    expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
+      { x: 110, y: 70, width: 300, height: 200 },
+      '/path/Screenshot.png'
+    );
+    expect(result).toBe('/path/Screenshot.png');
+    expect(mockOpenScreenshotEditor).toHaveBeenCalled();
+  });
+
+  it('hides desktop icons only while acquiring capture pixels', async () => {
+    const calls: string[] = [];
+    mockGetConfig.mockReturnValue({
+      general: { playSoundOnScreenshot: true },
+      screenshot: {
+        captureToClipboard: false,
+        showPreview: false,
+        hideDesktopIcons: true,
+      },
+    });
+    mockDesktopIconsSupported.mockReturnValue(true);
+    mockHideDesktopIcons.mockImplementation(async () => {
+      calls.push('hide');
+    });
+    mockCaptureRegionToFile.mockImplementation(async () => {
+      calls.push('capture');
+      return true;
+    });
+    mockShowDesktopIcons.mockImplementation(async () => {
+      calls.push('show');
+    });
+
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    await captureArea({
+      status: 'confirmed',
+      x: 110,
+      y: 70,
+      width: 300,
+      height: 200,
+    });
+
+    expect(calls).toEqual(['hide', 'capture', 'show']);
+  });
+
+  it('restores desktop icons and returns null when the capture fails', async () => {
+    mockGetConfig.mockReturnValue({
+      general: { playSoundOnScreenshot: true },
+      screenshot: {
+        captureToClipboard: false,
+        showPreview: false,
+        hideDesktopIcons: true,
+      },
+    });
+    mockDesktopIconsSupported.mockReturnValue(true);
+    mockCaptureRegionToFile.mockResolvedValue(false);
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+
+    const result = await captureArea({
+      status: 'confirmed',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+
+    expect(result).toBeNull();
+    expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
+    expect(mockOpenScreenshotEditor).not.toHaveBeenCalled();
   });
 });

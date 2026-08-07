@@ -1,5 +1,6 @@
 import { app } from 'electron';
 import { daemon } from '@/main/daemon';
+import { isLinux } from '@/main/utils/platform';
 
 if (!process.env.HOME) {
   process.env.HOME = app.getPath('home');
@@ -128,7 +129,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (isLinux) {
     app.quit();
   }
 });

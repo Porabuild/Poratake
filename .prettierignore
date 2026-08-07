@@ -5,6 +5,8 @@ node_modules
 dist
 dist-electron
 build
+src/main/daemon-win/target
+src/main/daemon-win/Cargo.lock
 
 # Package manager
 bun.lock
@@ -18,3 +20,4 @@ coverage
 
 # Config files that should maintain specific formatting
 *.json5
+CLAUDE.md

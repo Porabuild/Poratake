@@ -19,6 +19,11 @@ export default defineConfig({
       main: {
         // Shortcut of `build.lib.entry`.
         entry: 'src/main/main.ts',
+        onstart({ startup }) {
+          const env = { ...process.env };
+          delete env.ELECTRON_RUN_AS_NODE;
+          startup(['.', '--no-sandbox'], { env });
+        },
         vite: {
           resolve: { alias },
         },

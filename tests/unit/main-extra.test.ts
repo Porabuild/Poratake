@@ -172,13 +172,24 @@ describe('main.ts extra', () => {
     expect(mockSettings.updateConfig).not.toHaveBeenCalled();
   });
 
-  it('window-all-closed quits app on non-darwin', async () => {
+  it('window-all-closed quits app on linux', async () => {
     const original = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'win32' });
+    Object.defineProperty(process, 'platform', { value: 'linux' });
     await import('@/main/main');
     const handler = appEventHandlers['window-all-closed'];
     handler!();
     expect(mockApp.quit).toHaveBeenCalled();
+    Object.defineProperty(process, 'platform', { value: original });
+  });
+
+  it('window-all-closed stays running on win32', async () => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    await import('@/main/main');
+    mockApp.quit.mockClear();
+    const handler = appEventHandlers['window-all-closed'];
+    handler!();
+    expect(mockApp.quit).not.toHaveBeenCalled();
     Object.defineProperty(process, 'platform', { value: original });
   });
 

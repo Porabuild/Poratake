@@ -20,7 +20,6 @@ import {
 } from '@/main/capture/area-selector';
 import {
   isRecording,
-  getRecordingDuration,
   getCurrentRecordingPath,
   startRecordingWithConfig,
   stopRecording,
@@ -38,7 +37,12 @@ import {
 import { deleteVideo } from './delete-video.ts';
 import { getConfig, updateConfig } from '@/main/settings';
 import { generateInitialEditorState } from './auto-zoom-generator.ts';
-import type { RecordingConfig, RecordingType } from '@/types/video.ts';
+import type {
+  CompletedRecording,
+  RecordingConfig,
+  RecordingType,
+} from '@/types/video.ts';
+import { isFeatureSupported } from '@/main/system/capabilities';
 
 let lastRecordingConfig: RecordingConfig | null = null;
 let currentRecordingType: RecordingType | undefined;
@@ -71,39 +75,56 @@ export interface RecordingOptions {
   iosDeviceName?: string | null;
 }
 
+async function handleTerminalRecordingFailure(error: Error): Promise<void> {
+  currentRecordingType = undefined;
+  await Promise.allSettled([
+    disableCameraContentProtection(),
+    hideRecordingControl(),
+  ]);
+  hideCameraPreview();
+  await showRecordingError(error);
+}
+
 export async function stopRecordingAction(): Promise<string | null> {
-  const duration = getRecordingDuration();
-  let outputPath: string | null = null;
+  let recordingResult: CompletedRecording | null = null;
 
   try {
-    outputPath = await stopRecording(hideRecordingControl);
+    recordingResult = await stopRecording(hideRecordingControl);
   } finally {
-    disableCameraContentProtection();
+    await disableCameraContentProtection();
     hideCameraPreview();
-    hideRecordingControl();
+    await hideRecordingControl();
   }
 
-  if (outputPath) {
-    const historyItem = await addToHistory(outputPath, 'video', duration);
+  if (recordingResult) {
+    const historyItem = await addToHistory(
+      recordingResult.outputPath,
+      'video',
+      recordingResult.duration
+    );
     await generateInitialEditorState({
-      projectPath: outputPath,
+      projectPath: recordingResult.outputPath,
       recordingType: currentRecordingType,
     });
 
     const config = getConfig();
     if (config.recording.showPreview) {
-      showCapturePreview(outputPath, 'video', historyItem?.id);
+      showCapturePreview(recordingResult.outputPath, 'video', historyItem?.id);
     } else {
-      createVideoEditorWindow(outputPath);
+      createVideoEditorWindow(recordingResult.outputPath);
     }
   }
 
   currentRecordingType = undefined;
 
-  return outputPath;
+  return recordingResult?.outputPath ?? null;
 }
 
 export async function recordArea(): Promise<void> {
+  if (!isFeatureSupported('recording')) {
+    return;
+  }
+
   if (isRecording()) {
     console.log('Already recording');
     return;
@@ -163,8 +184,16 @@ export async function startPendingRecording(
   const iosDeviceId = options.iosDeviceId ?? null;
   const iosDeviceName = options.iosDeviceName ?? null;
   const isIOSRecording = iosDeviceId !== null;
+  const micEnabled = options.micEnabled ?? false;
 
   currentRecordingType = isIOSRecording ? 'ios-device' : undefined;
+
+  if (micEnabled) {
+    const granted = await checkAndRequestMicrophonePermission();
+    if (!granted) {
+      return;
+    }
+  }
 
   if (isIOSRecording) {
     await killAreaSelector();
@@ -201,15 +230,6 @@ export async function startPendingRecording(
     }
   }
 
-  const micEnabled = options.micEnabled ?? false;
-
-  if (micEnabled) {
-    const granted = await checkAndRequestMicrophonePermission();
-    if (!granted) {
-      return;
-    }
-  }
-
   if (!isIOSRecording) {
     await hidePreRecordingControl(false);
   }
@@ -224,10 +244,6 @@ export async function startPendingRecording(
   const keyboardEnabled = isIOSRecording
     ? false
     : (options.keyboardEnabled ?? false);
-
-  if (cameraEnabled) {
-    enableCameraContentProtection();
-  }
 
   lastRecordingConfig = {
     x,
@@ -250,6 +266,10 @@ export async function startPendingRecording(
   };
 
   try {
+    if (cameraEnabled) {
+      await enableCameraContentProtection();
+    }
+
     await startRecordingWithConfig(
       {
         x,
@@ -270,7 +290,9 @@ export async function startPendingRecording(
         iosDeviceId,
         iosDeviceName,
       },
-      showRecordingControl
+      showRecordingControl,
+      hideRecordingControl,
+      handleTerminalRecordingFailure
     );
 
     console.log('Recording started:', {
@@ -290,7 +312,7 @@ export async function startPendingRecording(
   } catch (error) {
     console.error('Error starting recording:', error);
     await hideRecordingControl();
-    disableCameraContentProtection();
+    await disableCameraContentProtection();
     hideCameraPreview();
     if (error instanceof Error) {
       await showRecordingError(error);
@@ -310,9 +332,9 @@ export async function deleteRecordingAction(): Promise<void> {
     await stopRecording(hideRecordingControl);
   } finally {
     currentRecordingType = undefined;
-    disableCameraContentProtection();
+    await disableCameraContentProtection();
     hideCameraPreview();
-    hideRecordingControl();
+    await hideRecordingControl();
   }
 
   if (currentPath) {
@@ -332,9 +354,9 @@ export async function restartRecordingAction(): Promise<void> {
   try {
     await stopRecording(hideRecordingControl);
   } finally {
-    disableCameraContentProtection();
+    await disableCameraContentProtection();
     hideCameraPreview();
-    hideRecordingControl();
+    await hideRecordingControl();
   }
 
   if (currentPath) {
@@ -348,32 +370,37 @@ export async function restartRecordingAction(): Promise<void> {
     outputPath,
   };
 
-  if (config.cameraEnabled) {
-    const appConfig = getConfig();
-    const cameraSettings = appConfig.recording.camera;
-    if (cameraSettings) {
-      showCameraPreview({
-        ...cameraSettings,
-        enabled: true,
-        selectedDeviceId: config.cameraDeviceId ?? null,
-        selectedDeviceName: config.cameraDeviceName ?? null,
-      });
-    }
-    enableCameraContentProtection();
-  }
-
   try {
+    if (config.cameraEnabled) {
+      const appConfig = getConfig();
+      const cameraSettings = appConfig.recording.camera;
+      if (cameraSettings) {
+        await showCameraPreview({
+          ...cameraSettings,
+          enabled: true,
+          selectedDeviceId: config.cameraDeviceId ?? null,
+          selectedDeviceName: config.cameraDeviceName ?? null,
+        });
+      }
+      await enableCameraContentProtection();
+    }
+
     await startRecordingWithConfig(
       {
         ...config,
         outputPath,
       },
-      showRecordingControl
+      showRecordingControl,
+      hideRecordingControl,
+      handleTerminalRecordingFailure
     );
     console.log('Recording restarted with same area');
   } catch (error) {
     console.error('Error restarting recording:', error);
     lastRecordingConfig = null;
+    await disableCameraContentProtection();
+    hideCameraPreview();
+    await hideRecordingControl();
     if (error instanceof Error) {
       await showRecordingError(error);
     }
@@ -381,6 +408,10 @@ export async function restartRecordingAction(): Promise<void> {
 }
 
 export async function recordScreen(): Promise<void> {
+  if (!isFeatureSupported('recording')) {
+    return;
+  }
+
   if (isRecording()) {
     console.log('Already recording');
     return;
@@ -436,6 +467,10 @@ export async function recordScreen(): Promise<void> {
 }
 
 export async function recordWindow(): Promise<void> {
+  if (!isFeatureSupported('recording')) {
+    return;
+  }
+
   if (isRecording()) {
     console.log('Already recording');
     return;

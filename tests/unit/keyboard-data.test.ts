@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 import type { KeyboardData } from '@/types/keyboard';
+
+const projectKeysJsonPath = path.join('/path/to/Rec.capty', 'keys.json');
 
 vi.mock('fs/promises', () => ({
   default: {
@@ -19,7 +22,7 @@ describe('keyboard-data', () => {
       const { getKeyboardDataPath } =
         await import('@/main/capture/video/keyboard-data');
       expect(getKeyboardDataPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/keys.json'
+        projectKeysJsonPath
       );
     });
 
@@ -86,9 +89,7 @@ describe('keyboard-data', () => {
       const { deleteKeyboardData } =
         await import('@/main/capture/video/keyboard-data');
       await deleteKeyboardData('/path/to/Rec.capty/recording.mov');
-      expect(fs.default.unlink).toHaveBeenCalledWith(
-        '/path/to/Rec.capty/keys.json'
-      );
+      expect(fs.default.unlink).toHaveBeenCalledWith(projectKeysJsonPath);
     });
 
     it('swallows errors silently', async () => {
@@ -99,6 +100,66 @@ describe('keyboard-data', () => {
       await expect(
         deleteKeyboardData('/path/to/video.mov')
       ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('keyboard rendering', () => {
+    it('renders Windows shortcut modifiers with Windows labels', async () => {
+      const fillText = vi.fn();
+      const context = {
+        save: vi.fn(),
+        restore: vi.fn(),
+        measureText: vi.fn(() => ({ width: 20 })),
+        beginPath: vi.fn(),
+        roundRect: vi.fn(),
+        fill: vi.fn(),
+        fillText,
+      } as never;
+      const { renderKeyboard } =
+        await import('@/renderer/components/video-editor/composition/keyboard-canvas-renderer');
+
+      renderKeyboard(context, 1, {
+        keyboardData: {
+          events: [
+            {
+              timestamp: 0.5,
+              key: 'K',
+              keyCode: 75,
+              modifiers: ['control', 'alt'],
+              type: 'down',
+            },
+          ],
+          meta: {
+            startTime: '2025-01-01T00:00:00.000Z',
+            duration: 2,
+            sampleRate: 1,
+            platform: 'windows',
+          },
+        },
+        keyboardStyle: {
+          visible: true,
+          displayDuration: 2,
+          position: 'bottom-center',
+          fontSize: 'medium',
+          opacity: 0.75,
+        },
+        segments: [
+          {
+            id: 'segment-1',
+            startTime: 0,
+            endTime: 2,
+            timelineStart: 0,
+          },
+        ],
+        videoWidth: 1920,
+        videoHeight: 1080,
+      });
+
+      expect(fillText).toHaveBeenCalledWith(
+        'Ctrl+Alt+K',
+        expect.any(Number),
+        expect.any(Number)
+      );
     });
   });
 });

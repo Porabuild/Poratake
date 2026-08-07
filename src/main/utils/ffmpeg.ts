@@ -10,6 +10,7 @@ import {
   type VideoQualityPreset,
 } from '@/types/video';
 import { getNativeBinaryPath } from './paths';
+import { isWindows } from './platform';
 
 const execFileAsync = promisify(execFile);
 
@@ -225,66 +226,117 @@ function getOutputEncodingArgs(
   const mp4Filters = [...videoFilters];
   mp4Filters.push(`fps=${fps}`);
 
-  if (socialOptions) {
-    const h264Level = socialOptions.resolution === '4k' ? '5.2' : '4.2';
+  return {
+    filters: mp4Filters,
+    args: getVideoEncodingArgs(crf, fps, socialOptions),
+  };
+}
 
-    return {
-      filters: mp4Filters,
-      args: [
+function getVideoEncodingArgs(
+  crf: string,
+  fps: string,
+  socialOptions?: SocialMediaEncodingOptions
+): string[] {
+  const qualityValue = getEncoderQuality(crf);
+
+  if (isWindows) {
+    if (socialOptions) {
+      return [
         '-c:v',
-        'h264_videotoolbox',
-        '-profile:v',
-        'high',
-        '-level',
-        h264Level,
+        'h264_mf',
+        '-rate_control',
+        'pc_vbr',
+        '-scenario',
+        'archive',
         '-b:v',
         `${socialOptions.bitrate}k`,
-        '-coder',
-        'cabac',
         '-pix_fmt',
-        'yuv420p',
+        'nv12',
         '-g',
         String(parseInt(fps) * 2),
-        '-bf',
-        '2',
         '-c:a',
-        'aac_at',
+        'aac',
         '-b:a',
         '256k',
         '-ar',
         '48000',
         '-movflags',
         '+faststart',
-      ],
-    };
-  }
+      ];
+    }
 
-  const qualityValue = getVideoToolboxQuality(
-    crf as '18' | '23' | '28' | string
-  );
-
-  return {
-    filters: mp4Filters,
-    args: [
+    return [
       '-c:v',
-      'h264_videotoolbox',
-      '-q:v',
+      'h264_mf',
+      '-rate_control',
+      'quality',
+      '-scenario',
+      'archive',
+      '-quality',
       qualityValue,
       '-pix_fmt',
-      'yuv420p',
+      'nv12',
       '-force_key_frames',
       'expr:eq(t,0)',
       '-c:a',
-      'aac_at',
+      'aac',
       '-b:a',
       '192k',
       '-movflags',
       '+faststart',
-    ],
-  };
+    ];
+  }
+
+  if (socialOptions) {
+    const h264Level = socialOptions.resolution === '4k' ? '5.2' : '4.2';
+
+    return [
+      '-c:v',
+      'h264_videotoolbox',
+      '-profile:v',
+      'high',
+      '-level',
+      h264Level,
+      '-b:v',
+      `${socialOptions.bitrate}k`,
+      '-coder',
+      'cabac',
+      '-pix_fmt',
+      'yuv420p',
+      '-g',
+      String(parseInt(fps) * 2),
+      '-bf',
+      '2',
+      '-c:a',
+      'aac_at',
+      '-b:a',
+      '256k',
+      '-ar',
+      '48000',
+      '-movflags',
+      '+faststart',
+    ];
+  }
+
+  return [
+    '-c:v',
+    'h264_videotoolbox',
+    '-q:v',
+    qualityValue,
+    '-pix_fmt',
+    'yuv420p',
+    '-force_key_frames',
+    'expr:eq(t,0)',
+    '-c:a',
+    'aac_at',
+    '-b:a',
+    '192k',
+    '-movflags',
+    '+faststart',
+  ];
 }
 
-function getVideoToolboxQuality(crf: string): string {
+function getEncoderQuality(crf: string): string {
   switch (crf) {
     case '18':
       return '85';
@@ -600,53 +652,8 @@ export async function processVideoSegments(
 
       args.push('-r', fps);
 
-      if (socialOptions) {
-        args.push(
-          '-c:v',
-          'h264_videotoolbox',
-          '-profile:v',
-          'high',
-          '-level',
-          '4.2',
-          '-b:v',
-          `${socialOptions.bitrate}k`,
-          '-coder',
-          'cabac',
-          '-pix_fmt',
-          'yuv420p',
-          '-g',
-          String(parseInt(fps) * 2),
-          '-bf',
-          '2',
-          '-c:a',
-          'aac_at',
-          '-b:a',
-          '256k',
-          '-ar',
-          '48000',
-          '-y',
-          segmentPath
-        );
-      } else {
-        const qualityValue = getVideoToolboxQuality(crf);
-
-        args.push(
-          '-c:v',
-          'h264_videotoolbox',
-          '-q:v',
-          qualityValue,
-          '-pix_fmt',
-          'yuv420p',
-          '-force_key_frames',
-          'expr:eq(t,0)',
-          '-c:a',
-          'aac_at',
-          '-b:a',
-          '192k',
-          '-y',
-          segmentPath
-        );
-      }
+      args.push(...getVideoEncodingArgs(crf, fps, socialOptions));
+      args.push('-y', segmentPath);
 
       const segmentProgressCallback = onProgress
         ? (segmentProgress: number) => {

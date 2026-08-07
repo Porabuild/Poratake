@@ -1,3 +1,4 @@
+import { getPrimaryModifierLabel } from '@/renderer/utils/shortcuts';
 import {
   MousePointer2,
   Pencil,
@@ -193,7 +194,7 @@ export default function Toolbar({
           </Button>
         </TooltipTrigger>
         <TooltipContent>
-          Capture & Attach (hold ⌘ for edge picker)
+          Capture & Attach (hold {getPrimaryModifierLabel()} for edge picker)
         </TooltipContent>
       </Tooltip>
 
