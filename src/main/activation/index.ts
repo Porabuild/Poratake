@@ -8,6 +8,12 @@ import {
 } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
+import {
+  titleBarWindowOptions,
+  trackTitleBarTheme,
+} from '@/main/utils/title-bar';
+
+const ACTIVATION_TITLE_BAR_HEIGHT = 32;
 
 let activationWindow: BrowserWindow | null = null;
 
@@ -32,8 +38,11 @@ export function createActivationWindow(): BrowserWindow {
     maximizable: false,
     fullscreenable: false,
     show: false,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 18 },
+    ...titleBarWindowOptions({
+      height: ACTIVATION_TITLE_BAR_HEIGHT,
+      surface: 'background',
+      trafficLightPosition: { x: 16, y: 18 },
+    }),
     x: Math.floor((screenWidth - windowWidth) / 2),
     y: Math.floor((screenHeight - windowHeight) / 2),
     backgroundColor: '#1e1e1e',
@@ -44,6 +53,11 @@ export function createActivationWindow(): BrowserWindow {
       nodeIntegration: false,
       devTools: isDev,
     },
+  });
+
+  trackTitleBarTheme(activationWindow, {
+    height: ACTIVATION_TITLE_BAR_HEIGHT,
+    surface: 'background',
   });
 
   if (devServerUrl) {

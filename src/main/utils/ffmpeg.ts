@@ -116,6 +116,17 @@ export function getFFmpegPath(): string {
   return getNativeBinaryPath('ffmpeg');
 }
 
+function ensureFFmpegExists(ffmpegPath: string): boolean {
+  if (fs.existsSync(ffmpegPath)) return true;
+
+  console.error(
+    `FFmpeg binary not found at: ${ffmpegPath}. ` +
+      'Build it with `bun run build-ffmpeg-win` (Windows) or ' +
+      '`./scripts/build-ffmpeg.sh` (macOS).'
+  );
+  return false;
+}
+
 export interface VideoProbeResult {
   metadata: VideoMetadata;
   hasAudio: boolean;
@@ -126,10 +137,12 @@ export async function probeVideo(
 ): Promise<VideoProbeResult | null> {
   if (!fs.existsSync(videoPath)) return null;
 
+  const ffmpegPath = getFFmpegPath();
+  if (!ensureFFmpegExists(ffmpegPath)) return null;
+
   try {
     const stats = fs.statSync(videoPath);
     const fileSize = stats.size;
-    const ffmpegPath = getFFmpegPath();
 
     let stderr = '';
     try {
@@ -477,7 +490,7 @@ export async function generateVideoThumbnail(
 
   const ffmpegPath = getFFmpegPath();
 
-  if (!fs.existsSync(ffmpegPath)) {
+  if (!ensureFFmpegExists(ffmpegPath)) {
     return {
       success: false,
       message: `FFmpeg binary not found at: ${ffmpegPath}`,

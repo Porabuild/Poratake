@@ -198,4 +198,52 @@ describe('video editor state handlers', () => {
     expect(result).toBe(false);
     expect(mockFs.writeFileSync).not.toHaveBeenCalled();
   });
+
+  it('migrates v1 cursor size from sprite pixels to a percentage', async () => {
+    mockFs.existsSync.mockReturnValue(true);
+    mockFs.readFileSync.mockReturnValue(
+      JSON.stringify(
+        createState({
+          version: 1,
+          cursorStyle: { size: 200 } as VideoEditorState['cursorStyle'],
+        })
+      )
+    );
+
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+
+    registerStateHandlers();
+
+    const state = (await ipcHandlers['video-editor:getState']({
+      sender: { id: 1 },
+    })) as VideoEditorState;
+
+    expect(state.version).toBe(2);
+    expect(state.cursorStyle.size).toBe(100);
+  });
+
+  it('leaves v2 cursor size untouched', async () => {
+    mockFs.existsSync.mockReturnValue(true);
+    mockFs.readFileSync.mockReturnValue(
+      JSON.stringify(
+        createState({
+          version: 2,
+          cursorStyle: { size: 120 } as VideoEditorState['cursorStyle'],
+        })
+      )
+    );
+
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+
+    registerStateHandlers();
+
+    const state = (await ipcHandlers['video-editor:getState']({
+      sender: { id: 1 },
+    })) as VideoEditorState;
+
+    expect(state.version).toBe(2);
+    expect(state.cursorStyle.size).toBe(120);
+  });
 });

@@ -22,6 +22,7 @@ const mockGetConfig = vi.fn();
 const mockUpdateConfig = vi.fn();
 const mockGetAllDisplays = vi.fn();
 const mockIsFeatureSupported = vi.fn();
+const mockSetAreaSelectorAspectRatio = vi.fn();
 
 vi.mock('electron', () => ({
   globalShortcut: {
@@ -40,6 +41,8 @@ vi.mock('@/main/capture/area-selector', () => ({
   updateAreaSelection: (...a: unknown[]) => mockUpdateAreaSelection(...a),
   updateAreaSelectionCallbacks: (...a: unknown[]) =>
     mockUpdateAreaSelectionCallbacks(...a),
+  setAreaSelectorAspectRatio: (...a: unknown[]) =>
+    mockSetAreaSelectorAspectRatio(...a),
 }));
 
 vi.mock('@/main/capture/all-in-one/open-all-in-one.ts', () => ({
@@ -215,6 +218,109 @@ describe('all-in-one orchestrator', () => {
       y: 60,
       width: 200,
       height: 100,
+    });
+  });
+
+  it('passes the overlay toolbar and its action handler to selection', async () => {
+    mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+    await startAllInOne();
+    const [opts] = mockStartAreaSelection.mock.calls[0];
+    expect(opts.toolbar).toEqual({
+      kind: 'all-in-one',
+      recordingEnabled: true,
+    });
+    expect(opts.onToolbarAction).toBeInstanceOf(Function);
+  });
+
+  describe('toolbar actions', () => {
+    async function getToolbarHandler(): Promise<(action: unknown) => void> {
+      mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
+      const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+      await startAllInOne();
+      return mockStartAreaSelection.mock.calls[0][0].onToolbarAction;
+    }
+
+    it('screenshot action captures the current area', async () => {
+      mockGetCurrentAreaSelection.mockReturnValue({
+        x: 1,
+        y: 2,
+        width: 30,
+        height: 40,
+      });
+      const handle = await getToolbarHandler();
+      handle({ action: 'screenshot' });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(mockCaptureArea).toHaveBeenCalled();
+    });
+
+    it('record action starts the pre-recording flow', async () => {
+      mockGetCurrentAreaSelection.mockReturnValue({
+        x: 1,
+        y: 2,
+        width: 30,
+        height: 40,
+      });
+      const handle = await getToolbarHandler();
+      handle({ action: 'record' });
+      expect(mockShowPreRecordingControl).toHaveBeenCalled();
+    });
+
+    it('close action cancels the selection', async () => {
+      const handle = await getToolbarHandler();
+      handle({ action: 'close' });
+      expect(mockCancelAreaSelection).toHaveBeenCalled();
+      expect(mockHideAllInOneControl).toHaveBeenCalled();
+    });
+
+    it('aspect ratio action forwards to the area selector', async () => {
+      const handle = await getToolbarHandler();
+      handle({
+        action: 'select-aspect-ratio',
+        name: '16:9',
+        width: 16,
+        height: 9,
+      });
+      expect(mockSetAreaSelectorAspectRatio).toHaveBeenCalledWith({
+        name: '16:9',
+        width: 16,
+        height: 9,
+      });
+    });
+
+    it('update-size action resizes the selection', async () => {
+      mockGetCurrentAreaSelection.mockReturnValue({
+        x: 100,
+        y: 100,
+        width: 400,
+        height: 200,
+      });
+      const handle = await getToolbarHandler();
+      handle({ action: 'update-size', width: 200, height: 100 });
+      await Promise.resolve();
+      expect(mockUpdateAreaSelection).toHaveBeenCalledWith({
+        x: 200,
+        y: 150,
+        width: 200,
+        height: 100,
+      });
+    });
+
+    it('size editor actions suspend and restore shortcuts', async () => {
+      mockGetCurrentAreaSelection.mockReturnValue({
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const handle = await getToolbarHandler();
+      const registrationsBefore = mockGlobalShortcutRegister.mock.calls.length;
+      handle({ action: 'size-editor-opened' });
+      expect(mockGlobalShortcutUnregister).toHaveBeenCalled();
+      handle({ action: 'size-editor-closed' });
+      expect(mockGlobalShortcutRegister.mock.calls.length).toBeGreaterThan(
+        registrationsBefore
+      );
     });
   });
 

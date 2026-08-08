@@ -25,8 +25,10 @@ export interface ExportSettings {
   openInFinder: boolean;
 }
 
+export const EDITOR_STATE_VERSION = 2;
+
 export interface VideoEditorState {
-  version: 1;
+  version: 1 | 2;
   savedAt: string;
   recordingType?: RecordingType;
 

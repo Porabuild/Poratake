@@ -192,6 +192,12 @@ vi.mock('@/main/capture/freeze-screen', () => ({
   isSupported: () => mockIsFreezeScreenSupported(),
 }));
 
+vi.mock('@/main/capture/freeze-screen/preference', () => ({
+  isFreezeScreenEnabled: () =>
+    Boolean(mockGetConfig().screenshot?.freezeScreen) &&
+    mockIsFreezeScreenSupported(),
+}));
+
 // Mock history
 const mockAddToHistory = vi.fn();
 const mockUpdateHistoryItemByPath = vi.fn();
@@ -806,6 +812,7 @@ describe('Screenshot Module', () => {
       const mockImage = {
         toPNG: vi.fn(),
         getSize: () => ({ width: 100, height: 100 }),
+        isEmpty: () => false,
       };
       mockNativeImageCreateFromBuffer.mockReturnValue(mockImage);
 

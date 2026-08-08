@@ -12,6 +12,7 @@ import { Button } from '@/renderer/components/ui/button';
 import { Separator } from '@/renderer/components/ui/separator';
 import { Slider } from '@/renderer/components/ui/slider';
 import { Switch } from '@/renderer/components/ui/switch';
+import { formatAccelerator } from '@/renderer/utils/shortcuts';
 import {
   Tooltip,
   TooltipContent,
@@ -168,7 +169,9 @@ export default function TimelineControls({
               <Minus className="size-3.5" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="top">Zoom Out (Cmd -)</TooltipContent>
+          <TooltipContent side="top">
+            Zoom Out ({formatAccelerator('CommandOrControl+-')})
+          </TooltipContent>
         </Tooltip>
 
         <Slider
@@ -192,7 +195,9 @@ export default function TimelineControls({
               <Plus className="size-3.5" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="top">Zoom In (Cmd +)</TooltipContent>
+          <TooltipContent side="top">
+            Zoom In ({formatAccelerator('CommandOrControl+=')})
+          </TooltipContent>
         </Tooltip>
 
         <Tooltip>

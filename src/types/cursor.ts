@@ -54,7 +54,7 @@ export interface CursorStyle {
 
 export const DEFAULT_CURSOR_STYLE: CursorStyle = {
   enabled: true,
-  size: 200,
+  size: 100,
   color: '#000000',
   borderColor: '#ffffff',
   borderWidth: 2,

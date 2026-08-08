@@ -15,12 +15,11 @@ use windows::Win32::Graphics::Gdi::{
     DT_CENTER, DT_SINGLELINE, DT_VCENTER, FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION,
     FONT_QUALITY, FW_SEMIBOLD, HFONT, PAINTSTRUCT, TRANSPARENT,
 };
-use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, KillTimer, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
-    HWND_TOPMOST, LWA_ALPHA, MB_OK, SWP_NOACTIVATE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_LBUTTONDOWN,
+    HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_LBUTTONDOWN,
     WM_PAINT, WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
@@ -115,7 +114,6 @@ fn handle_tick() {
         if let Some(window) = window {
             unsafe {
                 let _ = InvalidateRect(Some(window), None, true);
-                let _ = MessageBeep(MB_OK);
             }
         }
         return;
@@ -161,7 +159,6 @@ fn show_panel(x: i32, y: i32, duration: i32) -> Result<(), String> {
                 return Err("Failed to start the countdown timer".to_string());
             }
             let _ = InvalidateRect(Some(window), None, true);
-            let _ = MessageBeep(MB_OK);
         }
         return Ok(());
     }
@@ -244,7 +241,6 @@ fn show_panel(x: i32, y: i32, duration: i32) -> Result<(), String> {
     });
     unsafe {
         let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
-        let _ = MessageBeep(MB_OK);
     }
     Ok(())
 }

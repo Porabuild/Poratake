@@ -15,10 +15,13 @@ const mockOpenScreenshotEditor = vi.fn();
 const mockAddToHistory = vi.fn();
 const mockDipToScreenRect = vi.fn();
 const mockGetDisplayMatching = vi.fn();
+const mockSelectAreaWithOverlay = vi.fn();
+const mockCancelOverlaySelection = vi.fn();
+const mockReleaseSelection = vi.fn();
 
 vi.mock('electron', () => ({
   clipboard: { writeImage: (...a: unknown[]) => mockClipboardWriteImage(...a) },
-  nativeImage: { createFromBuffer: vi.fn() },
+  nativeImage: { createFromBuffer: vi.fn(() => ({ isEmpty: () => false })) },
   screen: {
     dipToScreenRect: (...a: unknown[]) => mockDipToScreenRect(...a),
     getDisplayMatching: (...a: unknown[]) => mockGetDisplayMatching(...a),
@@ -76,6 +79,11 @@ vi.mock('@/main/capture/area-selector', () => ({
   cancelAreaSelection: vi.fn(),
 }));
 
+vi.mock('@/main/capture/area-overlay', () => ({
+  cancelOverlaySelection: (...a: unknown[]) => mockCancelOverlaySelection(...a),
+  selectAreaWithOverlay: (...a: unknown[]) => mockSelectAreaWithOverlay(...a),
+}));
+
 describe('scroll-capture', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -89,6 +97,7 @@ describe('scroll-capture', () => {
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
     mockDipToScreenRect.mockImplementation((_window, bounds) => bounds);
     mockGetDisplayMatching.mockReturnValue({ scaleFactor: 1 });
+    mockReleaseSelection.mockResolvedValue(undefined);
   });
 
   describe('cancelScrollCapture', () => {
@@ -105,6 +114,20 @@ describe('scroll-capture', () => {
       const { cancelScrollCapture } =
         await import('@/main/capture/scroll-capture');
       await expect(cancelScrollCapture()).resolves.toBeUndefined();
+    });
+
+    it('cancels a pending Windows overlay selection', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+
+      try {
+        const { cancelScrollCapture } =
+          await import('@/main/capture/scroll-capture');
+        await cancelScrollCapture();
+        expect(mockCancelOverlaySelection).toHaveBeenCalledWith(true);
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
     });
   });
 
@@ -373,7 +396,7 @@ describe('scroll-capture', () => {
       );
     });
 
-    it('converts Windows DIP selection bounds to physical pixels', async () => {
+    it('selects with the Electron overlay on Windows and converts DIP bounds', async () => {
       const originalPlatform = process.platform;
       Object.defineProperty(process, 'platform', { value: 'win32' });
       const daemonModule = await import('@/main/daemon');
@@ -391,29 +414,28 @@ describe('scroll-capture', () => {
         width: 400,
         height: 200,
       });
-      mockGetDisplayMatching.mockReturnValue({ scaleFactor: 2 });
-      vi.mocked(areaSelector.startAreaSelection).mockImplementation(((opts: {
-        onSelected?: (selection: unknown) => Promise<void>;
-      }) => {
-        setImmediate(async () => {
-          await opts.onSelected?.({
-            status: 'selected',
-            x: 10,
-            y: 20,
-            width: 200,
-            height: 100,
-            screenId: 7,
-          });
-          daemonHandler?.('scroll-capture:cancelled');
-        });
-        return undefined;
-      }) as never);
+      mockSelectAreaWithOverlay.mockImplementation(async () => {
+        setImmediate(() => daemonHandler?.('scroll-capture:cancelled'));
+        return {
+          display: {
+            id: 7,
+            scaleFactor: 2,
+            bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+          },
+          rect: { x: 10, y: 20, width: 200, height: 100 },
+          release: (...a: unknown[]) => mockReleaseSelection(...a),
+        };
+      });
 
       try {
         const { startScrollCapture } =
           await import('@/main/capture/scroll-capture');
         await startScrollCapture();
 
+        expect(mockSelectAreaWithOverlay).toHaveBeenCalledWith({
+          freeze: false,
+        });
+        expect(mockReleaseSelection).not.toHaveBeenCalled();
         expect(mockDipToScreenRect).toHaveBeenCalledWith(null, {
           x: 10,
           y: 20,
@@ -428,9 +450,28 @@ describe('scroll-capture', () => {
             y: 40,
             width: 400,
             height: 200,
-            displayId: 7,
             scaleFactor: 2,
           })
+        );
+        expect(areaSelector.startAreaSelection).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
+    });
+
+    it('completes without starting when the overlay selection is cancelled on Windows', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      mockSelectAreaWithOverlay.mockResolvedValue(null);
+
+      try {
+        const { startScrollCapture } =
+          await import('@/main/capture/scroll-capture');
+        await expect(startScrollCapture()).resolves.toBeUndefined();
+        expect(mockDaemonCall).not.toHaveBeenCalledWith(
+          'scroll-capture',
+          'start',
+          expect.anything()
         );
       } finally {
         Object.defineProperty(process, 'platform', { value: originalPlatform });

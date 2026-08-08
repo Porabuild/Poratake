@@ -18,6 +18,7 @@ router.register(AreaSelectorModule())
 router.register(RecordingControlModule())
 router.register(TimerControlModule())
 router.register(CameraPreviewModule())
+router.register(MediaDevicesModule())
 router.register(PrintModule())
 router.register(ScrollCaptureModule())
 if #available(macOS 12.3, *) {

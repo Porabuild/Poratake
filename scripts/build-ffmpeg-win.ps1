@@ -3,8 +3,12 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 $buildScript = Join-Path $scriptDir 'build-ffmpeg-win.sh'
-$bashCandidates = @(
-    'C:\msys64\usr\bin\bash.exe',
+$bashCandidates = @()
+if ($env:CAPTY_MSYS2_ROOT) {
+    $bashCandidates += Join-Path $env:CAPTY_MSYS2_ROOT 'usr\bin\bash.exe'
+}
+$bashCandidates += @(
+    'C:\msys64\usr\bin\bash.exe'
     'C:\tools\msys64\usr\bin\bash.exe'
 )
 $bash = $bashCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1

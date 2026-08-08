@@ -8,6 +8,13 @@
   -webkit-app-region: no-drag;
 }
 
+.window-controls-spacer {
+  width: calc(
+    100vw - env(titlebar-area-x, 0px) -
+      env(titlebar-area-width, calc(100vw - 138px))
+  );
+}
+
 /* Custom range slider styles */
 input[type='range'] {
   -webkit-appearance: none;

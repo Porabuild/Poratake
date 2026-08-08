@@ -15,7 +15,6 @@ import type {
 } from '@/types/capture-preview';
 import { useVideoClipboardExport } from '@/renderer/hooks/use-video-clipboard-export';
 import { useCloudFileUpload } from '@/renderer/hooks/use-cloud-file-upload';
-import { useTransparentBody } from '@/renderer/hooks/use-transparent-body';
 
 const UPLOAD_DONE_DISPLAY_MS = 800;
 
@@ -26,14 +25,27 @@ interface CapturePreviewWindowProps {
 export default function CapturePreviewWindow({
   params,
 }: CapturePreviewWindowProps) {
-  const { contentType, thumbnailBase64, filePath, acrylic } = params;
+  const { contentType, thumbnailBase64, filePath } = params;
   const [isHovered, setIsHovered] = useState(false);
   const [displays, setDisplays] = useState<PreviewDisplayInfo[]>([]);
   const [isDisplayMenuOpen, setIsDisplayMenuOpen] = useState(false);
   const isDeleting = useRef(false);
   const displayMenuRef = useRef<HTMLDivElement>(null);
+  const [hasEntered, setHasEntered] = useState(false);
 
-  useTransparentBody(acrylic);
+  const notifyReady = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.ipcRenderer.send('capture-preview:ready');
+        setHasEntered(true);
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (thumbnailBase64) return;
+    notifyReady();
+  }, [thumbnailBase64, notifyReady]);
 
   const { isCopying, isDone, copyProgress, startExport, cancelExport } =
     useVideoClipboardExport(filePath);
@@ -58,6 +70,16 @@ export default function CapturePreviewWindow({
 
     return () => clearTimeout(timer);
   }, [isUploaded]);
+
+  const isAutoDismissPaused =
+    isHovered || isDisplayMenuOpen || isBusy || isFinished;
+
+  useEffect(() => {
+    window.ipcRenderer.send(
+      'capture-preview:set-auto-dismiss-paused',
+      isAutoDismissPaused
+    );
+  }, [isAutoDismissPaused]);
 
   useEffect(() => {
     window.ipcRenderer
@@ -197,14 +219,17 @@ export default function CapturePreviewWindow({
   const showControls =
     (isHovered || isBusy || isDisplayMenuOpen) && !isFinished;
   const hasMultipleDisplays = displays.length > 1;
-  const hoverEffect = acrylic ? 'opacity-0' : 'scale-110 blur-sm brightness-75';
-  const thumbnailClassName = `transition-all duration-200 ${
-    isHovered && !isBusy ? hoverEffect : ''
+  const thumbnailClassName = `transition-transform duration-200 ${
+    showControls ? 'scale-105' : ''
   }`;
 
   return (
     <div
-      className="relative h-screen w-screen overflow-hidden rounded-lg select-none"
+      className={`relative h-screen w-screen overflow-hidden rounded-lg select-none ${
+        hasEntered
+          ? 'animate-in fade-in zoom-in-95 duration-200 ease-out'
+          : 'opacity-0'
+      }`}
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       draggable={contentType === 'screenshot'}
       onDragStart={handleDragStart}
@@ -215,6 +240,8 @@ export default function CapturePreviewWindow({
           alt="Preview"
           className={`h-full w-full object-cover ${thumbnailClassName}`}
           draggable={false}
+          onLoad={notifyReady}
+          onError={notifyReady}
         />
       ) : (
         <div
@@ -256,6 +283,7 @@ export default function CapturePreviewWindow({
       >
         {showControls && (
           <>
+            <div className="animate-in fade-in pointer-events-none absolute inset-0 bg-black/25 backdrop-blur-md duration-200" />
             <button
               onClick={handleClose}
               className="bg-background/80 hover:bg-destructive absolute top-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors"

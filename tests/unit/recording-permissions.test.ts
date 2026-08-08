@@ -6,6 +6,9 @@ const mockOpenScreenRecordingPreferences = vi.fn();
 const mockGetMicStatus = vi.fn();
 const mockRequestMicPermission = vi.fn();
 const mockOpenMicPreferences = vi.fn();
+const mockGetCameraStatus = vi.fn();
+const mockRequestCameraPermission = vi.fn();
+const mockOpenCameraPreferences = vi.fn();
 
 vi.mock('electron', () => ({
   dialog: {
@@ -21,6 +24,9 @@ vi.mock('@/main/system/permissions.ts', () => ({
   getMicrophoneStatus: () => mockGetMicStatus(),
   requestMicrophonePermission: () => mockRequestMicPermission(),
   openMicrophonePreferences: () => mockOpenMicPreferences(),
+  getCameraStatus: () => mockGetCameraStatus(),
+  requestCameraPermission: () => mockRequestCameraPermission(),
+  openCameraPreferences: () => mockOpenCameraPreferences(),
 }));
 
 describe('recording permissions', () => {
@@ -158,6 +164,63 @@ describe('recording permissions', () => {
       const { checkAndRequestMicrophonePermission } =
         await import('@/main/capture/video/permissions');
       await checkAndRequestMicrophonePermission();
+
+      const dialogArgs = mockShowMessageBox.mock.calls[0][0] as {
+        detail: string;
+      };
+      expect(dialogArgs.detail).toContain('Windows Settings');
+      expect(dialogArgs.detail).toContain('desktop apps');
+    });
+  });
+
+  describe('checkAndRequestCameraPermission', () => {
+    it('returns true when permission already granted', async () => {
+      mockGetCameraStatus.mockReturnValue('granted');
+      const { checkAndRequestCameraPermission } =
+        await import('@/main/capture/video/permissions');
+      expect(await checkAndRequestCameraPermission()).toBe(true);
+      expect(mockRequestCameraPermission).not.toHaveBeenCalled();
+    });
+
+    it('requests permission when not-determined', async () => {
+      mockGetCameraStatus.mockReturnValue('not-determined');
+      mockRequestCameraPermission.mockResolvedValue(true);
+      const { checkAndRequestCameraPermission } =
+        await import('@/main/capture/video/permissions');
+      expect(await checkAndRequestCameraPermission()).toBe(true);
+      expect(mockRequestCameraPermission).toHaveBeenCalled();
+    });
+
+    it('shows dialog and opens preferences on denied', async () => {
+      mockGetCameraStatus.mockReturnValue('denied');
+      mockRequestCameraPermission.mockResolvedValue(false);
+      mockShowMessageBox.mockResolvedValue({ response: 0 });
+      const { checkAndRequestCameraPermission } =
+        await import('@/main/capture/video/permissions');
+      expect(await checkAndRequestCameraPermission()).toBe(false);
+      expect(mockOpenCameraPreferences).toHaveBeenCalled();
+    });
+
+    it('returns false without opening prefs when user cancels', async () => {
+      mockGetCameraStatus.mockReturnValue('restricted');
+      mockRequestCameraPermission.mockResolvedValue(false);
+      mockShowMessageBox.mockResolvedValue({ response: 1 });
+      const { checkAndRequestCameraPermission } =
+        await import('@/main/capture/video/permissions');
+      expect(await checkAndRequestCameraPermission()).toBe(false);
+      expect(mockOpenCameraPreferences).not.toHaveBeenCalled();
+    });
+
+    it('uses Windows camera settings guidance', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      mockGetCameraStatus.mockReturnValue('denied');
+      mockRequestCameraPermission.mockResolvedValue(false);
+      mockShowMessageBox.mockResolvedValue({ response: 1 });
+
+      const { checkAndRequestCameraPermission } =
+        await import('@/main/capture/video/permissions');
+      await checkAndRequestCameraPermission();
 
       const dialogArgs = mockShowMessageBox.mock.calls[0][0] as {
         detail: string;

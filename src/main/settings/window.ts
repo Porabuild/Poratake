@@ -2,6 +2,10 @@ import { BrowserWindow, screen, app } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
 import { registerDockWindow } from '@/main/utils/dock';
+import {
+  titleBarWindowOptions,
+  trackTitleBarTheme,
+} from '@/main/utils/title-bar';
 
 let settingsWindow: BrowserWindow | null = null;
 
@@ -34,14 +38,15 @@ export function createOrShowSettingsWindow(tab?: string) {
       preload: path.join(__dirname, 'preload.js'),
       devTools: isDev,
     },
-    titleBarStyle: 'hiddenInset',
-    frame: true,
+    ...titleBarWindowOptions({ surface: 'background' }),
     x: Math.floor((screenWidth - windowWidth) / 2),
     y: Math.floor((screenHeight - windowHeight) / 2),
     show: false,
     backgroundColor: '#1e1e1e',
     title: 'Settings',
   });
+
+  trackTitleBarTheme(settingsWindow, { surface: 'background' });
 
   const hash = tab ? `#${tab}` : '';
   if (devServerUrl) {

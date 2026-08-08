@@ -47,6 +47,10 @@ export function getHistoryFilePath(): string {
   return path.join(getConfigDir(), 'history.json');
 }
 
+export function getWindowStateFilePath(): string {
+  return path.join(getConfigDir(), 'window-state.json');
+}
+
 export function ensureDirectoryExists(dirPath: string): string {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });

@@ -4,7 +4,6 @@ export interface CapturePreviewParams {
   filePath: string;
   contentType: ContentType;
   thumbnailBase64: string | null;
-  acrylic: boolean;
   historyId?: string;
 }
 

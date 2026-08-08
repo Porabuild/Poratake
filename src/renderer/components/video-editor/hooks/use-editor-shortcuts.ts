@@ -70,6 +70,8 @@ export function useEditorShortcuts({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      const primaryModifier = e.metaKey || e.ctrlKey;
+
       if (e.key === 'Escape') {
         e.preventDefault();
         onEscape();
@@ -84,7 +86,7 @@ export function useEditorShortcuts({
         return;
       }
 
-      if (e.key === 'Backspace' && e.metaKey) {
+      if (e.key === 'Backspace' && primaryModifier) {
         e.preventDefault();
         onDeleteVideo();
         return;
@@ -110,7 +112,7 @@ export function useEditorShortcuts({
         }
       }
 
-      if (e.key === 's' && e.metaKey) {
+      if (e.key === 's' && primaryModifier) {
         e.preventDefault();
         activateSidebarTab('export');
         return;
@@ -141,31 +143,31 @@ export function useEditorShortcuts({
         }
       }
 
-      if (e.key === 'z' && e.metaKey && !e.shiftKey) {
+      if (e.key === 'z' && primaryModifier && !e.shiftKey) {
         e.preventDefault();
         onUndo();
         return;
       }
 
-      if (e.key === 'z' && e.metaKey && e.shiftKey) {
+      if (e.key === 'z' && primaryModifier && e.shiftKey) {
         e.preventDefault();
         onRedo();
         return;
       }
 
-      if (e.metaKey && (e.key === '=' || e.key === '+')) {
+      if (primaryModifier && (e.key === '=' || e.key === '+')) {
         e.preventDefault();
         onTimelineZoomIn?.();
         return;
       }
 
-      if (e.metaKey && e.key === '-') {
+      if (primaryModifier && e.key === '-') {
         e.preventDefault();
         onTimelineZoomOut?.();
         return;
       }
 
-      if (e.metaKey && e.key === '0') {
+      if (primaryModifier && e.key === '0') {
         e.preventDefault();
         onTimelineZoomReset?.();
         return;

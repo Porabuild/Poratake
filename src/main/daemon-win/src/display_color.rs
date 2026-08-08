@@ -238,4 +238,3 @@ mod tests {
         assert_eq!(mapper.map(1.0, 1.0, 1.0), [255, 255, 255]);
     }
 }
-

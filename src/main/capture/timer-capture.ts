@@ -7,6 +7,7 @@ import {
   hideAreaSelector,
 } from '@/main/capture/area-selector';
 import { selectAreaWithOverlay } from '@/main/capture/area-overlay';
+import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
 import { captureArea } from '@/main/capture/screenshot';
 import {
   hideDesktopIcons,
@@ -141,7 +142,9 @@ async function timerCaptureWindows(shouldHideIcons: boolean): Promise<void> {
       await hideDesktopIcons('capture');
     }
 
-    const selection = await selectAreaWithOverlay();
+    const selection = await selectAreaWithOverlay({
+      freeze: isFreezeScreenEnabled(),
+    });
     if (!selection) {
       return;
     }

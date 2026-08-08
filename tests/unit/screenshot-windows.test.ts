@@ -52,7 +52,9 @@ vi.mock('electron', () => ({
   ipcMain: { on: vi.fn(), handle: vi.fn() },
   dialog: { showSaveDialog: vi.fn(), showMessageBox: vi.fn() },
   clipboard: { writeImage: (...a: unknown[]) => mockClipboardWriteImage(...a) },
-  nativeImage: { createFromBuffer: vi.fn(() => ({ image: true })) },
+  nativeImage: {
+    createFromBuffer: vi.fn(() => ({ image: true, isEmpty: () => false })),
+  },
   Notification: class {
     show = vi.fn();
   },

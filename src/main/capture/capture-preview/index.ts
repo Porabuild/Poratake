@@ -16,19 +16,17 @@ import { createVideoEditorWindow } from '@/main/capture/video/video-editor';
 import { deleteVideo } from '@/main/capture/video/delete-video';
 import * as settings from '@/main/settings';
 import { registerPreviewExportIpc } from './video-export';
-import { supportsAcrylic } from '@/main/utils/platform';
-import {
-  animateWindowIn,
-  animateWindowMove,
-  getInitialBounds,
-} from '@/main/utils/window-animation';
+import { animateWindowMove } from '@/main/utils/window-animation';
 import type { ContentType, PreviewDisplayInfo } from '@/types/capture-preview';
+import type { PreviewCorner } from '@/types/settings';
 
 interface PreviewWindowData {
   window: BrowserWindow;
   filePath: string;
   contentType: ContentType;
   historyId?: string;
+  reveal: () => void;
+  setAutoDismissPaused: (paused: boolean) => void;
 }
 
 const previewWindows: PreviewWindowData[] = [];
@@ -36,9 +34,20 @@ const previewWindows: PreviewWindowData[] = [];
 const MAX_PREVIEW_WINDOWS = 4;
 const PREVIEW_WIDTH = 200;
 const PREVIEW_HEIGHT = 140;
-const MARGIN_BOTTOM = 24;
-const MARGIN_LEFT = 24;
+const MARGIN_X = 24;
+const MARGIN_Y = 24;
 const WINDOW_GAP = 12;
+
+const CORNER_ANCHORS: Record<
+  PreviewCorner,
+  { fromRight: boolean; fromBottom: boolean }
+> = {
+  'top-left': { fromRight: false, fromBottom: false },
+  'top-right': { fromRight: true, fromBottom: false },
+  'bottom-left': { fromRight: false, fromBottom: true },
+  'bottom-right': { fromRight: true, fromBottom: true },
+};
+const REVEAL_FALLBACK_MS = 1500;
 
 function getSelectedPreviewDisplay(): Electron.Display {
   const displays = screen.getAllDisplays();
@@ -59,15 +68,18 @@ function getDisplayLabel(display: Electron.Display, index: number): string {
 
 function getPreviewPosition(index: number): { x: number; y: number } {
   const display = getSelectedPreviewDisplay();
-  const { x: displayX, y: displayY, height } = display.workArea;
+  const { x: displayX, y: displayY, width, height } = display.workArea;
+  const anchor =
+    CORNER_ANCHORS[settings.getConfig().preview.corner] ??
+    CORNER_ANCHORS['bottom-right'];
+  const stackOffset = index * (PREVIEW_HEIGHT + WINDOW_GAP);
 
-  const x = displayX + MARGIN_LEFT;
-  const y =
-    displayY +
-    height -
-    MARGIN_BOTTOM -
-    PREVIEW_HEIGHT -
-    index * (PREVIEW_HEIGHT + WINDOW_GAP);
+  const x = anchor.fromRight
+    ? displayX + width - MARGIN_X - PREVIEW_WIDTH
+    : displayX + MARGIN_X;
+  const y = anchor.fromBottom
+    ? displayY + height - MARGIN_Y - PREVIEW_HEIGHT - stackOffset
+    : displayY + MARGIN_Y + stackOffset;
 
   return { x, y };
 }
@@ -90,7 +102,9 @@ function movePreviewsToDisplay(displayId: number): PreviewDisplayInfo[] {
     return getPreviewDisplays();
   }
 
-  settings.updateConfig({ preview: { displayId } });
+  settings.updateConfig({
+    preview: { ...settings.getConfig().preview, displayId },
+  });
   repositionAllWindows();
 
   return getPreviewDisplays();
@@ -103,7 +117,9 @@ function persistPreviewDisplayForWindow(window: BrowserWindow): void {
 
   if (settings.getConfig().preview.displayId === display.id) return;
 
-  settings.updateConfig({ preview: { displayId: display.id } });
+  settings.updateConfig({
+    preview: { ...settings.getConfig().preview, displayId: display.id },
+  });
 }
 
 function broadcastDisplaysChanged(): void {
@@ -168,19 +184,14 @@ export async function showCapturePreview(
   const newIndex = previewWindows.length;
   const { x, y } = getPreviewPosition(newIndex);
 
-  const targetBounds = { x, y, width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT };
-  const initialBounds = getInitialBounds(targetBounds);
-  const acrylic = supportsAcrylic();
-
   const previewWindow = new BrowserWindow({
-    width: initialBounds.width,
-    height: initialBounds.height,
-    x: initialBounds.x,
-    y: initialBounds.y,
+    width: PREVIEW_WIDTH,
+    height: PREVIEW_HEIGHT,
+    x,
+    y,
     frame: false,
     transparent: false,
-    backgroundColor: acrylic ? '#00000000' : '#1e1e1e',
-    backgroundMaterial: acrylic ? 'acrylic' : 'none',
+    backgroundColor: '#1e1e1e',
     resizable: false,
     movable: true,
     skipTaskbar: true,
@@ -205,11 +216,65 @@ export async function showCapturePreview(
 
   const webContentsId = previewWindow.webContents.id;
 
+  let revealed = false;
+  let revealTimer: NodeJS.Timeout | null = null;
+  let dismissTimer: NodeJS.Timeout | null = null;
+  let dismissPaused = false;
+
+  const clearDismissTimer = () => {
+    if (dismissTimer) {
+      clearTimeout(dismissTimer);
+      dismissTimer = null;
+    }
+  };
+
+  const scheduleAutoDismiss = () => {
+    clearDismissTimer();
+    if (!revealed || dismissPaused || previewWindow.isDestroyed()) return;
+
+    const { autoDismiss, autoDismissSeconds } = settings.getConfig().preview;
+    if (!autoDismiss || autoDismissSeconds <= 0) return;
+
+    dismissTimer = setTimeout(() => {
+      dismissTimer = null;
+      if (!previewWindow.isDestroyed()) {
+        previewWindow.close();
+      }
+    }, autoDismissSeconds * 1000);
+  };
+
+  const setAutoDismissPaused = (paused: boolean) => {
+    if (dismissPaused === paused) return;
+
+    dismissPaused = paused;
+    if (paused) {
+      clearDismissTimer();
+      return;
+    }
+    scheduleAutoDismiss();
+  };
+
+  const reveal = () => {
+    if (revealTimer) {
+      clearTimeout(revealTimer);
+      revealTimer = null;
+    }
+    if (revealed || previewWindow.isDestroyed()) return;
+
+    revealed = true;
+    previewWindow.showInactive();
+    scheduleAutoDismiss();
+  };
+
+  revealTimer = setTimeout(reveal, REVEAL_FALLBACK_MS);
+
   const previewData: PreviewWindowData = {
     window: previewWindow,
     filePath,
     contentType,
     historyId,
+    reveal,
+    setAutoDismissPaused,
   };
 
   previewWindows.push(previewData);
@@ -227,15 +292,9 @@ export async function showCapturePreview(
         filePath,
         contentType,
         thumbnailBase64: thumbnailResult.base64,
-        acrylic,
         historyId,
       },
     });
-  });
-
-  previewWindow.once('ready-to-show', () => {
-    previewWindow.showInactive();
-    animateWindowIn(previewWindow, targetBounds);
   });
 
   previewWindow.on('moved', () => {
@@ -243,6 +302,11 @@ export async function showCapturePreview(
   });
 
   previewWindow.on('closed', () => {
+    if (revealTimer) {
+      clearTimeout(revealTimer);
+      revealTimer = null;
+    }
+    clearDismissTimer();
     removePreviewWindow(webContentsId);
   });
 }
@@ -258,6 +322,23 @@ function getPreviewDataByWebContentsId(
 
 export function registerCapturePreviewIpc(): void {
   registerPreviewExportIpc();
+
+  ipcMain.on('capture-preview:reposition', () => {
+    repositionAllWindows();
+  });
+
+  ipcMain.on('capture-preview:ready', event => {
+    getPreviewDataByWebContentsId(event.sender.id)?.reveal();
+  });
+
+  ipcMain.on(
+    'capture-preview:set-auto-dismiss-paused',
+    (event, paused: boolean) => {
+      getPreviewDataByWebContentsId(event.sender.id)?.setAutoDismissPaused(
+        paused
+      );
+    }
+  );
 
   ipcMain.on('capture-preview:close', event => {
     const data = getPreviewDataByWebContentsId(event.sender.id);

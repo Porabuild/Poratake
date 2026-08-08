@@ -3,6 +3,7 @@ import {
   Settings,
   Camera,
   Video,
+  Webcam,
   HardDrive,
   Keyboard,
   Cloud,
@@ -15,6 +16,7 @@ import { isFeatureSupported } from '@/renderer/utils/capabilities';
 import { GENERAL_ITEMS } from './registry/general';
 import { SCREENSHOT_ITEMS } from './registry/screenshot';
 import { RECORDING_ITEMS } from './registry/recording';
+import { DEVICES_ITEMS } from './registry/devices';
 import { STORAGE_ITEMS } from './registry/storage';
 import { SHORTCUTS_ITEMS } from './registry/shortcuts';
 import { CLOUD_ITEMS } from './registry/cloud';
@@ -109,6 +111,14 @@ interface RestHeadersItem extends BaseItem {
   visibleWhen?: (s: SettingsConfig) => boolean;
 }
 
+interface MicrophoneDeviceItem extends BaseItem {
+  type: 'microphone-device';
+}
+
+interface CameraDeviceItem extends BaseItem {
+  type: 'camera-device';
+}
+
 export type SettingsItem =
   | SwitchItem
   | SelectItem
@@ -119,7 +129,9 @@ export type SettingsItem =
   | NamingPatternItem
   | CaptyCloudAccessItem
   | CloudTestConnectionItem
-  | RestHeadersItem;
+  | RestHeadersItem
+  | MicrophoneDeviceItem
+  | CameraDeviceItem;
 
 const ALL_SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
@@ -141,6 +153,14 @@ const ALL_SETTINGS_CATEGORIES: SettingsCategory[] = [
     label: 'Recording',
     icon: Video,
     description: 'Configure video recording behavior',
+    searchable: true,
+    feature: 'recording',
+  },
+  {
+    id: 'devices',
+    label: 'Devices',
+    icon: Webcam,
+    description: 'Select and test your microphone and camera',
     searchable: true,
     feature: 'recording',
   },
@@ -199,6 +219,7 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
   ...GENERAL_ITEMS,
   ...SCREENSHOT_ITEMS,
   ...RECORDING_ITEMS,
+  ...DEVICES_ITEMS,
   ...STORAGE_ITEMS,
   ...SHORTCUTS_ITEMS,
   ...CLOUD_ITEMS,
@@ -211,6 +232,8 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 const SECTION_DESCRIPTIONS: Record<string, Record<string, string>> = {
   general: {
     Application: 'Configure how Capty behaves on your system',
+    Preview:
+      'Choose where capture previews appear on screen and how long they stay',
     History: 'Configure screenshot history settings',
   },
   screenshot: {
@@ -221,6 +244,10 @@ const SECTION_DESCRIPTIONS: Record<string, Record<string, string>> = {
   },
   recording: {
     Behavior: 'Configure default behavior for new recordings',
+  },
+  devices: {
+    Microphone: 'Choose which microphone recordings use and test its level',
+    Camera: 'Choose which camera recordings use and preview it',
   },
   storage: {
     'File Naming': 'Customize how files are named using tokens',

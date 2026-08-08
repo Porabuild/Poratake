@@ -1,4 +1,5 @@
 use super::recorder_types::{RecorderError, StagedAsset};
+use crate::com::retain_process_mta;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
@@ -373,13 +374,13 @@ fn run_worker(
         Ok(runtime) => runtime,
         Err(error) => {
             let _ = ready.send(Err(error));
-            drop(apartment);
             return;
         }
     };
     if let Err(error) = runtime.request_frame() {
         runtime.abort(&events);
         let _ = ready.send(Err(error));
+        drop(runtime);
         drop(apartment);
         return;
     }
@@ -476,6 +477,7 @@ fn run_worker(
             WorkerEvent::Flushed => {}
         }
     }
+    drop(runtime);
     drop(apartment);
 }
 
@@ -545,6 +547,11 @@ struct CameraApartment {
 
 impl CameraApartment {
     fn initialize() -> Result<Self, RecorderError> {
+        retain_process_mta().map_err(|error| {
+            RecorderError::start(format!(
+                "Failed to retain the process COM apartment: {error}"
+            ))
+        })?;
         unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
             .ok()
             .map_err(|error| {

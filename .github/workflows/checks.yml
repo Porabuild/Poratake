@@ -65,5 +65,20 @@ jobs:
       - name: Test Windows daemon
         run: cargo test --manifest-path src/main/daemon-win/Cargo.toml
 
-      - name: Build Windows daemon
-        run: bun run build-daemon-win
+      - name: Setup MSYS2
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            make
+            nasm
+            pkgconf
+            curl
+            tar
+
+      - name: Build Windows package
+        run: bun run build-win
+        env:
+          CAPTY_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}

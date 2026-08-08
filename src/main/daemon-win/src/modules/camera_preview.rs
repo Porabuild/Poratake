@@ -1,3 +1,4 @@
+use crate::com::{retain_process_mta, MtaInterface};
 use crate::overlay::{create_popup_window, default_wndproc, ensure_window_class, monitors};
 use crate::protocol::{param_bool, param_i32, param_str, respond_error, respond_success, Request};
 use crate::router::{method_not_found, Module, Reply};
@@ -7,18 +8,20 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use windows::core::{AgileReference, PWSTR};
+use windows::core::PWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-    InvalidateRect, SetStretchBltMode, SetWindowRgn, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, DIB_RGB_COLORS, HALFTONE, PAINTSTRUCT, SRCCOPY,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateRoundRectRgn,
+    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, InvalidateRect, SelectObject,
+    SetStretchBltMode, SetWindowRgn, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    DIB_RGB_COLORS, HALFTONE, PAINTSTRUCT, SRCCOPY,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFMediaSource, IMFSample, MFCreateAttributes, MFCreateMediaType,
-    MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFMediaType_Video, MFShutdown,
-    MFStartup, MFVideoFormat_RGB32, MFSTARTUP_FULL, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+    IMFActivate, IMFAttributes, IMFMediaSource, IMFSample, IMFSourceReader, MFCreateAttributes,
+    MFCreateMediaType, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFMediaType_Video,
+    MFShutdown, MFStartup, MFVideoFormat_RGB32, MFSTARTUP_FULL,
+    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
     MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READERF_ENDOFSTREAM,
     MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION,
@@ -46,6 +49,7 @@ struct CameraConfig {
     device_id: Option<String>,
     device_name: Option<String>,
     resolution: String,
+    flipped: bool,
     content_protected: bool,
 }
 
@@ -55,6 +59,7 @@ impl Default for CameraConfig {
             device_id: None,
             device_name: None,
             resolution: "720p".to_string(),
+            flipped: false,
             content_protected: false,
         }
     }
@@ -81,10 +86,9 @@ struct CameraLifecycle {
     visible: bool,
 }
 
-#[derive(Clone)]
 struct CaptureInterrupt {
-    reader: AgileReference<windows::Win32::Media::MediaFoundation::IMFSourceReader>,
-    source: AgileReference<IMFMediaSource>,
+    reader: MtaInterface<IMFSourceReader>,
+    source: MtaInterface<IMFMediaSource>,
 }
 
 struct CaptureSession {
@@ -212,6 +216,7 @@ struct CameraUiState {
     window: Option<HWND>,
     frame: Option<Arc<Mutex<Option<CameraFrame>>>>,
     runtime: Option<Arc<CameraRuntime>>,
+    flipped: bool,
     content_protected: bool,
 }
 
@@ -220,6 +225,7 @@ thread_local! {
         window: None,
         frame: None,
         runtime: None,
+        flipped: false,
         content_protected: false,
     }) };
 }
@@ -272,7 +278,10 @@ unsafe extern "system" fn wndproc(
 }
 
 fn paint(window: HWND) {
-    let frame = STATE.with(|state| state.borrow().frame.clone());
+    let (frame, flipped) = STATE.with(|state| {
+        let state = state.borrow();
+        (state.frame.clone(), state.flipped)
+    });
     let frame = frame.and_then(|frame| frame.lock().ok().and_then(|frame| frame.clone()));
 
     unsafe {
@@ -280,8 +289,11 @@ fn paint(window: HWND) {
         let dc = BeginPaint(window, &mut paint);
         let mut bounds = RECT::default();
         let _ = GetClientRect(window, &mut bounds);
+        let buffer_dc = CreateCompatibleDC(Some(dc));
+        let buffer = CreateCompatibleBitmap(dc, bounds.right, bounds.bottom);
+        let previous_bitmap = SelectObject(buffer_dc, buffer.into());
         let black = CreateSolidBrush(COLORREF(0));
-        FillRect(dc, &bounds, black);
+        FillRect(buffer_dc, &bounds, black);
         let _ = DeleteObject(black.into());
 
         if let Some(frame) = frame {
@@ -291,11 +303,16 @@ fn paint(window: HWND) {
             let crop = frame.width.min(frame.height);
             let source_x = (frame.width - crop) / 2;
             let source_y = (frame.height - crop) / 2;
+            let (destination_x, destination_width) = if flipped {
+                (padding + preview, -preview)
+            } else {
+                (padding, preview)
+            };
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                     biWidth: frame.width,
-                    biHeight: frame.height,
+                    biHeight: -frame.height,
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB.0,
@@ -304,12 +321,12 @@ fn paint(window: HWND) {
                 },
                 ..Default::default()
             };
-            let _ = SetStretchBltMode(dc, HALFTONE);
+            let _ = SetStretchBltMode(buffer_dc, HALFTONE);
             let _ = StretchDIBits(
-                dc,
-                padding + preview,
+                buffer_dc,
+                destination_x,
                 padding,
-                -preview,
+                destination_width,
                 preview,
                 source_x,
                 source_y,
@@ -321,6 +338,20 @@ fn paint(window: HWND) {
                 SRCCOPY,
             );
         }
+        let _ = BitBlt(
+            dc,
+            0,
+            0,
+            bounds.right,
+            bounds.bottom,
+            Some(buffer_dc),
+            0,
+            0,
+            SRCCOPY,
+        );
+        SelectObject(buffer_dc, previous_bitmap);
+        let _ = DeleteObject(buffer.into());
+        let _ = DeleteDC(buffer_dc);
         let _ = EndPaint(window, &paint);
     }
 }
@@ -389,6 +420,7 @@ fn create_or_update_window(
     frame: Arc<Mutex<Option<CameraFrame>>>,
     x: Option<i32>,
     y: Option<i32>,
+    flipped: bool,
     content_protected: bool,
 ) -> Result<HWND, CameraWindowError> {
     if let Some(window) = STATE.with(|state| state.borrow().window) {
@@ -415,6 +447,7 @@ fn create_or_update_window(
             let mut state = state.borrow_mut();
             state.runtime = Some(runtime);
             state.frame = Some(frame);
+            state.flipped = flipped;
             state.content_protected = content_protected;
         });
         return Ok(window);
@@ -461,6 +494,7 @@ fn create_or_update_window(
         let mut state = state.borrow_mut();
         state.runtime = Some(runtime);
         state.frame = Some(frame);
+        state.flipped = flipped;
         state.content_protected = content_protected;
         state.window = Some(window);
     });
@@ -650,6 +684,10 @@ fn capture_loop(
     window_value: isize,
     ready: impl FnOnce(Result<(), String>),
 ) {
+    if let Err(error) = retain_process_mta() {
+        ready(Err(error.to_string()));
+        return;
+    }
     let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
     let started = unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) };
     if let Err(error) = started {
@@ -660,12 +698,14 @@ fn capture_loop(
         return;
     }
 
-    let result = (|| -> Result<(IMFMediaSource, windows::Win32::Media::MediaFoundation::IMFSourceReader, i32, i32), String> {
+    let result = (|| -> Result<(IMFMediaSource, IMFSourceReader, i32, i32), String> {
         let activate = select_camera(&config)?;
-        let source: IMFMediaSource = unsafe { activate.ActivateObject() }.map_err(|error| error.to_string())?;
+        let source: IMFMediaSource =
+            unsafe { activate.ActivateObject() }.map_err(|error| error.to_string())?;
         let mut attributes = None;
         unsafe { MFCreateAttributes(&mut attributes, 2) }.map_err(|error| error.to_string())?;
-        let attributes = attributes.ok_or_else(|| "Source reader attributes unavailable".to_string())?;
+        let attributes =
+            attributes.ok_or_else(|| "Source reader attributes unavailable".to_string())?;
         unsafe { attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1) }
             .map_err(|error| error.to_string())?;
         unsafe { attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1) }
@@ -678,10 +718,8 @@ fn capture_loop(
             .map_err(|error| error.to_string())?;
         unsafe { media_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32) }
             .map_err(|error| error.to_string())?;
-        unsafe {
-            media_type.SetUINT64(&MF_MT_FRAME_SIZE, ((width as u64) << 32) | height as u64)
-        }
-        .map_err(|error| error.to_string())?;
+        unsafe { media_type.SetUINT64(&MF_MT_FRAME_SIZE, ((width as u64) << 32) | height as u64) }
+            .map_err(|error| error.to_string())?;
         unsafe {
             reader.SetCurrentMediaType(
                 MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
@@ -690,10 +728,9 @@ fn capture_loop(
             )
         }
         .map_err(|error| error.to_string())?;
-        let active_type = unsafe {
-            reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32)
-        }
-        .map_err(|error| error.to_string())?;
+        let active_type =
+            unsafe { reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32) }
+                .map_err(|error| error.to_string())?;
         let packed = unsafe { active_type.GetUINT64(&MF_MT_FRAME_SIZE) }
             .map_err(|error| error.to_string())?;
         Ok((source, reader, (packed >> 32) as i32, packed as u32 as i32))
@@ -711,33 +748,11 @@ fn capture_loop(
         }
     };
 
-    let interrupt_reader = match AgileReference::new(&reader) {
-        Ok(reference) => reference,
-        Err(error) => {
-            ready(Err(error.to_string()));
-            let _ = unsafe { source.Shutdown() };
-            let _ = unsafe { MFShutdown() };
-            if initialized {
-                unsafe { CoUninitialize() };
-            }
-            return;
-        }
-    };
-    let interrupt_source = match AgileReference::new(&source) {
-        Ok(reference) => reference,
-        Err(error) => {
-            ready(Err(error.to_string()));
-            let _ = unsafe { source.Shutdown() };
-            let _ = unsafe { MFShutdown() };
-            if initialized {
-                unsafe { CoUninitialize() };
-            }
-            return;
-        }
-    };
     let Ok(mut active) = interrupt.lock() else {
         ready(Err("Camera interrupt state unavailable".to_string()));
         let _ = unsafe { source.Shutdown() };
+        drop(reader);
+        drop(source);
         let _ = unsafe { MFShutdown() };
         if initialized {
             unsafe { CoUninitialize() };
@@ -745,8 +760,8 @@ fn capture_loop(
         return;
     };
     *active = Some(CaptureInterrupt {
-        reader: interrupt_reader,
-        source: interrupt_source,
+        reader: MtaInterface::new(reader.clone()),
+        source: MtaInterface::new(source.clone()),
     });
     drop(active);
     if stop.load(Ordering::Acquire) {
@@ -755,6 +770,8 @@ fn capture_loop(
             active.take();
         }
         let _ = unsafe { source.Shutdown() };
+        drop(reader);
+        drop(source);
         let _ = unsafe { MFShutdown() };
         if initialized {
             unsafe { CoUninitialize() };
@@ -798,6 +815,8 @@ fn capture_loop(
         active.take();
     }
     let _ = unsafe { source.Shutdown() };
+    drop(reader);
+    drop(source);
     let _ = unsafe { MFShutdown() };
     if initialized {
         unsafe { CoUninitialize() };
@@ -835,14 +854,19 @@ fn stop_capture_session(session: CaptureSession) {
         .and_then(|mut interrupt| interrupt.take());
     if let Some(interrupt) = interrupt {
         let interrupter = std::thread::spawn(move || {
-            let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-            if let Ok(source) = interrupt.source.resolve() {
-                let _ = unsafe { source.Shutdown() };
-            }
-            if let Ok(reader) = interrupt.reader.resolve() {
-                let _ = unsafe { reader.Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32) };
-            }
+            let retained = retain_process_mta().is_ok();
+            let initialized =
+                retained && unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
             if initialized {
+                unsafe {
+                    interrupt.reader.with(|reader| {
+                        let _ = reader.Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32);
+                    });
+                    interrupt.source.with(|source| {
+                        let _ = source.Shutdown();
+                    });
+                }
+                drop(interrupt);
                 unsafe { CoUninitialize() };
             }
         });
@@ -1067,6 +1091,7 @@ impl Module for CameraPreviewModule {
                 self.config.resolution = param_str(&request.params, "resolution")
                     .unwrap_or("720p")
                     .to_string();
+                self.config.flipped = param_bool(&request.params, "flipped").unwrap_or(false);
                 let changed = previous.device_id != self.config.device_id
                     || previous.device_name != self.config.device_name
                     || previous.resolution != self.config.resolution;
@@ -1102,6 +1127,7 @@ impl Module for CameraPreviewModule {
                             frame,
                             x,
                             y,
+                            config.flipped,
                             content_protected,
                         ) {
                             Ok(window) => window,
@@ -1149,6 +1175,7 @@ impl Module for CameraPreviewModule {
                                     frame,
                                     x,
                                     y,
+                                    config.flipped,
                                     content_protected,
                                 ) {
                                     Ok(window) => window,
@@ -1239,6 +1266,9 @@ impl Module for CameraPreviewModule {
                     changed |= resolution != self.config.resolution;
                     self.config.resolution = resolution.to_string();
                 }
+                if let Some(flipped) = param_bool(&request.params, "flipped") {
+                    self.config.flipped = flipped;
+                }
                 let x = param_i32(&request.params, "x");
                 let y = param_i32(&request.params, "y");
                 let config = self.config.clone();
@@ -1272,6 +1302,7 @@ impl Module for CameraPreviewModule {
                                 frame,
                                 x,
                                 y,
+                                config.flipped,
                                 content_protected,
                             ) {
                                 Ok(window) => window,
@@ -1288,9 +1319,14 @@ impl Module for CameraPreviewModule {
                         return;
                     };
                     let content_protected = STATE.with(|state| state.borrow().content_protected);
-                    let Ok(_) =
-                        create_or_update_window(runtime.clone(), frame, x, y, content_protected)
-                    else {
+                    let Ok(_) = create_or_update_window(
+                        runtime.clone(),
+                        frame,
+                        x,
+                        y,
+                        config.flipped,
+                        content_protected,
+                    ) else {
                         return;
                     };
                 });

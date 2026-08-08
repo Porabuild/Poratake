@@ -1,4 +1,5 @@
 use super::recorder_types::{RecorderError, RecordingConfig, StagedAsset};
+use crate::com::retain_process_mta;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -33,7 +34,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
-const HNS_PER_SECOND: i64 = 10_000_000;
+pub(super) const HNS_PER_SECOND: i64 = 10_000_000;
 const AAC_SAMPLE_RATE: u32 = 48_000;
 const AAC_CHANNELS: u32 = 2;
 const AAC_BIT_RATE: u32 = 192_000;
@@ -44,7 +45,7 @@ const SILENCE_CHUNK_FRAMES: u32 = 4_096;
 const MAX_PENDING_AUDIO_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
-enum AudioKind {
+pub(super) enum AudioKind {
     System,
     Microphone,
 }
@@ -464,7 +465,6 @@ fn run_audio_worker(
         Err(error) => {
             let _ = ready.send(Err(error.clone()));
             let _ = completion.send(Err(error));
-            drop(apartment);
             return;
         }
     };
@@ -548,6 +548,7 @@ struct ComApartment;
 
 impl ComApartment {
     fn initialize() -> Result<Self, windows::core::Error> {
+        retain_process_mta()?;
         unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok()?;
         Ok(Self)
     }
@@ -562,14 +563,14 @@ impl Drop for ComApartment {
 }
 
 #[derive(Clone, Copy)]
-struct AudioFormat {
-    sample_rate: u32,
-    channels: u32,
-    bits_per_sample: u32,
-    valid_bits_per_sample: u32,
-    block_align: u32,
-    channel_mask: Option<u32>,
-    floating_point: bool,
+pub(super) struct AudioFormat {
+    pub(super) sample_rate: u32,
+    pub(super) channels: u32,
+    pub(super) bits_per_sample: u32,
+    pub(super) valid_bits_per_sample: u32,
+    pub(super) block_align: u32,
+    pub(super) channel_mask: Option<u32>,
+    pub(super) floating_point: bool,
 }
 
 struct WasapiCapture {
@@ -740,12 +741,12 @@ impl Drop for WasapiCapture {
     }
 }
 
-struct OwnedHandle {
-    handle: HANDLE,
+pub(super) struct OwnedHandle {
+    pub(super) handle: HANDLE,
 }
 
 impl OwnedHandle {
-    fn new(handle: HANDLE) -> Self {
+    pub(super) fn new(handle: HANDLE) -> Self {
         Self { handle }
     }
 }
@@ -758,7 +759,7 @@ impl Drop for OwnedHandle {
     }
 }
 
-fn select_device(
+pub(super) fn select_device(
     enumerator: &IMMDeviceEnumerator,
     kind: AudioKind,
     device_id: Option<&str>,
@@ -876,7 +877,9 @@ fn device_friendly_name(device: &IMMDevice) -> Result<Option<String>, RecorderEr
     Ok(result)
 }
 
-unsafe fn parse_audio_format(format: *const WAVEFORMATEX) -> Result<AudioFormat, RecorderError> {
+pub(super) unsafe fn parse_audio_format(
+    format: *const WAVEFORMATEX,
+) -> Result<AudioFormat, RecorderError> {
     let wave = unsafe { std::ptr::read_unaligned(format) };
     if wave.nSamplesPerSec == 0 || wave.nChannels == 0 || wave.nBlockAlign == 0 {
         return Err(RecorderError::configuration(
@@ -1203,7 +1206,15 @@ impl AudioEncoder {
         unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.map_err(|error| {
             RecorderError::capture(format!("Failed to start Media Foundation audio: {error}"))
         })?;
-        let temporary_path = temporary_audio_path(output_path)?;
+        let temporary_path = match temporary_audio_path(output_path) {
+            Ok(path) => path,
+            Err(error) => {
+                unsafe {
+                    let _ = MFShutdown();
+                }
+                return Err(error);
+            }
+        };
         if temporary_path.exists() {
             if let Err(error) = std::fs::remove_file(&temporary_path) {
                 unsafe {
@@ -1561,7 +1572,7 @@ fn channel_speaker(mask: u32, channel: u32) -> Option<u32> {
     None
 }
 
-fn channel_sample(
+pub(super) fn channel_sample(
     data: &[u8],
     frame: u32,
     channel: u32,

@@ -65,19 +65,12 @@ vi.mock('@/main/capture/video/recorder', () => ({
 }));
 
 const mockCheckMic = vi.fn();
+const mockCheckCamera = vi.fn();
 const mockShowRecordingError = vi.fn();
 vi.mock('@/main/capture/video/permissions', () => ({
   checkAndRequestMicrophonePermission: () => mockCheckMic(),
+  checkAndRequestCameraPermission: () => mockCheckCamera(),
   showRecordingError: (...a: unknown[]) => mockShowRecordingError(...a),
-}));
-
-const mockGetCameraStatus = vi.fn(() => 'granted');
-const mockRequestCameraPermission = vi.fn();
-const mockOpenCameraPreferences = vi.fn();
-vi.mock('@/main/system/permissions', () => ({
-  getCameraStatus: () => mockGetCameraStatus(),
-  requestCameraPermission: () => mockRequestCameraPermission(),
-  openCameraPreferences: () => mockOpenCameraPreferences(),
 }));
 
 const mockSetAspectRatio = vi.fn();
@@ -108,6 +101,7 @@ describe('recording-control', () => {
     mockResumeRecording.mockResolvedValue(undefined);
     mockShowCameraPreview.mockResolvedValue(undefined);
     mockShowRecordingError.mockResolvedValue(undefined);
+    mockCheckCamera.mockResolvedValue(true);
     mockDipToScreenPoint.mockImplementation(position => position);
     mockGetDisplayMatching.mockReturnValue({
       workArea: { x: 0, y: 0, width: 1920, height: 1080 },
@@ -145,6 +139,23 @@ describe('recording-control', () => {
       width: 800,
       height: 600,
     });
+  });
+
+  it('anchors the control to the top centre of the selected display', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.resetModules();
+    mockGetDisplayMatching.mockReturnValue({
+      workArea: { x: 1920, y: 40, width: 1920, height: 1040 },
+    });
+
+    const m = await import('@/main/capture/video/recording-control');
+    m.showPreRecordingControl({ x: 2000, y: 600, width: 800, height: 600 });
+
+    expect(mockDaemonCall).toHaveBeenCalledWith(
+      'recording-control',
+      'show',
+      expect.objectContaining({ x: 2621, y: 64 })
+    );
   });
 
   it('converts the Windows control position to physical pixels', async () => {
@@ -377,7 +388,7 @@ describe('recording-control', () => {
           camera: { enabled: false },
         },
       });
-      mockRequestCameraPermission.mockResolvedValue(true);
+      mockCheckCamera.mockResolvedValue(true);
       await setupAndFire('recording-control:toggle-camera');
       expect(mockShowCameraPreview).toHaveBeenCalled();
     });
@@ -425,8 +436,7 @@ describe('recording-control', () => {
     });
 
     it('select-camera with deviceId enables and shows preview', async () => {
-      mockRequestCameraPermission.mockResolvedValue(true);
-      mockGetCameraStatus.mockReturnValue('not-determined');
+      mockCheckCamera.mockResolvedValue(true);
       await setupAndFire('recording-control:select-camera', {
         deviceId: 'cam-1',
         deviceName: 'Cam 1',
@@ -609,7 +619,7 @@ describe('recording-control', () => {
   });
 
   describe('camera permission check', () => {
-    it('shows dialog and opens prefs when denied', async () => {
+    it('keeps the camera disabled when permission is denied', async () => {
       // Permission flow only triggers when toggling camera ON
       // (not when toggling OFF). Set camera to disabled so toggle enables it.
       mockGetConfig.mockReturnValue({
@@ -619,17 +629,13 @@ describe('recording-control', () => {
           camera: { enabled: false },
         },
       });
-      mockGetCameraStatus.mockReturnValue('denied');
-      mockRequestCameraPermission.mockResolvedValue(false);
-      mockShowMessageBox.mockResolvedValue({ response: 0 });
+      mockCheckCamera.mockResolvedValue(false);
       const m = await import('@/main/capture/video/recording-control');
       m.showPreRecordingControl();
+      mockUpdateConfig.mockClear();
       await daemonEventHandler!('recording-control:toggle-camera');
-      // Either the prefs were opened, or the dialog wasn't shown (defensive)
-      expect(
-        mockOpenCameraPreferences.mock.calls.length +
-          mockShowMessageBox.mock.calls.length
-      ).toBeGreaterThan(0);
+      expect(mockShowCameraPreview).not.toHaveBeenCalled();
+      expect(mockUpdateConfig).not.toHaveBeenCalled();
     });
   });
 });

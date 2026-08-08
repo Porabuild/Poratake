@@ -1,4 +1,4 @@
-import { dialog, BrowserWindow, screen, shell } from 'electron';
+import { screen, shell } from 'electron';
 import { daemon } from '@/main/daemon';
 import { getConfig, updateConfig } from '@/main/settings';
 import { showCameraPreview, hideCameraPreview } from './camera-preview';
@@ -11,14 +11,10 @@ import {
 } from './recording-actions';
 import { pauseRecording, resumeRecording } from './recorder';
 import {
+  checkAndRequestCameraPermission,
   checkAndRequestMicrophonePermission,
   showRecordingError,
 } from './permissions';
-import {
-  getCameraStatus,
-  requestCameraPermission,
-  openCameraPreferences,
-} from '@/main/system/permissions';
 import type { AspectRatio } from '@/types/aspect-ratio';
 import {
   setAreaSelectorAspectRatio,
@@ -26,46 +22,6 @@ import {
   showAreaSelector,
 } from '@/main/capture/area-selector';
 import { isWindows } from '@/main/utils/platform';
-
-async function checkAndRequestCameraPermission(): Promise<boolean> {
-  const status = getCameraStatus();
-
-  if (
-    status === 'not-determined' ||
-    status === 'denied' ||
-    status === 'restricted'
-  ) {
-    const granted = await requestCameraPermission();
-    if (!granted) {
-      const options = {
-        type: 'error' as const,
-        title: 'Camera Permission Required',
-        message: 'Camera access is not granted.',
-        detail: isWindows
-          ? 'To record with camera, please allow camera access in Windows Settings.\n\n' +
-            'Go to: Settings > Privacy & security > Camera\n' +
-            'Enable access for desktop apps'
-          : 'To record with camera, please grant camera permission in System Settings.\n\n' +
-            'Go to: System Settings > Privacy & Security > Camera\n' +
-            'Enable access for Capty',
-        buttons: ['Open Settings', 'Cancel'],
-        defaultId: 0,
-      };
-
-      const win = BrowserWindow.getFocusedWindow();
-      const result = win
-        ? await dialog.showMessageBox(win, options)
-        : await dialog.showMessageBox(options);
-
-      if (result.response === 0) {
-        openCameraPreferences();
-      }
-      return false;
-    }
-  }
-
-  return true;
-}
 
 type RecordingControlMode = 'pre-recording' | 'recording';
 
@@ -87,9 +43,9 @@ export function getCurrentRecordingAreaSelection() {
   return currentAreaSelection;
 }
 
-const WINDOW_WIDTH_PRE_RECORDING = isWindows ? 420 : 468;
+const WINDOW_WIDTH_PRE_RECORDING = isWindows ? 518 : 468;
 const WINDOW_WIDTH_RECORDING = 352;
-const WINDOW_HEIGHT = 48;
+const CONTROL_TOP_MARGIN = 24;
 const WINDOWS_CAMERA_PREVIEW_SIZE = 270;
 const WINDOWS_CAMERA_PREVIEW_MARGIN = 32;
 
@@ -99,15 +55,15 @@ function getWindowWidth(): number {
     : WINDOW_WIDTH_RECORDING;
 }
 
-function calculateCenteredPosition(area: {
+function calculateControlPosition(area: {
   x: number;
   y: number;
   width: number;
   height: number;
 }): { x: number; y: number } {
-  const windowWidth = getWindowWidth();
-  const x = Math.round(area.x + area.width / 2 - windowWidth / 2);
-  const y = Math.round(area.y + area.height / 2 - WINDOW_HEIGHT / 2);
+  const { workArea } = screen.getDisplayMatching(area);
+  const x = Math.round(workArea.x + (workArea.width - getWindowWidth()) / 2);
+  const y = workArea.y + CONTROL_TOP_MARGIN;
   return { x, y };
 }
 
@@ -633,7 +589,7 @@ export function showPreRecordingControl(area?: {
   }
 
   const position = toNativePosition(
-    area ? calculateCenteredPosition(area) : { x: 100, y: 100 }
+    area ? calculateControlPosition(area) : { x: 100, y: 100 }
   );
 
   daemon
@@ -658,7 +614,7 @@ export function updateRecordingControlPosition(area: {
 }): void {
   currentAreaSelection = area;
 
-  const position = toNativePosition(calculateCenteredPosition(area));
+  const position = toNativePosition(calculateControlPosition(area));
 
   daemon.call('recording-control', 'update', position).catch(error => {
     console.error('Failed to update recording control position:', error);

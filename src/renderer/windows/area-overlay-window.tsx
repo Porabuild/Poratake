@@ -1,54 +1,87 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AreaOverlayParams } from '@/types/area-overlay';
-
-interface SelectionRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-interface DragState {
-  startX: number;
-  startY: number;
-  currentX: number;
-  currentY: number;
-}
-
-const MIN_SELECTION_SIZE = 4;
-
-function toRect(drag: DragState): SelectionRect {
-  return {
-    x: Math.min(drag.startX, drag.currentX),
-    y: Math.min(drag.startY, drag.currentY),
-    width: Math.abs(drag.currentX - drag.startX),
-    height: Math.abs(drag.currentY - drag.startY),
-  };
-}
+import AllInOneToolbar from '@/renderer/components/area-overlay/all-in-one-toolbar';
+import CrosshairGuides from '@/renderer/components/area-overlay/crosshair-guides';
+import SelectionFrame from '@/renderer/components/area-overlay/selection-frame';
+import SelectionScrim from '@/renderer/components/area-overlay/selection-scrim';
+import useAreaSelection from '@/renderer/hooks/use-area-selection';
+import type {
+  AreaOverlayParams,
+  AreaOverlayRect,
+  AreaOverlayToolbarAction,
+  AreaOverlayToolbarMessage,
+} from '@/types/area-overlay';
 
 export default function AreaOverlayWindow({
   params,
 }: {
   params: AreaOverlayParams;
 }) {
-  const [drag, setDrag] = useState<DragState | null>(null);
   const frozenFrame = useRef<HTMLImageElement>(null);
+  const [toolbar, setToolbar] = useState(params.toolbar);
 
-  const rect = drag ? toRect(drag) : null;
-  const hasSelection =
-    rect !== null &&
-    rect.width >= MIN_SELECTION_SIZE &&
-    rect.height >= MIN_SELECTION_SIZE;
-
-  const confirmSelection = useCallback(
-    (selection: SelectionRect) => {
-      window.ipcRenderer.send('area-overlay:confirm', {
+  const send = useCallback(
+    (channel: string, rect: AreaOverlayRect) => {
+      window.ipcRenderer.send(channel, {
         displayId: params.displayId,
-        ...selection,
+        ...rect,
       });
     },
     [params.displayId]
   );
+
+  const cancel = useCallback(
+    () => window.ipcRenderer.send('area-overlay:cancel'),
+    []
+  );
+
+  const sendToolbarAction = useCallback(
+    (action: AreaOverlayToolbarAction) =>
+      window.ipcRenderer.send('area-overlay:toolbar', action),
+    []
+  );
+
+  useEffect(() => {
+    const handleToolbar = (
+      _event: unknown,
+      message: AreaOverlayToolbarMessage
+    ) => setToolbar(message.toolbar);
+
+    window.ipcRenderer.on('area-overlay:set-toolbar', handleToolbar);
+    return () => {
+      window.ipcRenderer.off('area-overlay:set-toolbar', handleToolbar);
+    };
+  }, []);
+
+  const {
+    rect,
+    pointer,
+    cursor,
+    interacting,
+    bounds,
+    startDrag,
+    trackPointer,
+    clearPointer,
+  } = useAreaSelection({
+    interactive: params.interactive,
+    initialRect: params.rect,
+    initialAspectRatio: params.aspectRatio,
+    onSelected: selection =>
+      send(
+        params.interactive ? 'area-overlay:selected' : 'area-overlay:confirm',
+        selection
+      ),
+    onUpdated: selection => send('area-overlay:updated', selection),
+    onDiscarded: () => {
+      if (params.interactive) {
+        cancel();
+      }
+    },
+  });
+
+  useEffect(() => {
+    document.body.classList.add('window-transparent');
+    return () => document.body.classList.remove('window-transparent');
+  }, []);
 
   useEffect(() => {
     const announceReady = () =>
@@ -64,78 +97,63 @@ export default function AreaOverlayWindow({
   }, [params.displayId, params.imageUrl]);
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        window.ipcRenderer.send('area-overlay:cancel');
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        cancel();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [cancel]);
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    setDrag({
-      startX: e.clientX,
-      startY: e.clientY,
-      currentX: e.clientX,
-      currentY: e.clientY,
-    });
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!drag) return;
-    setDrag({ ...drag, currentX: e.clientX, currentY: e.clientY });
-  };
-
-  const handleMouseUp = () => {
-    if (!drag) return;
-    const selection = toRect(drag);
-    setDrag(null);
-    if (
-      selection.width >= MIN_SELECTION_SIZE &&
-      selection.height >= MIN_SELECTION_SIZE
-    ) {
-      confirmSelection(selection);
-    }
-  };
+  const visibleRect = rect && rect.width > 0 && rect.height > 0 ? rect : null;
 
   return (
     <div
-      className="fixed inset-0 cursor-crosshair overflow-hidden select-none"
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
+      className="fixed inset-0 overflow-hidden select-none"
+      style={{ cursor }}
+      onMouseDown={startDrag}
+      onMouseMove={event =>
+        trackPointer({ x: event.clientX, y: event.clientY })
+      }
+      onMouseLeave={clearPointer}
     >
-      <img
-        ref={frozenFrame}
-        src={params.imageUrl}
-        className="pointer-events-none absolute inset-0 h-full w-full"
-        alt=""
-        draggable={false}
-      />
-      {rect && hasSelection ? (
+      {params.imageUrl ? (
+        <img
+          ref={frozenFrame}
+          src={params.imageUrl}
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          alt=""
+          draggable={false}
+        />
+      ) : null}
+      <SelectionScrim rect={visibleRect} />
+      {visibleRect ? (
+        <SelectionFrame
+          rect={visibleRect}
+          viewportHeight={bounds.height}
+          interactive={params.interactive}
+        />
+      ) : null}
+      {!interacting && !visibleRect && pointer ? (
+        <CrosshairGuides x={pointer.x} y={pointer.y} />
+      ) : null}
+      {params.showPrompt && !interacting && !visibleRect ? (
         <div
-          className="pointer-events-none absolute border border-white/90"
-          style={{
-            left: rect.x,
-            top: rect.y,
-            width: rect.width,
-            height: rect.height,
-            boxShadow: '0 0 0 100000px rgba(0, 0, 0, 0.45)',
-          }}
+          className={`pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm text-white shadow-lg ${
+            toolbar ? 'top-24' : 'top-8'
+          }`}
         >
-          <div className="absolute -bottom-7 left-0 rounded bg-black/70 px-2 py-0.5 font-mono text-xs whitespace-nowrap text-white">
-            {rect.width} × {rect.height}
-          </div>
+          Drag to select an area · Esc to cancel
         </div>
-      ) : (
-        <div className="pointer-events-none absolute inset-0 bg-black/45">
-          <div className="absolute top-6 left-1/2 -translate-x-1/2 rounded bg-black/70 px-3 py-1 text-sm text-white">
-            Drag to select an area — Esc to cancel
-          </div>
-        </div>
-      )}
+      ) : null}
+      {toolbar ? (
+        <AllInOneToolbar
+          recordingEnabled={toolbar.recordingEnabled}
+          rect={visibleRect}
+          onAction={sendToolbarAction}
+        />
+      ) : null}
     </div>
   );
 }

@@ -11,6 +11,10 @@ import {
   TooltipTrigger,
 } from '@/renderer/components/ui/tooltip';
 import UndoRedoButtons from '@/renderer/components/editor/undo-redo';
+import WindowControlsSpacer from '@/renderer/components/window-controls-spacer';
+import { isMacPlatform } from '@/renderer/utils/platform';
+import { formatAccelerator } from '@/renderer/utils/shortcuts';
+import { cn } from '@/renderer/lib/utils';
 import ExportProgressIndicator from './export-progress-indicator';
 import ProjectPathIndicator from './project-path-indicator';
 
@@ -48,8 +52,13 @@ export default function VideoTitleBar({
   onRename,
 }: VideoTitleBarProps) {
   return (
-    <div className="drag-region bg-card border-border fixed top-0 right-0 left-0 z-50 flex h-10 w-full items-center justify-between border-b px-2">
-      <div className="flex min-w-0 flex-1 items-center pl-16">
+    <div className="drag-region bg-card fixed top-0 right-0 left-0 z-50 flex h-10 w-full items-center justify-between px-2">
+      <div
+        className={cn(
+          'flex min-w-0 flex-1 items-center',
+          isMacPlatform() && 'pl-16'
+        )}
+      >
         <span className="text-muted-foreground truncate text-sm">
           {fileName || 'Untitled'}
         </span>
@@ -91,7 +100,7 @@ export default function VideoTitleBar({
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">
-            Delete Video (Cmd+Delete)
+            Delete Video ({formatAccelerator('CommandOrControl+Backspace')})
           </TooltipContent>
         </Tooltip>
 
@@ -116,6 +125,7 @@ export default function VideoTitleBar({
           </Tooltip>
         )}
       </div>
+      <WindowControlsSpacer />
     </div>
   );
 }

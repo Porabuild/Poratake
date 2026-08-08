@@ -5,6 +5,7 @@ use super::recorder_types::{
 use super::recording_audio::AudioCaptureSet;
 use super::recording_camera::{CameraRecordingConfig, CameraSyncClock, RecordingCamera};
 use super::recording_input::InputTracker;
+use crate::com::retain_process_mta;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -37,14 +38,15 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFAttributes, IMFByteStream,
-    IMFDXGIDeviceManager, IMFSample, IMFSinkWriter, MFCreateAttributes, MFCreateDXGIDeviceManager,
-    MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateSinkWriterFromURL, MFCreateTrackedSample,
-    MFMediaType_Video, MFShutdown, MFStartup, MFVideoFormat_ARGB32, MFVideoFormat_H264,
-    MFVideoInterlace_Progressive, MFSTARTUP_FULL, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE,
-    MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-    MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE,
-    MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_D3D_MANAGER, MF_VERSION,
+    IMF2DBuffer, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFAttributes,
+    IMFByteStream, IMFDXGIDeviceManager, IMFSample, IMFSinkWriter, MFCreateAttributes,
+    MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer, MFCreateMediaType,
+    MFCreateSinkWriterFromURL, MFCreateTrackedSample, MFMediaType_Video, MFShutdown, MFStartup,
+    MFVideoFormat_ARGB32, MFVideoFormat_H264, MFVideoInterlace_Progressive, MFSTARTUP_FULL,
+    MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE,
+    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE,
+    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_D3D_MANAGER, MF_VERSION,
 };
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
@@ -313,7 +315,6 @@ fn run_worker(
         Err(error) => {
             set_idle(&shared, generation);
             let _ = start_sender.send(Err(error));
-            drop(apartment);
             return;
         }
     };
@@ -322,6 +323,7 @@ fn run_worker(
         runtime.abort();
         set_idle(&shared, generation);
         let _ = start_sender.send(Err(error));
+        drop(runtime);
         drop(apartment);
         return;
     }
@@ -466,6 +468,7 @@ fn run_worker(
         }
     }
 
+    drop(runtime);
     drop(apartment);
 }
 
@@ -542,6 +545,7 @@ struct RecordingApartment;
 
 impl RecordingApartment {
     fn initialize() -> Result<Self, windows::core::Error> {
+        retain_process_mta()?;
         unsafe { RoInitialize(RO_INIT_MULTITHREADED) }?;
         Ok(Self)
     }
@@ -1366,6 +1370,7 @@ impl WindowsCapture {
                 "This Windows version cannot disable the captured cursor: {error}"
             ))
         })?;
+        let _ = session.SetIsBorderRequired(false);
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let frame_sender = sender.clone();
@@ -1569,7 +1574,15 @@ impl MediaFoundationEncoder {
             })?;
         }
 
-        let temporary_path = temporary_video_path(output_path)?;
+        let temporary_path = match temporary_video_path(output_path) {
+            Ok(path) => path,
+            Err(error) => {
+                unsafe {
+                    let _ = MFShutdown();
+                }
+                return Err(error);
+            }
+        };
         if temporary_path.exists() {
             std::fs::remove_file(&temporary_path).map_err(|error| {
                 RecorderError::capture(format!("Failed to replace temporary video: {error}"))
@@ -1799,6 +1812,17 @@ impl MediaFoundationEncoder {
             .map_err(|error| {
                 RecorderError::capture(format!("Failed to wrap encoder texture: {error}"))
             })?;
+        let plane: IMF2DBuffer = buffer.cast().map_err(|error| {
+            RecorderError::capture(format!("Failed to access encoder texture planes: {error}"))
+        })?;
+        let length = unsafe { plane.GetContiguousLength() }.map_err(|error| {
+            RecorderError::capture(format!("Failed to measure the encoder texture: {error}"))
+        })?;
+        unsafe {
+            buffer.SetCurrentLength(length).map_err(|error| {
+                RecorderError::capture(format!("Failed to size the encoder buffer: {error}"))
+            })?;
+        }
         let tracked = unsafe { MFCreateTrackedSample() }.map_err(|error| {
             RecorderError::capture(format!("Failed to create tracked video sample: {error}"))
         })?;
@@ -1888,6 +1912,8 @@ impl MediaFoundationEncoder {
         if !self.mf_started {
             return;
         }
+        self.release_callbacks.clear();
+        self.textures.clear();
         unsafe {
             let _ = MFShutdown();
         }

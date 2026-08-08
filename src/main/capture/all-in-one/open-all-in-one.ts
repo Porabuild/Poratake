@@ -1,7 +1,9 @@
 import { daemon } from '@/main/daemon';
 import type { AspectRatio } from '@/types/aspect-ratio';
+import { setOverlayToolbar } from '@/main/capture/area-overlay';
 import { setAreaSelectorAspectRatio } from '@/main/capture/area-selector';
 import { isFeatureSupported } from '@/main/system/capabilities';
+import { isWindows } from '@/main/utils/platform';
 
 let currentAreaSelection: {
   x: number;
@@ -120,6 +122,11 @@ export async function showAllInOneControl(area?: {
   height: number;
 }): Promise<void> {
   currentAreaSelection = area || null;
+
+  if (isWindows) {
+    return;
+  }
+
   setupEventListener();
 
   const recordingEnabled = isFeatureSupported('recording');
@@ -153,6 +160,10 @@ export async function updateAllInOnePosition(area: {
 }): Promise<void> {
   currentAreaSelection = area;
 
+  if (isWindows) {
+    return;
+  }
+
   const position = calculateCenteredPosition(
     area,
     isFeatureSupported('recording')
@@ -172,6 +183,12 @@ export async function updateAllInOnePosition(area: {
 
 export async function hideAllInOneControl(): Promise<void> {
   cleanupEventListener();
+
+  if (isWindows) {
+    setOverlayToolbar(null);
+    currentAreaSelection = null;
+    return;
+  }
 
   try {
     await daemon.call('all-in-one', 'hide');

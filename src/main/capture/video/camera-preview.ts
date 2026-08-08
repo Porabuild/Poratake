@@ -32,6 +32,7 @@ export async function showCameraPreview(
       deviceId: settings.selectedDeviceId,
       deviceName: settings.selectedDeviceName,
       resolution: settings.resolution || '720p',
+      flipped: settings.flipped ?? false,
       x: position?.x,
       y: position?.y,
     });
@@ -64,6 +65,7 @@ export function updateCameraPreview(settings: CameraSettings): void {
     deviceId: settings.selectedDeviceId,
     deviceName: settings.selectedDeviceName,
     resolution: settings.resolution,
+    flipped: settings.flipped ?? false,
   };
 
   if (settings.position) {

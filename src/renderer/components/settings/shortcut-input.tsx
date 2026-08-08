@@ -2,7 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
-import { formatAccelerator } from '@/renderer/utils/shortcuts';
+import {
+  acceleratorKeyFromCode,
+  formatAccelerator,
+} from '@/renderer/utils/shortcuts';
 
 interface ShortcutInputProps {
   value: string;
@@ -21,6 +24,25 @@ function formatShortcut(shortcut: string, singleKey = false): string {
   return formatAccelerator(shortcut, ' ');
 }
 
+const MODIFIER_KEYS = ['META', 'CONTROL', 'SHIFT', 'ALT', 'ALTGRAPH'];
+
+function eventKeyToAccelerator(key: string): string {
+  switch (key) {
+    case ' ':
+      return 'Space';
+    case 'ARROWUP':
+      return 'Up';
+    case 'ARROWDOWN':
+      return 'Down';
+    case 'ARROWLEFT':
+      return 'Left';
+    case 'ARROWRIGHT':
+      return 'Right';
+    default:
+      return key;
+  }
+}
+
 function eventToAccelerator(e: KeyboardEvent): string {
   const parts: string[] = [];
 
@@ -32,22 +54,8 @@ function eventToAccelerator(e: KeyboardEvent): string {
   if (e.altKey) parts.push('Alt');
 
   const key = e.key.toUpperCase();
-  if (!['META', 'CONTROL', 'SHIFT', 'ALT'].includes(key)) {
-    if (key.length === 1) {
-      parts.push(key);
-    } else if (key === ' ') {
-      parts.push('Space');
-    } else if (key === 'ARROWUP') {
-      parts.push('Up');
-    } else if (key === 'ARROWDOWN') {
-      parts.push('Down');
-    } else if (key === 'ARROWLEFT') {
-      parts.push('Left');
-    } else if (key === 'ARROWRIGHT') {
-      parts.push('Right');
-    } else {
-      parts.push(key);
-    }
+  if (!MODIFIER_KEYS.includes(key)) {
+    parts.push(acceleratorKeyFromCode(e.code) ?? eventKeyToAccelerator(key));
   }
 
   return parts.join('+');

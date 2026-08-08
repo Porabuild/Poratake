@@ -13,6 +13,14 @@ import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env.ts';
 import { updateHistoryItemByPath, getHistoryItemByPath } from '@/main/history';
 import { registerDockWindow } from '@/main/utils/dock';
+import {
+  titleBarWindowOptions,
+  trackTitleBarTheme,
+} from '@/main/utils/title-bar';
+import {
+  getStoredWindowSize,
+  trackWindowSize,
+} from '@/main/utils/window-state';
 import type { ImageLayer } from '@/types/editor.ts';
 import type { EditorState } from '@/types/history.ts';
 import type { MultiImageAttachEdge } from '@/types/settings.ts';
@@ -56,6 +64,8 @@ export function getImageDimensions(imagePath: string): {
   };
 }
 
+const WINDOW_STATE_ID = 'screenshot-editor';
+
 function calculateWindowSize(imgWidth: number, imgHeight: number) {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width: screenWidth, height: screenHeight } =
@@ -78,6 +88,12 @@ function calculateWindowSize(imgWidth: number, imgHeight: number) {
 
     windowWidth = Math.floor(imgWidth * scale);
     windowHeight = Math.floor(imgHeight * scale) + titleBarHeight;
+  }
+
+  const storedSize = getStoredWindowSize(WINDOW_STATE_ID);
+  if (storedSize) {
+    windowWidth = Math.min(storedSize.width, maxWidth);
+    windowHeight = Math.min(storedSize.height, maxHeight);
   }
 
   windowWidth = Math.max(windowWidth, minWidth);
@@ -129,13 +145,15 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
       devTools: isDev,
     },
     alwaysOnTop: false,
-    titleBarStyle: 'hiddenInset',
-    frame: true,
+    ...titleBarWindowOptions(),
     x: Math.floor((screenWidth - windowWidth) / 2) + positionOffset,
     y: Math.floor((screenHeight - windowHeight) / 2) + positionOffset,
     show: false,
     backgroundColor: '#1e1e1e',
   });
+
+  trackTitleBarTheme(newWindow);
+  trackWindowSize(WINDOW_STATE_ID, newWindow);
 
   const webContentsId = newWindow.webContents.id;
 

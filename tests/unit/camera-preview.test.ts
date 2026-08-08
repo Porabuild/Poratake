@@ -35,6 +35,7 @@ const sampleSettings = {
   selectedDeviceName: 'FaceTime HD',
   resolution: '1080p',
   position: { x: 100, y: 200 },
+  flipped: true,
 };
 
 describe('camera-preview', () => {
@@ -61,7 +62,7 @@ describe('camera-preview', () => {
     expect(mockDaemonCall).toHaveBeenCalledWith(
       'camera-preview',
       'show',
-      expect.objectContaining({ deviceId: 'cam-1' })
+      expect.objectContaining({ deviceId: 'cam-1', flipped: true })
     );
     expect(m.isCameraPreviewVisible()).toBe(true);
   });
@@ -100,7 +101,7 @@ describe('camera-preview', () => {
     expect(mockDaemonCall).toHaveBeenCalledWith(
       'camera-preview',
       'update',
-      expect.objectContaining({ x: 100, y: 200 })
+      expect.objectContaining({ x: 100, y: 200, flipped: true })
     );
   });
 

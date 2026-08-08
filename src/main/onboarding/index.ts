@@ -1,7 +1,11 @@
-import { BrowserWindow, ipcMain, nativeTheme, screen, shell } from 'electron';
+import { BrowserWindow, ipcMain, screen, shell } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
-import { isMac } from '@/main/utils/platform';
+import {
+  titleBarColors,
+  titleBarWindowOptions,
+  trackTitleBarTheme,
+} from '@/main/utils/title-bar';
 import {
   markOnboardingCompleted,
   markOnboardingSkipped,
@@ -9,17 +13,6 @@ import {
 } from '@/main/settings';
 
 const TITLE_BAR_HEIGHT = 32;
-
-/**
- * Resolved values of the `--background` / `--foreground` tokens in
- * src/renderer/styles/base.css, so the title bar and its window-control
- * buttons render on the same color as the page underneath.
- */
-function titleBarColors(): { color: string; symbolColor: string } {
-  return nativeTheme.shouldUseDarkColors
-    ? { color: '#181818', symbolColor: '#fafafa' }
-    : { color: '#ffffff', symbolColor: '#000000' };
-}
 
 let onboardingWindow: BrowserWindow | null = null;
 let onCompletedCallback: (() => Promise<void>) | null = null;
@@ -47,21 +40,14 @@ export function createOnboardingWindow(): BrowserWindow {
     maximizable: false,
     fullscreenable: false,
     show: false,
-    ...(isMac
-      ? {
-          titleBarStyle: 'hiddenInset' as const,
-          trafficLightPosition: { x: 16, y: 18 },
-        }
-      : {
-          titleBarStyle: 'hidden' as const,
-          titleBarOverlay: {
-            ...titleBarColors(),
-            height: TITLE_BAR_HEIGHT,
-          },
-        }),
+    ...titleBarWindowOptions({
+      height: TITLE_BAR_HEIGHT,
+      surface: 'background',
+      trafficLightPosition: { x: 16, y: 18 },
+    }),
     x: Math.floor((screenWidth - windowWidth) / 2),
     y: Math.floor((screenHeight - windowHeight) / 2),
-    backgroundColor: titleBarColors().color,
+    backgroundColor: titleBarColors('background').color,
     title: 'Setup Capty',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -88,24 +74,11 @@ export function createOnboardingWindow(): BrowserWindow {
     onboardingWindow?.show();
   });
 
-  if (!isMac) {
-    // Re-apply on show and on theme changes: the overlay keeps the system
-    // colors otherwise, which leaves a light backplate behind the close button.
-    const applyTitleBarOverlay = () => {
-      if (!onboardingWindow || onboardingWindow.isDestroyed()) return;
-      onboardingWindow.setTitleBarOverlay({
-        ...titleBarColors(),
-        height: TITLE_BAR_HEIGHT,
-      });
-      onboardingWindow.setBackgroundColor(titleBarColors().color);
-    };
-
-    onboardingWindow.once('ready-to-show', applyTitleBarOverlay);
-    nativeTheme.on('updated', applyTitleBarOverlay);
-    onboardingWindow.once('closed', () => {
-      nativeTheme.off('updated', applyTitleBarOverlay);
-    });
-  }
+  trackTitleBarTheme(onboardingWindow, {
+    height: TITLE_BAR_HEIGHT,
+    surface: 'background',
+    syncBackground: true,
+  });
 
   onboardingWindow.on('closed', () => {
     onboardingWindow = null;

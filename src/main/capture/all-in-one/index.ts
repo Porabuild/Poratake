@@ -1,5 +1,6 @@
 import {
   cancelAreaSelection,
+  setAreaSelectorAspectRatio,
   startAreaSelection,
   updateAreaSelection,
   updateAreaSelectionCallbacks,
@@ -21,6 +22,7 @@ import {
 import { prewarmRecorder } from '@/main/capture/video/recorder.ts';
 import { prewarmOverlay } from '@/main/capture/video/overlay.ts';
 import type { AreaSelection } from '@/types/area.ts';
+import type { AreaOverlayToolbarAction } from '@/types/area-overlay.ts';
 import { globalShortcut, screen } from 'electron';
 import { getConfig, updateConfig } from '@/main/settings';
 import { isFeatureSupported } from '@/main/system/capabilities';
@@ -286,6 +288,39 @@ function handleCloseAction(): void {
   hideAllInOneControl();
 }
 
+function handleToolbarAction(action: AreaOverlayToolbarAction): void {
+  switch (action.action) {
+    case 'close':
+      handleCloseAction();
+      break;
+    case 'screenshot':
+      void handleScreenshotAction();
+      break;
+    case 'record':
+      handleRecordAction();
+      break;
+    case 'select-aspect-ratio':
+      void setAreaSelectorAspectRatio({
+        name: action.name,
+        width: action.width,
+        height: action.height,
+      });
+      break;
+    case 'update-size':
+      void handleUpdateSizeAction({
+        width: action.width,
+        height: action.height,
+      });
+      break;
+    case 'size-editor-opened':
+      handleSizeEditorOpened();
+      break;
+    case 'size-editor-closed':
+      handleSizeEditorClosed();
+      break;
+  }
+}
+
 export default async function startAllInOne(): Promise<void> {
   if (!isFeatureSupported('all-in-one')) {
     return;
@@ -325,9 +360,14 @@ export default async function startAllInOne(): Promise<void> {
 
   const selection = await startAreaSelection({
     preset: persistedArea ?? undefined,
+    toolbar: {
+      kind: 'all-in-one',
+      recordingEnabled: isFeatureSupported('recording'),
+    },
     onSelected: handleSelected,
     onUpdate: handleUpdate,
     onCancelled: handleCancelled,
+    onToolbarAction: handleToolbarAction,
   });
 
   if (!selection) {

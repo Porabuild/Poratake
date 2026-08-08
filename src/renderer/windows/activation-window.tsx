@@ -23,10 +23,6 @@ const ERROR_MESSAGES: Record<string, string> = {
     'Unable to connect to license server. Please check your internet.',
 };
 
-function isMacPlatform(): boolean {
-  return window.appPlatform === undefined || window.appPlatform === 'darwin';
-}
-
 export default function ActivationWindow() {
   const [email, setEmail] = useState('');
   const [licenseKey, setLicenseKey] = useState('');
@@ -87,12 +83,10 @@ export default function ActivationWindow() {
 
   return (
     <div className="bg-background flex h-screen flex-col">
-      {isMacPlatform() && (
-        <div
-          className="h-8 w-full flex-none"
-          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-        />
-      )}
+      <div
+        className="h-8 w-full flex-none"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      />
 
       <div className="flex min-h-0 flex-1 flex-col p-6">
         <div className="mb-6 text-center">

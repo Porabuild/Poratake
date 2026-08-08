@@ -15,6 +15,7 @@ const mockDaemonOnEvent = vi.fn();
 const mockDaemonOffEvent = vi.fn();
 const mockSelectAreaWithOverlay = vi.fn();
 const mockReleaseSelection = vi.fn();
+const mockIsFreezeScreenEnabled = vi.fn(() => true);
 
 vi.mock('electron', () => ({
   screen: {
@@ -24,6 +25,10 @@ vi.mock('electron', () => ({
 
 vi.mock('@/main/capture/area-overlay', () => ({
   selectAreaWithOverlay: (...a: unknown[]) => mockSelectAreaWithOverlay(...a),
+}));
+
+vi.mock('@/main/capture/freeze-screen/preference', () => ({
+  isFreezeScreenEnabled: () => mockIsFreezeScreenEnabled(),
 }));
 
 vi.mock('@/main/settings', () => ({
@@ -218,6 +223,7 @@ describe('timer-capture on Windows', () => {
     mockCaptureArea.mockReset();
     mockDaemonCall.mockReset();
     handlers.length = 0;
+    mockIsFreezeScreenEnabled.mockReturnValue(true);
     Object.defineProperty(process, 'platform', { value: 'win32' });
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: false } });
     mockIsSupported.mockReturnValue(true);
@@ -289,6 +295,16 @@ describe('timer-capture on Windows', () => {
 
     expect(mockDaemonCall).not.toHaveBeenCalled();
     expect(mockCaptureArea).not.toHaveBeenCalled();
+  });
+
+  it('follows the freeze screen setting when selecting the area', async () => {
+    mockIsFreezeScreenEnabled.mockReturnValue(false);
+    mockSelectAreaWithOverlay.mockResolvedValue(null);
+
+    const timerCapture = (await import('@/main/capture/timer-capture')).default;
+    await timerCapture();
+
+    expect(mockSelectAreaWithOverlay).toHaveBeenCalledWith({ freeze: false });
   });
 
   it('restores desktop icons after a cancelled selection', async () => {
