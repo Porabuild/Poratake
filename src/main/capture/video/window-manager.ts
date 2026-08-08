@@ -4,6 +4,10 @@ import fs from 'fs';
 import { isDev, devServerUrl } from '@/main/utils/env';
 import { isRecordingProject, getRecordingVideoPath } from './recording-project';
 import { registerDockWindow } from '@/main/utils/dock';
+import {
+  titleBarWindowOptions,
+  trackTitleBarTheme,
+} from '@/main/utils/title-bar';
 
 export interface VideoEditorWindowData {
   window: BrowserWindow;
@@ -88,13 +92,14 @@ export function createVideoEditorWindow(
       webSecurity: false,
     },
     alwaysOnTop: false,
-    titleBarStyle: 'hiddenInset',
-    frame: true,
+    ...titleBarWindowOptions(),
     x: Math.floor((screenWidth - windowWidth) / 2) + positionOffset,
     y: Math.floor((screenHeight - windowHeight) / 2) + positionOffset,
     show: false,
     backgroundColor: '#1e1e1e',
   });
+
+  trackTitleBarTheme(newWindow);
 
   const webContentsId = newWindow.webContents.id;
 

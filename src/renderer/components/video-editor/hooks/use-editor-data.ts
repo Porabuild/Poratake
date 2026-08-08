@@ -15,6 +15,8 @@ import { DEFAULT_AUDIO_STYLE, type AudioStyle } from '@/types/audio';
 import type { VideoMetadata } from '@/types/video';
 import type { SliceController } from './use-editor-history';
 
+export type VideoMetadataStatus = 'loading' | 'ready' | 'unavailable';
+
 interface UseEditorDataProps {
   cursorStyleSlice: SliceController<CursorStyle>;
   cameraStyleSlice: SliceController<CameraStyle>;
@@ -57,6 +59,7 @@ interface UseEditorDataReturn {
   hasEmbeddedAudio: boolean;
   audioPathsLoaded: boolean;
   videoMetadata: VideoMetadata | null;
+  videoMetadataStatus: VideoMetadataStatus;
   restoreState: (state: {
     cursorStyle?: CursorStyle;
     cameraStyle?: CameraStyle;
@@ -88,6 +91,8 @@ export function useEditorData({
   const [videoMetadata, setVideoMetadata] = useState<VideoMetadata | null>(
     null
   );
+  const [videoMetadataStatus, setVideoMetadataStatus] =
+    useState<VideoMetadataStatus>('loading');
 
   useEffect(() => {
     window.ipcRenderer
@@ -177,12 +182,17 @@ export function useEditorData({
     window.ipcRenderer
       .invoke('video-editor:getVideoMetadata')
       .then((metadata: VideoMetadata | null) => {
-        if (metadata) {
+        if (metadata && metadata.duration > 0) {
           setVideoMetadata(metadata);
+          setVideoMetadataStatus('ready');
+          return;
         }
+        console.error('Video metadata unavailable for this recording');
+        setVideoMetadataStatus('unavailable');
       })
       .catch((err: Error) => {
         console.error('Failed to get video metadata:', err);
+        setVideoMetadataStatus('unavailable');
       });
   }, []);
 
@@ -361,6 +371,7 @@ export function useEditorData({
     hasEmbeddedAudio,
     audioPathsLoaded,
     videoMetadata,
+    videoMetadataStatus,
     restoreState,
   };
 }

@@ -1,6 +1,7 @@
 import type { Segment, VideoToTimelineResult } from './types';
 import type { DrawingSegment } from '@/types/drawing';
 import type { ZoomSegment } from '@/types/zoom';
+import { PROJECT_EXTENSION } from '@/types/video';
 
 interface TimelineRange {
   startTime: number;
@@ -33,6 +34,35 @@ export interface AdjustedTimelineRangeSlices {
 export interface SegmentBoundaryTransition {
   isFinalSegment: boolean;
   nextSegmentIndex: number | null;
+}
+
+const PATH_SEPARATORS = /[/\\]/;
+
+function lastSeparatorIndex(filePath: string): number {
+  return Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+}
+
+export function getFileNameFromPath(
+  filePath: string | null | undefined
+): string {
+  if (!filePath) return '';
+  const parts = filePath.split(PATH_SEPARATORS);
+
+  const dirName = parts[parts.length - 2] || '';
+  if (dirName.endsWith(PROJECT_EXTENSION)) {
+    return dirName.slice(0, -PROJECT_EXTENSION.length);
+  }
+
+  const fullName = parts[parts.length - 1] || '';
+  const lastDot = fullName.lastIndexOf('.');
+  return lastDot > 0 ? fullName.substring(0, lastDot) : fullName;
+}
+
+export function getProjectPath(filePath: string | null | undefined): string {
+  if (!filePath) return '';
+
+  const separatorIndex = lastSeparatorIndex(filePath);
+  return separatorIndex > 0 ? filePath.slice(0, separatorIndex) : '';
 }
 
 export function formatTime(seconds: number): string {

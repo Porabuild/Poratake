@@ -113,7 +113,9 @@ describe('Config Management', () => {
 
       // Should have the old settings
       expect(config.general.startOnLogin).toBe(false);
+      expect(config.screenshot.hideDesktopIcons).toBe(false);
       // Should also have new default settings
+      expect(config.screenshot.autoCopyToClipboard).toBe(true);
       expect(config.recording).toBeDefined();
       expect(config.recording.autoZoom).toBe(false);
       expect(config.editor).toBeDefined();

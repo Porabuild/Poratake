@@ -2,13 +2,15 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    CreateFontW, CreateRoundRectRgn, EnumDisplayMonitors, GetMonitorInfoW, SetWindowRgn,
+    FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, HDC, HFONT, HMONITOR,
+    MONITORINFO, MONITORINFOEXW,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, LoadCursorW, RegisterClassExW,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, GetClientRect, LoadCursorW, RegisterClassExW,
     SetWindowsHookExW, UnhookWindowsHookEx, HCURSOR, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT,
     MONITORINFOF_PRIMARY, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WM_KEYDOWN, WM_SYSKEYDOWN, WNDCLASSEXW,
     WNDPROC, WS_POPUP,
@@ -16,9 +18,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
 
+const CLEARTYPE_QUALITY: u8 = 5;
+
 pub struct MonitorEntry {
     pub handle: isize,
     pub rect: RECT,
+    pub work_rect: RECT,
     pub is_primary: bool,
     pub device: String,
     pub device_number: i32,
@@ -34,6 +39,65 @@ pub fn rect_height(rect: &RECT) -> i32 {
 
 pub fn to_wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+pub fn scale_for_dpi(value: i32, dpi: u32) -> i32 {
+    ((value as i64 * dpi.max(96) as i64) / 96) as i32
+}
+
+pub fn point_from_lparam(lparam: LPARAM) -> POINT {
+    let value = lparam.0 as u32;
+    POINT {
+        x: (value as u16 as i16) as i32,
+        y: ((value >> 16) as u16 as i16) as i32,
+    }
+}
+
+pub fn rects_intersect(first: &RECT, second: &RECT) -> bool {
+    first.left < second.right
+        && first.right > second.left
+        && first.top < second.bottom
+        && first.bottom > second.top
+}
+
+pub fn create_ui_font(dpi: u32, point_size: i32, weight: i32) -> HFONT {
+    let face = to_wide("Segoe UI");
+
+    unsafe {
+        CreateFontW(
+            -scale_for_dpi(point_size, dpi),
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            FONT_CHARSET(0),
+            FONT_OUTPUT_PRECISION(0),
+            FONT_CLIP_PRECISION(0),
+            FONT_QUALITY(CLEARTYPE_QUALITY),
+            0,
+            PCWSTR(face.as_ptr()),
+        )
+    }
+}
+
+pub fn apply_round_region(window: HWND, radius: i32) {
+    let mut client = RECT::default();
+
+    unsafe {
+        let _ = GetClientRect(window, &mut client);
+        let region = CreateRoundRectRgn(
+            0,
+            0,
+            client.right + 1,
+            client.bottom + 1,
+            radius * 2,
+            radius * 2,
+        );
+        let _ = SetWindowRgn(window, Some(region), true);
+    }
 }
 
 pub fn monitors() -> Vec<MonitorEntry> {
@@ -70,6 +134,7 @@ pub fn monitors() -> Vec<MonitorEntry> {
             entries.push(MonitorEntry {
                 handle: monitor.0 as isize,
                 rect: info.monitorInfo.rcMonitor,
+                work_rect: info.monitorInfo.rcWork,
                 is_primary: (info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
                 device,
                 device_number,

@@ -94,12 +94,6 @@ function getIconsDir(): string {
   return path.join(app.getAppPath(), 'src/main/menu/icons');
 }
 
-/**
- * The glyphs ship as black-on-transparent macOS template images, which AppKit
- * recolors to the menu foreground for us. Windows and Linux ignore the template
- * flag and draw the source pixels as-is, leaving black glyphs on a dark menu, so
- * recolor them here to match the menu text.
- */
 function tintToMenuForeground(icon: NativeImage): NativeImage {
   if (!nativeTheme.shouldUseDarkColors) {
     return icon;
@@ -108,7 +102,6 @@ function tintToMenuForeground(icon: NativeImage): NativeImage {
   const { width, height } = icon.getSize();
   const bitmap = icon.toBitmap();
 
-  // BGRA with premultiplied alpha, so white at alpha `a` is (a, a, a, a).
   for (let i = 0; i < bitmap.length; i += 4) {
     const alpha = bitmap[i + 3];
     bitmap[i] = alpha;
@@ -502,8 +495,6 @@ export const init = async () => {
 
   tray.setContextMenu(buildContextMenu());
 
-  // macOS re-tints template images itself; elsewhere the glyphs are baked to the
-  // current theme, so they have to be rebuilt when the user switches light/dark.
   if (!isMac && !isThemeListenerAttached) {
     isThemeListenerAttached = true;
     nativeTheme.on('updated', () => {

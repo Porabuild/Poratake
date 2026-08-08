@@ -31,8 +31,14 @@ export const DEFAULT_SAVE_LOCATIONS_CONFIG: SaveLocationsConfig = {
   video: '',
 };
 
+export type PreviewCorner =
+  'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
 export interface PreviewConfig {
   displayId: number | null;
+  corner: PreviewCorner;
+  autoDismiss: boolean;
+  autoDismissSeconds: number;
 }
 
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
@@ -43,6 +49,9 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
 
 export const DEFAULT_PREVIEW_CONFIG: PreviewConfig = {
   displayId: null,
+  corner: 'bottom-right',
+  autoDismiss: true,
+  autoDismissSeconds: 10,
 };
 
 export type ScreenshotFormat = 'png' | 'jpeg';
@@ -178,6 +187,17 @@ export interface EditorShortcuts {
 
 export const DEFAULT_UPLOAD_TO_CLOUD_SHORTCUT = 'CommandOrControl+Shift+U';
 
+function getRuntimePlatform(): NodeJS.Platform | undefined {
+  if (typeof process !== 'undefined' && process.platform) {
+    return process.platform;
+  }
+
+  return typeof window === 'undefined' ? undefined : window.appPlatform;
+}
+
+export const DEFAULT_GLOBAL_SHORTCUT_MODIFIERS =
+  getRuntimePlatform() === 'win32' ? 'Alt+Shift' : 'CommandOrControl+Shift';
+
 export interface EditorActionShortcuts {
   uploadToCloud: string;
 }
@@ -206,6 +226,7 @@ export interface SettingsConfig {
     closeOnCopy: boolean;
     closeOnSave: boolean;
     captureToClipboard: boolean;
+    autoCopyToClipboard: boolean;
     showPreview: boolean;
     hideDesktopIcons: boolean;
     freezeScreen: boolean;
@@ -388,17 +409,18 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
     closeOnCopy: false,
     closeOnSave: false,
     captureToClipboard: false,
+    autoCopyToClipboard: true,
     showPreview: true,
     hideDesktopIcons: true,
-    freezeScreen: false,
+    freezeScreen: true,
     format: 'png',
     multiImageAttachEdge: 'right',
   },
   shortcuts: {
     screenshot: {
-      area: 'CommandOrControl+Shift+4',
-      window: 'CommandOrControl+Shift+5',
-      screen: 'CommandOrControl+Shift+3',
+      area: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+4`,
+      window: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+5`,
+      screen: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+3`,
     },
     captureText: '',
     scanQRCode: '',

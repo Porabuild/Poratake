@@ -1,5 +1,10 @@
 import { Minus, Plus } from 'lucide-react';
 
+export const MIN_ZOOM = 0.25;
+export const MAX_ZOOM = 4;
+export const MAX_FIT_ZOOM = 2;
+export const ZOOM_STEP = 0.1;
+
 interface ZoomControlProps {
   zoom: number;
   onZoomIn: () => void;
@@ -23,7 +28,7 @@ export default function ZoomControl({
       <button
         onClick={onZoomOut}
         className="hover:bg-accent flex size-7 items-center justify-center rounded transition-colors disabled:opacity-50"
-        disabled={zoom <= 0.25}
+        disabled={zoom <= MIN_ZOOM}
         title="Zoom Out"
       >
         <Minus className="size-4" />
@@ -38,7 +43,7 @@ export default function ZoomControl({
       <button
         onClick={onZoomIn}
         className="hover:bg-accent flex size-7 items-center justify-center rounded transition-colors disabled:opacity-50"
-        disabled={zoom >= 4}
+        disabled={zoom >= MAX_ZOOM}
         title="Zoom In"
       >
         <Plus className="size-4" />

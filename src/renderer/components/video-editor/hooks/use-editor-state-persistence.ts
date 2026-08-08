@@ -3,6 +3,7 @@ import type {
   VideoEditorState,
   ExportSettings,
 } from '@/types/video-editor-state';
+import { EDITOR_STATE_VERSION } from '@/types/video-editor-state';
 import type { RecordingType } from '@/types/video';
 import type { CursorStyle } from '@/types/cursor';
 import type { CameraStyle } from '@/types/camera';
@@ -105,7 +106,7 @@ export function useEditorStatePersistence({
     isSavingRef.current = true;
 
     const state: VideoEditorState = {
-      version: 1,
+      version: EDITOR_STATE_VERSION,
       savedAt: new Date().toISOString(),
       recordingType: recordingTypeRef.current,
       segments: values.segments,

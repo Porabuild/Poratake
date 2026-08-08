@@ -1,7 +1,9 @@
+mod com;
 mod desktop_frame;
 mod display_color;
 mod modules;
 mod overlay;
+mod panel;
 mod protocol;
 mod router;
 mod ui;
@@ -13,6 +15,7 @@ use modules::desktop_helper::DesktopHelperModule;
 use modules::desktop_wallpaper::DesktopWallpaperModule;
 use modules::display_selector::DisplaySelectorModule;
 use modules::freeze_screen::FreezeScreenModule;
+use modules::media_devices::MediaDevicesModule;
 use modules::ocr::OcrModule;
 use modules::print::PrintModule;
 use modules::qrcode::QrCodeModule;
@@ -46,6 +49,7 @@ fn main() {
     router.register(Box::new(RecordingOverlayModule::new()));
     router.register(Box::new(RecordingControlModule::new()));
     router.register(Box::new(CameraPreviewModule::new()));
+    router.register(Box::new(MediaDevicesModule::new()));
     router.register(Box::new(ScreenRecorderModule::new()));
     router.register(Box::new(ScrollCaptureModule::new()));
     router.register(Box::new(ScreenshotModule));

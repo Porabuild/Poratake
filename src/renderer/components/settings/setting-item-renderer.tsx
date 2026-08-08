@@ -29,6 +29,8 @@ import {
 } from 'lucide-react';
 import ShortcutInput from './shortcut-input';
 import CaptyCloudAccess from './capty-cloud-access';
+import MicrophoneDeviceSetting from './devices/microphone-device-setting';
+import CameraDeviceSetting from './devices/camera-device-setting';
 import type { SettingsItem } from './settings-registry';
 import type { SettingsConfig, StorageConfig } from '@/types/settings';
 import { DEFAULT_STORAGE_CONFIG } from '@/types/settings';
@@ -444,6 +446,14 @@ export default function SettingItemRenderer({
 
   if (item.type === 'rest-headers') {
     return <RestHeadersControl settings={settings} onUpdate={onUpdate} />;
+  }
+
+  if (item.type === 'microphone-device') {
+    return <MicrophoneDeviceSetting settings={settings} onUpdate={onUpdate} />;
+  }
+
+  if (item.type === 'camera-device') {
+    return <CameraDeviceSetting settings={settings} onUpdate={onUpdate} />;
   }
 
   const handleSwitchChange = async (checked: boolean) => {

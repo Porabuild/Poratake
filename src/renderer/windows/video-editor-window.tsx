@@ -38,7 +38,7 @@ import {
   MAX_PIXELS_PER_SECOND,
 } from '@/renderer/components/video-editor';
 import type { VideoEditorSidebarShortcuts } from '@/types/settings';
-import { Film, PenLine, ZoomIn } from 'lucide-react';
+import { Film, PenLine, TriangleAlert, ZoomIn } from 'lucide-react';
 import { SOURCE_ICONS } from '@/types/music';
 import type { MusicTrack as MusicTrackType } from '@/types/music';
 import {
@@ -51,51 +51,24 @@ import type {
   Segment,
   SidebarTab,
 } from '@/renderer/components/video-editor';
-import {
-  PROJECT_EXTENSION,
-  type VideoExportOptions,
-  type ProjectRenameResult,
-} from '@/types/video';
+import type { VideoExportOptions, ProjectRenameResult } from '@/types/video';
 import {
   hasWallpaperEffect,
   DEFAULT_VIDEO_WALLPAPER,
   IOS_DEVICE_DEFAULT_WALLPAPER,
 } from '@/types/video-wallpaper';
 import { SVG_WALLPAPER_PRESETS } from '@/renderer/hooks/useWallpaperState';
-import { adjustTimelineRangeSlices } from '@/renderer/components/video-editor/utils';
+import {
+  adjustTimelineRangeSlices,
+  getFileNameFromPath,
+  getProjectPath,
+} from '@/renderer/components/video-editor/utils';
 
 interface VideoEditorWindowProps {
   params: {
     filePath: string;
   };
 }
-
-const getFileNameFromPath = (filePath: string | null | undefined) => {
-  if (!filePath) return '';
-  const parts = filePath.split('/');
-
-  const dirName = parts[parts.length - 2] || '';
-  if (dirName.endsWith(PROJECT_EXTENSION)) {
-    return dirName.slice(0, -PROJECT_EXTENSION.length);
-  }
-
-  const fullName = parts[parts.length - 1] || '';
-  const lastDot = fullName.lastIndexOf('.');
-  return lastDot > 0 ? fullName.substring(0, lastDot) : fullName;
-};
-
-const getProjectPath = (filePath: string | null | undefined) => {
-  if (!filePath) return '';
-  const parts = filePath.split('/');
-
-  const dirName = parts[parts.length - 2] || '';
-  if (dirName.endsWith(PROJECT_EXTENSION)) {
-    return parts.slice(0, -1).join('/');
-  }
-
-  parts.pop();
-  return parts.join('/');
-};
 
 export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const [filePath, setFilePath] = useState(params.filePath);
@@ -747,6 +720,23 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const isEditorReady = isStateLoaded && segments.length > 0;
 
   if (!isEditorReady) {
+    if (editorData.videoMetadataStatus === 'unavailable') {
+      return (
+        <div className="bg-background flex h-screen w-full flex-col items-center justify-center gap-3 px-10 text-center select-none">
+          <TriangleAlert className="text-muted-foreground size-8" />
+          <p className="text-sm font-medium">Could not read this recording</p>
+          <p className="text-muted-foreground max-w-md text-xs">
+            Capty could not determine the video duration, so the editor cannot
+            open. The recording may be corrupted, or the bundled FFmpeg binary
+            may be missing from this build.
+          </p>
+          <p className="text-muted-foreground max-w-md font-mono text-xs break-all">
+            {filePath}
+          </p>
+        </div>
+      );
+    }
+
     return null;
   }
 

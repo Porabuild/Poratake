@@ -15,6 +15,7 @@ import {
 import type { PermissionsState } from '@/types/permissions';
 import type { SettingsConfig } from '@/types/settings';
 import ShortcutInput from '@/renderer/components/settings/shortcut-input';
+import { isMacPlatform } from '@/renderer/utils/platform';
 
 interface PermissionItemProps {
   title: string;
@@ -95,10 +96,6 @@ function StepIndicator({ currentStep, totalSteps }: StepIndicatorProps) {
 
 type OnboardingStep =
   'welcome' | 'disable-macos-shortcuts' | 'shortcuts' | 'permissions';
-
-function isMacPlatform(): boolean {
-  return window.appPlatform === undefined || window.appPlatform === 'darwin';
-}
 
 function WindowsKeyIcon({ className }: { className?: string }) {
   return (

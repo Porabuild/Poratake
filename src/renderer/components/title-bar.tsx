@@ -1,6 +1,9 @@
 import Toolbar from '@/renderer/components/editor/toolbar';
 import ToolOptions from '@/renderer/components/editor/tool-options';
 import ColorPicker from '@/renderer/components/editor/color-picker';
+import WindowControlsSpacer from '@/renderer/components/window-controls-spacer';
+import { isMacPlatform } from '@/renderer/utils/platform';
+import { cn } from '@/renderer/lib/utils';
 import type {
   ArrowStyle,
   HighlightColor,
@@ -130,10 +133,14 @@ export default function TitleBar({
     : '';
 
   return (
-    <div className="drag-region bg-card border-border fixed top-0 right-0 left-0 z-9999 flex h-10 w-full flex-none items-center justify-between border-b px-2">
-      <div className="flex w-[120px] items-center"></div>
-      <div className="flex items-center gap-1"></div>
-      <div className="flex items-center justify-end gap-1">
+    <div className="drag-region bg-card fixed top-0 right-0 left-0 z-9999 flex h-10 w-full flex-none items-center px-2">
+      {isMacPlatform() && <div className="w-[120px] flex-none" />}
+      <div
+        className={cn(
+          'flex items-center gap-1',
+          isMacPlatform() && 'ml-auto justify-end'
+        )}
+      >
         <ToolOptions
           activeTool={activeTool}
           strokeWidth={strokeWidth}
@@ -236,6 +243,7 @@ export default function TitleBar({
           <TooltipContent>Pin Screenshot</TooltipContent>
         </Tooltip>
       </div>
+      <WindowControlsSpacer />
     </div>
   );
 }

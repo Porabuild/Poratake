@@ -58,8 +58,10 @@ class MockBrowserWindow {
     this.windowHandlers[event].push(cb);
   });
 
-  constructor(_opts: unknown) {
-    void _opts;
+  options: { x: number; y: number; width: number; height: number };
+
+  constructor(opts: { x: number; y: number; width: number; height: number }) {
+    this.options = opts;
     browserWindows.push(this);
   }
 }
@@ -141,9 +143,7 @@ vi.mock('@/main/capture/capture-preview/video-export', () => ({
 }));
 
 vi.mock('@/main/utils/window-animation', () => ({
-  animateWindowIn: vi.fn(),
   animateWindowMove: vi.fn(),
-  getInitialBounds: () => ({ x: 0, y: 0, width: 200, height: 140 }),
 }));
 
 describe('capture-preview index', () => {
@@ -165,6 +165,58 @@ describe('capture-preview index', () => {
     expect(browserWindows.length).toBe(1);
   });
 
+  describe('preview corner', () => {
+    const corners = [
+      {
+        corner: 'bottom-right',
+        first: { x: 1696, y: 916 },
+        second: { x: 1696, y: 764 },
+      },
+      {
+        corner: 'bottom-left',
+        first: { x: 24, y: 916 },
+        second: { x: 24, y: 764 },
+      },
+      {
+        corner: 'top-right',
+        first: { x: 1696, y: 24 },
+        second: { x: 1696, y: 176 },
+      },
+      {
+        corner: 'top-left',
+        first: { x: 24, y: 24 },
+        second: { x: 24, y: 176 },
+      },
+    ];
+
+    it.each(corners)(
+      'anchors previews to the $corner corner and stacks away from it',
+      async ({ corner, first, second }) => {
+        mockGetConfig.mockReturnValue({ preview: { displayId: 1, corner } });
+        const { showCapturePreview } =
+          await import('@/main/capture/capture-preview');
+
+        await showCapturePreview('/p/a.png', 'screenshot');
+        await showCapturePreview('/p/b.png', 'screenshot');
+
+        expect(browserWindows[0].options).toMatchObject(first);
+        expect(browserWindows[1].options).toMatchObject(second);
+      }
+    );
+
+    it('falls back to the bottom-right corner for an unknown value', async () => {
+      mockGetConfig.mockReturnValue({
+        preview: { displayId: 1, corner: 'middle' },
+      });
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+
+      await showCapturePreview('/p/a.png', 'screenshot');
+
+      expect(browserWindows[0].options).toMatchObject({ x: 1696, y: 916 });
+    });
+  });
+
   it('closeAllPreviewWindows closes all windows', async () => {
     const m = await import('@/main/capture/capture-preview');
     await m.showCapturePreview('/p/img.png', 'screenshot');
@@ -178,6 +230,49 @@ describe('capture-preview index', () => {
       const { registerCapturePreviewIpc } =
         await import('@/main/capture/capture-preview');
       registerCapturePreviewIpc();
+    });
+
+    it('keeps the preview hidden until the renderer has painted it', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/img.png', 'screenshot');
+
+      expect(browserWindows[0].showInactive).not.toHaveBeenCalled();
+
+      const id = browserWindows[0].webContents.id;
+      ipcOn['capture-preview:ready']({ sender: { id } });
+
+      expect(browserWindows[0].showInactive).toHaveBeenCalledTimes(1);
+      expect(browserWindows[0].setBounds).not.toHaveBeenCalled();
+    });
+
+    it('reveals the preview only once', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/img.png', 'screenshot');
+
+      const id = browserWindows[0].webContents.id;
+      ipcOn['capture-preview:ready']({ sender: { id } });
+      ipcOn['capture-preview:ready']({ sender: { id } });
+
+      expect(browserWindows[0].showInactive).toHaveBeenCalledTimes(1);
+    });
+
+    it('reveals the preview even when the renderer never reports back', async () => {
+      vi.useFakeTimers();
+      try {
+        const { showCapturePreview } =
+          await import('@/main/capture/capture-preview');
+        await showCapturePreview('/p/img.png', 'screenshot');
+
+        expect(browserWindows[0].showInactive).not.toHaveBeenCalled();
+
+        vi.advanceTimersByTime(1500);
+
+        expect(browserWindows[0].showInactive).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('close closes the matching preview window', async () => {

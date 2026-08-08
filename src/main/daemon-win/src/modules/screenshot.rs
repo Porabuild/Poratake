@@ -2,11 +2,14 @@ use crate::desktop_frame::{
     capture_display_frame, capture_rect, capture_window, clear_frozen, crop, frozen_rect,
     retain_frozen, write_image, DesktopFrame,
 };
-use crate::protocol::{param_bool, param_i32, param_i64, param_str, respond_error, respond_success, Request};
+use crate::protocol::{
+    param_bool, param_i32, param_i64, param_str, respond_error, respond_success, Request,
+};
 use crate::router::{method_not_found, Module, Reply};
 use serde_json::json;
 use std::ffi::c_void;
 use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Graphics::Dwm::DwmFlush;
 
 pub struct ScreenshotModule;
 
@@ -51,6 +54,7 @@ fn capture_area(request: &Request) -> Reply {
         }
 
         if !retain {
+            unsafe { DwmFlush() }.map_err(|error| error.to_string())?;
             return capture_rect(bounds);
         }
 

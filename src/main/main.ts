@@ -24,6 +24,7 @@ import * as update from '@/main/update/index.ts';
 import * as permissions from '@/main/system/permissions.ts';
 import * as cloud from '@/main/cloud/index.ts';
 import * as capture from '@/main/capture';
+import * as devices from '@/main/devices';
 import * as activation from '@/main/activation';
 import * as onboarding from '@/main/onboarding';
 import * as allInOne from '@/main/capture/all-in-one';
@@ -106,6 +107,7 @@ const initializeModules = async () => {
   onboarding.init();
   permissions.initPermissionsIPC();
   capture.init();
+  devices.init();
   preferences.init();
   cloud.init();
   allInOne.init();

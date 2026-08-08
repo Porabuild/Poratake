@@ -3,8 +3,6 @@ import { selectDisplay, displayFromSelection } from '../display-selector';
 import { selectWindow } from '../window-selector';
 import {
   screen,
-  clipboard,
-  nativeImage,
   ipcMain,
   app,
   dialog,
@@ -21,14 +19,10 @@ import {
   isSupported as isDesktopIconsSupported,
   checkAccessibilityPermission,
 } from '@/main/capture/desktop-icons';
-import {
-  freezeScreen,
-  releaseScreen,
-  isSupported as isFreezeScreenSupported,
-} from '@/main/capture/freeze-screen';
+import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
+import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
 
 import {
-  addToHistory,
   deleteHistoryItem,
   getHistoryItemByPath,
   updateHistoryItemByPath,
@@ -46,8 +40,7 @@ import { EditorState, HistoryItem } from '@/types/history.ts';
 import type { ScreenshotFormat } from '@/types/settings';
 import { openScreenshotFromHistory } from '@/main/capture/screenshot/open-from-history.ts';
 import { createOrShowSettingsWindow } from '@/main/settings';
-import { showCapturePreview } from '@/main/capture/capture-preview';
-import { openScreenshotEditor } from '@/main/capture/screenshot/open-editor';
+import { finalizeCapture } from '@/main/capture/screenshot/finalize';
 import { isMac } from '@/main/utils/platform';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import {
@@ -78,29 +71,6 @@ async function withHiddenDesktopIcons<T>(
   }
 }
 
-async function finalizeScreenshot(screenshotPath: string): Promise<void> {
-  if (!fs.existsSync(screenshotPath)) {
-    return;
-  }
-
-  const config = getConfig();
-  const historyItem = await addToHistory(screenshotPath);
-
-  if (config.screenshot.captureToClipboard) {
-    const imageBuffer = fs.readFileSync(screenshotPath);
-    const image = nativeImage.createFromBuffer(imageBuffer);
-    clipboard.writeImage(image);
-    return;
-  }
-
-  if (config.screenshot.showPreview) {
-    showCapturePreview(screenshotPath, 'screenshot', historyItem?.id);
-    return;
-  }
-
-  openScreenshotEditor(screenshotPath, historyItem?.id);
-}
-
 async function captureScreenWithDisplaySelector(): Promise<void> {
   let display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
 
@@ -129,7 +99,7 @@ async function captureScreenWithDisplaySelector(): Promise<void> {
     return;
   }
 
-  await finalizeScreenshot(screenshotPath);
+  await finalizeCapture(screenshotPath);
 }
 
 async function captureWindowWithSelector(): Promise<void> {
@@ -160,7 +130,7 @@ async function captureWindowWithSelector(): Promise<void> {
     return;
   }
 
-  await finalizeScreenshot(screenshotPath);
+  await finalizeCapture(screenshotPath);
 }
 
 async function captureAreaWithSelector(): Promise<void> {
@@ -173,7 +143,7 @@ async function captureAreaWithSelector(): Promise<void> {
     return;
   }
 
-  await finalizeScreenshot(screenshotPath);
+  await finalizeCapture(screenshotPath);
 }
 
 async function captureScreenMode(): Promise<void> {
@@ -235,7 +205,7 @@ async function captureScreenMode(): Promise<void> {
       return;
     }
 
-    await finalizeScreenshot(screenshotPath);
+    await finalizeCapture(screenshotPath);
   });
 }
 
@@ -283,7 +253,7 @@ async function captureWindowMode(): Promise<void> {
       return;
     }
 
-    await finalizeScreenshot(screenshotPath);
+    await finalizeCapture(screenshotPath);
   });
 }
 
@@ -303,8 +273,7 @@ async function captureAreaMode(): Promise<void> {
     });
   }
 
-  const shouldFreeze =
-    config.screenshot.freezeScreen && isFreezeScreenSupported();
+  const shouldFreeze = isFreezeScreenEnabled();
 
   if (shouldHideIcons) {
     await hideDesktopIcons('capture');
@@ -344,7 +313,7 @@ async function captureAreaMode(): Promise<void> {
         return;
       }
 
-      await finalizeScreenshot(screenshotPath);
+      await finalizeCapture(screenshotPath);
 
       resolve();
     });

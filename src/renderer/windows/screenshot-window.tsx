@@ -3,7 +3,12 @@ import TitleBar from '@/renderer/components/title-bar';
 import EditorCanvas, {
   type EditorCanvasHandle,
 } from '@/renderer/components/editor/editor-canvas';
-import ZoomControl from '@/renderer/components/editor/zoom';
+import ZoomControl, {
+  MAX_FIT_ZOOM,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  ZOOM_STEP,
+} from '@/renderer/components/editor/zoom';
 import { WallpaperSheetContent } from '@/renderer/components/editor/wallpaper';
 import DropZoneOverlay from '@/renderer/components/editor/drop-zone-overlay';
 import CaptureEdgeOverlay from '@/renderer/components/editor/capture-edge-overlay';
@@ -19,6 +24,7 @@ import { useAcceleratorShortcut } from '@/renderer/hooks/use-accelerator-shortcu
 import { useAnnotationClipboard } from '@/renderer/hooks/useAnnotationClipboard';
 import { useContentDimensions } from '@/renderer/hooks/useContentDimensions';
 import { useImageDrop, type DropEdge } from '@/renderer/hooks/useImageDrop';
+import { usePanOnDrag } from '@/renderer/hooks/use-pan-on-drag';
 import {
   renumberAnnotations,
   getNextNumberValue,
@@ -47,6 +53,7 @@ import { DEFAULT_UPLOAD_TO_CLOUD_SHORTCUT } from '@/types/settings';
 import type { CloudUploadState } from '@/types/cloud';
 import type { EditorState } from '@/types/history';
 import { shouldIgnoreGlobalKeyboardShortcuts } from '@/renderer/utils/keyboard';
+import { isMacPlatform } from '@/renderer/utils/platform';
 
 interface ScreenshotWindowProps {
   params: {
@@ -81,6 +88,7 @@ export default function ScreenshotWindow({
   } = params;
   const canvasRef = useRef<EditorCanvasHandle>(null);
   const dropTargetRef = useRef<HTMLDivElement>(null);
+  const pan = usePanOnDrag(dropTargetRef);
   const [image, setImage] = useState<string>('');
   const [imageElement, setImageElement] = useState<HTMLImageElement | null>(
     null
@@ -528,11 +536,11 @@ export default function ScreenshotWindow({
   );
 
   const handleZoomIn = useCallback(() => {
-    setZoom(prev => Math.min(prev + 0.1, 4));
+    setZoom(prev => Math.min(prev + ZOOM_STEP, MAX_ZOOM));
   }, []);
 
   const handleZoomOut = useCallback(() => {
-    setZoom(prev => Math.max(prev - 0.1, 0.25));
+    setZoom(prev => Math.max(prev - ZOOM_STEP, MIN_ZOOM));
   }, []);
 
   const handleZoomReset = useCallback(() => {
@@ -543,8 +551,8 @@ export default function ScreenshotWindow({
     if (!e.metaKey && !e.ctrlKey) return;
 
     e.preventDefault();
-    const zoomDelta = e.deltaY > 0 ? -0.1 : 0.1;
-    setZoom(prev => Math.max(0.25, Math.min(4, prev + zoomDelta)));
+    const zoomDelta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
+    setZoom(prev => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev + zoomDelta)));
   }, []);
 
   const calculateOptimalZoom = useCallback(
@@ -561,9 +569,9 @@ export default function ScreenshotWindow({
 
       const zoomX = availableWidth / totalCanvasWidth;
       const zoomY = availableHeight / totalCanvasHeight;
-      const calculatedZoom = Math.min(zoomX, zoomY, 1);
+      const calculatedZoom = Math.round(Math.min(zoomX, zoomY) * 100) / 100;
 
-      return Math.max(0.25, Math.round(calculatedZoom * 100) / 100);
+      return Math.min(MAX_FIT_ZOOM, Math.max(MIN_ZOOM, calculatedZoom));
     },
     [width, height, totalCanvasWidth, totalCanvasHeight]
   );
@@ -605,6 +613,14 @@ export default function ScreenshotWindow({
     isWallpaperSheetOpen,
     calculateOptimalZoom,
   ]);
+
+  useEffect(() => {
+    const fitToWindow = () =>
+      setZoom(calculateOptimalZoom(isWallpaperSheetOpen));
+
+    window.addEventListener('resize', fitToWindow);
+    return () => window.removeEventListener('resize', fitToWindow);
+  }, [calculateOptimalZoom, isWallpaperSheetOpen]);
 
   const nextNumberValue = useMemo(
     () => getNextNumberValue(annotations, numberStartValue),
@@ -1152,11 +1168,12 @@ export default function ScreenshotWindow({
   }, [handleWheelZoom]);
 
   useEffect(() => {
+    const primaryModifier = isMacPlatform() ? 'Meta' : 'Control';
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Control') setIsMetaHeld(true);
+      if (e.key === primaryModifier) setIsMetaHeld(true);
     };
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'Control') setIsMetaHeld(false);
+      if (e.key === primaryModifier) setIsMetaHeld(false);
     };
     const handleBlur = () => setIsMetaHeld(false);
 
@@ -1284,23 +1301,20 @@ export default function ScreenshotWindow({
         <div
           ref={dropTargetRef}
           className="bg-background relative h-full overflow-auto transition-all duration-300"
+          onMouseDownCapture={pan.onMouseDownCapture}
           style={{
             marginLeft: isWallpaperSheetOpen ? '320px' : '0',
             width: isWallpaperSheetOpen ? 'calc(100% - 320px)' : '100%',
+            cursor: pan.isPanning ? 'grabbing' : undefined,
           }}
         >
           <div
             style={{
               minWidth: '100%',
               minHeight: '100%',
-              width:
-                width && height
-                  ? `${(croppedWidth + wallpaper.inset * 2 + wallpaper.padding * 2) * zoom}px`
-                  : 'auto',
+              width: width && height ? `${totalCanvasWidth * zoom}px` : 'auto',
               height:
-                width && height
-                  ? `${(croppedHeight + wallpaper.inset * 2 + wallpaper.padding * 2) * zoom}px`
-                  : 'auto',
+                width && height ? `${totalCanvasHeight * zoom}px` : 'auto',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',

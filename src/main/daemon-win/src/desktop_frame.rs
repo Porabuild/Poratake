@@ -4,8 +4,9 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::channel;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 use windows::core::{factory, IInspectable, Interface, PCWSTR};
 use windows::Foundation::TypedEventHandler;
@@ -21,8 +22,8 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
-    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{
@@ -59,7 +60,7 @@ pub struct DesktopFrame {
 
 pub fn capture_monitors() -> Vec<DesktopFrame> {
     let entries = monitors();
-    let captured = run_isolated(|| {
+    let captured = run_isolated(CAPTURE_TIMEOUT, || {
         let device = CaptureDevice::create().ok();
         monitors()
             .iter()
@@ -89,7 +90,7 @@ pub fn capture_display_frame(bounds: RECT) -> Result<DesktopFrame, String> {
         .ok_or_else(|| "The capture area is not on a connected display".to_string())?;
     let monitor_bounds = monitor.rect;
 
-    let captured = run_isolated(move || {
+    let captured = run_isolated(CAPTURE_TIMEOUT, move || {
         let device = CaptureDevice::create()?;
         let monitor = monitor_for_rect(monitor_bounds)
             .ok_or_else(|| "The display is no longer connected".to_string())?;
@@ -97,15 +98,13 @@ pub fn capture_display_frame(bounds: RECT) -> Result<DesktopFrame, String> {
     })
     .unwrap_or_else(|| Err("Timed out while capturing the screen".to_string()));
 
-    captured.or_else(|error| {
-        capture_with_gdi(monitor_bounds).ok_or(error)
-    })
+    captured.or_else(|error| capture_with_gdi(monitor_bounds).ok_or(error))
 }
 
 pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
     let handle = window.0 as isize;
 
-    run_isolated(move || {
+    run_isolated(CAPTURE_TIMEOUT, move || {
         let window = HWND(handle as *mut c_void);
         let device = CaptureDevice::create()?;
         let interop = capture_interop()?;
@@ -236,8 +235,7 @@ fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
             .CreateNewFrame(&mut encoded_frame, null_mut())
             .map_err(|error| format!("Failed to create the PNG frame: {error}"))?;
     }
-    let encoded_frame =
-        encoded_frame.ok_or_else(|| "The PNG frame was not created".to_string())?;
+    let encoded_frame = encoded_frame.ok_or_else(|| "The PNG frame was not created".to_string())?;
 
     let mut format = GUID_WICPixelFormat32bppBGRA;
     unsafe {
@@ -311,7 +309,9 @@ impl ImagingApartment {
             return Ok(ImagingApartment { owned: false });
         }
 
-        Err(format!("Failed to initialize the image encoder: {result:?}"))
+        Err(format!(
+            "Failed to initialize the image encoder: {result:?}"
+        ))
     }
 }
 
@@ -338,25 +338,113 @@ fn ensure_multithreaded_apartment() {
     APARTMENT.get_or_init(|| unsafe { CoIncrementMTAUsage() }.is_ok());
 }
 
-fn capture_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+struct CaptureGate {
+    active: Mutex<Option<u64>>,
+    ready: Condvar,
+    next_token: AtomicU64,
 }
 
-fn run_isolated<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+impl CaptureGate {
+    fn acquire(&'static self, token: u64, cancelled: &AtomicBool) -> Option<CapturePermit> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return None;
+            }
+
+            if active.is_none() {
+                *active = Some(token);
+                return Some(CapturePermit { gate: self, token });
+            }
+
+            active = self
+                .ready
+                .wait(active)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
+    fn cancel(&self, token: u64, cancelled: &AtomicBool) {
+        cancelled.store(true, Ordering::Release);
+
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *active == Some(token) {
+            *active = None;
+        }
+        self.ready.notify_all();
+    }
+
+    fn release(&self, token: u64) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *active != Some(token) {
+            return;
+        }
+
+        *active = None;
+        self.ready.notify_all();
+    }
+}
+
+struct CapturePermit {
+    gate: &'static CaptureGate,
+    token: u64,
+}
+
+impl Drop for CapturePermit {
+    fn drop(&mut self) {
+        self.gate.release(self.token);
+    }
+}
+
+fn capture_gate() -> &'static CaptureGate {
+    static GATE: OnceLock<CaptureGate> = OnceLock::new();
+    GATE.get_or_init(|| CaptureGate {
+        active: Mutex::new(None),
+        ready: Condvar::new(),
+        next_token: AtomicU64::new(1),
+    })
+}
+
+fn run_isolated<T: Send + 'static>(
+    timeout: Duration,
+    job: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
     ensure_multithreaded_apartment();
 
+    let gate = capture_gate();
+    let token = gate.next_token.fetch_add(1, Ordering::Relaxed);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
     let (sender, receiver) = channel();
-    let worker = std::thread::Builder::new()
+    std::thread::Builder::new()
         .spawn(move || {
-            let _guard = capture_lock().lock();
+            let Some(_permit) = gate.acquire(token, &worker_cancelled) else {
+                return;
+            };
+            if worker_cancelled.load(Ordering::Acquire) {
+                return;
+            }
             let _ = sender.send(job());
         })
         .ok()?;
 
-    let result = receiver.recv_timeout(CAPTURE_TIMEOUT).ok();
-    drop(worker);
-    result
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => Some(result),
+        Err(_) => {
+            gate.cancel(token, &cancelled);
+            None
+        }
+    }
 }
 
 fn capture_interop() -> Result<IGraphicsCaptureItemInterop, String> {
@@ -368,10 +456,7 @@ fn capture_interop() -> Result<IGraphicsCaptureItemInterop, String> {
         .map_err(|error| format!("Failed to open the capture factory: {error}"))
 }
 
-fn capture_monitor(
-    device: &CaptureDevice,
-    monitor: &MonitorEntry,
-) -> Result<DesktopFrame, String> {
+fn capture_monitor(device: &CaptureDevice, monitor: &MonitorEntry) -> Result<DesktopFrame, String> {
     let interop = capture_interop()?;
     let handle = HMONITOR(monitor.handle as *mut c_void);
     let item = unsafe { interop.CreateForMonitor(handle) }
@@ -402,9 +487,13 @@ fn capture_item(
         Some(_) => DirectXPixelFormat::R16G16B16A16Float,
         None => DirectXPixelFormat::B8G8R8A8UIntNormalized,
     };
-    let pool =
-        Direct3D11CaptureFramePool::CreateFreeThreaded(&device.winrt, format, FRAME_POOL_SIZE, size)
-            .map_err(|error| format!("Failed to create the capture frame pool: {error}"))?;
+    let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+        &device.winrt,
+        format,
+        FRAME_POOL_SIZE,
+        size,
+    )
+    .map_err(|error| format!("Failed to create the capture frame pool: {error}"))?;
     let session = pool
         .CreateCaptureSession(item)
         .map_err(|error| format!("Failed to create the capture session: {error}"))?;
@@ -412,8 +501,8 @@ fn capture_item(
     let _ = session.SetIsBorderRequired(false);
 
     let (sender, receiver) = channel();
-    let handler = TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(
-        move |source, _| {
+    let handler =
+        TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |source, _| {
             let Some(source) = source.as_ref() else {
                 return Ok(());
             };
@@ -421,8 +510,7 @@ fn capture_item(
                 let _ = sender.send(frame);
             }
             Ok(())
-        },
-    );
+        });
     let token = pool
         .FrameArrived(&handler)
         .map_err(|error| format!("Failed to subscribe to captured frames: {error}"))?;
@@ -850,5 +938,65 @@ mod tests {
             }
         )
         .is_none());
+    }
+
+    #[test]
+    fn timed_out_capture_does_not_block_the_next_job() {
+        let (started_sender, started_receiver) = channel();
+        let (release_sender, release_receiver) = channel();
+        let (finished_sender, finished_receiver) = channel();
+
+        let first = std::thread::spawn(move || {
+            run_isolated(Duration::from_millis(500), move || {
+                let _ = started_sender.send(());
+                let _ = release_receiver.recv();
+                let _ = finished_sender.send(());
+                1
+            })
+        });
+
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first capture started");
+        assert_eq!(first.join().expect("first capture caller"), None);
+        assert_eq!(run_isolated(Duration::from_secs(1), || 2), Some(2));
+
+        let _ = release_sender.send(());
+        finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("timed out worker finished");
+    }
+
+    #[test]
+    fn queued_timeout_never_runs_after_the_gate_opens() {
+        let (started_sender, started_receiver) = channel();
+        let (release_sender, release_receiver) = channel();
+        let active = std::thread::spawn(move || {
+            run_isolated(Duration::from_secs(2), move || {
+                let _ = started_sender.send(());
+                let _ = release_receiver.recv();
+                1
+            })
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("active capture started");
+
+        let queued_ran = Arc::new(AtomicBool::new(false));
+        let queued_worker_ran = Arc::clone(&queued_ran);
+        let queued = std::thread::spawn(move || {
+            run_isolated(Duration::from_millis(100), move || {
+                queued_worker_ran.store(true, Ordering::Release);
+                2
+            })
+        });
+        assert_eq!(queued.join().expect("queued capture caller"), None);
+
+        let next = std::thread::spawn(|| run_isolated(Duration::from_secs(1), || 3));
+        let _ = release_sender.send(());
+
+        assert_eq!(active.join().expect("active capture caller"), Some(1));
+        assert_eq!(next.join().expect("next capture caller"), Some(3));
+        assert!(!queued_ran.load(Ordering::Acquire));
     }
 }

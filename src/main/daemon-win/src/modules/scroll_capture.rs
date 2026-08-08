@@ -1,6 +1,13 @@
 use crate::overlay::{
-    add_key_handler, create_popup_window, default_wndproc, ensure_window_class, monitors,
-    remove_key_handler, to_wide,
+    add_key_handler, apply_round_region, create_popup_window, create_ui_font, default_wndproc,
+    ensure_window_class, monitors, point_from_lparam, rects_intersect, remove_key_handler,
+    scale_for_dpi, WM_MOUSELEAVE,
+};
+use crate::panel::{
+    button_at, button_fill, button_rect, button_state, draw_label, draw_pill, paint_buffered,
+    panel_height, panel_width, ACTIVE_BUTTON, BUTTON_TEXT, BUTTON_TEXT_ON_FILL, NEUTRAL_BUTTON,
+    PANEL_ALPHA, PANEL_BUTTON_RADIUS, PANEL_CORNER_RADIUS, PANEL_FONT_SIZE, PANEL_FONT_WEIGHT,
+    PRIMARY_BUTTON,
 };
 use crate::protocol::{param_i32, param_str, respond_error, respond_success, send_event, Request};
 use crate::router::{method_not_found, Module, Reply};
@@ -12,28 +19,31 @@ use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
-    DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GetDC, GetDIBits, InvalidateRect,
-    ReleaseDC, SelectObject, SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    CAPTUREBLT, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, PAINTSTRUCT, SRCCOPY,
-    TRANSPARENT,
+    BeginPaint, BitBlt, CombineRgn, CreateCompatibleBitmap, CreateCompatibleDC, CreateRectRgn,
+    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, FrameRect, GetDC, GetDIBits,
+    InvalidateRect, ReleaseDC, SelectObject, SetWindowRgn, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    CAPTUREBLT, DIB_RGB_COLORS, HFONT, PAINTSTRUCT, RGN_DIFF, SRCCOPY,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT, VK_ESCAPE, VK_RETURN,
+    SendInput, TrackMouseEvent, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE, VK_RETURN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GetCursorPos, IsWindowVisible, KillTimer, SetCursorPos,
-    SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
-    HWND_TOPMOST, LWA_ALPHA, LWA_COLORKEY, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-    SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
+    DestroyWindow, GetClientRect, GetCursorPos, GetWindowRect, IsWindowVisible, KillTimer,
+    LoadCursorW, SetCursorPos, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
+    SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_HAND, LWA_ALPHA, LWA_COLORKEY, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_ERASEBKGND,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const BOUNDARY_CLASS_NAME: &str = "CaptyScrollCaptureBoundary";
 const PANEL_CLASS_NAME: &str = "CaptyScrollCapturePanel";
-const PANEL_WIDTH: i32 = 192;
-const PANEL_HEIGHT: i32 = 48;
+const PANEL_BUTTON_WIDTHS: [i32; 3] = [76, 76, 76];
 const PANEL_GAP: i32 = 16;
+const BOUNDARY_THICKNESS: i32 = 2;
+const COLOR_KEY: COLORREF = COLORREF(0);
+const BOUNDARY_COLOR: COLORREF = COLORREF(0x00FF7A00);
 const AUTO_SCROLL_TIMER_ID: usize = 1;
 const FRAME_OVERLAP_PERCENT: i32 = 30;
 const MAX_DUPLICATE_FRAMES: usize = 3;
@@ -118,6 +128,10 @@ fn logical_height(physical_height: usize, scale_factor: f64) -> usize {
     (physical_height as f64 / scale_factor).ceil() as usize
 }
 
+fn dpi_for_scale_factor(scale_factor: f64) -> u32 {
+    (96.0 * scale_factor).round().max(96.0) as u32
+}
+
 struct CapturedFrame {
     width: usize,
     height: usize,
@@ -184,9 +198,22 @@ impl CaptureState {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PanelButton {
+    Auto,
+    Done,
+    Cancel,
+}
+
+const PANEL_BUTTONS: [PanelButton; 3] = [PanelButton::Auto, PanelButton::Done, PanelButton::Cancel];
+
 struct ScrollUiState {
     boundary: Option<HWND>,
     panel: Option<HWND>,
+    font: Option<HFONT>,
+    dpi: u32,
+    hovered: Option<usize>,
+    pressed: Option<usize>,
     escape_token: Option<usize>,
     enter_token: Option<usize>,
     capture_state: Option<Arc<Mutex<CaptureState>>>,
@@ -196,6 +223,10 @@ thread_local! {
     static UI_STATE: RefCell<ScrollUiState> = RefCell::new(ScrollUiState {
         boundary: None,
         panel: None,
+        font: None,
+        dpi: 96,
+        hovered: None,
+        pressed: None,
         escape_token: None,
         enter_token: None,
         capture_state: None,
@@ -208,12 +239,14 @@ unsafe extern "system" fn boundary_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if message == WM_PAINT {
-        paint_boundary(window);
-        return LRESULT(0);
+    match message {
+        WM_PAINT => {
+            paint_boundary(window);
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1),
+        _ => default_wndproc(window, message, wparam, lparam),
     }
-
-    default_wndproc(window, message, wparam, lparam)
 }
 
 unsafe extern "system" fn panel_wndproc(
@@ -227,8 +260,21 @@ unsafe extern "system" fn panel_wndproc(
             paint_panel(window);
             LRESULT(0)
         }
+        WM_ERASEBKGND => LRESULT(1),
+        WM_MOUSEMOVE => {
+            track_panel_hover(window, point_from_lparam(lparam));
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            clear_panel_hover(window);
+            LRESULT(0)
+        }
         WM_LBUTTONDOWN => {
-            handle_panel_click((lparam.0 as i16) as i32);
+            press_panel_button(window, point_from_lparam(lparam));
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            release_panel_button(window, point_from_lparam(lparam));
             LRESULT(0)
         }
         WM_TIMER => {
@@ -241,89 +287,196 @@ unsafe extern "system" fn panel_wndproc(
     }
 }
 
+fn client_rect(window: HWND) -> RECT {
+    let mut client = RECT::default();
+    unsafe {
+        let _ = GetClientRect(window, &mut client);
+    }
+    client
+}
+
+fn apply_ring_region(window: HWND, thickness: i32) {
+    let client = client_rect(window);
+
+    unsafe {
+        let ring = CreateRectRgn(0, 0, client.right, client.bottom);
+        let hole = CreateRectRgn(
+            thickness,
+            thickness,
+            client.right - thickness,
+            client.bottom - thickness,
+        );
+        CombineRgn(Some(ring), Some(ring), Some(hole), RGN_DIFF);
+        let _ = DeleteObject(hole.into());
+        let _ = SetWindowRgn(window, Some(ring), true);
+    }
+}
+
+fn panel_button_label(index: usize, auto_scrolling: bool) -> &'static str {
+    match PANEL_BUTTONS[index] {
+        PanelButton::Auto if auto_scrolling => "Stop",
+        PanelButton::Auto => "Auto",
+        PanelButton::Done => "Done",
+        PanelButton::Cancel => "Cancel",
+    }
+}
+
+fn panel_button_palette(index: usize, auto_scrolling: bool) -> [COLORREF; 3] {
+    match PANEL_BUTTONS[index] {
+        PanelButton::Auto if auto_scrolling => ACTIVE_BUTTON,
+        PanelButton::Done => PRIMARY_BUTTON,
+        _ => NEUTRAL_BUTTON,
+    }
+}
+
+fn panel_button_text(index: usize, auto_scrolling: bool) -> COLORREF {
+    match PANEL_BUTTONS[index] {
+        PanelButton::Auto if auto_scrolling => BUTTON_TEXT_ON_FILL,
+        PanelButton::Done => BUTTON_TEXT_ON_FILL,
+        _ => BUTTON_TEXT,
+    }
+}
+
+fn is_auto_scrolling() -> bool {
+    UI_STATE
+        .with(|ui| ui.borrow().capture_state.clone())
+        .and_then(|state| state.lock().ok().map(|state| state.is_auto_scrolling))
+        .unwrap_or(false)
+}
+
 fn paint_boundary(window: HWND) {
+    let client = client_rect(window);
+    let thickness = UI_STATE.with(|ui| scale_for_dpi(BOUNDARY_THICKNESS, ui.borrow().dpi));
+
     unsafe {
         let mut paint_struct = PAINTSTRUCT::default();
         let dc = BeginPaint(window, &mut paint_struct);
-        let transparent = CreateSolidBrush(COLORREF(0));
-        let blue = CreateSolidBrush(COLORREF(0x00FF7A00));
+        let transparent = CreateSolidBrush(COLOR_KEY);
+        let accent = CreateSolidBrush(BOUNDARY_COLOR);
         FillRect(dc, &paint_struct.rcPaint, transparent);
 
-        let mut outer = paint_struct.rcPaint;
-        FrameRect(dc, &outer, blue);
-        outer.left += 1;
-        outer.top += 1;
-        outer.right -= 1;
-        outer.bottom -= 1;
-        FrameRect(dc, &outer, blue);
+        let mut edge = client;
+        for _ in 0..thickness.max(1) {
+            if edge.left >= edge.right || edge.top >= edge.bottom {
+                break;
+            }
+            FrameRect(dc, &edge, accent);
+            edge.left += 1;
+            edge.top += 1;
+            edge.right -= 1;
+            edge.bottom -= 1;
+        }
 
         let _ = DeleteObject(transparent.into());
-        let _ = DeleteObject(blue.into());
+        let _ = DeleteObject(accent.into());
         let _ = EndPaint(window, &paint_struct);
     }
 }
 
 fn paint_panel(window: HWND) {
-    let auto_scrolling = UI_STATE.with(|ui| {
-        let state = ui.borrow().capture_state.clone();
-        state
-            .and_then(|state| state.lock().ok().map(|state| state.is_auto_scrolling))
-            .unwrap_or(false)
+    let (font, dpi, hovered, pressed) = UI_STATE.with(|ui| {
+        let ui = ui.borrow();
+        (ui.font, ui.dpi, ui.hovered, ui.pressed)
     });
+    let auto_scrolling = is_auto_scrolling();
 
-    unsafe {
-        let mut paint_struct = PAINTSTRUCT::default();
-        let dc = BeginPaint(window, &mut paint_struct);
-        let background = CreateSolidBrush(COLORREF(0x00242424));
-        FillRect(dc, &paint_struct.rcPaint, background);
-        let _ = DeleteObject(background.into());
-
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, COLORREF(0x00FFFFFF));
-
-        let labels = [
-            if auto_scrolling { "Stop" } else { "Auto" },
-            "Done",
-            "Cancel",
-        ];
-        for (index, label) in labels.iter().enumerate() {
-            let left = index as i32 * (PANEL_WIDTH / 3);
-            let mut rect = RECT {
-                left,
-                top: 0,
-                right: left + PANEL_WIDTH / 3,
-                bottom: PANEL_HEIGHT,
-            };
-            let mut text = to_wide(label);
-            text.pop();
-            DrawTextW(
+    paint_buffered(window, font, |dc, _| {
+        for index in 0..PANEL_BUTTONS.len() {
+            let rect = button_rect(&PANEL_BUTTON_WIDTHS, index, dpi);
+            let state = button_state(hovered == Some(index), pressed == Some(index));
+            draw_pill(
                 dc,
-                &mut text,
-                &mut rect,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                rect,
+                scale_for_dpi(PANEL_BUTTON_RADIUS, dpi),
+                button_fill(panel_button_palette(index, auto_scrolling), state),
+            );
+            draw_label(
+                dc,
+                panel_button_label(index, auto_scrolling),
+                rect,
+                panel_button_text(index, auto_scrolling),
             );
         }
+    });
+}
 
-        let separator = CreateSolidBrush(COLORREF(0x00505050));
-        for x in [PANEL_WIDTH / 3, PANEL_WIDTH * 2 / 3] {
-            let rect = RECT {
-                left: x,
-                top: 8,
-                right: x + 1,
-                bottom: PANEL_HEIGHT - 8,
-            };
-            FillRect(dc, &rect, separator);
-        }
-        let _ = DeleteObject(separator.into());
-        let _ = EndPaint(window, &paint_struct);
+fn repaint_panel(window: HWND) {
+    unsafe {
+        let _ = InvalidateRect(Some(window), None, false);
     }
 }
 
-fn handle_panel_click(x: i32) {
-    match x / (PANEL_WIDTH / 3) {
-        0 => toggle_auto_scroll_from_ui(),
-        1 => done_from_ui(),
-        _ => cancel_from_ui(),
+fn track_panel_hover(window: HWND, point: POINT) {
+    let hovered = UI_STATE.with(|ui| button_at(&PANEL_BUTTON_WIDTHS, point, ui.borrow().dpi));
+    let changed = UI_STATE.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        if ui.hovered == hovered {
+            return false;
+        }
+        ui.hovered = hovered;
+        true
+    });
+
+    let mut tracking = TRACKMOUSEEVENT {
+        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: TME_LEAVE,
+        hwndTrack: window,
+        dwHoverTime: 0,
+    };
+    unsafe {
+        let _ = TrackMouseEvent(&mut tracking);
+    }
+
+    if changed {
+        repaint_panel(window);
+    }
+}
+
+fn clear_panel_hover(window: HWND) {
+    let changed = UI_STATE.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        ui.pressed = None;
+        ui.hovered.take().is_some()
+    });
+
+    if changed {
+        repaint_panel(window);
+    }
+}
+
+fn press_panel_button(window: HWND, point: POINT) {
+    let pressed = UI_STATE.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        ui.pressed = button_at(&PANEL_BUTTON_WIDTHS, point, ui.dpi);
+        ui.pressed
+    });
+
+    if pressed.is_some() {
+        repaint_panel(window);
+    }
+}
+
+fn release_panel_button(window: HWND, point: POINT) {
+    let (pressed, released) = UI_STATE.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        let released = button_at(&PANEL_BUTTON_WIDTHS, point, ui.dpi);
+        (ui.pressed.take(), released)
+    });
+
+    let Some(pressed) = pressed else {
+        return;
+    };
+
+    repaint_panel(window);
+
+    if released != Some(pressed) {
+        return;
+    }
+
+    match PANEL_BUTTONS[pressed] {
+        PanelButton::Auto => toggle_auto_scroll_from_ui(),
+        PanelButton::Done => done_from_ui(),
+        PanelButton::Cancel => cancel_from_ui(),
     }
 }
 
@@ -394,16 +547,26 @@ fn cancel_from_ui() {
     }
 }
 
-fn show_capture_ui(state: Arc<Mutex<CaptureState>>, bounds: CaptureBounds) -> Result<(), String> {
+fn show_capture_ui(
+    state: Arc<Mutex<CaptureState>>,
+    bounds: CaptureBounds,
+    dpi: u32,
+) -> Result<(), String> {
     teardown_ui();
     ensure_window_class(BOUNDARY_CLASS_NAME, Some(boundary_wndproc), None);
-    ensure_window_class(PANEL_CLASS_NAME, Some(panel_wndproc), None);
+    let hand = unsafe { LoadCursorW(None, IDC_HAND) }.ok();
+    ensure_window_class(PANEL_CLASS_NAME, Some(panel_wndproc), hand);
 
+    UI_STATE.with(|ui| {
+        ui.borrow_mut().dpi = dpi.max(96);
+    });
+
+    let thickness = scale_for_dpi(BOUNDARY_THICKNESS, dpi);
     let boundary_rect = RECT {
-        left: bounds.x - 2,
-        top: bounds.y - 2,
-        right: bounds.x + bounds.width + 2,
-        bottom: bounds.y + bounds.height + 2,
+        left: bounds.x - thickness,
+        top: bounds.y - thickness,
+        right: bounds.x + bounds.width + thickness,
+        bottom: bounds.y + bounds.height + thickness,
     };
     let boundary_style =
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT;
@@ -412,8 +575,10 @@ fn show_capture_ui(state: Arc<Mutex<CaptureState>>, bounds: CaptureBounds) -> Re
         return Err("Failed to create the scroll capture boundary".to_string());
     };
 
+    apply_ring_region(boundary, thickness);
+
     let boundary_setup = unsafe {
-        let layered = SetLayeredWindowAttributes(boundary, COLORREF(0), 255, LWA_COLORKEY);
+        let layered = SetLayeredWindowAttributes(boundary, COLOR_KEY, 255, LWA_COLORKEY);
         if layered.is_ok() {
             let _ = SetWindowDisplayAffinity(boundary, WDA_EXCLUDEFROMCAPTURE);
             let _ = ShowWindow(boundary, SW_SHOWNOACTIVATE);
@@ -437,7 +602,7 @@ fn show_capture_ui(state: Arc<Mutex<CaptureState>>, bounds: CaptureBounds) -> Re
         return Err("Failed to configure the scroll capture boundary".to_string());
     }
 
-    let panel_rect = capture_panel_rect(bounds);
+    let panel_rect = capture_panel_rect(bounds, dpi);
     let panel_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED;
     let Some(panel) = create_popup_window(PANEL_CLASS_NAME, panel_style, &panel_rect) else {
         unsafe {
@@ -446,8 +611,10 @@ fn show_capture_ui(state: Arc<Mutex<CaptureState>>, bounds: CaptureBounds) -> Re
         return Err("Failed to create the scroll capture controls".to_string());
     };
 
+    apply_round_region(panel, scale_for_dpi(PANEL_CORNER_RADIUS, dpi));
+
     let panel_setup = unsafe {
-        let layered = SetLayeredWindowAttributes(panel, COLORREF(0), 242, LWA_ALPHA);
+        let layered = SetLayeredWindowAttributes(panel, COLOR_KEY, PANEL_ALPHA, LWA_ALPHA);
         if layered.is_ok() {
             let _ = SetWindowDisplayAffinity(panel, WDA_EXCLUDEFROMCAPTURE);
             let _ = ShowWindow(panel, SW_SHOWNOACTIVATE);
@@ -476,6 +643,7 @@ fn show_capture_ui(state: Arc<Mutex<CaptureState>>, bounds: CaptureBounds) -> Re
         let mut ui = ui.borrow_mut();
         ui.boundary = Some(boundary);
         ui.panel = Some(panel);
+        ui.font = Some(create_ui_font(dpi, PANEL_FONT_SIZE, PANEL_FONT_WEIGHT));
         ui.capture_state = Some(state);
     });
 
@@ -504,44 +672,45 @@ fn show_capture_ui(state: Arc<Mutex<CaptureState>>, bounds: CaptureBounds) -> Re
     Ok(())
 }
 
-fn capture_panel_rect(bounds: CaptureBounds) -> RECT {
+fn capture_panel_rect(bounds: CaptureBounds, dpi: u32) -> RECT {
     let capture_rect = bounds.rect();
     let monitor = monitors()
         .into_iter()
-        .find(|monitor| {
-            capture_rect.left < monitor.rect.right
-                && capture_rect.right > monitor.rect.left
-                && capture_rect.top < monitor.rect.bottom
-                && capture_rect.bottom > monitor.rect.top
-        })
+        .find(|monitor| rects_intersect(&capture_rect, &monitor.rect))
         .map(|monitor| monitor.rect)
         .unwrap_or(capture_rect);
 
+    let width = scale_for_dpi(panel_width(&PANEL_BUTTON_WIDTHS), dpi);
+    let height = scale_for_dpi(panel_height(), dpi);
+    let gap = scale_for_dpi(PANEL_GAP, dpi);
     let min_x = monitor.left;
-    let max_x = (monitor.right - PANEL_WIDTH).max(min_x);
-    let x = (bounds.x + (bounds.width - PANEL_WIDTH) / 2).clamp(min_x, max_x);
-    let below = bounds.y + bounds.height + PANEL_GAP;
-    let y = if below + PANEL_HEIGHT <= monitor.bottom {
+    let max_x = (monitor.right - width).max(min_x);
+    let x = (bounds.x + (bounds.width - width) / 2).clamp(min_x, max_x);
+    let below = bounds.y + bounds.height + gap;
+    let y = if below + height <= monitor.bottom {
         below
     } else {
-        (bounds.y - PANEL_HEIGHT - PANEL_GAP).max(monitor.top)
+        (bounds.y - height - gap).max(monitor.top)
     };
 
     RECT {
         left: x,
         top: y,
-        right: x + PANEL_WIDTH,
-        bottom: y + PANEL_HEIGHT,
+        right: x + width,
+        bottom: y + height,
     }
 }
 
 fn teardown_ui() {
-    let (boundary, panel, escape_token, enter_token) = UI_STATE.with(|ui| {
+    let (boundary, panel, font, escape_token, enter_token) = UI_STATE.with(|ui| {
         let mut ui = ui.borrow_mut();
         ui.capture_state = None;
+        ui.hovered = None;
+        ui.pressed = None;
         (
             ui.boundary.take(),
             ui.panel.take(),
+            ui.font.take(),
             ui.escape_token.take(),
             ui.enter_token.take(),
         )
@@ -557,6 +726,12 @@ fn teardown_ui() {
     if let Some(boundary) = boundary {
         unsafe {
             let _ = DestroyWindow(boundary);
+        }
+    }
+
+    if let Some(font) = font {
+        unsafe {
+            let _ = DeleteObject(font.into());
         }
     }
 
@@ -702,7 +877,7 @@ fn start_auto_scroll_ui(state: &Arc<Mutex<CaptureState>>) -> Result<(), (String,
                 "Failed to start the auto-scroll timer".to_string(),
             ));
         }
-        let _ = InvalidateRect(Some(panel), None, true);
+        let _ = InvalidateRect(Some(panel), None, false);
     }
 
     Ok(())
@@ -717,7 +892,7 @@ fn stop_auto_scroll_ui(state: &Arc<Mutex<CaptureState>>) {
     if let Some(panel) = panel {
         unsafe {
             let _ = KillTimer(Some(panel), AUTO_SCROLL_TIMER_ID);
-            let _ = InvalidateRect(Some(panel), None, true);
+            let _ = InvalidateRect(Some(panel), None, false);
         }
     }
 }
@@ -820,7 +995,7 @@ fn auto_scroll_tick() {
         if let Some(panel) = panel {
             unsafe {
                 let _ = KillTimer(Some(panel), AUTO_SCROLL_TIMER_ID);
-                let _ = InvalidateRect(Some(panel), None, true);
+                let _ = InvalidateRect(Some(panel), None, false);
             }
         }
         send_event("scroll-capture:scroll-ended", event);
@@ -864,16 +1039,58 @@ fn with_hidden_capture_windows<T, E>(
     result
 }
 
+fn windows_to_hide(visible: [bool; 2], covers_capture: [bool; 2]) -> [bool; 2] {
+    [
+        visible[0] && covers_capture[0],
+        visible[1] && covers_capture[1],
+    ]
+}
+
+fn window_rect(window: HWND) -> RECT {
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(window, &mut rect);
+    }
+    rect
+}
+
+fn contains_rect(outer: &RECT, inner: &RECT) -> bool {
+    outer.left <= inner.left
+        && outer.top <= inner.top
+        && outer.right >= inner.right
+        && outer.bottom >= inner.bottom
+}
+
+fn ring_covers_rect(ring: &RECT, thickness: i32, capture: &RECT) -> bool {
+    let hole = RECT {
+        left: ring.left + thickness,
+        top: ring.top + thickness,
+        right: ring.right - thickness,
+        bottom: ring.bottom - thickness,
+    };
+
+    !contains_rect(&hole, capture)
+}
+
 fn capture_pixels_without_ui(bounds: CaptureBounds) -> Result<Vec<u8>, String> {
-    let windows = UI_STATE.with(|ui| {
+    let (windows, thickness) = UI_STATE.with(|ui| {
         let ui = ui.borrow();
-        [ui.boundary, ui.panel]
+        (
+            [ui.boundary, ui.panel],
+            scale_for_dpi(BOUNDARY_THICKNESS, ui.dpi),
+        )
     });
-    let visibility = windows
+    let capture_rect = bounds.rect();
+    let visible = windows
         .map(|window| window.is_some_and(|window| unsafe { IsWindowVisible(window).as_bool() }));
+    let covers_capture = [
+        windows[0]
+            .is_some_and(|window| ring_covers_rect(&window_rect(window), thickness, &capture_rect)),
+        windows[1].is_some_and(|window| rects_intersect(&window_rect(window), &capture_rect)),
+    ];
 
     with_hidden_capture_windows(
-        visibility,
+        windows_to_hide(visible, covers_capture),
         |index, visible| {
             let Some(window) = windows[index] else {
                 return;
@@ -1433,7 +1650,8 @@ impl ScrollCaptureModule {
         let state = Arc::new(Mutex::new(capture_state));
         self.state = state.clone();
         let request_id = request.id.clone();
-        run_on_ui(move || match show_capture_ui(state.clone(), bounds) {
+        let dpi = dpi_for_scale_factor(scale_factor);
+        run_on_ui(move || match show_capture_ui(state.clone(), bounds, dpi) {
             Ok(()) => respond_success(&request_id, json!({ "started": true })),
             Err(message) => {
                 if let Ok(mut state) = state.lock() {
@@ -1753,6 +1971,50 @@ mod tests {
     fn converts_physical_stitched_height_to_logical_max_height_units() {
         assert_eq!(logical_height(3_000, 2.0), 1_500);
         assert_eq!(logical_height(1_501, 1.5), 1_001);
+    }
+
+    #[test]
+    fn derives_panel_dpi_from_the_display_scale_factor() {
+        assert_eq!(dpi_for_scale_factor(1.5), 144);
+        assert_eq!(dpi_for_scale_factor(0.5), 96);
+    }
+
+    #[test]
+    fn auto_button_switches_to_a_stop_action_while_scrolling() {
+        assert_eq!(panel_button_label(0, false), "Auto");
+        assert_eq!(panel_button_label(0, true), "Stop");
+        assert_eq!(panel_button_palette(0, false)[0].0, NEUTRAL_BUTTON[0].0);
+        assert_eq!(panel_button_palette(0, true)[0].0, ACTIVE_BUTTON[0].0);
+        assert_eq!(panel_button_palette(1, false)[0].0, PRIMARY_BUTTON[0].0);
+    }
+
+    #[test]
+    fn boundary_ring_leaves_the_capture_area_untouched() {
+        let capture = RECT {
+            left: 100,
+            top: 200,
+            right: 500,
+            bottom: 600,
+        };
+        let ring = RECT {
+            left: capture.left - 2,
+            top: capture.top - 2,
+            right: capture.right + 2,
+            bottom: capture.bottom + 2,
+        };
+
+        assert!(!ring_covers_rect(&ring, 2, &capture));
+        assert!(ring_covers_rect(&ring, 3, &capture));
+    }
+
+    #[test]
+    fn hides_only_windows_the_capture_would_include() {
+        assert_eq!(
+            windows_to_hide([true, true], [false, false]),
+            [false, false]
+        );
+        assert_eq!(windows_to_hide([true, true], [true, false]), [true, false]);
+        assert_eq!(windows_to_hide([false, true], [true, true]), [false, true]);
     }
 
     #[test]

@@ -119,6 +119,10 @@
   }
 }
 
+body.window-transparent {
+  background-color: transparent;
+}
+
 .scrollbar-overlay {
   overflow-x: scroll;
   overflow-y: hidden;

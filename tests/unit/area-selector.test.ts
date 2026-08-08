@@ -33,7 +33,7 @@ vi.mock('@/main/capture/window-selector', () => ({
   selectWindow: () => mockSelectWindow(),
 }));
 
-describe('area-selector', () => {
+describe('area-selector daemon backend', () => {
   const originalPlatform = process.platform;
 
   beforeEach(() => {
@@ -59,69 +59,69 @@ describe('area-selector', () => {
 
   describe('hasPendingSelection', () => {
     it('returns false initially', async () => {
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       expect(m.hasPendingSelection()).toBe(false);
     });
   });
 
   describe('cancelAreaSelection', () => {
     it('calls daemon cancel', async () => {
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await m.cancelAreaSelection();
       expect(mockDaemonCall).toHaveBeenCalledWith('area-selector', 'cancel');
     });
 
     it('swallows daemon errors', async () => {
       mockDaemonCall.mockRejectedValue(new Error('boom'));
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await expect(m.cancelAreaSelection()).resolves.toBeUndefined();
     });
   });
 
   describe('confirmAreaSelection', () => {
     it('returns null when no pending selection', async () => {
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       expect(await m.confirmAreaSelection()).toBeNull();
     });
   });
 
   describe('hideAreaSelector/showAreaSelector', () => {
     it('hideAreaSelector calls daemon hide', async () => {
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await m.hideAreaSelector();
       expect(mockDaemonCall).toHaveBeenCalledWith('area-selector', 'hide');
     });
 
     it('showAreaSelector calls daemon show', async () => {
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await m.showAreaSelector();
       expect(mockDaemonCall).toHaveBeenCalledWith('area-selector', 'show');
     });
 
     it('swallows hide errors', async () => {
       mockDaemonCall.mockRejectedValue(new Error('boom'));
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await expect(m.hideAreaSelector()).resolves.toBeUndefined();
     });
 
     it('swallows show errors', async () => {
       mockDaemonCall.mockRejectedValue(new Error('boom'));
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await expect(m.showAreaSelector()).resolves.toBeUndefined();
     });
   });
 
-  describe('killAreaSelector', () => {
+  describe('cancelAreaSelection silently', () => {
     it('cancels selection silently', async () => {
-      const m = await import('@/main/capture/area-selector');
-      await m.killAreaSelector();
+      const m = await import('@/main/capture/area-selector/daemon-backend');
+      await m.cancelAreaSelection(true);
       expect(mockDaemonCall).toHaveBeenCalledWith('area-selector', 'cancel');
     });
   });
 
   describe('updateAreaSelection', () => {
     it('forwards bounds to daemon update', async () => {
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       const result = await m.updateAreaSelection({
         x: 100,
         y: 50,
@@ -139,7 +139,7 @@ describe('area-selector', () => {
 
     it('returns false on daemon error', async () => {
       mockDaemonCall.mockRejectedValue(new Error('boom'));
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await expect(
         m.updateAreaSelection({
           x: 100,
@@ -153,7 +153,7 @@ describe('area-selector', () => {
 
   describe('setAreaSelectorAspectRatio', () => {
     it('forwards aspect ratio to daemon', async () => {
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await m.setAreaSelectorAspectRatio({
         id: 'r1',
         label: '16:9',
@@ -169,7 +169,7 @@ describe('area-selector', () => {
 
     it('swallows errors', async () => {
       mockDaemonCall.mockRejectedValue(new Error('boom'));
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await expect(
         m.setAreaSelectorAspectRatio({
           id: 'r1',
@@ -196,7 +196,7 @@ describe('area-selector', () => {
       Object.defineProperty(process, 'platform', { value: 'win32' });
       vi.resetModules();
       fireAllHandlersAfterStart('area-selector:cancelled');
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       const result = await m.startAreaSelection({ mode: 'display' });
       expect(result).toBeNull();
       const params = mockDaemonCall.mock.calls[0]?.[2];
@@ -208,7 +208,7 @@ describe('area-selector', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin' });
       vi.resetModules();
       fireAllHandlersAfterStart('area-selector:cancelled');
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await m.startAreaSelection({ mode: 'display' });
       expect(mockDaemonCall.mock.calls[0]?.[2]).toEqual(
         expect.objectContaining({ fullscreen: true, displayId: 987654321 })
@@ -231,7 +231,7 @@ describe('area-selector', () => {
         screenId: 2,
       });
       fireAllHandlersAfterStart('area-selector:cancelled');
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       const result = await m.startAreaSelection({ mode: 'display' });
       expect(result).toBeNull();
       expect(mockDaemonCall).toHaveBeenCalledWith(
@@ -253,7 +253,7 @@ describe('area-selector', () => {
         },
       ]);
       mockSelectDisplay.mockResolvedValue({ status: 'cancelled' });
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       const result = await m.startAreaSelection({ mode: 'display' });
       expect(result).toBeNull();
     });
@@ -262,14 +262,14 @@ describe('area-selector', () => {
   describe('startAreaSelection window mode', () => {
     it('returns null when window selection cancelled', async () => {
       mockSelectWindow.mockResolvedValue({ status: 'cancelled' });
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       const result = await m.startAreaSelection({ mode: 'window' });
       expect(result).toBeNull();
     });
 
     it('returns null on window selection error', async () => {
       mockSelectWindow.mockResolvedValue({ status: 'error' });
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       const result = await m.startAreaSelection({ mode: 'window' });
       expect(result).toBeNull();
     });
@@ -286,7 +286,7 @@ describe('area-selector', () => {
       mockScreenToDipRect.mockReturnValue(dipBounds);
       fireAllHandlersAfterStart('area-selector:cancelled');
 
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       await m.startAreaSelection({ mode: 'window' });
 
       expect(mockScreenToDipRect).toHaveBeenCalledWith(null, physicalBounds);
@@ -309,7 +309,7 @@ describe('area-selector', () => {
       Object.defineProperty(process, 'platform', { value: 'win32' });
       vi.resetModules();
       fireAllHandlersAfterStart('area-selector:cancelled');
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       const result = await m.startAreaSelection({
         preset: { x: 100, y: 50, width: 200, height: 150 },
       });
@@ -331,7 +331,7 @@ describe('area-selector', () => {
   describe('startAreaSelection manual', () => {
     it('returns null on daemon error during start', async () => {
       mockDaemonCall.mockRejectedValue(new Error('boom'));
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       const result = await m.startAreaSelection();
       expect(result).toBeNull();
     });
@@ -347,7 +347,7 @@ describe('area-selector', () => {
       fireAllHandlersAfterStart('area-selector:cancelled');
       const onSelected = vi.fn();
       const onUpdate = vi.fn();
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
 
       mockDaemonCall.mockImplementation(async () => {
         setImmediate(() => {
@@ -369,7 +369,7 @@ describe('area-selector', () => {
       });
       const onSelected = vi.fn();
       const onUpdate = vi.fn();
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
 
       mockDaemonCall.mockImplementation(async () => {
         setImmediate(() => {
@@ -389,7 +389,7 @@ describe('area-selector', () => {
       mockOnEvent.mockImplementation((cb: (e: string, d: unknown) => void) => {
         handlers.push(cb);
       });
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
 
       mockDaemonCall.mockImplementation(async (_module, method) => {
         if (method === 'start') {
@@ -425,7 +425,7 @@ describe('area-selector', () => {
       mockOnEvent.mockImplementation((cb: (e: string, d: unknown) => void) => {
         handlers.push(cb);
       });
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
 
       mockDaemonCall.mockImplementationOnce(async () => {
         setImmediate(() => {
@@ -456,7 +456,7 @@ describe('area-selector', () => {
 
   describe('updateAreaSelectionCallbacks', () => {
     it('replaces existing callbacks', async () => {
-      const m = await import('@/main/capture/area-selector');
+      const m = await import('@/main/capture/area-selector/daemon-backend');
       m.updateAreaSelectionCallbacks({ onSelected: vi.fn() });
       m.updateAreaSelectionCallbacks({ onSelected: vi.fn() });
       expect(mockOffEvent).toHaveBeenCalled();

@@ -280,14 +280,14 @@ export default function CursorSettingsPanel({
             <div className="flex items-center justify-between">
               <Label className="text-sm">Size</Label>
               <span className="text-muted-foreground text-xs">
-                {cursorStyle.size}px
+                {cursorStyle.size}%
               </span>
             </div>
             <Slider
               value={[cursorStyle.size]}
               onValueChange={([value]) => updateStyle({ size: value })}
-              min={100}
-              max={300}
+              min={50}
+              max={250}
               step={5}
             />
           </div>

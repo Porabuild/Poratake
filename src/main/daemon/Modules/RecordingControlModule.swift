@@ -106,7 +106,7 @@ class RecordingControlModule: Module {
             if self.panel != nil {
                 self.rebuildPanel()
             } else {
-                let position = self.calculateBottomCenterPosition()
+                let position = self.calculateTopCenterPosition()
                 self.showPanel(x: position.x, y: position.y)
             }
             
@@ -114,19 +114,19 @@ class RecordingControlModule: Module {
         }
     }
     
-    private func calculateBottomCenterPosition() -> (x: Int, y: Int) {
-        guard let screen = NSScreen.main else {
+    private func calculateTopCenterPosition(on targetScreen: NSScreen? = nil) -> (x: Int, y: Int) {
+        guard let screen = targetScreen ?? NSScreen.main else {
             return (x: 100, y: 100)
         }
-        
+
         let width = RecordingControlContentView.calculateWidth(for: currentMode, micEnabled: settings.micEnabled)
-        let height: CGFloat = 48
-        let bottomMargin: CGFloat = 80
-        
+        let topMargin: CGFloat = 24
+
         let screenFrame = screen.visibleFrame
         let x = Int(screenFrame.midX - width / 2)
-        let y = Int(screen.frame.height - screenFrame.origin.y - height - bottomMargin)
-        
+        let mainScreenHeight = NSScreen.main?.frame.height ?? screen.frame.height
+        let y = Int(mainScreenHeight - screenFrame.maxY + topMargin)
+
         return (x: x, y: y)
     }
     
@@ -228,39 +228,10 @@ class RecordingControlModule: Module {
     }
     
     private func enumerateDevices() {
-        micDevices = []
-        cameraDevices = []
+        micDevices = MediaDeviceDiscovery.microphones()
+        cameraDevices = MediaDeviceDiscovery.cameras()
         iosDevices = []
-        
-        let audioSession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInMicrophone, .externalUnknown],
-            mediaType: .audio,
-            position: .unspecified
-        )
-        
-        for device in audioSession.devices {
-            micDevices.append(MediaDevice(id: device.uniqueID, label: device.localizedName))
-        }
-        
-        let videoSession: AVCaptureDevice.DiscoverySession
-        if #available(macOS 14.0, *) {
-            videoSession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
-                mediaType: .video,
-                position: .unspecified
-            )
-        } else {
-            videoSession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
-                mediaType: .video,
-                position: .unspecified
-            )
-        }
-        
-        for device in videoSession.devices {
-            cameraDevices.append(MediaDevice(id: device.uniqueID, label: device.localizedName))
-        }
-        
+
         enumerateIOSDevices()
     }
     
@@ -374,7 +345,7 @@ class RecordingControlModule: Module {
         let width = RecordingControlContentView.calculateWidth(for: currentMode, micEnabled: settings.micEnabled)
         let height: CGFloat = 48
         
-        let position = calculateBottomCenterPosition()
+        let position = calculateTopCenterPosition(on: currentPanel.screen)
         
         currentPanel.setContentSize(NSSize(width: width, height: height))
         
@@ -497,11 +468,6 @@ class RecordingControlModule: Module {
             audioLevelMonitor.stop()
         }
     }
-}
-
-struct MediaDevice {
-    let id: String
-    let label: String
 }
 
 enum RecordingControlMode {

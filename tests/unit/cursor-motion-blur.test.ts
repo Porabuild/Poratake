@@ -118,6 +118,46 @@ async function loadRenderer() {
   return import('../../src/renderer/components/video-editor/composition/cursor-canvas-renderer');
 }
 
+describe('cursor sprite size', () => {
+  it('renders a life-size cursor at 100% on a 1080p recording', async () => {
+    const { resolveCursorSpriteSize } = await loadRenderer();
+
+    expect(resolveCursorSpriteSize(100, 1080, 1080)).toBeCloseTo(49, 6);
+  });
+
+  it('grows with the recording resolution to track display scaling', async () => {
+    const { resolveCursorSpriteSize } = await loadRenderer();
+
+    expect(resolveCursorSpriteSize(100, 2160, 1080)).toBeCloseTo(98, 6);
+    expect(resolveCursorSpriteSize(100, 1600, 1000)).toBeCloseTo(78.4, 1);
+  });
+
+  it('does not scale a 4K recording captured at 1x', async () => {
+    const { resolveCursorSpriteSize } = await loadRenderer();
+
+    expect(resolveCursorSpriteSize(100, 2160, 2160)).toBeCloseTo(49, 6);
+  });
+
+  it('clamps the display scale for very tall recordings', async () => {
+    const { resolveCursorSpriteSize } = await loadRenderer();
+
+    expect(resolveCursorSpriteSize(100, 8640, 1080)).toBeCloseTo(49 * 2.5, 6);
+  });
+
+  it('falls back to 1x when the recording height is invalid', async () => {
+    const { resolveCursorSpriteSize } = await loadRenderer();
+
+    expect(resolveCursorSpriteSize(100, 1080, 0)).toBeCloseTo(49, 6);
+  });
+
+  it('scales linearly with the configured percentage', async () => {
+    const { resolveCursorSpriteSize } = await loadRenderer();
+
+    expect(resolveCursorSpriteSize(50, 1080, 1080)).toBeCloseTo(24.5, 6);
+    expect(resolveCursorSpriteSize(250, 1080, 1080)).toBeCloseTo(122.5, 6);
+  });
+});
+
 describe('cursor motion blur', () => {
   it('accumulates blur taps in an offscreen buffer and blits once', async () => {
     const { renderCursor } = await loadRenderer();

@@ -1,12 +1,9 @@
 import { exec } from 'child_process';
-import { clipboard, nativeImage } from 'electron';
 import fs from 'fs';
 import { getConfig } from '@/main/settings';
-import { addToHistory } from '@/main/history';
 import { generateScreenshotPath } from './utils.ts';
 import type { AreaSelection } from '@/types/area.ts';
-import { showCapturePreview } from '@/main/capture/capture-preview';
-import { openScreenshotEditor } from '@/main/capture/screenshot/open-editor';
+import { finalizeCapture } from '@/main/capture/screenshot/finalize';
 import { isMac } from '@/main/utils/platform';
 import { captureRegionToFile } from '@/main/capture/screenshot/native-capture';
 import {
@@ -109,21 +106,7 @@ export async function captureArea(
   }
 
   await options?.onCaptured?.();
+  await finalizeCapture(screenshotPath);
 
-  const historyItem = await addToHistory(screenshotPath);
-
-  if (config.screenshot.captureToClipboard) {
-    const imageBuffer = fs.readFileSync(screenshotPath);
-    const image = nativeImage.createFromBuffer(imageBuffer);
-    clipboard.writeImage(image);
-    return screenshotPath;
-  }
-
-  if (config.screenshot.showPreview) {
-    showCapturePreview(screenshotPath, 'screenshot', historyItem?.id);
-    return screenshotPath;
-  }
-
-  openScreenshotEditor(screenshotPath, historyItem?.id);
   return screenshotPath;
 }

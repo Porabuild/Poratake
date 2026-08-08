@@ -92,6 +92,9 @@ vi.mock('@/main/onboarding', () => mockOnboarding);
 const mockAllInOne = { init: vi.fn(), default: vi.fn() };
 vi.mock('@/main/capture/all-in-one', () => mockAllInOne);
 
+const mockDevices = { init: vi.fn() };
+vi.mock('@/main/devices', () => mockDevices);
+
 const mockDaemon = { daemon: { start: vi.fn(() => Promise.resolve()) } };
 vi.mock('@/main/daemon', () => mockDaemon);
 

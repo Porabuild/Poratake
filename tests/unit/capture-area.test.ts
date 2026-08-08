@@ -7,7 +7,10 @@ type ExecCallback = (
 ) => void;
 const mockExec = vi.fn<(command: string, callback: ExecCallback) => void>();
 const mockClipboardWriteImage = vi.fn();
-const mockCreateFromBuffer = vi.fn(() => ({ image: true }));
+const mockCreateFromBuffer = vi.fn(() => ({
+  image: true,
+  isEmpty: () => false,
+}));
 const mockGetConfig = vi.fn();
 const mockAddToHistory = vi.fn();
 const mockGenerateScreenshotPath = vi.fn(() => '/path/Screenshot.png');

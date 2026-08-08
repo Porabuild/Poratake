@@ -103,7 +103,9 @@ pub fn param_bool(params: &Option<HashMap<String, Value>>, key: &str) -> Option<
 
 pub fn param_i64(params: &Option<HashMap<String, Value>>, key: &str) -> Option<i64> {
     let value = params.as_ref()?.get(key)?;
-    value.as_i64().or_else(|| value.as_f64().map(|number| number as i64))
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|number| number as i64))
 }
 
 pub fn param_i32(params: &Option<HashMap<String, Value>>, key: &str) -> Option<i32> {

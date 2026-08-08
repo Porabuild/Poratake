@@ -1,7 +1,14 @@
 use super::media_devices::{enumerate_cameras, enumerate_microphones, MediaDevice};
 use crate::overlay::{
-    add_key_handler, create_popup_window, default_wndproc, ensure_window_class, monitors,
-    remove_key_handler, to_wide,
+    add_key_handler, apply_round_region, create_popup_window, create_ui_font, default_wndproc,
+    ensure_window_class, monitors, point_from_lparam, remove_key_handler, scale_for_dpi, to_wide,
+    WM_MOUSELEAVE,
+};
+use crate::panel::{
+    button_at, button_fill, button_rect, button_state, draw_label, draw_pill, paint_buffered,
+    panel_height, panel_width, ACTIVE_BUTTON, BUTTON_TEXT, BUTTON_TEXT_MUTED, BUTTON_TEXT_ON_FILL,
+    NEUTRAL_BUTTON, PANEL_ALPHA, PANEL_BUTTON_RADIUS, PANEL_CORNER_RADIUS, PANEL_FONT_SIZE,
+    PANEL_FONT_WEIGHT, PRIMARY_BUTTON,
 };
 use crate::protocol::{
     param_bool, param_i32, param_str, respond_error, respond_success, send_event, Request,
@@ -14,32 +21,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW,
-    EndPaint, FillRect, InvalidateRect, ScreenToClient, SelectObject, SetBkMode, SetTextColor,
-    SetWindowRgn, DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, FONT_CHARSET,
-    FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_NORMAL, HFONT, PAINTSTRUCT,
-    TRANSPARENT,
-};
+use windows::Win32::Graphics::Gdi::{DeleteObject, InvalidateRect, ScreenToClient, HFONT};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, DestroyWindow, GetClientRect, GetCursorPos,
-    GetWindowRect, MessageBoxW, SetForegroundWindow, SetLayeredWindowAttributes,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, DestroyWindow, GetCursorPos, GetWindowRect,
+    LoadCursorW, MessageBoxW, SetForegroundWindow, SetLayeredWindowAttributes,
     SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TrackPopupMenu, HTCAPTION, HWND_TOPMOST,
-    LWA_ALPHA, MB_ICONWARNING, MB_YESNO, MF_CHECKED, MF_STRING, SWP_NOACTIVATE, SWP_NOMOVE,
-    SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WDA_EXCLUDEFROMCAPTURE,
-    WM_DPICHANGED, WM_LBUTTONUP, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    IDC_HAND, LWA_ALPHA, MB_ICONWARNING, MB_YESNO, MF_CHECKED, MF_STRING, SWP_NOACTIVATE,
+    SWP_NOMOVE, SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    WDA_EXCLUDEFROMCAPTURE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
 const CLASS_NAME: &str = "CaptyRecordingControl";
-const BUTTON_SIZE: i32 = 48;
-const TIMER_WIDTH: i32 = 84;
-const PANEL_HEIGHT: i32 = 48;
-const PRE_WIDTH: i32 = BUTTON_SIZE * 7 + TIMER_WIDTH;
-const RECORDING_WIDTH: i32 = BUTTON_SIZE * 5 + TIMER_WIDTH;
-const PANEL_ALPHA: u8 = 245;
+const ITEM_WIDTH: i32 = 64;
+const TIMER_WIDTH: i32 = 68;
+const DRAG_WIDTH: i32 = 26;
+const CONTROL_TOP_MARGIN: i32 = 24;
 
 #[derive(Clone, Copy, PartialEq)]
 enum ControlMode {
@@ -107,10 +108,29 @@ impl Default for ControlModel {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlItem {
+    SystemAudio,
+    Mic,
+    Camera,
+    AspectRatio,
+    Timer,
+    Record,
+    Cancel,
+    MicMute,
+    PauseResume,
+    Stop,
+    Restart,
+    Delete,
+    Drag,
+}
+
 struct ControlUiState {
     window: Option<HWND>,
     font: Option<HFONT>,
     key_token: Option<usize>,
+    hovered: Option<usize>,
+    pressed: Option<usize>,
     model: Option<Arc<Mutex<ControlModel>>>,
     visible: Option<Arc<AtomicBool>>,
 }
@@ -120,13 +140,107 @@ thread_local! {
         window: None,
         font: None,
         key_token: None,
+        hovered: None,
+        pressed: None,
         model: None,
         visible: None,
     }) };
 }
 
-fn scale(value: i32, dpi: u32) -> i32 {
-    ((value as i64 * dpi.max(96) as i64) / 96) as i32
+fn control_items(model: &ControlModel) -> Vec<ControlItem> {
+    if model.mode == ControlMode::PreRecording {
+        return vec![
+            ControlItem::SystemAudio,
+            ControlItem::Mic,
+            ControlItem::Camera,
+            ControlItem::AspectRatio,
+            ControlItem::Timer,
+            ControlItem::Record,
+            ControlItem::Cancel,
+            ControlItem::Drag,
+        ];
+    }
+
+    let mut items = Vec::with_capacity(7);
+    if model.settings.mic_enabled {
+        items.push(ControlItem::MicMute);
+    }
+    items.extend([
+        ControlItem::Timer,
+        ControlItem::PauseResume,
+        ControlItem::Stop,
+        ControlItem::Restart,
+        ControlItem::Delete,
+        ControlItem::Drag,
+    ]);
+    items
+}
+
+fn item_widths(items: &[ControlItem]) -> Vec<i32> {
+    items
+        .iter()
+        .map(|item| match item {
+            ControlItem::Timer => TIMER_WIDTH,
+            ControlItem::Drag => DRAG_WIDTH,
+            _ => ITEM_WIDTH,
+        })
+        .collect()
+}
+
+fn item_label(item: ControlItem, model: &ControlModel) -> String {
+    match item {
+        ControlItem::SystemAudio if model.settings.system_audio => "Audio".into(),
+        ControlItem::SystemAudio => "No audio".into(),
+        ControlItem::Mic if model.settings.mic_enabled => "Mic".into(),
+        ControlItem::Mic => "No mic".into(),
+        ControlItem::Camera if model.settings.camera_enabled => "Camera".into(),
+        ControlItem::Camera => "No cam".into(),
+        ControlItem::AspectRatio => "Ratio".into(),
+        ControlItem::Timer => {
+            let seconds = model.elapsed_seconds.max(0);
+            format!("{:02}:{:02}", seconds / 60, seconds % 60)
+        }
+        ControlItem::Record if model.is_starting => "…".into(),
+        ControlItem::Record => "Record".into(),
+        ControlItem::Cancel => "Cancel".into(),
+        ControlItem::MicMute if model.settings.mic_muted => "Unmute".into(),
+        ControlItem::MicMute => "Mute".into(),
+        ControlItem::PauseResume if model.is_paused => "Resume".into(),
+        ControlItem::PauseResume => "Pause".into(),
+        ControlItem::Stop => "Stop".into(),
+        ControlItem::Restart => "Restart".into(),
+        ControlItem::Delete => "Delete".into(),
+        ControlItem::Drag => "≡".into(),
+    }
+}
+
+fn item_palette(item: ControlItem) -> [COLORREF; 3] {
+    match item {
+        ControlItem::Record => PRIMARY_BUTTON,
+        ControlItem::Stop | ControlItem::Delete => ACTIVE_BUTTON,
+        _ => NEUTRAL_BUTTON,
+    }
+}
+
+fn item_text(item: ControlItem, enabled: bool) -> COLORREF {
+    if !enabled {
+        return BUTTON_TEXT_MUTED;
+    }
+    match item {
+        ControlItem::Record | ControlItem::Stop | ControlItem::Delete => BUTTON_TEXT_ON_FILL,
+        _ => BUTTON_TEXT,
+    }
+}
+
+fn item_enabled(item: ControlItem, model: &ControlModel) -> bool {
+    if item == ControlItem::Timer {
+        return false;
+    }
+    model.mode != ControlMode::PreRecording || !model.is_starting
+}
+
+fn window_dpi(window: HWND) -> u32 {
+    unsafe { GetDpiForWindow(window) }.max(96)
 }
 
 fn model_snapshot() -> Option<ControlModel> {
@@ -136,16 +250,7 @@ fn model_snapshot() -> Option<ControlModel> {
 }
 
 fn model_width(model: &ControlModel) -> i32 {
-    if model.mode == ControlMode::PreRecording {
-        return PRE_WIDTH;
-    }
-
-    RECORDING_WIDTH
-        + if model.settings.mic_enabled {
-            BUTTON_SIZE
-        } else {
-            0
-        }
+    panel_width(&item_widths(&control_items(model)))
 }
 
 fn emit(name: &str) {
@@ -171,25 +276,33 @@ unsafe extern "system" fn wndproc(
             paint(window);
             LRESULT(0)
         }
+        WM_ERASEBKGND => LRESULT(1),
+        WM_MOUSEMOVE => {
+            track_hover(window, point_from_lparam(lparam));
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            clear_hover(window);
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            press_item(window, point_from_lparam(lparam));
+            LRESULT(0)
+        }
         WM_LBUTTONUP => {
-            let x = (lparam.0 as u32 & 0xffff) as i16 as i32;
-            handle_click(window, x);
+            release_item(window, point_from_lparam(lparam));
             LRESULT(0)
         }
         WM_RBUTTONUP => {
-            let x = (lparam.0 as u32 & 0xffff) as i16 as i32;
-            handle_context_click(window, x);
+            handle_context_click(window, point_from_lparam(lparam));
             LRESULT(0)
         }
         WM_NCHITTEST => {
-            let mut point = POINT {
-                x: (lparam.0 as u32 & 0xffff) as i16 as i32,
-                y: ((lparam.0 as u32 >> 16) & 0xffff) as i16 as i32,
-            };
+            let mut point = point_from_lparam(lparam);
             unsafe {
                 let _ = ScreenToClient(window, &mut point);
             }
-            if is_drag_zone(window, point.x) {
+            if item_at(window, point).map(|(_, item)| item) == Some(ControlItem::Drag) {
                 return LRESULT(HTCAPTION as isize);
             }
             default_wndproc(window, message, wparam, lparam)
@@ -223,186 +336,127 @@ fn recreate_font(window: HWND) {
         }
     }
 
-    let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-    let face = to_wide("Segoe UI");
-    let font = unsafe {
-        CreateFontW(
-            -scale(12, dpi),
-            0,
-            0,
-            0,
-            FW_NORMAL.0 as i32,
-            0,
-            0,
-            0,
-            FONT_CHARSET(0),
-            FONT_OUTPUT_PRECISION(0),
-            FONT_CLIP_PRECISION(0),
-            FONT_QUALITY(0),
-            0,
-            PCWSTR(face.as_ptr()),
-        )
-    };
+    let font = create_ui_font(window_dpi(window), PANEL_FONT_SIZE, PANEL_FONT_WEIGHT);
     STATE.with(|state| state.borrow_mut().font = Some(font));
 }
 
 fn update_region(window: HWND) {
-    let mut bounds = RECT::default();
+    apply_round_region(
+        window,
+        scale_for_dpi(PANEL_CORNER_RADIUS, window_dpi(window)),
+    );
+}
+
+fn item_at(window: HWND, point: POINT) -> Option<(usize, ControlItem)> {
+    let model = model_snapshot()?;
+    let items = control_items(&model);
+    let index = button_at(&item_widths(&items), point, window_dpi(window))?;
+    Some((index, items[index]))
+}
+
+fn repaint(window: HWND) {
     unsafe {
-        let _ = GetClientRect(window, &mut bounds);
-        let dpi = GetDpiForWindow(window).max(96);
-        let radius = scale(12, dpi) * 2;
-        let region = CreateRoundRectRgn(0, 0, bounds.right + 1, bounds.bottom + 1, radius, radius);
-        let _ = SetWindowRgn(window, Some(region), true);
+        let _ = InvalidateRect(Some(window), None, false);
     }
 }
 
-fn draw_text(
-    dc: windows::Win32::Graphics::Gdi::HDC,
-    font: Option<HFONT>,
-    text: &str,
-    mut rect: RECT,
-    color: COLORREF,
-) {
-    unsafe {
-        let previous = font.map(|font| SelectObject(dc, font.into()));
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, color);
-        let text = to_wide(text);
-        let mut buffer = text[..text.len().saturating_sub(1)].to_vec();
-        DrawTextW(
-            dc,
-            &mut buffer,
-            &mut rect,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
-        );
-        if let Some(previous) = previous {
-            SelectObject(dc, previous);
+fn track_hover(window: HWND, point: POINT) {
+    let hovered = item_at(window, point).map(|(index, _)| index);
+    let changed = STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.hovered == hovered {
+            return false;
         }
+        state.hovered = hovered;
+        true
+    });
+
+    let mut tracking = TRACKMOUSEEVENT {
+        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: TME_LEAVE,
+        hwndTrack: window,
+        dwHoverTime: 0,
+    };
+    unsafe {
+        let _ = TrackMouseEvent(&mut tracking);
     }
+
+    if changed {
+        repaint(window);
+    }
+}
+
+fn clear_hover(window: HWND) {
+    let changed = STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.pressed = None;
+        state.hovered.take().is_some()
+    });
+
+    if changed {
+        repaint(window);
+    }
+}
+
+fn press_item(window: HWND, point: POINT) {
+    let pressed = item_at(window, point).map(|(index, _)| index);
+    STATE.with(|state| state.borrow_mut().pressed = pressed);
+
+    if pressed.is_some() {
+        repaint(window);
+    }
+}
+
+fn release_item(window: HWND, point: POINT) {
+    let pressed = STATE.with(|state| state.borrow_mut().pressed.take());
+    let Some(pressed) = pressed else {
+        return;
+    };
+
+    repaint(window);
+
+    let Some((index, item)) = item_at(window, point) else {
+        return;
+    };
+    if index != pressed {
+        return;
+    }
+
+    handle_click(window, item);
 }
 
 fn paint(window: HWND) {
     let Some(model) = model_snapshot() else {
         return;
     };
-    let font = STATE.with(|state| state.borrow().font);
-    let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-    let button = scale(BUTTON_SIZE, dpi);
-    let timer = scale(TIMER_WIDTH, dpi);
+    let (font, hovered, pressed) = STATE.with(|state| {
+        let state = state.borrow();
+        (state.font, state.hovered, state.pressed)
+    });
+    let dpi = window_dpi(window);
+    let items = control_items(&model);
+    let widths = item_widths(&items);
+    let radius = scale_for_dpi(PANEL_BUTTON_RADIUS, dpi);
 
-    unsafe {
-        let mut paint = PAINTSTRUCT::default();
-        let dc = BeginPaint(window, &mut paint);
-        let background = CreateSolidBrush(COLORREF(0x00202020));
-        FillRect(dc, &paint.rcPaint, background);
-        let _ = DeleteObject(background.into());
+    paint_buffered(window, font, |dc, _| {
+        for (index, item) in items.iter().enumerate() {
+            let rect = button_rect(&widths, index, dpi);
+            let label = item_label(*item, &model);
+            let enabled = item_enabled(*item, &model);
 
-        let mut labels: Vec<(String, i32)> = Vec::new();
-        if model.mode == ControlMode::PreRecording {
-            labels.push((
-                if model.settings.system_audio {
-                    "Audio"
-                } else {
-                    "No audio"
-                }
-                .into(),
-                button,
-            ));
-            labels.push((
-                if model.settings.mic_enabled {
-                    "Mic"
-                } else {
-                    "No mic"
-                }
-                .into(),
-                button,
-            ));
-            labels.push((
-                if model.settings.camera_enabled {
-                    "Camera"
-                } else {
-                    "No cam"
-                }
-                .into(),
-                button,
-            ));
-            labels.push(("Ratio".into(), button));
-            labels.push(("00:00".into(), timer));
-            labels.push((
-                if model.is_starting { "..." } else { "Record" }.into(),
-                button,
-            ));
-            labels.push(("Cancel".into(), button));
-            labels.push(("Drag".into(), button));
-        } else {
-            if model.settings.mic_enabled {
-                labels.push((
-                    if model.settings.mic_muted {
-                        "Unmute"
-                    } else {
-                        "Mute"
-                    }
-                    .into(),
-                    button,
-                ));
+            if *item == ControlItem::Timer {
+                draw_label(dc, &label, rect, BUTTON_TEXT);
+                continue;
             }
-            let minutes = model.elapsed_seconds.max(0) / 60;
-            let seconds = model.elapsed_seconds.max(0) % 60;
-            labels.push((format!("{minutes:02}:{seconds:02}"), timer));
-            labels.push((
-                if model.is_paused { "Resume" } else { "Pause" }.into(),
-                button,
-            ));
-            labels.push(("Stop".into(), button));
-            labels.push(("Restart".into(), button));
-            labels.push(("Delete".into(), button));
-            labels.push(("Drag".into(), button));
+
+            let state = button_state(
+                enabled && hovered == Some(index),
+                enabled && pressed == Some(index),
+            );
+            draw_pill(dc, rect, radius, button_fill(item_palette(*item), state));
+            draw_label(dc, &label, rect, item_text(*item, enabled));
         }
-
-        let separator = CreateSolidBrush(COLORREF(0x00454545));
-        let mut left = 0;
-        for (label, width) in labels {
-            if left > 0 {
-                let line = RECT {
-                    left,
-                    top: scale(8, dpi),
-                    right: left + 1,
-                    bottom: scale(40, dpi),
-                };
-                FillRect(dc, &line, separator);
-            }
-            let rect = RECT {
-                left: left + scale(3, dpi),
-                top: 0,
-                right: left + width - scale(3, dpi),
-                bottom: scale(PANEL_HEIGHT, dpi),
-            };
-            let color = if model.mode == ControlMode::PreRecording && model.is_starting {
-                COLORREF(0x00808080)
-            } else if label == "Record" || label == "Stop" || label == "Delete" {
-                COLORREF(0x006B6BFF)
-            } else {
-                COLORREF(0x00F2F2F2)
-            };
-            draw_text(dc, font, &label, rect, color);
-            left += width;
-        }
-        let _ = DeleteObject(separator.into());
-        let _ = EndPaint(window, &paint);
-    }
-}
-
-fn logical_x(window: HWND, physical_x: i32) -> i32 {
-    let dpi = unsafe { GetDpiForWindow(window) }.max(96) as i32;
-    (physical_x * 96) / dpi
-}
-
-fn is_drag_zone(window: HWND, x: i32) -> bool {
-    let Some(model) = model_snapshot() else {
-        return false;
-    };
-    logical_x(window, x) >= model_width(&model) - BUTTON_SIZE
+    });
 }
 
 fn append_menu_item(
@@ -539,95 +593,72 @@ fn confirm(window: HWND, title: &str, message: &str) -> bool {
     answer.0 == 6
 }
 
-fn handle_click(window: HWND, physical_x: i32) {
+fn toggle_mic_mute(window: HWND) {
+    STATE.with(|state| {
+        let shared = state.borrow().model.clone();
+        if let Some(shared) = shared {
+            if let Ok(mut current) = shared.lock() {
+                current.settings.mic_muted = !current.settings.mic_muted;
+            }
+        }
+    });
+    repaint(window);
+    emit("toggle-mic-mute");
+}
+
+fn handle_click(window: HWND, item: ControlItem) {
     let Some(model) = model_snapshot() else {
         return;
     };
-    let x = logical_x(window, physical_x);
-
-    if model.mode == ControlMode::PreRecording {
-        if model.is_starting {
-            return;
-        }
-        match x {
-            0..=47 => emit("toggle-system-audio"),
-            48..=95 => emit("toggle-mic"),
-            96..=143 => emit("toggle-camera"),
-            144..=191 => show_aspect_menu(window),
-            276..=323 => emit("start"),
-            324..=371 => emit("cancel"),
-            _ => {}
-        }
+    if !item_enabled(item, &model) {
         return;
     }
 
-    let mut offset = 0;
-    if model.settings.mic_enabled {
-        if x < BUTTON_SIZE {
-            STATE.with(|state| {
-                let shared = state.borrow().model.clone();
-                if let Some(shared) = shared {
-                    if let Ok(mut current) = shared.lock() {
-                        current.settings.mic_muted = !current.settings.mic_muted;
-                    }
-                }
-            });
-            unsafe {
-                let _ = InvalidateRect(Some(window), None, true);
+    match item {
+        ControlItem::SystemAudio => emit("toggle-system-audio"),
+        ControlItem::Mic => emit("toggle-mic"),
+        ControlItem::Camera => emit("toggle-camera"),
+        ControlItem::AspectRatio => show_aspect_menu(window),
+        ControlItem::Record => emit("start"),
+        ControlItem::Cancel => emit("cancel"),
+        ControlItem::MicMute => toggle_mic_mute(window),
+        ControlItem::PauseResume => emit(if model.is_paused { "resume" } else { "pause" }),
+        ControlItem::Stop => emit("stop"),
+        ControlItem::Restart => {
+            if confirm(
+                window,
+                "Restart Recording?",
+                "Discard the current recording and restart?",
+            ) {
+                emit("restart");
             }
-            emit("toggle-mic-mute");
-            return;
         }
-        offset += BUTTON_SIZE;
-    }
-    offset += TIMER_WIDTH;
-    if x < offset {
-        return;
-    }
-    if x < offset + BUTTON_SIZE {
-        emit(if model.is_paused { "resume" } else { "pause" });
-        return;
-    }
-    offset += BUTTON_SIZE;
-    if x < offset + BUTTON_SIZE {
-        emit("stop");
-        return;
-    }
-    offset += BUTTON_SIZE;
-    if x < offset + BUTTON_SIZE {
-        if confirm(
-            window,
-            "Restart Recording?",
-            "Discard the current recording and restart?",
-        ) {
-            emit("restart");
+        ControlItem::Delete => {
+            if confirm(window, "Delete Recording?", "Delete the current recording?") {
+                emit("delete");
+            }
         }
-        return;
-    }
-    offset += BUTTON_SIZE;
-    if x < offset + BUTTON_SIZE
-        && confirm(window, "Delete Recording?", "Delete the current recording?")
-    {
-        emit("delete");
+        ControlItem::Timer | ControlItem::Drag => {}
     }
 }
 
-fn handle_context_click(window: HWND, physical_x: i32) {
+fn handle_context_click(window: HWND, point: POINT) {
     let Some(model) = model_snapshot() else {
         return;
     };
     if model.mode != ControlMode::PreRecording || model.is_starting {
         return;
     }
-    match logical_x(window, physical_x) {
-        48..=95 => show_device_menu(
+
+    match item_at(window, point).map(|(_, item)| item) {
+        Some(ControlItem::Mic) => show_device_menu(
             window,
             "select-mic",
             &model.microphones,
             model.settings.mic_enabled,
             model.settings.selected_mic_id.as_deref(),
         ),
-        96..=143 => show_device_menu(
+        Some(ControlItem::Camera) => show_device_menu(
             window,
             "select-camera",
             &model.cameras,
@@ -665,15 +696,15 @@ fn refresh_escape_handler() -> bool {
     true
 }
 
-fn bottom_center_in_rect(rect: &RECT, width: i32, dpi: u32) -> (i32, i32) {
-    let width = scale(width, dpi);
+fn top_center_in_rect(rect: &RECT, width: i32, dpi: u32) -> (i32, i32) {
+    let width = scale_for_dpi(width, dpi);
     (
         rect.left + (rect.right - rect.left - width) / 2,
-        rect.bottom - scale(PANEL_HEIGHT, dpi) - scale(80, dpi),
+        rect.top + scale_for_dpi(CONTROL_TOP_MARGIN, dpi),
     )
 }
 
-fn bottom_center(model: &ControlModel, dpi: u32) -> (i32, i32) {
+fn top_center(model: &ControlModel, dpi: u32) -> (i32, i32) {
     let monitor = monitors()
         .into_iter()
         .find(|monitor| monitor.is_primary)
@@ -681,10 +712,10 @@ fn bottom_center(model: &ControlModel, dpi: u32) -> (i32, i32) {
     let Some(monitor) = monitor else {
         return (100, 100);
     };
-    bottom_center_in_rect(&monitor.rect, model_width(model), dpi)
+    top_center_in_rect(&monitor.work_rect, model_width(model), dpi)
 }
 
-fn bottom_center_for_window(window: HWND, model: &ControlModel, dpi: u32) -> (i32, i32) {
+fn top_center_for_window(window: HWND, model: &ControlModel, dpi: u32) -> (i32, i32) {
     let mut window_rect = RECT::default();
     if unsafe { GetWindowRect(window, &mut window_rect) }.is_ok() {
         let center_x = window_rect.left + (window_rect.right - window_rect.left) / 2;
@@ -695,10 +726,10 @@ fn bottom_center_for_window(window: HWND, model: &ControlModel, dpi: u32) -> (i3
                 && center_y >= monitor.rect.top
                 && center_y < monitor.rect.bottom
         }) {
-            return bottom_center_in_rect(&monitor.rect, model_width(model), dpi);
+            return top_center_in_rect(&monitor.work_rect, model_width(model), dpi);
         }
     }
-    bottom_center(model, dpi)
+    top_center(model, dpi)
 }
 
 fn resize_window(window: HWND, x: i32, y: i32, move_window: bool) {
@@ -717,11 +748,11 @@ fn resize_window(window: HWND, x: i32, y: i32, move_window: bool) {
             Some(HWND_TOPMOST),
             x,
             y,
-            scale(model_width(&model), dpi),
-            scale(PANEL_HEIGHT, dpi),
+            scale_for_dpi(model_width(&model), dpi),
+            scale_for_dpi(panel_height(), dpi),
             flags,
         );
-        let _ = InvalidateRect(Some(window), None, true);
+        let _ = InvalidateRect(Some(window), None, false);
     }
     update_region(window);
 }
@@ -741,7 +772,7 @@ fn show_panel(
         let dpi = unsafe { GetDpiForWindow(window) }.max(96);
         let (x, y) = position.unwrap_or_else(|| {
             model_snapshot()
-                .map(|model| bottom_center(&model, dpi))
+                .map(|model| top_center(&model, dpi))
                 .unwrap_or((100, 100))
         });
         resize_window(window, x, y, true);
@@ -760,13 +791,14 @@ fn show_panel(
         return true;
     }
 
-    ensure_window_class(CLASS_NAME, Some(wndproc), None);
+    let hand = unsafe { LoadCursorW(None, IDC_HAND) }.ok();
+    ensure_window_class(CLASS_NAME, Some(wndproc), hand);
     let (x, y) = position.unwrap_or((100, 100));
     let rect = RECT {
         left: x,
         top: y,
-        right: x + PRE_WIDTH,
-        bottom: y + PANEL_HEIGHT,
+        right: x + panel_width(&item_widths(&control_items(&ControlModel::default()))),
+        bottom: y + panel_height(),
     };
     let styles = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED;
     let Some(window) = create_popup_window(CLASS_NAME, styles, &rect) else {
@@ -779,7 +811,7 @@ fn show_panel(
     let dpi = unsafe { GetDpiForWindow(window) }.max(96);
     let (x, y) = position.unwrap_or_else(|| {
         model_snapshot()
-            .map(|model| bottom_center(&model, dpi))
+            .map(|model| top_center(&model, dpi))
             .unwrap_or((100, 100))
     });
     resize_window(window, x, y, true);
@@ -807,7 +839,7 @@ fn refresh_panel(reposition: bool) -> bool {
     };
     let position = if reposition {
         let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-        model_snapshot().map(|model| bottom_center_for_window(window, &model, dpi))
+        model_snapshot().map(|model| top_center_for_window(window, &model, dpi))
     } else {
         None
     };
@@ -1181,28 +1213,59 @@ impl Module for RecordingControlModule {
 mod tests {
     use super::*;
 
-    #[test]
-    fn bottom_center_scales_geometry_at_96_dpi() {
-        let rect = RECT {
+    fn screen() -> RECT {
+        RECT {
             left: 0,
             top: 0,
             right: 1920,
             bottom: 1080,
-        };
-
-        assert_eq!(bottom_center_in_rect(&rect, PRE_WIDTH, 96), (750, 952));
+        }
     }
 
     #[test]
-    fn bottom_center_scales_geometry_at_192_dpi() {
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: 1920,
-            bottom: 1080,
-        };
+    fn top_center_scales_geometry_at_96_dpi() {
+        assert_eq!(top_center_in_rect(&screen(), 500, 96), (710, 24));
+    }
 
-        assert_eq!(bottom_center_in_rect(&rect, PRE_WIDTH, 192), (540, 824));
+    #[test]
+    fn top_center_scales_geometry_at_192_dpi() {
+        assert_eq!(top_center_in_rect(&screen(), 500, 192), (460, 48));
+    }
+
+    #[test]
+    fn recording_row_drops_the_pre_recording_controls() {
+        let mut model = ControlModel::default();
+        assert_eq!(
+            control_items(&model).first(),
+            Some(&ControlItem::SystemAudio)
+        );
+        assert!(control_items(&model).contains(&ControlItem::Record));
+
+        model.mode = ControlMode::Recording;
+        let items = control_items(&model);
+        assert!(!items.contains(&ControlItem::MicMute));
+        assert_eq!(items.first(), Some(&ControlItem::Timer));
+        assert_eq!(items.last(), Some(&ControlItem::Drag));
+
+        model.settings.mic_enabled = true;
+        let items = control_items(&model);
+        assert_eq!(items.first(), Some(&ControlItem::MicMute));
+        assert!(model_width(&model) > panel_width(&[ITEM_WIDTH]));
+    }
+
+    #[test]
+    fn starting_state_disables_every_pre_recording_button() {
+        let mut model = ControlModel::default();
+        model.is_starting = true;
+
+        assert!(!item_enabled(ControlItem::Record, &model));
+        assert!(!item_enabled(ControlItem::Timer, &model));
+        assert_eq!(item_label(ControlItem::Record, &model), "…");
+
+        model.is_starting = false;
+        assert!(item_enabled(ControlItem::Record, &model));
+        assert!(!item_enabled(ControlItem::Timer, &model));
+        assert_eq!(item_label(ControlItem::Record, &model), "Record");
     }
 
     #[test]

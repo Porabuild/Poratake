@@ -79,6 +79,9 @@ export async function getThumbnail(
       time: 0.5,
     });
     success = result.success;
+    if (!success) {
+      console.error(`Failed to generate video thumbnail: ${result.message}`);
+    }
   } else {
     success = generateImageThumbnail(originalPath, thumbnailPath);
   }
