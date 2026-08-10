@@ -48,4 +48,6 @@ src/main/daemon/capty-daemon
 .plans/
 .agents/
 .claude/
+.commandcode/
+.poracode/
 skills-lock.json
