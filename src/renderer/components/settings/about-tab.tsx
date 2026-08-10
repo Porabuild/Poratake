@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
+  Code2,
   Globe,
   Heart,
+  Scale,
   RefreshCw,
   Download,
   CheckCircle,
@@ -19,11 +21,18 @@ import { Separator } from '@/renderer/components/ui/separator';
 import { Button } from '@/renderer/components/ui/button';
 import type { UpdateState, UpdateStatus } from '@/types/update';
 import appIcon from '@build/icon.png';
+import BrandLogo from '@/renderer/components/brand-logo';
+
+const SOURCE_URL = 'https://github.com/SDSLeon/capty';
+const UPSTREAM_URL = 'https://github.com/capty-app/capty';
 
 export default function AboutTab() {
   const [version, setVersion] = useState('0.0.0');
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const versionSourceUrl = `${SOURCE_URL}/tree/v${version}`;
+  const licenseUrl = `${SOURCE_URL}/blob/v${version}/LICENSE`;
+  const thirdPartyNoticesUrl = `${SOURCE_URL}/blob/v${version}/THIRD_PARTY_NOTICES.md`;
 
   useEffect(() => {
     const getInitialData = async () => {
@@ -82,6 +91,8 @@ export default function AboutTab() {
         return <CheckCircle className="h-4 w-4 text-green-500" />;
       case 'error':
         return <AlertCircle className="h-4 w-4 text-red-500" />;
+      case 'unsupported':
+        return <AlertCircle className="text-muted-foreground h-4 w-4" />;
       case 'up_to_date':
         return <CheckCircle className="h-4 w-4 text-green-500" />;
       default:
@@ -101,6 +112,8 @@ export default function AboutTab() {
         return 'Update ready to install';
       case 'error':
         return 'Update check failed';
+      case 'unsupported':
+        return 'Automatic updates are not available on this platform';
       case 'up_to_date':
         return 'You are up to date';
       default:
@@ -131,7 +144,6 @@ export default function AboutTab() {
           )}
         </div>
 
-        {}
         {status === 'downloading' && (
           <div className="space-y-1">
             <div className="bg-muted h-2 w-full overflow-hidden rounded-full">
@@ -146,7 +158,6 @@ export default function AboutTab() {
           </div>
         )}
 
-        {}
         {(status === 'available' || status === 'ready') &&
           updateState.latestVersion && (
             <div className="rounded-lg border bg-green-500/5 p-3">
@@ -166,7 +177,6 @@ export default function AboutTab() {
             </div>
           )}
 
-        {}
         {status === 'ready' && (
           <Button onClick={handleInstallUpdate} className="w-full">
             <Download className="mr-2 h-4 w-4" />
@@ -174,7 +184,6 @@ export default function AboutTab() {
           </Button>
         )}
 
-        {}
         {status === 'error' && updateState.error && (
           <p className="text-xs text-red-500">{updateState.error}</p>
         )}
@@ -185,7 +194,7 @@ export default function AboutTab() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-medium">About Capty</h2>
+        <h2 className="text-lg font-medium">About Poratake</h2>
         <p className="text-muted-foreground text-sm">
           Application information and updates
         </p>
@@ -194,22 +203,27 @@ export default function AboutTab() {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-4">
-            <img src={appIcon} alt="Capty" className="h-16 w-16 rounded-xl" />
+            <img
+              src={appIcon}
+              alt="Poratake"
+              className="h-16 w-16 rounded-xl"
+            />
             <div>
-              <CardTitle className="text-2xl">Capty</CardTitle>
+              <CardTitle>
+                <BrandLogo />
+              </CardTitle>
               <CardDescription>Version {version}</CardDescription>
             </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-muted-foreground text-sm">
-            A beautiful screenshot tool for macOS. Capture, annotate, and share
-            screenshots with powerful editing tools and wallpaper backgrounds.
+            Capture, annotate, record, edit, and share from one focused
+            workspace on macOS and Windows.
           </p>
 
           <Separator />
 
-          {}
           {renderUpdateSection()}
 
           <Separator />
@@ -221,36 +235,85 @@ export default function AboutTab() {
                 href="#"
                 onClick={e => {
                   e.preventDefault();
-                  window.ipcRenderer.send('open-external', 'https://capty.app');
+                  window.ipcRenderer.send('open-external', versionSourceUrl);
                 }}
                 className="text-muted-foreground hover:text-foreground transition-colors"
               >
-                capty.app
+                This version&apos;s source
+              </a>
+            </div>
+            <div className="flex items-center gap-3 text-sm">
+              <Code2 className="text-muted-foreground h-4 w-4" />
+              <a
+                href="#"
+                onClick={e => {
+                  e.preventDefault();
+                  window.ipcRenderer.send('open-external', UPSTREAM_URL);
+                }}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Original Capty project
               </a>
             </div>
             <div className="flex items-center gap-3 text-sm">
               <Heart className="text-muted-foreground h-4 w-4" />
               <span className="text-muted-foreground">
-                Made with love for the macOS community
+                Made for people who capture, explain, and share
               </span>
             </div>
           </div>
 
           <Separator />
 
-          <div className="flex items-center justify-between">
-            <div className="text-muted-foreground text-xs">
-              <p>&copy; 2025 Capty. All rights reserved.</p>
+          <div className="space-y-3">
+            <div className="text-muted-foreground space-y-1 text-xs">
+              <p>
+                Poratake is a modified version of Capty. Modifications made in
+                2026.
+              </p>
+              <p>
+                Copyright &copy; 2026 Capty. Copyright in Poratake modifications
+                is held by their respective contributors.
+              </p>
+              <p>
+                Licensed under GNU AGPL v3.0, without warranty. You may
+                redistribute Poratake under the same license.
+              </p>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                window.ipcRenderer.send('open-external', 'https://capty.app');
-              }}
-            >
-              Visit Website
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  window.ipcRenderer.send('open-external', versionSourceUrl);
+                }}
+              >
+                <Code2 className="mr-2 h-4 w-4" />
+                This Version&apos;s Source
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  window.ipcRenderer.send('open-external', licenseUrl);
+                }}
+              >
+                <Scale className="mr-2 h-4 w-4" />
+                GNU AGPL v3.0
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  window.ipcRenderer.send(
+                    'open-external',
+                    thirdPartyNoticesUrl
+                  );
+                }}
+              >
+                Third-party Notices
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import AllInOneToolbar from '@/renderer/components/area-overlay/all-in-one-toolbar';
 import CrosshairGuides from '@/renderer/components/area-overlay/crosshair-guides';
 import SelectionFrame from '@/renderer/components/area-overlay/selection-frame';
@@ -18,6 +24,12 @@ export default function AreaOverlayWindow({
 }) {
   const frozenFrame = useRef<HTMLImageElement>(null);
   const [toolbar, setToolbar] = useState(params.toolbar);
+  const [isPickingColor, setIsPickingColor] = useState(false);
+
+  useLayoutEffect(() => {
+    setToolbar(params.toolbar);
+    setIsPickingColor(false);
+  }, [params.sessionId, params.toolbar]);
 
   const send = useCallback(
     (channel: string, rect: AreaOverlayRect) => {
@@ -39,6 +51,11 @@ export default function AreaOverlayWindow({
       window.ipcRenderer.send('area-overlay:toolbar', action),
     []
   );
+
+  const handlePickingColorChange = useCallback((active: boolean) => {
+    setIsPickingColor(active);
+    window.ipcRenderer.send('area-overlay:color-picker', active);
+  }, []);
 
   useEffect(() => {
     const handleToolbar = (
@@ -62,6 +79,7 @@ export default function AreaOverlayWindow({
     trackPointer,
     clearPointer,
   } = useAreaSelection({
+    resetKey: params.sessionId,
     interactive: params.interactive,
     initialRect: params.rect,
     initialAspectRatio: params.aspectRatio,
@@ -85,7 +103,7 @@ export default function AreaOverlayWindow({
 
   useEffect(() => {
     const announceReady = () =>
-      window.ipcRenderer.send('area-overlay:ready', params.displayId);
+      window.ipcRenderer.send('area-overlay:ready', params.sessionId);
     const image = frozenFrame.current;
 
     if (!image) {
@@ -94,27 +112,27 @@ export default function AreaOverlayWindow({
     }
 
     image.decode().then(announceReady, announceReady);
-  }, [params.displayId, params.imageUrl]);
+  }, [params.displayId, params.imageUrl, params.sessionId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !isPickingColor) {
         cancel();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [cancel]);
+  }, [cancel, isPickingColor]);
 
   const visibleRect = rect && rect.width > 0 && rect.height > 0 ? rect : null;
 
   return (
     <div
       className="fixed inset-0 overflow-hidden select-none"
-      style={{ cursor }}
-      onMouseDown={startDrag}
+      style={{ cursor: isPickingColor ? 'default' : cursor }}
+      onMouseDown={isPickingColor ? undefined : startDrag}
       onMouseMove={event =>
-        trackPointer({ x: event.clientX, y: event.clientY })
+        !isPickingColor && trackPointer({ x: event.clientX, y: event.clientY })
       }
       onMouseLeave={clearPointer}
     >
@@ -127,18 +145,18 @@ export default function AreaOverlayWindow({
           draggable={false}
         />
       ) : null}
-      <SelectionScrim rect={visibleRect} />
-      {visibleRect ? (
+      {!isPickingColor ? <SelectionScrim rect={visibleRect} /> : null}
+      {visibleRect && !isPickingColor ? (
         <SelectionFrame
           rect={visibleRect}
           viewportHeight={bounds.height}
           interactive={params.interactive}
         />
       ) : null}
-      {!interacting && !visibleRect && pointer ? (
+      {!isPickingColor && !interacting && !visibleRect && pointer ? (
         <CrosshairGuides x={pointer.x} y={pointer.y} />
       ) : null}
-      {params.showPrompt && !interacting && !visibleRect ? (
+      {params.showPrompt && !isPickingColor && !interacting && !visibleRect ? (
         <div
           className={`pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm text-white shadow-lg ${
             toolbar ? 'top-24' : 'top-8'
@@ -150,8 +168,10 @@ export default function AreaOverlayWindow({
       {toolbar ? (
         <AllInOneToolbar
           recordingEnabled={toolbar.recordingEnabled}
-          rect={visibleRect}
+          ocrEnabled={toolbar.ocrEnabled}
+          activeMode={toolbar.activeMode}
           onAction={sendToolbarAction}
+          onPickingColorChange={handlePickingColorChange}
         />
       ) : null}
     </div>

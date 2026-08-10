@@ -1,14 +1,24 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import fs from 'fs';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { daemon } from '@/main/daemon';
+import { isSettingsWindowWebContents } from '@/main/settings/window';
+import {
+  applyTitleBarAppearance,
+  supportsNativeWindowMaterial,
+  supportsWindowsAcrylic,
+} from '@/main/utils/title-bar';
 import type {
   CloudConfig,
   CustomBackground,
   CustomGradient,
+  AppearanceConfig,
   SettingsConfig,
+  SettingsUiConfig,
   WallpaperPreset,
 } from '@/types/settings.ts';
+import { APP_THEME_PRESETS } from '@/types/theme';
 import {
   DEFAULT_CLOUD_CONFIG,
   DEFAULT_REST_PROVIDER_CONFIG,
@@ -35,6 +45,74 @@ const CONFIG_FILE = getConfigFilePath();
 
 let currentConfig: SettingsConfig = { ...DEFAULT_SETTINGS };
 let configLoaded = false;
+const configUpdateListeners = new Set<
+  (updates: Partial<SettingsConfig>) => void
+>();
+
+export function onConfigUpdated(
+  listener: (updates: Partial<SettingsConfig>) => void
+): () => void {
+  configUpdateListeners.add(listener);
+  return () => configUpdateListeners.delete(listener);
+}
+
+const APPEARANCE_MODES = new Set(['system', 'light', 'dark']);
+const APP_THEME_IDS = new Set(APP_THEME_PRESETS.map(theme => theme.id));
+
+function migrateAppearanceConfig(
+  savedAppearance?: Partial<AppearanceConfig>
+): AppearanceConfig {
+  return {
+    mode: APPEARANCE_MODES.has(savedAppearance?.mode ?? '')
+      ? (savedAppearance?.mode ?? DEFAULT_SETTINGS.appearance.mode)
+      : DEFAULT_SETTINGS.appearance.mode,
+    theme: APP_THEME_IDS.has(savedAppearance?.theme ?? '')
+      ? (savedAppearance?.theme ?? DEFAULT_SETTINGS.appearance.theme)
+      : DEFAULT_SETTINGS.appearance.theme,
+  };
+}
+
+function getSettingsUiConfig(
+  config: SettingsConfig,
+  includeCloudCredentials: boolean
+): SettingsUiConfig {
+  const settings = {
+    ...config,
+    cloud: includeCloudCredentials
+      ? config.cloud
+      : {
+          ...config.cloud,
+          s3: {
+            ...config.cloud.s3,
+            accessKeyId: '',
+            secretAccessKey: '',
+          },
+          rest: {
+            ...config.cloud.rest,
+            headers: config.cloud.rest.headers.map(header => ({
+              ...header,
+              value: '',
+            })),
+          },
+        },
+  };
+  Reflect.deleteProperty(settings, 'wallpaper');
+  return settings;
+}
+
+function migrateStorageConfig(
+  savedStorage?: Partial<SettingsConfig['storage']>
+): SettingsConfig['storage'] {
+  const storage = { ...DEFAULT_STORAGE_CONFIG, ...savedStorage };
+
+  return {
+    ...storage,
+    screenshotsPath:
+      storage.screenshotsPath || path.join(app.getPath('pictures'), 'Poratake'),
+    recordingsPath:
+      storage.recordingsPath || path.join(app.getPath('videos'), 'Poratake'),
+  };
+}
 
 function migrateWallpaperConfig(
   savedWallpaper?: SettingsConfig['wallpaper']
@@ -155,6 +233,7 @@ export function loadConfig(): SettingsConfig {
       const fileContent = fs.readFileSync(CONFIG_FILE, 'utf-8');
       const savedConfig = JSON.parse(fileContent);
       currentConfig = {
+        appearance: migrateAppearanceConfig(savedConfig.appearance),
         general: { ...DEFAULT_SETTINGS.general, ...savedConfig.general },
         screenshot: {
           ...DEFAULT_SETTINGS.screenshot,
@@ -215,7 +294,7 @@ export function loadConfig(): SettingsConfig {
         },
         cloud: migrateCloudConfig(savedConfig.cloud),
         recording: { ...DEFAULT_SETTINGS.recording, ...savedConfig.recording },
-        storage: { ...DEFAULT_STORAGE_CONFIG, ...savedConfig.storage },
+        storage: migrateStorageConfig(savedConfig.storage),
         saveLocations: {
           ...DEFAULT_SAVE_LOCATIONS_CONFIG,
           ...savedConfig.saveLocations,
@@ -266,6 +345,10 @@ export function updateConfig(updates: Partial<SettingsConfig>): SettingsConfig {
   currentConfig = {
     ...currentConfig,
     ...updates,
+    appearance: migrateAppearanceConfig({
+      ...currentConfig.appearance,
+      ...updates.appearance,
+    }),
     general: { ...currentConfig.general, ...updates.general },
     screenshot: { ...currentConfig.screenshot, ...updates.screenshot },
     shortcuts: {
@@ -340,6 +423,7 @@ export function updateConfig(updates: Partial<SettingsConfig>): SettingsConfig {
   }
 
   saveConfig(currentConfig);
+  configUpdateListeners.forEach(listener => listener(updates));
   return currentConfig;
 }
 
@@ -368,20 +452,60 @@ function applyLoginItemSetting() {
 }
 
 export function init() {
-  loadConfig();
+  const config = loadConfig();
+  applyTitleBarAppearance(config.appearance);
 
   applyLoginItemSetting();
 
-  ipcMain.handle('settings:get', () => {
-    return getConfig();
+  ipcMain.handle('settings:get-ui', event => {
+    return getSettingsUiConfig(
+      getConfig(),
+      isSettingsWindowWebContents(event.sender)
+    );
+  });
+
+  ipcMain.handle('settings:get-appearance', () => {
+    return getConfig().appearance;
+  });
+
+  ipcMain.handle('settings:apply-window-material', event => {
+    const nativeCapable = supportsNativeWindowMaterial();
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!nativeCapable || !window || window.isDestroyed()) {
+      return { nativeCapable: false };
+    }
+
+    if (supportsWindowsAcrylic()) {
+      window.setBackgroundMaterial('acrylic');
+      window.setBackgroundColor('#00000000');
+    }
+    return { nativeCapable: true };
   });
 
   ipcMain.handle(
     'settings:update',
-    (_event, updates: Partial<SettingsConfig>) => {
-      const updatedConfig = updateConfig(updates);
+    (event, updates: Partial<SettingsConfig>) => {
+      const isSettingsWindow = isSettingsWindowWebContents(event.sender);
+      const allowedUpdates = { ...updates };
+      if (!isSettingsWindow) {
+        Reflect.deleteProperty(allowedUpdates, 'cloud');
+      }
+      const updatedConfig = updateConfig(allowedUpdates);
 
-      if (updates.screenshot) {
+      if (allowedUpdates.appearance) {
+        applyTitleBarAppearance(updatedConfig.appearance);
+      }
+
+      if (allowedUpdates.appearance) {
+        BrowserWindow.getAllWindows().forEach(win => {
+          win.webContents.send(
+            'settings:appearance-updated',
+            updatedConfig.appearance
+          );
+        });
+      }
+
+      if (allowedUpdates.screenshot) {
         BrowserWindow.getAllWindows().forEach(win => {
           win.webContents.send('screenshot-settings:updated', {
             closeOnCopy: updatedConfig.screenshot.closeOnCopy,
@@ -391,14 +515,26 @@ export function init() {
         });
       }
 
-      return updatedConfig;
+      return getSettingsUiConfig(updatedConfig, isSettingsWindow);
     }
   );
 
-  ipcMain.handle('settings:reset', () => {
+  ipcMain.handle('settings:reset', event => {
+    if (!isSettingsWindowWebContents(event.sender)) {
+      return getSettingsUiConfig(currentConfig, false);
+    }
+
     currentConfig = { ...DEFAULT_SETTINGS };
     saveConfig(currentConfig);
+    configUpdateListeners.forEach(listener => listener(currentConfig));
+    applyTitleBarAppearance(currentConfig.appearance);
     applyLoginItemSetting();
+    BrowserWindow.getAllWindows().forEach(win => {
+      win.webContents.send(
+        'settings:appearance-updated',
+        currentConfig.appearance
+      );
+    });
     return currentConfig;
   });
 
@@ -568,9 +704,13 @@ export function init() {
   });
 
   ipcMain.handle('storage:getDefaultPaths', () => {
+    const storage = getConfig().storage;
     return {
-      screenshots: path.join(app.getPath('pictures'), 'Capty'),
-      recordings: path.join(app.getPath('videos'), 'Capty'),
+      screenshots:
+        storage.screenshotsPath ||
+        path.join(app.getPath('pictures'), 'Poratake'),
+      recordings:
+        storage.recordingsPath || path.join(app.getPath('videos'), 'Poratake'),
     };
   });
 
@@ -637,19 +777,7 @@ export function init() {
           return null;
         }
 
-        const imageBuffer = fs.readFileSync(filePath);
-        const ext = path.extname(filePath).toLowerCase();
-        const mimeType =
-          ext === '.png'
-            ? 'image/png'
-            : ext === '.jpg' || ext === '.jpeg'
-              ? 'image/jpeg'
-              : ext === '.heic'
-                ? 'image/heic'
-                : 'image/png';
-
-        const base64 = imageBuffer.toString('base64');
-        return `data:${mimeType};base64,${base64}`;
+        return pathToFileURL(filePath).href;
       }
 
       return null;

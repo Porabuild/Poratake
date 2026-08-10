@@ -32,4 +32,12 @@ enum MediaDeviceDiscovery {
         }
         return session.devices.map { MediaDevice(id: $0.uniqueID, label: $0.localizedName) }
     }
+
+    static func defaultMicrophoneId() -> String? {
+        AVCaptureDevice.default(for: .audio)?.uniqueID
+    }
+
+    static func defaultCameraId() -> String? {
+        AVCaptureDevice.default(for: .video)?.uniqueID
+    }
 }

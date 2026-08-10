@@ -48,6 +48,7 @@ interface ExportSettingsPanelProps {
   onExportSettingsChange: (settings: ExportSettings) => void;
   onExport: (options: VideoExportOptions) => void;
   isExporting: boolean;
+  exportError: string | null;
   videoDurationSeconds: number;
   hasCamera: boolean;
   hasWallpaper: boolean;
@@ -220,6 +221,7 @@ interface ExportEstimateSectionProps {
   hasCamera: boolean;
   hasWallpaper: boolean;
   isExporting: boolean;
+  exportError: string | null;
   onExport: () => void;
   onOpenInFinderChange: (value: boolean) => void;
   uploadToCloud: boolean;
@@ -237,6 +239,7 @@ function ExportEstimateSection({
   hasCamera,
   hasWallpaper,
   isExporting,
+  exportError,
   onExport,
   onOpenInFinderChange,
   uploadToCloud,
@@ -315,6 +318,11 @@ function ExportEstimateSection({
       <Button className="w-full" onClick={onExport} disabled={isExporting}>
         {buttonText}
       </Button>
+      {exportError && (
+        <p className="text-destructive text-xs" role="alert">
+          {exportError}
+        </p>
+      )}
       <CloudUploadStatus
         uploadState={cloudUploadState}
         uploadedUrl={uploadedUrl}
@@ -330,6 +338,7 @@ export default function ExportSettingsPanel({
   onExportSettingsChange,
   onExport,
   isExporting,
+  exportError,
   videoDurationSeconds,
   hasCamera,
   hasWallpaper,
@@ -604,6 +613,7 @@ export default function ExportSettingsPanel({
         hasWallpaper={hasWallpaper}
         isExporting={isExporting}
         onExport={handleExport}
+        exportError={exportError}
         onOpenInFinderChange={setOpenInFinder}
         uploadToCloud={uploadToCloud}
         onUploadToCloudChange={onUploadToCloudChange}
@@ -617,7 +627,7 @@ export default function ExportSettingsPanel({
       <UpgradeDialog
         open={upgradeOpen}
         onOpenChange={setUpgradeOpen}
-        reason="Export in 4K, 60fps, Studio quality and GIF with Capty Pro."
+        reason="A Capty license unlocks 4K, 60fps, Studio quality, and GIF export in Poratake."
       />
     </div>
   );

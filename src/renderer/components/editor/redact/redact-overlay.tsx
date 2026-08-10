@@ -5,12 +5,12 @@ import {
   useImperativeHandle,
   useMemo,
 } from 'react';
-import type {
-  Annotation,
-  RedactAnnotation,
-  RedactIntensity,
-} from '@/types/editor';
+import type { Annotation, RedactAnnotation } from '@/types/editor';
 import type { BalanceCrop } from '@/renderer/utils/color-detection';
+import {
+  pixelateImageData,
+  REDACT_INTENSITY_MAP,
+} from '@/renderer/utils/redact';
 
 export interface RedactOverlayProps {
   image: HTMLImageElement | null;
@@ -28,22 +28,6 @@ export interface RedactOverlayProps {
 export interface RedactOverlayHandle {
   getCanvas: () => HTMLCanvasElement | null;
 }
-
-const INTENSITY_MAP: Record<
-  RedactIntensity,
-  { pixelSize: number; blurRadius: number }
-> = {
-  1: { pixelSize: 4, blurRadius: 4 },
-  2: { pixelSize: 8, blurRadius: 8 },
-  3: { pixelSize: 12, blurRadius: 12 },
-  4: { pixelSize: 16, blurRadius: 16 },
-  5: { pixelSize: 20, blurRadius: 20 },
-  6: { pixelSize: 24, blurRadius: 24 },
-  7: { pixelSize: 28, blurRadius: 30 },
-  8: { pixelSize: 32, blurRadius: 36 },
-  9: { pixelSize: 40, blurRadius: 44 },
-  10: { pixelSize: 48, blurRadius: 52 },
-};
 
 const pixelateRegion = (
   ctx: CanvasRenderingContext2D,
@@ -87,35 +71,7 @@ const pixelateRegion = (
     clampedHeight
   );
   const data = imageData.data;
-
-  for (let py = 0; py < clampedHeight; py += scaledBlockSize) {
-    for (let px = 0; px < clampedWidth; px += scaledBlockSize) {
-      const sampleX = Math.min(
-        px + Math.floor(scaledBlockSize / 2),
-        clampedWidth - 1
-      );
-      const sampleY = Math.min(
-        py + Math.floor(scaledBlockSize / 2),
-        clampedHeight - 1
-      );
-      const sampleIdx = (sampleY * clampedWidth + sampleX) * 4;
-
-      const r = data[sampleIdx];
-      const g = data[sampleIdx + 1];
-      const b = data[sampleIdx + 2];
-      const a = data[sampleIdx + 3];
-
-      for (let by = 0; by < scaledBlockSize && py + by < clampedHeight; by++) {
-        for (let bx = 0; bx < scaledBlockSize && px + bx < clampedWidth; bx++) {
-          const idx = ((py + by) * clampedWidth + (px + bx)) * 4;
-          data[idx] = r;
-          data[idx + 1] = g;
-          data[idx + 2] = b;
-          data[idx + 3] = a;
-        }
-      }
-    }
-  }
+  pixelateImageData(data, clampedWidth, clampedHeight, scaledBlockSize);
 
   ctx.putImageData(imageData, clampedX, clampedY);
 };
@@ -247,7 +203,8 @@ const applyRedactEffect = (
 
   if (rectW <= 0 || rectH <= 0) return;
 
-  const intensity = INTENSITY_MAP[redact.intensity] || INTENSITY_MAP[5];
+  const intensity =
+    REDACT_INTENSITY_MAP[redact.intensity] || REDACT_INTENSITY_MAP[5];
 
   switch (redact.style) {
     case 'pixelate':

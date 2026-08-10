@@ -1,12 +1,15 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { isMac } from '@/main/utils/platform';
+import { prewarmCapturePreview } from '@/main/capture/capture-preview';
+import { prewarmAreaOverlay } from '@/main/capture/area-overlay';
+import { onConfigUpdated } from '@/main/settings';
 
 export function resetScreenCaptureCache(): void {
   if (!isMac) {
     return;
   }
 
-  exec('killall screencapturemgr 2>/dev/null', error => {
+  execFile('killall', ['screencapturemgr'], error => {
     if (error) {
       console.log('screencapturemgr not running or already killed');
     } else {
@@ -18,5 +21,13 @@ export function resetScreenCaptureCache(): void {
 }
 
 export function init(): void {
+  onConfigUpdated(updates => {
+    if (!updates.screenshot && !updates.recording) return;
+    prewarmCapturePreview();
+  });
+  prewarmCapturePreview();
+  if (!isMac) {
+    prewarmAreaOverlay();
+  }
   // Daemon cleanup is automatic - child process dies with parent
 }

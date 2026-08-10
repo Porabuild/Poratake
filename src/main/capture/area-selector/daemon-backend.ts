@@ -12,7 +12,10 @@ import type {
 } from './types';
 
 let pendingAreaSelection: AreaSelection | null = null;
-let eventCleanup: (() => void) | null = null;
+let callbackCleanup: (() => void) | null = null;
+let completionCleanup: (() => void) | null = null;
+let completePendingSelection:
+  ((selection: AreaSelection | null) => void) | null = null;
 
 function handleDaemonEvent(
   event: string,
@@ -45,24 +48,24 @@ function handleDaemonEvent(
 }
 
 function setupEventListener(options?: StartAreaSelectionOptions): void {
-  if (eventCleanup) {
-    eventCleanup();
-  }
+  callbackCleanup?.();
 
   const handler = (event: string, data: unknown) => {
     handleDaemonEvent(event, data, options);
   };
 
   daemon.onEvent(handler);
-  eventCleanup = () => {
+  callbackCleanup = () => {
     daemon.offEvent(handler);
-    eventCleanup = null;
+    callbackCleanup = null;
   };
 }
 
 function cleanupEventListener(): void {
-  eventCleanup?.();
-  eventCleanup = null;
+  callbackCleanup?.();
+  completionCleanup?.();
+  callbackCleanup = null;
+  completionCleanup = null;
 }
 
 export function updateAreaSelectionCallbacks(
@@ -84,48 +87,44 @@ async function startDaemonAreaSelector(
   },
   options?: StartAreaSelectionOptions
 ): Promise<AreaSelection | null> {
+  completePendingSelection?.(null);
   setupEventListener(options);
+
+  let settle: (selection: AreaSelection | null) => void = () => {};
+  const result = new Promise<AreaSelection | null>(resolve => {
+    let isPending = true;
+    const handler = (event: string, data: unknown) => {
+      if (event === 'area-selector:confirmed') {
+        settle({ ...(data as AreaSelection), status: 'confirmed' });
+      } else if (event === 'area-selector:cancelled') {
+        settle(null);
+      }
+    };
+
+    completionCleanup = () => {
+      daemon.offEvent(handler);
+      completionCleanup = null;
+    };
+    settle = selection => {
+      if (!isPending) return;
+
+      isPending = false;
+      completePendingSelection = null;
+      cleanupEventListener();
+      resolve(selection);
+    };
+    completePendingSelection = settle;
+    daemon.onEvent(handler);
+  });
 
   try {
     await daemon.call('area-selector', 'start', params);
   } catch (error) {
     console.error('Failed to start area selector:', error);
-    cleanupEventListener();
-    return null;
+    settle(null);
   }
 
-  return new Promise(resolve => {
-    const checkInterval = setInterval(() => {
-      if (pendingAreaSelection?.status === 'confirmed') {
-        clearInterval(checkInterval);
-        cleanupEventListener();
-        resolve(pendingAreaSelection);
-      } else if (pendingAreaSelection === null && !eventCleanup) {
-        clearInterval(checkInterval);
-        resolve(null);
-      }
-    }, 50);
-
-    const handler = (event: string) => {
-      if (event === 'area-selector:confirmed') {
-        clearInterval(checkInterval);
-        cleanupEventListener();
-        resolve(pendingAreaSelection);
-      } else if (event === 'area-selector:cancelled') {
-        clearInterval(checkInterval);
-        cleanupEventListener();
-        resolve(null);
-      }
-    };
-
-    daemon.onEvent(handler);
-    const originalCleanup = eventCleanup;
-    eventCleanup = () => {
-      daemon.offEvent(handler);
-      originalCleanup?.();
-      eventCleanup = null;
-    };
-  });
+  return result;
 }
 
 export async function startAreaSelection(
@@ -259,6 +258,7 @@ export async function confirmAreaSelection(): Promise<AreaSelection | null> {
     await daemon.call('area-selector', 'confirm');
     const selection = pendingAreaSelection;
     pendingAreaSelection = null;
+    completePendingSelection?.(selection);
     cleanupEventListener();
     return selection;
   } catch (error) {
@@ -271,6 +271,7 @@ export async function cancelAreaSelection(
   silent: boolean = false
 ): Promise<void> {
   if (silent) {
+    completePendingSelection?.(null);
     cleanupEventListener();
   }
 
@@ -282,6 +283,7 @@ export async function cancelAreaSelection(
   pendingAreaSelection = null;
 
   if (!silent) {
+    completePendingSelection?.(null);
     cleanupEventListener();
   }
 }

@@ -3,7 +3,8 @@ export type ContentType = 'screenshot' | 'video';
 export interface CapturePreviewParams {
   filePath: string;
   contentType: ContentType;
-  thumbnailBase64: string | null;
+  imageUrl: string | null;
+  thumbnailUrl?: string;
   historyId?: string;
 }
 

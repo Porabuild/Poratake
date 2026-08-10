@@ -1,7 +1,7 @@
-use crate::protocol::{param_str, Request};
+use crate::com::retain_process_mta;
+use crate::protocol::{param_str, respond_error, respond_success, Request};
 use crate::router::{method_not_found, Module, Reply};
-use serde_json::{json, Value};
-use std::collections::HashMap;
+use serde_json::json;
 use std::path::Path;
 use std::ptr::null;
 use windows::core::PCWSTR;
@@ -10,11 +10,12 @@ use windows::Win32::Graphics::Imaging::{
     WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnLoad,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 
 pub struct QrCodeModule;
+
+const MAX_QR_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
 
 impl Module for QrCodeModule {
     fn name(&self) -> &'static str {
@@ -23,41 +24,54 @@ impl Module for QrCodeModule {
 
     fn handle(&mut self, request: &Request) -> Reply {
         match request.method.as_str() {
-            "detect" => self.detect(&request.params).into(),
+            "detect" => self.detect(request),
             method => method_not_found(method),
         }
     }
 }
 
 impl QrCodeModule {
-    fn detect(
-        &self,
-        params: &Option<HashMap<String, Value>>,
-    ) -> Result<Option<Value>, (String, String)> {
-        let Some(image_path) = param_str(params, "imagePath") else {
-            return Err((
+    fn detect(&self, request: &Request) -> Reply {
+        let Some(image_path) = param_str(&request.params, "imagePath") else {
+            return Reply::Now(Err((
                 "INVALID_PARAMS".to_string(),
                 "Missing imagePath parameter".to_string(),
-            ));
+            )));
         };
 
         if !Path::new(image_path).exists() {
-            return Err((
+            return Reply::Now(Err((
                 "FILE_NOT_FOUND".to_string(),
                 format!("Image file not found: {image_path}"),
-            ));
+            )));
         }
 
-        let payload = detect_qr_code(image_path);
-        Ok(Some(json!({ "payload": payload })))
+        let request_id = request.id.clone();
+        let image_path = image_path.to_string();
+        let worker = std::thread::Builder::new()
+            .name("qr-detection".to_string())
+            .spawn(move || match detect_qr_code(&image_path) {
+                Ok(payload) => respond_success(&request_id, json!({ "payload": payload })),
+                Err(error) => respond_error(
+                    &request_id,
+                    "QR_DETECTION_FAILED",
+                    &format!("QR code detection failed: {error}"),
+                ),
+            });
+
+        match worker {
+            Ok(_) => Reply::Deferred,
+            Err(error) => Reply::Now(Err((
+                "QR_DETECTION_FAILED".to_string(),
+                format!("Failed to start QR code detection: {error}"),
+            ))),
+        }
     }
 }
 
-fn detect_qr_code(image_path: &str) -> String {
-    match load_greyscale(image_path) {
-        Ok((pixels, width, height)) => detect_payload_from_greyscale(&pixels, width, height),
-        Err(_) => String::new(),
-    }
+fn detect_qr_code(image_path: &str) -> Result<String, String> {
+    let (pixels, width, height) = load_greyscale(image_path)?;
+    Ok(detect_payload_from_greyscale(&pixels, width, height))
 }
 
 pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize) -> String {
@@ -81,19 +95,30 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
 }
 
 fn load_greyscale(image_path: &str) -> Result<(Vec<u8>, usize, usize), String> {
-    unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+    let _apartment = QrApartment::initialize()?;
+
+    load_greyscale_inner(image_path)
+}
+
+struct QrApartment;
+
+impl QrApartment {
+    fn initialize() -> Result<Self, String> {
+        retain_process_mta()
+            .map_err(|error| format!("Failed to retain the process COM apartment: {error}"))?;
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
             .ok()
-            .map_err(|_| "Failed to initialize COM".to_string())?;
+            .map_err(|error| format!("Failed to initialize COM: {error}"))?;
+        Ok(Self)
     }
+}
 
-    let result = load_greyscale_inner(image_path);
-
-    unsafe {
-        CoUninitialize();
+impl Drop for QrApartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
+        }
     }
-
-    result
 }
 
 fn load_greyscale_inner(image_path: &str) -> Result<(Vec<u8>, usize, usize), String> {
@@ -137,15 +162,13 @@ fn load_greyscale_inner(image_path: &str) -> Result<(Vec<u8>, usize, usize), Str
     }
 
     let stride = width;
-    let buffer_size = stride
-        .checked_mul(height)
-        .ok_or_else(|| "Failed to decode image data".to_string())?;
+    let buffer_size = qr_image_buffer_size(width, height)?;
 
     let mut pixels = Vec::new();
     pixels
-        .try_reserve_exact(buffer_size as usize)
+        .try_reserve_exact(buffer_size)
         .map_err(|_| "Failed to decode image data".to_string())?;
-    pixels.resize(buffer_size as usize, 0);
+    pixels.resize(buffer_size, 0);
 
     let converter = unsafe {
         factory
@@ -172,9 +195,19 @@ fn load_greyscale_inner(image_path: &str) -> Result<(Vec<u8>, usize, usize), Str
     Ok((pixels, width as usize, height as usize))
 }
 
+fn qr_image_buffer_size(width: u32, height: u32) -> Result<usize, String> {
+    let pixel_count = u64::from(width) * u64::from(height);
+    if pixel_count > MAX_QR_IMAGE_PIXELS {
+        return Err("Image dimensions exceed the QR detection limit".to_string());
+    }
+
+    usize::try_from(pixel_count).map_err(|_| "Failed to decode image data".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn fixture_path(name: &str) -> PathBuf {
@@ -206,9 +239,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_images_above_the_detection_memory_limit() {
+        assert_eq!(qr_image_buffer_size(8192, 8192), Ok(64 * 1024 * 1024));
+        assert_eq!(
+            qr_image_buffer_size(8193, 8192),
+            Err("Image dimensions exceed the QR detection limit".to_string())
+        );
+    }
+
+    #[test]
     fn detect_rejects_missing_image_path() {
         let module = QrCodeModule;
-        let err = module.detect(&None).expect_err("missing path");
+        let request = Request {
+            id: "missing-path".to_string(),
+            module: "qrcode".to_string(),
+            method: "detect".to_string(),
+            params: None,
+        };
+        let Reply::Now(result) = module.detect(&request) else {
+            panic!("missing path should respond immediately");
+        };
+        let err = result.expect_err("missing path");
         assert_eq!(err.0, "INVALID_PARAMS");
     }
 
@@ -220,9 +271,16 @@ mod tests {
             "imagePath".to_string(),
             json!("C:\\nonexistent\\capty-qr-missing.png"),
         );
-        let err = module
-            .detect(&Some(params))
-            .expect_err("missing file should error");
+        let request = Request {
+            id: "missing-file".to_string(),
+            module: "qrcode".to_string(),
+            method: "detect".to_string(),
+            params: Some(params),
+        };
+        let Reply::Now(result) = module.detect(&request) else {
+            panic!("missing file should respond immediately");
+        };
+        let err = result.expect_err("missing file should error");
         assert_eq!(err.0, "FILE_NOT_FOUND");
         assert!(err.1.contains("Image file not found"));
     }
@@ -231,15 +289,17 @@ mod tests {
     fn detect_returns_empty_payload_for_non_qr_image_bytes() {
         let path = std::env::temp_dir().join("capty-qrcode-blank.png");
         write_minimal_png(&path, 32, 32, 255);
-        let module = QrCodeModule;
-        let mut params = HashMap::new();
-        params.insert(
-            "imagePath".to_string(),
-            json!(path.to_string_lossy().to_string()),
-        );
-        let result = module.detect(&Some(params)).expect("detect should succeed");
-        let value = result.expect("result present");
-        assert_eq!(value["payload"], "");
+        let payload = detect_qr_code(&path.to_string_lossy()).expect("decode image");
+        assert_eq!(payload, "");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn detect_reports_invalid_image_data() {
+        let path = std::env::temp_dir().join("capty-qrcode-invalid.png");
+        std::fs::write(&path, b"invalid image").expect("write invalid image");
+        let result = detect_qr_code(&path.to_string_lossy());
+        assert!(result.is_err());
         let _ = std::fs::remove_file(path);
     }
 

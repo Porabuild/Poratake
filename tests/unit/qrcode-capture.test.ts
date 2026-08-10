@@ -5,7 +5,8 @@ type ExecCallback = (
   stdout: string,
   stderr: string
 ) => void;
-const mockExec = vi.fn<(command: string, callback: ExecCallback) => void>();
+const mockExecFile =
+  vi.fn<(file: string, args: string[], callback: ExecCallback) => void>();
 const mockClipboardWriteText = vi.fn();
 const mockNotificationShow = vi.fn();
 const mockGetConfig = vi.fn();
@@ -17,7 +18,8 @@ const mockFsExistsSync = vi.fn();
 const mockFsUnlinkSync = vi.fn();
 
 vi.mock('child_process', () => ({
-  exec: (cmd: string, cb: ExecCallback) => mockExec(cmd, cb),
+  execFile: (file: string, args: string[], cb: ExecCallback) =>
+    mockExecFile(file, args, cb),
 }));
 
 class MockNotification {
@@ -64,16 +66,11 @@ vi.mock('@/main/capture/area-overlay', () => ({
   captureAreaToFile: (...a: unknown[]) => mockCaptureAreaToFile(...a),
 }));
 
-async function flush(): Promise<void> {
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
-}
-
 describe('scanQRCode', () => {
   const originalPlatform = process.platform;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     vi.resetModules();
     Object.defineProperty(process, 'platform', { value: 'darwin' });
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: false } });
@@ -87,10 +84,9 @@ describe('scanQRCode', () => {
   it('copies detected QR payload', async () => {
     mockFsExistsSync.mockReturnValue(true);
     mockDaemonCall.mockResolvedValue({ payload: 'https://example.com' });
-    mockExec.mockImplementation((_c, cb) => cb(null, '', ''));
+    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const scan = (await import('@/main/capture/qrcode')).default;
     await scan();
-    await flush();
     expect(mockClipboardWriteText).toHaveBeenCalledWith('https://example.com');
     expect(mockNotificationShow).toHaveBeenCalled();
   });
@@ -98,46 +94,48 @@ describe('scanQRCode', () => {
   it('notifies when no QR detected', async () => {
     mockFsExistsSync.mockReturnValue(true);
     mockDaemonCall.mockResolvedValue({ payload: '' });
-    mockExec.mockImplementation((_c, cb) => cb(null, '', ''));
+    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const scan = (await import('@/main/capture/qrcode')).default;
     await scan();
-    await flush();
     expect(mockClipboardWriteText).not.toHaveBeenCalled();
     expect(mockNotificationShow).toHaveBeenCalled();
   });
 
   it('bails on screencapture error', async () => {
-    mockExec.mockImplementation((_c, cb) => cb(new Error('cap fail'), '', ''));
+    mockExecFile.mockImplementation((_file, _args, cb) =>
+      cb(new Error('cap fail'), '', '')
+    );
     const scan = (await import('@/main/capture/qrcode')).default;
     await scan();
-    await flush();
     expect(mockDaemonCall).not.toHaveBeenCalled();
   });
 
-  it('bails on stderr', async () => {
-    mockExec.mockImplementation((_c, cb) => cb(null, '', 'err'));
+  it('recognizes a captured file when screencapture also writes stderr', async () => {
+    mockFsExistsSync.mockReturnValue(true);
+    mockDaemonCall.mockResolvedValue({ payload: 'captured value' });
+    mockExecFile.mockImplementation((_file, _args, cb) =>
+      cb(null, '', 'capture warning')
+    );
     const scan = (await import('@/main/capture/qrcode')).default;
     await scan();
-    await flush();
-    expect(mockDaemonCall).not.toHaveBeenCalled();
+    expect(mockDaemonCall).toHaveBeenCalled();
+    expect(mockClipboardWriteText).toHaveBeenCalledWith('captured value');
   });
 
   it('bails when temp file missing', async () => {
     mockFsExistsSync.mockReturnValue(false);
-    mockExec.mockImplementation((_c, cb) => cb(null, '', ''));
+    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const scan = (await import('@/main/capture/qrcode')).default;
     await scan();
-    await flush();
     expect(mockDaemonCall).not.toHaveBeenCalled();
   });
 
   it('shows failure notification on daemon error', async () => {
     mockFsExistsSync.mockReturnValue(true);
     mockDaemonCall.mockRejectedValue(new Error('qr crash'));
-    mockExec.mockImplementation((_c, cb) => cb(null, '', ''));
+    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const scan = (await import('@/main/capture/qrcode')).default;
     await scan();
-    await flush();
     expect(mockNotificationShow).toHaveBeenCalled();
   });
 
@@ -145,12 +143,86 @@ describe('scanQRCode', () => {
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
     mockFsExistsSync.mockReturnValue(true);
     mockDaemonCall.mockResolvedValue({ payload: 'x' });
-    mockExec.mockImplementation((_c, cb) => cb(null, '', ''));
+    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const scan = (await import('@/main/capture/qrcode')).default;
     await scan();
-    await flush();
     expect(mockHideDesktopIcons).toHaveBeenCalledWith('capture');
     expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
+  });
+
+  it('awaits the native capture command', async () => {
+    let finishCapture: ExecCallback = () => {};
+    mockFsExistsSync.mockReturnValue(true);
+    mockDaemonCall.mockResolvedValue({ payload: 'x' });
+    mockExecFile.mockImplementation((_file, _args, cb) => {
+      finishCapture = cb;
+    });
+    const scan = (await import('@/main/capture/qrcode')).default;
+    const scanning = scan();
+
+    await Promise.resolve();
+    expect(mockDaemonCall).not.toHaveBeenCalled();
+
+    finishCapture(null, '', '');
+    await scanning;
+
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'screencapture',
+      ['-i', '-x', '-t', 'png', expect.stringContaining('capty-qrcode-')],
+      expect.any(Function)
+    );
+    expect(mockDaemonCall).toHaveBeenCalled();
+  });
+
+  it('uses a unique temporary path for every scan', async () => {
+    mockFsExistsSync.mockReturnValue(true);
+    mockDaemonCall.mockResolvedValue({ payload: 'x' });
+    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
+    const scan = (await import('@/main/capture/qrcode')).default;
+
+    await scan();
+    await scan();
+
+    expect(mockExecFile.mock.calls[0][1][4]).not.toBe(
+      mockExecFile.mock.calls[1][1][4]
+    );
+  });
+
+  it('keeps the copied payload when temporary-file cleanup fails', async () => {
+    mockFsExistsSync.mockReturnValue(true);
+    mockFsUnlinkSync.mockImplementation(() => {
+      throw new Error('file locked');
+    });
+    mockDaemonCall.mockResolvedValue({ payload: 'copied value' });
+    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
+    const scan = (await import('@/main/capture/qrcode')).default;
+
+    await scan();
+
+    expect(mockClipboardWriteText).toHaveBeenCalledWith('copied value');
+  });
+
+  it('ignores a second scan while the first is active', async () => {
+    let finishCapture: ExecCallback = () => {};
+    mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
+    mockFsExistsSync.mockReturnValue(true);
+    mockDaemonCall.mockResolvedValue({ payload: 'x' });
+    mockExecFile.mockImplementation((_file, _args, cb) => {
+      finishCapture = cb;
+    });
+    const scan = (await import('@/main/capture/qrcode')).default;
+
+    const firstScan = scan();
+    await Promise.resolve();
+    const secondScan = scan();
+
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    expect(mockHideDesktopIcons).toHaveBeenCalledTimes(1);
+
+    finishCapture(null, '', '');
+    await Promise.all([firstScan, secondScan]);
+
+    expect(mockShowDesktopIcons).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -158,7 +230,7 @@ describe('scanQRCode on Windows', () => {
   const originalPlatform = process.platform;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     vi.resetModules();
     Object.defineProperty(process, 'platform', { value: 'win32' });
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: false } });
@@ -179,7 +251,7 @@ describe('scanQRCode on Windows', () => {
     const scan = (await import('@/main/capture/qrcode')).default;
     await scan();
 
-    expect(mockExec).not.toHaveBeenCalled();
+    expect(mockExecFile).not.toHaveBeenCalled();
     expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
       expect.stringContaining('capty-qrcode-')
     );
@@ -198,5 +270,51 @@ describe('scanQRCode on Windows', () => {
     await scan();
 
     expect(mockDaemonCall).not.toHaveBeenCalled();
+    expect(mockFsUnlinkSync).not.toHaveBeenCalled();
+  });
+
+  it('cleans up a partial file when area capture is cancelled', async () => {
+    mockCaptureAreaToFile.mockResolvedValue(false);
+    mockFsExistsSync.mockReturnValue(true);
+
+    const scan = (await import('@/main/capture/qrcode')).default;
+    await scan();
+
+    expect(mockFsUnlinkSync).toHaveBeenCalled();
+  });
+
+  it('reports capture failures and restores desktop icons', async () => {
+    mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
+    mockCaptureAreaToFile.mockRejectedValue(new Error('capture failed'));
+    mockFsExistsSync.mockReturnValue(true);
+
+    const scan = (await import('@/main/capture/qrcode')).default;
+    await scan();
+
+    expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
+    expect(mockFsUnlinkSync).toHaveBeenCalled();
+    expect(mockNotificationShow).toHaveBeenCalled();
+  });
+
+  it('restores desktop icons before QR detection finishes', async () => {
+    let finishDetection: (result: { payload: string }) => void = () => {};
+    mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
+    mockCaptureAreaToFile.mockResolvedValue(true);
+    mockFsExistsSync.mockReturnValue(true);
+    mockDaemonCall.mockReturnValue(
+      new Promise(resolve => {
+        finishDetection = resolve;
+      })
+    );
+    const scan = (await import('@/main/capture/qrcode')).default;
+
+    const scanning = scan();
+    await vi.waitFor(() => {
+      expect(mockDaemonCall).toHaveBeenCalled();
+    });
+
+    expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
+    finishDetection({ payload: 'x' });
+    await scanning;
   });
 });

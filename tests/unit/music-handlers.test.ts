@@ -11,6 +11,8 @@ const mockExistsSync = vi.fn();
 const mockMkdir = vi.fn();
 const mockCopyFile = vi.fn();
 const mockUnlink = vi.fn();
+const mockGetExportAbortSignal = vi.fn();
+const exportEvent = { sender: { id: 1 } };
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -66,11 +68,18 @@ vi.mock('@/main/utils/ffmpeg', () => ({
   getFFmpegPath: () => '/bin/ffmpeg',
 }));
 
+vi.mock('@/main/capture/video/ipc/export-session', () => ({
+  getExportAbortSignal: (...args: unknown[]) =>
+    mockGetExportAbortSignal(...args),
+  isExportOutputPathAllowed: () => true,
+}));
+
 describe('music handlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
+    mockGetExportAbortSignal.mockReturnValue(undefined);
   });
 
   describe('music:add', () => {
@@ -314,6 +323,31 @@ describe('music handlers', () => {
   });
 
   describe('music:prepare-for-export', () => {
+    it('rejects invalid speed before probing audio', async () => {
+      const { registerMusicHandlers } =
+        await import('@/main/capture/video/ipc/music-handlers');
+      registerMusicHandlers();
+
+      const result = (await ipcHandle['video-editor:music:prepare-for-export'](
+        exportEvent,
+        {
+          musicFilePath: '/p/song.mp3',
+          trimStart: 0,
+          trimEnd: 0,
+          speed: 0,
+          startTime: 0,
+          totalDuration: 10,
+          outputPath: '/p/out.aac',
+        }
+      )) as { success: boolean; error?: string };
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Invalid music track timing',
+      });
+      expect(mockExecFileAsync).not.toHaveBeenCalled();
+    });
+
     it('returns error when clipped duration is non-positive', async () => {
       mockExecFileAsync.mockImplementation(() => {
         const e = new Error('expected');
@@ -324,7 +358,7 @@ describe('music handlers', () => {
         await import('@/main/capture/video/ipc/music-handlers');
       registerMusicHandlers();
       const result = (await ipcHandle['video-editor:music:prepare-for-export'](
-        {},
+        exportEvent,
         {
           musicFilePath: '/p/song.mp3',
           trimStart: 0,
@@ -340,6 +374,8 @@ describe('music handlers', () => {
     });
 
     it('exports music with simple trim', async () => {
+      const controller = new AbortController();
+      mockGetExportAbortSignal.mockReturnValue(controller.signal);
       mockExecFileAsync.mockImplementationOnce(() => {
         const e = new Error('expected');
         (e as { stderr?: string }).stderr = 'Duration: 00:00:10.00, start: 0';
@@ -350,7 +386,7 @@ describe('music handlers', () => {
         await import('@/main/capture/video/ipc/music-handlers');
       registerMusicHandlers();
       const result = await ipcHandle['video-editor:music:prepare-for-export'](
-        {},
+        exportEvent,
         {
           musicFilePath: '/p/song.mp3',
           trimStart: 1,
@@ -362,6 +398,14 @@ describe('music handlers', () => {
         }
       );
       expect(result).toEqual({ success: true });
+      expect(mockExecFileAsync.mock.calls[0][2]).toEqual({
+        timeout: 10000,
+        signal: controller.signal,
+      });
+      expect(mockExecFileAsync.mock.calls[1][2]).toEqual({
+        timeout: 120000,
+        signal: controller.signal,
+      });
     });
 
     it('exports music with startTime > 0 prepends silence', async () => {
@@ -374,20 +418,49 @@ describe('music handlers', () => {
       const { registerMusicHandlers } =
         await import('@/main/capture/video/ipc/music-handlers');
       registerMusicHandlers();
-      await ipcHandle['video-editor:music:prepare-for-export'](
-        {},
+      await ipcHandle['video-editor:music:prepare-for-export'](exportEvent, {
+        musicFilePath: '/p/song.mp3',
+        trimStart: 0,
+        trimEnd: 0,
+        speed: 1,
+        startTime: 2,
+        totalDuration: 30,
+        outputPath: '/p/out.aac',
+      });
+      const args = mockExecFileAsync.mock.calls[1][1];
+      expect(args.join(' ')).toContain('anullsrc');
+    });
+
+    it('removes a partial music output when export is aborted', async () => {
+      mockExecFileAsync.mockImplementationOnce(() => {
+        const error = new Error('expected');
+        (error as { stderr?: string }).stderr =
+          'Duration: 00:00:10.00, start: 0';
+        throw error;
+      });
+      mockExecFileAsync.mockRejectedValueOnce(
+        new Error('The operation was aborted')
+      );
+      mockUnlink.mockResolvedValue(undefined);
+      const { registerMusicHandlers } =
+        await import('@/main/capture/video/ipc/music-handlers');
+      registerMusicHandlers();
+
+      const result = (await ipcHandle['video-editor:music:prepare-for-export'](
+        exportEvent,
         {
           musicFilePath: '/p/song.mp3',
           trimStart: 0,
           trimEnd: 0,
           speed: 1,
-          startTime: 2,
+          startTime: 0,
           totalDuration: 30,
           outputPath: '/p/out.aac',
         }
-      );
-      const args = mockExecFileAsync.mock.calls[1][1];
-      expect(args.join(' ')).toContain('anullsrc');
+      )) as { success: boolean };
+
+      expect(result.success).toBe(false);
+      expect(mockUnlink).toHaveBeenCalledWith('/p/out.aac');
     });
   });
 });

@@ -1,4 +1,4 @@
-import { screen, shell } from 'electron';
+import { dialog, screen, shell } from 'electron';
 import { daemon } from '@/main/daemon';
 import { getConfig, updateConfig } from '@/main/settings';
 import { showCameraPreview, hideCameraPreview } from './camera-preview';
@@ -22,8 +22,20 @@ import {
   showAreaSelector,
 } from '@/main/capture/area-selector';
 import { isWindows } from '@/main/utils/platform';
-
-type RecordingControlMode = 'pre-recording' | 'recording';
+import {
+  getRecordingControlBrowserWindow,
+  getRecordingControlWindowWidth,
+  hideRecordingControlBrowserWindow,
+  prewarmRecordingControlBrowserWindow,
+  showRecordingControlBrowserWindow,
+  updateRecordingControlBrowserWindow,
+  updateRecordingControlBrowserWindowPosition,
+} from './recording-control-window';
+import type {
+  RecordingControlAction,
+  RecordingControlMode,
+  RecordingControlState,
+} from '@/types/recording-control';
 
 let eventCleanup: (() => void) | null = null;
 let timerInterval: NodeJS.Timeout | null = null;
@@ -43,13 +55,17 @@ export function getCurrentRecordingAreaSelection() {
   return currentAreaSelection;
 }
 
-const WINDOW_WIDTH_PRE_RECORDING = isWindows ? 518 : 468;
+const WINDOW_WIDTH_PRE_RECORDING = 468;
 const WINDOW_WIDTH_RECORDING = 352;
 const CONTROL_TOP_MARGIN = 24;
 const WINDOWS_CAMERA_PREVIEW_SIZE = 270;
 const WINDOWS_CAMERA_PREVIEW_MARGIN = 32;
 
 function getWindowWidth(): number {
+  if (isWindows) {
+    return getRecordingControlWindowWidth(currentMode);
+  }
+
   return currentMode === 'pre-recording'
     ? WINDOW_WIDTH_PRE_RECORDING
     : WINDOW_WIDTH_RECORDING;
@@ -74,6 +90,11 @@ function toNativePosition(position: { x: number; y: number }): {
   return isWindows ? screen.dipToScreenPoint(position) : position;
 }
 
+let currentControlCenter = {
+  x: 100 + getWindowWidth() / 2,
+  y: 100,
+};
+
 function getRecordingSettings() {
   const config = getConfig();
   return {
@@ -90,6 +111,20 @@ function getRecordingSettings() {
     cameraFlipped: config.recording.camera?.flipped ?? false,
     selectedIOSDeviceId: config.recording.iosDevice?.id ?? null,
     selectedIOSDeviceName: config.recording.iosDevice?.name ?? null,
+  };
+}
+
+function getRecordingControlState(): RecordingControlState {
+  const settings = getRecordingSettings();
+  return {
+    mode: currentMode,
+    systemAudio: settings.systemAudio,
+    micEnabled: settings.micEnabled,
+    micMuted: settings.micMuted,
+    cameraEnabled: settings.cameraEnabled,
+    isPaused,
+    isStarting: isHandlingStart,
+    elapsedSeconds: pausedElapsedTime,
   };
 }
 
@@ -343,10 +378,12 @@ async function handleSelectCamera(
 }
 
 async function handleToggleMicMute(): Promise<void> {
-  micMuted = !micMuted;
+  const muted = !micMuted;
 
   try {
-    await daemon.call('screen-recorder', 'setMicMuted', { muted: micMuted });
+    await daemon.call('screen-recorder', 'setMicMuted', { muted });
+    micMuted = muted;
+    await updateNativeSettings();
   } catch (error) {
     console.error('Failed to set mic muted state:', error);
   }
@@ -356,14 +393,12 @@ async function handleStart(): Promise<void> {
   if (isHandlingStart) return;
   isHandlingStart = true;
 
-  const config = getConfig();
-
-  await daemon.call('recording-control', 'updateState', {
-    isStarting: true,
-    isPaused: false,
-  });
-
   try {
+    const config = getConfig();
+    await updateControlState({
+      isStarting: true,
+      isPaused: false,
+    });
     await startPendingRecording({
       systemAudio: config.recording.systemAudio,
       micEnabled: config.recording.micEnabled,
@@ -385,11 +420,14 @@ async function handleStart(): Promise<void> {
       iosDeviceName: config.recording.iosDevice?.name ?? null,
     });
   } finally {
-    await daemon.call('recording-control', 'updateState', {
-      isStarting: false,
-      isPaused,
-    });
-    isHandlingStart = false;
+    try {
+      await updateControlState({
+        isStarting: false,
+        isPaused,
+      });
+    } finally {
+      isHandlingStart = false;
+    }
   }
 }
 
@@ -416,6 +454,24 @@ async function handleRestart(): Promise<void> {
 }
 
 async function handleDelete(): Promise<void> {
+  if (isWindows) {
+    const options = {
+      type: 'warning' as const,
+      title: 'Discard Recording?',
+      message: 'Discard this recording?',
+      detail: 'The current recording will be permanently deleted.',
+      buttons: ['Discard', 'Keep Recording'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const window = getRecordingControlBrowserWindow();
+    const result = window
+      ? await dialog.showMessageBox(window, options)
+      : await dialog.showMessageBox(options);
+    if (result.response !== 0) return;
+  }
+
   await deleteRecordingAction();
 }
 
@@ -456,6 +512,16 @@ async function handleSelectIOSDevice(
 async function updateNativeSettings(): Promise<void> {
   const settings = getRecordingSettings();
 
+  if (isWindows) {
+    updateRecordingControlBrowserWindow({
+      systemAudio: settings.systemAudio,
+      micEnabled: settings.micEnabled,
+      micMuted: settings.micMuted,
+      cameraEnabled: settings.cameraEnabled,
+    });
+    return;
+  }
+
   try {
     await daemon.call('recording-control', 'updateSettings', settings);
   } catch (error) {
@@ -464,6 +530,7 @@ async function updateNativeSettings(): Promise<void> {
 }
 
 function setupEventListener(): void {
+  if (isWindows) return;
   if (eventCleanup) return;
 
   const handler = (event: string, data?: unknown) => {
@@ -472,6 +539,24 @@ function setupEventListener(): void {
 
   daemon.onEvent(handler);
   eventCleanup = () => daemon.offEvent(handler);
+}
+
+function handleBrowserAction(action: RecordingControlAction): void {
+  void handleEvent(`recording-control:${action}`).catch(reportControlError);
+}
+
+function updateControlState(
+  update: Partial<RecordingControlState>
+): Promise<void> {
+  if (isWindows) {
+    updateRecordingControlBrowserWindow(update);
+    return Promise.resolve();
+  }
+
+  return daemon.call('recording-control', 'updateState', {
+    isPaused: update.isPaused,
+    isStarting: update.isStarting,
+  });
 }
 
 function cleanupEventListener(): void {
@@ -512,7 +597,9 @@ export function pauseTimer(): void {
     timerInterval = null;
   }
 
-  daemon.call('recording-control', 'updateState', { isPaused: true });
+  void updateControlState({ isPaused: true }).catch(error => {
+    console.error('Failed to update paused control state:', error);
+  });
 }
 
 export function resumeTimer(): void {
@@ -527,7 +614,9 @@ export function resumeTimer(): void {
 
   sendElapsedTime();
 
-  daemon.call('recording-control', 'updateState', { isPaused: false });
+  void updateControlState({ isPaused: false }).catch(error => {
+    console.error('Failed to update resumed control state:', error);
+  });
 }
 
 function sendElapsedTime(): void {
@@ -536,10 +625,26 @@ function sendElapsedTime(): void {
   const elapsedMs = Date.now() - recordingStartTime;
   const elapsedSeconds = Math.floor(elapsedMs / 1000);
 
-  daemon.call('recording-control', 'updateTimer', { seconds: elapsedSeconds });
+  let update: Promise<unknown>;
+  if (isWindows) {
+    updateRecordingControlBrowserWindow({ elapsedSeconds });
+    update = Promise.resolve();
+  } else {
+    update = daemon.call('recording-control', 'updateTimer', {
+      seconds: elapsedSeconds,
+    });
+  }
+
+  void update.catch(error => {
+    console.error('Failed to update recording timer:', error);
+  });
 }
 
-export function prewarmRecordingControlWindow(): void {}
+export function prewarmRecordingControlWindow(): void {
+  if (isWindows) {
+    prewarmRecordingControlBrowserWindow();
+  }
+}
 
 export function showPreRecordingControl(area?: {
   x: number;
@@ -588,13 +693,26 @@ export function showPreRecordingControl(area?: {
     });
   }
 
-  const position = toNativePosition(
-    area ? calculateControlPosition(area) : { x: 100, y: 100 }
-  );
+  const position = area ? calculateControlPosition(area) : { x: 100, y: 100 };
+  currentControlCenter = {
+    x: position.x + getWindowWidth() / 2,
+    y: position.y,
+  };
+
+  if (isWindows) {
+    showRecordingControlBrowserWindow(
+      getRecordingControlState(),
+      position,
+      handleBrowserAction
+    );
+    return;
+  }
+
+  const nativePosition = toNativePosition(position);
 
   daemon
     .call('recording-control', 'show', {
-      ...position,
+      ...nativePosition,
       mode: 'pre-recording',
       settings: getRecordingSettings(),
     })
@@ -614,9 +732,20 @@ export function updateRecordingControlPosition(area: {
 }): void {
   currentAreaSelection = area;
 
-  const position = toNativePosition(calculateControlPosition(area));
+  const position = calculateControlPosition(area);
+  currentControlCenter = {
+    x: position.x + getWindowWidth() / 2,
+    y: position.y,
+  };
 
-  daemon.call('recording-control', 'update', position).catch(error => {
+  if (isWindows) {
+    updateRecordingControlBrowserWindowPosition(position);
+    return;
+  }
+
+  const nativePosition = toNativePosition(position);
+
+  daemon.call('recording-control', 'update', nativePosition).catch(error => {
     console.error('Failed to update recording control position:', error);
   });
 }
@@ -633,6 +762,13 @@ export async function hidePreRecordingControl(
     hideCameraPreview();
   }
 
+  if (isWindows) {
+    if (hideCamera) {
+      hideRecordingControlBrowserWindow();
+    }
+    return;
+  }
+
   try {
     await daemon.call('recording-control', 'hide');
   } catch (error) {
@@ -644,6 +780,20 @@ export async function showRecordingControl(): Promise<void> {
   currentMode = 'recording';
   micMuted = false;
   setupEventListener();
+
+  if (isWindows) {
+    const position = {
+      x: Math.round(currentControlCenter.x - getWindowWidth() / 2),
+      y: currentControlCenter.y,
+    };
+    showRecordingControlBrowserWindow(
+      getRecordingControlState(),
+      position,
+      handleBrowserAction
+    );
+    startTimer();
+    return;
+  }
 
   try {
     await daemon.call('recording-control', 'setMode', {
@@ -665,6 +815,11 @@ export async function hideRecordingControl(): Promise<void> {
   currentAreaSelection = null;
   currentMode = 'pre-recording';
 
+  if (isWindows) {
+    hideRecordingControlBrowserWindow();
+    return;
+  }
+
   try {
     await daemon.call('recording-control', 'hide');
   } catch (error) {
@@ -672,6 +827,6 @@ export async function hideRecordingControl(): Promise<void> {
   }
 }
 
-export function getRecordingControlWindow(): null {
-  return null;
+export function getRecordingControlWindow() {
+  return isWindows ? getRecordingControlBrowserWindow() : null;
 }

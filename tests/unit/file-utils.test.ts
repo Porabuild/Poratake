@@ -42,7 +42,22 @@ describe('file-utils', () => {
         await import('@/renderer/components/video-editor/export/file-utils');
       await loadFileAsBlob('/path/to/my video.mp4');
 
-      expect(mockFetch).toHaveBeenCalledWith('file:///path/to/my video.mp4');
+      expect(mockFetch).toHaveBeenCalledWith('file:///path/to/my%20video.mp4');
+    });
+
+    it('encodes URL-significant characters in Windows paths', async () => {
+      const mockBlob = new Blob(['test'], { type: 'video/mp4' });
+      mockFetch.mockResolvedValue({
+        blob: () => Promise.resolve(mockBlob),
+      });
+
+      const { loadFileAsBlob } =
+        await import('@/renderer/components/video-editor/export/file-utils');
+      await loadFileAsBlob('C:\\Videos\\Demo #1.mp4');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'file:///C:/Videos/Demo%20%231.mp4'
+      );
     });
   });
 
@@ -129,32 +144,57 @@ describe('file-utils', () => {
     });
   });
 
-  describe('writeBuffer', () => {
-    it('should invoke file:write-buffer IPC with correct params', async () => {
-      mockInvoke.mockResolvedValue(undefined);
+  describe('streamed output', () => {
+    it('creates the output file through IPC', async () => {
+      mockInvoke.mockResolvedValue({ success: true });
 
-      const { writeBuffer } =
+      const { createOutputFile } =
+        await import('@/renderer/components/video-editor/export/file-utils');
+
+      await createOutputFile('/path/to/output.mp4');
+
+      expect(mockInvoke).toHaveBeenCalledWith('file:create-output', {
+        path: '/path/to/output.mp4',
+      });
+    });
+
+    it('writes positioned output chunks through IPC', async () => {
+      mockInvoke.mockResolvedValue({ success: true });
+
+      const { writeOutputChunk } =
         await import('@/renderer/components/video-editor/export/file-utils');
 
       const buffer = new Uint8Array([1, 2, 3, 4]);
-      await writeBuffer('/path/to/output.mp4', buffer);
+      await writeOutputChunk('/path/to/output.mp4', 128, buffer);
 
-      expect(mockInvoke).toHaveBeenCalledWith('file:write-buffer', {
+      expect(mockInvoke).toHaveBeenCalledWith('file:write-output-chunk', {
         path: '/path/to/output.mp4',
+        position: 128,
         buffer,
       });
     });
 
-    it('should handle write errors', async () => {
+    it('propagates IPC write errors', async () => {
       mockInvoke.mockRejectedValue(new Error('Write failed'));
 
-      const { writeBuffer } =
+      const { writeOutputChunk } =
         await import('@/renderer/components/video-editor/export/file-utils');
 
       const buffer = new Uint8Array([1, 2, 3]);
-      await expect(writeBuffer('/path/to/file.mp4', buffer)).rejects.toThrow(
-        'Write failed'
-      );
+      await expect(
+        writeOutputChunk('/path/to/file.mp4', 0, buffer)
+      ).rejects.toThrow('Write failed');
+    });
+
+    it('rejects write failures returned by the main process', async () => {
+      mockInvoke.mockResolvedValue({ success: false, error: 'disk full' });
+
+      const { writeOutputChunk } =
+        await import('@/renderer/components/video-editor/export/file-utils');
+
+      await expect(
+        writeOutputChunk('/path/to/file.mp4', 0, new Uint8Array([1, 2, 3]))
+      ).rejects.toThrow('disk full');
     });
   });
 });

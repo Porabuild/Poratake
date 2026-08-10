@@ -11,6 +11,8 @@ import {
 import { getConfig } from '@/main/settings';
 import { getCachedLicense } from '@/main/license/cache.ts';
 import { isPro } from '@/main/license/validation.ts';
+import { getCapturePreviewUploadPath } from '@/main/capture/capture-preview';
+import { isExportOutputPathAllowed } from '@/main/capture/video/ipc/export-session';
 import type {
   CloudConfig,
   RestProviderConfig,
@@ -100,7 +102,7 @@ function createCaptyCloudClient(): CaptyCloudClient {
   const license = getCachedLicense();
 
   if (!isPro() || !license) {
-    throw new Error('Capty Cloud requires an active license');
+    throw new Error('Capty Cloud requires an active Capty license');
   }
 
   return new CaptyCloudClient({
@@ -305,6 +307,18 @@ function showNotification(title: string, body: string): void {
 
 const activeFileUploads = new Map<number, AbortController>();
 
+function isUploadFileAllowed(
+  senderId: number,
+  filePath: unknown
+): filePath is string {
+  if (typeof filePath !== 'string') return false;
+
+  return (
+    getCapturePreviewUploadPath(senderId) === filePath ||
+    isExportOutputPathAllowed(senderId, filePath)
+  );
+}
+
 function abortFileUpload(senderId: number, reason: string): void {
   activeFileUploads.get(senderId)?.abort(reason);
 }
@@ -323,8 +337,12 @@ export function init(): void {
     }
   });
 
-  ipcMain.handle('cloud:uploadFile', async (event, filePath: string) => {
+  ipcMain.handle('cloud:uploadFile', async (event, filePath: unknown) => {
     const senderId = event.sender.id;
+    if (!isUploadFileAllowed(senderId, filePath)) {
+      return { success: false, error: 'Upload file is not authorized' };
+    }
+
     abortFileUpload(senderId, 'cancelled');
 
     const controller = new AbortController();

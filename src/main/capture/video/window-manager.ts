@@ -89,7 +89,7 @@ export function createVideoEditorWindow(
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       devTools: isDev,
-      webSecurity: false,
+      webSecurity: !isDev,
     },
     alwaysOnTop: false,
     ...titleBarWindowOptions(),

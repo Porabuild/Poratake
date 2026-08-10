@@ -144,14 +144,18 @@ export default function LicenseTab() {
       <div>
         <h2 className="text-lg font-medium">License</h2>
         <p className="text-muted-foreground text-sm">
-          Manage your Capty license
+          Manage the Capty license used by Poratake
         </p>
       </div>
 
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center gap-3">
-            <img src={appIcon} alt="Capty" className="h-10 w-10 rounded-lg" />
+            <img
+              src={appIcon}
+              alt="Poratake"
+              className="h-10 w-10 rounded-lg"
+            />
             <div>
               <CardTitle>License Status</CardTitle>
               <CardDescription>
@@ -218,8 +222,8 @@ export default function LicenseTab() {
                       </p>
                       <p className="text-muted-foreground text-sm">
                         This will deactivate your license from this device and
-                        return Capty to the free tier. You will need to re-enter
-                        your license key to restore Pro features.
+                        return Poratake to the free tier. You will need to
+                        re-enter your Capty license key to restore Pro features.
                       </p>
                     </div>
                   </div>
@@ -247,7 +251,9 @@ export default function LicenseTab() {
           ) : (
             <>
               <div className="space-y-2">
-                <p className="text-sm font-medium">Unlock Capty Pro</p>
+                <p className="text-sm font-medium">
+                  Use a Capty license with Poratake
+                </p>
                 <ul className="space-y-1.5">
                   {PRO_FEATURES.map(feature => (
                     <li
@@ -266,7 +272,7 @@ export default function LicenseTab() {
               <div className="space-y-2 pt-2">
                 <Button onClick={handlePurchaseLicense} className="w-full">
                   <ExternalLink className="mr-2 h-4 w-4" />
-                  Upgrade to Pro
+                  Get Capty License
                 </Button>
                 <Button
                   variant="outline"

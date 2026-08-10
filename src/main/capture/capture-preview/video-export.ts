@@ -2,6 +2,9 @@ import { ipcMain, clipboard } from 'electron';
 import { existsSync, unlinkSync, readFileSync } from 'fs';
 import { app } from 'electron';
 import path from 'path';
+import { randomUUID } from 'crypto';
+import { execFile } from 'child_process';
+import { pathToFileURL } from 'url';
 import { probeVideo } from '@/main/utils/ffmpeg';
 import {
   getRecordingVideoPath,
@@ -19,7 +22,12 @@ import type { VideoMetadata } from '@/types/video';
 import type { CursorData, CursorStyle } from '@/types/cursor';
 import type { CameraStyle } from '@/types/camera';
 import type { AudioStyle } from '@/types/audio';
+import type { MusicTrack } from '@/types/music';
 import type { VideoEditorState } from '@/types/video-editor-state';
+import {
+  authorizeExportOutputPaths,
+  isExportOutputPathAllowed,
+} from '@/main/capture/video/ipc/export-session';
 
 interface PreviewExportData {
   videoPath: string;
@@ -36,9 +44,35 @@ interface PreviewExportData {
   micAudioPath: string | null;
   hasEmbeddedAudio: boolean;
   audioStyle: AudioStyle | null;
+  musicTracks: MusicTrack[] | null;
 }
 
 const CLIPBOARD_CLEANUP_MS = 5 * 60 * 1000;
+
+function writeWindowsFileToClipboard(filePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        'Set-Clipboard -LiteralPath $env:PORATAKE_CLIPBOARD_FILE',
+      ],
+      {
+        env: { ...process.env, PORATAKE_CLIPBOARD_FILE: filePath },
+        windowsHide: true,
+      },
+      error => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      }
+    );
+  });
+}
 
 function loadEditorState(filePath: string): Partial<VideoEditorState> | null {
   const statePath = getEditorStatePath(filePath);
@@ -52,10 +86,15 @@ function loadEditorState(filePath: string): Partial<VideoEditorState> | null {
   }
 }
 
-export function registerPreviewExportIpc(): void {
+export function registerPreviewExportIpc(
+  getPreviewFilePath: (webContentsId: number) => string | null
+): void {
   ipcMain.handle(
     'capture-preview:load-export-data',
-    async (_, filePath: string): Promise<PreviewExportData | null> => {
+    async (event): Promise<PreviewExportData | null> => {
+      const filePath = getPreviewFilePath(event.sender.id);
+      if (!filePath) return null;
+
       const videoPath = isRecordingProject(filePath)
         ? getRecordingVideoPath(filePath)
         : filePath;
@@ -97,24 +136,35 @@ export function registerPreviewExportIpc(): void {
         micAudioPath: micAudioExists ? micAudioFilePath : null,
         hasEmbeddedAudio,
         audioStyle: (editorState?.audioStyle as AudioStyle) ?? null,
+        musicTracks: editorState?.musicTracks ?? null,
       };
     }
   );
 
-  ipcMain.handle('capture-preview:get-export-output-path', (): string => {
-    return path.join(app.getPath('temp'), `capty-clipboard-${Date.now()}.mp4`);
+  ipcMain.handle('capture-preview:get-export-output-path', event => {
+    const outputPath = path.join(
+      app.getPath('temp'),
+      `capty-clipboard-${randomUUID()}.mp4`
+    );
+    authorizeExportOutputPaths(event.sender, [outputPath]);
+    return outputPath;
   });
 
   ipcMain.handle(
     'capture-preview:copy-video-to-clipboard',
-    async (_, outputPath: string): Promise<boolean> => {
+    async (event, outputPath: string): Promise<boolean> => {
+      if (!isExportOutputPathAllowed(event.sender.id, outputPath)) return false;
       if (!existsSync(outputPath)) return false;
 
       try {
-        clipboard.writeBuffer(
-          'public.file-url',
-          Buffer.from(`file://${outputPath}`)
-        );
+        if (process.platform === 'win32') {
+          await writeWindowsFileToClipboard(outputPath);
+        } else {
+          clipboard.writeBuffer(
+            'public.file-url',
+            Buffer.from(pathToFileURL(outputPath).href)
+          );
+        }
         scheduleCleanup(outputPath);
         return true;
       } catch {

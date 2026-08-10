@@ -3,15 +3,18 @@ import path from 'path';
 
 const mockExistsSync = vi.fn();
 const mockUnlinkSync = vi.fn();
+const mockRenameSync = vi.fn();
 const mockCreateWriteStream = vi.fn();
 
 vi.mock('fs', () => ({
   default: {
     existsSync: (...a: unknown[]) => mockExistsSync(...a),
     unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
+    renameSync: (...a: unknown[]) => mockRenameSync(...a),
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
+  renameSync: (...a: unknown[]) => mockRenameSync(...a),
   createWriteStream: (...a: unknown[]) => mockCreateWriteStream(...a),
 }));
 

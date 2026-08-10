@@ -145,6 +145,7 @@ describe('Main Process', () => {
     mockSettings.needsOnboarding.mockReturnValue(false);
     mockApp.getVersion.mockReturnValue('1.0.0');
     mockSingleInstanceLock = true;
+    mockHistory.init.mockResolvedValue(undefined);
     mockSettingsConfig.general.hideMenuBarIcon = false;
   });
 
@@ -217,6 +218,29 @@ describe('Main Process', () => {
   });
 
   describe('initializeRuntimeModules', () => {
+    it('loads history before enabling capture shortcuts', async () => {
+      let finishHistory: () => void = () => {};
+      mockHistory.init.mockReturnValueOnce(
+        new Promise<void>(resolve => {
+          finishHistory = resolve;
+        })
+      );
+
+      await import('@/main/main');
+      await vi.waitFor(() => {
+        expect(mockHistory.init).toHaveBeenCalled();
+      });
+
+      expect(mockShortcuts.init).not.toHaveBeenCalled();
+      expect(mockMenu.init).not.toHaveBeenCalled();
+
+      finishHistory();
+      await vi.waitFor(() => {
+        expect(mockShortcuts.init).toHaveBeenCalled();
+        expect(mockMenu.init).toHaveBeenCalled();
+      });
+    });
+
     it('should initialize shortcuts', async () => {
       await import('@/main/main');
 
@@ -246,7 +270,9 @@ describe('Main Process', () => {
     it('should be called after modules are initialized', async () => {
       await import('@/main/main');
 
-      expect(mockUpdate.handleAppUpdate).toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(mockUpdate.handleAppUpdate).toHaveBeenCalled();
+      });
     });
   });
 

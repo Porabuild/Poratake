@@ -98,6 +98,17 @@ describe('renderDrawings redact scaling', () => {
       sw: 40,
       sh: 40,
     });
+    expect(ctx.drawImage).toHaveBeenCalledWith(
+      expect.any(FakeOffscreenCanvas),
+      0,
+      0,
+      3,
+      3,
+      10,
+      10,
+      20,
+      20
+    );
   });
 
   it('reads the source region in composition pixels when not scaled', () => {
@@ -116,5 +127,16 @@ describe('renderDrawings redact scaling', () => {
       sw: 20,
       sh: 20,
     });
+    expect(ctx.drawImage).toHaveBeenCalledWith(
+      expect.any(FakeOffscreenCanvas),
+      0,
+      0,
+      3,
+      3,
+      10,
+      10,
+      20,
+      20
+    );
   });
 });

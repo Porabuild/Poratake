@@ -1,13 +1,7 @@
-import {
-  BrowserWindow,
-  shell,
-  ipcMain,
-  app,
-  screen,
-  Notification,
-} from 'electron';
+import { BrowserWindow, ipcMain, app, screen, Notification } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
+import { openExternalUrl } from '@/main/utils/external-url';
 import {
   titleBarWindowOptions,
   trackTitleBarTheme,
@@ -46,7 +40,7 @@ export function createActivationWindow(): BrowserWindow {
     x: Math.floor((screenWidth - windowWidth) / 2),
     y: Math.floor((screenHeight - windowHeight) / 2),
     backgroundColor: '#1e1e1e',
-    title: 'Activate Capty',
+    title: 'Activate Poratake',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -84,7 +78,7 @@ export function createActivationWindow(): BrowserWindow {
   });
 
   activationWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalUrl(url);
     return { action: 'deny' };
   });
 
@@ -117,8 +111,8 @@ export function init(): void {
 
     if (Notification.isSupported()) {
       const notification = new Notification({
-        title: 'Capty Pro Activated',
-        body: 'Your license has been successfully activated. Enjoy Capty Pro!',
+        title: 'Capty License Activated',
+        body: 'Your Capty license now unlocks Pro features in Poratake.',
       });
       notification.show();
     }

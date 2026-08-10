@@ -1,10 +1,4 @@
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import { ListBox, Select } from '@heroui/react';
 import type {
   ArrowStyle,
   HighlightOpacity,
@@ -111,35 +105,47 @@ export default function ToolOptions({
       {showThickness && (
         <>
           <Select
+            aria-label="Line thickness"
+            variant="secondary"
             value={String(strokeWidth)}
-            onValueChange={value => onStrokeWidthChange(Number(value))}
+            onChange={value => {
+              if (value === null) {
+                return;
+              }
+
+              onStrokeWidthChange(Number(value));
+            }}
           >
-            <SelectTrigger size="sm" className="h-7!">
-              <SelectValue>
-                <div
-                  className="bg-muted-foreground rounded-full"
-                  style={{
-                    width: '16px',
-                    height: `${THICKNESS_OPTIONS_SIZE[THICKNESS_OPTIONS.indexOf(strokeWidth)]}px`,
-                  }}
-                />
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent align="center">
-              {THICKNESS_OPTIONS.map((thickness, index) => (
-                <SelectItem key={thickness} value={String(thickness)}>
-                  <div className="flex h-4 items-center">
-                    <div
-                      className="bg-muted-foreground rounded-full"
-                      style={{
-                        width: '32px',
-                        height: `${THICKNESS_OPTIONS_SIZE[index]}px`,
-                      }}
-                    />
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
+            <Select.Trigger className="h-7 min-h-7 items-center rounded-3xl py-0 ps-2">
+              <div
+                className="bg-muted-foreground w-4 rounded-full"
+                style={{
+                  height: `${THICKNESS_OPTIONS_SIZE[THICKNESS_OPTIONS.indexOf(strokeWidth)]}px`,
+                }}
+              />
+              <Select.Indicator />
+            </Select.Trigger>
+            <Select.Popover placement="bottom">
+              <ListBox>
+                {THICKNESS_OPTIONS.map((thickness, index) => (
+                  <ListBox.Item
+                    key={thickness}
+                    id={String(thickness)}
+                    textValue={`${thickness}px`}
+                  >
+                    <div className="flex h-4 flex-1 items-center">
+                      <div
+                        className="bg-muted-foreground w-8 rounded-full"
+                        style={{
+                          height: `${THICKNESS_OPTIONS_SIZE[index]}px`,
+                        }}
+                      />
+                    </div>
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                ))}
+              </ListBox>
+            </Select.Popover>
           </Select>
           <div className="bg-border mx-1 h-[18px] w-px" />
         </>

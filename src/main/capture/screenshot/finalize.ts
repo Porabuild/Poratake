@@ -2,7 +2,14 @@ import { clipboard, nativeImage } from 'electron';
 import fs from 'fs';
 import { getConfig } from '@/main/settings';
 import { addToHistory } from '@/main/history';
-import { showCapturePreview } from '@/main/capture/capture-preview';
+import {
+  prepareCapturePreview,
+  showCapturePreview,
+} from '@/main/capture/capture-preview';
+import type {
+  CapturePreviewHandle,
+  CapturePreviewPreparation,
+} from '@/main/capture/capture-preview';
 import { openScreenshotEditor } from '@/main/capture/screenshot/open-editor';
 
 export function copyImageFileToClipboard(filePath: string): void {
@@ -18,24 +25,81 @@ export function copyImageFileToClipboard(filePath: string): void {
   }
 }
 
-export async function finalizeCapture(filePath: string): Promise<void> {
+export function prepareScreenshotPreview(): CapturePreviewPreparation | null {
+  const { screenshot } = getConfig();
+  if (!screenshot.showPreview || screenshot.captureToClipboard) {
+    return null;
+  }
+
+  try {
+    return prepareCapturePreview();
+  } catch (error) {
+    console.error('Failed to prepare capture preview:', error);
+    return null;
+  }
+}
+
+export async function finalizeCapture(
+  filePath: string,
+  preparation?: CapturePreviewPreparation | null
+): Promise<void> {
   if (!fs.existsSync(filePath)) {
+    preparation?.dispose();
     return;
   }
 
   const { screenshot } = getConfig();
-  const historyItem = await addToHistory(filePath);
+  let startHistoryPersistence: () => void = () => {};
+  const historyStart = new Promise<void>(resolve => {
+    startHistoryPersistence = resolve;
+  });
+  const historyItemPromise = historyStart.then(() => addToHistory(filePath));
+  const historyIdPromise = historyItemPromise.then(item => item?.id);
+  let preview: CapturePreviewHandle | null = null;
+
+  if (screenshot.showPreview && !screenshot.captureToClipboard) {
+    try {
+      preview = showCapturePreview(
+        filePath,
+        'screenshot',
+        undefined,
+        preparation ?? undefined,
+        historyIdPromise
+      );
+    } catch (error) {
+      console.error('Failed to show capture preview:', error);
+    }
+  }
+
+  if (!preview) {
+    preparation?.dispose();
+    startHistoryPersistence();
+  } else {
+    void preview.revealed.then(startHistoryPersistence);
+  }
+
+  let clipboardPromise = Promise.resolve();
 
   if (screenshot.autoCopyToClipboard || screenshot.captureToClipboard) {
-    copyImageFileToClipboard(filePath);
+    if (preview) {
+      clipboardPromise = preview.revealed.then(() =>
+        copyImageFileToClipboard(filePath)
+      );
+    } else {
+      copyImageFileToClipboard(filePath);
+    }
   }
+
+  const [historyItem] = await Promise.all([
+    historyItemPromise,
+    clipboardPromise,
+  ]);
 
   if (screenshot.captureToClipboard) {
     return;
   }
 
-  if (screenshot.showPreview) {
-    showCapturePreview(filePath, 'screenshot', historyItem?.id);
+  if (preview) {
     return;
   }
 

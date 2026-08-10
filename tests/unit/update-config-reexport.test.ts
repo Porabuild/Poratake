@@ -5,9 +5,9 @@ vi.mock('electron', () => ({
 }));
 
 describe('update/config', () => {
-  it('re-exports API_URL', async () => {
+  it('exports the fork update destination', async () => {
     const m = await import('@/main/update/config');
-    expect(m.API_URL).toBeDefined();
-    expect(typeof m.API_URL).toBe('string');
+    expect(m.UPDATE_OWNER).toBe('SDSLeon');
+    expect(m.UPDATE_REPOSITORY).toBe('capty');
   });
 });

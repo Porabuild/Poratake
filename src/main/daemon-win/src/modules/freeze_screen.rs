@@ -1,6 +1,7 @@
 use crate::desktop_frame::{capture_monitors, clear_frozen, store_frozen, to_hbitmap};
 use crate::overlay::{
-    add_key_handler, create_popup_window, default_wndproc, ensure_window_class, remove_key_handler,
+    add_key_handler, create_popup_window, default_wndproc, disable_window_transitions,
+    ensure_window_class, remove_key_handler,
 };
 use crate::protocol::{param_bool, respond_error, respond_success, Request};
 use crate::router::{method_not_found, Module, Reply};
@@ -105,6 +106,8 @@ fn create_overlays() {
             }
             continue;
         };
+
+        let _ = disable_window_transitions(window);
 
         unsafe {
             let _ = SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA);

@@ -2,15 +2,15 @@ import { useState, useEffect, useCallback, useRef, forwardRef } from 'react';
 import { Trash2, Play, Mic, Volume2, Video, MousePointer2 } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import type {
-  HistoryItem as HistoryItemType,
+  HistoryItemSummary,
   VideoRecordingFeatures,
 } from '@/types/history';
 import { formatRelativeTime } from '@/renderer/components/history/utils';
 
 interface HistoryItemProps {
-  item: HistoryItemType;
+  item: HistoryItemSummary;
   isSelected?: boolean;
-  onOpen: (item: HistoryItemType) => void;
+  onOpen: (item: HistoryItemSummary) => void;
   onDelete: (id: string) => void;
 }
 
@@ -64,8 +64,7 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
         try {
           const base64 = (await window.ipcRenderer.invoke(
             'history:getThumbnail',
-            item.originalPath,
-            item.type
+            item.id
           )) as string | null;
 
           if (base64) {
@@ -78,7 +77,7 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
         }
       };
       loadThumbnail();
-    }, [isVisible, item.originalPath, item.type]);
+    }, [isVisible, item.id]);
 
     useEffect(() => {
       if (!isVisible || !isVideo) return;
@@ -87,7 +86,7 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
         try {
           const features = (await window.ipcRenderer.invoke(
             'history:getVideoFeatures',
-            item.originalPath
+            item.id
           )) as VideoRecordingFeatures;
           setVideoFeatures(features);
         } catch (error) {
@@ -95,7 +94,7 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
         }
       };
       loadVideoFeatures();
-    }, [isVisible, isVideo, item.originalPath]);
+    }, [isVisible, isVideo, item.id]);
 
     const handleClick = useCallback(() => {
       onOpen(item);
@@ -112,7 +111,7 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
     return (
       <div
         ref={setRefs}
-        className={`group bg-secondary hover:bg-accent relative cursor-pointer overflow-hidden rounded-lg transition-all ${
+        className={`group bg-secondary hover:bg-accent relative cursor-default overflow-hidden rounded-lg transition-all ${
           isSelected
             ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-transparent'
             : ''
@@ -121,7 +120,6 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
         onMouseLeave={() => setIsHovered(false)}
         onClick={handleClick}
       >
-        {}
         <div className="relative aspect-video w-full overflow-hidden">
           {loading ? (
             <div className="bg-muted flex h-full w-full items-center justify-center">
@@ -173,14 +171,12 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
           )}
         </div>
 
-        {}
         <div className="px-2 py-1.5">
           <p className="text-muted-foreground text-xs">
             {formatRelativeTime(item.timestamp)}
           </p>
         </div>
 
-        {}
         {(isHovered || isSelected) && (
           <Button
             variant="ghost"

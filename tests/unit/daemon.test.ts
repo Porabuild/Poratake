@@ -158,6 +158,29 @@ describe('NativeDaemon', () => {
     await stopPromise;
   });
 
+  it('call rejects immediately when the daemon pipe write fails', async () => {
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    setImmediate(() => {
+      mockChild.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+      );
+    });
+    await start;
+    mockChild.stdin.write = vi.fn(() => {
+      throw new Error('broken pipe');
+    });
+
+    await expect(daemon.call('mymod', 'method')).rejects.toThrow(
+      'Daemon stdin write failed'
+    );
+
+    const stopPromise = daemon.stop();
+    mockChild.emit('exit', 0, null);
+    await stopPromise;
+  });
+
   it('event handlers receive daemon-event messages', async () => {
     const { daemon } = await import('@/main/daemon');
     const start = daemon.start();
@@ -244,6 +267,62 @@ describe('NativeDaemon', () => {
     const callPromise = daemon.call('mymod', 'method');
     mockChild.emit('exit', 1, null);
     await expect(callPromise).rejects.toThrow(/Daemon exited/);
+  });
+
+  it('cancels a scheduled restart when the daemon is stopped', async () => {
+    vi.useFakeTimers();
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    mockChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+
+    mockChild.emit('exit', 1, null);
+    await daemon.stop();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries when an automatic restart fails before ready', async () => {
+    vi.useFakeTimers();
+    const firstChild = makeMockChild();
+    const failedRestart = makeMockChild();
+    const successfulRestart = makeMockChild();
+    mockSpawn
+      .mockReturnValueOnce(firstChild)
+      .mockReturnValueOnce(failedRestart)
+      .mockReturnValueOnce(successfulRestart);
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    firstChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+
+    firstChild.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(1000);
+    failedRestart.emit('error', new Error('restart failed'));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(2000);
+    successfulRestart.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await Promise.resolve();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(3);
+    const stopPromise = daemon.stop();
+    successfulRestart.emit('exit', 0, null);
+    await stopPromise;
+    consoleError.mockRestore();
   });
 
   it('can start again after a spawn error', async () => {

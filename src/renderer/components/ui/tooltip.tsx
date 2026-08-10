@@ -1,58 +1,120 @@
 import * as React from 'react';
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+import { Tooltip as HeroTooltip } from '@heroui/react';
 
-import { cn } from '@/renderer/lib/utils';
+const TooltipDelayContext = React.createContext(150);
 
 function TooltipProvider({
-  delayDuration = 0,
-  ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  delayDuration = 150,
+  children,
+}: {
+  delayDuration?: number;
+  children: React.ReactNode;
+}) {
   return (
-    <TooltipPrimitive.Provider
-      data-slot="tooltip-provider"
-      delayDuration={delayDuration}
+    <TooltipDelayContext.Provider value={delayDuration}>
+      {children}
+    </TooltipDelayContext.Provider>
+  );
+}
+
+function Tooltip(props: React.ComponentProps<typeof HeroTooltip>) {
+  const delay = React.useContext(TooltipDelayContext);
+  return <HeroTooltip delay={delay} {...props} />;
+}
+
+function mergeRefs<T>(
+  ...refs: Array<React.Ref<T> | undefined>
+): React.RefCallback<T> {
+  return value => {
+    refs.forEach(ref => {
+      if (typeof ref === 'function') {
+        ref(value);
+        return;
+      }
+      if (ref) {
+        (ref as React.MutableRefObject<T | null>).current = value;
+      }
+    });
+  };
+}
+
+function mergeTriggerProps(
+  childProps: Record<string, unknown>,
+  triggerProps: Record<string, unknown>
+): Record<string, unknown> {
+  const merged = { ...childProps, ...triggerProps };
+  Object.keys(triggerProps).forEach(key => {
+    const childHandler = childProps[key];
+    const triggerHandler = triggerProps[key];
+    if (
+      !key.startsWith('on') ||
+      typeof childHandler !== 'function' ||
+      typeof triggerHandler !== 'function'
+    ) {
+      return;
+    }
+    merged[key] = (...args: unknown[]) => {
+      childHandler(...args);
+      triggerHandler(...args);
+    };
+  });
+  return merged;
+}
+
+function TooltipTrigger({
+  asChild,
+  children,
+  ...props
+}: React.ComponentPropsWithRef<'div'> & { asChild?: boolean }) {
+  if (!asChild) {
+    return (
+      <HeroTooltip.Trigger<'div'> {...props}>{children}</HeroTooltip.Trigger>
+    );
+  }
+
+  const child = React.Children.only(children) as React.ReactElement<
+    {
+      className?: string;
+      ref?: React.Ref<HTMLElement>;
+    } & Record<string, unknown>
+  >;
+
+  return (
+    <HeroTooltip.Trigger<'div'>
       {...props}
+      render={triggerProps => {
+        const mergedProps = mergeTriggerProps(
+          child.props,
+          triggerProps as unknown as Record<string, unknown>
+        );
+        return React.cloneElement(child, {
+          ...mergedProps,
+          className: [triggerProps.className, child.props.className]
+            .filter(Boolean)
+            .join(' '),
+          ref: mergeRefs(
+            triggerProps.ref as React.Ref<HTMLElement>,
+            child.props.ref
+          ),
+        });
+      }}
     />
   );
 }
 
-function Tooltip({
-  ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return (
-    <TooltipProvider>
-      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
-    </TooltipProvider>
-  );
-}
-
-function TooltipTrigger({
-  ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
-  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
-}
-
 function TooltipContent({
-  className,
-  sideOffset = 0,
-  children,
+  side,
+  sideOffset,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: Omit<
+  React.ComponentProps<typeof HeroTooltip.Content>,
+  'placement' | 'offset'
+> & {
+  side?: 'top' | 'right' | 'bottom' | 'left';
+  sideOffset?: number;
+}) {
   return (
-    <TooltipPrimitive.Portal>
-      <TooltipPrimitive.Content
-        data-slot="tooltip-content"
-        sideOffset={sideOffset}
-        className={cn(
-          'bg-foreground text-background animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 w-fit origin-(--radix-tooltip-content-transform-origin) rounded-md px-3 py-1.5 text-xs text-balance',
-          className
-        )}
-        {...props}
-      >
-        {children}
-        <TooltipPrimitive.Arrow className="bg-foreground fill-foreground z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px]" />
-      </TooltipPrimitive.Content>
-    </TooltipPrimitive.Portal>
+    <HeroTooltip.Content placement={side} offset={sideOffset} {...props} />
   );
 }
 

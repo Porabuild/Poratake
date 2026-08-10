@@ -44,7 +44,7 @@ describe('screenshot utils', () => {
       expect(getScreenshotsDir()).toBe('/custom/dir');
     });
 
-    it('falls back to Pictures/Capty when custom path invalid', async () => {
+    it('falls back to Pictures/Poratake when custom path invalid', async () => {
       mockGetConfig.mockReturnValue({
         storage: { screenshotsPath: '/bad/dir' },
       });
@@ -52,16 +52,16 @@ describe('screenshot utils', () => {
       const { getScreenshotsDir } =
         await import('@/main/capture/screenshot/utils');
       expect(getScreenshotsDir()).toBe(
-        path.join('/Users/me/Pictures', 'Capty')
+        path.join('/Users/me/Pictures', 'Poratake')
       );
     });
 
-    it('uses default Pictures/Capty when no custom path', async () => {
+    it('uses default Pictures/Poratake when no custom path', async () => {
       mockGetConfig.mockReturnValue({ storage: {} });
       const { getScreenshotsDir } =
         await import('@/main/capture/screenshot/utils');
       expect(getScreenshotsDir()).toBe(
-        path.join('/Users/me/Pictures', 'Capty')
+        path.join('/Users/me/Pictures', 'Poratake')
       );
     });
   });
@@ -77,7 +77,7 @@ describe('screenshot utils', () => {
         await import('@/main/capture/screenshot/utils');
       const result = generateScreenshotPath();
       expect(result).toBe(
-        path.join('/Users/me/Pictures', 'Capty', 'My Screenshot.png')
+        path.join('/Users/me/Pictures', 'Poratake', 'My Screenshot.png')
       );
       expect(mockGenerateFilename).toHaveBeenCalledWith({
         pattern: 'CustomPattern',

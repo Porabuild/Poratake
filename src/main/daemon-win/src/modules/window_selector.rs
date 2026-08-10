@@ -1,6 +1,6 @@
 use crate::overlay::{
     add_key_handler, create_popup_window, default_wndproc, ensure_window_class, rect_height,
-    rect_width, remove_key_handler, to_wide, WM_MOUSELEAVE,
+    rect_width, remove_key_handler, WM_MOUSELEAVE,
 };
 use crate::protocol::{respond_error, respond_success, Request};
 use crate::router::{method_not_found, Module, Reply};
@@ -8,30 +8,25 @@ use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, FrameRect, GetTextExtentPoint32W, InvalidateRect, RoundRect, SelectObject, SetBkMode,
-    SetTextColor, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FONT_CHARSET, FONT_CLIP_PRECISION,
-    FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_SEMIBOLD, HFONT, PAINTSTRUCT, PS_INSIDEFRAME,
-    TRANSPARENT,
+    BeginPaint, CombineRgn, CreateRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+    SetWindowRgn, PAINTSTRUCT, RGN_DIFF,
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, EnumWindows, GetClassNameW, GetSystemMetrics, GetWindowLongW, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, LoadCursorW, SetLayeredWindowAttributes,
-    SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, IDC_HAND, LWA_ALPHA, SM_CXVIRTUALSCREEN,
+    SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, SM_CXVIRTUALSCREEN,
     SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
@@ -40,10 +35,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const OVERLAY_CLASS: &str = "CaptyWindowSelector";
 const DIM_CLASS: &str = "CaptyWindowSelectorDim";
 const IDLE_ALPHA: u8 = 1;
-const HOVER_ALPHA: u8 = 150;
-const DIM_ALPHA: u8 = 102;
+const DIM_ALPHA: u8 = 160;
 const MIN_WINDOW_SIZE: i32 = 50;
-const PROMPT_TEXT: &str = "Click to select this window";
 
 const EXCLUDED_CLASSES: [&str; 4] = [
     "Progman",
@@ -72,7 +65,6 @@ struct OverlayEntry {
 struct SelectorUiState {
     overlays: Vec<OverlayEntry>,
     dim_window: Option<HWND>,
-    font: Option<HFONT>,
     key_token: Option<usize>,
     pending: Option<PendingRequest>,
 }
@@ -81,7 +73,6 @@ thread_local! {
     static STATE: RefCell<SelectorUiState> = RefCell::new(SelectorUiState {
         overlays: Vec::new(),
         dim_window: None,
-        font: None,
         key_token: None,
         pending: None,
     });
@@ -257,7 +248,7 @@ unsafe extern "system" fn overlay_wndproc(
 ) -> LRESULT {
     match message {
         WM_PAINT => {
-            paint_overlay(window);
+            paint_solid(window, COLORREF(0));
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -287,149 +278,39 @@ fn paint_solid(window: HWND, color: COLORREF) {
     }
 }
 
-fn paint_overlay(window: HWND) {
-    let (hovered, font) = STATE.with(|state| {
-        let state = state.borrow();
-        let hovered = state
+fn handle_hover(window: HWND, hovered: bool) {
+    let (changed, target_rect) = STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let Some(index) = state
             .overlays
             .iter()
-            .find(|entry| entry.window == window)
-            .map(|entry| entry.hovered)
-            .unwrap_or(false);
-        (hovered, state.font)
-    });
-
-    if !hovered {
-        paint_solid(window, COLORREF(0));
-        return;
-    }
-
-    unsafe {
-        let mut paint_struct = PAINTSTRUCT::default();
-        let dc = BeginPaint(window, &mut paint_struct);
-        let bounds = paint_struct.rcPaint;
-
-        let blue = CreateSolidBrush(COLORREF(0x00D77800));
-        FillRect(dc, &bounds, blue);
-        let _ = DeleteObject(blue.into());
-
-        let border = CreateSolidBrush(COLORREF(0x00FFFFFF));
-        for inset in 0..4 {
-            let frame = RECT {
-                left: bounds.left + inset,
-                top: bounds.top + inset,
-                right: bounds.right - inset,
-                bottom: bounds.bottom - inset,
-            };
-            FrameRect(dc, &frame, border);
-        }
-        let _ = DeleteObject(border.into());
-
-        draw_prompt(dc, window, &bounds, font);
-
-        let _ = EndPaint(window, &paint_struct);
-    }
-}
-
-fn draw_prompt(
-    dc: windows::Win32::Graphics::Gdi::HDC,
-    window: HWND,
-    bounds: &RECT,
-    font: Option<HFONT>,
-) {
-    let Some(font) = font else {
-        return;
-    };
-
-    let dpi = unsafe { GetDpiForWindow(window) }.max(96) as i32;
-    let scale = |value: i32| (value * dpi) / 96;
-
-    unsafe {
-        let previous_font = SelectObject(dc, font.into());
-        SetBkMode(dc, TRANSPARENT);
-
-        let text = to_wide(PROMPT_TEXT);
-        let mut text_size = SIZE::default();
-        let _ = GetTextExtentPoint32W(dc, &text[..text.len() - 1], &mut text_size);
-
-        let padding_x = scale(16);
-        let padding_y = scale(8);
-        let box_width = text_size.cx + padding_x * 2;
-        let box_height = text_size.cy + padding_y * 2;
-
-        if rect_width(bounds) >= box_width + scale(40)
-            && rect_height(bounds) >= box_height + scale(30)
-        {
-            let center_x = (bounds.left + bounds.right) / 2;
-            let center_y = (bounds.top + bounds.bottom) / 2;
-            let mut box_rect = RECT {
-                left: center_x - box_width / 2,
-                top: center_y - box_height / 2,
-                right: center_x + box_width / 2,
-                bottom: center_y + box_height / 2,
-            };
-
-            let dark = CreateSolidBrush(COLORREF(0x00141414));
-            let pen = CreatePen(PS_INSIDEFRAME, 1, COLORREF(0x00141414));
-            let previous_brush = SelectObject(dc, dark.into());
-            let previous_pen = SelectObject(dc, pen.into());
-            let radius = scale(12) * 2;
-            let _ = RoundRect(
-                dc,
-                box_rect.left,
-                box_rect.top,
-                box_rect.right,
-                box_rect.bottom,
-                radius,
-                radius,
-            );
-            SelectObject(dc, previous_brush);
-            SelectObject(dc, previous_pen);
-            let _ = DeleteObject(dark.into());
-            let _ = DeleteObject(pen.into());
-
-            SetTextColor(dc, COLORREF(0x00FFFFFF));
-            let mut buffer: Vec<u16> = text[..text.len() - 1].to_vec();
-            DrawTextW(
-                dc,
-                &mut buffer,
-                &mut box_rect,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-            );
-        }
-
-        SelectObject(dc, previous_font);
-    }
-}
-
-fn handle_hover(window: HWND, hovered: bool) {
-    let changed = STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let Some(entry) = state
-            .overlays
-            .iter_mut()
-            .find(|entry| entry.window == window)
+            .position(|entry| entry.window == window)
         else {
-            return false;
+            return (false, None);
         };
 
-        if entry.hovered == hovered {
-            return false;
+        if state.overlays[index].hovered == hovered {
+            return (false, None);
         }
 
-        entry.hovered = hovered;
-        true
+        state.overlays[index].hovered = hovered;
+        let target_rect = if hovered {
+            Some(state.overlays[index].target.rect)
+        } else {
+            state
+                .overlays
+                .iter()
+                .find(|entry| entry.hovered)
+                .map(|entry| entry.target.rect)
+        };
+        (true, target_rect)
     });
 
     if !changed {
         return;
     }
 
-    let alpha = if hovered { HOVER_ALPHA } else { IDLE_ALPHA };
-    unsafe {
-        let _ = SetLayeredWindowAttributes(window, COLORREF(0), alpha, LWA_ALPHA);
-        let _ = InvalidateRect(Some(window), None, true);
-    }
+    update_dim_cutout(target_rect);
 
     if hovered {
         let mut track = TRACKMOUSEEVENT {
@@ -441,6 +322,43 @@ fn handle_hover(window: HWND, hovered: bool) {
         unsafe {
             let _ = TrackMouseEvent(&mut track);
         }
+    }
+}
+
+fn update_dim_cutout(target: Option<RECT>) {
+    let dim_window = STATE.with(|state| state.borrow().dim_window);
+    let Some(dim_window) = dim_window else {
+        return;
+    };
+
+    let Some(target) = target else {
+        unsafe {
+            let _ = SetWindowRgn(dim_window, None, true);
+        }
+        return;
+    };
+
+    let virtual_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+    let virtual_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+    let virtual_width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+    let virtual_height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+
+    unsafe {
+        let dim_region = CreateRectRgn(0, 0, virtual_width, virtual_height);
+        let target_region = CreateRectRgn(
+            target.left - virtual_x,
+            target.top - virtual_y,
+            target.right - virtual_x,
+            target.bottom - virtual_y,
+        );
+        CombineRgn(
+            Some(dim_region),
+            Some(dim_region),
+            Some(target_region),
+            RGN_DIFF,
+        );
+        let _ = DeleteObject(target_region.into());
+        let _ = SetWindowRgn(dim_window, Some(dim_region), true);
     }
 }
 
@@ -517,32 +435,8 @@ fn create_dim_overlay() {
 }
 
 fn create_window_overlays(targets: Vec<TargetWindow>) {
-    let hand_cursor = unsafe { LoadCursorW(None, IDC_HAND) }.ok();
-    ensure_window_class(OVERLAY_CLASS, Some(overlay_wndproc), hand_cursor);
-
-    let font = unsafe {
-        let font_name = to_wide("Segoe UI");
-        CreateFontW(
-            -24,
-            0,
-            0,
-            0,
-            FW_SEMIBOLD.0 as i32,
-            0,
-            0,
-            0,
-            FONT_CHARSET(0),
-            FONT_OUTPUT_PRECISION(0),
-            FONT_CLIP_PRECISION(0),
-            FONT_QUALITY(0),
-            0,
-            PCWSTR(font_name.as_ptr()),
-        )
-    };
-
-    STATE.with(|state| {
-        state.borrow_mut().font = Some(font);
-    });
+    let default_cursor = unsafe { LoadCursorW(None, IDC_ARROW) }.ok();
+    ensure_window_class(OVERLAY_CLASS, Some(overlay_wndproc), default_cursor);
 
     let ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED;
 
@@ -609,13 +503,12 @@ fn start_selection(pending: PendingRequest) {
 }
 
 fn teardown() {
-    let (overlays, dim_window, font, key_token) = STATE.with(|state| {
+    let (overlays, dim_window, key_token) = STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.pending = None;
         (
             std::mem::take(&mut state.overlays),
             state.dim_window.take(),
-            state.font.take(),
             state.key_token.take(),
         )
     });
@@ -629,12 +522,6 @@ fn teardown() {
     if let Some(window) = dim_window {
         unsafe {
             let _ = DestroyWindow(window);
-        }
-    }
-
-    if let Some(font) = font {
-        unsafe {
-            let _ = DeleteObject(font.into());
         }
     }
 

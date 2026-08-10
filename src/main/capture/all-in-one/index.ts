@@ -13,6 +13,7 @@ import {
   setAllInOneCallbacks,
 } from './open-all-in-one.ts';
 import { captureArea } from '@/main/capture/screenshot/capture-area.ts';
+import captureText from '@/main/capture/ocr';
 import {
   showPreRecordingControl,
   updateRecordingControlPosition,
@@ -22,10 +23,17 @@ import {
 import { prewarmRecorder } from '@/main/capture/video/recorder.ts';
 import { prewarmOverlay } from '@/main/capture/video/overlay.ts';
 import type { AreaSelection } from '@/types/area.ts';
-import type { AreaOverlayToolbarAction } from '@/types/area-overlay.ts';
-import { globalShortcut, screen } from 'electron';
-import { getConfig, updateConfig } from '@/main/settings';
+import type {
+  AllInOneCaptureMode,
+  AreaOverlayToolbarAction,
+} from '@/types/area-overlay.ts';
+import { clipboard, globalShortcut, Notification, screen } from 'electron';
+import { updateConfig } from '@/main/settings';
 import { isFeatureSupported } from '@/main/system/capabilities';
+import { isWindows } from '@/main/utils/platform';
+import { setOverlayToolbar } from '@/main/capture/area-overlay';
+import { isScreenFrozen } from '@/main/capture/freeze-screen';
+import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
 
 export { showAllInOneControl, updateAllInOnePosition, hideAllInOneControl };
 
@@ -35,34 +43,10 @@ const MIN_SELECTION_SIZE = 20;
 type AreaBounds = { x: number; y: number; width: number; height: number };
 type ManualSize = { width: number; height: number };
 
+let activeCaptureMode: AllInOneCaptureMode = 'screenshot';
+
 function persistAreaSelection(bounds: AreaBounds): void {
   updateConfig({ allInOne: { lastArea: bounds } });
-}
-
-function getPersistedArea(): AreaBounds | null {
-  const config = getConfig();
-  const lastArea = config.allInOne?.lastArea;
-
-  if (!lastArea) {
-    return null;
-  }
-
-  const displays = screen.getAllDisplays();
-  const isOnAnyDisplay = displays.some(display => {
-    const { x, y, width, height } = display.bounds;
-    return (
-      lastArea.x >= x &&
-      lastArea.x < x + width &&
-      lastArea.y >= y &&
-      lastArea.y < y + height
-    );
-  });
-
-  if (!isOnAnyDisplay) {
-    return null;
-  }
-
-  return lastArea;
 }
 
 function registerAllInOneShortcuts(
@@ -81,6 +65,10 @@ function unregisterAllInOneShortcuts(): void {
   for (const shortcut of [...SCREENSHOT_SHORTCUTS, 'R']) {
     globalShortcut.unregister(shortcut);
   }
+}
+
+async function closeAreaSelection(): Promise<void> {
+  await Promise.all([cancelAreaSelection(), hideAllInOneControl()]);
 }
 
 function extractBounds(selection: AreaSelection): {
@@ -192,18 +180,36 @@ async function handleScreenshotAction(): Promise<void> {
   }
 
   unregisterAllInOneShortcuts();
-  await Promise.all([cancelAreaSelection(), hideAllInOneControl()]);
+  const frozen = isScreenFrozen();
+
+  if (!frozen) {
+    await closeAreaSelection();
+  }
 
   try {
-    await captureArea({
-      status: 'confirmed',
+    const selection = {
+      status: 'confirmed' as const,
       x: area.x,
       y: area.y,
       width: area.width,
       height: area.height,
-    });
+    };
+
+    if (frozen) {
+      await captureArea(selection, {
+        cached: true,
+        onCaptured: closeAreaSelection,
+      });
+    } else {
+      await captureArea(selection);
+    }
+    persistAreaSelection(area);
   } catch (error) {
     console.error('Failed to capture screenshot:', error);
+  } finally {
+    if (frozen) {
+      await closeAreaSelection();
+    }
   }
 }
 
@@ -247,6 +253,72 @@ function handleRecordAction(): void {
   });
 
   showPreRecordingControl(area);
+  persistAreaSelection(area);
+}
+
+async function handleOcrAction(): Promise<void> {
+  const area = getCurrentAreaSelection();
+  if (!area || !isFeatureSupported('ocr')) {
+    return;
+  }
+
+  unregisterAllInOneShortcuts();
+  const frozen = isScreenFrozen();
+
+  if (!frozen) {
+    await closeAreaSelection();
+  }
+
+  try {
+    if (frozen) {
+      await captureText(area, {
+        cached: true,
+        onCaptured: closeAreaSelection,
+      });
+    } else {
+      await captureText(area);
+    }
+  } finally {
+    if (frozen) {
+      await closeAreaSelection();
+    }
+  }
+}
+
+function handleCopyColorAction(color: string): void {
+  clipboard.writeText(color);
+  new Notification({
+    title: 'Color copied',
+    body: `${color.toUpperCase()} copied to the clipboard`,
+  }).show();
+  handleCloseAction();
+}
+
+function handleCaptureModeSelected(mode: AllInOneCaptureMode): void {
+  if (mode === 'record' && !isFeatureSupported('recording')) return;
+  if (mode === 'ocr' && !isFeatureSupported('ocr')) return;
+
+  activeCaptureMode = mode;
+  setOverlayToolbar({
+    kind: 'all-in-one',
+    recordingEnabled: isFeatureSupported('recording'),
+    ocrEnabled: isFeatureSupported('ocr'),
+    activeMode: activeCaptureMode,
+  });
+}
+
+function runActiveCaptureMode(): void {
+  switch (activeCaptureMode) {
+    case 'record':
+      handleRecordAction();
+      break;
+    case 'ocr':
+      void handleOcrAction();
+      break;
+    case 'screenshot':
+      void handleScreenshotAction();
+      break;
+  }
 }
 
 async function handleUpdateSizeAction(size: ManualSize): Promise<void> {
@@ -299,6 +371,15 @@ function handleToolbarAction(action: AreaOverlayToolbarAction): void {
     case 'record':
       handleRecordAction();
       break;
+    case 'ocr':
+      void handleOcrAction();
+      break;
+    case 'copy-color':
+      handleCopyColorAction(action.color);
+      break;
+    case 'select-capture-mode':
+      handleCaptureModeSelected(action.mode);
+      break;
     case 'select-aspect-ratio':
       void setAreaSelectorAspectRatio({
         name: action.name,
@@ -335,11 +416,16 @@ export default async function startAllInOne(): Promise<void> {
     onSizeEditorClosed: handleSizeEditorClosed,
   });
 
+  activeCaptureMode = 'screenshot';
+
   const handleSelected = (selection: AreaSelection) => {
     const bounds = extractBounds(selection);
     if (bounds) {
-      persistAreaSelection(bounds);
       showAllInOneControl(bounds);
+      if (isWindows) {
+        queueMicrotask(runActiveCaptureMode);
+        return;
+      }
       registerAllInOneShortcuts(handleScreenshotAction, handleRecordAction);
     }
   };
@@ -347,7 +433,6 @@ export default async function startAllInOne(): Promise<void> {
   const handleUpdate = (selection: AreaSelection) => {
     const bounds = extractBounds(selection);
     if (bounds) {
-      persistAreaSelection(bounds);
       updateAllInOnePosition(bounds);
     }
   };
@@ -356,13 +441,13 @@ export default async function startAllInOne(): Promise<void> {
     unregisterAllInOneShortcuts();
   };
 
-  const persistedArea = getPersistedArea();
-
   const selection = await startAreaSelection({
-    preset: persistedArea ?? undefined,
+    freeze: isWindows && isFreezeScreenEnabled(),
     toolbar: {
       kind: 'all-in-one',
       recordingEnabled: isFeatureSupported('recording'),
+      ocrEnabled: isFeatureSupported('ocr'),
+      activeMode: activeCaptureMode,
     },
     onSelected: handleSelected,
     onUpdate: handleUpdate,
@@ -373,6 +458,12 @@ export default async function startAllInOne(): Promise<void> {
   if (!selection) {
     unregisterAllInOneShortcuts();
     hideAllInOneControl();
+    return;
+  }
+
+  const finalBounds = extractBounds(selection);
+  if (finalBounds) {
+    persistAreaSelection(finalBounds);
   }
 }
 

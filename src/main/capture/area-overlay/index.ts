@@ -14,6 +14,7 @@ export {
   cancelOverlaySelection,
   confirmOverlaySelection,
   isOverlayActive,
+  prewarmAreaOverlay,
   setOverlayAspectRatio,
   setOverlayToolbar,
   setOverlayVisible,
@@ -27,9 +28,13 @@ export function selectAreaWithOverlay(
 }
 
 export function startInteractiveOverlay(
-  options?: Omit<OverlayOptions, 'interactive' | 'freeze'>
+  options?: Omit<OverlayOptions, 'interactive'>
 ): Promise<OverlaySelection | null> {
-  return startOverlaySession({ ...options, interactive: true, freeze: false });
+  return startOverlaySession({
+    ...options,
+    interactive: true,
+    freeze: options?.freeze ?? false,
+  });
 }
 
 export async function captureAreaToFile(filePath: string): Promise<boolean> {
@@ -41,7 +46,7 @@ export async function captureAreaToFile(filePath: string): Promise<boolean> {
 
   try {
     return await captureRegionToFile(selection.rect, filePath, {
-      cached: freeze,
+      cached: selection.frozen,
     });
   } finally {
     await selection.release();

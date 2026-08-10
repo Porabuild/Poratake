@@ -8,7 +8,7 @@ export const GENERAL_ITEMS: SettingsItem[] = [
     section: 'Application',
     type: 'switch',
     label: 'Start on login',
-    description: 'Launch Capty automatically when you log in',
+    description: 'Launch Poratake automatically when you log in',
     keywords: ['startup', 'launch', 'boot', 'login', 'auto start'],
     getValue: s => s.general.startOnLogin,
     setValue: (s, v) => ({

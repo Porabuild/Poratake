@@ -7,10 +7,11 @@ import path from 'path';
 import type { UpdateState, UpdateStatus } from '@/types/update.ts';
 import { getAppVersion, isDev } from '@/main/utils/env.ts';
 import { getConfigDir } from '@/main/utils/paths.ts';
+import { isMac } from '@/main/utils/platform.ts';
 import { rebuildTrayMenu } from '@/main/menu';
 import * as capture from '@/main/capture';
 import { broadcastUpdateEvent } from './broadcast.ts';
-import { API_URL } from './config.ts';
+import { UPDATE_OWNER, UPDATE_REPOSITORY } from './config.ts';
 
 const INITIAL_CHECK_DELAY = 3000;
 const UPDATE_CHECK_INTERVAL = 30 * 60 * 1000;
@@ -52,8 +53,9 @@ function setError(error: string): void {
 
 function configureAutoUpdater(): void {
   autoUpdater.setFeedURL({
-    provider: 'generic',
-    url: `${API_URL}/api/versions`,
+    provider: 'github',
+    owner: UPDATE_OWNER,
+    repo: UPDATE_REPOSITORY,
   });
 
   autoUpdater.autoDownload = false;
@@ -72,7 +74,7 @@ function configureAutoUpdater(): void {
         : (info.releaseNotes?.[0]?.note ?? null);
     setStatus('available');
 
-    autoUpdater.downloadUpdate();
+    void autoUpdater.downloadUpdate().catch(() => {});
   });
 
   autoUpdater.on('update-not-available', info => {
@@ -100,16 +102,7 @@ function configureAutoUpdater(): void {
     setStatus('ready');
   });
 
-  autoUpdater.on('error', (error: Error & { code?: string }) => {
-    const isChannelNotFound =
-      error.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' ||
-      error.message?.includes('404');
-
-    if (isChannelNotFound) {
-      setStatus('up_to_date');
-      return;
-    }
-
+  autoUpdater.on('error', (error: Error) => {
     console.error('Auto-updater error:', error);
     setError(error.message || 'Update failed');
   });
@@ -138,20 +131,17 @@ export async function checkForUpdate(): Promise<UpdateState> {
     return getUpdateState();
   }
 
+  if (!isMac) {
+    updateState.error = null;
+    setStatus('unsupported');
+    return getUpdateState();
+  }
+
   try {
     await autoUpdater.checkForUpdates();
   } catch (error) {
-    const err = error as Error & { code?: string };
-    const isChannelNotFound =
-      err.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' ||
-      err.message?.includes('404');
-
-    if (isChannelNotFound) {
-      setStatus('up_to_date');
-    } else {
-      console.error('Update check failed:', error);
-      setError('Failed to check for updates');
-    }
+    console.error('Update check failed:', error);
+    setError('Failed to check for updates');
   }
   return getUpdateState();
 }
@@ -170,6 +160,11 @@ export function installDownloadedUpdate(): void {
       return;
     }
     setStatus('ready');
+    return;
+  }
+  if (!isMac) {
+    updateState.error = null;
+    setStatus('unsupported');
     return;
   }
   autoUpdater.quitAndInstall(false, true);
@@ -200,8 +195,6 @@ export function stopPeriodicUpdateChecks(): void {
 export function init(): void {
   updateState.currentVersion = getAppVersion();
 
-  configureAutoUpdater();
-
   ipcMain.handle('update:getState', () => {
     return getUpdateState();
   });
@@ -213,6 +206,16 @@ export function init(): void {
   ipcMain.handle('update:install', () => {
     installDownloadedUpdate();
   });
+
+  const hasDevUpdate = Boolean(isDev && process.env.CAPTY_DEV_UPDATE_VERSION);
+  if (!isMac && !hasDevUpdate) {
+    setStatus('unsupported');
+    return;
+  }
+
+  if (isMac) {
+    configureAutoUpdater();
+  }
 
   setTimeout(() => {
     checkForUpdate();

@@ -26,6 +26,7 @@ class MockBrowserWindow {
   };
 
   destroyed = false;
+  options: Electron.BrowserWindowConstructorOptions;
   loadURL = vi.fn();
   loadFile = vi.fn();
   show = vi.fn();
@@ -41,8 +42,8 @@ class MockBrowserWindow {
     this.windowHandlers[event].push(cb);
   });
 
-  constructor(_opts: unknown) {
-    void _opts;
+  constructor(options: Electron.BrowserWindowConstructorOptions) {
+    this.options = options;
     browserWindows.push(this);
     MockBrowserWindow.instances.push(this);
   }
@@ -98,6 +99,9 @@ describe('window-manager', () => {
       expect(win).toBeDefined();
       expect(browserWindows.length).toBe(1);
       expect(m.getVideoEditorWindowsCount()).toBe(1);
+      expect(browserWindows[0].options).toMatchObject({
+        webPreferences: { webSecurity: false },
+      });
     });
 
     it('uses project recording path when path is a project folder', async () => {

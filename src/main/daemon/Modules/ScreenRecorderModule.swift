@@ -8,6 +8,21 @@ class ScreenRecorderModule: Module {
     private let screenRecorder = ScreenCaptureRecorder()
     private let iosRecorder = IOSDeviceRecorder()
     private var isIOSRecording = false
+
+    init() {
+        screenRecorder.onError = { [weak self] error in
+            self?.emit(event: "error", data: [
+                "code": "CAPTURE_ERROR",
+                "message": error.localizedDescription
+            ])
+        }
+        iosRecorder.onError = { [weak self] error in
+            self?.emit(event: "error", data: [
+                "code": "CAPTURE_ERROR",
+                "message": error.localizedDescription
+            ])
+        }
+    }
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
         switch method {

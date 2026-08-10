@@ -15,6 +15,12 @@ import type {
 } from './editor';
 import type { HistoryConfig } from './history';
 import { DEFAULT_HISTORY_CONFIG } from './history';
+import type { ThemeMode } from './theme';
+
+export interface AppearanceConfig {
+  mode: ThemeMode;
+  theme: string;
+}
 
 export interface StorageConfig {
   screenshotsPath: string;
@@ -216,6 +222,7 @@ export interface VideoEditorSidebarShortcuts {
 }
 
 export interface SettingsConfig {
+  appearance: AppearanceConfig;
   general: {
     startOnLogin: boolean;
     playSoundOnScreenshot: boolean;
@@ -272,6 +279,8 @@ export interface SettingsConfig {
   allInOne: AllInOneConfig;
   scrollCapture: ScrollCaptureConfig;
 }
+
+export type SettingsUiConfig = Omit<SettingsConfig, 'wallpaper'>;
 
 export const DEFAULT_ONBOARDING_CONFIG: OnboardingConfig = {
   completed: false,
@@ -399,6 +408,10 @@ export const DEFAULT_SCROLL_CAPTURE_CONFIG: ScrollCaptureConfig = {
 };
 
 export const DEFAULT_SETTINGS: SettingsConfig = {
+  appearance: {
+    mode: 'dark',
+    theme: 'default',
+  },
   general: {
     startOnLogin: false,
     playSoundOnScreenshot: true,
@@ -432,7 +445,7 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
       window: '',
     },
     history: '',
-    allInOne: '',
+    allInOne: 'Alt+Shift+S',
     openInEditor: '',
     clipboardInEditor: '',
     editor: {

@@ -93,9 +93,15 @@ export default function ActivationWindow() {
           <div className="bg-primary/10 mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full">
             <Key className="text-primary h-8 w-8" />
           </div>
-          <h1 className="text-xl font-semibold">Activate Capty Pro</h1>
+          <h1 className="text-xl font-semibold">Activate Capty License</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             Enter your email and license key to unlock Pro features
+          </p>
+          <p className="text-muted-foreground mt-2 text-xs">
+            Activation is provided by Capty. Your email, license key, device
+            identifier, device name, platform, and Poratake version are sent to
+            capty.app. Capty&apos;s terms govern service access for modified
+            builds.
           </p>
         </div>
 
@@ -166,6 +172,23 @@ export default function ActivationWindow() {
             <ExternalLink className="mr-2 h-4 w-4" />
             Purchase
           </Button>
+        </div>
+
+        <div className="text-muted-foreground mt-3 flex justify-center gap-3 text-xs">
+          <button
+            type="button"
+            className="hover:text-foreground transition-colors"
+            onClick={() => window.open('https://capty.app/terms', '_blank')}
+          >
+            Capty Terms
+          </button>
+          <button
+            type="button"
+            className="hover:text-foreground transition-colors"
+            onClick={() => window.open('https://capty.app/privacy', '_blank')}
+          >
+            Capty Privacy
+          </button>
         </div>
 
         <div className="mt-auto pt-6">

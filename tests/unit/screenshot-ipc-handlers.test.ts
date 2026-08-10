@@ -23,6 +23,8 @@ const mockShowMessageBox = vi.fn();
 const mockGetWindowData = vi.fn();
 const mockGetWindowFromWebContentsId = vi.fn();
 const mockGetHistoryItemByPath = vi.fn();
+const mockGetHistoryItem = vi.fn();
+const mockIsHistoryPopoverWebContents = vi.fn(() => true);
 const mockDeleteHistoryItem = vi.fn();
 const mockUpdateHistoryItemByPath = vi.fn();
 const mockOpenScreenshotFromHistory = vi.fn();
@@ -30,6 +32,7 @@ const mockCreateOrShowSettingsWindow = vi.fn();
 const mockDaemonCall = vi.fn();
 const mockNotificationShow = vi.fn();
 const mockExec = vi.fn();
+const mockRmSync = vi.fn();
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -73,16 +76,24 @@ vi.mock('fs', () => ({
     readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
     writeFileSync: (...a: unknown[]) => mockWriteFileSync(...a),
     copyFileSync: (...a: unknown[]) => mockCopyFileSync(...a),
+    rmSync: (...a: unknown[]) => mockRmSync(...a),
     statSync: (...a: unknown[]) => mockStatSync(...a),
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
   writeFileSync: (...a: unknown[]) => mockWriteFileSync(...a),
   copyFileSync: (...a: unknown[]) => mockCopyFileSync(...a),
+  rmSync: (...a: unknown[]) => mockRmSync(...a),
   statSync: (...a: unknown[]) => mockStatSync(...a),
 }));
 
-vi.mock('child_process', () => ({ exec: (...a: unknown[]) => mockExec(...a) }));
+vi.mock('child_process', () => ({
+  execFile: (
+    file: string,
+    args: string[],
+    callback: (error: Error | null, stdout: string, stderr: string) => void
+  ) => mockExec([file, ...args].join(' '), callback),
+}));
 
 vi.mock('@/main/settings', () => ({
   getConfig: () => mockGetConfig(),
@@ -111,7 +122,10 @@ vi.mock('@/main/capture/freeze-screen', () => ({
 vi.mock('@/main/history', () => ({
   addToHistory: vi.fn().mockResolvedValue({ id: 'h1' }),
   deleteHistoryItem: (...a: unknown[]) => mockDeleteHistoryItem(...a),
+  getHistoryItem: (...a: unknown[]) => mockGetHistoryItem(...a),
   getHistoryItemByPath: (...a: unknown[]) => mockGetHistoryItemByPath(...a),
+  isHistoryPopoverWebContents: (...a: unknown[]) =>
+    mockIsHistoryPopoverWebContents(...a),
   updateHistoryItemByPath: (...a: unknown[]) =>
     mockUpdateHistoryItemByPath(...a),
 }));
@@ -164,6 +178,7 @@ describe('screenshot IPC handlers', () => {
     vi.resetModules();
     Object.keys(ipcOn).forEach(k => delete ipcOn[k]);
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
+    mockIsHistoryPopoverWebContents.mockReturnValue(true);
   });
 
   async function registerHandlers(): Promise<void> {
@@ -380,17 +395,35 @@ describe('screenshot IPC handlers', () => {
     it('returns base64', async () => {
       mockExistsSync.mockReturnValue(true);
       mockReadFileSync.mockReturnValue(Buffer.from('img'));
+      mockGetWindowData.mockReturnValue({ filePath: '/p/x.png' });
       await registerHandlers();
-      const result = await ipcHandle['screenshot:read-file']({}, '/p/x.png');
+      const result = await ipcHandle['screenshot:read-file']({
+        sender: { id: 1 },
+      });
       expect(typeof result).toBe('string');
+      expect(mockReadFileSync).toHaveBeenCalledWith('/p/x.png');
     });
 
     it('throws when file missing', async () => {
       mockExistsSync.mockReturnValue(false);
+      mockGetWindowData.mockReturnValue({ filePath: '/p/missing.png' });
       await registerHandlers();
       await expect(
-        ipcHandle['screenshot:read-file']({}, '/p/missing.png')
+        ipcHandle['screenshot:read-file']({ sender: { id: 1 } })
       ).rejects.toThrow('File not found');
+    });
+
+    it('rejects a renderer without an owned screenshot', async () => {
+      mockGetWindowData.mockReturnValue(undefined);
+      await registerHandlers();
+
+      await expect(
+        ipcHandle['screenshot:read-file'](
+          { sender: { id: 1 } },
+          '/p/private.txt'
+        )
+      ).rejects.toThrow('File not found');
+      expect(mockReadFileSync).not.toHaveBeenCalled();
     });
   });
 
@@ -432,9 +465,23 @@ describe('screenshot IPC handlers', () => {
   describe('history:openScreenshot', () => {
     it('forwards to openScreenshotFromHistory', async () => {
       await registerHandlers();
-      const item = { id: 'h1', filePath: '/p/x.png' };
-      ipcOn['history:openScreenshot']({}, item);
+      const item = {
+        id: 'h1',
+        type: 'screenshot',
+        originalPath: '/p/x.png',
+      };
+      mockGetHistoryItem.mockReturnValue(item);
+      ipcOn['history:openScreenshot']({ sender: {} }, 'h1');
+      expect(mockGetHistoryItem).toHaveBeenCalledWith('h1');
       expect(mockOpenScreenshotFromHistory).toHaveBeenCalledWith(item);
+    });
+
+    it('ignores another renderer', async () => {
+      mockIsHistoryPopoverWebContents.mockReturnValue(false);
+      await registerHandlers();
+      ipcOn['history:openScreenshot']({ sender: {} }, 'h1');
+      expect(mockGetHistoryItem).not.toHaveBeenCalled();
+      expect(mockOpenScreenshotFromHistory).not.toHaveBeenCalled();
     });
   });
 
@@ -563,6 +610,8 @@ describe('screenshot IPC handlers', () => {
       const { BrowserWindow } = await import('electron');
       const win = {
         isDestroyed: () => false,
+        isVisible: () => true,
+        once: vi.fn((_event: string, callback: () => void) => callback()),
         hide: vi.fn(),
         show: vi.fn(),
         focus: vi.fn(),
@@ -578,12 +627,54 @@ describe('screenshot IPC handlers', () => {
         sender: {},
       });
       expect(typeof result).toBe('string');
+      expect(mockRmSync).toHaveBeenCalledWith(
+        expect.stringContaining('capty-editor-'),
+        { force: true }
+      );
+      expect(win.show).toHaveBeenCalled();
+      expect(win.focus).toHaveBeenCalled();
+    });
+
+    it('waits for the editor window to be hidden before capturing', async () => {
+      const { BrowserWindow } = await import('electron');
+      let hidden: (() => void) | undefined;
+      const win = {
+        isDestroyed: () => false,
+        isVisible: () => true,
+        once: vi.fn((_event: string, callback: () => void) => {
+          hidden = callback;
+        }),
+        hide: vi.fn(),
+        show: vi.fn(),
+        focus: vi.fn(),
+      };
+      vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(win as never);
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(Buffer.from('img'));
+      mockExec.mockImplementation(
+        (_cmd: string, cb: (err: Error | null) => void) => cb(null)
+      );
+      await registerHandlers();
+
+      const capture = ipcHandle['screenshot:capture-for-editor']({
+        sender: {},
+      });
+      await Promise.resolve();
+
+      expect(mockReadFileSync).not.toHaveBeenCalled();
+
+      hidden?.();
+      await capture;
+
+      expect(mockReadFileSync).toHaveBeenCalled();
     });
 
     it('returns null when capture file missing', async () => {
       const { BrowserWindow } = await import('electron');
       const win = {
         isDestroyed: () => false,
+        isVisible: () => true,
+        once: vi.fn((_event: string, callback: () => void) => callback()),
         hide: vi.fn(),
         show: vi.fn(),
         focus: vi.fn(),
@@ -604,6 +695,8 @@ describe('screenshot IPC handlers', () => {
       const { BrowserWindow } = await import('electron');
       const win = {
         isDestroyed: () => false,
+        isVisible: () => true,
+        once: vi.fn((_event: string, callback: () => void) => callback()),
         hide: vi.fn(),
         show: vi.fn(),
         focus: vi.fn(),

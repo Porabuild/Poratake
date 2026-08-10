@@ -25,30 +25,68 @@ interface CapturePreviewWindowProps {
 export default function CapturePreviewWindow({
   params,
 }: CapturePreviewWindowProps) {
-  const { contentType, thumbnailBase64, filePath } = params;
+  const { contentType, imageUrl, thumbnailUrl, filePath } = params;
   const [isHovered, setIsHovered] = useState(false);
   const [displays, setDisplays] = useState<PreviewDisplayInfo[]>([]);
   const [isDisplayMenuOpen, setIsDisplayMenuOpen] = useState(false);
+  const [imageSources, setImageSources] = useState<string[]>(() =>
+    [imageUrl, thumbnailUrl].filter((source): source is string =>
+      Boolean(source)
+    )
+  );
+  const [visibleImageSource, setVisibleImageSource] = useState<string | null>(
+    null
+  );
+  const visibleImageSourceRef = useRef<string | null>(null);
+  const contentReadySentRef = useRef(false);
   const isDeleting = useRef(false);
   const displayMenuRef = useRef<HTMLDivElement>(null);
-  const [hasEntered, setHasEntered] = useState(false);
-
-  const notifyReady = useCallback(() => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        window.ipcRenderer.send('capture-preview:ready');
-        setHasEntered(true);
-      });
-    });
-  }, []);
 
   useEffect(() => {
-    if (thumbnailBase64) return;
-    notifyReady();
-  }, [thumbnailBase64, notifyReady]);
+    const nextSources = [imageUrl, thumbnailUrl].filter(
+      (source): source is string => Boolean(source)
+    );
+    if (nextSources.length === 0) return;
+
+    setImageSources(sources =>
+      nextSources.reduce(
+        (result, source) =>
+          result.includes(source) ? result : [...result, source],
+        sources
+      )
+    );
+  }, [imageUrl, thumbnailUrl]);
+
+  useEffect(() => {
+    const isPlaceholderReady = imageSources.length === 0;
+    if (!visibleImageSource && !isPlaceholderReady) return;
+    if (contentReadySentRef.current) return;
+
+    contentReadySentRef.current = true;
+    window.ipcRenderer.send('capture-preview:content-ready');
+  }, [contentType, imageSources.length, visibleImageSource]);
+
+  const handleImageLoad = useCallback(
+    (source: string) => {
+      if (
+        visibleImageSourceRef.current &&
+        source !== (thumbnailUrl ?? imageUrl ?? imageSources[0])
+      ) {
+        return;
+      }
+
+      visibleImageSourceRef.current = source;
+      setVisibleImageSource(source);
+    },
+    [imageSources, imageUrl, thumbnailUrl]
+  );
+
+  const handleImageError = useCallback((source: string) => {
+    setImageSources(sources => sources.filter(item => item !== source));
+  }, []);
 
   const { isCopying, isDone, copyProgress, startExport, cancelExport } =
-    useVideoClipboardExport(filePath);
+    useVideoClipboardExport();
 
   const {
     uploadState,
@@ -211,9 +249,9 @@ export default function CapturePreviewWindow({
     (e: React.DragEvent) => {
       if (contentType !== 'screenshot') return;
       e.preventDefault();
-      window.ipcRenderer.send('capture-preview:start-drag', filePath);
+      window.ipcRenderer.send('capture-preview:start-drag');
     },
-    [contentType, filePath]
+    [contentType]
   );
 
   const showControls =
@@ -225,25 +263,25 @@ export default function CapturePreviewWindow({
 
   return (
     <div
-      className={`relative h-screen w-screen overflow-hidden rounded-lg select-none ${
-        hasEntered
-          ? 'animate-in fade-in zoom-in-95 duration-200 ease-out'
-          : 'opacity-0'
-      }`}
+      className="relative h-screen w-screen overflow-hidden rounded-lg select-none"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       draggable={contentType === 'screenshot'}
       onDragStart={handleDragStart}
     >
-      {thumbnailBase64 ? (
+      {imageSources.map(source => (
         <img
-          src={`data:image/jpeg;base64,${thumbnailBase64}`}
+          key={source}
+          src={source}
           alt="Preview"
-          className={`h-full w-full object-cover ${thumbnailClassName}`}
+          className={`absolute inset-0 h-full w-full object-cover ${thumbnailClassName} ${
+            source === visibleImageSource ? '' : 'opacity-0'
+          }`}
           draggable={false}
-          onLoad={notifyReady}
-          onError={notifyReady}
+          onLoad={() => handleImageLoad(source)}
+          onError={() => handleImageError(source)}
         />
-      ) : (
+      ))}
+      {!visibleImageSource && (
         <div
           className={`bg-muted flex h-full w-full items-center justify-center ${thumbnailClassName}`}
         >
@@ -275,7 +313,7 @@ export default function CapturePreviewWindow({
       )}
 
       <div
-        className="absolute inset-0 cursor-pointer"
+        className="absolute inset-0 cursor-default"
         onDoubleClick={handleDoubleClick}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}

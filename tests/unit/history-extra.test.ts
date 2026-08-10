@@ -20,6 +20,7 @@ const mockGetMicAudioPath = vi.fn();
 const mockGetSystemAudioPath = vi.fn();
 const mockGetCameraVideoPath = vi.fn();
 const mockGetCursorPath = vi.fn();
+const mockIsHistoryPopoverWebContents = vi.fn(() => true);
 
 vi.mock('electron', () => ({
   app: {
@@ -87,6 +88,8 @@ vi.mock('@/main/history/popover', () => ({
   closeHistoryPopover: vi.fn(),
   toggleHistoryPopover: vi.fn(),
   getHistoryPopover: () => null,
+  isHistoryPopoverWebContents: (...a: unknown[]) =>
+    mockIsHistoryPopoverWebContents(...a),
   isHistoryPopoverVisible: () => false,
 }));
 
@@ -102,6 +105,7 @@ describe('history extra', () => {
     mockGetSystemAudioPath.mockImplementation((p: string) => `${p}.sys`);
     mockGetCameraVideoPath.mockImplementation((p: string) => `${p}.cam`);
     mockGetCursorPath.mockImplementation((p: string) => `${p}.cur`);
+    mockIsHistoryPopoverWebContents.mockReturnValue(true);
   });
 
   describe('getVideoRecordingFeatures', () => {
@@ -137,47 +141,55 @@ describe('history extra', () => {
     async function loadInit(): Promise<void> {
       mockExistsSync.mockReturnValue(false);
       const { init } = await import('@/main/history');
-      init();
+      await init();
     }
 
-    it('history:confirmClear returns true on confirm', async () => {
+    it('history:clear clears history on confirm', async () => {
       mockShowMessageBox.mockResolvedValue({ response: 0 });
-      await loadInit();
-      const result = await ipcHandle['history:confirmClear']({ sender: {} });
-      expect(result).toBe(true);
-    });
-
-    it('history:confirmClear returns false on cancel', async () => {
-      mockShowMessageBox.mockResolvedValue({ response: 1 });
-      await loadInit();
-      const result = await ipcHandle['history:confirmClear']({ sender: {} });
-      expect(result).toBe(false);
-    });
-
-    it('history:clear clears history', async () => {
       mockWriteFile.mockResolvedValue(undefined);
       await loadInit();
-      const result = await ipcHandle['history:clear']();
+      const result = await ipcHandle['history:clear']({ sender: {} });
       expect(result).toBe(true);
+    });
+
+    it('history:clear preserves history on cancel', async () => {
+      mockShowMessageBox.mockResolvedValue({ response: 1 });
+      await loadInit();
+      const result = await ipcHandle['history:clear']({ sender: {} });
+      expect(result).toBe(false);
+      expect(mockWriteFile).not.toHaveBeenCalled();
     });
 
     it('history:getThumbnail returns base64', async () => {
       mockGetThumbnail.mockResolvedValue({ base64: 'abc', cached: false });
-      await loadInit();
+      mockExistsSync.mockReturnValue(true);
+      mockReadFile.mockResolvedValue(
+        JSON.stringify([
+          {
+            id: 'h1',
+            timestamp: 1,
+            originalPath: '/p/x.png',
+            type: 'screenshot',
+            editorState: null,
+          },
+        ])
+      );
+      const { init } = await import('@/main/history');
+      await init();
       const result = await ipcHandle['history:getThumbnail'](
-        {},
-        '/p/x.png',
-        'screenshot'
+        { sender: {} },
+        'h1'
       );
       expect(result).toBe('abc');
+      expect(mockGetThumbnail).toHaveBeenCalledWith('/p/x.png', 'screenshot');
     });
 
-    it('history:getVideoFeatures returns features', async () => {
+    it('history:getVideoFeatures rejects an unknown history id', async () => {
       mockGetProjectFolder.mockReturnValue(null);
       await loadInit();
       const result = await ipcHandle['history:getVideoFeatures'](
-        {},
-        '/p/x.mov'
+        { sender: {} },
+        'missing'
       );
       expect(result).toEqual({
         hasMic: false,
@@ -185,6 +197,61 @@ describe('history extra', () => {
         hasCamera: false,
         hasCursor: false,
       });
+    });
+
+    it('history:getVideoFeatures resolves the stored video path by id', async () => {
+      mockReadFile.mockResolvedValue(
+        JSON.stringify([
+          {
+            id: 'v1',
+            timestamp: 1,
+            originalPath: '/p/video.mov',
+            type: 'video',
+            editorState: null,
+          },
+        ])
+      );
+      mockGetProjectFolder.mockReturnValue('/p/video.capty');
+      mockExistsSync.mockImplementation((path: string) => {
+        const value = String(path);
+        return (
+          value.endsWith('history.json') ||
+          value === '/p/video.mov' ||
+          value.endsWith('.cam')
+        );
+      });
+      const { init } = await import('@/main/history');
+      await init();
+
+      const result = await ipcHandle['history:getVideoFeatures'](
+        { sender: {} },
+        'v1'
+      );
+
+      expect(result).toEqual({
+        hasMic: false,
+        hasSystemAudio: false,
+        hasCamera: true,
+        hasCursor: false,
+      });
+    });
+
+    it('rejects history access from another renderer', async () => {
+      mockIsHistoryPopoverWebContents.mockReturnValue(false);
+      await loadInit();
+
+      expect(ipcHandle['history:get']({ sender: {} })).toEqual([]);
+      await expect(
+        ipcHandle['history:delete']({ sender: {} }, 'h1')
+      ).resolves.toBe(false);
+      await expect(ipcHandle['history:clear']({ sender: {} })).resolves.toBe(
+        false
+      );
+      await expect(
+        ipcHandle['history:getThumbnail']({ sender: {} }, 'h1')
+      ).resolves.toBeNull();
+      expect(mockShowMessageBox).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
     });
   });
 });

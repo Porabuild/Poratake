@@ -1,58 +1,117 @@
 import * as React from 'react';
-import * as TabsPrimitive from '@radix-ui/react-tabs';
+import { Tabs as HeroTabs } from '@heroui/react';
 
 import { cn } from '@/renderer/lib/utils';
 
-function Tabs(props: React.ComponentProps<typeof TabsPrimitive.Root>) {
-  return <TabsPrimitive.Root data-slot="tabs" {...props} />;
+interface TabsProps extends Omit<
+  React.ComponentProps<typeof HeroTabs>,
+  'selectedKey' | 'defaultSelectedKey' | 'onSelectionChange'
+> {
+  value?: string;
+  defaultValue?: string;
+  onValueChange?: (value: string) => void;
+}
+
+function Tabs({ value, defaultValue, onValueChange, ...props }: TabsProps) {
+  return (
+    <HeroTabs
+      data-slot="tabs"
+      variant="secondary"
+      selectedKey={value}
+      defaultSelectedKey={defaultValue}
+      onSelectionChange={key => onValueChange?.(String(key))}
+      {...props}
+    />
+  );
 }
 
 function TabsList({
   className,
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.List>) {
+}: React.ComponentProps<typeof HeroTabs.List>) {
   return (
-    <TabsPrimitive.List
+    <HeroTabs.List
       data-slot="tabs-list"
-      className={cn(
-        'bg-muted text-muted-foreground inline-flex h-9 items-center justify-center rounded-lg p-1',
-        className
-      )}
+      className={cn('w-fit', className)}
       {...props}
     />
   );
+}
+
+function TabsListContainer({
+  className,
+  ...props
+}: React.ComponentProps<typeof HeroTabs.ListContainer>) {
+  return (
+    <HeroTabs.ListContainer
+      data-slot="tabs-list-container"
+      className={className}
+      {...props}
+    />
+  );
+}
+
+interface TabsTriggerProps extends Omit<
+  React.ComponentProps<typeof HeroTabs.Tab>,
+  'id' | 'isDisabled'
+> {
+  value: string;
+  disabled?: boolean;
 }
 
 function TabsTrigger({
   className,
+  value,
+  disabled,
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
+}: TabsTriggerProps) {
   return (
-    <TabsPrimitive.Trigger
+    <HeroTabs.Tab
       data-slot="tabs-trigger"
-      className={cn(
-        'ring-offset-background focus-visible:ring-ring data-[state=active]:bg-background data-[state=active]:text-foreground inline-flex items-center justify-center rounded-md px-3 py-1 text-sm font-medium whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm',
-        className
-      )}
+      id={value}
+      isDisabled={disabled}
+      className={cn('text-sm font-medium', className)}
       {...props}
     />
   );
 }
 
-function TabsContent({
+function TabsIndicator({
   className,
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Content>) {
+}: React.ComponentProps<typeof HeroTabs.Indicator>) {
   return (
-    <TabsPrimitive.Content
-      data-slot="tabs-content"
-      className={cn(
-        'ring-offset-background focus-visible:ring-ring mt-2 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
-        className
-      )}
+    <HeroTabs.Indicator
+      data-slot="tabs-indicator"
+      className={className}
       {...props}
     />
   );
 }
 
-export { Tabs, TabsList, TabsTrigger, TabsContent };
+interface TabsContentProps extends Omit<
+  React.ComponentProps<typeof HeroTabs.Panel>,
+  'id'
+> {
+  value: string;
+}
+
+function TabsContent({ className, value, ...props }: TabsContentProps) {
+  return (
+    <HeroTabs.Panel
+      data-slot="tabs-content"
+      id={value}
+      className={cn('mt-2', className)}
+      {...props}
+    />
+  );
+}
+
+export {
+  Tabs,
+  TabsContent,
+  TabsIndicator,
+  TabsList,
+  TabsListContainer,
+  TabsTrigger,
+};

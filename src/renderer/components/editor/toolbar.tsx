@@ -59,7 +59,8 @@ function ToolButton({
       <TooltipTrigger asChild>
         <Button
           variant={activeTool === tool ? 'default' : 'ghost'}
-          className="size-7"
+          size="icon-sm"
+          className="size-7!"
           onClick={() => onToolChange(tool)}
         >
           {icon}
@@ -187,7 +188,8 @@ export default function Toolbar({
         <TooltipTrigger asChild>
           <Button
             variant={isCaptureMode ? 'default' : 'ghost'}
-            className="size-7"
+            size="icon-sm"
+            className="size-7!"
             onClick={onCaptureClick}
           >
             <Camera className="size-4" />

@@ -34,11 +34,12 @@ export const HIGHLIGHT_COLORS = [
   '#FFA500',
 ] as const;
 
-export type HighlightColor = (typeof HIGHLIGHT_COLORS)[number];
+export type HighlightColor = string;
 
 export type TextFontSize = number;
 
-export type WindowFrameStyle = 'none' | 'macos-light' | 'macos-dark';
+export type WindowFrameStyle =
+  'none' | 'macos-light' | 'macos-dark' | 'windows-light' | 'windows-dark';
 
 export interface WindowFrameSettings {
   style: WindowFrameStyle;

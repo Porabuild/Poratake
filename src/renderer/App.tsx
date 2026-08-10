@@ -4,12 +4,14 @@ import type {
   EditorPreferences,
   EditorShortcuts,
   ScreenshotFormat,
-  SettingsConfig,
+  SettingsUiConfig,
 } from '@/types/settings';
 import type { EditorState } from '@/types/history';
 import type { CapturePreviewParams } from '@/types/capture-preview';
 import type { AreaOverlayParams } from '@/types/area-overlay';
+import type { RecordingControlState } from '@/types/recording-control';
 import { useAccentColor } from '@/renderer/hooks/useAccentColor';
+import { useAppTheme } from '@/renderer/hooks/use-app-theme';
 
 const ScreenshotWindow = lazy(
   () => import('@/renderer/windows/screenshot-window')
@@ -25,12 +27,49 @@ const PinWindow = lazy(() => import('@/renderer/windows/pin-window'));
 const VideoEditorWindow = lazy(
   () => import('@/renderer/windows/video-editor-window')
 );
-const CapturePreviewWindow = lazy(
-  () => import('@/renderer/windows/capture-preview-window')
+const loadCapturePreviewWindow = () =>
+  import('@/renderer/windows/capture-preview-window');
+const CapturePreviewWindow = lazy(loadCapturePreviewWindow);
+const loadAreaOverlayWindow = () =>
+  import('@/renderer/windows/area-overlay-window');
+const AreaOverlayWindow = lazy(loadAreaOverlayWindow);
+const RecordingControlWindow = lazy(
+  () => import('@/renderer/windows/recording-control-window')
 );
-const AreaOverlayWindow = lazy(
-  () => import('@/renderer/windows/area-overlay-window')
-);
+const isCapturePreviewWindow =
+  new URLSearchParams(window.location.search).get('window') ===
+  'capture-preview';
+const isAreaOverlayWindow =
+  new URLSearchParams(window.location.search).get('window') === 'area-overlay';
+
+function CapturePreviewFallback({ params }: { params: CapturePreviewParams }) {
+  const previewImageUrl = params.thumbnailUrl ?? params.imageUrl;
+
+  useEffect(() => {
+    if (previewImageUrl) return;
+
+    window.ipcRenderer.send('capture-preview:content-ready');
+  }, [previewImageUrl]);
+
+  return (
+    <div className="bg-muted h-screen w-screen overflow-hidden rounded-lg">
+      {previewImageUrl && (
+        <img
+          src={previewImageUrl}
+          alt="Preview"
+          className="h-full w-full object-cover"
+          draggable={false}
+          onLoad={() =>
+            window.ipcRenderer.send('capture-preview:content-ready')
+          }
+          onError={() =>
+            window.ipcRenderer.send('capture-preview:content-ready')
+          }
+        />
+      )}
+    </div>
+  );
+}
 
 interface ScreenshotParams {
   filePath: string;
@@ -51,6 +90,14 @@ interface VideoEditorParams {
   filePath: string;
 }
 
+interface SettingsParams {
+  nativeMaterial: boolean;
+}
+
+interface WindowMaterialResult {
+  nativeCapable: boolean;
+}
+
 interface LoadEvent {
   type:
     | 'screenshot'
@@ -60,18 +107,22 @@ interface LoadEvent {
     | 'pin'
     | 'video-editor'
     | 'capture-preview'
-    | 'area-overlay';
+    | 'area-overlay'
+    | 'recording-control';
   params:
     | ScreenshotParams
     | PinParams
     | VideoEditorParams
     | CapturePreviewParams
     | AreaOverlayParams
+    | RecordingControlState
+    | SettingsParams
     | Record<string, never>;
 }
 
 function App() {
   useAccentColor();
+  useAppTheme();
 
   const [windowData, setWindowData] = useState<LoadEvent | null>(null);
   const [editorPreferences, setEditorPreferences] =
@@ -87,30 +138,101 @@ function App() {
     useState<EditorActionShortcuts | null>(null);
 
   useEffect(() => {
+    const handlePrepareCapturePreview = () => {
+      void loadCapturePreviewWindow()
+        .then(() => {
+          window.ipcRenderer.send('capture-preview:renderer-prepared');
+        })
+        .catch(() => {
+          window.ipcRenderer.send('capture-preview:renderer-failed');
+        });
+    };
+
+    const handlePrepareAreaOverlay = () => {
+      void loadAreaOverlayWindow()
+        .then(() => {
+          window.ipcRenderer.send('area-overlay:renderer-prepared');
+        })
+        .catch(() => {
+          window.ipcRenderer.send('area-overlay:renderer-failed');
+        });
+    };
+
     const handleLoad = async (_event: unknown, data: LoadEvent) => {
       if (data.type === 'screenshot') {
         const [prefs, settings] = await Promise.all([
           window.ipcRenderer.invoke(
             'editor:getPreferences'
           ) as Promise<EditorPreferences>,
-          window.ipcRenderer.invoke('settings:get') as Promise<SettingsConfig>,
+          window.ipcRenderer.invoke(
+            'settings:get-ui'
+          ) as Promise<SettingsUiConfig>,
         ]);
         setEditorPreferences(prefs);
         setScreenshotSettings(settings.screenshot);
         setEditorShortcuts(settings.shortcuts.editor);
         setEditorActionShortcuts(settings.shortcuts.editorActions);
       }
+
+      if (data.type === 'settings') {
+        const reducedTransparency =
+          typeof window.matchMedia === 'function' &&
+          window.matchMedia('(prefers-reduced-transparency: reduce)').matches;
+        const settingsParams = data.params as SettingsParams;
+        document.documentElement.dataset.platform = window.appPlatform;
+        document.documentElement.dataset.sidebarGlass = reducedTransparency
+          ? 'off'
+          : 'on';
+        document.documentElement.dataset.nativeMaterial = 'off';
+
+        if (settingsParams.nativeMaterial && !reducedTransparency) {
+          void window.ipcRenderer
+            .invoke('settings:apply-window-material')
+            .then(result => {
+              const material = result as WindowMaterialResult;
+              document.documentElement.dataset.nativeMaterial =
+                material.nativeCapable ? 'on' : 'off';
+            })
+            .catch(() => {
+              document.documentElement.dataset.nativeMaterial = 'off';
+            });
+        }
+      }
       setWindowData(data);
     };
 
     window.ipcRenderer.on('load', handleLoad);
+    window.ipcRenderer.on(
+      'capture-preview:prepare-renderer',
+      handlePrepareCapturePreview
+    );
+    window.ipcRenderer.on(
+      'area-overlay:prepare-renderer',
+      handlePrepareAreaOverlay
+    );
+    window.ipcRenderer.send('capture-preview:renderer-mounted');
+    if (isAreaOverlayWindow) {
+      window.ipcRenderer.send('area-overlay:renderer-mounted');
+    }
 
     return () => {
       window.ipcRenderer.off('load', handleLoad);
+      window.ipcRenderer.off(
+        'capture-preview:prepare-renderer',
+        handlePrepareCapturePreview
+      );
+      window.ipcRenderer.off(
+        'area-overlay:prepare-renderer',
+        handlePrepareAreaOverlay
+      );
     };
   }, []);
 
   if (!windowData) {
+    if (isCapturePreviewWindow) {
+      return <div className="bg-background h-screen w-full" />;
+    }
+
     return (
       <div className="bg-background flex h-screen w-full items-center justify-center">
         <div className="text-muted-foreground">Loading...</div>
@@ -166,6 +288,16 @@ function App() {
         return (
           <AreaOverlayWindow params={windowData.params as AreaOverlayParams} />
         );
+      case 'recording-control': {
+        const recordingControlParams =
+          windowData.params as RecordingControlState;
+        return (
+          <RecordingControlWindow
+            key={recordingControlParams.mode}
+            params={recordingControlParams}
+          />
+        );
+      }
       default:
         return null;
     }
@@ -174,9 +306,15 @@ function App() {
   return (
     <Suspense
       fallback={
-        <div className="bg-background flex h-screen w-full items-center justify-center">
-          <div className="text-muted-foreground">Loading...</div>
-        </div>
+        windowData.type === 'capture-preview' ? (
+          <CapturePreviewFallback
+            params={windowData.params as CapturePreviewParams}
+          />
+        ) : (
+          <div className="bg-background flex h-screen w-full items-center justify-center">
+            <div className="text-muted-foreground">Loading...</div>
+          </div>
+        )
       }
     >
       {renderWindow()}

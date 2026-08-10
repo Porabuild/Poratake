@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { KeyboardData } from '@/types/keyboard';
+import type { KeyboardData, KeyboardKeyEvent } from '@/types/keyboard';
 import type { KeyboardSoundType } from '@/types/audio';
 import { KEYBOARD_SOUND_SAMPLES_PER_TYPE } from '@/types/audio';
 import type { Segment } from '../types';
@@ -34,6 +34,25 @@ interface UseKeyboardSoundReturn {
   playDemo: () => void;
   stopDemo: () => void;
   isDemoPlaying: boolean;
+}
+
+export function getKeyboardDownEventsForPlaybackInterval(
+  events: KeyboardKeyEvent[],
+  previousTimelinePosition: number,
+  previousVideoTime: number,
+  currentVideoTime: number
+): KeyboardKeyEvent[] {
+  const intervalStart = Math.min(previousVideoTime, currentVideoTime);
+
+  return events.filter(event => {
+    if (event.type !== 'down' || event.timestamp > currentVideoTime) {
+      return false;
+    }
+
+    return previousTimelinePosition === 0
+      ? event.timestamp >= intervalStart
+      : event.timestamp > intervalStart;
+  });
 }
 
 async function loadSamples(
@@ -142,18 +161,13 @@ export function useKeyboardSound({
     if (prevTimelinePosition === null || prevVideoTime === null) return;
     if (timelinePosition <= prevTimelinePosition) return;
 
-    const effectivePrevVideoTime =
-      currentVideoTime < prevVideoTime ? currentVideoTime : prevVideoTime;
-
-    const downEvents = keyboardData.events.filter(e => e.type === 'down');
-    for (const event of downEvents) {
-      if (
-        event.timestamp > effectivePrevVideoTime &&
-        event.timestamp <= currentVideoTime
-      ) {
-        playSample(volume);
-      }
-    }
+    const downEvents = getKeyboardDownEventsForPlaybackInterval(
+      keyboardData.events,
+      prevTimelinePosition,
+      prevVideoTime,
+      currentVideoTime
+    );
+    downEvents.forEach(() => playSample(volume));
   }, [
     enabled,
     isPlaying,

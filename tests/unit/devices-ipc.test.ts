@@ -12,6 +12,7 @@ const mockIsCameraPreviewVisible = vi.fn();
 const mockMicPermission = vi.fn();
 const mockCameraPermission = vi.fn();
 const mockGetConfig = vi.fn();
+const mockIsSettingsWindowWebContents = vi.fn();
 
 let daemonEventHandler: DaemonEventHandler | null = null;
 
@@ -36,6 +37,11 @@ vi.mock('@/main/settings', () => ({
   getConfig: () => mockGetConfig(),
 }));
 
+vi.mock('@/main/settings/window', () => ({
+  isSettingsWindowWebContents: (...args: unknown[]) =>
+    mockIsSettingsWindowWebContents(...args),
+}));
+
 vi.mock('@/main/capture/video/camera-preview', () => ({
   showCameraPreview: (...args: unknown[]) => mockShowCameraPreview(...args),
   hideCameraPreview: (...args: unknown[]) => mockHideCameraPreview(...args),
@@ -49,13 +55,17 @@ vi.mock('@/main/capture/video/permissions', () => ({
 
 function createSender() {
   const listeners: Record<string, () => void> = {};
+  let destroyed = false;
   return {
     send: vi.fn(),
-    isDestroyed: vi.fn(() => false),
+    isDestroyed: vi.fn(() => destroyed),
     once: vi.fn((event: string, callback: () => void) => {
       listeners[event] = callback;
     }),
-    emitDestroyed: () => listeners['destroyed']?.(),
+    emitDestroyed: () => {
+      destroyed = true;
+      listeners['destroyed']?.();
+    },
   };
 }
 
@@ -88,6 +98,7 @@ describe('devices IPC handlers', () => {
     mockIsCameraPreviewVisible.mockReturnValue(false);
     mockShowCameraPreview.mockResolvedValue(undefined);
     mockDaemonCall.mockResolvedValue({});
+    mockIsSettingsWindowWebContents.mockReturnValue(true);
   });
 
   describe('devices:list', () => {
@@ -95,15 +106,21 @@ describe('devices IPC handlers', () => {
       mockDaemonCall.mockResolvedValue({
         microphones: [{ id: 'mic-1', label: 'Mic 1' }],
         cameras: [{ id: 'cam-1', label: 'Cam 1' }],
+        defaultMicrophoneId: 'mic-1',
+        defaultCameraId: 'cam-1',
       });
       await loadAndInit();
 
-      const result = await ipcHandle['devices:list']();
+      const result = await ipcHandle['devices:list']({
+        sender: createSender(),
+      });
 
       expect(mockDaemonCall).toHaveBeenCalledWith('media-devices', 'list');
       expect(result).toEqual({
         microphones: [{ id: 'mic-1', label: 'Mic 1' }],
         cameras: [{ id: 'cam-1', label: 'Cam 1' }],
+        defaultMicrophoneId: 'mic-1',
+        defaultCameraId: 'cam-1',
       });
     });
 
@@ -111,10 +128,52 @@ describe('devices IPC handlers', () => {
       mockDaemonCall.mockResolvedValue({});
       await loadAndInit();
 
-      const result = await ipcHandle['devices:list']();
+      const result = await ipcHandle['devices:list']({
+        sender: createSender(),
+      });
 
-      expect(result).toEqual({ microphones: [], cameras: [] });
+      expect(result).toEqual({
+        microphones: [],
+        cameras: [],
+        defaultMicrophoneId: null,
+        defaultCameraId: null,
+      });
     });
+  });
+
+  it('rejects device access from non-settings windows', async () => {
+    mockIsSettingsWindowWebContents.mockReturnValue(false);
+    await loadAndInit();
+    const sender = createSender();
+
+    const devices = await ipcHandle['devices:list']({ sender });
+    const micStarted = await ipcHandle['devices:mic-test:start'](
+      { sender },
+      { deviceId: 'mic-1', deviceName: 'Mic 1' }
+    );
+    const cameraStarted = await ipcHandle['devices:camera-test:start'](
+      { sender },
+      { deviceId: 'cam-1', deviceName: 'Cam 1' }
+    );
+    const micStopped = await ipcHandle['devices:mic-test:stop']({ sender });
+    const cameraStopped = await ipcHandle['devices:camera-test:stop']({
+      sender,
+    });
+
+    expect(devices).toEqual({
+      microphones: [],
+      cameras: [],
+      defaultMicrophoneId: null,
+      defaultCameraId: null,
+    });
+    expect(micStarted).toBe(false);
+    expect(cameraStarted).toBe(false);
+    expect(micStopped).toBe(false);
+    expect(cameraStopped).toBe(false);
+    expect(mockDaemonCall).not.toHaveBeenCalled();
+    expect(mockMicPermission).not.toHaveBeenCalled();
+    expect(mockCameraPermission).not.toHaveBeenCalled();
+    expect(mockShowCameraPreview).not.toHaveBeenCalled();
   });
 
   describe('devices:mic-test', () => {
@@ -168,7 +227,7 @@ describe('devices IPC handlers', () => {
         { deviceId: null, deviceName: null }
       );
 
-      await ipcHandle['devices:mic-test:stop']();
+      await ipcHandle['devices:mic-test:stop']({ sender });
 
       expect(mockDaemonCall).toHaveBeenCalledWith(
         'media-devices',
@@ -193,6 +252,48 @@ describe('devices IPC handlers', () => {
         'media-devices',
         'stopMicTest'
       );
+    });
+
+    it('cancels mic startup when the sender is destroyed during permission', async () => {
+      let resolvePermission: (granted: boolean) => void = () => {};
+      mockMicPermission.mockReturnValueOnce(
+        new Promise(resolve => {
+          resolvePermission = resolve;
+        })
+      );
+      await loadAndInit();
+      const sender = createSender();
+
+      const starting = ipcHandle['devices:mic-test:start'](
+        { sender },
+        { deviceId: 'mic-1', deviceName: 'Mic 1' }
+      );
+      sender.emitDestroyed();
+      resolvePermission(true);
+
+      expect(await starting).toBe(false);
+      expect(mockDaemonCall).not.toHaveBeenCalled();
+    });
+
+    it('cancels pending mic startup when the component stops it', async () => {
+      let resolvePermission: (granted: boolean) => void = () => {};
+      mockMicPermission.mockReturnValueOnce(
+        new Promise(resolve => {
+          resolvePermission = resolve;
+        })
+      );
+      await loadAndInit();
+      const sender = createSender();
+
+      const starting = ipcHandle['devices:mic-test:start'](
+        { sender },
+        { deviceId: 'mic-1', deviceName: 'Mic 1' }
+      );
+      await ipcHandle['devices:mic-test:stop']({ sender });
+      resolvePermission(true);
+
+      expect(await starting).toBe(false);
+      expect(mockDaemonCall).not.toHaveBeenCalled();
     });
   });
 
@@ -237,7 +338,7 @@ describe('devices IPC handlers', () => {
         { deviceId: 'cam-1', deviceName: 'Cam 1' }
       );
 
-      await ipcHandle['devices:camera-test:stop']();
+      await ipcHandle['devices:camera-test:stop']({ sender });
 
       expect(mockHideCameraPreview).toHaveBeenCalled();
     });
@@ -255,7 +356,7 @@ describe('devices IPC handlers', () => {
       );
       mockShowCameraPreview.mockClear();
 
-      await ipcHandle['devices:camera-test:stop']();
+      await ipcHandle['devices:camera-test:stop']({ sender });
 
       expect(mockHideCameraPreview).not.toHaveBeenCalled();
       expect(mockShowCameraPreview).toHaveBeenCalledWith({
@@ -276,6 +377,129 @@ describe('devices IPC handlers', () => {
       await Promise.resolve();
 
       expect(mockHideCameraPreview).toHaveBeenCalled();
+    });
+
+    it('cancels camera startup when the sender is destroyed during native show', async () => {
+      let finishShow: () => void = () => {};
+      mockShowCameraPreview.mockReturnValueOnce(
+        new Promise<void>(resolve => {
+          finishShow = resolve;
+        })
+      );
+      await loadAndInit();
+      const sender = createSender();
+
+      const starting = ipcHandle['devices:camera-test:start'](
+        { sender },
+        { deviceId: 'cam-1', deviceName: 'Cam 1' }
+      );
+      await vi.waitFor(() => {
+        expect(mockShowCameraPreview).toHaveBeenCalled();
+      });
+      sender.emitDestroyed();
+      finishShow();
+
+      expect(await starting).toBe(false);
+      expect(mockHideCameraPreview).toHaveBeenCalled();
+    });
+
+    it('cancels pending camera startup when the component stops it', async () => {
+      let resolvePermission: (granted: boolean) => void = () => {};
+      mockCameraPermission.mockReturnValueOnce(
+        new Promise(resolve => {
+          resolvePermission = resolve;
+        })
+      );
+      await loadAndInit();
+      const sender = createSender();
+
+      const starting = ipcHandle['devices:camera-test:start'](
+        { sender },
+        { deviceId: 'cam-1', deviceName: 'Cam 1' }
+      );
+      await ipcHandle['devices:camera-test:stop']({ sender });
+      resolvePermission(true);
+
+      expect(await starting).toBe(false);
+      expect(mockShowCameraPreview).not.toHaveBeenCalled();
+    });
+
+    it('does not stop a newer camera test when an old sender is destroyed', async () => {
+      await loadAndInit();
+      const oldSender = createSender();
+      const currentSender = createSender();
+      await ipcHandle['devices:mic-test:start'](
+        { sender: oldSender },
+        { deviceId: null, deviceName: null }
+      );
+      await ipcHandle['devices:mic-test:stop']({ sender: oldSender });
+      await ipcHandle['devices:camera-test:start'](
+        { sender: currentSender },
+        { deviceId: 'cam-1', deviceName: 'Cam 1' }
+      );
+      mockHideCameraPreview.mockClear();
+
+      oldSender.emitDestroyed();
+      await Promise.resolve();
+
+      expect(mockHideCameraPreview).not.toHaveBeenCalled();
+    });
+
+    it('keeps a newer pending camera test when the old sender is destroyed', async () => {
+      await loadAndInit();
+      const oldSender = createSender();
+      const currentSender = createSender();
+      await ipcHandle['devices:camera-test:start'](
+        { sender: oldSender },
+        { deviceId: 'cam-1', deviceName: 'Cam 1' }
+      );
+      let resolvePermission: (granted: boolean) => void = () => {};
+      mockCameraPermission.mockReturnValueOnce(
+        new Promise(resolve => {
+          resolvePermission = resolve;
+        })
+      );
+      const starting = ipcHandle['devices:camera-test:start'](
+        { sender: currentSender },
+        { deviceId: 'cam-2', deviceName: 'Cam 2' }
+      );
+      mockShowCameraPreview.mockClear();
+      mockHideCameraPreview.mockClear();
+
+      oldSender.emitDestroyed();
+      resolvePermission(true);
+
+      expect(await starting).toBe(true);
+      expect(mockShowCameraPreview).toHaveBeenCalledWith({
+        ...baseCamera,
+        selectedDeviceId: 'cam-2',
+        selectedDeviceName: 'Cam 2',
+      });
+      expect(mockHideCameraPreview).not.toHaveBeenCalled();
+    });
+
+    it('restores the configured preview when a camera test fails to start', async () => {
+      mockIsCameraPreviewVisible.mockReturnValue(true);
+      mockGetConfig.mockReturnValue({
+        recording: { camera: { ...baseCamera, enabled: true } },
+      });
+      mockShowCameraPreview
+        .mockRejectedValueOnce(new Error('camera failed'))
+        .mockResolvedValueOnce(undefined);
+      await loadAndInit();
+      const sender = createSender();
+
+      await expect(
+        ipcHandle['devices:camera-test:start'](
+          { sender },
+          { deviceId: 'cam-1', deviceName: 'Cam 1' }
+        )
+      ).rejects.toThrow('camera failed');
+
+      expect(mockShowCameraPreview).toHaveBeenLastCalledWith({
+        ...baseCamera,
+        enabled: true,
+      });
     });
   });
 });

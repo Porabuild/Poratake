@@ -188,4 +188,25 @@ describe('ffmpeg gif export', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('stops before encoding when duration probing is cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { convertMp4ToGif } = await import('@/main/utils/ffmpeg');
+
+    const result = await convertMp4ToGif({
+      inputPath: '/p/in.mp4',
+      outputPath: '/p/out.gif',
+      resolution: '720p',
+      frameRate: '20',
+      abortSignal: controller.signal,
+    });
+
+    expect(result).toEqual({ success: false, message: 'Aborted' });
+    expect(mockExecFile.mock.calls[0][2]).toEqual({
+      timeout: 30000,
+      signal: controller.signal,
+    });
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
 });

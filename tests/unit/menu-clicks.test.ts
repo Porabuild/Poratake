@@ -151,21 +151,21 @@ describe('menu click handlers', () => {
     mockMenu.buildFromTemplate.mockReturnValue({ items: [] } as never);
   });
 
-  it('Upgrade to Capty Pro click opens license settings', async () => {
+  it('Get Capty License click opens license settings', async () => {
     mockIsPro.mockReturnValue(false);
     const { init } = await import('@/main/menu');
     await init();
-    const item = getMenuItems().find(i => i.label === 'Upgrade to Capty Pro');
+    const item = getMenuItems().find(i => i.label === 'Get Capty License');
     expect(item).toBeDefined();
     await item!.click!();
     expect(mockCreateOrShowSettingsWindow).toHaveBeenCalledWith('license');
   });
 
-  it('Upgrade to Capty Pro is absent when pro', async () => {
+  it('Get Capty License is absent when pro', async () => {
     mockIsPro.mockReturnValue(true);
     const { init } = await import('@/main/menu');
     await init();
-    const item = getMenuItems().find(i => i.label === 'Upgrade to Capty Pro');
+    const item = getMenuItems().find(i => i.label === 'Get Capty License');
     expect(item).toBeUndefined();
   });
 
@@ -251,15 +251,13 @@ describe('menu click handlers', () => {
     expect(mockCreateOrShowSettingsWindow).toHaveBeenCalled();
   });
 
-  it('Feature Request / Bug Report click opens external URL', async () => {
+  it('Poratake Issues click opens the fork issue tracker', async () => {
     const { init } = await import('@/main/menu');
     await init();
-    const item = getMenuItems().find(
-      i => i.label === 'Feature Request / Bug Report'
-    );
+    const item = getMenuItems().find(i => i.label === 'Poratake Issues');
     await item!.click!();
     expect(mockShellOpenExternal).toHaveBeenCalledWith(
-      'https://capty.app/roadmap'
+      'https://github.com/SDSLeon/capty/issues'
     );
   });
 

@@ -418,7 +418,7 @@ describe('Tray System', () => {
   });
 
   describe('Pro upgrade item', () => {
-    it('should show "Upgrade to Capty Pro" when not pro', async () => {
+    it('should show "Get Capty License" when not pro', async () => {
       mockIsPro.mockReturnValue(false);
 
       const { init } = await import('@/main/menu');
@@ -429,10 +429,10 @@ describe('Tray System', () => {
         .filter(item => item.label)
         .map(item => item.label);
 
-      expect(labels).toContain('Upgrade to Capty Pro');
+      expect(labels).toContain('Get Capty License');
     });
 
-    it('should not show "Upgrade to Capty Pro" when pro', async () => {
+    it('should not show "Get Capty License" when pro', async () => {
       mockIsPro.mockReturnValue(true);
 
       const { init } = await import('@/main/menu');
@@ -443,7 +443,7 @@ describe('Tray System', () => {
         .filter(item => item.label)
         .map(item => item.label);
 
-      expect(labels).not.toContain('Upgrade to Capty Pro');
+      expect(labels).not.toContain('Get Capty License');
     });
 
     it('should open license settings when upgrade item clicked', async () => {
@@ -454,7 +454,7 @@ describe('Tray System', () => {
 
       const menuItems = getMenuItems();
       const upgradeItem = menuItems.find(
-        item => item.label === 'Upgrade to Capty Pro'
+        item => item.label === 'Get Capty License'
       );
 
       upgradeItem?.click?.();
@@ -750,7 +750,7 @@ describe('Tray System', () => {
         title: 'Hide Menu Bar Icon',
         message: 'Are you sure you want to hide the menu bar icon?',
         detail:
-          'The app will continue running in the background. To restore the menu bar icon, launch the app again (double-click Capty in Applications).',
+          'The app will continue running in the background. To restore the menu bar icon, launch the app again (double-click Poratake in Applications).',
         buttons: ['Hide Icon', 'Cancel'],
         defaultId: 0,
         cancelId: 1,

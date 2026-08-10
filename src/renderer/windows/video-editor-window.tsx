@@ -60,8 +60,10 @@ import {
 import { SVG_WALLPAPER_PRESETS } from '@/renderer/hooks/useWallpaperState';
 import {
   adjustTimelineRangeSlices,
+  getContentPlaybackState,
   getFileNameFromPath,
   getProjectPath,
+  toFileUrl,
 } from '@/renderer/components/video-editor/utils';
 
 interface VideoEditorWindowProps {
@@ -164,6 +166,11 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     segments,
     firstFrameDuration: activeFirstFrameDuration,
   });
+  const contentPlayback = getContentPlaybackState(
+    playback.effectiveTimelinePosition,
+    activeFirstFrameDuration,
+    playback.isPlaying
+  );
 
   const keyboardSound = useKeyboardSound({
     keyboardData: editorData.keyboardData,
@@ -172,7 +179,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     volume: editorData.audioStyle.keyboardSoundVolume,
     soundType: editorData.audioStyle.keyboardSoundType,
     isPlaying: playback.isPlaying,
-    timelinePosition: playback.effectiveTimelinePosition,
+    timelinePosition: contentPlayback.timelinePosition,
   });
 
   const zoomControl = useZoomSegments({
@@ -194,10 +201,11 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
 
   useMusicPlayback({
     musicTracks: musicControl.musicTracks,
-    timelinePosition: playback.effectiveTimelinePosition,
-    isPlaying: playback.isPlaying,
+    timelinePosition: contentPlayback.timelinePosition,
+    isPlaying: contentPlayback.isPlaying,
     systemAudioPath: editorData.systemAudioPath,
     micAudioPath: editorData.micAudioPath,
+    embeddedAudioPath: editorData.hasEmbeddedAudio ? filePath : null,
   });
 
   const handleTimelineRangesAdjust = useCallback(
@@ -333,7 +341,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
       }
 
       setFilePath(result.newVideoPath);
-      setVideoSrc(`file://${result.newVideoPath}`);
+      setVideoSrc(toFileUrl(result.newVideoPath));
       return null;
     },
     []
@@ -510,7 +518,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const settings = await window.ipcRenderer.invoke('settings:get');
+        const settings = await window.ipcRenderer.invoke('settings:get-ui');
         if (settings?.shortcuts?.videoEditorSidebar) {
           setSidebarShortcuts(settings.shortcuts.videoEditorSidebar);
         }
@@ -523,10 +531,10 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
 
   useEffect(() => {
     if (fileName) {
-      document.title = `${fileName} - Capty`;
+      document.title = `${fileName} - Poratake`;
     }
     return () => {
-      document.title = 'Capty';
+      document.title = 'Poratake';
     };
   }, [fileName]);
 
@@ -535,7 +543,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
       if (/^(https?|blob|data|file):/.test(filePath)) {
         setVideoSrc(filePath);
       } else {
-        setVideoSrc(`file://${filePath}`);
+        setVideoSrc(toFileUrl(filePath));
       }
     }
   }, [filePath]);
@@ -726,9 +734,9 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
           <TriangleAlert className="text-muted-foreground size-8" />
           <p className="text-sm font-medium">Could not read this recording</p>
           <p className="text-muted-foreground max-w-md text-xs">
-            Capty could not determine the video duration, so the editor cannot
-            open. The recording may be corrupted, or the bundled FFmpeg binary
-            may be missing from this build.
+            Poratake could not determine the video duration, so the editor
+            cannot open. The recording may be corrupted, or the bundled FFmpeg
+            binary may be missing from this build.
           </p>
           <p className="text-muted-foreground max-w-md font-mono text-xs break-all">
             {filePath}
@@ -1058,6 +1066,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
           onExportSettingsChange={videoExport.setExportSettings}
           onExport={handleExport}
           isExporting={videoExport.isExporting}
+          exportError={videoExport.exportError}
           videoDurationSeconds={playback.totalTimelineDuration}
           hasWallpaper={hasWallpaperEffect(wallpaper)}
           uploadToCloud={uploadToCloud}

@@ -31,7 +31,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, GetClientRect, GetCursorPos, GetWindowRect, IsWindowVisible, KillTimer,
     LoadCursorW, SetCursorPos, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
-    SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_HAND, LWA_ALPHA, LWA_COLORKEY, SWP_NOACTIVATE,
+    SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, LWA_COLORKEY, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_ERASEBKGND,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
@@ -554,8 +554,8 @@ fn show_capture_ui(
 ) -> Result<(), String> {
     teardown_ui();
     ensure_window_class(BOUNDARY_CLASS_NAME, Some(boundary_wndproc), None);
-    let hand = unsafe { LoadCursorW(None, IDC_HAND) }.ok();
-    ensure_window_class(PANEL_CLASS_NAME, Some(panel_wndproc), hand);
+    let arrow = unsafe { LoadCursorW(None, IDC_ARROW) }.ok();
+    ensure_window_class(PANEL_CLASS_NAME, Some(panel_wndproc), arrow);
 
     UI_STATE.with(|ui| {
         ui.borrow_mut().dpi = dpi.max(96);
@@ -1808,7 +1808,7 @@ impl ScrollCaptureModule {
         Reply::Deferred
     }
 
-    fn cancel(&self, request: &Request) -> Reply {
+    fn cancel(&self) -> Reply {
         let was_capturing = self
             .state
             .lock()
@@ -1868,7 +1868,7 @@ impl Module for ScrollCaptureModule {
             "stopAutoScroll" => self.stop_auto_scroll(request),
             "captureFrame" => self.capture_frame(request),
             "finish" => self.finish(request),
-            "cancel" => self.cancel(request),
+            "cancel" => self.cancel(),
             "status" => self.status(),
             "hide" => self.set_visible(request, false),
             "show" => self.set_visible(request, true),

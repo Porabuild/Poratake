@@ -132,8 +132,19 @@ describe('Preferences', () => {
       handler({}, 'https://example.com');
 
       expect(mockShell.openExternal).toHaveBeenCalledWith(
-        'https://example.com'
+        'https://example.com/'
       );
+    });
+
+    it('should reject unsafe external protocols', async () => {
+      const { init } = await import('@/main/system/preferences');
+      init();
+
+      const handler = mockIpcMainOnHandlers['open-external'];
+      handler({}, 'file:///C:/Windows/System32/calc.exe');
+      handler({}, 'javascript:alert(1)');
+
+      expect(mockShell.openExternal).not.toHaveBeenCalled();
     });
 
     it('should subscribe to macOS accent color notifications', async () => {

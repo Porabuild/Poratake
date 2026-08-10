@@ -8,12 +8,19 @@ export interface AreaOverlayRect {
 export interface AreaOverlayToolbar {
   kind: 'all-in-one';
   recordingEnabled: boolean;
+  ocrEnabled: boolean;
+  activeMode: AllInOneCaptureMode;
 }
+
+export type AllInOneCaptureMode = 'screenshot' | 'record' | 'ocr';
 
 export type AreaOverlayToolbarAction =
   | { action: 'close' }
   | { action: 'screenshot' }
   | { action: 'record' }
+  | { action: 'ocr' }
+  | { action: 'copy-color'; color: string }
+  | { action: 'select-capture-mode'; mode: AllInOneCaptureMode }
   | {
       action: 'select-aspect-ratio';
       name: string;
@@ -25,6 +32,7 @@ export type AreaOverlayToolbarAction =
   | { action: 'size-editor-closed' };
 
 export interface AreaOverlayParams {
+  sessionId: number;
   displayId: number;
   imageUrl: string | null;
   interactive: boolean;

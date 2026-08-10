@@ -1,6 +1,6 @@
 import Vision
 import Foundation
-import AppKit
+import ImageIO
 
 class QRCodeModule: Module {
     let name = "qrcode"
@@ -25,24 +25,40 @@ class QRCodeModule: Module {
             return
         }
         
-        let payload = detectQRCode(from: imagePath)
-        respond(id: requestId, result: ["payload": payload])
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let result = Result { try self.detectQRCode(from: imagePath) }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let payload):
+                    self.respond(id: requestId, result: ["payload": payload])
+                case .failure(let error):
+                    self.respondError(id: requestId, code: "QR_DETECTION_FAILED", message: error.localizedDescription)
+                }
+            }
+        }
     }
     
-    private func detectQRCode(from imagePath: String) -> String {
-        guard let image = NSImage(contentsOfFile: imagePath),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return ""
+    private func detectQRCode(from imagePath: String) throws -> String {
+        let imageUrl = URL(fileURLWithPath: imagePath) as CFURL
+        guard let source = CGImageSourceCreateWithURL(imageUrl, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw QRCodeError.imageDecodeFailed
         }
         
         var detectedPayload = ""
+        var detectionError: Error?
         let semaphore = DispatchSemaphore(value: 0)
         
         let request = VNDetectBarcodesRequest { request, error in
             defer { semaphore.signal() }
             
-            guard error == nil,
-                  let observations = request.results as? [VNBarcodeObservation] else {
+            if let error = error {
+                detectionError = error
+                return
+            }
+
+            guard let observations = request.results as? [VNBarcodeObservation] else {
                 return
             }
             
@@ -53,22 +69,25 @@ class QRCodeModule: Module {
                     return
                 }
             }
-            
-            if let firstObservation = observations.first,
-               let payload = firstObservation.payloadStringValue {
-                detectedPayload = payload
-            }
         }
         
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         
-        do {
-            try handler.perform([request])
-            semaphore.wait()
-        } catch {
-            return ""
+        try handler.perform([request])
+        semaphore.wait()
+
+        if let detectionError = detectionError {
+            throw detectionError
         }
         
         return detectedPayload
+    }
+}
+
+private enum QRCodeError: LocalizedError {
+    case imageDecodeFailed
+
+    var errorDescription: String? {
+        "Failed to decode image"
     }
 }

@@ -27,6 +27,7 @@ export type UpdateStatus =
   | 'downloading'
   | 'ready'
   | 'error'
+  | 'unsupported'
   | 'up_to_date';
 
 export interface UpdateState {

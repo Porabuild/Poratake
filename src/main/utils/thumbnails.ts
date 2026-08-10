@@ -8,11 +8,10 @@ import { generateVideoThumbnail } from './ffmpeg';
 const THUMBNAILS_DIR = path.join(getConfigDir(), 'thumbnails');
 const THUMBNAIL_WIDTH = 300;
 const THUMBNAIL_QUALITY = 80;
+const pendingThumbnails = new Map<string, Promise<ThumbnailResult>>();
 
-function ensureThumbnailsDir(): void {
-  if (!fs.existsSync(THUMBNAILS_DIR)) {
-    fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
-  }
+async function ensureThumbnailsDir(): Promise<void> {
+  await fs.promises.mkdir(THUMBNAILS_DIR, { recursive: true });
 }
 
 function getThumbnailPath(originalPath: string, ext: string = 'jpg'): string {
@@ -20,12 +19,15 @@ function getThumbnailPath(originalPath: string, ext: string = 'jpg'): string {
   return path.join(THUMBNAILS_DIR, `${hash}.${ext}`);
 }
 
-function generateImageThumbnail(
+async function generateImageThumbnail(
   inputPath: string,
   outputPath: string
-): boolean {
+): Promise<boolean> {
   try {
-    const image = nativeImage.createFromPath(inputPath);
+    const image = await nativeImage.createThumbnailFromPath(inputPath, {
+      width: THUMBNAIL_WIDTH,
+      height: THUMBNAIL_WIDTH,
+    });
 
     if (image.isEmpty()) {
       return false;
@@ -37,7 +39,10 @@ function generateImageThumbnail(
         ? image.resize({ width: THUMBNAIL_WIDTH, quality: 'good' })
         : image;
 
-    fs.writeFileSync(outputPath, thumbnail.toJPEG(THUMBNAIL_QUALITY));
+    await fs.promises.writeFile(
+      outputPath,
+      thumbnail.toJPEG(THUMBNAIL_QUALITY)
+    );
     return true;
   } catch (error) {
     console.error('Failed to generate image thumbnail:', error);
@@ -50,7 +55,7 @@ export interface ThumbnailResult {
   cached: boolean;
 }
 
-export async function getThumbnail(
+async function loadThumbnail(
   originalPath: string,
   type: 'screenshot' | 'video'
 ): Promise<ThumbnailResult> {
@@ -58,12 +63,12 @@ export async function getThumbnail(
     return { base64: null, cached: false };
   }
 
-  ensureThumbnailsDir();
+  await ensureThumbnailsDir();
   const thumbnailPath = getThumbnailPath(originalPath, 'jpg');
 
   if (fs.existsSync(thumbnailPath)) {
     try {
-      const buffer = fs.readFileSync(thumbnailPath);
+      const buffer = await fs.promises.readFile(thumbnailPath);
       return { base64: buffer.toString('base64'), cached: true };
     } catch {
       console.warn(`Failed to read cached thumbnail: ${thumbnailPath}`);
@@ -83,15 +88,32 @@ export async function getThumbnail(
       console.error(`Failed to generate video thumbnail: ${result.message}`);
     }
   } else {
-    success = generateImageThumbnail(originalPath, thumbnailPath);
+    success = await generateImageThumbnail(originalPath, thumbnailPath);
   }
 
   if (success && fs.existsSync(thumbnailPath)) {
-    const buffer = fs.readFileSync(thumbnailPath);
+    const buffer = await fs.promises.readFile(thumbnailPath);
     return { base64: buffer.toString('base64'), cached: false };
   }
 
   return { base64: null, cached: false };
+}
+
+export function getThumbnail(
+  originalPath: string,
+  type: 'screenshot' | 'video'
+): Promise<ThumbnailResult> {
+  const key = `${type}:${originalPath}`;
+  const pending = pendingThumbnails.get(key);
+  if (pending) {
+    return pending;
+  }
+
+  const thumbnail = loadThumbnail(originalPath, type).finally(() => {
+    pendingThumbnails.delete(key);
+  });
+  pendingThumbnails.set(key, thumbnail);
+  return thumbnail;
 }
 
 export function rekeyThumbnail(oldPath: string, newPath: string): void {

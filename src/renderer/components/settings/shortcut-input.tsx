@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
+import { cn } from '@/renderer/lib/utils';
 import {
   acceleratorKeyFromCode,
   formatAccelerator,
@@ -12,6 +13,7 @@ interface ShortcutInputProps {
   onChange: (shortcut: string) => void;
   label: string;
   singleKey?: boolean;
+  compact?: boolean;
 }
 
 function formatShortcut(shortcut: string, singleKey = false): string {
@@ -66,6 +68,7 @@ export default function ShortcutInput({
   onChange,
   label,
   singleKey = false,
+  compact = false,
 }: ShortcutInputProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [tempShortcut, setTempShortcut] = useState('');
@@ -131,14 +134,20 @@ export default function ShortcutInput({
   };
 
   return (
-    <div className="flex items-center justify-between py-2">
+    <div
+      className={cn(
+        'flex items-center justify-between',
+        compact ? 'min-h-10 py-1' : 'py-2'
+      )}
+    >
       <Label className="text-sm font-normal">{label}</Label>
-      <div className="flex items-center gap-2">
+      <div className={cn('flex items-center', compact ? 'gap-1' : 'gap-2')}>
         {value && !isRecording && (
           <Button
             variant="ghost"
             size="icon-sm"
             onClick={handleClear}
+            aria-label={`Clear ${label} shortcut`}
             className="text-muted-foreground hover:text-foreground"
           >
             <X size={16} />
@@ -146,12 +155,19 @@ export default function ShortcutInput({
         )}
         <Button
           variant={isRecording ? 'default' : 'outline'}
+          size={compact ? 'sm' : 'default'}
           onClick={() => setIsRecording(true)}
-          className={
+          className={cn(
+            'font-normal tracking-wide',
+            compact ? 'text-sm' : 'text-base',
             singleKey
-              ? 'min-w-[80px] text-base font-normal tracking-wide'
-              : 'min-w-[180px] text-base font-normal tracking-wide'
-          }
+              ? compact
+                ? 'min-w-16'
+                : 'min-w-[80px]'
+              : compact
+                ? 'min-w-36'
+                : 'min-w-[180px]'
+          )}
         >
           {isRecording
             ? tempShortcut

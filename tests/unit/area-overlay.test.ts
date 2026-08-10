@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockCaptureRegionToFile = vi.fn();
-const mockReleaseRetainedDisplays = vi.fn();
+const mockFreezeScreen = vi.fn();
+const mockReleaseScreen = vi.fn();
 const mockIsFreezeScreenEnabled = vi.fn();
-const mockRmSync = vi.fn();
-const mockReaddirSync = vi.fn();
+const mockDaemonCall = vi.fn();
+const mockGlobalShortcutRegister = vi.fn();
+const mockGlobalShortcutUnregister = vi.fn();
 const mockGetAllDisplays = vi.fn();
 const mockGetCursorScreenPoint = vi.fn();
 const mockGetDisplayNearestPoint = vi.fn();
@@ -32,14 +34,25 @@ class MockBrowserWindow {
   showInactive = vi.fn(() => {
     this.visible = true;
   });
+  hide = vi.fn(() => {
+    this.visible = false;
+  });
   focus = vi.fn();
+  moveTop = vi.fn();
   destroy = vi.fn(() => {
     this.destroyed = true;
   });
   isDestroyed = () => this.destroyed;
   isVisible = () => this.visible;
+  getNativeWindowHandle = () => {
+    const handle = Buffer.alloc(8);
+    handle.writeBigUInt64LE(BigInt(this.webContents.id));
+    return handle;
+  };
   setAlwaysOnTop = vi.fn();
   setBounds = vi.fn();
+  setIgnoreMouseEvents = vi.fn();
+  setOpacity = vi.fn();
   loadURL = vi.fn();
   loadFile = vi.fn();
   on = vi.fn();
@@ -53,6 +66,10 @@ class MockBrowserWindow {
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp' },
   BrowserWindow: MockBrowserWindow,
+  globalShortcut: {
+    register: (...a: unknown[]) => mockGlobalShortcutRegister(...a),
+    unregister: (...a: unknown[]) => mockGlobalShortcutUnregister(...a),
+  },
   ipcMain: {
     on: (
       channel: string,
@@ -69,15 +86,6 @@ vi.mock('electron', () => ({
   },
 }));
 
-vi.mock('fs', () => ({
-  default: {
-    readdirSync: (...a: unknown[]) => mockReaddirSync(...a),
-    rmSync: (...a: unknown[]) => mockRmSync(...a),
-  },
-  readdirSync: (...a: unknown[]) => mockReaddirSync(...a),
-  rmSync: (...a: unknown[]) => mockRmSync(...a),
-}));
-
 vi.mock('@/main/utils/env', () => ({
   isDev: false,
   devServerUrl: null,
@@ -85,12 +93,19 @@ vi.mock('@/main/utils/env', () => ({
 
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureRegionToFile: (...a: unknown[]) => mockCaptureRegionToFile(...a),
-  releaseRetainedDisplays: (...a: unknown[]) =>
-    mockReleaseRetainedDisplays(...a),
+}));
+
+vi.mock('@/main/capture/freeze-screen', () => ({
+  freezeScreen: (...a: unknown[]) => mockFreezeScreen(...a),
+  releaseScreen: (...a: unknown[]) => mockReleaseScreen(...a),
 }));
 
 vi.mock('@/main/capture/freeze-screen/preference', () => ({
   isFreezeScreenEnabled: () => mockIsFreezeScreenEnabled(),
+}));
+
+vi.mock('@/main/daemon', () => ({
+  daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
 }));
 
 const display = {
@@ -106,6 +121,10 @@ function fire(channel: string, webContentsId: number, data?: unknown): void {
   ipcHandlers.get(channel)?.({ sender: { id: webContentsId } }, data);
 }
 
+function prepare(window: MockBrowserWindow): void {
+  fire('area-overlay:renderer-prepared', window.webContents.id);
+}
+
 describe('area overlay', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -117,30 +136,84 @@ describe('area overlay', () => {
     mockGetCursorScreenPoint.mockReturnValue({ x: 200, y: 100 });
     mockGetDisplayNearestPoint.mockReturnValue(display);
     mockCaptureRegionToFile.mockResolvedValue(true);
-    mockReleaseRetainedDisplays.mockResolvedValue(undefined);
+    mockFreezeScreen.mockResolvedValue(true);
+    mockReleaseScreen.mockResolvedValue(true);
     mockIsFreezeScreenEnabled.mockReturnValue(true);
-    mockReaddirSync.mockReturnValue([]);
+    mockDaemonCall.mockResolvedValue({ disabled: true });
+    mockGlobalShortcutRegister.mockReturnValue(true);
   });
 
-  it('retains the frozen display and keeps the overlay hidden until it paints', async () => {
+  it('mounts the overlay UI while the prewarmed window is hidden', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    module.prewarmAreaOverlay();
+    await settle();
+
+    expect(overlayWindows).toHaveLength(1);
+    expect(mockDaemonCall).toHaveBeenCalledWith(
+      'area-selector',
+      'disableWindowTransitions',
+      { windowHandle: overlayWindows[0].webContents.id.toString() }
+    );
+    expect(overlayWindows[0].showInactive).not.toHaveBeenCalled();
+    expect(overlayWindows[0].hide).toHaveBeenCalled();
+    expect(overlayWindows[0].isVisible()).toBe(false);
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
+
+    fire('area-overlay:renderer-mounted', overlayWindows[0].webContents.id);
+    prepare(overlayWindows[0]);
+
+    expect(overlayWindows[0].webContents.send).toHaveBeenCalledWith('load', {
+      type: 'area-overlay',
+      params: {
+        sessionId: 0,
+        displayId: display.id,
+        imageUrl: null,
+        interactive: true,
+        showPrompt: true,
+        aspectRatio: null,
+        toolbar: null,
+        rect: null,
+      },
+    });
+  });
+
+  it('blocks input without activating the selected app', async () => {
     const module = await import('@/main/capture/area-overlay');
     const selection = module.selectAreaWithOverlay();
     await settle();
 
-    expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
-      display.bounds,
-      expect.stringContaining('.bmp'),
-      { retain: true }
-    );
+    expect(mockFreezeScreen).toHaveBeenCalledTimes(1);
+    expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
     expect(overlayWindows).toHaveLength(1);
-    expect(overlayWindows[0].showInactive).not.toHaveBeenCalled();
+    expect(overlayWindows[0].options).toMatchObject({
+      transparent: true,
+      backgroundColor: '#00000000',
+    });
+    expect(overlayWindows[0].options.opacity).toBe(0);
+    expect(overlayWindows[0].options).toMatchObject({
+      webPreferences: { webSecurity: true },
+    });
+    expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
+    expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
+      false
+    );
+    expect(mockGlobalShortcutRegister).toHaveBeenCalledWith(
+      'Escape',
+      expect.any(Function)
+    );
 
     fire('area-overlay:ready', overlayWindows[0].webContents.id);
-    expect(overlayWindows[0].showInactive).toHaveBeenCalled();
-    expect(overlayWindows[0].focus).toHaveBeenCalled();
+    expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
+    expect(overlayWindows[0].setOpacity).toHaveBeenCalledWith(1);
+    expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
+      false
+    );
+    expect(overlayWindows[0].focus).not.toHaveBeenCalled();
+    expect(overlayWindows[0].moveTop).toHaveBeenCalled();
 
     fire('area-overlay:cancel', overlayWindows[0].webContents.id);
     expect(await selection).toBeNull();
+    expect(mockGlobalShortcutUnregister).toHaveBeenCalledWith('Escape');
   });
 
   it('resolves display-local coordinates as a global rect', async () => {
@@ -163,10 +236,26 @@ describe('area overlay', () => {
       width: 300,
       height: 200,
     });
-    expect(mockReleaseRetainedDisplays).not.toHaveBeenCalled();
+    expect(result?.frozen).toBe(true);
+    expect(mockReleaseScreen).not.toHaveBeenCalled();
   });
 
-  it('deletes the frozen preview and releases the daemon on cancellation', async () => {
+  it('returns Escape handling to the color picker while it is active', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay();
+    await settle();
+
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, true);
+    expect(mockGlobalShortcutUnregister).toHaveBeenLastCalledWith('Escape');
+
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, false);
+    expect(mockGlobalShortcutRegister).toHaveBeenCalledTimes(2);
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    expect(await selection).toBeNull();
+  });
+
+  it('releases the native freeze on cancellation', async () => {
     const module = await import('@/main/capture/area-overlay');
     const selection = module.selectAreaWithOverlay();
     await settle();
@@ -174,12 +263,12 @@ describe('area overlay', () => {
     fire('area-overlay:cancel', overlayWindows[0].webContents.id);
     await selection;
 
-    expect(mockRmSync).toHaveBeenCalledWith(
-      expect.stringContaining('.bmp'),
-      expect.objectContaining({ force: true })
+    expect(mockReleaseScreen).toHaveBeenCalled();
+    expect(overlayWindows[0].hide).toHaveBeenCalled();
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
+    expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
+      true
     );
-    expect(mockReleaseRetainedDisplays).toHaveBeenCalled();
-    expect(overlayWindows[0].destroy).toHaveBeenCalled();
   });
 
   it('ignores geometry that leaves the display', async () => {
@@ -200,35 +289,45 @@ describe('area overlay', () => {
     expect(await selection).toBeNull();
   });
 
-  it('tears the overlay down when no display could be frozen', async () => {
-    mockCaptureRegionToFile.mockResolvedValue(false);
+  it('continues with a live selector when the native freeze fails', async () => {
+    mockFreezeScreen.mockResolvedValue(false);
     const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay();
+    await settle();
 
-    expect(await module.selectAreaWithOverlay()).toBeNull();
-    expect(overlayWindows[0].destroy).toHaveBeenCalled();
-    expect(mockReleaseRetainedDisplays).toHaveBeenCalled();
+    fire('area-overlay:confirm', overlayWindows[0].webContents.id, {
+      displayId: display.id,
+      x: 10,
+      y: 20,
+      width: 300,
+      height: 200,
+    });
+
+    expect((await selection)?.frozen).toBe(false);
+    expect(mockReleaseScreen).not.toHaveBeenCalled();
   });
 
-  it('boots the overlay window before the capture finishes', async () => {
-    let finishCapture!: (captured: boolean) => void;
-    mockCaptureRegionToFile.mockImplementation(
-      () => new Promise<boolean>(resolve => (finishCapture = resolve))
+  it('keeps the prewarmed selector hidden until the native freeze is ready', async () => {
+    let finishFreeze!: (frozen: boolean) => void;
+    mockFreezeScreen.mockImplementation(
+      () => new Promise<boolean>(resolve => (finishFreeze = resolve))
     );
 
     const module = await import('@/main/capture/area-overlay');
     const selection = module.selectAreaWithOverlay();
     await settle();
 
+    expect(mockFreezeScreen).toHaveBeenCalled();
     expect(overlayWindows).toHaveLength(1);
-    expect(overlayWindows[0].loadFile).toHaveBeenCalled();
-    expect(overlayWindows[0].webContents.send).not.toHaveBeenCalled();
+    expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
 
-    loadHandlers.get(overlayWindows[0].webContents.id)?.();
-    expect(overlayWindows[0].webContents.send).not.toHaveBeenCalled();
-
-    finishCapture(true);
+    finishFreeze(true);
     await settle();
 
+    expect(overlayWindows).toHaveLength(1);
+    prepare(overlayWindows[0]);
+    expect(overlayWindows[0].loadFile).toHaveBeenCalled();
     expect(overlayWindows[0].webContents.send).toHaveBeenCalledWith(
       'load',
       expect.objectContaining({ type: 'area-overlay' })
@@ -238,10 +337,10 @@ describe('area overlay', () => {
     await selection;
   });
 
-  it('waits for a pending frozen capture before releasing it', async () => {
-    let finishCapture!: (captured: boolean) => void;
-    mockCaptureRegionToFile.mockImplementationOnce(
-      () => new Promise<boolean>(resolve => (finishCapture = resolve))
+  it('waits for a pending native release before starting another freeze', async () => {
+    let finishRelease!: (released: boolean) => void;
+    mockReleaseScreen.mockImplementationOnce(
+      () => new Promise<boolean>(resolve => (finishRelease = resolve))
     );
 
     const module = await import('@/main/capture/area-overlay');
@@ -252,23 +351,62 @@ describe('area overlay', () => {
     const nextSelection = module.selectAreaWithOverlay();
 
     await settle();
-    expect(mockReleaseRetainedDisplays).not.toHaveBeenCalled();
+    expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
     expect(overlayWindows).toHaveLength(1);
 
-    finishCapture(true);
+    finishRelease(true);
     expect(await selection).toBeNull();
-    await vi.waitFor(() =>
-      expect(mockReleaseRetainedDisplays).toHaveBeenCalledTimes(1)
-    );
-    expect(mockRmSync).toHaveBeenCalledWith(
-      expect.stringContaining('.bmp'),
-      expect.objectContaining({ force: true })
-    );
 
     await settle();
-    expect(overlayWindows).toHaveLength(2);
-    fire('area-overlay:cancel', overlayWindows[1].webContents.id);
+    expect(overlayWindows).toHaveLength(1);
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
     expect(await nextSelection).toBeNull();
+  });
+
+  it('reuses the prepared renderer with fresh state for the next capture', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const firstSelection = module.selectAreaWithOverlay();
+    await settle();
+
+    fire('area-overlay:renderer-mounted', overlayWindows[0].webContents.id);
+    expect(overlayWindows[0].webContents.send).toHaveBeenCalledWith(
+      'area-overlay:prepare-renderer'
+    );
+    prepare(overlayWindows[0]);
+
+    const firstLoad = overlayWindows[0].webContents.send.mock.calls.find(
+      ([channel]) => channel === 'load'
+    );
+    const firstSessionId = firstLoad?.[1].params.sessionId;
+
+    fire('area-overlay:selected', overlayWindows[0].webContents.id, {
+      displayId: display.id,
+      x: 10,
+      y: 20,
+      width: 300,
+      height: 200,
+    });
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await firstSelection;
+    expect(overlayWindows[0].webContents.send).toHaveBeenCalledWith(
+      'area-overlay:set-rect',
+      { rect: null }
+    );
+
+    const secondSelection = module.selectAreaWithOverlay();
+    await settle();
+
+    expect(overlayWindows).toHaveLength(1);
+    const loadCalls = overlayWindows[0].webContents.send.mock.calls.filter(
+      ([channel]) => channel === 'load'
+    );
+    expect(loadCalls).toHaveLength(2);
+    expect(loadCalls[1][1].params.sessionId).not.toBe(firstSessionId);
+    expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(2);
+    expect(overlayWindows[0].hide).toHaveBeenCalled();
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await secondSelection;
   });
 
   it('selects on a live transparent overlay when freezing is disabled', async () => {
@@ -282,10 +420,11 @@ describe('area overlay', () => {
       backgroundColor: '#00000000',
     });
 
-    loadHandlers.get(overlayWindows[0].webContents.id)?.();
+    prepare(overlayWindows[0]);
     expect(overlayWindows[0].webContents.send).toHaveBeenCalledWith('load', {
       type: 'area-overlay',
       params: {
+        sessionId: expect.any(Number),
         displayId: display.id,
         imageUrl: null,
         interactive: false,
@@ -308,8 +447,7 @@ describe('area overlay', () => {
     expect(result?.rect).toEqual({ x: 110, y: 70, width: 300, height: 200 });
 
     await result?.release();
-    expect(mockReleaseRetainedDisplays).not.toHaveBeenCalled();
-    expect(mockRmSync).not.toHaveBeenCalled();
+    expect(mockReleaseScreen).not.toHaveBeenCalled();
   });
 
   it('leaves the daemon untouched when a live overlay is cancelled', async () => {
@@ -320,8 +458,9 @@ describe('area overlay', () => {
     fire('area-overlay:cancel', overlayWindows[0].webContents.id);
 
     expect(await selection).toBeNull();
-    expect(mockReleaseRetainedDisplays).not.toHaveBeenCalled();
-    expect(overlayWindows[0].destroy).toHaveBeenCalled();
+    expect(mockReleaseScreen).not.toHaveBeenCalled();
+    expect(overlayWindows[0].hide).toHaveBeenCalled();
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
   });
 
   it('crops the saved file from the retained frame and then releases it', async () => {
@@ -343,7 +482,7 @@ describe('area overlay', () => {
       '/tmp/shot.png',
       { cached: true }
     );
-    expect(mockReleaseRetainedDisplays).toHaveBeenCalled();
+    expect(mockReleaseScreen).toHaveBeenCalled();
   });
 
   it('captures the live screen when the freeze screen setting is disabled', async () => {
@@ -370,7 +509,8 @@ describe('area overlay', () => {
       '/tmp/shot.png',
       { cached: false }
     );
-    expect(overlayWindows[0].destroy).toHaveBeenCalled();
-    expect(mockReleaseRetainedDisplays).not.toHaveBeenCalled();
+    expect(overlayWindows[0].hide).toHaveBeenCalled();
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
+    expect(mockReleaseScreen).not.toHaveBeenCalled();
   });
 });

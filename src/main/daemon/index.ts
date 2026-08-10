@@ -1,9 +1,4 @@
-import {
-  spawn,
-  execFileSync,
-  execSync,
-  type ChildProcess,
-} from 'child_process';
+import { spawn, execFileSync, type ChildProcess } from 'child_process';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
 import type {
@@ -27,6 +22,7 @@ class NativeDaemon extends EventEmitter {
   private process: ChildProcess | null = null;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private restartAttempts = 0;
+  private restartTimer: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
   private buffer = '';
 
@@ -39,12 +35,14 @@ class NativeDaemon extends EventEmitter {
     if (this.process) return;
 
     this.isShuttingDown = false;
+    this.clearRestartTimer();
     this.killStaleProcesses();
     await this.spawn();
   }
 
   async stop(): Promise<void> {
     this.isShuttingDown = true;
+    this.clearRestartTimer();
 
     if (!this.process) return;
 
@@ -94,7 +92,13 @@ class NativeDaemon extends EventEmitter {
         timeout: timeoutId,
       });
 
-      this.send(request);
+      try {
+        this.send(request);
+      } catch (error) {
+        clearTimeout(timeoutId);
+        this.pendingRequests.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -134,7 +138,7 @@ class NativeDaemon extends EventEmitter {
 
     try {
       const binaryPath = getNativeBinaryPath(DAEMON_BINARY);
-      const result = execSync(`pgrep -f "${binaryPath}"`, {
+      const result = execFileSync('pgrep', ['-f', binaryPath], {
         encoding: 'utf-8',
       }).trim();
 
@@ -300,6 +304,12 @@ class NativeDaemon extends EventEmitter {
 
     if (this.isShuttingDown) return;
 
+    this.scheduleRestart();
+  }
+
+  private scheduleRestart(): void {
+    if (this.isShuttingDown || this.restartTimer) return;
+
     if (this.restartAttempts < MAX_RESTART_ATTEMPTS) {
       this.restartAttempts++;
       const delay =
@@ -307,11 +317,24 @@ class NativeDaemon extends EventEmitter {
       console.log(
         `[daemon] Restarting in ${delay}ms (attempt ${this.restartAttempts})`
       );
-      setTimeout(() => this.spawn().catch(console.error), delay);
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null;
+        if (this.isShuttingDown || this.process) return;
+        void this.spawn().catch(error => {
+          console.error(error);
+          this.scheduleRestart();
+        });
+      }, delay);
     } else {
       console.error('[daemon] Max restart attempts reached');
       this.emit('daemon-error', new Error('Daemon crashed too many times'));
     }
+  }
+
+  private clearRestartTimer(): void {
+    if (!this.restartTimer) return;
+    clearTimeout(this.restartTimer);
+    this.restartTimer = null;
   }
 
   private rejectAllPending(error: Error): void {
@@ -326,7 +349,9 @@ class NativeDaemon extends EventEmitter {
     if (!this.process?.stdin?.writable) {
       throw new Error('Daemon stdin not writable');
     }
-    this.sendRaw(request);
+    if (!this.sendRaw(request)) {
+      throw new Error('Daemon stdin write failed');
+    }
   }
 
   private sendRaw(request: DaemonRequest): boolean {

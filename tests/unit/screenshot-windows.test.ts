@@ -12,6 +12,7 @@ const mockSelectDisplay = vi.fn();
 const mockDisplayFromSelection = vi.fn();
 const mockSelectWindow = vi.fn();
 const mockCaptureDisplayToFile = vi.fn();
+const mockCaptureFrozenScreenRegionToFile = vi.fn();
 const mockCaptureWindowToFile = vi.fn();
 const mockGetCursorScreenPoint = vi.fn();
 const mockGetDisplayNearestPoint = vi.fn();
@@ -20,6 +21,11 @@ const mockGetConfig = vi.fn();
 const mockHideDesktopIcons = vi.fn();
 const mockShowDesktopIcons = vi.fn();
 const mockDesktopIconsSupported = vi.fn();
+const mockPrepareCapturePreview = vi.fn();
+const mockShowCapturePreview = vi.fn();
+const mockDisposePreparedPreview = vi.fn();
+const mockFreezeScreen = vi.fn();
+const mockReleaseScreen = vi.fn();
 
 vi.mock('@/main/daemon', () => ({
   daemon: {
@@ -30,7 +36,7 @@ vi.mock('@/main/daemon', () => ({
 }));
 
 vi.mock('child_process', () => ({
-  exec: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 vi.mock('fs', () => ({
@@ -87,9 +93,9 @@ vi.mock('@/main/capture/desktop-icons', () => ({
 }));
 
 vi.mock('@/main/capture/freeze-screen', () => ({
-  freezeScreen: vi.fn(),
-  releaseScreen: vi.fn(),
-  isSupported: () => false,
+  freezeScreen: (...a: unknown[]) => mockFreezeScreen(...a),
+  releaseScreen: (...a: unknown[]) => mockReleaseScreen(...a),
+  isSupported: () => true,
 }));
 
 vi.mock('@/main/history', () => ({
@@ -100,7 +106,8 @@ vi.mock('@/main/history', () => ({
 }));
 
 vi.mock('@/main/capture/capture-preview', () => ({
-  showCapturePreview: vi.fn(),
+  prepareCapturePreview: (...a: unknown[]) => mockPrepareCapturePreview(...a),
+  showCapturePreview: (...a: unknown[]) => mockShowCapturePreview(...a),
   registerCapturePreviewIpc: vi.fn(),
 }));
 
@@ -123,6 +130,8 @@ vi.mock('@/main/capture/window-selector', () => ({
 
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureDisplayToFile: (...a: unknown[]) => mockCaptureDisplayToFile(...a),
+  captureFrozenScreenRegionToFile: (...a: unknown[]) =>
+    mockCaptureFrozenScreenRegionToFile(...a),
   captureWindowToFile: (...a: unknown[]) => mockCaptureWindowToFile(...a),
 }));
 
@@ -151,8 +160,14 @@ describe('screenshot on Windows', () => {
     mockShowDesktopIcons.mockReset();
     mockDesktopIconsSupported.mockReset();
     mockCaptureDisplayToFile.mockReset();
+    mockCaptureFrozenScreenRegionToFile.mockReset();
     mockCaptureWindowToFile.mockReset();
     mockCaptureAreaToFile.mockReset();
+    mockPrepareCapturePreview.mockReset();
+    mockShowCapturePreview.mockReset();
+    mockDisposePreparedPreview.mockReset();
+    mockFreezeScreen.mockReset();
+    mockReleaseScreen.mockReset();
     Object.defineProperty(process, 'platform', { value: 'win32' });
     mockExistsSync.mockReturnValue(true);
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
@@ -169,8 +184,14 @@ describe('screenshot on Windows', () => {
     });
     mockDesktopIconsSupported.mockReturnValue(false);
     mockCaptureDisplayToFile.mockResolvedValue(true);
+    mockCaptureFrozenScreenRegionToFile.mockResolvedValue(true);
     mockCaptureWindowToFile.mockResolvedValue(true);
     mockCaptureAreaToFile.mockResolvedValue(true);
+    mockPrepareCapturePreview.mockReturnValue({
+      dispose: mockDisposePreparedPreview,
+    });
+    mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
+    mockFreezeScreen.mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -178,6 +199,62 @@ describe('screenshot on Windows', () => {
   });
 
   describe('screen mode', () => {
+    it('prepares the preview while native capture is running', async () => {
+      mockGetConfig.mockReturnValue({
+        general: { playSoundOnScreenshot: false },
+        screenshot: {
+          autoCopyToClipboard: false,
+          captureToClipboard: false,
+          showPreview: true,
+          hideDesktopIcons: false,
+        },
+      });
+      let finishCapture: (captured: boolean) => void = () => {};
+      mockCaptureDisplayToFile.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishCapture = resolve;
+        })
+      );
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+
+      const capturing = screenshot('screen');
+
+      expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1);
+      expect(mockCaptureDisplayToFile).toHaveBeenCalledTimes(1);
+      expect(mockShowCapturePreview).not.toHaveBeenCalled();
+
+      finishCapture(true);
+      await capturing;
+
+      expect(mockShowCapturePreview).toHaveBeenCalledWith(
+        expect.any(String),
+        'screenshot',
+        undefined,
+        expect.objectContaining({ dispose: mockDisposePreparedPreview }),
+        expect.any(Promise)
+      );
+      expect(mockDisposePreparedPreview).toHaveBeenCalledTimes(1);
+    });
+
+    it('disposes the prepared preview when native capture fails', async () => {
+      mockGetConfig.mockReturnValue({
+        general: { playSoundOnScreenshot: false },
+        screenshot: {
+          autoCopyToClipboard: false,
+          captureToClipboard: false,
+          showPreview: true,
+          hideDesktopIcons: false,
+        },
+      });
+      mockCaptureDisplayToFile.mockResolvedValueOnce(false);
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+
+      await screenshot('screen');
+
+      expect(mockShowCapturePreview).not.toHaveBeenCalled();
+      expect(mockDisposePreparedPreview).toHaveBeenCalledTimes(1);
+    });
+
     it('captures the cursor display without a selector on a single display', async () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('screen');
@@ -262,6 +339,36 @@ describe('screenshot on Windows', () => {
       expect(calls).toEqual(['hide', 'capture', 'show']);
     });
 
+    it('starts the preview while desktop icons are being restored', async () => {
+      mockGetConfig.mockReturnValue({
+        general: { playSoundOnScreenshot: false },
+        screenshot: {
+          autoCopyToClipboard: false,
+          captureToClipboard: false,
+          showPreview: true,
+          hideDesktopIcons: true,
+          freezeScreen: false,
+        },
+      });
+      mockDesktopIconsSupported.mockReturnValue(true);
+      let finishRestore: (restored: boolean) => void = () => {};
+      mockShowDesktopIcons.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishRestore = resolve;
+        })
+      );
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+
+      const capturing = screenshot('screen');
+
+      await vi.waitFor(() => {
+        expect(mockShowCapturePreview).toHaveBeenCalledTimes(1);
+      });
+
+      finishRestore(true);
+      await capturing;
+    });
+
     it('restores desktop icons when display capture throws', async () => {
       mockGetConfig.mockReturnValue({
         general: { playSoundOnScreenshot: false },
@@ -340,6 +447,78 @@ describe('screenshot on Windows', () => {
       await screenshot('window');
 
       expect(mockCaptureWindowToFile).not.toHaveBeenCalled();
+    });
+
+    it('uses the freeze screen setting for window selection', async () => {
+      mockGetConfig.mockReturnValue({
+        general: { playSoundOnScreenshot: false },
+        screenshot: {
+          captureToClipboard: true,
+          hideDesktopIcons: false,
+          freezeScreen: true,
+        },
+      });
+      mockSelectWindow.mockResolvedValue({ status: 'cancelled' });
+
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+      await screenshot('window');
+
+      expect(mockFreezeScreen).toHaveBeenCalledWith(true);
+      expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
+    });
+
+    it('crops a frozen window from the retained desktop snapshot', async () => {
+      mockGetConfig.mockReturnValue({
+        general: { playSoundOnScreenshot: false },
+        screenshot: {
+          captureToClipboard: true,
+          hideDesktopIcons: false,
+          freezeScreen: true,
+        },
+      });
+      mockSelectWindow.mockResolvedValue({
+        status: 'selected',
+        windowId: 264610,
+        bounds: { x: 200, y: 100, width: 800, height: 600 },
+      });
+
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+      await screenshot('window');
+
+      expect(mockCaptureFrozenScreenRegionToFile).toHaveBeenCalledWith(
+        { x: 200, y: 100, width: 800, height: 600 },
+        expect.any(String),
+        264610
+      );
+      expect(mockCaptureWindowToFile).not.toHaveBeenCalled();
+      expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to live window capture when freezing fails', async () => {
+      mockGetConfig.mockReturnValue({
+        general: { playSoundOnScreenshot: false },
+        screenshot: {
+          captureToClipboard: true,
+          hideDesktopIcons: false,
+          freezeScreen: true,
+        },
+      });
+      mockFreezeScreen.mockResolvedValue(false);
+      mockSelectWindow.mockResolvedValue({
+        status: 'selected',
+        windowId: 264610,
+        bounds: { x: 200, y: 100, width: 800, height: 600 },
+      });
+
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+      await screenshot('window');
+
+      expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
+        264610,
+        expect.any(String)
+      );
+      expect(mockCaptureFrozenScreenRegionToFile).not.toHaveBeenCalled();
+      expect(mockReleaseScreen).not.toHaveBeenCalled();
     });
 
     it('handles selector errors gracefully', async () => {

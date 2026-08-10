@@ -11,7 +11,7 @@ export function checkAccessibilityPermission(prompt = false): boolean {
   return systemPreferences.isTrustedAccessibilityClient(prompt);
 }
 
-const hideReasons = new Set<DesktopIconsHideSource>();
+const hideReasons = new Map<DesktopIconsHideSource, number>();
 let isHidden = false;
 
 export function areDesktopIconsHidden(): boolean {
@@ -29,7 +29,8 @@ export async function hideDesktopIcons(
     return false;
   }
 
-  hideReasons.add(source);
+  const activeCount = hideReasons.get(source) ?? 0;
+  hideReasons.set(source, source === 'capture' ? activeCount + 1 : 1);
 
   if (isHidden) {
     return true;
@@ -54,6 +55,13 @@ export async function showDesktopIcons(
 
   if (source === 'system') {
     hideReasons.clear();
+  } else if (source === 'capture') {
+    const activeCount = hideReasons.get(source) ?? 0;
+    if (activeCount > 1) {
+      hideReasons.set(source, activeCount - 1);
+    } else {
+      hideReasons.delete(source);
+    }
   } else {
     hideReasons.delete(source);
   }

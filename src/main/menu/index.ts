@@ -180,7 +180,7 @@ function buildContextMenu(): Menu {
   if (!isPro()) {
     menuItems.push(
       {
-        label: 'Upgrade to Capty Pro',
+        label: 'Get Capty License',
         click: () => {
           createOrShowSettingsWindow('license');
         },
@@ -421,8 +421,8 @@ function buildContextMenu(): Menu {
             ? 'Are you sure you want to hide the tray icon?'
             : 'Are you sure you want to hide the menu bar icon?',
           detail: isWindows
-            ? 'The app will continue running in the background. To restore the tray icon, launch Capty again from the Start menu.'
-            : 'The app will continue running in the background. To restore the menu bar icon, launch the app again (double-click Capty in Applications).',
+            ? 'The app will continue running in the background. To restore the tray icon, launch Poratake again from the Start menu.'
+            : 'The app will continue running in the background. To restore the menu bar icon, launch the app again (double-click Poratake in Applications).',
           buttons: ['Hide Icon', 'Cancel'],
           defaultId: 0,
           cancelId: 1,
@@ -444,10 +444,10 @@ function buildContextMenu(): Menu {
       },
     },
     {
-      label: 'Feature Request / Bug Report',
+      label: 'Poratake Issues',
       icon: icons.aperture,
       click: () => {
-        shell.openExternal('https://capty.app/roadmap');
+        shell.openExternal('https://github.com/SDSLeon/capty/issues');
       },
     },
     {
@@ -464,7 +464,7 @@ function buildContextMenu(): Menu {
 
 function getTrayIconPath(): string {
   if (isWindows) {
-    return getPublicAssetPath('icon.png');
+    return getPublicAssetPath('tray-icon.png');
   }
   if (isProduction) {
     return path.join(process.resourcesPath, 'menu-icons', 'iconTemplate.png');

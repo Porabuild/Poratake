@@ -17,7 +17,7 @@ export const CLOUD_ITEMS: SettingsItem[] = [
     description: 'Where uploaded screenshots and videos are sent',
     keywords: ['cloud', 'upload', 'provider', 'capty', 's3', 'rest', 'api'],
     options: [
-      { value: 'capty', label: 'Capty Cloud' },
+      { value: 'capty', label: 'Capty Cloud (external)' },
       { value: 'rest', label: 'Self-hosted cloud' },
       { value: 's3', label: 'S3-compatible storage' },
     ],
@@ -63,7 +63,7 @@ export const CLOUD_ITEMS: SettingsItem[] = [
     section: 'Capty Cloud',
     type: 'capty-cloud-access',
     label: 'Capty Cloud access',
-    description: 'License access for hosted uploads',
+    description: 'Uploads are sent to the external Capty service',
     keywords: ['capty', 'cloud', 'license', 'hosted', 'upload'],
     visibleWhen: isCapty,
   },

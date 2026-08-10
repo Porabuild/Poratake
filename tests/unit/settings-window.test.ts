@@ -14,6 +14,7 @@ class MockBrowserWindow {
   };
 
   destroyedFlag = false;
+  options: Electron.BrowserWindowConstructorOptions;
   show = vi.fn();
   focus = vi.fn();
   loadURL = vi.fn();
@@ -28,8 +29,8 @@ class MockBrowserWindow {
     this.windowHandlers[event].push(cb);
   });
 
-  constructor(_opts: unknown) {
-    void _opts;
+  constructor(opts: Electron.BrowserWindowConstructorOptions) {
+    this.options = opts;
     browserWindows.push(this);
   }
 }
@@ -65,6 +66,36 @@ describe('settings window', () => {
       await import('@/main/settings/window');
     createOrShowSettingsWindow();
     expect(browserWindows.length).toBe(1);
+  });
+
+  it('starts supported Windows settings windows on acrylic', async () => {
+    const { createOrShowSettingsWindow } =
+      await import('@/main/settings/window');
+    const { supportsWindowsAcrylic } = await import('@/main/utils/title-bar');
+    createOrShowSettingsWindow();
+
+    if (!supportsWindowsAcrylic()) return;
+
+    expect(browserWindows[0].options).toMatchObject({
+      backgroundColor: '#00000000',
+      backgroundMaterial: 'acrylic',
+      titleBarOverlay: { color: '#00000000' },
+    });
+  });
+
+  it('starts macOS settings windows with sidebar vibrancy', async () => {
+    const { createOrShowSettingsWindow } =
+      await import('@/main/settings/window');
+    createOrShowSettingsWindow();
+
+    if (process.platform !== 'darwin') return;
+
+    expect(browserWindows[0].options).toMatchObject({
+      backgroundColor: '#00000000',
+      vibrancy: 'sidebar',
+      visualEffectState: 'active',
+      transparent: true,
+    });
   });
 
   it('reuses existing window on subsequent calls', async () => {
@@ -106,7 +137,12 @@ describe('settings window', () => {
       (win.windowHandlers['wc:did-finish-load'] || []).forEach(cb => cb());
       expect(win.webContents.send).toHaveBeenCalledWith(
         'load',
-        expect.objectContaining({ type: 'settings' })
+        expect.objectContaining({
+          type: 'settings',
+          params: expect.objectContaining({
+            nativeMaterial: expect.any(Boolean),
+          }),
+        })
       );
     });
 

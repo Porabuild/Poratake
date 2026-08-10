@@ -46,7 +46,7 @@ export default function CaptureEdgeOverlay({
         <button
           key={edge}
           type="button"
-          className={`group absolute ${EDGE_CONFIG[edge].zone} cursor-pointer`}
+          className={`group absolute ${EDGE_CONFIG[edge].zone} cursor-default`}
           onMouseDown={e => {
             if (e.button !== 0 && e.button !== 2) return;
             e.preventDefault();

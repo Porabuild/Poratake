@@ -127,8 +127,28 @@ describe('history popover', () => {
     const m = await import('@/main/history/popover');
     m.preloadHistoryPopover();
     expect(ipcOn['history:closePopover']).toBeDefined();
-    ipcOn['history:closePopover']();
+    ipcOn['history:closePopover']({ sender: browserWindows[0].webContents });
     expect(browserWindows[0].close).toHaveBeenCalled();
+  });
+
+  it('history:closePopover ignores another renderer', async () => {
+    const m = await import('@/main/history/popover');
+    m.preloadHistoryPopover();
+    ipcOn['history:closePopover']({ sender: {} });
+    expect(browserWindows[0].close).not.toHaveBeenCalled();
+  });
+
+  it('history:ready refreshes only a visible popover', async () => {
+    const m = await import('@/main/history/popover');
+    m.preloadHistoryPopover();
+    const win = browserWindows[0];
+
+    ipcOn['history:ready']({ sender: win.webContents });
+    expect(win.webContents.send).not.toHaveBeenCalled();
+
+    win.show();
+    ipcOn['history:ready']({ sender: win.webContents });
+    expect(win.webContents.send).toHaveBeenCalledWith('history:refresh');
   });
 
   it('window blur closes popover', async () => {

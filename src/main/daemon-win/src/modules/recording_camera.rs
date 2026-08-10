@@ -58,8 +58,6 @@ pub struct CameraSyncClock {
 #[derive(Clone, Debug)]
 pub struct CameraRecordingResult {
     pub video_path: PathBuf,
-    pub metadata_path: PathBuf,
-    pub duration: f64,
     pub staged_assets: Vec<StagedAsset>,
 }
 
@@ -1013,8 +1011,6 @@ impl CameraRuntime {
         self.committed = true;
         Ok(CameraRecordingResult {
             video_path: self.video_path.clone(),
-            metadata_path: self.metadata_path.clone(),
-            duration,
             staged_assets: vec![
                 StagedAsset {
                     temporary_path: self.temporary_video_path.clone(),

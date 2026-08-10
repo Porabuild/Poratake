@@ -27,6 +27,8 @@ const WINDOW_FRAME_STYLES: WindowFrameStyle[] = [
   'none',
   'macos-light',
   'macos-dark',
+  'windows-light',
+  'windows-dark',
 ];
 
 interface WallpaperSheetProps {
@@ -61,7 +63,8 @@ export function WallpaperSheetTrigger({
       <TooltipTrigger asChild>
         <Button
           variant={isOpen ? 'default' : 'ghost'}
-          className="size-7"
+          size="icon-sm"
+          className="size-7!"
           onClick={onClick}
         >
           <Wallpaper className="size-4" />
@@ -454,7 +457,6 @@ export function WallpaperSheetContent({
             </div>
           </div>
           <div className="grid grid-cols-5 gap-2">
-            {}
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -498,7 +500,6 @@ export function WallpaperSheetContent({
               </TooltipContent>
             </Tooltip>
 
-            {}
             {SVG_WALLPAPER_PRESETS.map(preset => (
               <button
                 key={preset.id}
@@ -518,7 +519,6 @@ export function WallpaperSheetContent({
               />
             ))}
 
-            {}
             {customBackgrounds.map(background => {
               if (background.type === 'gradient') {
                 return (
@@ -717,7 +717,7 @@ export function WallpaperSheetContent({
           <span className="text-muted-foreground text-xs font-medium">
             Window Frame
           </span>
-          <div className="flex gap-2">
+          <div className="grid grid-cols-3 gap-2">
             {WINDOW_FRAME_STYLES.map(style => (
               <WindowFramePreview
                 key={style}

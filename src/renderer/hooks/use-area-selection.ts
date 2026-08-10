@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   adjustRectToRatio,
   clampPoint,
@@ -28,6 +34,7 @@ type Interaction =
   | { type: 'resizing'; handle: SelectionHandle };
 
 export interface AreaSelectionOptions {
+  resetKey: number;
   interactive: boolean;
   initialRect: AreaOverlayRect | null;
   initialAspectRatio: number | null;
@@ -40,7 +47,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  const [bounds] = useState<Bounds>(() => ({
+  const [bounds, setBounds] = useState<Bounds>(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
   }));
@@ -57,6 +64,21 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
     rectRef.current = next;
     setRect(next);
   }, []);
+
+  useLayoutEffect(() => {
+    ratioRef.current = options.initialAspectRatio;
+    interactionRef.current = null;
+    setBounds({ width: window.innerWidth, height: window.innerHeight });
+    applyRect(options.initialRect);
+    setPointer(null);
+    setCursor('crosshair');
+    setInteracting(false);
+  }, [
+    applyRect,
+    options.initialAspectRatio,
+    options.initialRect,
+    options.resetKey,
+  ]);
 
   useEffect(() => {
     const handleRect = (_event: unknown, message: AreaOverlayRectMessage) => {

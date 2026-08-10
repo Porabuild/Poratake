@@ -48,6 +48,7 @@ src/main/daemon/capty-daemon
 src/main/daemon/capty-daemon.exe
 
 # Agent and editor tooling
+.poracode/worktrees/
 .plans/
 .agents/
 .claude/
