@@ -1,31 +1,46 @@
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import SettingsSelect from '@/renderer/components/settings/settings-select';
 import type { MediaDeviceDescriptor } from '@/types/devices';
 
 const SYSTEM_DEFAULT_VALUE = 'system-default';
 
 interface DeviceSelectProps {
+  label: string;
   devices: MediaDeviceDescriptor[];
   selectedId: string | null;
   selectedName: string | null;
+  defaultDeviceId: string | null;
   onSelect: (device: MediaDeviceDescriptor | null) => void;
   onOpen: () => void;
 }
 
 export default function DeviceSelect({
+  label,
   devices,
   selectedId,
   selectedName,
+  defaultDeviceId,
   onSelect,
   onOpen,
 }: DeviceSelectProps) {
   const isUnavailable =
     selectedId !== null && !devices.some(device => device.id === selectedId);
+  const defaultDevice =
+    devices.find(device => device.id === defaultDeviceId) ?? null;
+  const systemDefaultLabel = defaultDevice
+    ? `System Default (${defaultDevice.label})`
+    : 'System Default';
+  const options = [
+    { value: SYSTEM_DEFAULT_VALUE, label: systemDefaultLabel },
+    ...devices.map(device => ({ value: device.id, label: device.label })),
+    ...(isUnavailable
+      ? [
+          {
+            value: selectedId,
+            label: `${selectedName ?? 'Unknown device'} (unavailable)`,
+          },
+        ]
+      : []),
+  ];
 
   const handleChange = (value: string) => {
     if (value === SYSTEM_DEFAULT_VALUE) {
@@ -37,29 +52,15 @@ export default function DeviceSelect({
   };
 
   return (
-    <Select
+    <SettingsSelect
+      label={label}
+      options={options}
       value={selectedId ?? SYSTEM_DEFAULT_VALUE}
-      onValueChange={handleChange}
+      onChange={handleChange}
       onOpenChange={open => {
         if (open) onOpen();
       }}
-    >
-      <SelectTrigger className="w-full">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={SYSTEM_DEFAULT_VALUE}>System Default</SelectItem>
-        {devices.map(device => (
-          <SelectItem key={device.id} value={device.id}>
-            {device.label}
-          </SelectItem>
-        ))}
-        {isUnavailable && (
-          <SelectItem value={selectedId}>
-            {selectedName ?? 'Unknown device'} (unavailable)
-          </SelectItem>
-        )}
-      </SelectContent>
-    </Select>
+      className="w-full"
+    />
   );
 }

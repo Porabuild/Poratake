@@ -3,7 +3,10 @@ import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
 import DeviceSelect from './device-select';
 import LevelMeter from './level-meter';
-import { useMediaDevices } from '@/renderer/hooks/use-media-devices';
+import {
+  useDeviceTest,
+  useMediaDevices,
+} from '@/renderer/hooks/use-media-devices';
 import type { MediaDeviceDescriptor } from '@/types/devices';
 import type { SettingsConfig } from '@/types/settings';
 
@@ -16,8 +19,8 @@ export default function MicrophoneDeviceSetting({
   settings,
   onUpdate,
 }: MicrophoneDeviceSettingProps) {
-  const { microphones, refresh } = useMediaDevices();
-  const [testing, setTesting] = useState(false);
+  const { microphones, defaultMicrophoneId, refresh } = useMediaDevices();
+  const { testing, startTest, stopTest } = useDeviceTest('mic');
   const [level, setLevel] = useState(0);
 
   const selectedId = settings.recording.selectedMicId;
@@ -33,30 +36,6 @@ export default function MicrophoneDeviceSetting({
     };
   }, [testing]);
 
-  const startTest = useCallback(
-    async (deviceId: string | null, deviceName: string | null) => {
-      try {
-        const started = await window.ipcRenderer.invoke(
-          'devices:mic-test:start',
-          { deviceId, deviceName }
-        );
-        setTesting(Boolean(started));
-      } catch (error) {
-        console.error('Failed to start mic test:', error);
-        setTesting(false);
-      }
-    },
-    []
-  );
-
-  const stopTest = useCallback(() => {
-    setTesting(false);
-    setLevel(0);
-    window.ipcRenderer.invoke('devices:mic-test:stop').catch(() => {});
-  }, []);
-
-  useEffect(() => stopTest, [stopTest]);
-
   const handleSelect = useCallback(
     (device: MediaDeviceDescriptor | null) => {
       onUpdate({
@@ -67,7 +46,10 @@ export default function MicrophoneDeviceSetting({
         },
       });
       if (testing) {
-        void startTest(device?.id ?? null, device?.label ?? null);
+        void startTest({
+          deviceId: device?.id ?? null,
+          deviceName: device?.label ?? null,
+        });
       }
     },
     [onUpdate, settings.recording, testing, startTest]
@@ -76,9 +58,10 @@ export default function MicrophoneDeviceSetting({
   const handleToggleTest = useCallback(() => {
     if (testing) {
       stopTest();
+      setLevel(0);
       return;
     }
-    void startTest(selectedId, selectedName);
+    void startTest({ deviceId: selectedId, deviceName: selectedName });
   }, [testing, stopTest, startTest, selectedId, selectedName]);
 
   return (
@@ -90,15 +73,17 @@ export default function MicrophoneDeviceSetting({
         </p>
       </div>
       <DeviceSelect
+        label="Microphone"
         devices={microphones}
         selectedId={selectedId}
         selectedName={selectedName}
+        defaultDeviceId={defaultMicrophoneId}
         onSelect={handleSelect}
         onOpen={refresh}
       />
       <div className="flex items-center gap-3">
         <Button
-          variant={testing ? 'secondary' : 'outline'}
+          variant="secondary"
           size="sm"
           className="w-24 shrink-0"
           onClick={handleToggleTest}

@@ -14,6 +14,16 @@ const mockShowCameraPreview = vi.fn();
 const mockHideCameraPreview = vi.fn();
 const mockDipToScreenPoint = vi.fn();
 const mockGetDisplayMatching = vi.fn();
+const mockBrowserWindow = { id: 'recording-control' };
+const mockGetBrowserWindow = vi.fn(() => mockBrowserWindow);
+const mockGetBrowserWindowWidth = vi.fn((mode: string) =>
+  mode === 'recording' ? 232 : 204
+);
+const mockHideBrowserWindow = vi.fn();
+const mockPrewarmBrowserWindow = vi.fn();
+const mockShowBrowserWindow = vi.fn();
+const mockUpdateBrowserWindow = vi.fn();
+const mockUpdateBrowserWindowPosition = vi.fn();
 
 vi.mock('electron', () => ({
   dialog: { showMessageBox: (...a: unknown[]) => mockShowMessageBox(...a) },
@@ -31,6 +41,20 @@ vi.mock('@/main/daemon', () => ({
     onEvent: (...a: unknown[]) => mockDaemonOnEvent(...a),
     offEvent: (...a: unknown[]) => mockDaemonOffEvent(...a),
   },
+}));
+
+vi.mock('@/main/capture/video/recording-control-window', () => ({
+  getRecordingControlBrowserWindow: () => mockGetBrowserWindow(),
+  getRecordingControlWindowWidth: (...a: unknown[]) =>
+    mockGetBrowserWindowWidth(...a),
+  hideRecordingControlBrowserWindow: () => mockHideBrowserWindow(),
+  prewarmRecordingControlBrowserWindow: () => mockPrewarmBrowserWindow(),
+  showRecordingControlBrowserWindow: (...a: unknown[]) =>
+    mockShowBrowserWindow(...a),
+  updateRecordingControlBrowserWindow: (...a: unknown[]) =>
+    mockUpdateBrowserWindow(...a),
+  updateRecordingControlBrowserWindowPosition: (...a: unknown[]) =>
+    mockUpdateBrowserWindowPosition(...a),
 }));
 
 vi.mock('@/main/settings', () => ({
@@ -89,6 +113,7 @@ describe('recording-control', () => {
   const originalPlatform = process.platform;
 
   beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
     vi.clearAllMocks();
     vi.resetModules();
     mockDaemonCall.mockResolvedValue({});
@@ -101,6 +126,7 @@ describe('recording-control', () => {
     mockResumeRecording.mockResolvedValue(undefined);
     mockShowCameraPreview.mockResolvedValue(undefined);
     mockShowRecordingError.mockResolvedValue(undefined);
+    mockShowMessageBox.mockResolvedValue({ response: 1 });
     mockCheckCamera.mockResolvedValue(true);
     mockDipToScreenPoint.mockImplementation(position => position);
     mockGetDisplayMatching.mockReturnValue({
@@ -151,14 +177,14 @@ describe('recording-control', () => {
     const m = await import('@/main/capture/video/recording-control');
     m.showPreRecordingControl({ x: 2000, y: 600, width: 800, height: 600 });
 
-    expect(mockDaemonCall).toHaveBeenCalledWith(
-      'recording-control',
-      'show',
-      expect.objectContaining({ x: 2621, y: 64 })
+    expect(mockShowBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'pre-recording' }),
+      { x: 2778, y: 64 },
+      expect.any(Function)
     );
   });
 
-  it('converts the Windows control position to physical pixels', async () => {
+  it('keeps the Electron control position in logical pixels', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     vi.resetModules();
     mockDipToScreenPoint.mockReturnValue({ x: 900, y: 1000 });
@@ -166,11 +192,68 @@ describe('recording-control', () => {
     const m = await import('@/main/capture/video/recording-control');
     m.showPreRecordingControl({ x: 100, y: 100, width: 800, height: 600 });
 
-    expect(mockDipToScreenPoint).toHaveBeenCalled();
-    expect(mockDaemonCall).toHaveBeenCalledWith(
-      'recording-control',
-      'show',
-      expect.objectContaining({ x: 900, y: 1000 })
+    expect(mockDipToScreenPoint).not.toHaveBeenCalled();
+    expect(mockShowBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'pre-recording' }),
+      { x: 858, y: 24 },
+      expect.any(Function)
+    );
+  });
+
+  it('keeps the Windows toolbar centered when recording starts', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.resetModules();
+    const m = await import('@/main/capture/video/recording-control');
+    m.showPreRecordingControl({ x: 100, y: 100, width: 800, height: 600 });
+
+    await m.showRecordingControl();
+
+    expect(mockShowBrowserWindow).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: 'recording' }),
+      { x: 844, y: 24 },
+      expect.any(Function)
+    );
+    await m.hideRecordingControl();
+  });
+
+  it('routes Windows renderer actions through the recording controller', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.resetModules();
+    const m = await import('@/main/capture/video/recording-control');
+    m.showPreRecordingControl();
+    mockUpdateConfig.mockImplementation(update => {
+      mockGetConfig.mockReturnValue(update);
+    });
+    const actionHandler = mockShowBrowserWindow.mock.calls[0][2] as (
+      action: string
+    ) => void;
+
+    actionHandler('toggle-system-audio');
+
+    await vi.waitFor(() => expect(mockUpdateConfig).toHaveBeenCalled());
+    expect(mockUpdateBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ systemAudio: false })
+    );
+  });
+
+  it('confirms discard actions from the Windows toolbar', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.resetModules();
+    mockShowMessageBox.mockResolvedValue({ response: 0 });
+    const m = await import('@/main/capture/video/recording-control');
+    m.showPreRecordingControl();
+    const actionHandler = mockShowBrowserWindow.mock.calls[0][2] as (
+      action: string
+    ) => void;
+
+    actionHandler('delete');
+
+    await vi.waitFor(() =>
+      expect(mockDeleteRecordingAction).toHaveBeenCalledTimes(1)
+    );
+    expect(mockShowMessageBox).toHaveBeenCalledWith(
+      mockBrowserWindow,
+      expect.objectContaining({ title: 'Discard Recording?' })
     );
   });
 
@@ -325,6 +408,25 @@ describe('recording-control', () => {
     expect(mockDaemonCall).not.toHaveBeenCalled();
   });
 
+  it('handles timer control update failures', async () => {
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const m = await import('@/main/capture/video/recording-control');
+    await m.showRecordingControl();
+    mockDaemonCall.mockRejectedValueOnce(new Error('control unavailable'));
+
+    m.pauseTimer();
+
+    await vi.waitFor(() =>
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to update paused control state:',
+        expect.objectContaining({ message: 'control unavailable' })
+      )
+    );
+    consoleError.mockRestore();
+  });
+
   it('swallows daemon errors on show', async () => {
     mockDaemonCall.mockRejectedValue(new Error('boom'));
     const m = await import('@/main/capture/video/recording-control');
@@ -453,6 +555,27 @@ describe('recording-control', () => {
       );
     });
 
+    it('retries the same mic mute state after a native failure', async () => {
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const m = await import('@/main/capture/video/recording-control');
+      m.showPreRecordingControl();
+      mockDaemonCall.mockRejectedValueOnce(new Error('mute failed'));
+
+      await daemonEventHandler!('recording-control:toggle-mic-mute');
+      await daemonEventHandler!('recording-control:toggle-mic-mute');
+
+      const muteCalls = mockDaemonCall.mock.calls.filter(
+        call => call[0] === 'screen-recorder' && call[1] === 'setMicMuted'
+      );
+      expect(muteCalls).toEqual([
+        ['screen-recorder', 'setMicMuted', { muted: true }],
+        ['screen-recorder', 'setMicMuted', { muted: true }],
+      ]);
+      consoleError.mockRestore();
+    });
+
     it('start delegates to startPendingRecording', async () => {
       mockStartPendingRecording.mockResolvedValue(undefined);
       await setupAndFire('recording-control:start');
@@ -475,6 +598,24 @@ describe('recording-control', () => {
       await first;
       await second;
       expect(mockStartPendingRecording).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows a retry when the native starting state update fails', async () => {
+      const m = await import('@/main/capture/video/recording-control');
+      m.showPreRecordingControl();
+      mockDaemonCall.mockRejectedValueOnce(new Error('state update failed'));
+
+      daemonEventHandler!('recording-control:start');
+      await vi.waitFor(() =>
+        expect(mockShowRecordingError).toHaveBeenCalledWith(
+          expect.objectContaining({ message: 'state update failed' })
+        )
+      );
+
+      daemonEventHandler!('recording-control:start');
+      await vi.waitFor(() =>
+        expect(mockStartPendingRecording).toHaveBeenCalledTimes(1)
+      );
     });
 
     it('ignores mutable controls while recording startup is pending', async () => {

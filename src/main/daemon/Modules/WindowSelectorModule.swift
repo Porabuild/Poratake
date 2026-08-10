@@ -162,7 +162,7 @@ class WindowSelectorOverlayView: NSView {
     
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
-        NSCursor.pointingHand.set()
+        NSCursor.arrow.set()
         needsDisplay = true
     }
     

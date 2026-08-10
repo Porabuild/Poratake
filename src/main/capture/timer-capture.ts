@@ -4,7 +4,6 @@ import { daemon } from '@/main/daemon';
 import {
   startAreaSelection,
   cancelAreaSelection,
-  hideAreaSelector,
 } from '@/main/capture/area-selector';
 import { selectAreaWithOverlay } from '@/main/capture/area-overlay';
 import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
@@ -23,7 +22,6 @@ const WINDOW_WIDTH = 140;
 const WINDOW_HEIGHT = 52;
 const TIMER_TOP_MARGIN = 20;
 
-let eventCleanup: (() => void) | null = null;
 let isTimerActive = false;
 
 interface TimerControlPosition {
@@ -47,29 +45,6 @@ function calculateTimerPosition(area: AreaRect): TimerControlPosition {
   }
 
   return { x, y };
-}
-
-function setupEventListener(onCancel: () => void): void {
-  if (eventCleanup) {
-    eventCleanup();
-  }
-
-  const handler = (event: string) => {
-    if (event === 'timer-control:cancel') {
-      onCancel();
-    }
-  };
-
-  daemon.onEvent(handler);
-  eventCleanup = () => {
-    daemon.offEvent(handler);
-    eventCleanup = null;
-  };
-}
-
-function cleanupEventListener(): void {
-  eventCleanup?.();
-  eventCleanup = null;
 }
 
 async function showTimerControl(
@@ -100,23 +75,29 @@ function createTimerCompletionWaiter(): {
   result: Promise<boolean>;
   cancel: () => void;
 } {
-  let handler: (event: string) => void;
+  let finish: (completed: boolean) => void = () => {};
   const result = new Promise<boolean>(resolve => {
-    handler = (event: string) => {
+    let isPending = true;
+    const handler = (event: string) => {
       if (event === 'timer-control:completed') {
-        daemon.offEvent(handler);
-        resolve(true);
+        finish(true);
       } else if (event === 'timer-control:cancel') {
-        daemon.offEvent(handler);
-        resolve(false);
+        finish(false);
       }
+    };
+    finish = completed => {
+      if (!isPending) return;
+
+      isPending = false;
+      daemon.offEvent(handler);
+      resolve(completed);
     };
     daemon.onEvent(handler);
   });
 
   return {
     result,
-    cancel: () => daemon.offEvent(handler),
+    cancel: () => finish(false),
   };
 }
 
@@ -183,106 +164,121 @@ async function timerCaptureWindows(shouldHideIcons: boolean): Promise<void> {
   }
 }
 
-function timerCaptureMac(shouldHideIcons: boolean): Promise<void> {
-  return new Promise<void>(resolve => {
-    let captured = false;
-    let timerCancelled = false;
+async function timerCaptureMac(shouldHideIcons: boolean): Promise<void> {
+  let iconsRestored = !shouldHideIcons;
+  const restoreIcons = async () => {
+    if (iconsRestored) return;
 
-    const cleanup = async () => {
-      isTimerActive = false;
-      cleanupEventListener();
-      await hideTimerControl();
-      if (shouldHideIcons) {
-        await showDesktopIcons('capture');
-      }
-    };
+    iconsRestored = true;
+    await showDesktopIcons('capture');
+  };
 
-    const handleSelected = async (selection: {
-      x?: number;
-      y?: number;
-      width?: number;
-      height?: number;
-    }) => {
-      if (captured || timerCancelled) return;
-      if (
-        selection.x === undefined ||
-        selection.y === undefined ||
-        selection.width === undefined ||
-        selection.height === undefined
-      ) {
-        return;
-      }
+  try {
+    await new Promise<void>(resolve => {
+      let isSettled = false;
+      let isCancelled = false;
+      let hasSelection = false;
+      let timerCompletion: ReturnType<
+        typeof createTimerCompletionWaiter
+      > | null = null;
 
-      captured = true;
-      isTimerActive = true;
+      const settle = () => {
+        if (isSettled) return;
 
-      const position = calculateTimerPosition({
-        x: selection.x,
-        y: selection.y,
-        width: selection.width,
-        height: selection.height,
-      });
-
-      setupEventListener(async () => {
-        timerCancelled = true;
-        await cleanup();
-        await hideAreaSelector();
-        await cancelAreaSelection();
+        isSettled = true;
+        timerCompletion?.cancel();
         resolve();
-      });
+      };
 
-      const timerCompletion = createTimerCompletionWaiter();
-      await showTimerControl(position);
+      const handleCancelled = () => {
+        isCancelled = true;
+        timerCompletion?.cancel();
+        if (!hasSelection) {
+          settle();
+        }
+      };
 
-      const shouldCapture = await timerCompletion.result;
+      const handleSelected = async (selection: {
+        x?: number;
+        y?: number;
+        width?: number;
+        height?: number;
+      }) => {
+        if (hasSelection || isSettled) return;
+        if (
+          selection.x === undefined ||
+          selection.y === undefined ||
+          selection.width === undefined ||
+          selection.height === undefined
+        ) {
+          return;
+        }
 
-      if (!shouldCapture || timerCancelled) {
-        await cleanup();
-        await hideAreaSelector();
-        await cancelAreaSelection();
-        resolve();
-        return;
-      }
-
-      await hideTimerControl();
-      cleanupEventListener();
-      await hideAreaSelector();
-      await new Promise(r => setTimeout(r, 50));
-      await cancelAreaSelection();
-      await new Promise(r => setTimeout(r, 50));
-
-      await captureArea(
-        {
-          status: 'confirmed',
+        hasSelection = true;
+        const position = calculateTimerPosition({
           x: selection.x,
           y: selection.y,
           width: selection.width,
           height: selection.height,
+        });
+
+        timerCompletion = createTimerCompletionWaiter();
+        if (!(await showTimerControl(position)) || isCancelled || isSettled) {
+          await cancelAreaSelection(true);
+          settle();
+          return;
+        }
+
+        const shouldCapture = await timerCompletion.result;
+        timerCompletion = null;
+        if (!shouldCapture || isCancelled || isSettled) {
+          await cancelAreaSelection(true);
+          settle();
+          return;
+        }
+
+        await hideTimerControl();
+        await cancelAreaSelection(true);
+
+        try {
+          await captureArea(
+            {
+              status: 'confirmed',
+              x: selection.x,
+              y: selection.y,
+              width: selection.width,
+              height: selection.height,
+            },
+            { onCaptured: restoreIcons }
+          );
+        } catch (error) {
+          console.error('Timer capture failed:', error);
+        }
+        settle();
+      };
+
+      void startAreaSelection({
+        onSelected: handleSelected,
+        onCancelled: handleCancelled,
+        showPrompt: false,
+        style: 'simple',
+      }).then(
+        selection => {
+          if (!selection && !hasSelection) {
+            settle();
+          }
         },
-        {
-          onCaptured: async () => {
-            if (shouldHideIcons) {
-              await showDesktopIcons('capture');
-            }
-          },
+        error => {
+          console.error('Timer area selection failed:', error);
+          settle();
         }
       );
-
-      isTimerActive = false;
-      resolve();
-    };
-
-    startAreaSelection({
-      onSelected: handleSelected,
-      onCancelled: async () => {
-        timerCancelled = true;
-        await cleanup();
-        resolve();
-      },
-      showPrompt: false,
-      style: 'simple',
     });
-  });
+  } finally {
+    await hideTimerControl();
+    await restoreIcons();
+    isTimerActive = false;
+  }
 }
 
 export default async function timerCapture(): Promise<void> {
@@ -295,6 +291,7 @@ export default async function timerCapture(): Promise<void> {
   }
 
   const shouldHideIcons = resolveHideIcons();
+  isTimerActive = true;
 
   if (isMac) {
     if (shouldHideIcons) {
@@ -303,6 +300,5 @@ export default async function timerCapture(): Promise<void> {
     return timerCaptureMac(shouldHideIcons);
   }
 
-  isTimerActive = true;
   return timerCaptureWindows(shouldHideIcons);
 }

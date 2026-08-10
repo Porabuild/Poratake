@@ -63,7 +63,7 @@ describe('recording-tray', () => {
       'Click to stop recording'
     );
     expect(mockNativeImageCreateFromPath).toHaveBeenCalledWith(
-      '/public/icon.png'
+      '/public/tray-icon.png'
     );
     expect(mockResize).toHaveBeenCalledWith({ width: 16, height: 16 });
   });
@@ -84,6 +84,26 @@ describe('recording-tray', () => {
     expect(mockStopRecordingAction).toHaveBeenCalled();
     expect(tray.destroy).toHaveBeenCalled();
     expect(mockRebuildTrayMenu).toHaveBeenCalled();
+  });
+
+  it('cleans up the tray when stopping fails', async () => {
+    mockStopRecordingAction.mockRejectedValue(new Error('stop failed'));
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const { showRecordingTray } = await import('@/main/menu/recording-tray');
+    showRecordingTray();
+    const tray = trayInstances[0];
+
+    await expect((tray.handlers['click'] || [])[0]()).resolves.toBeUndefined();
+
+    expect(tray.destroy).toHaveBeenCalled();
+    expect(mockRebuildTrayMenu).toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      'Error stopping recording from tray:',
+      expect.objectContaining({ message: 'stop failed' })
+    );
+    consoleError.mockRestore();
   });
 
   it('hideRecordingTray destroys the tray', async () => {

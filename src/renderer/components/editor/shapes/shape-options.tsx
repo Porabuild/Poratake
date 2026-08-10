@@ -1,10 +1,4 @@
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import { ListBox, Select } from '@heroui/react';
 import type { ShapeFillMode } from '@/types/editor';
 
 interface ShapeOptionsProps {
@@ -53,24 +47,32 @@ export default function ShapeOptions({
   return (
     <>
       <Select
+        aria-label="Shape fill"
+        variant="secondary"
         value={shapeFillMode}
-        onValueChange={value => onShapeFillModeChange(value as ShapeFillMode)}
+        onChange={value => {
+          if (value === null) {
+            return;
+          }
+
+          onShapeFillModeChange(value as ShapeFillMode);
+        }}
       >
-        <SelectTrigger size="sm" className="h-7! w-auto gap-1 px-2">
-          <SelectValue>
-            <ShapeFillPreview mode={shapeFillMode} color={color} size={16} />
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent align="center">
-          {FILL_MODES.map(({ value, label }) => (
-            <SelectItem key={value} value={value}>
-              <div className="flex items-center gap-2">
+        <Select.Trigger className="h-7 min-h-7 items-center rounded-3xl py-0 ps-2">
+          <ShapeFillPreview mode={shapeFillMode} color={color} size={16} />
+          <Select.Indicator />
+        </Select.Trigger>
+        <Select.Popover placement="bottom">
+          <ListBox>
+            {FILL_MODES.map(({ value, label }) => (
+              <ListBox.Item key={value} id={value} textValue={label}>
                 <ShapeFillPreview mode={value} color={color} size={16} />
-                <span>{label}</span>
-              </div>
-            </SelectItem>
-          ))}
-        </SelectContent>
+                <span className="flex-1">{label}</span>
+                <ListBox.ItemIndicator />
+              </ListBox.Item>
+            ))}
+          </ListBox>
+        </Select.Popover>
       </Select>
       <div className="bg-border mx-1 h-[18px] w-px" />
     </>

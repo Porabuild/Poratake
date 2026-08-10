@@ -29,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, DestroyWindow, GetCursorPos, GetWindowRect,
     LoadCursorW, MessageBoxW, SetForegroundWindow, SetLayeredWindowAttributes,
     SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TrackPopupMenu, HTCAPTION, HWND_TOPMOST,
-    IDC_HAND, LWA_ALPHA, MB_ICONWARNING, MB_YESNO, MF_CHECKED, MF_STRING, SWP_NOACTIVATE,
+    IDC_ARROW, LWA_ALPHA, MB_ICONWARNING, MB_YESNO, MF_CHECKED, MF_STRING, SWP_NOACTIVATE,
     SWP_NOMOVE, SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WDA_EXCLUDEFROMCAPTURE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WS_EX_LAYERED, WS_EX_NOACTIVATE,
@@ -791,8 +791,8 @@ fn show_panel(
         return true;
     }
 
-    let hand = unsafe { LoadCursorW(None, IDC_HAND) }.ok();
-    ensure_window_class(CLASS_NAME, Some(wndproc), hand);
+    let arrow = unsafe { LoadCursorW(None, IDC_ARROW) }.ok();
+    ensure_window_class(CLASS_NAME, Some(wndproc), arrow);
     let (x, y) = position.unwrap_or((100, 100));
     let rect = RECT {
         left: x,

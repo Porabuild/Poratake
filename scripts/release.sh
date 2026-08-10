@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Capty Local Release Script
+# Poratake Local Release Script
 # This script replicates the GitHub Actions release workflow for local execution
 # 
 # Required environment variables for notarization (set in .env.release or export):
@@ -15,19 +15,16 @@
 # For GitHub release upload:
 #   GH_TOKEN                    - GitHub token with release permissions
 #
-# For capty.app upload:
-#   CAPTY_RELEASE_SECRET        - Secret for capty.app API
-#
 # Usage:
 #   ./scripts/release.sh <version> [--no-notarize] [--skip-upload] [--force-build]
 #
 # Examples:
 #   ./scripts/release.sh 1.1.0
-#   ./scripts/release.sh 1.1.0 --no-notarize
+#   ./scripts/release.sh 1.1.0 --no-notarize --skip-upload
 #   ./scripts/release.sh 1.1.0 --skip-upload
 #   ./scripts/release.sh 1.1.0 --force-build    # Re-build even if artifacts exist
 
-set -e
+set -eo pipefail
 
 # Colors for output
 RED='\033[0;31m'
@@ -110,8 +107,18 @@ if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
   exit 1
 fi
 
+if [[ "$NOTARIZE" == "false" ]] && [[ "$SKIP_UPLOAD" == "false" ]]; then
+  log_error "Non-notarized builds cannot be uploaded"
+  exit 1
+fi
+
 log_info "Starting release process for version $VERSION"
 echo ""
+
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  log_error "Release requires a clean working tree"
+  exit 1
+fi
 
 # Check required environment variables for notarization
 if [[ "$NOTARIZE" == "true" ]]; then
@@ -129,7 +136,7 @@ if [[ "$NOTARIZE" == "true" ]]; then
     done
     echo ""
     echo "Set these in .env.release or export them manually."
-    echo "Or run with --no-notarize to skip notarization."
+    echo "Or run with --no-notarize --skip-upload to create a local build."
     exit 1
   fi
   
@@ -139,20 +146,22 @@ fi
 # Check GitHub token for upload
 if [[ "$SKIP_UPLOAD" == "false" ]]; then
   if [[ -z "$GH_TOKEN" ]]; then
-    log_warning "GH_TOKEN not set - GitHub release upload will be skipped"
-    SKIP_UPLOAD=true
+    log_error "GH_TOKEN is required unless --skip-upload is used"
+    exit 1
   fi
 fi
 
 # Define artifact paths
-DMG_PATH="release/${VERSION}/Capty-${VERSION}-universal.dmg"
-ZIP_PATH="release/${VERSION}/Capty-${VERSION}-universal-mac.zip"
-DMG_NAME="Capty-${VERSION}-universal.dmg"
-ZIP_NAME="Capty-${VERSION}-universal-mac.zip"
+DMG_PATH="release/${VERSION}/Poratake-${VERSION}-universal.dmg"
+ZIP_PATH="release/${VERSION}/Poratake-${VERSION}-universal-mac.zip"
+DMG_NAME="Poratake-${VERSION}-universal.dmg"
+ZIP_NAME="Poratake-${VERSION}-universal-mac.zip"
+UPDATE_METADATA_PATH="release/${VERSION}/latest-mac.yml"
+BLOCKMAP_PATH="${ZIP_PATH}.blockmap"
 
 # Check if build artifacts already exist
 SKIP_BUILD=false
-if [[ -f "$DMG_PATH" ]] && [[ -f "$ZIP_PATH" ]] && [[ "$FORCE_BUILD" == "false" ]]; then
+if [[ -f "$DMG_PATH" ]] && [[ -f "$ZIP_PATH" ]] && [[ -f "$UPDATE_METADATA_PATH" ]] && [[ -f "$BLOCKMAP_PATH" ]] && [[ "$FORCE_BUILD" == "false" ]] && [[ "$SKIP_UPLOAD" == "true" ]]; then
   log_info "Build artifacts already exist for v$VERSION:"
   echo "  - $DMG_PATH"
   echo "  - $ZIP_PATH"
@@ -163,7 +172,7 @@ fi
 
 # Step 1: Install dependencies
 log_info "Step 1: Installing dependencies..."
-bun install
+bun install --frozen-lockfile
 log_success "Dependencies installed"
 echo ""
 
@@ -174,19 +183,26 @@ mv package.json.tmp package.json
 log_success "Version updated in package.json"
 echo ""
 
-# Step 3: Commit version update
-log_info "Step 3: Committing version update..."
-git add package.json
-git commit -m "chore: bump version to $VERSION" || log_warning "Nothing to commit (version may already be set)"
-git push || log_warning "Failed to push (you may need to push manually)"
-log_success "Version commit created"
-echo ""
+restore_local_version() {
+  if [[ "$SKIP_UPLOAD" == "true" ]]; then
+    git restore -- package.json
+  fi
+}
+trap restore_local_version EXIT
 
-# Step 4: Create and push tag
-log_info "Step 4: Creating and pushing tag v$VERSION..."
-git tag "v$VERSION" 2>/dev/null || log_warning "Tag v$VERSION already exists"
-git push origin "v$VERSION" 2>/dev/null || log_warning "Tag may already exist on remote"
-log_success "Tag created"
+if [[ "$SKIP_UPLOAD" == "false" ]]; then
+  log_info "Step 3: Committing version update..."
+  git add package.json
+  if git diff --cached --quiet; then
+    log_info "Version is already set to $VERSION"
+  else
+    git commit -m "chore: bump version to $VERSION"
+  fi
+  log_success "Version commit created"
+else
+  log_info "Step 3: Using the version locally without committing"
+fi
+BUILD_COMMIT=$(git rev-parse HEAD)
 echo ""
 
 # Step 5: Generate release notes
@@ -370,13 +386,58 @@ fi
 # Step 8: Create GitHub Release
 if [[ "$SKIP_UPLOAD" == "false" ]]; then
   log_info "Step 8: Creating GitHub release..."
+
+  if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+    log_error "Working tree changed after the release commit was created"
+    exit 1
+  fi
+  if [[ "$(git rev-parse HEAD)" != "$BUILD_COMMIT" ]]; then
+    log_error "Release commit changed during the build"
+    exit 1
+  fi
+
+  APP_RESOURCES=$(find "release/$VERSION" -type d -path "*/Poratake.app/Contents/Resources" -print -quit)
+  if [[ -z "$APP_RESOURCES" ]]; then
+    log_error "Packaged Poratake.app resources were not found"
+    exit 1
+  fi
+  APP_PATH=$(dirname "$(dirname "$APP_RESOURCES")")
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+  xcrun stapler validate "$APP_PATH"
   
-  REPO=$(git remote get-url origin | sed -E 's/.*github.com[:/](.+)(\.git)?$/\1/' | sed 's/\.git$//')
-  
-  if [[ ! -f "$DMG_PATH" ]] || [[ ! -f "$ZIP_PATH" ]]; then
+  if [[ ! -s "$DMG_PATH" ]] || [[ ! -s "$ZIP_PATH" ]] || [[ ! -s "$UPDATE_METADATA_PATH" ]] || [[ ! -s "$BLOCKMAP_PATH" ]]; then
     log_error "Build artifacts not found:"
     [[ ! -f "$DMG_PATH" ]] && echo "  Missing: $DMG_PATH"
     [[ ! -f "$ZIP_PATH" ]] && echo "  Missing: $ZIP_PATH"
+    [[ ! -f "$UPDATE_METADATA_PATH" ]] && echo "  Missing: $UPDATE_METADATA_PATH"
+    [[ ! -f "$BLOCKMAP_PATH" ]] && echo "  Missing: $BLOCKMAP_PATH"
+    exit 1
+  fi
+  node scripts/validate-release-assets.mjs \
+    "$VERSION" \
+    "$DMG_PATH" \
+    "$ZIP_PATH" \
+    "$UPDATE_METADATA_PATH" \
+    "$BLOCKMAP_PATH" \
+    "$APP_RESOURCES"
+
+  git push origin HEAD
+  if git rev-parse --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+    LOCAL_TAG_COMMIT=$(git rev-list -n 1 "v$VERSION")
+    if [[ "$LOCAL_TAG_COMMIT" != "$BUILD_COMMIT" ]]; then
+      log_error "Tag v$VERSION does not point to the release commit"
+      exit 1
+    fi
+  else
+    git tag "v$VERSION"
+  fi
+  git push origin "v$VERSION"
+  REMOTE_TAG_COMMIT=$(git ls-remote origin "refs/tags/v$VERSION^{}" | awk '{print $1}')
+  if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
+    REMOTE_TAG_COMMIT=$(git ls-remote origin "refs/tags/v$VERSION" | awk '{print $1}')
+  fi
+  if [[ "$REMOTE_TAG_COMMIT" != "$BUILD_COMMIT" ]]; then
+    log_error "Remote tag v$VERSION does not point to the release commit"
     exit 1
   fi
   
@@ -386,17 +447,17 @@ if [[ "$SKIP_UPLOAD" == "false" ]]; then
   DMG_SIZE_MB=$(echo "scale=1; $DMG_SIZE_BYTES / 1048576" | bc)
   ZIP_SIZE_MB=$(echo "scale=1; $ZIP_SIZE_BYTES / 1048576" | bc)
   
-  # Check if release already exists and delete it (keep the tag)
   if gh release view "v$VERSION" &>/dev/null; then
-    log_warning "Release v$VERSION already exists, deleting it to recreate..."
-    gh release delete "v$VERSION" --yes
-    log_success "Existing release deleted (tag preserved)"
+    log_error "Release v$VERSION already exists"
+    exit 1
   fi
   
   # Create release (without assets)
   log_info "Creating release v$VERSION..."
   gh release create "v$VERSION" \
-    --title "Capty v$VERSION" \
+    --verify-tag \
+    --draft \
+    --title "Poratake v$VERSION" \
     --notes-file release_notes.txt
   
   log_success "Release created"
@@ -413,123 +474,29 @@ if [[ "$SKIP_UPLOAD" == "false" ]]; then
     echo "  $line"
   done
   log_success "ZIP uploaded"
+
+  log_info "Uploading update metadata..."
+  gh release upload "v$VERSION" "$UPDATE_METADATA_PATH" --clobber
+  gh release upload "v$VERSION" "$BLOCKMAP_PATH" --clobber
+  log_success "Update metadata uploaded"
+
+  for ASSET_PATH in "$DMG_PATH" "$ZIP_PATH" "$UPDATE_METADATA_PATH" "$BLOCKMAP_PATH"; do
+    ASSET_NAME=$(basename "$ASSET_PATH")
+    ASSET_SIZE=$(stat -f%z "$ASSET_PATH")
+    REMOTE_SIZE=$(gh release view "v$VERSION" --json assets --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .size")
+    if [[ "$REMOTE_SIZE" != "$ASSET_SIZE" ]]; then
+      log_error "Uploaded asset verification failed: $ASSET_NAME"
+      exit 1
+    fi
+  done
+
+  gh release edit "v$VERSION" --draft=false
   
   log_success "GitHub release created with all assets"
   echo ""
   
-  # Step 9: Upload to capty.app
-  if [[ -n "$CAPTY_RELEASE_SECRET" ]]; then
-    log_info "Step 9: Uploading to capty.app..."
-    
-    RELEASE_NOTES_CONTENT=$(cat release_notes.txt)
-    INTERNAL_RELEASE_NOTES_CONTENT=$(cat internal_release_notes.txt)
-
-    # Calculate SHA512 hashes with progress
-    log_info "Calculating SHA512 hash for DMG..."
-    DMG_SHA512=$(shasum -a 512 "$DMG_PATH" | awk '{print $1}' | xxd -r -p | base64)
-    DMG_SIZE=$(stat -f%z "$DMG_PATH")
-    log_success "DMG hash calculated"
-    
-    log_info "Calculating SHA512 hash for ZIP..."
-    ZIP_SHA512=$(shasum -a 512 "$ZIP_PATH" | awk '{print $1}' | xxd -r -p | base64)
-    ZIP_SIZE=$(stat -f%z "$ZIP_PATH")
-    log_success "ZIP hash calculated"
-    
-    # Wait for assets to be fully available on GitHub
-    log_info "Waiting for GitHub assets to be available..."
-    MAX_RETRIES=30
-    RETRY_DELAY=5
-    
-    for ((i=1; i<=MAX_RETRIES; i++)); do
-      RELEASE_DATA=$(gh api "repos/$REPO/releases/tags/v${VERSION}" 2>/dev/null || echo "{}")
-      
-      DMG_ASSET_ID=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name == \"${DMG_NAME}\") | .id")
-      ZIP_ASSET_ID=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name == \"${ZIP_NAME}\") | .id")
-      DMG_STATE=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name == \"${DMG_NAME}\") | .state")
-      ZIP_STATE=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name == \"${ZIP_NAME}\") | .state")
-      
-      # Check if both assets exist and are uploaded
-      if [[ -n "$DMG_ASSET_ID" ]] && [[ "$DMG_ASSET_ID" != "null" ]] && \
-         [[ -n "$ZIP_ASSET_ID" ]] && [[ "$ZIP_ASSET_ID" != "null" ]] && \
-         [[ "$DMG_STATE" == "uploaded" ]] && [[ "$ZIP_STATE" == "uploaded" ]]; then
-        log_success "All assets are available on GitHub"
-        break
-      fi
-      
-      if [[ $i -eq $MAX_RETRIES ]]; then
-        log_error "Timeout waiting for assets to be available"
-        echo "  DMG: ID=$DMG_ASSET_ID, State=$DMG_STATE"
-        echo "  ZIP: ID=$ZIP_ASSET_ID, State=$ZIP_STATE"
-        exit 1
-      fi
-      
-      echo -ne "\r  Waiting for assets... (attempt $i/$MAX_RETRIES, DMG: $DMG_STATE, ZIP: $ZIP_STATE)"
-      sleep $RETRY_DELAY
-    done
-    echo ""
-    
-    DMG_URL="https://api.github.com/repos/$REPO/releases/assets/${DMG_ASSET_ID}"
-    ZIP_URL="https://api.github.com/repos/$REPO/releases/assets/${ZIP_ASSET_ID}"
-    
-    # Escape release notes for JSON
-    RELEASE_NOTES_ESCAPED=$(echo "$RELEASE_NOTES_CONTENT" | jq -Rs .)
-    INTERNAL_RELEASE_NOTES_ESCAPED=$(echo "$INTERNAL_RELEASE_NOTES_CONTENT" | jq -Rs .)
-
-    # Build JSON payload
-    JSON_PAYLOAD=$(cat <<EOF
-{
-  "secret": "${CAPTY_RELEASE_SECRET}",
-  "version": "${VERSION}",
-  "release_notes": ${RELEASE_NOTES_ESCAPED},
-  "internal_release_notes": ${INTERNAL_RELEASE_NOTES_ESCAPED},
-  "files": [
-    {
-      "url": "${DMG_URL}",
-      "name": "${DMG_NAME}",
-      "platform": "macos",
-      "arch": "universal",
-      "sha512": "${DMG_SHA512}",
-      "size": ${DMG_SIZE}
-    },
-    {
-      "url": "${ZIP_URL}",
-      "name": "${ZIP_NAME}",
-      "platform": "macos",
-      "arch": "universal",
-      "sha512": "${ZIP_SHA512}",
-      "size": ${ZIP_SIZE}
-    }
-  ]
-}
-EOF
-)
-    
-    log_info "Sending request to capty.app..."
-    echo "$JSON_PAYLOAD" | jq 'del(.secret)'
-    
-    # Use curl with progress bar for the API call
-    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://capty.app/api/versions" \
-      -H "Content-Type: application/json" \
-      -H "Accept: application/json" \
-      --data-raw "$JSON_PAYLOAD")
-    
-    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-    BODY=$(echo "$RESPONSE" | sed '$d')
-    
-    echo "Response status: $HTTP_CODE"
-    echo "Response body: $BODY"
-    
-    if [[ "$HTTP_CODE" -ge 200 ]] && [[ "$HTTP_CODE" -lt 300 ]]; then
-      log_success "Upload to capty.app successful!"
-    else
-      log_error "Upload to capty.app failed with status $HTTP_CODE"
-      exit 1
-    fi
-  else
-    log_warning "CAPTY_RELEASE_SECRET not set - skipping capty.app upload"
-  fi
 else
-  log_warning "Skipping GitHub release and capty.app upload"
+  log_warning "Skipping GitHub release upload"
 fi
 
 # Cleanup (only if we created a build keychain)
@@ -545,5 +512,6 @@ echo ""
 log_success "Release $VERSION completed successfully!"
 echo ""
 echo "Artifacts:"
-echo "  - release/${VERSION}/Capty-${VERSION}-universal.dmg"
-echo "  - release/${VERSION}/Capty-${VERSION}-universal-mac.zip"
+echo "  - release/${VERSION}/Poratake-${VERSION}-universal.dmg"
+echo "  - release/${VERSION}/Poratake-${VERSION}-universal-mac.zip"
+echo "  - release/${VERSION}/latest-mac.yml"

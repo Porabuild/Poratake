@@ -12,7 +12,12 @@ const mockGetConfig = vi.fn();
 const mockGenerateFilename = vi.fn();
 const mockCreateProjectFolder = vi.fn();
 const mockDipToScreenRect = vi.fn();
+const mockExistsSync = vi.fn();
 const daemonEventHandlers = new Set<(event: string, data: unknown) => void>();
+
+vi.mock('fs', () => ({
+  existsSync: (...a: unknown[]) => mockExistsSync(...a),
+}));
 
 vi.mock('electron', () => ({
   app: { getPath: () => '/Users/me/Movies' },
@@ -72,6 +77,7 @@ describe('recorder', () => {
     });
     mockGenerateFilename.mockReturnValue('Recording 2025-01-01');
     mockDipToScreenRect.mockImplementation((_window, bounds) => bounds);
+    mockExistsSync.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -79,10 +85,12 @@ describe('recorder', () => {
   });
 
   describe('paths/naming', () => {
-    it('getRecordingsDir uses Videos/Capty by default', async () => {
+    it('getRecordingsDir uses Videos/Poratake by default', async () => {
       const { getRecordingsDir } =
         await import('@/main/capture/video/recorder');
-      expect(getRecordingsDir()).toBe(path.join('/Users/me/Movies', 'Capty'));
+      expect(getRecordingsDir()).toBe(
+        path.join('/Users/me/Movies', 'Poratake')
+      );
     });
 
     it('getRecordingsDir respects custom path when valid', async () => {
@@ -108,6 +116,29 @@ describe('recorder', () => {
       const result = createRecordingProject();
       expect(result).toBe('/path/recording.mov');
       expect(mockCreateProjectFolder).toHaveBeenCalled();
+    });
+
+    it('creates a unique project when the generated name already exists', async () => {
+      mockExistsSync
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(false);
+      mockCreateProjectFolder.mockImplementation((projectPath: string) =>
+        path.join(projectPath, 'recording.mov')
+      );
+      const { createRecordingProject } =
+        await import('@/main/capture/video/recorder');
+
+      const result = createRecordingProject();
+
+      expect(result).toBe(
+        path.join(
+          '/Users/me/Movies',
+          'Poratake',
+          'Recording 2025-01-01 3.capty',
+          'recording.mov'
+        )
+      );
     });
 
     it('generateRecordingExportName generates filename with extension', async () => {
@@ -347,11 +378,83 @@ describe('recorder', () => {
         message: 'Capture failed',
         code: 'CAPTURE_ERROR',
       });
+      expect(onFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Capture failed' }),
+        '/out.mov'
+      );
       expect(m.getRecordingState()).toBe('idle');
       expect(m.getCurrentRecordingPath()).toBeNull();
       expect(mockHideOverlay).toHaveBeenCalledWith(true);
       expect(mockHideTray).toHaveBeenCalled();
       expect(daemonEventHandlers.size).toBe(0);
+    });
+
+    it('waits for terminal failure cleanup before starting again', async () => {
+      let finishFailureCleanup: () => void = () => {};
+      mockDaemonCall.mockResolvedValue({ success: true });
+      const m = await import('@/main/capture/video/recorder');
+      const onFailure = vi.fn(
+        () =>
+          new Promise<void>(resolve => {
+            finishFailureCleanup = resolve;
+          })
+      );
+      await m.startRecordingWithConfig(
+        { outputPath: '/first.mov' },
+        vi.fn(),
+        vi.fn(),
+        onFailure
+      );
+
+      for (const handler of daemonEventHandlers) {
+        handler('screen-recorder:error', {
+          code: 'CAPTURE_ERROR',
+          message: 'Capture failed',
+        });
+      }
+      await vi.waitFor(() => expect(onFailure).toHaveBeenCalledTimes(1));
+
+      mockDaemonCall.mockClear();
+      const nextStart = m.startRecordingWithConfig(
+        { outputPath: '/second.mov' },
+        vi.fn()
+      );
+      await Promise.resolve();
+      expect(mockDaemonCall).not.toHaveBeenCalled();
+
+      finishFailureCleanup();
+      await nextStart;
+
+      expect(mockDaemonCall).toHaveBeenCalledWith(
+        'screen-recorder',
+        'start',
+        expect.objectContaining({ outputPath: '/second.mov' }),
+        60000
+      );
+    });
+
+    it('rejects an overlapping recording start', async () => {
+      let finishStart: (response: { success: boolean }) => void = () => {};
+      mockDaemonCall.mockReturnValue(
+        new Promise(resolve => {
+          finishStart = resolve;
+        })
+      );
+      const m = await import('@/main/capture/video/recorder');
+      const firstStart = m.startRecordingWithConfig(
+        { outputPath: '/first.mov' },
+        vi.fn()
+      );
+
+      await vi.waitFor(() => expect(mockDaemonCall).toHaveBeenCalledTimes(1));
+      await expect(
+        m.startRecordingWithConfig({ outputPath: '/second.mov' }, vi.fn())
+      ).rejects.toThrow('A recording is already active');
+      expect(mockDaemonCall).toHaveBeenCalledTimes(1);
+
+      finishStart({ success: true });
+      await firstStart;
+      expect(m.getCurrentRecordingPath()).toBe('/first.mov');
     });
 
     it('ignores a stale terminal listener after a newer start', async () => {
@@ -509,6 +612,80 @@ describe('recorder', () => {
       await expect(m.stopRecording(vi.fn())).rejects.toThrow('stop fail');
       expect(m.getRecordingState()).toBe('idle');
     });
+
+    it('shares native finalization across overlapping stop requests', async () => {
+      mockDaemonCall.mockResolvedValueOnce({ success: true });
+      const m = await import('@/main/capture/video/recorder');
+      await m.startRecordingWithConfig({ outputPath: '/out.mov' }, vi.fn());
+      let finishStop: (response: {
+        success: boolean;
+        outputPath: string;
+      }) => void = () => {};
+      mockDaemonCall.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishStop = resolve;
+        })
+      );
+      const hideControl = vi.fn();
+
+      const firstStop = m.stopRecording(hideControl);
+      const secondStop = m.stopRecording(hideControl);
+      await vi.waitFor(() => expect(mockDaemonCall).toHaveBeenCalledTimes(2));
+
+      finishStop({ success: true, outputPath: '/final/out.mov' });
+      await expect(Promise.all([firstStop, secondStop])).resolves.toEqual([
+        expect.objectContaining({ outputPath: '/final/out.mov' }),
+        expect.objectContaining({ outputPath: '/final/out.mov' }),
+      ]);
+      expect(hideControl).toHaveBeenCalledTimes(1);
+      expect(mockHideOverlay).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a late pause response after recording stops', async () => {
+      mockDaemonCall.mockResolvedValueOnce({ success: true });
+      const m = await import('@/main/capture/video/recorder');
+      await m.startRecordingWithConfig({ outputPath: '/out.mov' }, vi.fn());
+      let finishPause: (response: {
+        success: boolean;
+        duration: number;
+      }) => void = () => {};
+      mockDaemonCall.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishPause = resolve;
+        })
+      );
+
+      const pausing = m.pauseRecording();
+      await vi.waitFor(() => expect(mockDaemonCall).toHaveBeenCalledTimes(2));
+      mockDaemonCall.mockResolvedValueOnce({
+        success: true,
+        outputPath: '/out.mov',
+      });
+
+      await m.stopRecording(vi.fn());
+      finishPause({ success: true, duration: 12 });
+      await pausing;
+
+      expect(m.getRecordingState()).toBe('idle');
+      expect(m.getRecordingDuration()).toBe(0);
+    });
+
+    it('still finalizes when hiding the recording control fails', async () => {
+      mockDaemonCall.mockResolvedValueOnce({ success: true });
+      const m = await import('@/main/capture/video/recorder');
+      await m.startRecordingWithConfig({ outputPath: '/out.mov' }, vi.fn());
+      mockDaemonCall.mockResolvedValueOnce({
+        success: true,
+        outputPath: '/out.mov',
+      });
+
+      const result = await m.stopRecording(
+        vi.fn().mockRejectedValue(new Error('control failed'))
+      );
+
+      expect(result?.outputPath).toBe('/out.mov');
+      expect(m.getRecordingState()).toBe('idle');
+    });
   });
 
   describe('quitRecorder', () => {
@@ -524,6 +701,8 @@ describe('recorder', () => {
       mockDaemonCall.mockResolvedValueOnce({ success: true });
       const m = await import('@/main/capture/video/recorder');
       await m.startRecordingWithConfig({ outputPath: '/out.mov' }, vi.fn());
+      mockDaemonCall.mockResolvedValueOnce({ success: true, duration: 12 });
+      await m.pauseRecording();
       mockDaemonCall.mockResolvedValueOnce({ success: true });
       await m.quitRecorder();
       expect(mockDaemonCall).toHaveBeenCalledWith(
@@ -532,6 +711,84 @@ describe('recorder', () => {
         undefined,
         5000
       );
+      expect(m.getRecordingState()).toBe('idle');
+      expect(m.getCurrentRecordingPath()).toBeNull();
+      expect(m.getRecordingDuration()).toBe(0);
+    });
+
+    it('cancels and rolls back a recording that is still starting', async () => {
+      let finishStart: (response: { success: boolean }) => void = () => {};
+      mockDaemonCall.mockImplementation((module: string, method: string) => {
+        if (module === 'screen-recorder' && method === 'start') {
+          return new Promise(resolve => {
+            finishStart = resolve;
+          });
+        }
+
+        return Promise.resolve({ success: true });
+      });
+      const m = await import('@/main/capture/video/recorder');
+      const showControl = vi.fn();
+      const starting = m.startRecordingWithConfig(
+        { outputPath: '/out.mov' },
+        showControl
+      );
+      await vi.waitFor(() =>
+        expect(mockDaemonCall).toHaveBeenCalledWith(
+          'screen-recorder',
+          'start',
+          expect.any(Object),
+          60000
+        )
+      );
+
+      const quitting = m.quitRecorder();
+      finishStart({ success: true });
+
+      await expect(starting).rejects.toMatchObject({ name: 'AbortError' });
+      await quitting;
+
+      expect(showControl).not.toHaveBeenCalled();
+      expect(mockDaemonCall).toHaveBeenCalledWith(
+        'screen-recorder',
+        'stop',
+        undefined,
+        60000
+      );
+      expect(m.getRecordingState()).toBe('idle');
+      expect(m.getCurrentRecordingPath()).toBeNull();
+    });
+
+    it('waits for an active stop instead of sending a second stop', async () => {
+      mockDaemonCall.mockResolvedValueOnce({ success: true });
+      const m = await import('@/main/capture/video/recorder');
+      await m.startRecordingWithConfig({ outputPath: '/out.mov' }, vi.fn());
+
+      let finishStop: (response: { success: boolean }) => void = () => {};
+      mockDaemonCall.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishStop = resolve;
+        })
+      );
+      const stopping = m.stopRecording(vi.fn());
+      await vi.waitFor(() =>
+        expect(mockDaemonCall).toHaveBeenCalledWith(
+          'screen-recorder',
+          'stop',
+          undefined,
+          60000
+        )
+      );
+
+      const quitting = m.quitRecorder();
+      finishStop({ success: true });
+      await Promise.all([stopping, quitting]);
+
+      const stopCalls = mockDaemonCall.mock.calls.filter(
+        ([module, method]) => module === 'screen-recorder' && method === 'stop'
+      );
+      expect(stopCalls).toHaveLength(1);
+      expect(m.getRecordingState()).toBe('idle');
     });
 
     it('swallows daemon errors during quit', async () => {

@@ -1,8 +1,16 @@
 import { ipcMain } from 'electron';
+import { randomUUID } from 'crypto';
 import { getFFmpegPath } from '@/main/utils/ffmpeg';
 import { getPublicAssetPath } from '@/main/utils/paths';
 import type { KeyboardSoundType } from '@/types/audio';
-import { KEYBOARD_SOUND_SAMPLES_PER_TYPE } from '@/types/audio';
+import {
+  KEYBOARD_SOUND_OPTIONS,
+  KEYBOARD_SOUND_SAMPLES_PER_TYPE,
+} from '@/types/audio';
+import {
+  getExportAbortSignal,
+  isExportOutputPathAllowed,
+} from './export-session';
 
 interface KeyPressEvent {
   timestamp: number;
@@ -33,7 +41,8 @@ async function generateChunk(
   samplePaths: string[],
   keyPresses: KeyPressEvent[],
   duration: number,
-  outputPath: string
+  outputPath: string,
+  signal?: AbortSignal
 ): Promise<void> {
   const { execFile } = await import('child_process');
   const { promisify } = await import('util');
@@ -81,7 +90,7 @@ async function generateChunk(
       '-y',
       outputPath,
     ],
-    { maxBuffer: 50 * 1024 * 1024 }
+    { maxBuffer: 50 * 1024 * 1024, signal }
   );
 }
 
@@ -89,7 +98,7 @@ export function registerKeyboardSoundHandlers(): void {
   ipcMain.handle(
     'video-editor:generate-keyboard-audio',
     async (
-      _,
+      event,
       {
         keyPresses,
         soundType,
@@ -97,12 +106,36 @@ export function registerKeyboardSoundHandlers(): void {
         outputPath,
       }: GenerateKeyboardAudioParams
     ): Promise<{ success: boolean; error?: string }> => {
+      const chunkPaths: string[] = [];
+
       try {
+        if (!isExportOutputPathAllowed(event.sender.id, outputPath)) {
+          return { success: false, error: 'Export path is not authorized' };
+        }
         if (keyPresses.length === 0) {
           return { success: false, error: 'No key presses provided' };
         }
+        if (!Number.isFinite(duration) || duration <= 0) {
+          return { success: false, error: 'Invalid keyboard audio duration' };
+        }
+        if (
+          !keyPresses.every(
+            keyPress =>
+              Number.isFinite(keyPress.timestamp) &&
+              keyPress.timestamp >= 0 &&
+              keyPress.timestamp < duration
+          )
+        ) {
+          return { success: false, error: 'Invalid key press timestamp' };
+        }
+        if (
+          !KEYBOARD_SOUND_OPTIONS.some(option => option.value === soundType)
+        ) {
+          return { success: false, error: 'Invalid keyboard sound type' };
+        }
 
         const ffmpegPath = getFFmpegPath();
+        const signal = getExportAbortSignal(event.sender.id);
 
         const samplePaths: string[] = [];
         for (let i = 0; i < KEYBOARD_SOUND_SAMPLES_PER_TYPE; i++) {
@@ -115,33 +148,34 @@ export function registerKeyboardSoundHandlers(): void {
             samplePaths,
             keyPresses,
             duration,
-            outputPath
+            outputPath,
+            signal
           );
           return { success: true };
         }
 
         const { execFile } = await import('child_process');
         const { promisify } = await import('util');
-        const { unlink } = await import('fs/promises');
         const { dirname } = await import('path');
         const execFileAsync = promisify(execFile);
 
         const tempDir = dirname(outputPath);
+        const operationId = randomUUID();
         const chunks: KeyPressEvent[][] = [];
         for (let i = 0; i < keyPresses.length; i += MAX_AMIX_INPUTS) {
           chunks.push(keyPresses.slice(i, i + MAX_AMIX_INPUTS));
         }
 
-        const chunkPaths: string[] = [];
         for (let c = 0; c < chunks.length; c++) {
-          const chunkPath = `${tempDir}/temp_kb_chunk_${c}.aac`;
+          const chunkPath = `${tempDir}/poratake-keyboard-${operationId}-${c}.aac`;
           chunkPaths.push(chunkPath);
           await generateChunk(
             ffmpegPath,
             samplePaths,
             chunks[c],
             duration,
-            chunkPath
+            chunkPath,
+            signal
           );
         }
 
@@ -168,18 +202,21 @@ export function registerKeyboardSoundHandlers(): void {
             '-y',
             outputPath,
           ],
-          { maxBuffer: 50 * 1024 * 1024 }
+          { maxBuffer: 50 * 1024 * 1024, signal }
         );
-
-        for (const p of chunkPaths) {
-          await unlink(p).catch(() => {});
-        }
 
         return { success: true };
       } catch (error) {
+        const { unlink } = await import('fs/promises');
+        await unlink(outputPath).catch(() => {});
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error';
         return { success: false, error: errorMessage };
+      } finally {
+        const { unlink } = await import('fs/promises');
+        for (const chunkPath of chunkPaths) {
+          await unlink(chunkPath).catch(() => {});
+        }
       }
     }
   );

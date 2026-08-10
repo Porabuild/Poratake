@@ -116,7 +116,7 @@ pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
             .find(|entry| entry.handle == monitor.0 as isize)
             .and_then(|entry| hdr_white_scale(&entry.device));
 
-        capture_item(&device, &item, RECT::default(), white_scale)
+        capture_item(&device, &item, RECT::default(), white_scale, true)
     })
     .unwrap_or_else(|| Err("Timed out while capturing the window".to_string()))
 }
@@ -467,6 +467,7 @@ fn capture_monitor(device: &CaptureDevice, monitor: &MonitorEntry) -> Result<Des
         &item,
         monitor.rect,
         hdr_white_scale(&monitor.device),
+        false,
     )
 }
 
@@ -475,6 +476,7 @@ fn capture_item(
     item: &GraphicsCaptureItem,
     bounds: RECT,
     white_scale: Option<f32>,
+    preserve_alpha: bool,
 ) -> Result<DesktopFrame, String> {
     let size = item
         .Size()
@@ -523,7 +525,7 @@ fn capture_item(
                 .recv_timeout(FRAME_TIMEOUT)
                 .map_err(|_| "Timed out while waiting for the screen contents".to_string())
         })
-        .and_then(|frame| read_pixels(device, &frame, white_scale));
+        .and_then(|frame| read_pixels(device, &frame, white_scale, preserve_alpha));
 
     let _ = session.Close();
     let _ = pool.RemoveFrameArrived(token);
@@ -543,6 +545,7 @@ fn read_pixels(
     device: &CaptureDevice,
     frame: &Direct3D11CaptureFrame,
     white_scale: Option<f32>,
+    preserve_alpha: bool,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let surface = frame
         .Surface()
@@ -597,6 +600,7 @@ fn read_pixels(
         descriptor.Width as usize,
         descriptor.Height as usize,
         white_scale,
+        preserve_alpha,
     );
 
     unsafe {
@@ -611,6 +615,7 @@ fn convert_pixels(
     width: usize,
     height: usize,
     white_scale: Option<f32>,
+    preserve_alpha: bool,
 ) -> Result<Vec<u8>, String> {
     let stride = width * BYTES_PER_PIXEL;
     let pitch = mapped.RowPitch as usize;
@@ -627,8 +632,10 @@ fn convert_pixels(
             let source_row = &source[row * pitch..row * pitch + stride];
             let target_row = &mut pixels[row * stride..(row + 1) * stride];
             target_row.copy_from_slice(source_row);
-            for pixel in target_row.chunks_exact_mut(BYTES_PER_PIXEL) {
-                pixel[3] = u8::MAX;
+            if !preserve_alpha {
+                for pixel in target_row.chunks_exact_mut(BYTES_PER_PIXEL) {
+                    pixel[3] = u8::MAX;
+                }
             }
         }
         return Ok(pixels);
@@ -651,7 +658,13 @@ fn convert_pixels(
             pixel[0] = blue;
             pixel[1] = green;
             pixel[2] = red;
-            pixel[3] = u8::MAX;
+            pixel[3] = if preserve_alpha {
+                (half_to_f32(u16::from_le_bytes([channels[6], channels[7]])).clamp(0.0, 1.0)
+                    * u8::MAX as f32)
+                    .round() as u8
+            } else {
+                u8::MAX
+            };
         }
     }
 
@@ -717,6 +730,22 @@ pub fn crop(frame: &DesktopFrame, bounds: RECT) -> Option<DesktopFrame> {
         height: height as u32,
         pixels,
     })
+}
+
+pub fn apply_alpha_mask(frame: &mut DesktopFrame, mask: &DesktopFrame) -> bool {
+    if frame.width != mask.width || frame.height != mask.height {
+        return false;
+    }
+
+    for (pixel, mask_pixel) in frame
+        .pixels
+        .chunks_exact_mut(BYTES_PER_PIXEL)
+        .zip(mask.pixels.chunks_exact(BYTES_PER_PIXEL))
+    {
+        pixel[3] = mask_pixel[3];
+    }
+
+    true
 }
 
 fn capture_with_gdi(bounds: RECT) -> Option<DesktopFrame> {
@@ -886,6 +915,54 @@ mod tests {
         assert_eq!(half_to_f32(0x3c00), 1.0);
         assert_eq!(half_to_f32(0x4000), 2.0);
         assert_eq!(half_to_f32(0xbc00), -1.0);
+    }
+
+    #[test]
+    fn preserves_window_alpha() {
+        let mut source = vec![1, 2, 3, 0, 4, 5, 6, 128];
+        let mapped = D3D11_MAPPED_SUBRESOURCE {
+            pData: source.as_mut_ptr().cast(),
+            RowPitch: source.len() as u32,
+            ..Default::default()
+        };
+
+        let pixels = convert_pixels(&mapped, 2, 1, None, true).expect("pixels");
+
+        assert_eq!(pixels, source);
+    }
+
+    #[test]
+    fn makes_monitor_capture_opaque() {
+        let mut source = vec![1, 2, 3, 0, 4, 5, 6, 128];
+        let mapped = D3D11_MAPPED_SUBRESOURCE {
+            pData: source.as_mut_ptr().cast(),
+            RowPitch: source.len() as u32,
+            ..Default::default()
+        };
+
+        let pixels = convert_pixels(&mapped, 2, 1, None, false).expect("pixels");
+
+        assert_eq!(pixels, vec![1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn applies_window_alpha_to_frozen_pixels() {
+        let mut frozen = frame(2, 1, 20);
+        let mut mask = frame(2, 1, 30);
+        mask.pixels[3] = 0;
+        mask.pixels[7] = 128;
+
+        assert!(apply_alpha_mask(&mut frozen, &mask));
+        assert_eq!(frozen.pixels, vec![20, 20, 20, 0, 20, 20, 20, 128]);
+    }
+
+    #[test]
+    fn rejects_a_different_sized_window_mask() {
+        let mut frozen = frame(2, 1, 20);
+        let mask = frame(1, 1, 30);
+
+        assert!(!apply_alpha_mask(&mut frozen, &mask));
+        assert_eq!(frozen.pixels, vec![20; 8]);
     }
 
     #[test]

@@ -1,5 +1,6 @@
-import { systemPreferences, ipcMain, BrowserWindow, shell } from 'electron';
+import { systemPreferences, ipcMain, BrowserWindow } from 'electron';
 import { isMac, isWindows } from '@/main/utils/platform';
+import { openExternalUrl } from '@/main/utils/external-url';
 
 export function getAccentColor(): string {
   try {
@@ -16,8 +17,8 @@ export function init() {
     return getAccentColor();
   });
 
-  ipcMain.on('open-external', (_event, url: string) => {
-    shell.openExternal(url);
+  ipcMain.on('open-external', (_event, url: unknown) => {
+    openExternalUrl(url);
   });
 
   const notifyAccentColorChange = () => {

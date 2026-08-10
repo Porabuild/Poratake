@@ -25,7 +25,14 @@ const mockStatSync = vi.fn();
 const mockUnlink = vi.fn();
 const mockWriteFile = vi.fn();
 const mockRename = vi.fn();
+const mockFileWrite = vi.fn();
+const mockFileClose = vi.fn();
+const mockOpen = vi.fn(() =>
+  Promise.resolve({ write: mockFileWrite, close: mockFileClose })
+);
 const mockProbeVideo = vi.fn();
+const mockIsExportOutputPathAllowed = vi.fn(() => true);
+const exportEvent = { sender: { id: 1 } };
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -48,6 +55,7 @@ vi.mock('fs', () => ({
       unlink: (...a: unknown[]) => mockUnlink(...a),
       writeFile: (...a: unknown[]) => mockWriteFile(...a),
       rename: (...a: unknown[]) => mockRename(...a),
+      open: (...a: unknown[]) => mockOpen(...a),
     },
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
@@ -56,6 +64,7 @@ vi.mock('fs', () => ({
     unlink: (...a: unknown[]) => mockUnlink(...a),
     writeFile: (...a: unknown[]) => mockWriteFile(...a),
     rename: (...a: unknown[]) => mockRename(...a),
+    open: (...a: unknown[]) => mockOpen(...a),
   },
 }));
 
@@ -91,12 +100,18 @@ vi.mock('@/main/utils/ffmpeg', () => ({
   probeVideo: (...a: unknown[]) => mockProbeVideo(...a),
 }));
 
+vi.mock('@/main/capture/video/ipc/export-session', () => ({
+  isExportOutputPathAllowed: (...a: unknown[]) =>
+    mockIsExportOutputPathAllowed(...a),
+}));
+
 describe('dialog handlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     Object.keys(ipcOnHandlers).forEach(k => delete ipcOnHandlers[k]);
     Object.keys(ipcHandleHandlers).forEach(k => delete ipcHandleHandlers[k]);
+    mockIsExportOutputPathAllowed.mockReturnValue(true);
   });
 
   it('registers handlers', async () => {
@@ -183,6 +198,7 @@ describe('metadata handlers', () => {
     vi.clearAllMocks();
     vi.resetModules();
     Object.keys(ipcHandleHandlers).forEach(k => delete ipcHandleHandlers[k]);
+    mockIsExportOutputPathAllowed.mockReturnValue(true);
   });
 
   it('getVideoFileSize returns stats.size', async () => {
@@ -256,6 +272,7 @@ describe('file handlers', () => {
     vi.clearAllMocks();
     vi.resetModules();
     Object.keys(ipcHandleHandlers).forEach(k => delete ipcHandleHandlers[k]);
+    mockIsExportOutputPathAllowed.mockReturnValue(true);
   });
 
   it('delete-temp-file unlinks existing file', async () => {
@@ -265,7 +282,7 @@ describe('file handlers', () => {
       await import('@/main/capture/video/ipc/file-handlers');
     registerFileHandlers();
     const result = await ipcHandleHandlers['video-editor:delete-temp-file'](
-      {},
+      exportEvent,
       { filePath: '/p/temp.mp4' }
     );
     expect(result).toEqual({ success: true });
@@ -278,7 +295,7 @@ describe('file handlers', () => {
       await import('@/main/capture/video/ipc/file-handlers');
     registerFileHandlers();
     const result = await ipcHandleHandlers['video-editor:delete-temp-file'](
-      {},
+      exportEvent,
       { filePath: '/p/missing' }
     );
     expect(result).toEqual({ success: true });
@@ -292,38 +309,155 @@ describe('file handlers', () => {
       await import('@/main/capture/video/ipc/file-handlers');
     registerFileHandlers();
     const result = (await ipcHandleHandlers['video-editor:delete-temp-file'](
-      {},
+      exportEvent,
       { filePath: '/p/temp.mp4' }
     )) as { success: boolean; error?: string };
     expect(result.success).toBe(false);
     expect(result.error).toBe('locked');
   });
 
-  it('file:write-buffer writes buffer', async () => {
+  it('file:create-output truncates the authorized output', async () => {
     mockWriteFile.mockResolvedValue(undefined);
     const { registerFileHandlers } =
       await import('@/main/capture/video/ipc/file-handlers');
     registerFileHandlers();
-    const buf = new Uint8Array([1, 2, 3]);
-    const result = await ipcHandleHandlers['file:write-buffer'](
-      {},
-      { path: '/p/out.bin', buffer: buf }
-    );
+    const result = await ipcHandleHandlers['file:create-output'](exportEvent, {
+      path: '/p/out.bin',
+    });
     expect(result).toEqual({ success: true });
-    expect(mockWriteFile).toHaveBeenCalledWith('/p/out.bin', buf);
+    expect(mockWriteFile).toHaveBeenCalledWith('/p/out.bin', new Uint8Array());
   });
 
-  it('file:write-buffer returns error', async () => {
+  it('file:create-output returns errors', async () => {
     mockWriteFile.mockRejectedValue(new Error('disk full'));
     const { registerFileHandlers } =
       await import('@/main/capture/video/ipc/file-handlers');
     registerFileHandlers();
-    const result = (await ipcHandleHandlers['file:write-buffer'](
-      {},
-      { path: '/p/x', buffer: new Uint8Array() }
-    )) as { success: boolean; error?: string };
+    const result = (await ipcHandleHandlers['file:create-output'](exportEvent, {
+      path: '/p/x',
+    })) as { success: boolean; error?: string };
     expect(result.success).toBe(false);
     expect(result.error).toBe('disk full');
+  });
+
+  it('writes positioned chunks and closes the file handle', async () => {
+    mockFileWrite.mockResolvedValue({ bytesWritten: 3 });
+    mockFileClose.mockResolvedValue(undefined);
+    const { registerFileHandlers } =
+      await import('@/main/capture/video/ipc/file-handlers');
+    registerFileHandlers();
+    const buffer = new Uint8Array([1, 2, 3]);
+
+    const result = await ipcHandleHandlers['file:write-output-chunk'](
+      exportEvent,
+      { path: '/p/out.bin', position: 128, buffer }
+    );
+
+    expect(result).toEqual({ success: true });
+    expect(mockOpen).toHaveBeenCalledWith('/p/out.bin', 'r+');
+    expect(mockFileWrite).toHaveBeenCalledWith(buffer, 0, 3, 128);
+    expect(mockFileClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes partial positioned writes before accepting the chunk', async () => {
+    mockFileWrite
+      .mockResolvedValueOnce({ bytesWritten: 2 })
+      .mockResolvedValueOnce({ bytesWritten: 1 });
+    mockFileClose.mockResolvedValue(undefined);
+    const { registerFileHandlers } =
+      await import('@/main/capture/video/ipc/file-handlers');
+    registerFileHandlers();
+    const buffer = new Uint8Array([1, 2, 3]);
+
+    const result = await ipcHandleHandlers['file:write-output-chunk'](
+      exportEvent,
+      { path: '/p/out.bin', position: 128, buffer }
+    );
+
+    expect(result).toEqual({ success: true });
+    expect(mockFileWrite).toHaveBeenNthCalledWith(1, buffer, 0, 3, 128);
+    expect(mockFileWrite).toHaveBeenNthCalledWith(2, buffer, 2, 1, 130);
+    expect(mockFileClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects output creation outside the active export paths', async () => {
+    mockIsExportOutputPathAllowed.mockReturnValue(false);
+    const { registerFileHandlers } =
+      await import('@/main/capture/video/ipc/file-handlers');
+    registerFileHandlers();
+
+    const result = await ipcHandleHandlers['file:create-output'](exportEvent, {
+      path: '/p/unrelated.bin',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Export path is not authorized',
+    });
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid output chunk positions before opening the file', async () => {
+    const { registerFileHandlers } =
+      await import('@/main/capture/video/ipc/file-handlers');
+    registerFileHandlers();
+
+    const result = await ipcHandleHandlers['file:write-output-chunk'](
+      exportEvent,
+      {
+        path: '/p/out.bin',
+        position: -1,
+        buffer: new Uint8Array(),
+      }
+    );
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Invalid output position',
+    });
+    expect(mockOpen).not.toHaveBeenCalled();
+  });
+
+  it('rejects output chunks outside the active export paths', async () => {
+    mockIsExportOutputPathAllowed.mockReturnValue(false);
+    const { registerFileHandlers } =
+      await import('@/main/capture/video/ipc/file-handlers');
+    registerFileHandlers();
+
+    const result = await ipcHandleHandlers['file:write-output-chunk'](
+      exportEvent,
+      {
+        path: '/p/unrelated.bin',
+        position: 0,
+        buffer: new Uint8Array(),
+      }
+    );
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Export path is not authorized',
+    });
+    expect(mockOpen).not.toHaveBeenCalled();
+  });
+
+  it('closes the output handle when a chunk write fails', async () => {
+    mockFileWrite.mockRejectedValue(new Error('disk full'));
+    mockFileClose.mockResolvedValue(undefined);
+    const { registerFileHandlers } =
+      await import('@/main/capture/video/ipc/file-handlers');
+    registerFileHandlers();
+
+    const result = (await ipcHandleHandlers['file:write-output-chunk'](
+      exportEvent,
+      {
+        path: '/p/out.bin',
+        position: 0,
+        buffer: new Uint8Array([1]),
+      }
+    )) as { success: boolean; error?: string };
+
+    expect(result).toEqual({ success: false, error: 'disk full' });
+    expect(mockFileClose).toHaveBeenCalledTimes(1);
   });
 
   it('file:rename renames file', async () => {
@@ -331,10 +465,10 @@ describe('file handlers', () => {
     const { registerFileHandlers } =
       await import('@/main/capture/video/ipc/file-handlers');
     registerFileHandlers();
-    const result = await ipcHandleHandlers['file:rename'](
-      {},
-      { oldPath: '/a', newPath: '/b' }
-    );
+    const result = await ipcHandleHandlers['file:rename'](exportEvent, {
+      oldPath: '/a',
+      newPath: '/b',
+    });
     expect(result).toEqual({ success: true });
     expect(mockRename).toHaveBeenCalledWith('/a', '/b');
   });
@@ -344,10 +478,10 @@ describe('file handlers', () => {
     const { registerFileHandlers } =
       await import('@/main/capture/video/ipc/file-handlers');
     registerFileHandlers();
-    const result = (await ipcHandleHandlers['file:rename'](
-      {},
-      { oldPath: '/a', newPath: '/b' }
-    )) as { success: boolean; error?: string };
+    const result = (await ipcHandleHandlers['file:rename'](exportEvent, {
+      oldPath: '/a',
+      newPath: '/b',
+    })) as { success: boolean; error?: string };
     expect(result.success).toBe(false);
     expect(result.error).toBe('eexists');
   });

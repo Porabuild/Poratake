@@ -71,5 +71,5 @@ export const getHandleStyle = () => ({
   fill: 'white',
   stroke: '#007AFF',
   strokeWidth: 2,
-  cursor: 'pointer',
+  cursor: 'default',
 });

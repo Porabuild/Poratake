@@ -26,7 +26,8 @@ export default function UndoRedoButtons({
         <TooltipTrigger asChild>
           <Button
             variant="ghost"
-            className="size-7"
+            size="icon-sm"
+            className="size-7!"
             onClick={onUndo}
             disabled={!canUndo}
           >
@@ -41,7 +42,8 @@ export default function UndoRedoButtons({
         <TooltipTrigger asChild>
           <Button
             variant="ghost"
-            className="size-7"
+            size="icon-sm"
+            className="size-7!"
             onClick={onRedo}
             disabled={!canRedo}
           >

@@ -47,7 +47,6 @@ describe('native-capture', () => {
       height: 400,
       path: '/tmp/shot.png',
       cached: false,
-      retain: false,
     });
   });
 
@@ -68,30 +67,26 @@ describe('native-capture', () => {
     );
   });
 
-  it('asks the daemon to keep the display frame for later crops', async () => {
-    const { captureRegionToFile } =
+  it('crops physical window bounds from the retained frozen frame', async () => {
+    const { captureFrozenScreenRegionToFile } =
       await import('@/main/capture/screenshot/native-capture');
 
-    await captureRegionToFile(
-      { x: 0, y: 0, width: 100, height: 100 },
-      '/tmp/frozen.bmp',
-      { retain: true }
+    await captureFrozenScreenRegionToFile(
+      { x: 200, y: 100, width: 800, height: 600 },
+      '/tmp/window.png',
+      264610
     );
 
-    expect(mockDaemonCall).toHaveBeenCalledWith(
-      'screenshot',
-      'capture-area',
-      expect.objectContaining({ retain: true })
-    );
-  });
-
-  it('releases retained frames', async () => {
-    const { releaseRetainedDisplays } =
-      await import('@/main/capture/screenshot/native-capture');
-
-    await releaseRetainedDisplays();
-
-    expect(mockDaemonCall).toHaveBeenCalledWith('screenshot', 'release');
+    expect(mockDipToScreenRect).not.toHaveBeenCalled();
+    expect(mockDaemonCall).toHaveBeenCalledWith('screenshot', 'capture-area', {
+      x: 200,
+      y: 100,
+      width: 800,
+      height: 600,
+      path: '/tmp/window.png',
+      cached: true,
+      windowId: 264610,
+    });
   });
 
   it('captures a display through its bounds', async () => {

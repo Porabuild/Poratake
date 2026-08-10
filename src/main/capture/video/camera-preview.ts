@@ -58,55 +58,8 @@ export function hideCameraPreview(): void {
   currentSettings = null;
 }
 
-export function updateCameraPreview(settings: CameraSettings): void {
-  currentSettings = settings;
-
-  const params: Record<string, unknown> = {
-    deviceId: settings.selectedDeviceId,
-    deviceName: settings.selectedDeviceName,
-    resolution: settings.resolution,
-    flipped: settings.flipped ?? false,
-  };
-
-  if (settings.position) {
-    const position = toNativePosition(settings.position);
-    params.x = position.x;
-    params.y = position.y;
-  }
-
-  daemon.call('camera-preview', 'update', params).catch(error => {
-    console.error('Failed to update camera preview:', error);
-  });
-}
-
-export function getCameraPreviewWindow(): null {
-  return null;
-}
-
 export function isCameraPreviewVisible(): boolean {
   return currentSettings !== null;
-}
-
-export async function getCameraPreviewPosition(): Promise<{
-  x: number;
-  y: number;
-} | null> {
-  try {
-    const result = (await daemon.call('camera-preview', 'getPosition')) as {
-      x?: number;
-      y?: number;
-    } | null;
-    if (
-      result &&
-      typeof result.x === 'number' &&
-      typeof result.y === 'number'
-    ) {
-      return fromNativePosition({ x: result.x, y: result.y });
-    }
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 export async function enableCameraContentProtection(): Promise<void> {

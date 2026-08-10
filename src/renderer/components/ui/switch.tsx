@@ -1,27 +1,53 @@
 import * as React from 'react';
-import * as SwitchPrimitives from '@radix-ui/react-switch';
+import { Switch as HeroSwitch } from '@heroui/react';
+import type { SwitchProps as HeroSwitchProps } from '@heroui/react';
 
 import { cn } from '@/renderer/lib/utils';
 
+interface SwitchProps extends Omit<
+  HeroSwitchProps,
+  'isSelected' | 'defaultSelected' | 'onChange' | 'children' | 'isDisabled'
+> {
+  checked?: boolean;
+  defaultChecked?: boolean;
+  onCheckedChange?: (checked: boolean) => void;
+  disabled?: boolean;
+}
+
 function Switch({
   className,
+  checked,
+  defaultChecked,
+  onCheckedChange,
+  disabled,
   ...props
-}: React.ComponentProps<typeof SwitchPrimitives.Root>) {
+}: SwitchProps) {
   return (
-    <SwitchPrimitives.Root
+    <HeroSwitch
       data-slot="switch"
-      className={cn(
-        'peer focus-visible:ring-ring focus-visible:ring-offset-background data-[state=checked]:bg-primary data-[state=unchecked]:bg-input inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent shadow-sm transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50',
-        className
-      )}
+      isSelected={checked}
+      defaultSelected={defaultChecked}
+      onChange={onCheckedChange}
+      isDisabled={disabled}
+      className={cn('shrink-0', className)}
       {...props}
     >
-      <SwitchPrimitives.Thumb
-        className={cn(
-          'bg-background pointer-events-none block h-4 w-4 rounded-full shadow-lg ring-0 transition-transform data-[state=checked]:translate-x-4 data-[state=unchecked]:translate-x-0'
-        )}
-      />
-    </SwitchPrimitives.Root>
+      <HeroSwitch.Content>
+        <HeroSwitch.Control
+          onClick={event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (disabled) return;
+            event.currentTarget
+              .closest('label')
+              ?.querySelector<HTMLInputElement>('input[role="switch"]')
+              ?.click();
+          }}
+        >
+          <HeroSwitch.Thumb />
+        </HeroSwitch.Control>
+      </HeroSwitch.Content>
+    </HeroSwitch>
   );
 }
 

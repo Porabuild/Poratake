@@ -10,7 +10,7 @@ let recordingTray: Tray | null = null;
 
 function getRecordingTrayIconPath(): string {
   if (isWindows) {
-    return getPublicAssetPath('icon.png');
+    return getPublicAssetPath('tray-icon.png');
   }
   if (isProduction) {
     return path.join(
@@ -27,9 +27,14 @@ function getRecordingTrayIconPath(): string {
 }
 
 async function handleStopRecording(): Promise<void> {
-  await stopRecordingAction();
-  hideRecordingTray();
-  rebuildTrayMenu();
+  try {
+    await stopRecordingAction();
+  } catch (error) {
+    console.error('Error stopping recording from tray:', error);
+  } finally {
+    hideRecordingTray();
+    rebuildTrayMenu();
+  }
 }
 
 export function showRecordingTray(): void {

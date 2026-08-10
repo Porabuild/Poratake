@@ -233,10 +233,15 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
         }
         captureSession = nil
 
+        captureQueue.sync {}
+        writerQueue.sync {}
+
         videoInput?.markAsFinished()
 
         let finalOutputPath = outputPath
         let finalMetadataPath = metadataPath
+        outputPath = nil
+        metadataPath = nil
         let duration = CMTimeGetSeconds(lastFrameTime)
 
         if assetWriter?.status == .writing {
@@ -281,6 +286,48 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
         pixelBufferAdaptor = nil
 
         return (finalOutputPath, finalMetadataPath)
+    }
+
+    func abort() {
+        isRecording = false
+        isPaused = false
+
+        if let session = captureSession {
+            session.stopRunning()
+            for input in session.inputs {
+                session.removeInput(input)
+            }
+            for output in session.outputs {
+                session.removeOutput(output)
+            }
+        }
+        captureSession = nil
+
+        captureQueue.sync {}
+        writerQueue.sync {}
+
+        if assetWriter?.status == .writing {
+            assetWriter?.cancelWriting()
+        }
+        assetWriter = nil
+        videoInput = nil
+        pixelBufferAdaptor = nil
+
+        syncQueue.sync {
+            isSynced = false
+            syncTime = nil
+            pendingBuffers.removeAll()
+            syncOffsetMs = 0
+        }
+
+        if let outputPath, FileManager.default.fileExists(atPath: outputPath) {
+            try? FileManager.default.removeItem(atPath: outputPath)
+        }
+        if let metadataPath, FileManager.default.fileExists(atPath: metadataPath) {
+            try? FileManager.default.removeItem(atPath: metadataPath)
+        }
+        outputPath = nil
+        metadataPath = nil
     }
 
     func captureOutput(

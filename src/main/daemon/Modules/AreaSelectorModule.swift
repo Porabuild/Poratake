@@ -59,6 +59,8 @@ class AreaSelectorModule: Module {
             handleStatus(requestId: requestId)
         case "setAspectRatio":
             handleSetAspectRatio(params: params, requestId: requestId)
+        case "disableWindowTransitions":
+            respond(id: requestId, result: ["disabled": false])
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }

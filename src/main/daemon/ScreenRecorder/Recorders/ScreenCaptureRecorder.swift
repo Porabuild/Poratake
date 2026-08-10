@@ -58,6 +58,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private let cameraRecorder = CameraRecorder()
     
     var onFirstFrame: (() -> Void)?
+    var onError: ((Error) -> Void)?
 
     func configure(_ config: RecordingConfig) {
         self.config = config
@@ -71,6 +72,16 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         guard let config = config else {
             throw RecorderError.configuration("Recording config not set")
         }
+
+        do {
+            try await startCapture(config)
+        } catch {
+            await rollbackFailedStart()
+            throw error
+        }
+    }
+
+    private func startCapture(_ config: RecordingConfig) async throws {
 
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: config.outputPath) {
@@ -274,11 +285,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
                 frameRate: 30,
                 outputPath: cameraOutputPath
             )
-            do {
-                try cameraRecorder.start()
-            } catch {
-                // Don't fail the entire recording if camera fails
-            }
+            try cameraRecorder.start()
         }
 
         if let rect = config.captureRect {
@@ -316,9 +323,6 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             try stream?.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
         }
 
-        try await stream?.startCapture()
-
-        state = .recording
         sessionStarted = false
         firstFrameTime = nil
         lastFrameTime = .zero
@@ -330,6 +334,33 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         videoFrameCount = 0
         lastVideoTime = .zero
         firstMicTime = nil
+
+        try await stream?.startCapture()
+        state = .recording
+    }
+
+    private func rollbackFailedStart() async {
+        state = .idle
+
+        try? await stream?.stopCapture()
+        stream = nil
+        stopMicrophoneCapture()
+        cameraRecorder.abort()
+        _ = cursorTracker.stop()
+        _ = keyboardTracker.stop()
+        waitForPendingSamples()
+
+        if assetWriter?.status == .writing {
+            assetWriter?.cancelWriting()
+        }
+        if systemAudioAssetWriter?.status == .writing {
+            systemAudioAssetWriter?.cancelWriting()
+        }
+        if micAudioAssetWriter?.status == .writing {
+            micAudioAssetWriter?.cancelWriting()
+        }
+
+        resetRecordingState()
     }
 
     private func setupMicrophoneCapture(config: RecordingConfig) throws {
@@ -563,7 +594,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             throw RecorderError.invalidState("Cannot pause: recorder is \(state.rawValue)")
         }
 
-        pauseStartTime = lastFrameTime
+        pauseStartTime = videoFrameCount > 0 ? lastFrameTime : nil
         state = .paused
 
         cursorTracker.pause()
@@ -601,6 +632,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         state = .idle
+        defer { resetRecordingState() }
 
         let cursorFilePath = cursorTracker.stop()
 
@@ -625,7 +657,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
         stream = nil
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        waitForPendingSamples()
 
         videoInput?.markAsFinished()
         systemAudioInput?.markAsFinished()
@@ -660,6 +692,38 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             throw RecorderError.capture("Mic audio writer error: \(error.localizedDescription)")
         }
 
+        return RecordingResult(
+            outputPath: finalPath,
+            cursorPath: cursorFilePath,
+            cameraPath: cameraFilePath,
+            keysPath: keysFilePath,
+            systemAudioPath: finalSystemAudioPath,
+            micAudioPath: finalMicAudioPath,
+            duration: finalDuration
+        )
+    }
+
+    func getStatus() -> (state: RecorderState, duration: Double) {
+        return (state, recordingDuration)
+    }
+
+    private func waitForPendingSamples() {
+        videoQueue.sync {}
+        audioQueue.sync {}
+        micQueue.sync {}
+        writerQueue.sync {}
+        audioWriterQueue.sync {}
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        Task { @MainActor [weak self] in
+            guard let self, self.state == .recording || self.state == .paused else { return }
+            _ = try? await self.stop()
+            self.onError?(error)
+        }
+    }
+
+    private func resetRecordingState() {
         assetWriter = nil
         videoInput = nil
         pixelBufferAdaptor = nil
@@ -676,24 +740,6 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         pauseStartTime = nil
         totalPauseDuration = .zero
         recordingDuration = 0
-
-        return RecordingResult(
-            outputPath: finalPath,
-            cursorPath: cursorFilePath,
-            cameraPath: cameraFilePath,
-            keysPath: keysFilePath,
-            systemAudioPath: finalSystemAudioPath,
-            micAudioPath: finalMicAudioPath,
-            duration: finalDuration
-        )
-    }
-
-    func getStatus() -> (state: RecorderState, duration: Double) {
-        return (state, recordingDuration)
-    }
-
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        // Stream stopped with error - handled externally
     }
 }
 

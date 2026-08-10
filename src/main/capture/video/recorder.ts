@@ -1,5 +1,6 @@
 import { app, screen } from 'electron';
 import path from 'path';
+import { existsSync } from 'fs';
 import { showRecordingOverlay, hideRecordingOverlay } from './overlay.ts';
 import {
   showRecordingTray,
@@ -24,12 +25,27 @@ let recorderState: RecorderState = 'idle';
 let currentRecordingPath: string | null = null;
 let currentDuration = 0;
 let recordingGeneration = 0;
+let isStarting = false;
+let pendingStart: Promise<void> | null = null;
+let pendingStop: Promise<CompletedRecording | null> | null = null;
+let pendingFailureCleanup: Promise<void> | null = null;
 let activeRecordingErrorListener: {
   generation: number;
   handler: (event: string, data: unknown) => void;
 } | null = null;
 
-type RecordingFailureHandler = (error: Error) => void | Promise<void>;
+type RecordingFailureHandler = (
+  error: Error,
+  outputPath: string | null
+) => void | Promise<void>;
+
+function throwIfRecordingStartCancelled(generation: number): void {
+  if (generation === recordingGeneration) return;
+
+  const error = new Error('Recording start cancelled');
+  error.name = 'AbortError';
+  throw error;
+}
 
 function clearRecordingErrorListener(generation?: number): void {
   if (
@@ -54,6 +70,8 @@ async function handleTerminalRecordingError(
   }
 
   clearRecordingErrorListener(generation);
+  recordingGeneration += 1;
+  const outputPath = currentRecordingPath;
   recorderState = 'idle';
   currentRecordingPath = null;
   currentDuration = 0;
@@ -61,7 +79,7 @@ async function handleTerminalRecordingError(
   await hideRecordingOverlay(true);
 
   try {
-    await onFailure?.(error);
+    await onFailure?.(error, outputPath);
   } catch (failureError) {
     console.error('Failed to handle recording error:', failureError);
   }
@@ -76,7 +94,7 @@ export function getRecordingsDir(): string {
   }
 
   const moviesPath = app.getPath('videos');
-  const defaultDir = path.join(moviesPath, 'Capty');
+  const defaultDir = path.join(moviesPath, 'Poratake');
   return ensureDirectoryExists(defaultDir);
 }
 
@@ -95,10 +113,17 @@ export function generateRecordingProjectName(): string {
 }
 
 export function createRecordingProject(): string {
-  const projectPath = path.join(
-    getRecordingsDir(),
-    generateRecordingProjectName()
-  );
+  const recordingsDir = getRecordingsDir();
+  const generatedName = generateRecordingProjectName();
+  const { name, ext } = path.parse(generatedName);
+  let projectPath = path.join(recordingsDir, generatedName);
+  let suffix = 2;
+
+  while (existsSync(projectPath)) {
+    projectPath = path.join(recordingsDir, `${name} ${suffix}${ext}`);
+    suffix++;
+  }
+
   return createProjectFolder(projectPath);
 }
 
@@ -134,12 +159,20 @@ export function getCurrentRecordingPath(): string | null {
   return currentRecordingPath;
 }
 
-export async function startRecordingWithConfig(
+async function startRecording(
   config: RecordingConfig,
   showControl: () => void | Promise<void>,
   hideControl?: () => void | Promise<void>,
   onFailure?: RecordingFailureHandler
 ): Promise<void> {
+  if (pendingFailureCleanup) {
+    await pendingFailureCleanup;
+  }
+
+  if (isStarting || recorderState !== 'idle') {
+    throw new Error('A recording is already active');
+  }
+
   const isAreaRecording =
     config.x !== undefined &&
     config.y !== undefined &&
@@ -190,13 +223,21 @@ export async function startRecordingWithConfig(
       return;
     }
 
-    void handleTerminalRecordingError(generation, error, onFailure);
+    const cleanup = handleTerminalRecordingError(generation, error, onFailure);
+    pendingFailureCleanup = cleanup;
+    const clearPendingCleanup = () => {
+      if (pendingFailureCleanup === cleanup) {
+        pendingFailureCleanup = null;
+      }
+    };
+    void cleanup.then(clearPendingCleanup, clearPendingCleanup);
   };
   activeRecordingErrorListener = { generation, handler: errorHandler };
   daemon.onEvent(errorHandler);
   let pendingStartup: Promise<unknown> | null = null;
   let pendingControl: Promise<void> | null = null;
 
+  isStarting = true;
   try {
     const startup = Promise.allSettled([
       Promise.resolve().then(() =>
@@ -241,6 +282,7 @@ export async function startRecordingWithConfig(
       startup,
       terminalError,
     ]);
+    throwIfRecordingStartCancelled(generation);
 
     if (startResult.status === 'rejected') {
       throw startResult.reason;
@@ -254,6 +296,7 @@ export async function startRecordingWithConfig(
 
     pendingControl = Promise.resolve().then(showControl);
     await Promise.race([pendingControl, terminalError]);
+    throwIfRecordingStartCancelled(generation);
     recorderState = 'recording';
     currentRecordingPath = config.outputPath;
     showRecordingTray();
@@ -274,7 +317,29 @@ export async function startRecordingWithConfig(
     currentRecordingPath = null;
     currentDuration = 0;
     throw error;
+  } finally {
+    isStarting = false;
   }
+}
+
+export function startRecordingWithConfig(
+  config: RecordingConfig,
+  showControl: () => void | Promise<void>,
+  hideControl?: () => void | Promise<void>,
+  onFailure?: RecordingFailureHandler
+): Promise<void> {
+  if (pendingStart) {
+    return Promise.reject(new Error('A recording is already active'));
+  }
+
+  const start = startRecording(config, showControl, hideControl, onFailure);
+  pendingStart = start;
+
+  return start.finally(() => {
+    if (pendingStart === start) {
+      pendingStart = null;
+    }
+  });
 }
 
 export async function pauseRecording(): Promise<void> {
@@ -283,10 +348,15 @@ export async function pauseRecording(): Promise<void> {
     return;
   }
 
+  const generation = recordingGeneration;
   const response = await daemon.call<RecorderResponse>(
     'screen-recorder',
     'pause'
   );
+
+  if (generation !== recordingGeneration || recorderState !== 'recording') {
+    return;
+  }
 
   if (!response.success) {
     throw new Error(response.message || 'Failed to pause recording');
@@ -304,10 +374,15 @@ export async function resumeRecording(): Promise<void> {
     return;
   }
 
+  const generation = recordingGeneration;
   const response = await daemon.call<RecorderResponse>(
     'screen-recorder',
     'resume'
   );
+
+  if (generation !== recordingGeneration || recorderState !== 'paused') {
+    return;
+  }
 
   if (!response.success) {
     throw new Error(response.message || 'Failed to resume recording');
@@ -319,18 +394,19 @@ export async function resumeRecording(): Promise<void> {
   }
 }
 
-export async function stopRecording(
+async function stopActiveRecording(
   hideControl: () => void | Promise<void>
 ): Promise<CompletedRecording | null> {
-  if (!isRecording()) {
-    console.log('Not recording, nothing to stop');
-    return null;
-  }
-
   const outputPath = currentRecordingPath;
   const fallbackDuration = currentDuration;
   clearRecordingErrorListener();
-  await hideControl();
+  recordingGeneration += 1;
+
+  try {
+    await hideControl();
+  } catch (error) {
+    console.error('Failed to hide recording controls:', error);
+  }
 
   let response: RecorderResponse | null = null;
   let stopError: Error | null = null;
@@ -378,12 +454,38 @@ export async function stopRecording(
   };
 }
 
+export function stopRecording(
+  hideControl: () => void | Promise<void>
+): Promise<CompletedRecording | null> {
+  if (pendingStop) {
+    return pendingStop;
+  }
+
+  if (!isRecording()) {
+    console.log('Not recording, nothing to stop');
+    return Promise.resolve(null);
+  }
+
+  const stop = stopActiveRecording(hideControl);
+  pendingStop = stop;
+
+  return stop.finally(() => {
+    if (pendingStop === stop) {
+      pendingStop = null;
+    }
+  });
+}
+
 export async function quitRecorder(): Promise<void> {
+  recordingGeneration += 1;
   clearRecordingErrorListener();
+  await pendingStart?.catch(() => {});
   await hideRecordingOverlay();
   hideRecordingTray();
 
-  if (recorderState !== 'idle') {
+  if (pendingStop) {
+    await pendingStop.catch(() => {});
+  } else if (recorderState !== 'idle') {
     try {
       await daemon.call('screen-recorder', 'stop', undefined, 5000);
     } catch {
@@ -392,6 +494,8 @@ export async function quitRecorder(): Promise<void> {
   }
 
   recorderState = 'idle';
+  currentRecordingPath = null;
+  currentDuration = 0;
 }
 
 export async function prewarmRecorder(): Promise<void> {

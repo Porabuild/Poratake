@@ -39,7 +39,6 @@ export function renderRedact({
       }}
       onMouseDown={isPreview ? undefined : e => onMouseDown?.(e, ann.id)}
     >
-      {}
       {isSelected && (
         <rect
           x={rectX}
@@ -53,7 +52,6 @@ export function renderRedact({
         />
       )}
 
-      {}
       <rect
         x={rectX}
         y={rectY}
@@ -96,7 +94,7 @@ export function renderRedactHandles({
     fill: 'white',
     stroke: '#007AFF',
     strokeWidth: 2,
-    cursor: 'pointer',
+    cursor: 'default',
     pointerEvents: 'auto' as const,
   };
 

@@ -13,7 +13,7 @@ import {
   ChevronLeft,
 } from 'lucide-react';
 import type { PermissionsState } from '@/types/permissions';
-import type { SettingsConfig } from '@/types/settings';
+import type { SettingsUiConfig } from '@/types/settings';
 import ShortcutInput from '@/renderer/components/settings/shortcut-input';
 import { isMacPlatform } from '@/renderer/utils/platform';
 
@@ -124,7 +124,7 @@ function WelcomeStep() {
           <WindowsKeyIcon className="text-primary h-8 w-8" />
         )}
       </div>
-      <h1 className="text-xl font-semibold">Welcome to Capty</h1>
+      <h1 className="text-xl font-semibold">Welcome to Poratake</h1>
       <p className="text-muted-foreground mt-2 text-sm">
         {isMacPlatform()
           ? 'Your new screenshot tool for macOS'
@@ -143,7 +143,7 @@ function WelcomeStep() {
                 : 'Lives in Your System Tray'}
             </h3>
             <p className="text-muted-foreground mt-1 text-sm">
-              Capty runs quietly in your{' '}
+              Poratake runs quietly in your{' '}
               {isMacPlatform() ? 'menu bar' : 'system tray'}. Click the icon to
               access all features or use keyboard shortcuts for quick captures.
             </p>
@@ -185,8 +185,8 @@ function DisableMacOSShortcutsStep() {
           Disable macOS Screenshot Shortcuts
         </h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          To use Capty&apos;s shortcuts, you need to disable the default macOS
-          screenshot shortcuts first.
+          To use Poratake&apos;s shortcuts, you need to disable the default
+          macOS screenshot shortcuts first.
         </p>
       </div>
 
@@ -230,8 +230,8 @@ function DisableMacOSShortcutsStep() {
         </Button>
 
         <p className="text-muted-foreground text-center text-xs">
-          You can skip this step, but Capty&apos;s shortcuts may conflict with
-          macOS defaults.
+          You can skip this step, but Poratake&apos;s shortcuts may conflict
+          with macOS defaults.
         </p>
       </div>
     </div>
@@ -239,7 +239,7 @@ function DisableMacOSShortcutsStep() {
 }
 
 interface ShortcutsStepProps {
-  settings: SettingsConfig | null;
+  settings: SettingsUiConfig | null;
   onShortcutChange: (
     type: 'area' | 'window' | 'screen',
     shortcut: string
@@ -311,7 +311,7 @@ function PermissionsStep({
         </div>
         <h1 className="text-xl font-semibold">Setup Permissions</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Capty needs these permissions to work properly
+          Poratake needs these permissions to work properly
         </p>
       </div>
 
@@ -346,7 +346,7 @@ export default function OnboardingWindow() {
     microphone: 'not-determined',
     camera: 'not-determined',
   });
-  const [settings, setSettings] = useState<SettingsConfig | null>(null);
+  const [settings, setSettings] = useState<SettingsUiConfig | null>(null);
 
   const isScreenRecordingGranted = permissions.screenRecording === 'granted';
   const isAccessibilityGranted = permissions.accessibility;
@@ -362,8 +362,8 @@ export default function OnboardingWindow() {
 
   const loadSettings = useCallback(async () => {
     const loadedSettings = (await window.ipcRenderer.invoke(
-      'settings:get'
-    )) as SettingsConfig;
+      'settings:get-ui'
+    )) as SettingsUiConfig;
     setSettings(loadedSettings);
   }, []);
 
@@ -467,15 +467,11 @@ export default function OnboardingWindow() {
       />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
-        {}
         <div className="flex-1">{renderStep()}</div>
 
-        {}
         <div className="mt-6 space-y-4">
-          {}
           <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
 
-          {}
           <div className="flex gap-2">
             {step > 0 && (
               <Button variant="outline" onClick={handleBack} className="flex-1">

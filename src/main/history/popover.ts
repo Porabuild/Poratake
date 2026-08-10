@@ -1,4 +1,10 @@
-import { app, BrowserWindow, screen, ipcMain } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  screen,
+  ipcMain,
+  type WebContents,
+} from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
 
@@ -122,6 +128,10 @@ export function getHistoryPopover(): BrowserWindow | null {
   return historyPopover;
 }
 
+export function isHistoryPopoverWebContents(sender: WebContents): boolean {
+  return historyPopover?.webContents === sender;
+}
+
 export function isHistoryPopoverVisible(): boolean {
   return (
     historyPopover !== null &&
@@ -130,6 +140,15 @@ export function isHistoryPopoverVisible(): boolean {
   );
 }
 
-ipcMain.on('history:closePopover', () => {
+ipcMain.on('history:closePopover', event => {
+  if (!isHistoryPopoverWebContents(event.sender)) return;
+
   closeHistoryPopover();
+});
+
+ipcMain.on('history:ready', event => {
+  if (!isHistoryPopoverWebContents(event.sender)) return;
+  if (!isHistoryPopoverVisible()) return;
+
+  event.sender.send('history:refresh');
 });

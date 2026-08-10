@@ -44,6 +44,23 @@ Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config),
 - Use Shadcn components unless a custom component is necessary
 - For frameless Electron windows with solid backgrounds, use transparent: false with a matching backgroundColor instead of transparent: true to avoid dark border artifacts on macOS.
 
+## Licensing (AGPL-3.0 — mandatory, never trade off against other rules)
+
+Poratake is a rebranded fork of Capty (https://github.com/capty-app/capty) and is licensed AGPL-3.0-only as a whole. These rules keep every release compliant:
+
+- Never edit, remove, or replace `LICENSE` (verbatim GNU AGPL v3), and keep `"license": "AGPL-3.0-only"` in `package.json`.
+- Never remove or weaken existing copyright, license, warranty, or attribution notices — in `README.md`, the About tab, file headers, or vendored code. The upstream "Copyright (C) 2026 Capty" notice must stay.
+- `README.md` and the About tab must keep the modification statement (Poratake is a modified version of Capty, with the year of modification) and the link to the upstream project.
+- The About tab is the app's AGPL §5(d) "Appropriate Legal Notices". It must always show: the copyright notices, the AGPL v3 license with a working link, the no-warranty statement, a link to this exact version's source (`SOURCE_URL/tree/v{version}`), and the third-party notices link. Do not remove or hide these when redesigning settings.
+- Every public release must make corresponding source available alongside the binaries: the release workflow publishes to a GitHub Release whose tag must point at the exact commit the binaries were built from, so GitHub's automatic source archives sit next to the downloads. Never distribute a build made from uncommitted or unpushed changes, and never publish binaries through a channel that lacks a source link.
+- Packaged builds must ship license material via `extraResources` in `electron-builder.json5`: `licenses/Poratake-AGPL-3.0.txt`, `licenses/THIRD_PARTY_NOTICES.md`, `licenses/FFmpeg-LGPL-2.1.txt`, and the license texts of bundled npm packages. When adding a runtime dependency that ships in the app, add its `LICENSE*` glob to that filter.
+- Any change that adds, removes, or upgrades a bundled third-party component (npm package, native binary, font, icon set, sound, model) must update `THIRD_PARTY_NOTICES.md` in the same change, including the pinned version for native binaries.
+- Only bundle components under AGPL-compatible licenses (MIT, BSD, Apache-2.0, LGPL, MPL-2.0, AGPL/GPLv3-compatible). Never bundle proprietary or no-license code, and never copy source from projects under incompatible licenses.
+- FFmpeg must stay LGPL-configured: keep `--disable-gpl --disable-nonfree` in `scripts/build-ffmpeg.sh` and do not enable x264/x265/GPL filters. Keep native builds (`build-ffmpeg.sh`, `build-whisper.sh`) pinned to exact upstream release versions that match `THIRD_PARTY_NOTICES.md`.
+- Trademark: do not brand Poratake with the Capty name or logo. Referring to Capty factually is fine (upstream attribution, the Capty license/Capty Cloud services the app interoperates with) — implying Poratake is Capty or is endorsed by Capty is not.
+- The Windows daemon's statically linked crates are enumerated in `THIRD_PARTY_NOTICES.md`; any change to `src/main/daemon-win/Cargo.toml` or `Cargo.lock` that adds or removes crates must update that list in the same change. The macOS Swift daemon must stay free of third-party dependencies, or its dependencies must be added to the notices file the same way.
+- If Poratake ever gains a network-accessible service mode, AGPL §13 applies: users interacting with it over a network must be offered the corresponding source.
+
 ## Top Level Rules
 
 - Security first

@@ -1,14 +1,16 @@
+import { Button } from '@/renderer/components/ui/button';
 import { cn } from '@/renderer/lib/utils';
 
 export default function ToolbarButton({
   className,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+}: React.ComponentProps<typeof Button>) {
   return (
-    <button
-      type="button"
+    <Button
+      size="icon-sm"
+      variant="ghost"
       className={cn(
-        'flex h-8 items-center justify-center gap-1.5 rounded-full px-3 text-sm text-white/90 transition-colors hover:bg-white/15 hover:text-white disabled:pointer-events-none disabled:opacity-40',
+        'size-8 min-w-8 rounded-lg text-white/85 hover:bg-white/15 hover:text-white disabled:pointer-events-none disabled:opacity-35',
         className
       )}
       {...props}

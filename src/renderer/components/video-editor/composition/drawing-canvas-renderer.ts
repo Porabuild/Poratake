@@ -13,6 +13,7 @@ import type {
 } from '@/types/editor';
 import type { DrawingSegment } from '@/types/drawing';
 import { TEXT_FONT_WEIGHT } from '@/renderer/components/editor/text/text-utils';
+import { REDACT_INTENSITY_MAP } from '@/renderer/utils/redact';
 import { scaleAnnotationToComposition } from './drawing-scale';
 import type { Context2D } from './types';
 
@@ -30,19 +31,6 @@ const NUMBER_SIZE_CONFIG = {
   small: { radius: 14, fontSize: 14 },
   medium: { radius: 18, fontSize: 18 },
   large: { radius: 24, fontSize: 24 },
-};
-
-const INTENSITY_MAP = {
-  1: { pixelSize: 4, blurRadius: 4 },
-  2: { pixelSize: 8, blurRadius: 8 },
-  3: { pixelSize: 12, blurRadius: 12 },
-  4: { pixelSize: 16, blurRadius: 16 },
-  5: { pixelSize: 20, blurRadius: 20 },
-  6: { pixelSize: 24, blurRadius: 24 },
-  7: { pixelSize: 28, blurRadius: 30 },
-  8: { pixelSize: 32, blurRadius: 36 },
-  9: { pixelSize: 40, blurRadius: 44 },
-  10: { pixelSize: 48, blurRadius: 52 },
 };
 
 function pointsToCoordinates(points: number[]): [number, number][] {
@@ -456,13 +444,19 @@ function pixelateRegion(
   if (!scratch || !scratchCanvas) return;
 
   const { device, composition } = region;
-  const smallWidth = Math.max(1, Math.round(device.width / blockSize));
-  const smallHeight = Math.max(1, Math.round(device.height / blockSize));
+  const scale = getDeviceScale(ctx);
+  const deviceBlockWidth = Math.max(1, blockSize * scale.x);
+  const deviceBlockHeight = Math.max(1, blockSize * scale.y);
+  const smallWidth = Math.max(1, Math.round(device.width / deviceBlockWidth));
+  const smallHeight = Math.max(
+    1,
+    Math.round(device.height / deviceBlockHeight)
+  );
 
   scratchCanvas.width = smallWidth;
   scratchCanvas.height = smallHeight;
 
-  scratch.imageSmoothingEnabled = false;
+  scratch.imageSmoothingEnabled = true;
   scratch.clearRect(0, 0, smallWidth, smallHeight);
   scratch.drawImage(
     ctx.canvas,
@@ -574,7 +568,8 @@ function renderRedact(ctx: Context2D, annotation: RedactAnnotation): void {
     annotation.width,
     annotation.height
   );
-  const intensity = INTENSITY_MAP[annotation.intensity] ?? INTENSITY_MAP[5];
+  const intensity =
+    REDACT_INTENSITY_MAP[annotation.intensity] ?? REDACT_INTENSITY_MAP[5];
 
   switch (annotation.style) {
     case 'pixelate':

@@ -5,7 +5,6 @@ import type {
   HighlightAnnotation,
   ImageLayer,
   RedactAnnotation,
-  RedactIntensity,
   WindowFrameStyle,
 } from '@/types/editor';
 import type { ScreenshotFormat } from '@/types/settings';
@@ -17,12 +16,21 @@ import {
 } from '@/renderer/utils/color-detection';
 import { renderNoise } from '@/renderer/utils/noise';
 import {
+  pixelateImageData,
+  REDACT_INTENSITY_MAP,
+} from '@/renderer/utils/redact';
+import {
   computeLayerLayout,
   findPrimaryRect,
 } from '@/renderer/utils/layer-layout';
+import {
+  getWindowFrameCornerRadius,
+  isWindowsFrame,
+  WINDOW_FRAME_THEMES,
+  WINDOW_FRAME_TITLE_BAR_HEIGHT,
+  type FramedWindowStyle,
+} from '@/renderer/utils/window-frame';
 
-const WINDOW_FRAME_TITLE_BAR_HEIGHT = 28;
-const WINDOW_FRAME_CORNER_RADIUS = 10;
 const TRAFFIC_LIGHT_SIZE = 12;
 const TRAFFIC_LIGHT_SPACING = 8;
 const TRAFFIC_LIGHT_OFFSET_X = 13;
@@ -31,21 +39,6 @@ const TRAFFIC_LIGHT_COLORS = {
   close: '#FF5F57',
   minimize: '#FFBD2E',
   maximize: '#28C840',
-};
-
-const WINDOW_FRAME_THEMES = {
-  'macos-light': {
-    titleBar: '#E8E8E8',
-    titleBarBorder: '#D1D1D1',
-    content: '#FFFFFF',
-    frameBorder: '#C0C0C0',
-  },
-  'macos-dark': {
-    titleBar: '#3A3A3C',
-    titleBarBorder: '#2A2A2C',
-    content: '#1C1C1E',
-    frameBorder: '#4A4A4C',
-  },
 };
 
 interface UseCanvasExportProps {
@@ -190,6 +183,44 @@ const drawTrafficLights = (
   });
 };
 
+const drawWindowsControls = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  color: string,
+  scale: number
+) => {
+  const controlWidth = 34 * scale;
+  const centerY = y + (WINDOW_FRAME_TITLE_BAR_HEIGHT * scale) / 2;
+  const minimizeX = x + width - controlWidth * 2.5;
+  const maximizeX = x + width - controlWidth * 1.5;
+  const closeX = x + width - controlWidth * 0.5;
+  const iconRadius = 4 * scale;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = scale;
+
+  ctx.beginPath();
+  ctx.moveTo(minimizeX - iconRadius, centerY + iconRadius * 0.75);
+  ctx.lineTo(minimizeX + iconRadius, centerY + iconRadius * 0.75);
+  ctx.stroke();
+
+  ctx.strokeRect(
+    maximizeX - iconRadius,
+    centerY - iconRadius,
+    iconRadius * 2,
+    iconRadius * 2
+  );
+
+  ctx.beginPath();
+  ctx.moveTo(closeX - iconRadius, centerY - iconRadius);
+  ctx.lineTo(closeX + iconRadius, centerY + iconRadius);
+  ctx.moveTo(closeX + iconRadius, centerY - iconRadius);
+  ctx.lineTo(closeX - iconRadius, centerY + iconRadius);
+  ctx.stroke();
+};
+
 const renderWindowFrame = (
   ctx: CanvasRenderingContext2D,
   image: HTMLImageElement,
@@ -197,7 +228,7 @@ const renderWindowFrame = (
   y: number,
   croppedWidth: number,
   croppedHeight: number,
-  frameStyle: 'macos-light' | 'macos-dark',
+  frameStyle: FramedWindowStyle,
   shadow: number,
   scale: number,
   inset: number = 0,
@@ -208,7 +239,7 @@ const renderWindowFrame = (
 
   const theme = WINDOW_FRAME_THEMES[frameStyle];
   const scaledTitleBarHeight = WINDOW_FRAME_TITLE_BAR_HEIGHT * scale;
-  const scaledCornerRadius = WINDOW_FRAME_CORNER_RADIUS * scale;
+  const scaledCornerRadius = getWindowFrameCornerRadius(frameStyle) * scale;
 
   const frameWidth = croppedWidth + inset * 2;
   const frameHeight = croppedHeight + scaledTitleBarHeight + inset * 2;
@@ -248,9 +279,13 @@ const renderWindowFrame = (
   ctx.lineTo(x + frameWidth, y + scaledTitleBarHeight);
   ctx.stroke();
 
-  const trafficLightY = y + scaledTitleBarHeight / 2;
-  const trafficLightX = x + TRAFFIC_LIGHT_OFFSET_X * scale;
-  drawTrafficLights(ctx, trafficLightX, trafficLightY, scale);
+  if (isWindowsFrame(frameStyle)) {
+    drawWindowsControls(ctx, x, y, frameWidth, theme.control, scale);
+  } else {
+    const trafficLightY = y + scaledTitleBarHeight / 2;
+    const trafficLightX = x + TRAFFIC_LIGHT_OFFSET_X * scale;
+    drawTrafficLights(ctx, trafficLightX, trafficLightY, scale);
+  }
 
   if (inset > 0 && insetColor) {
     ctx.fillStyle = insetColor;
@@ -439,22 +474,6 @@ const svgToImage = (svgString: string): Promise<HTMLImageElement> => {
   });
 };
 
-const INTENSITY_MAP: Record<
-  RedactIntensity,
-  { pixelSize: number; blurRadius: number }
-> = {
-  1: { pixelSize: 4, blurRadius: 4 },
-  2: { pixelSize: 8, blurRadius: 8 },
-  3: { pixelSize: 12, blurRadius: 12 },
-  4: { pixelSize: 16, blurRadius: 16 },
-  5: { pixelSize: 20, blurRadius: 20 },
-  6: { pixelSize: 24, blurRadius: 24 },
-  7: { pixelSize: 28, blurRadius: 30 },
-  8: { pixelSize: 32, blurRadius: 36 },
-  9: { pixelSize: 40, blurRadius: 44 },
-  10: { pixelSize: 48, blurRadius: 52 },
-};
-
 const pixelateRegion = (
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -488,33 +507,7 @@ const pixelateRegion = (
     clampedHeight
   );
   const data = imageData.data;
-
-  for (let py = 0; py < clampedHeight; py += blockSize) {
-    for (let px = 0; px < clampedWidth; px += blockSize) {
-      const sampleX = Math.min(
-        px + Math.floor(blockSize / 2),
-        clampedWidth - 1
-      );
-      const sampleY = Math.min(
-        py + Math.floor(blockSize / 2),
-        clampedHeight - 1
-      );
-      const sampleIdx = (sampleY * clampedWidth + sampleX) * 4;
-
-      const r = data[sampleIdx];
-      const g = data[sampleIdx + 1];
-      const b = data[sampleIdx + 2];
-
-      for (let by = 0; by < blockSize && py + by < clampedHeight; by++) {
-        for (let bx = 0; bx < blockSize && px + bx < clampedWidth; bx++) {
-          const idx = ((py + by) * clampedWidth + (px + bx)) * 4;
-          data[idx] = r;
-          data[idx + 1] = g;
-          data[idx + 2] = b;
-        }
-      }
-    }
-  }
+  pixelateImageData(data, clampedWidth, clampedHeight, blockSize);
 
   ctx.putImageData(imageData, clampedX, clampedY);
 };
@@ -707,7 +700,8 @@ const applyRedactEffect = (
   const rectW = Math.abs(w);
   const rectH = Math.abs(h);
 
-  const intensity = INTENSITY_MAP[redact.intensity] || INTENSITY_MAP[5];
+  const intensity =
+    REDACT_INTENSITY_MAP[redact.intensity] || REDACT_INTENSITY_MAP[5];
   const scaledPixelSize = Math.max(1, Math.round(intensity.pixelSize * scale));
   const scaledBlurRadius = Math.max(
     1,
@@ -880,7 +874,7 @@ export const useCanvasExport = ({
             layerFrameY,
             layerContentW,
             layerContentH,
-            windowFrame as 'macos-light' | 'macos-dark',
+            windowFrame as FramedWindowStyle,
             shadow,
             nativeScale,
             nativeInset,

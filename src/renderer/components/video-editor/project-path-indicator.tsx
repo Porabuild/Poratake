@@ -73,8 +73,8 @@ export default function ProjectPathIndicator({
   }, [projectPath]);
 
   const handleOpenInFinder = useCallback(() => {
-    window.ipcRenderer.send('shell:reveal-in-finder', projectPath);
-  }, [projectPath]);
+    window.ipcRenderer.send('shell:reveal-in-finder');
+  }, []);
 
   const handleSaveRename = useCallback(async () => {
     const trimmed = editName.trim();

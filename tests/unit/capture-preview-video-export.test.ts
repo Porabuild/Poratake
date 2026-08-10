@@ -110,6 +110,22 @@ describe('capture preview video export', () => {
       transitionOutDuration: 1.2,
       easing: 'ease-in-out' as const,
     };
+    const musicTracks = [
+      {
+        id: 'system-audio',
+        name: 'System Audio',
+        source: 'system' as const,
+        fileName: '',
+        volume: 0.5,
+        enabled: true,
+        startTime: 0,
+        endTime: 12,
+        originalDuration: 12,
+        trimStart: 0,
+        trimEnd: 0,
+        speed: 1,
+      },
+    ];
 
     mockExistsSync.mockImplementation((targetPath: string) => {
       if (targetPath === '/project/video.cap/state.json') return true;
@@ -122,6 +138,7 @@ describe('capture preview video export', () => {
         segments,
         zoomSegments,
         zoomSettings,
+        musicTracks,
         cursorStyle: { visible: true },
         cameraStyle: { visible: true },
         audioStyle: {
@@ -139,18 +156,20 @@ describe('capture preview video export', () => {
     const { registerPreviewExportIpc } =
       await import('../../src/main/capture/capture-preview/video-export');
 
-    registerPreviewExportIpc();
+    registerPreviewExportIpc(() => '/project/video.cap');
 
     const handler = ipcHandlers['capture-preview:load-export-data'];
-    const result = (await handler({}, '/project/video.cap')) as {
+    const result = (await handler({ sender: { id: 1 } })) as {
       segments: typeof segments;
       zoomSegments: typeof zoomSegments;
       zoomSettings: typeof zoomSettings;
+      musicTracks: typeof musicTracks;
     };
 
     expect(result.segments).toEqual(segments);
     expect(result.zoomSegments).toEqual(zoomSegments);
     expect(result.zoomSettings).toEqual(zoomSettings);
+    expect(result.musicTracks).toEqual(musicTracks);
   });
 
   it('returns null timeline fields when no editor state exists', async () => {
@@ -164,17 +183,19 @@ describe('capture preview video export', () => {
     const { registerPreviewExportIpc } =
       await import('../../src/main/capture/capture-preview/video-export');
 
-    registerPreviewExportIpc();
+    registerPreviewExportIpc(() => '/project/video.cap');
 
     const handler = ipcHandlers['capture-preview:load-export-data'];
-    const result = (await handler({}, '/project/video.cap')) as {
+    const result = (await handler({ sender: { id: 1 } })) as {
       segments: unknown;
       zoomSegments: unknown;
       zoomSettings: unknown;
+      musicTracks: unknown;
     };
 
     expect(result.segments).toBeNull();
     expect(result.zoomSegments).toBeNull();
     expect(result.zoomSettings).toBeNull();
+    expect(result.musicTracks).toBeNull();
   });
 });

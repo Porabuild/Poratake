@@ -16,7 +16,7 @@ RESET=$'\033[0m'
 
 usage() {
   cat <<EOF
-Preview the release notes that would be generated for the next Capty release.
+Preview the release notes that would be generated for the next Poratake release.
 
 Uses the same commit-parsing logic as scripts/release.sh (feat: -> Features,
 fix: -> Bug Fixes, other prefixes -> Internal), so the output matches what the
@@ -153,7 +153,7 @@ print_header() {
   local color="$GREEN"
   printf "\n"
   hr "$color"
-  printf "  %s%sCapty Release Preview%s\n" "$BOLD" "$color" "$RESET"
+  printf "  %s%sPoratake Release Preview%s\n" "$BOLD" "$color" "$RESET"
   hr "$color"
   printf "  %sVersion:%s  %s\n" "$BOLD" "$RESET" "$VERSION"
   printf "  %sTag:%s      %s\n" "$BOLD" "$RESET" "$TAG"

@@ -536,9 +536,9 @@ fn fail_worker(
         report_worker_failure(error, start_sender, failure_sender);
         return;
     }
-    report_worker_failure(error, start_sender, failure_sender);
     runtime.abort();
     set_idle(shared, generation);
+    report_worker_failure(error, start_sender, failure_sender);
 }
 
 struct RecordingApartment;

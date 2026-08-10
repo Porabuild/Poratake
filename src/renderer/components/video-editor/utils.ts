@@ -42,6 +42,21 @@ function lastSeparatorIndex(filePath: string): number {
   return Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
 }
 
+export function toFileUrl(filePath: string): string {
+  if (/^file:/i.test(filePath)) return filePath;
+
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const encodedPath = encodeURI(normalizedPath)
+    .replace(/\?/g, '%3F')
+    .replace(/#/g, '%23');
+
+  if (encodedPath.startsWith('//')) {
+    return `file://${encodedPath.slice(2)}`;
+  }
+
+  return `file://${encodedPath.startsWith('/') ? '' : '/'}${encodedPath}`;
+}
+
 export function getFileNameFromPath(
   filePath: string | null | undefined
 ): string {
@@ -87,6 +102,18 @@ export function getSegmentDuration(segment: Segment): number {
 
 export function getTotalTimelineDuration(segments: Segment[]): number {
   return segments.reduce((sum, seg) => sum + getSegmentDuration(seg), 0);
+}
+
+export function getContentPlaybackState(
+  timelinePosition: number,
+  firstFrameDuration: number,
+  isPlaying: boolean
+): { timelinePosition: number; isPlaying: boolean } {
+  const contentPosition = timelinePosition - firstFrameDuration;
+  return {
+    timelinePosition: Math.max(0, contentPosition),
+    isPlaying: isPlaying && contentPosition >= 0,
+  };
 }
 
 export function adjustTimelineRanges<T extends TimelineRange>(

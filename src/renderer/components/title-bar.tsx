@@ -128,58 +128,64 @@ export default function TitleBar({
   isCaptureMode,
   onCaptureClick,
 }: TitleBarProps) {
+  const isMac = isMacPlatform();
   const cloudUploadHint = cloudUploadShortcut
     ? ` (${formatAccelerator(cloudUploadShortcut)})`
     : '';
+  const contextualControls = (
+    <>
+      <ToolOptions
+        activeTool={activeTool}
+        strokeWidth={strokeWidth}
+        onStrokeWidthChange={onStrokeWidthChange}
+        arrowStyle={arrowStyle}
+        onArrowStyleChange={onArrowStyleChange}
+        highlightOpacity={highlightOpacity}
+        onHighlightOpacityChange={onHighlightOpacityChange}
+        numberStyle={numberStyle}
+        onNumberStyleChange={onNumberStyleChange}
+        numberSize={numberSize}
+        onNumberSizeChange={onNumberSizeChange}
+        numberStartValue={numberStartValue}
+        onNumberStartValueChange={onNumberStartValueChange}
+        textBackground={textBackground}
+        onTextBackgroundChange={onTextBackgroundChange}
+        textFontSize={textFontSize}
+        onTextFontSizeChange={onTextFontSizeChange}
+        textFontFamily={textFontFamily}
+        onTextFontFamilyChange={onTextFontFamilyChange}
+        redactStyle={redactStyle}
+        onRedactStyleChange={onRedactStyleChange}
+        redactIntensity={redactIntensity}
+        onRedactIntensityChange={onRedactIntensityChange}
+        shapeFillMode={shapeFillMode}
+        onShapeFillModeChange={onShapeFillModeChange}
+        selectedColor={color}
+      />
+      <ColorPicker
+        selectedColor={activeTool === 'highlight' ? highlightColor : color}
+        onColorChange={
+          activeTool === 'highlight'
+            ? c => onHighlightColorChange(c as HighlightColor)
+            : onColorChange
+        }
+        activeTool={activeTool}
+        highlightOpacity={highlightOpacity}
+      />
+    </>
+  );
 
   return (
     <div className="drag-region bg-card fixed top-0 right-0 left-0 z-9999 flex h-10 w-full flex-none items-center px-2">
-      {isMacPlatform() && <div className="w-[120px] flex-none" />}
+      {isMac && <div className="w-[120px] flex-none" />}
       <div
         className={cn(
           'flex items-center gap-1',
-          isMacPlatform() && 'ml-auto justify-end'
+          isMac && 'ml-auto justify-end'
         )}
       >
-        <ToolOptions
-          activeTool={activeTool}
-          strokeWidth={strokeWidth}
-          onStrokeWidthChange={onStrokeWidthChange}
-          arrowStyle={arrowStyle}
-          onArrowStyleChange={onArrowStyleChange}
-          highlightOpacity={highlightOpacity}
-          onHighlightOpacityChange={onHighlightOpacityChange}
-          numberStyle={numberStyle}
-          onNumberStyleChange={onNumberStyleChange}
-          numberSize={numberSize}
-          onNumberSizeChange={onNumberSizeChange}
-          numberStartValue={numberStartValue}
-          onNumberStartValueChange={onNumberStartValueChange}
-          textBackground={textBackground}
-          onTextBackgroundChange={onTextBackgroundChange}
-          textFontSize={textFontSize}
-          onTextFontSizeChange={onTextFontSizeChange}
-          textFontFamily={textFontFamily}
-          onTextFontFamilyChange={onTextFontFamilyChange}
-          redactStyle={redactStyle}
-          onRedactStyleChange={onRedactStyleChange}
-          redactIntensity={redactIntensity}
-          onRedactIntensityChange={onRedactIntensityChange}
-          shapeFillMode={shapeFillMode}
-          onShapeFillModeChange={onShapeFillModeChange}
-          selectedColor={color}
-        />
-        <ColorPicker
-          selectedColor={activeTool === 'highlight' ? highlightColor : color}
-          onColorChange={
-            activeTool === 'highlight'
-              ? c => onHighlightColorChange(c as HighlightColor)
-              : onColorChange
-          }
-          activeTool={activeTool}
-          highlightOpacity={highlightOpacity}
-        />
-        <div className="bg-border mx-1 h-[18px] w-px" />
+        {isMac && contextualControls}
+        {isMac && <div className="bg-border mx-1 h-[18px] w-px" />}
         <Toolbar
           activeTool={activeTool}
           onToolChange={onToolChange}
@@ -193,7 +199,7 @@ export default function TitleBar({
         />
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button onClick={onCopy} className="size-7" variant="ghost">
+            <Button onClick={onCopy} size="icon-sm" variant="ghost">
               {isCopied ? (
                 <CheckIcon className="size-4" />
               ) : (
@@ -207,7 +213,7 @@ export default function TitleBar({
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button onClick={onSave} className="size-7" variant="ghost">
+            <Button onClick={onSave} size="icon-sm" variant="ghost">
               <SaveIcon className="size-4" />
             </Button>
           </TooltipTrigger>
@@ -219,7 +225,7 @@ export default function TitleBar({
           <TooltipTrigger asChild>
             <Button
               onClick={onCloudUpload}
-              className="size-7"
+              size="icon-sm"
               variant="ghost"
               disabled={cloudUploadState === 'uploading'}
             >
@@ -236,12 +242,14 @@ export default function TitleBar({
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button onClick={onPin} className="size-7" variant="ghost">
+            <Button onClick={onPin} size="icon-sm" variant="ghost">
               <PinIcon className="size-4" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Pin Screenshot</TooltipContent>
         </Tooltip>
+        {!isMac && <div className="bg-border mx-1 h-[18px] w-px" />}
+        {!isMac && contextualControls}
       </div>
       <WindowControlsSpacer />
     </div>

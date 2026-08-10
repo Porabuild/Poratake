@@ -80,13 +80,18 @@ async function deleteTempFile(filePath: string): Promise<void> {
 }
 
 async function deleteTempFiles(filePaths: string[]): Promise<void> {
-  for (const filePath of filePaths) {
-    await deleteTempFile(filePath);
-  }
+  await Promise.allSettled(filePaths.map(deleteTempFile));
 }
 
 async function renameFile(oldPath: string, newPath: string): Promise<void> {
-  await window.ipcRenderer.invoke('file:rename', { oldPath, newPath });
+  const result = (await window.ipcRenderer.invoke('file:rename', {
+    oldPath,
+    newPath,
+  })) as { success: boolean; error?: string };
+
+  if (!result.success) {
+    throw new Error(result.error ?? 'Failed to rename file');
+  }
 }
 
 async function applyVolumeIfNeeded(
@@ -100,7 +105,11 @@ async function applyVolumeIfNeeded(
 
   const adjustedPath = `${outputPathBase}.temp_adjusted.aac`;
   const result = await adjustAudioVolume(inputPath, adjustedPath, volume);
-  return result.success ? adjustedPath : inputPath;
+  if (!result.success) {
+    throw new Error(result.error ?? 'Failed to adjust audio volume');
+  }
+
+  return adjustedPath;
 }
 
 export interface MuxAudioOptions {
@@ -128,11 +137,6 @@ export async function muxAudioWithVideo(
     audioDelaySeconds = 0,
   } = options;
 
-  if (audioTracks.length === 0 && !embeddedAudio) {
-    await renameFile(videoPath, outputPath);
-    return { success: true };
-  }
-
   const hasSpeedChanges = segments.some(seg => (seg.speed ?? 1) !== 1);
 
   const audioSegmentsWithSpeed: AudioSegmentWithSpeed[] = segments.map(seg => ({
@@ -149,29 +153,38 @@ export async function muxAudioWithVideo(
   const tempFiles: string[] = [];
 
   try {
-    let finalAudioPath: string;
-
-    if (audioTracks.length === 0 && embeddedAudio) {
-      finalAudioPath = await processEmbeddedAudio(
-        embeddedAudio,
-        outputPath,
-        audioSegments,
-        audioSegmentsWithSpeed,
-        hasSpeedChanges,
-        tempFiles,
-        videoPath
-      );
-    } else {
-      finalAudioPath = await processAudioTracks(
-        audioTracks,
-        outputPath,
-        audioSegments,
-        audioSegmentsWithSpeed,
-        hasSpeedChanges,
-        tempFiles,
-        videoPath
-      );
+    if (audioTracks.length === 0 && !embeddedAudio) {
+      await renameFile(videoPath, outputPath);
+      return { success: true };
     }
+
+    const tracks = [...audioTracks];
+    const tempPathBase = `${outputPath}.temp-${crypto.randomUUID()}`;
+
+    if (embeddedAudio) {
+      const embeddedAudioPath = await processEmbeddedAudio(
+        embeddedAudio,
+        tempPathBase,
+        audioSegments,
+        audioSegmentsWithSpeed,
+        hasSpeedChanges,
+        tempFiles
+      );
+      tracks.unshift({
+        path: embeddedAudioPath,
+        volume: 1,
+        skipSegmentExtraction: true,
+      });
+    }
+
+    const finalAudioPath = await processAudioTracks(
+      tracks,
+      tempPathBase,
+      audioSegments,
+      audioSegmentsWithSpeed,
+      hasSpeedChanges,
+      tempFiles
+    );
 
     const muxResult = await muxAudio(
       videoPath,
@@ -180,19 +193,20 @@ export async function muxAudioWithVideo(
       audioDelaySeconds
     );
 
-    await deleteTempFiles(tempFiles);
     await deleteTempFile(videoPath);
 
     if (!muxResult.success) {
+      await deleteTempFile(outputPath);
       return { success: false, error: muxResult.error };
     }
 
     return { success: true };
   } catch (error) {
-    await deleteTempFiles(tempFiles);
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: errorMessage };
+  } finally {
+    await deleteTempFiles(tempFiles);
   }
 }
 
@@ -202,8 +216,7 @@ async function processEmbeddedAudio(
   audioSegments: AudioSegment[],
   audioSegmentsWithSpeed: AudioSegmentWithSpeed[],
   hasSpeedChanges: boolean,
-  tempFiles: string[],
-  videoPath: string
+  tempFiles: string[]
 ): Promise<string> {
   const tempAudioPath = `${outputPath}.temp_embedded.aac`;
   tempFiles.push(tempAudioPath);
@@ -221,9 +234,9 @@ async function processEmbeddedAudio(
       );
 
   if (!extractResult.success) {
-    await deleteTempFiles(tempFiles);
-    await renameFile(videoPath, outputPath);
-    throw new Error('FALLBACK_TO_VIDEO_ONLY');
+    throw new Error(
+      extractResult.error ?? 'Failed to extract embedded audio segments'
+    );
   }
 
   const finalAudioPath = await applyVolumeIfNeeded(
@@ -244,8 +257,7 @@ async function processAudioTracks(
   audioSegments: AudioSegment[],
   audioSegmentsWithSpeed: AudioSegmentWithSpeed[],
   hasSpeedChanges: boolean,
-  tempFiles: string[],
-  videoPath: string
+  tempFiles: string[]
 ): Promise<string> {
   const extractedPaths: string[] = [];
   const volumes: number[] = [];
@@ -274,9 +286,9 @@ async function processAudioTracks(
       console.warn(
         `Failed to extract audio from ${track.path}: ${extractResult.error}`
       );
-      await deleteTempFiles(tempFiles);
-      await renameFile(videoPath, outputPath);
-      throw new Error('FALLBACK_TO_VIDEO_ONLY');
+      throw new Error(
+        extractResult.error ?? 'Failed to extract audio segments'
+      );
     }
 
     extractedPaths.push(tempPath);
@@ -302,9 +314,7 @@ async function processAudioTracks(
 
   if (!mixResult.success) {
     console.warn(`Failed to mix audio tracks: ${mixResult.error}`);
-    await deleteTempFiles(tempFiles);
-    await renameFile(videoPath, outputPath);
-    throw new Error('FALLBACK_TO_VIDEO_ONLY');
+    throw new Error(mixResult.error ?? 'Failed to mix audio tracks');
   }
 
   return mixedPath;

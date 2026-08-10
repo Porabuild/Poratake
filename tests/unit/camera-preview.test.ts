@@ -95,22 +95,12 @@ describe('camera-preview', () => {
     expect(m.isCameraPreviewVisible()).toBe(false);
   });
 
-  it('updateCameraPreview calls daemon update with position', async () => {
-    const m = await import('@/main/capture/video/camera-preview');
-    m.updateCameraPreview(sampleSettings);
-    expect(mockDaemonCall).toHaveBeenCalledWith(
-      'camera-preview',
-      'update',
-      expect.objectContaining({ x: 100, y: 200, flipped: true })
-    );
-  });
-
   it('round-trips Windows camera positions through physical pixels', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     vi.resetModules();
     mockDipToScreenPoint.mockReturnValue({ x: 200, y: 400 });
     mockScreenToDipPoint.mockReturnValue({ x: 100, y: 200 });
-    mockDaemonCall.mockResolvedValue({ x: 200, y: 400 });
+    mockDaemonCall.mockResolvedValue(null);
 
     const m = await import('@/main/capture/video/camera-preview');
     await m.showCameraPreview(sampleSettings);
@@ -119,39 +109,12 @@ describe('camera-preview', () => {
       'show',
       expect.objectContaining({ x: 200, y: 400 })
     );
-    expect(await m.getCameraPreviewPosition()).toEqual({ x: 100, y: 200 });
-
     m.registerCameraPreviewIpcHandlers();
     daemonEventHandler!('camera-preview:position-changed', { x: 200, y: 400 });
     const settings = ipcHandle['camera:get-settings']() as {
       position: { x: number; y: number };
     };
     expect(settings.position).toEqual({ x: 100, y: 200 });
-  });
-
-  it('getCameraPreviewWindow returns null', async () => {
-    const m = await import('@/main/capture/video/camera-preview');
-    expect(m.getCameraPreviewWindow()).toBeNull();
-  });
-
-  describe('getCameraPreviewPosition', () => {
-    it('returns position from daemon', async () => {
-      mockDaemonCall.mockResolvedValue({ x: 50, y: 60 });
-      const m = await import('@/main/capture/video/camera-preview');
-      expect(await m.getCameraPreviewPosition()).toEqual({ x: 50, y: 60 });
-    });
-
-    it('returns null on invalid response', async () => {
-      mockDaemonCall.mockResolvedValue({ x: 'bad' });
-      const m = await import('@/main/capture/video/camera-preview');
-      expect(await m.getCameraPreviewPosition()).toBeNull();
-    });
-
-    it('returns null on daemon error', async () => {
-      mockDaemonCall.mockRejectedValue(new Error('boom'));
-      const m = await import('@/main/capture/video/camera-preview');
-      expect(await m.getCameraPreviewPosition()).toBeNull();
-    });
   });
 
   describe('content protection', () => {

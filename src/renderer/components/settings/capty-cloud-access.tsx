@@ -46,8 +46,8 @@ export default function CaptyCloudAccess() {
         <div className="space-y-1">
           <p className="text-sm font-medium">Ready to upload</p>
           <p className="text-muted-foreground text-xs">
-            Your active license securely authenticates Capty Cloud. No storage
-            credentials are required.
+            Your active Capty license authenticates Capty Cloud. Captures and
+            license credentials are sent to capty.app.
           </p>
         </div>
       </div>
@@ -61,16 +61,18 @@ export default function CaptyCloudAccess() {
         <div className="space-y-1">
           <p className="text-sm font-medium">Activate Capty Cloud</p>
           <p className="text-muted-foreground text-xs">
-            Get a license or enter an existing key to use hosted uploads. You
-            can also select Self-hosted cloud or S3-compatible storage without a
-            license.
+            Capty operates this external service. Get a Capty license or enter
+            an existing key to upload captures to capty.app. You can also select
+            Self-hosted cloud or S3-compatible storage without a license.
+            Service availability for modified builds is governed by Capty&apos;s
+            terms.
           </p>
         </div>
       </div>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={handleGetLicense}>
           <ExternalLink className="mr-2 size-4" />
-          Get a license
+          Get Capty license
         </Button>
         <Button size="sm" variant="outline" onClick={handleEnterLicense}>
           <KeyRound className="mr-2 size-4" />

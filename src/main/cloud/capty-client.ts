@@ -15,9 +15,9 @@ interface UploadParams {
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
-  missing_token: 'Capty Cloud requires an active license.',
+  missing_token: 'Capty Cloud requires an active Capty license.',
   invalid_token:
-    'Your license could not authenticate Capty Cloud. Reactivate it and try again.',
+    'Your Capty license could not authenticate Capty Cloud. Reactivate it and try again.',
   revoked: 'Your Capty license has been revoked.',
   expired: 'Your Capty license has expired.',
   unsupported_type: 'Capty Cloud only accepts images and videos.',

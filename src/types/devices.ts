@@ -6,6 +6,8 @@ export interface MediaDeviceDescriptor {
 export interface MediaDeviceLists {
   microphones: MediaDeviceDescriptor[];
   cameras: MediaDeviceDescriptor[];
+  defaultMicrophoneId: string | null;
+  defaultCameraId: string | null;
 }
 
 export interface DeviceTestTarget {

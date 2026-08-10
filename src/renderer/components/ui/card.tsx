@@ -1,17 +1,20 @@
 import * as React from 'react';
+import { Surface } from '@heroui/react';
 
 import { cn } from '@/renderer/lib/utils';
 
-function Card({ className, ...props }: React.ComponentProps<'div'>) {
+function Card({ className, children, ...props }: React.ComponentProps<'div'>) {
   return (
-    <div
+    <Surface
       data-slot="card"
       className={cn(
-        'bg-card text-card-foreground rounded-lg border shadow-sm',
+        'text-card-foreground rounded-xl border shadow-sm',
         className
       )}
       {...props}
-    />
+    >
+      {children}
+    </Surface>
   );
 }
 

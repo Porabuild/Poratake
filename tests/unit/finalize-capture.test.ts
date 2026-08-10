@@ -4,6 +4,7 @@ const mockClipboardWriteImage = vi.fn();
 const mockCreateFromBuffer = vi.fn(() => ({ isEmpty: () => false }));
 const mockGetConfig = vi.fn();
 const mockAddToHistory = vi.fn();
+const mockPrepareCapturePreview = vi.fn();
 const mockShowCapturePreview = vi.fn();
 const mockOpenScreenshotEditor = vi.fn();
 const mockFsExistsSync = vi.fn();
@@ -36,6 +37,7 @@ vi.mock('@/main/history', () => ({
 }));
 
 vi.mock('@/main/capture/capture-preview', () => ({
+  prepareCapturePreview: (...a: unknown[]) => mockPrepareCapturePreview(...a),
   showCapturePreview: (...a: unknown[]) => mockShowCapturePreview(...a),
 }));
 
@@ -64,6 +66,7 @@ describe('finalizeCapture', () => {
     vi.resetModules();
     mockFsExistsSync.mockReturnValue(true);
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
+    mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
     setScreenshotConfig({});
   });
 
@@ -100,9 +103,81 @@ describe('finalizeCapture', () => {
     expect(mockShowCapturePreview).toHaveBeenCalledWith(
       '/path/shot.png',
       'screenshot',
-      'h1'
+      undefined,
+      undefined,
+      expect.any(Promise)
     );
     expect(mockOpenScreenshotEditor).not.toHaveBeenCalled();
+  });
+
+  it('starts history persistence only after the preview is visible', async () => {
+    setScreenshotConfig({ autoCopyToClipboard: false, showPreview: true });
+    let revealPreview: () => void = () => {};
+    mockShowCapturePreview.mockReturnValueOnce({
+      revealed: new Promise(resolve => {
+        revealPreview = resolve;
+      }),
+    });
+    const { finalizeCapture } = await importFinalize();
+
+    const finalizing = finalizeCapture('/path/shot.png');
+
+    expect(mockShowCapturePreview).toHaveBeenCalledWith(
+      '/path/shot.png',
+      'screenshot',
+      undefined,
+      undefined,
+      expect.any(Promise)
+    );
+    expect(mockAddToHistory).not.toHaveBeenCalled();
+
+    revealPreview();
+    await finalizing;
+
+    expect(mockAddToHistory).toHaveBeenCalledWith('/path/shot.png');
+  });
+
+  it('waits until the preview is visible before auto-copying', async () => {
+    setScreenshotConfig({ showPreview: true });
+    let revealPreview: () => void = () => {};
+    mockShowCapturePreview.mockReturnValueOnce({
+      revealed: new Promise(resolve => {
+        revealPreview = resolve;
+      }),
+    });
+    const { finalizeCapture } = await importFinalize();
+
+    const finalizing = finalizeCapture('/path/shot.png');
+
+    expect(mockClipboardWriteImage).not.toHaveBeenCalled();
+
+    revealPreview();
+    await finalizing;
+
+    expect(mockClipboardWriteImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the editor when preview creation fails', async () => {
+    setScreenshotConfig({ showPreview: true });
+    const dispose = vi.fn();
+    mockShowCapturePreview.mockImplementationOnce(() => {
+      throw new Error('preview failed');
+    });
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const { finalizeCapture } = await importFinalize();
+
+    await finalizeCapture('/path/shot.png', { dispose } as never);
+
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(mockAddToHistory).toHaveBeenCalledWith('/path/shot.png');
+    expect(mockClipboardWriteImage).toHaveBeenCalledTimes(1);
+    expect(mockOpenScreenshotEditor).toHaveBeenCalledWith(
+      '/path/shot.png',
+      'h1'
+    );
+    consoleError.mockRestore();
   });
 
   it('skips the clipboard when auto copy is disabled', async () => {

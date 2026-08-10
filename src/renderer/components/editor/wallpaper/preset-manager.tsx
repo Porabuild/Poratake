@@ -1,13 +1,7 @@
 import { useState, useCallback } from 'react';
 import { Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import SettingsSelect from '@/renderer/components/settings/settings-select';
 import type { WallpaperPreset } from '@/types/settings';
 import type { WallpaperSettings } from '@/types/editor';
 
@@ -151,28 +145,16 @@ export default function PresetManager({
 
       {presets.length > 0 ? (
         <div className="flex items-center gap-2">
-          <Select value={selectedPresetId} onValueChange={handlePresetSelect}>
-            <SelectTrigger size="sm" className="h-8 flex-1">
-              <SelectValue placeholder="Select a preset" />
-            </SelectTrigger>
-            <SelectContent>
-              {presets.map(preset => (
-                <SelectItem key={preset.id} value={preset.id}>
-                  <div className="flex items-center gap-2">
-                    {preset.gradient && (
-                      <div
-                        className="size-4 rounded"
-                        style={{
-                          background: `linear-gradient(${preset.gradient.angle}deg, ${preset.gradient.colors.join(', ')})`,
-                        }}
-                      />
-                    )}
-                    <span>{preset.name}</span>
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SettingsSelect
+            label="Preset"
+            options={presets.map(preset => ({
+              value: preset.id,
+              label: preset.name,
+            }))}
+            value={selectedPresetId}
+            onChange={handlePresetSelect}
+            className="w-auto flex-1"
+          />
 
           {selectedPresetId && (
             <button

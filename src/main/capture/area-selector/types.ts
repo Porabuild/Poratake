@@ -20,6 +20,7 @@ export interface PresetArea {
 
 export interface StartAreaSelectionOptions {
   mode?: AreaSelectionMode;
+  freeze?: boolean;
   preset?: PresetArea;
   onUpdate?: AreaSelectionCallback;
   onSelected?: AreaSelectionCallback;

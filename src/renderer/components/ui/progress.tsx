@@ -1,8 +1,12 @@
 import * as React from 'react';
+import { ProgressBar } from '@heroui/react';
 
 import { cn } from '@/renderer/lib/utils';
 
-interface ProgressProps extends React.HTMLAttributes<HTMLDivElement> {
+interface ProgressProps extends Omit<
+  React.ComponentProps<typeof ProgressBar>,
+  'value'
+> {
   value?: number;
   indicatorClassName?: string;
   indeterminate?: boolean;
@@ -19,33 +23,20 @@ const Progress = React.forwardRef<HTMLDivElement, ProgressProps>(
     },
     ref
   ) => (
-    <div
+    <ProgressBar
       ref={ref}
-      role="progressbar"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={indeterminate ? undefined : value}
-      className={cn(
-        'bg-primary/20 relative h-2 w-full overflow-hidden rounded-full',
-        className
-      )}
+      value={value}
+      isIndeterminate={indeterminate}
+      className={className}
       {...props}
     >
-      <div
-        className={cn(
-          'bg-primary h-full transition-all duration-300 ease-out',
-          indeterminate && 'progress-indeterminate transition-none',
-          indicatorClassName
-        )}
-        style={
-          indeterminate
-            ? undefined
-            : { width: `${Math.max(0, Math.min(100, value))}%` }
-        }
-      />
-    </div>
+      <ProgressBar.Track className="h-2">
+        <ProgressBar.Fill className={cn(indicatorClassName)} />
+      </ProgressBar.Track>
+    </ProgressBar>
   )
 );
+
 Progress.displayName = 'Progress';
 
 export { Progress };

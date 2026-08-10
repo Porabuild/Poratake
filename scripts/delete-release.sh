@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Capty Delete Release Script
+# Poratake Delete Release Script
 # This script deletes a release and rolls back all associated changes
 #
 # Usage:

@@ -4,6 +4,9 @@ const mockGetAllDisplays = vi.fn();
 const mockGetCursorScreenPoint = vi.fn();
 const mockGetDisplayNearestPoint = vi.fn();
 const mockGetDisplayMatching = vi.fn();
+const mockDaemonCall = vi.fn();
+const mockGlobalShortcutRegister = vi.fn();
+const mockGlobalShortcutUnregister = vi.fn();
 
 const ipcHandlers = new Map<string, (event: unknown, data?: unknown) => void>();
 const overlayWindows: MockBrowserWindow[] = [];
@@ -31,13 +34,21 @@ class MockBrowserWindow {
     this.visible = false;
   });
   focus = vi.fn();
+  moveTop = vi.fn();
   destroy = vi.fn(() => {
     this.destroyed = true;
   });
   isDestroyed = () => this.destroyed;
   isVisible = () => this.visible;
+  getNativeWindowHandle = () => {
+    const handle = Buffer.alloc(8);
+    handle.writeBigUInt64LE(BigInt(this.webContents.id));
+    return handle;
+  };
   setAlwaysOnTop = vi.fn();
   setBounds = vi.fn();
+  setIgnoreMouseEvents = vi.fn();
+  setOpacity = vi.fn();
   loadURL = vi.fn();
   loadFile = vi.fn();
   on = vi.fn();
@@ -50,6 +61,10 @@ class MockBrowserWindow {
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp' },
   BrowserWindow: MockBrowserWindow,
+  globalShortcut: {
+    register: (...a: unknown[]) => mockGlobalShortcutRegister(...a),
+    unregister: (...a: unknown[]) => mockGlobalShortcutUnregister(...a),
+  },
   ipcMain: {
     on: (
       channel: string,
@@ -79,11 +94,14 @@ vi.mock('@/main/utils/env', () => ({
 
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureRegionToFile: vi.fn(),
-  releaseRetainedDisplays: vi.fn(),
 }));
 
 vi.mock('@/main/capture/freeze-screen/preference', () => ({
   isFreezeScreenEnabled: () => true,
+}));
+
+vi.mock('@/main/daemon', () => ({
+  daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
 }));
 
 const primary = { id: 7, bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
@@ -100,6 +118,10 @@ function fire(channel: string, webContentsId: number, data?: unknown): void {
   ipcHandlers.get(channel)?.({ sender: { id: webContentsId } }, data);
 }
 
+function prepare(window: MockBrowserWindow): void {
+  fire('area-overlay:renderer-prepared', window.webContents.id);
+}
+
 function windowFor(displayIndex: number): MockBrowserWindow {
   return overlayWindows[displayIndex];
 }
@@ -114,6 +136,8 @@ describe('interactive area overlay', () => {
     mockGetAllDisplays.mockReturnValue([primary, secondary]);
     mockGetCursorScreenPoint.mockReturnValue({ x: 10, y: 10 });
     mockGetDisplayNearestPoint.mockReturnValue(primary);
+    mockDaemonCall.mockResolvedValue({ disabled: true });
+    mockGlobalShortcutRegister.mockReturnValue(true);
     mockGetDisplayMatching.mockImplementation(
       (rect: { x: number; y: number }) =>
         rect.x >= secondary.bounds.x ? secondary : primary
@@ -131,21 +155,24 @@ describe('interactive area overlay', () => {
     await settle();
 
     expect(windowFor(0).hide).toHaveBeenCalled();
+    expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(0);
+    expect(windowFor(0).setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
     expect(onSelected).not.toHaveBeenCalled();
 
     fire('area-overlay:ready', windowFor(1).webContents.id);
 
-    expect(windowFor(1).showInactive).toHaveBeenCalled();
+    expect(windowFor(1).showInactive).toHaveBeenCalledTimes(1);
     expect(onSelected).toHaveBeenCalledWith(
       expect.objectContaining({
         rect: { x: 2000, y: 100, width: 400, height: 300 },
       })
     );
 
-    loadHandlers.get(windowFor(1).webContents.id)?.();
+    prepare(windowFor(1));
     expect(windowFor(1).webContents.send).toHaveBeenCalledWith('load', {
       type: 'area-overlay',
       params: {
+        sessionId: expect.any(Number),
         displayId: secondary.id,
         imageUrl: null,
         interactive: true,
@@ -206,6 +233,8 @@ describe('interactive area overlay', () => {
       })
     );
     expect(windowFor(0).hide).toHaveBeenCalled();
+    expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(0);
+    expect(windowFor(0).setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
     expect(windowFor(0).webContents.send).toHaveBeenCalledWith(
       'area-overlay:set-rect',
       { rect: null }
@@ -236,8 +265,10 @@ describe('interactive area overlay', () => {
         rect: { x: 1930, y: 30, width: 300, height: 200 },
       })
     );
-    expect(windowFor(0).destroy).toHaveBeenCalled();
-    expect(windowFor(1).destroy).toHaveBeenCalled();
+    expect(windowFor(0).hide).toHaveBeenCalled();
+    expect(windowFor(1).hide).toHaveBeenCalled();
+    expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(0);
+    expect(windowFor(1).setOpacity).toHaveBeenLastCalledWith(0);
   });
 
   it('ignores geometry that leaves the reporting display', async () => {
@@ -313,9 +344,17 @@ describe('interactive area overlay', () => {
     module.setOverlayVisible(false);
     expect(windowFor(0).hide).toHaveBeenCalled();
     expect(windowFor(1).hide).toHaveBeenCalled();
+    expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(0);
+    expect(windowFor(1).setOpacity).toHaveBeenLastCalledWith(0);
+    expect(windowFor(0).setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
+    expect(windowFor(1).setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
 
     module.setOverlayVisible(true);
     expect(windowFor(0).showInactive).toHaveBeenCalledTimes(2);
+    expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(1);
+    expect(windowFor(1).setOpacity).toHaveBeenLastCalledWith(1);
+    expect(windowFor(0).setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+    expect(windowFor(1).setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
 
     module.cancelOverlaySelection();
     await session;
@@ -326,7 +365,12 @@ describe('interactive area overlay', () => {
     const onToolbarAction = vi.fn();
 
     const session = module.startInteractiveOverlay({
-      toolbar: { kind: 'all-in-one', recordingEnabled: true },
+      toolbar: {
+        kind: 'all-in-one',
+        recordingEnabled: true,
+        ocrEnabled: true,
+        activeMode: 'screenshot',
+      },
       callbacks: { onToolbarAction },
     });
     await settle();
@@ -353,6 +397,39 @@ describe('interactive area overlay', () => {
       width: 16,
       height: 9,
     });
+
+    fire('area-overlay:toolbar', windowFor(1).webContents.id, {
+      action: 'ocr',
+    });
+    expect(onToolbarAction).toHaveBeenCalledWith({ action: 'ocr' });
+
+    fire('area-overlay:toolbar', windowFor(1).webContents.id, {
+      action: 'copy-color',
+      color: '#12abef',
+    });
+    expect(onToolbarAction).toHaveBeenCalledWith({
+      action: 'copy-color',
+      color: '#12abef',
+    });
+
+    fire('area-overlay:toolbar', windowFor(1).webContents.id, {
+      action: 'select-capture-mode',
+      mode: 'record',
+    });
+    expect(onToolbarAction).toHaveBeenCalledWith({
+      action: 'select-capture-mode',
+      mode: 'record',
+    });
+
+    fire('area-overlay:toolbar', windowFor(1).webContents.id, {
+      action: 'copy-color',
+      color: 'not-a-color',
+    });
+    fire('area-overlay:toolbar', windowFor(1).webContents.id, {
+      action: 'select-capture-mode',
+      mode: 'invalid',
+    });
+    expect(onToolbarAction).toHaveBeenCalledTimes(5);
     expect(onToolbarAction).toHaveBeenCalledWith({
       action: 'select-aspect-ratio',
       name: '16:9',

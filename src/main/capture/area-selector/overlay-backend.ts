@@ -91,6 +91,7 @@ export async function startAreaSelection(
   pendingAreaSelection = null;
 
   const selection = await startInteractiveOverlay({
+    freeze: options?.freeze,
     preset,
     showPrompt: options?.showPrompt ?? true,
     toolbar: options?.toolbar ?? null,
@@ -121,7 +122,11 @@ export async function startAreaSelection(
     return null;
   }
 
-  return toAreaSelection(selection, 'confirmed');
+  try {
+    return toAreaSelection(selection, 'confirmed');
+  } finally {
+    await selection.release();
+  }
 }
 
 export async function confirmAreaSelection(): Promise<AreaSelection | null> {
@@ -143,7 +148,7 @@ export async function cancelAreaSelection(
   silent: boolean = false
 ): Promise<void> {
   pendingAreaSelection = null;
-  cancelOverlaySelection(silent);
+  await cancelOverlaySelection(silent);
 }
 
 export function hasPendingSelection(): boolean {

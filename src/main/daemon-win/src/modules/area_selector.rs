@@ -1,6 +1,6 @@
 use crate::overlay::{
-    add_key_handler, create_popup_window, default_wndproc, ensure_window_class, monitors,
-    rect_height, rect_width, remove_key_handler, to_wide,
+    add_key_handler, configure_overlay_window, create_popup_window, default_wndproc,
+    ensure_window_class, monitors, rect_height, rect_width, remove_key_handler, to_wide,
 };
 use crate::protocol::{
     param_bool, param_i32, param_str, respond_error, respond_success, send_event, Request,
@@ -9,6 +9,7 @@ use crate::router::{method_not_found, Module, Reply};
 use crate::ui::run_on_ui;
 use serde_json::{json, Value};
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -1487,6 +1488,25 @@ impl Module for AreaSelectorModule {
                 let request_id = request.id.clone();
                 run_on_ui(move || set_aspect_ratio(request_id, ratio));
                 Reply::Deferred
+            }
+            "disableWindowTransitions" => {
+                let Some(window_handle) = param_str(&request.params, "windowHandle")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value != 0)
+                else {
+                    return Reply::Now(Err((
+                        "INVALID_PARAMS".to_string(),
+                        "disableWindowTransitions requires a windowHandle".to_string(),
+                    )));
+                };
+                let window = HWND(window_handle as *mut c_void);
+                match configure_overlay_window(window) {
+                    Ok(()) => Reply::Now(Ok(Some(json!({ "disabled": true })))),
+                    Err(error) => Reply::Now(Err((
+                        "WINDOW_CONFIGURATION_FAILED".to_string(),
+                        error.to_string(),
+                    ))),
+                }
             }
             method => method_not_found(method),
         }

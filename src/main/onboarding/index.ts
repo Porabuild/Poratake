@@ -1,6 +1,8 @@
 import { BrowserWindow, ipcMain, screen, shell } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
+import { openExternalUrl } from '@/main/utils/external-url';
+import { getWindowData } from '@/main/capture/video/window-manager';
 import {
   titleBarColors,
   titleBarWindowOptions,
@@ -48,7 +50,7 @@ export function createOnboardingWindow(): BrowserWindow {
     x: Math.floor((screenWidth - windowWidth) / 2),
     y: Math.floor((screenHeight - windowHeight) / 2),
     backgroundColor: titleBarColors('background').color,
-    title: 'Setup Capty',
+    title: 'Set up Poratake',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -119,12 +121,15 @@ export function init(): void {
     }
   });
 
-  ipcMain.on('shell:open-external', (_, url: string) => {
-    shell.openExternal(url);
+  ipcMain.on('shell:open-external', (_, url: unknown) => {
+    openExternalUrl(url);
   });
 
-  ipcMain.on('shell:reveal-in-finder', (_, path: string) => {
-    shell.showItemInFolder(`${path}/recording.mov`);
+  ipcMain.on('shell:reveal-in-finder', event => {
+    const data = getWindowData(event.sender.id);
+    if (!data) return;
+
+    shell.showItemInFolder(data.filePath);
   });
 }
 

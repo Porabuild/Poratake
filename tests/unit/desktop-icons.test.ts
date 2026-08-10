@@ -149,6 +149,25 @@ describe('desktop-icons', () => {
       Object.defineProperty(process, 'platform', { value: original });
     });
 
+    it('keeps icons hidden until every active capture releases them', async () => {
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      mockDaemonCall.mockResolvedValue({});
+      const m = await import('@/main/capture/desktop-icons');
+      await m.hideDesktopIcons('capture');
+      await m.hideDesktopIcons('capture');
+      mockDaemonCall.mockClear();
+
+      expect(await m.showDesktopIcons('capture')).toBe(true);
+      expect(mockDaemonCall).not.toHaveBeenCalled();
+      expect(m.areDesktopIconsHidden()).toBe(true);
+
+      expect(await m.showDesktopIcons('capture')).toBe(true);
+      expect(mockDaemonCall).toHaveBeenCalledWith('desktop-helper', 'show');
+      expect(m.areDesktopIconsHidden()).toBe(false);
+      Object.defineProperty(process, 'platform', { value: original });
+    });
+
     it('system reset clears all reasons and shows', async () => {
       const original = process.platform;
       Object.defineProperty(process, 'platform', { value: 'darwin' });

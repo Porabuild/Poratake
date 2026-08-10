@@ -1,6 +1,5 @@
 use crate::desktop_frame::{
-    capture_display_frame, capture_rect, capture_window, clear_frozen, crop, frozen_rect,
-    retain_frozen, write_image, DesktopFrame,
+    apply_alpha_mask, capture_rect, capture_window, frozen_rect, write_image, DesktopFrame,
 };
 use crate::protocol::{
     param_bool, param_i32, param_i64, param_str, respond_error, respond_success, Request,
@@ -22,10 +21,6 @@ impl Module for ScreenshotModule {
         match request.method.as_str() {
             "capture-area" => capture_area(request),
             "capture-window" => capture_target_window(request),
-            "release" => {
-                clear_frozen();
-                Reply::Now(Ok(Some(json!({ "released": true }))))
-            }
             method => method_not_found(method),
         }
     }
@@ -43,26 +38,25 @@ fn capture_area(request: &Request) -> Reply {
     };
 
     let cached = param_bool(&request.params, "cached").unwrap_or(false);
-    let retain = param_bool(&request.params, "retain").unwrap_or(false);
+    let window_id = param_i64(&request.params, "windowId");
     let request_id = request.id.clone();
 
     spawn_capture(request_id, path, move || {
-        if cached {
-            if let Some(frame) = frozen_rect(bounds) {
-                return Ok(frame);
-            }
-        }
-
-        if !retain {
+        let frame = if cached { frozen_rect(bounds) } else { None };
+        let Some(mut frame) = frame else {
             unsafe { DwmFlush() }.map_err(|error| error.to_string())?;
             return capture_rect(bounds);
-        }
+        };
+        let Some(window_id) = window_id else {
+            return Ok(frame);
+        };
+        let window = HWND(window_id as isize as *mut c_void);
+        let Ok(mask) = capture_window(window) else {
+            return Ok(frame);
+        };
 
-        let display = capture_display_frame(bounds)?;
-        let area = crop(&display, bounds)
-            .ok_or_else(|| "The capture area is outside the display bounds".to_string())?;
-        retain_frozen(display);
-        Ok(area)
+        apply_alpha_mask(&mut frame, &mask);
+        Ok(frame)
     })
 }
 

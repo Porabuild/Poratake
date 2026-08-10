@@ -41,6 +41,7 @@ describe('default global shortcuts', () => {
       window: 'Alt+Shift+5',
       screen: 'Alt+Shift+3',
     });
+    expect(DEFAULT_SETTINGS.shortcuts.allInOne).toBe('Alt+Shift+S');
   });
 
   it('uses Cmd+Shift on macOS', async () => {
@@ -53,6 +54,7 @@ describe('default global shortcuts', () => {
       window: 'CommandOrControl+Shift+5',
       screen: 'CommandOrControl+Shift+3',
     });
+    expect(DEFAULT_SETTINGS.shortcuts.allInOne).toBe('Alt+Shift+S');
   });
 
   it('falls back to the renderer platform when process is unavailable', async () => {

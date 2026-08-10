@@ -24,6 +24,8 @@ const mockPrewarmRecorder = vi.fn();
 const mockPrewarmOverlay = vi.fn();
 const mockCreateVideoEditorWindow = vi.fn();
 const mockShowCapturePreview = vi.fn();
+const mockPrepareCapturePreview = vi.fn();
+const mockPrewarmCapturePreview = vi.fn();
 const mockAddToHistory = vi.fn();
 const mockShowRecordingError = vi.fn();
 const mockCheckMic = vi.fn();
@@ -79,6 +81,8 @@ vi.mock('@/main/capture/video/video-editor.ts', () => ({
 
 vi.mock('@/main/capture/capture-preview', () => ({
   showCapturePreview: (...a: unknown[]) => mockShowCapturePreview(...a),
+  prepareCapturePreview: () => mockPrepareCapturePreview(),
+  prewarmCapturePreview: () => mockPrewarmCapturePreview(),
 }));
 
 vi.mock('@/main/history', () => ({
@@ -124,6 +128,8 @@ describe('recording-actions', () => {
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
     mockGenerateInitialEditorState.mockResolvedValue(true);
     mockCheckMic.mockResolvedValue(true);
+    mockPrepareCapturePreview.mockReturnValue({ prepared: true });
+    mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
   });
 
   describe('stopRecordingAction', () => {
@@ -151,6 +157,90 @@ describe('recording-actions', () => {
       expect(mockAddToHistory).not.toHaveBeenCalled();
     });
 
+    it('shares finalization across overlapping stop actions', async () => {
+      let finishStop: (result: {
+        outputPath: string;
+        duration: number;
+      }) => void = () => {};
+      mockStopRecording.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishStop = resolve;
+        })
+      );
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const firstStop = m.stopRecordingAction();
+      const secondStop = m.stopRecordingAction();
+
+      expect(mockStopRecording).toHaveBeenCalledTimes(1);
+      finishStop({
+        outputPath: '/p/Rec.capty/recording.mov',
+        duration: 18,
+      });
+      await Promise.all([firstStop, secondStop]);
+
+      expect(mockGenerateInitialEditorState).toHaveBeenCalledTimes(1);
+      expect(mockAddToHistory).toHaveBeenCalledTimes(1);
+      expect(mockCreateVideoEditorWindow).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for a pending start before stopping the recording', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      let finishStartup: () => void = () => {};
+      mockStartRecordingWithConfig.mockReturnValueOnce(
+        new Promise<void>(resolve => {
+          finishStartup = resolve;
+        })
+      );
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const startup = m.startPendingRecording();
+      await vi.waitFor(() =>
+        expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1)
+      );
+      const stopping = m.stopRecordingAction();
+
+      expect(mockStopRecording).not.toHaveBeenCalled();
+      finishStartup();
+      await Promise.all([startup, stopping]);
+
+      expect(mockStopRecording).toHaveBeenCalledTimes(1);
+      expect(mockAddToHistory).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores delete while stop finalization is active', async () => {
+      let finishStop: (result: {
+        outputPath: string;
+        duration: number;
+      }) => void = () => {};
+      mockStopRecording.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishStop = resolve;
+        })
+      );
+      mockGetCurrentRecordingPath.mockReturnValue('/p/Rec.capty/recording.mov');
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const stopping = m.stopRecordingAction();
+      await m.deleteRecordingAction();
+
+      expect(mockDeleteVideo).not.toHaveBeenCalled();
+      finishStop({
+        outputPath: '/p/Rec.capty/recording.mov',
+        duration: 18,
+      });
+      await stopping;
+
+      expect(mockAddToHistory).toHaveBeenCalledTimes(1);
+      expect(mockDeleteVideo).not.toHaveBeenCalled();
+    });
+
     it('shows capture preview when configured', async () => {
       mockGetConfig.mockReturnValue({
         recording: { iosDevice: null, showPreview: true, camera: null },
@@ -159,6 +249,120 @@ describe('recording-actions', () => {
       await m.stopRecordingAction();
       expect(mockShowCapturePreview).toHaveBeenCalled();
       expect(mockCreateVideoEditorWindow).not.toHaveBeenCalled();
+    });
+
+    it('shows the preview without waiting for editor state generation', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      let finishEditorState: (result: boolean) => void = () => {};
+      const editorStatePromise = new Promise<boolean>(resolve => {
+        finishEditorState = resolve;
+      });
+      mockGenerateInitialEditorState.mockReturnValueOnce(editorStatePromise);
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const stopping = m.stopRecordingAction();
+
+      await vi.waitFor(() => expect(mockShowCapturePreview).toHaveBeenCalled());
+      expect(mockShowCapturePreview.mock.calls[0][5]).toBe(editorStatePromise);
+
+      finishEditorState(true);
+      await stopping;
+    });
+
+    it('shows the preview before starting history persistence', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      let revealPreview: () => void = () => {};
+      mockShowCapturePreview.mockReturnValueOnce({
+        revealed: new Promise<void>(resolve => {
+          revealPreview = resolve;
+        }),
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const stopping = m.stopRecordingAction();
+
+      await vi.waitFor(() => expect(mockShowCapturePreview).toHaveBeenCalled());
+      expect(mockPrepareCapturePreview).toHaveBeenCalled();
+      expect(mockAddToHistory).not.toHaveBeenCalled();
+
+      revealPreview();
+      await stopping;
+
+      expect(mockAddToHistory).toHaveBeenCalledWith(
+        '/p/Rec.capty/recording.mov',
+        'video',
+        18
+      );
+    });
+
+    it('falls back to the editor when preview creation fails', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      const dispose = vi.fn();
+      mockPrepareCapturePreview.mockReturnValueOnce({ dispose });
+      mockShowCapturePreview.mockImplementationOnce(() => {
+        throw new Error('preview failed');
+      });
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const result = await m.stopRecordingAction();
+
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(mockCreateVideoEditorWindow).toHaveBeenCalledWith(
+        '/p/Rec.capty/recording.mov'
+      );
+      expect(mockAddToHistory).toHaveBeenCalledWith(
+        '/p/Rec.capty/recording.mov',
+        'video',
+        18
+      );
+      expect(result).toBe('/p/Rec.capty/recording.mov');
+      consoleError.mockRestore();
+    });
+
+    it('queues a new recording until previous finalization finishes', async () => {
+      let showPreview = true;
+      mockGetConfig.mockImplementation(() => ({
+        recording: { iosDevice: null, showPreview, camera: null },
+      }));
+      let revealPreview: () => void = () => {};
+      mockShowCapturePreview.mockReturnValueOnce({
+        revealed: new Promise<void>(resolve => {
+          revealPreview = resolve;
+        }),
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const firstStop = m.stopRecordingAction();
+      await vi.waitFor(() => expect(mockShowCapturePreview).toHaveBeenCalled());
+
+      showPreview = false;
+      const nextStart = m.startPendingRecording({
+        iosDeviceId: 'ios-device',
+        iosDeviceName: 'iPhone',
+      });
+      expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
+      revealPreview();
+      await Promise.all([firstStop, nextStart]);
+
+      mockStopRecording.mockResolvedValueOnce({
+        outputPath: '/p/Second.capty/recording.mov',
+        duration: 10,
+      });
+      await m.stopRecordingAction();
+
+      expect(mockGenerateInitialEditorState).toHaveBeenLastCalledWith({
+        projectPath: '/p/Second.capty/recording.mov',
+        recordingType: 'ios-device',
+      });
     });
 
     it('cleans up even on stop error', async () => {
@@ -400,6 +604,39 @@ describe('recording-actions', () => {
       expect(mockStartRecordingWithConfig).toHaveBeenCalled();
     });
 
+    it('shares startup across duplicate recording requests', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      let finishStartup: () => void = () => {};
+      mockStartRecordingWithConfig.mockReturnValueOnce(
+        new Promise<void>(resolve => {
+          finishStartup = resolve;
+        })
+      );
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const first = m.startPendingRecording({ cameraEnabled: true });
+      await vi.waitFor(() =>
+        expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1)
+      );
+      const second = m.startPendingRecording({ cameraEnabled: true });
+
+      expect(mockConfirmAreaSelection).toHaveBeenCalledTimes(1);
+      expect(mockCreateRecordingProject).toHaveBeenCalledTimes(1);
+      expect(mockDisableCameraProtection).not.toHaveBeenCalled();
+      expect(mockHideCameraPreview).not.toHaveBeenCalled();
+
+      finishStartup();
+      await Promise.all([first, second]);
+
+      expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1);
+    });
+
     it('iOS recording skips area selector', async () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording({
@@ -466,6 +703,36 @@ describe('recording-actions', () => {
       );
     });
 
+    it('waits for native startup before restarting', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      let finishStartup: () => void = () => {};
+      mockStartRecordingWithConfig.mockReturnValueOnce(
+        new Promise<void>(resolve => {
+          finishStartup = resolve;
+        })
+      );
+      const m = await import('@/main/capture/video/recording-actions');
+      const startup = m.startPendingRecording();
+      await vi.waitFor(() =>
+        expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1)
+      );
+
+      const restarting = m.restartRecordingAction();
+
+      expect(mockStopRecording).not.toHaveBeenCalled();
+      finishStartup();
+      await Promise.all([startup, restarting]);
+
+      expect(mockStopRecording).toHaveBeenCalledTimes(1);
+      expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(2);
+    });
+
     it('wires post-start recording failure cleanup', async () => {
       mockConfirmAreaSelection.mockResolvedValue({
         status: 'selected',
@@ -477,14 +744,25 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording({ cameraEnabled: true });
       const onFailure = mockStartRecordingWithConfig.mock.calls[0][3] as (
-        error: Error
+        error: Error,
+        outputPath: string | null
       ) => Promise<void>;
 
-      await onFailure(new Error('capture failed'));
+      await onFailure(
+        new Error('capture failed'),
+        '/p/Rec.capty/recording.mov'
+      );
 
       expect(mockDisableCameraProtection).toHaveBeenCalled();
       expect(mockHideRecordingControl).toHaveBeenCalled();
       expect(mockHideCameraPreview).toHaveBeenCalled();
+      expect(mockDeleteVideo).toHaveBeenCalledWith(
+        '/p/Rec.capty/recording.mov',
+        {
+          showNotification: false,
+          showErrorDialog: false,
+        }
+      );
       expect(mockShowRecordingError).toHaveBeenCalledWith(
         expect.objectContaining({ message: 'capture failed' })
       );
@@ -503,6 +781,61 @@ describe('recording-actions', () => {
       await m.startPendingRecording();
       expect(mockShowRecordingError).toHaveBeenCalled();
       expect(mockDisableCameraProtection).toHaveBeenCalled();
+      expect(mockDeleteVideo).toHaveBeenCalledWith(
+        '/p/Rec.capty/recording.mov',
+        {
+          showNotification: false,
+          showErrorDialog: false,
+        }
+      );
+    });
+
+    it('shows error when the recording project cannot be created', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      mockCreateRecordingProject.mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+
+      expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
+      expect(mockShowRecordingError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'disk full' })
+      );
+      expect(mockDeleteVideo).not.toHaveBeenCalled();
+      expect(mockDisableCameraProtection).toHaveBeenCalled();
+    });
+
+    it('silently cleans up when recording startup is cancelled', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const cancellation = new Error('Recording start cancelled');
+      cancellation.name = 'AbortError';
+      mockStartRecordingWithConfig.mockRejectedValueOnce(cancellation);
+      const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+
+      expect(mockShowRecordingError).not.toHaveBeenCalled();
+      expect(mockDeleteVideo).toHaveBeenCalledWith(
+        '/p/Rec.capty/recording.mov',
+        {
+          showNotification: false,
+          showErrorDialog: false,
+        }
+      );
     });
   });
 
@@ -539,6 +872,9 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await expect(m.deleteRecordingAction()).rejects.toThrow('boom');
       expect(mockHideRecordingControl).toHaveBeenCalled();
+      expect(mockDeleteVideo).toHaveBeenCalledWith('/p/x.mov', {
+        showNotification: true,
+      });
     });
   });
 
@@ -570,6 +906,79 @@ describe('recording-actions', () => {
       expect(mockStartRecordingWithConfig).toHaveBeenCalled();
     });
 
+    it('shares restart work across overlapping requests', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording();
+      mockCreateRecordingProject.mockClear();
+      mockStartRecordingWithConfig.mockClear();
+      let finishStop: () => void = () => {};
+      mockStopRecording.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishStop = () =>
+            resolve({
+              outputPath: '/p/old.mov',
+              duration: 10,
+            });
+        })
+      );
+      mockGetCurrentRecordingPath.mockReturnValue('/p/old.mov');
+
+      const firstRestart = m.restartRecordingAction();
+      const secondRestart = m.restartRecordingAction();
+
+      expect(mockStopRecording).toHaveBeenCalledTimes(1);
+      finishStop();
+      await Promise.all([firstRestart, secondRestart]);
+
+      expect(mockCreateRecordingProject).toHaveBeenCalledTimes(1);
+      expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1);
+      expect(mockDeleteVideo).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not start another recording while restart is pending', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording();
+      mockStartRecordingWithConfig.mockClear();
+      let finishStop: () => void = () => {};
+      mockStopRecording.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishStop = () =>
+            resolve({
+              outputPath: '/p/old.mov',
+              duration: 10,
+            });
+        })
+      );
+      mockGetCurrentRecordingPath.mockReturnValue('/p/old.mov');
+
+      const restarting = m.restartRecordingAction();
+      const overlappingStart = m.startPendingRecording({
+        iosDeviceId: 'ios-device',
+        iosDeviceName: 'iPhone',
+      });
+
+      expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
+      finishStop();
+      await Promise.all([restarting, overlappingStart]);
+
+      expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1);
+      expect(mockKillAreaSelector).not.toHaveBeenCalled();
+    });
+
     it('shows error on restart failure', async () => {
       mockConfirmAreaSelection.mockResolvedValue({
         status: 'selected',
@@ -583,6 +992,35 @@ describe('recording-actions', () => {
       mockStartRecordingWithConfig.mockRejectedValueOnce(new Error('boom'));
       await m.restartRecordingAction();
       expect(mockShowRecordingError).toHaveBeenCalled();
+      expect(mockDeleteVideo).toHaveBeenLastCalledWith(
+        '/p/Rec.capty/recording.mov',
+        {
+          showNotification: false,
+          showErrorDialog: false,
+        }
+      );
+    });
+
+    it('shows error when a restart project cannot be created', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording();
+      mockCreateRecordingProject.mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
+
+      await m.restartRecordingAction();
+
+      expect(mockShowRecordingError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'disk full' })
+      );
+      expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1);
     });
 
     it('shows camera preview when camera enabled in previous config', async () => {

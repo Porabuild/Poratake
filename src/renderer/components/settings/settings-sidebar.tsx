@@ -1,7 +1,5 @@
 import { useRef, useEffect } from 'react';
 import { Search, X } from 'lucide-react';
-import { Input } from '@/renderer/components/ui/input';
-import { Button } from '@/renderer/components/ui/button';
 import { Separator } from '@/renderer/components/ui/separator';
 import { cn } from '@/renderer/lib/utils';
 import { SEARCHABLE_CATEGORIES, SPECIAL_CATEGORIES } from './settings-registry';
@@ -33,28 +31,37 @@ export default function SettingsSidebar({
   }, []);
 
   return (
-    <div className="flex h-full w-52 shrink-0 flex-col border-r">
-      <div className="p-3">
-        <div className="relative">
-          <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
-          <Input
+    <aside className="poratake-settings-sidebar flex h-full w-60 shrink-0 flex-col">
+      <div
+        className="flex h-10 shrink-0 items-center px-4"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
+        <p className="text-muted-foreground text-xs font-semibold tracking-[0.12em]">
+          SETTINGS
+        </p>
+      </div>
+
+      <div className="px-2 pb-2">
+        <label className="text-muted-foreground focus-within:text-foreground hover:text-foreground flex cursor-text items-center gap-2 rounded-3xl px-2 py-1.5 transition-colors focus-within:bg-[var(--row-active)] hover:bg-[var(--row-hover)]">
+          <Search className="size-4 shrink-0" />
+          <input
             ref={inputRef}
             value={searchQuery}
             onChange={e => onSearchChange(e.target.value)}
-            placeholder="Search settings..."
-            className="h-8 pr-8 pl-8 text-sm"
+            placeholder="Search settings"
+            className="placeholder:text-muted-foreground text-foreground min-w-0 flex-1 bg-transparent text-sm outline-none"
           />
           {searchQuery && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute top-1/2 right-0.5 size-7 -translate-y-1/2"
+            <button
+              type="button"
+              aria-label="Clear settings search"
+              className="text-muted-foreground hover:text-foreground flex size-5 shrink-0 items-center justify-center rounded"
               onClick={() => onSearchChange('')}
             >
               <X className="size-3.5" />
-            </Button>
+            </button>
           )}
-        </div>
+        </label>
       </div>
 
       <nav className="flex-1 space-y-0.5 overflow-auto px-2">
@@ -70,10 +77,10 @@ export default function SettingsSidebar({
                 onCategoryChange(category.id);
               }}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
+                'flex w-full items-center gap-2.5 rounded-3xl px-2.5 py-1.5 text-sm transition-colors',
                 isActive
-                  ? 'bg-accent text-accent-foreground'
-                  : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                  ? 'text-foreground bg-[var(--row-active)]'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-[var(--row-hover)]'
               )}
             >
               <Icon className="size-4 shrink-0" />
@@ -83,9 +90,9 @@ export default function SettingsSidebar({
         })}
       </nav>
 
-      <div className="pb-3">
+      <div className="pb-2">
         <Separator className="mb-2" />
-        <div className="space-y-0.5 px-2">
+        <div className="space-y-1 px-2">
           {SPECIAL_CATEGORIES.map(category => {
             const Icon = category.icon;
             const isActive = !searchQuery && activeCategory === category.id;
@@ -98,10 +105,10 @@ export default function SettingsSidebar({
                   onCategoryChange(category.id);
                 }}
                 className={cn(
-                  'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
+                  'flex w-full items-center gap-2.5 rounded-3xl px-2.5 py-1.5 text-sm transition-colors',
                   isActive
-                    ? 'bg-accent text-accent-foreground'
-                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                    ? 'text-foreground bg-[var(--row-active)]'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-[var(--row-hover)]'
                 )}
               >
                 <Icon className="size-4 shrink-0" />
@@ -111,6 +118,6 @@ export default function SettingsSidebar({
           })}
         </div>
       </div>
-    </div>
+    </aside>
   );
 }

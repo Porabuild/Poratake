@@ -127,6 +127,40 @@ function ensureFFmpegExists(ffmpegPath: string): boolean {
   return false;
 }
 
+export async function preprocessImageForOcr(
+  inputPath: string,
+  outputPath: string
+): Promise<boolean> {
+  const ffmpegPath = getFFmpegPath();
+  if (!ensureFFmpegExists(ffmpegPath) || !fs.existsSync(inputPath)) {
+    return false;
+  }
+
+  try {
+    await execFFmpegWithAbort(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-i',
+        inputPath,
+        '-vf',
+        'scale=iw*max(1\\,1300/max(iw\\,ih)):ih*max(1\\,1300/max(iw\\,ih)):flags=lanczos,format=gray,unsharp=5:5:1.2',
+        '-frames:v',
+        '1',
+        outputPath,
+      ],
+      { timeout: 10000 }
+    );
+    return fs.existsSync(outputPath);
+  } catch (error) {
+    console.error('OCR image preprocessing failed:', error);
+    return false;
+  }
+}
+
 export interface VideoProbeResult {
   metadata: VideoMetadata;
   hasAudio: boolean;
@@ -463,6 +497,13 @@ export async function trimVideo(options: TrimOptions): Promise<FFmpegResult> {
       };
     }
   } catch (error) {
+    try {
+      if (fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath);
+      }
+    } catch {
+      console.warn(`Failed to remove incomplete output: ${outputPath}`);
+    }
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown FFmpeg error';
     return {
@@ -842,6 +883,7 @@ export async function convertMp4ToGif(
   try {
     await execFileAsync(ffmpegPath, ['-i', inputPath, '-f', 'null', '-'], {
       timeout: 30000,
+      signal: abortSignal,
     }).catch(err => {
       const durationMatch = err.stderr?.match(
         /Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/
@@ -856,6 +898,10 @@ export async function convertMp4ToGif(
     });
   } catch {
     totalDuration = 0;
+  }
+
+  if (abortSignal?.aborted) {
+    return { success: false, message: 'Aborted' };
   }
 
   try {
@@ -896,6 +942,13 @@ export async function convertMp4ToGif(
       };
     }
   } catch (error) {
+    try {
+      if (fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath);
+      }
+    } catch {
+      console.warn(`Failed to remove incomplete output: ${outputPath}`);
+    }
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown FFmpeg error';
     return {

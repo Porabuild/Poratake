@@ -90,9 +90,9 @@ app.on('activate', (_event, hasVisibleWindows) => {
 });
 
 const initializeRuntimeModules = async () => {
+  await history.init();
   shortcuts.init();
   await menu.init();
-  history.init();
   update.init();
 };
 

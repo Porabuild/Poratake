@@ -28,8 +28,8 @@ export async function showRecordingError(error: Error): Promise<void> {
         'After an app update, macOS may require you to re-grant screen recording permission.\n\n' +
         'To fix this:\n' +
         '1. Open System Settings > Privacy & Security > Screen Recording\n' +
-        '2. Toggle OFF Capty, then toggle it back ON\n' +
-        '3. Restart Capty\n\n' +
+        '2. Toggle OFF Poratake, then toggle it back ON\n' +
+        '3. Restart Poratake\n\n' +
         'If the issue persists, try restarting your Mac.',
       buttons: ['Open Settings', 'OK'],
       defaultId: 0,
@@ -79,7 +79,7 @@ export async function checkAndRequestCameraPermission(): Promise<boolean> {
             'Enable access for desktop apps'
           : 'To record with camera, please grant camera permission in System Settings.\n\n' +
             'Go to: System Settings > Privacy & Security > Camera\n' +
-            'Enable access for Capty',
+            'Enable access for Poratake',
         buttons: ['Open Settings', 'Cancel'],
         defaultId: 0,
       };
@@ -119,7 +119,7 @@ export async function checkAndRequestMicrophonePermission(): Promise<boolean> {
             'Enable access for desktop apps'
           : 'To record with microphone, please grant microphone permission in System Settings.\n\n' +
             'Go to: System Settings > Privacy & Security > Microphone\n' +
-            'Enable access for Capty',
+            'Enable access for Poratake',
         buttons: ['Open Settings', 'Cancel'],
         defaultId: 0,
       };

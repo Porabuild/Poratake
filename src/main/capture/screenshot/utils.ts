@@ -14,7 +14,7 @@ export function getScreenshotsDir(): string {
   }
 
   const picturesPath = app.getPath('pictures');
-  const defaultDir = path.join(picturesPath, 'Capty');
+  const defaultDir = path.join(picturesPath, 'Poratake');
   return ensureDirectoryExists(defaultDir);
 }
 

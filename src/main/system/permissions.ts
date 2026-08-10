@@ -194,7 +194,7 @@ export async function showMicrophonePermissionDialog(): Promise<boolean> {
         'Enable access for desktop apps'
       : 'To use the microphone, please grant microphone permission in System Settings.\n\n' +
         'Go to: System Settings > Privacy & Security > Microphone\n' +
-        'Enable access for Capty',
+        'Enable access for Poratake',
     buttons: ['Open Settings', 'Cancel'],
     defaultId: 0,
   };
@@ -224,7 +224,7 @@ export async function showCameraPermissionDialog(): Promise<boolean> {
         'Enable access for desktop apps'
       : 'To use the camera, please grant camera permission in System Settings.\n\n' +
         'Go to: System Settings > Privacy & Security > Camera\n' +
-        'Enable access for Capty',
+        'Enable access for Poratake',
     buttons: ['Open Settings', 'Cancel'],
     defaultId: 0,
   };

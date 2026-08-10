@@ -1,11 +1,5 @@
 import { Highlighter } from 'lucide-react';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import { ListBox, Select } from '@heroui/react';
 import type { HighlightOpacity } from '@/types/editor';
 
 interface HighlightOptionsProps {
@@ -21,23 +15,37 @@ export default function HighlightOptions({
 }: HighlightOptionsProps) {
   return (
     <Select
+      aria-label="Highlighter opacity"
+      variant="secondary"
       value={String(highlightOpacity)}
-      onValueChange={value =>
-        onHighlightOpacityChange(Number(value) as HighlightOpacity)
-      }
+      onChange={value => {
+        if (value === null) {
+          return;
+        }
+
+        onHighlightOpacityChange(Number(value) as HighlightOpacity);
+      }}
     >
-      <SelectTrigger size="sm" className="h-7! w-auto gap-1 px-2">
-        <SelectValue>
-          <Highlighter className="size-4" />
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent align="center">
-        {OPACITY_LEVELS.map(level => (
-          <SelectItem key={level} value={String(level)}>
-            <span className="font-medium">{Math.round(level * 100)}%</span>
-          </SelectItem>
-        ))}
-      </SelectContent>
+      <Select.Trigger className="h-7 min-h-7 items-center rounded-3xl py-0 ps-2">
+        <Highlighter className="size-4" />
+        <Select.Indicator />
+      </Select.Trigger>
+      <Select.Popover placement="bottom">
+        <ListBox>
+          {OPACITY_LEVELS.map(level => (
+            <ListBox.Item
+              key={level}
+              id={String(level)}
+              textValue={`${Math.round(level * 100)}%`}
+            >
+              <span className="flex-1 font-medium">
+                {Math.round(level * 100)}%
+              </span>
+              <ListBox.ItemIndicator />
+            </ListBox.Item>
+          ))}
+        </ListBox>
+      </Select.Popover>
     </Select>
   );
 }

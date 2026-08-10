@@ -4,31 +4,54 @@ import { daemon } from '@/main/daemon';
 
 export interface RegionCaptureOptions {
   cached?: boolean;
-  retain?: boolean;
+  windowId?: number;
 }
 
-export async function captureRegionToFile(
+async function capturePhysicalRegionToFile(
   area: Rectangle,
   filePath: string,
   options?: RegionCaptureOptions
 ): Promise<boolean> {
-  const bounds = screen.dipToScreenRect(null, area);
-
   try {
     await daemon.call('screenshot', 'capture-area', {
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: bounds.height,
+      x: area.x,
+      y: area.y,
+      width: area.width,
+      height: area.height,
       path: filePath,
       cached: options?.cached ?? false,
-      retain: options?.retain ?? false,
+      ...(options?.windowId === undefined
+        ? {}
+        : { windowId: options.windowId }),
     });
     return true;
   } catch (error) {
     console.error('Area capture failed:', error);
     return false;
   }
+}
+
+export function captureRegionToFile(
+  area: Rectangle,
+  filePath: string,
+  options?: RegionCaptureOptions
+): Promise<boolean> {
+  return capturePhysicalRegionToFile(
+    screen.dipToScreenRect(null, area),
+    filePath,
+    options
+  );
+}
+
+export function captureFrozenScreenRegionToFile(
+  bounds: Rectangle,
+  filePath: string,
+  windowId: number
+): Promise<boolean> {
+  return capturePhysicalRegionToFile(bounds, filePath, {
+    cached: true,
+    windowId,
+  });
 }
 
 export function captureDisplayToFile(
@@ -51,13 +74,5 @@ export async function captureWindowToFile(
   } catch (error) {
     console.error('Window capture failed:', error);
     return false;
-  }
-}
-
-export async function releaseRetainedDisplays(): Promise<void> {
-  try {
-    await daemon.call('screenshot', 'release');
-  } catch (error) {
-    console.error('Failed to release the frozen screen:', error);
   }
 }

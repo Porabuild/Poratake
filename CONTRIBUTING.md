@@ -1,13 +1,13 @@
-# Contributing to Capty
+# Contributing to Poratake
 
-Thanks for your interest in contributing to Capty.
+Thanks for your interest in contributing to Poratake.
 
 ## Before You Start
 
 - Discuss significant changes in an issue first.
 - Keep pull requests focused and small.
 - Follow the existing architecture, structure, and coding standards.
-- Capty targets macOS 15 or later (Intel + Apple Silicon) and Windows 10/11 x64.
+- Poratake targets macOS 15 or later (Intel + Apple Silicon) and Windows 10/11 x64.
 
 ## Development Setup
 
@@ -69,11 +69,11 @@ By opening a pull request, you agree to the following terms for that contributio
 
 2. **It is licensed under this repository's license.** Your contribution is licensed under the GNU Affero General Public License v3.0, and remains available to the community under those same terms.
 
-3. **You grant a relicensing right.** You grant Capty a perpetual, worldwide, non-exclusive, royalty-free, irrevocable, and sublicensable right to use, reproduce, modify, prepare derivative works of, publicly display, publicly perform, distribute, and relicense your contribution under any license terms, including proprietary and commercial licenses.
+3. **You keep your copyright.** This is a license grant under the AGPL, not a transfer of ownership. No additional relicensing rights are granted unless you and the repository maintainer enter a separate written agreement.
 
-4. **You grant a patent license.** You grant Capty and all recipients of the software a perpetual, worldwide, non-exclusive, royalty-free, and irrevocable patent license to make, use, sell, offer to sell, import, and otherwise transfer your contribution, covering only those patent claims you own or control that are necessarily infringed by your contribution alone or by its combination with this project.
+4. **Patent rights follow the AGPL.** The patent license in section 11 of the GNU Affero General Public License v3.0 applies to your contribution.
 
-5. **You keep your copyright.** This is a license grant, not a transfer of ownership. It exists so Capty can be offered under terms other than the AGPL — such as a commercial license — without having to contact every contributor individually.
+5. **You preserve notices.** Contributions must retain applicable copyright, license, warranty, and attribution notices and identify modified work as required by the AGPL.
 
 6. **It is provided as-is.** Unless required by applicable law, your contribution is provided without warranties or conditions of any kind.
 

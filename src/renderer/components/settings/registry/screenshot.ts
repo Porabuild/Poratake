@@ -79,8 +79,9 @@ export const SCREENSHOT_ITEMS: SettingsItem[] = [
     section: 'Capture Mode',
     type: 'switch',
     label: 'Freeze screen',
-    description: 'Show a static snapshot while selecting an area to capture',
-    keywords: ['freeze', 'static', 'snapshot', 'still'],
+    description:
+      'Capture areas and windows exactly as they appear in a static desktop snapshot',
+    keywords: ['freeze', 'static', 'snapshot', 'still', 'window', 'overlap'],
     getValue: s => s.screenshot.freezeScreen,
     setValue: (s, v) => ({
       screenshot: { ...s.screenshot, freezeScreen: v },

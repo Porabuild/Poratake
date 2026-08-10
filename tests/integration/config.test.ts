@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'path';
 import type { SettingsConfig } from '@/types/settings';
 
 // Mock file system
@@ -35,13 +36,23 @@ const mockIpcMain = {
 
 vi.mock('electron', () => ({
   app: mockApp,
+  BrowserWindow: {
+    getAllWindows: () => [],
+  },
   ipcMain: mockIpcMain,
+  nativeTheme: {
+    themeSource: 'system',
+  },
 }));
 
 // Mock utils/paths
 vi.mock('@/main/utils/paths', () => ({
   getConfigDir: vi.fn(() => '/mock/home/.config/capty-dev'),
   getConfigFilePath: vi.fn(() => '/mock/home/.config/capty-dev/config.json'),
+}));
+
+vi.mock('@/main/settings/window', () => ({
+  isSettingsWindowWebContents: () => true,
 }));
 
 describe('Config Management', () => {
@@ -88,6 +99,25 @@ describe('Config Management', () => {
       expect(config.general?.startOnLogin).toBe(true);
       expect(config.general?.playSoundOnScreenshot).toBe(false);
       expect(config.recording.autoZoom).toBe(false);
+      expect(config.appearance).toEqual({ mode: 'dark', theme: 'default' });
+      expect(config.storage.screenshotsPath).toBe(
+        path.join('/mock/pictures', 'Poratake')
+      );
+      expect(config.storage.recordingsPath).toBe(
+        path.join('/mock/videos', 'Poratake')
+      );
+    });
+
+    it('should normalize invalid saved appearance values', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({ appearance: { mode: 'invalid', theme: 'missing' } })
+      );
+
+      const { loadConfig } = await import('@/main/settings');
+      const config = loadConfig();
+
+      expect(config.appearance).toEqual({ mode: 'dark', theme: 'default' });
     });
 
     it('should merge saved config with defaults for new settings', async () => {
@@ -249,6 +279,15 @@ describe('Config Management', () => {
       expect(config.screenshot.hideDesktopIcons).toBe(true);
       // Other screenshot settings should remain at defaults
       expect(config.screenshot.captureToClipboard).toBeDefined();
+
+      updateConfig({
+        appearance: { mode: 'light', theme: 'github' },
+      });
+
+      expect(getConfig().appearance).toEqual({
+        mode: 'light',
+        theme: 'github',
+      });
     });
 
     it('should update login item settings when startOnLogin changes', async () => {
@@ -389,7 +428,7 @@ describe('Config Management', () => {
       init();
 
       expect(mockIpcMain.handle).toHaveBeenCalledWith(
-        'settings:get',
+        'settings:get-ui',
         expect.any(Function)
       );
       expect(mockIpcMain.handle).toHaveBeenCalledWith(
@@ -442,17 +481,17 @@ describe('Config Management', () => {
       );
     });
 
-    it('should handle settings:get IPC call', async () => {
+    it('should handle settings:get-ui IPC call', async () => {
       mockFs.existsSync.mockReturnValue(false);
 
       const { init } = await import('@/main/settings');
-      const { DEFAULT_SETTINGS } = await import('@/types/settings');
       init();
 
-      const handler = ipcHandlers['settings:get'];
-      const result = handler();
+      const handler = ipcHandlers['settings:get-ui'];
+      const result = handler({ sender: {} });
 
-      expect(result).toEqual(DEFAULT_SETTINGS);
+      expect(result).toHaveProperty('screenshot');
+      expect(result).not.toHaveProperty('wallpaper');
     });
 
     it('should handle settings:update IPC call', async () => {
@@ -462,7 +501,10 @@ describe('Config Management', () => {
       init();
 
       const handler = ipcHandlers['settings:update'];
-      const result = handler({}, { general: { startOnLogin: true } });
+      const result = handler(
+        { sender: {} },
+        { general: { startOnLogin: true } }
+      );
 
       expect(result.general.startOnLogin).toBe(true);
     });
@@ -476,11 +518,11 @@ describe('Config Management', () => {
 
       // First update settings
       const updateHandler = ipcHandlers['settings:update'];
-      updateHandler({}, { general: { startOnLogin: true } });
+      updateHandler({ sender: {} }, { general: { startOnLogin: true } });
 
       // Then reset
       const resetHandler = ipcHandlers['settings:reset'];
-      const result = resetHandler();
+      const result = resetHandler({ sender: {} });
 
       expect(result).toEqual(DEFAULT_SETTINGS);
     });

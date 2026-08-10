@@ -49,6 +49,7 @@ class MockBrowserWindow {
 
 const mockShellOpenExternal = vi.fn();
 const mockShellShowItemInFolder = vi.fn();
+const mockGetWindowData = vi.fn();
 
 vi.mock('electron', () => {
   return {
@@ -70,6 +71,10 @@ vi.mock('electron', () => {
 vi.mock('@/main/utils/env', () => ({
   isDev: true,
   devServerUrl: 'http://localhost:5173',
+}));
+
+vi.mock('@/main/capture/video/window-manager', () => ({
+  getWindowData: (...a: unknown[]) => mockGetWindowData(...a),
 }));
 
 const mockMarkCompleted = vi.fn();
@@ -153,16 +158,27 @@ describe('onboarding', () => {
     const m = await import('@/main/onboarding');
     m.init();
     ipcHandlers['shell:open-external']({}, 'https://capty.app');
-    expect(mockShellOpenExternal).toHaveBeenCalledWith('https://capty.app');
+    expect(mockShellOpenExternal).toHaveBeenCalledWith('https://capty.app/');
   });
 
   it('shell:reveal-in-finder shows item in folder', async () => {
+    mockGetWindowData.mockReturnValue({
+      filePath: '/path/to/My.capty/recording.mov',
+    });
     const m = await import('@/main/onboarding');
     m.init();
-    ipcHandlers['shell:reveal-in-finder']({}, '/path/to/My.capty');
+    ipcHandlers['shell:reveal-in-finder']({ sender: { id: 1 } });
     expect(mockShellShowItemInFolder).toHaveBeenCalledWith(
       '/path/to/My.capty/recording.mov'
     );
+  });
+
+  it('shell:reveal-in-finder ignores another renderer', async () => {
+    mockGetWindowData.mockReturnValue(undefined);
+    const m = await import('@/main/onboarding');
+    m.init();
+    ipcHandlers['shell:reveal-in-finder']({ sender: { id: 2 } });
+    expect(mockShellShowItemInFolder).not.toHaveBeenCalled();
   });
 
   describe('showOnboardingOrRun', () => {

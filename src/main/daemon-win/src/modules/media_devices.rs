@@ -16,7 +16,7 @@ use windows::core::{Result, PCWSTR, PWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
-    eCapture, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
+    eCapture, eMultimedia, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
     MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE,
 };
@@ -266,6 +266,8 @@ impl Module for MediaDevicesModule {
                 Reply::Now(Ok(Some(json!({
                     "microphones": devices_json(&microphones),
                     "cameras": devices_json(&cameras),
+                    "defaultMicrophoneId": default_microphone_id(),
+                    "defaultCameraId": cameras.first().map(|device| device.id.clone()),
                 }))))
             }
             "startMicTest" => {
@@ -290,6 +292,14 @@ fn devices_json(devices: &[MediaDevice]) -> Vec<serde_json::Value> {
         .iter()
         .map(|device| json!({ "id": device.id, "label": device.label }))
         .collect()
+}
+
+fn default_microphone_id() -> Option<String> {
+    let _apartment = ComApartment::initialize().ok()?;
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.ok()?;
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia) }.ok()?;
+    microphone_id(&device).ok().filter(|id| !id.is_empty())
 }
 
 fn run_mic_level_worker(

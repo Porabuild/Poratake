@@ -14,6 +14,7 @@ import { DEFAULT_KEYBOARD_STYLE } from '@/types/keyboard';
 import { DEFAULT_AUDIO_STYLE, type AudioStyle } from '@/types/audio';
 import type { VideoMetadata } from '@/types/video';
 import type { SliceController } from './use-editor-history';
+import { toFileUrl } from '../utils';
 
 export type VideoMetadataStatus = 'loading' | 'ready' | 'unavailable';
 
@@ -116,7 +117,7 @@ export function useEditorData({
         ) => {
           if (result) {
             setCameraData(result.cameraData);
-            setCameraSrc(`file://${result.cameraVideoPath}`);
+            setCameraSrc(toFileUrl(result.cameraVideoPath));
             setCameraVideoPath(result.cameraVideoPath);
           }
         }

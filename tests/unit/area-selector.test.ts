@@ -335,6 +335,86 @@ describe('area-selector daemon backend', () => {
       const result = await m.startAreaSelection();
       expect(result).toBeNull();
     });
+
+    it('handles cancellation emitted before the start response', async () => {
+      const handlers: Array<(event: string, data: unknown) => void> = [];
+      mockOnEvent.mockImplementation(
+        (handler: (event: string, data: unknown) => void) => {
+          handlers.push(handler);
+        }
+      );
+      mockOffEvent.mockImplementation(
+        (handler: (event: string, data: unknown) => void) => {
+          const index = handlers.indexOf(handler);
+          if (index >= 0) handlers.splice(index, 1);
+        }
+      );
+      mockDaemonCall.mockImplementation(async () => {
+        [...handlers].forEach(handler =>
+          handler('area-selector:cancelled', null)
+        );
+        return {};
+      });
+      const m = await import('@/main/capture/area-selector/daemon-backend');
+
+      await expect(m.startAreaSelection()).resolves.toBeNull();
+      expect(handlers).toHaveLength(0);
+    });
+
+    it('settles a silent cancellation without firing the callback', async () => {
+      const handlers: Array<(event: string, data: unknown) => void> = [];
+      mockOnEvent.mockImplementation(
+        (handler: (event: string, data: unknown) => void) => {
+          handlers.push(handler);
+        }
+      );
+      mockOffEvent.mockImplementation(
+        (handler: (event: string, data: unknown) => void) => {
+          const index = handlers.indexOf(handler);
+          if (index >= 0) handlers.splice(index, 1);
+        }
+      );
+      const onCancelled = vi.fn();
+      const m = await import('@/main/capture/area-selector/daemon-backend');
+      const selection = m.startAreaSelection({ onCancelled });
+
+      await Promise.resolve();
+      await m.cancelAreaSelection(true);
+
+      await expect(selection).resolves.toBeNull();
+      expect(onCancelled).not.toHaveBeenCalled();
+      expect(handlers).toHaveLength(0);
+    });
+
+    it('keeps completion active when callbacks are replaced', async () => {
+      const handlers: Array<(event: string, data: unknown) => void> = [];
+      mockOnEvent.mockImplementation(
+        (handler: (event: string, data: unknown) => void) => {
+          handlers.push(handler);
+        }
+      );
+      mockOffEvent.mockImplementation(
+        (handler: (event: string, data: unknown) => void) => {
+          const index = handlers.indexOf(handler);
+          if (index >= 0) handlers.splice(index, 1);
+        }
+      );
+      const replacementCancelled = vi.fn();
+      const m = await import('@/main/capture/area-selector/daemon-backend');
+      const selection = m.startAreaSelection();
+
+      await Promise.resolve();
+      m.updateAreaSelectionCallbacks({
+        onCancelled: replacementCancelled,
+      });
+      [...handlers].forEach(handler =>
+        handler('area-selector:cancelled', null)
+      );
+
+      await expect(selection).resolves.toBeNull();
+      expect(replacementCancelled).toHaveBeenCalledTimes(1);
+      expect(handlers).toHaveLength(0);
+    });
   });
 
   describe('handleDaemonEvent (via callbacks)', () => {

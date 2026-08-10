@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
 use windows::Win32::Graphics::Gdi::{
     CreateFontW, CreateRoundRectRgn, EnumDisplayMonitors, GetMonitorInfoW, SetWindowRgn,
     FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, HDC, HFONT, HMONITOR,
@@ -10,10 +11,10 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, GetClientRect, LoadCursorW, RegisterClassExW,
-    SetWindowsHookExW, UnhookWindowsHookEx, HCURSOR, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT,
-    MONITORINFOF_PRIMARY, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WM_KEYDOWN, WM_SYSKEYDOWN, WNDCLASSEXW,
-    WNDPROC, WS_POPUP,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowLongPtrW, LoadCursorW,
+    RegisterClassExW, SetWindowLongPtrW, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE,
+    HCURSOR, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, MONITORINFOF_PRIMARY, WH_KEYBOARD_LL,
+    WINDOW_EX_STYLE, WM_KEYDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WNDPROC, WS_EX_NOACTIVATE, WS_POPUP,
 };
 
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -98,6 +99,28 @@ pub fn apply_round_region(window: HWND, radius: i32) {
         );
         let _ = SetWindowRgn(window, Some(region), true);
     }
+}
+
+pub fn disable_window_transitions(window: HWND) -> windows::core::Result<()> {
+    let disabled = windows::core::BOOL(1);
+
+    unsafe {
+        DwmSetWindowAttribute(
+            window,
+            DWMWA_TRANSITIONS_FORCEDISABLED,
+            &disabled as *const _ as *const std::ffi::c_void,
+            std::mem::size_of_val(&disabled) as u32,
+        )
+    }
+}
+
+pub fn configure_overlay_window(window: HWND) -> windows::core::Result<()> {
+    unsafe {
+        let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        SetWindowLongPtrW(window, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize);
+    }
+
+    disable_window_transitions(window)
 }
 
 pub fn monitors() -> Vec<MonitorEntry> {

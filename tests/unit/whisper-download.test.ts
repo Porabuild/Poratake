@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
+import path from 'path';
 
 const mockExistsSync = vi.fn();
 const mockUnlinkSync = vi.fn();
+const mockRenameSync = vi.fn();
 const mockEnsureDirectory = vi.fn();
+const mockPipeline = vi.fn(() => Promise.resolve());
 
 interface MockWriteStream extends EventEmitter {
   close: () => void;
@@ -19,6 +22,7 @@ interface MockResponse extends EventEmitter {
   statusCode?: number;
   headers: Record<string, string | undefined>;
   pipe: (target: unknown) => unknown;
+  resume: () => void;
 }
 
 interface MockClientRequest extends EventEmitter {
@@ -64,15 +68,17 @@ vi.mock('fs', () => ({
   default: {
     existsSync: (...a: unknown[]) => mockExistsSync(...a),
     unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
+    renameSync: (...a: unknown[]) => mockRenameSync(...a),
     createWriteStream: (...a: unknown[]) => mockCreateWriteStream(...a),
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
+  renameSync: (...a: unknown[]) => mockRenameSync(...a),
   createWriteStream: (...a: unknown[]) => mockCreateWriteStream(...a),
 }));
 
 vi.mock('stream/promises', () => ({
-  pipeline: vi.fn(() => Promise.resolve()),
+  pipeline: (...a: unknown[]) => mockPipeline(...a),
 }));
 
 vi.mock('@/main/utils/paths', () => ({
@@ -92,6 +98,7 @@ function makeResponse(opts: {
   res.statusCode = opts.status;
   res.headers = opts.headers ?? {};
   res.pipe = (_target: unknown) => res;
+  res.resume = vi.fn();
   return res;
 }
 
@@ -114,6 +121,10 @@ describe('whisper download', () => {
     nextResponse!.emit('data', Buffer.from('chunk'));
     await promise;
     expect(mockEnsureDirectory).toHaveBeenCalled();
+    const partialPath = path.join('/cfg', 'whisper', 'ggml-base.bin.download');
+    const modelPath = path.join('/cfg', 'whisper', 'ggml-base.bin');
+    expect(mockCreateWriteStream).toHaveBeenCalledWith(partialPath);
+    expect(mockRenameSync).toHaveBeenCalledWith(partialPath, modelPath);
   });
 
   it('downloadWhisperModel follows redirects', async () => {
@@ -138,6 +149,22 @@ describe('whisper download', () => {
     nextResponse = makeResponse({ status: 404, headers: {} });
     const { downloadWhisperModel } = await import('@/main/utils/whisper');
     await expect(downloadWhisperModel('base')).rejects.toThrow(/HTTP 404/);
+  });
+
+  it('removes a partial model when streaming fails', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockPipeline.mockRejectedValueOnce(new Error('connection lost'));
+    nextResponse = makeResponse({ status: 200, headers: {} });
+    const { downloadWhisperModel } = await import('@/main/utils/whisper');
+
+    await expect(downloadWhisperModel('base')).rejects.toThrow(
+      'connection lost'
+    );
+
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      path.join('/cfg', 'whisper', 'ggml-base.bin.download')
+    );
+    expect(mockRenameSync).not.toHaveBeenCalled();
   });
 
   it('downloadWhisperModel reports progress', async () => {

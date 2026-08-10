@@ -1,3 +1,4 @@
+use crate::com::retain_process_mta;
 use crate::protocol::{param_str, respond_error, respond_success, Request};
 use crate::router::{method_not_found, Module, Reply};
 use base64::engine::general_purpose::STANDARD;
@@ -123,6 +124,8 @@ struct ComApartment;
 
 impl ComApartment {
     fn initialize() -> Result<Self, String> {
+        retain_process_mta()
+            .map_err(|error| format!("Failed to retain the process COM apartment: {error}"))?;
         unsafe {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED)
                 .ok()
@@ -438,7 +441,7 @@ fn print_document(printer: &PrinterContext, image: &DecodedImage) -> Result<(), 
 
     let bitmap_info = bitmap_info(image.width, image.height, image.pixels.len() as u32);
 
-    let title: Vec<u16> = "Capty Screenshot"
+    let title: Vec<u16> = "Poratake Screenshot"
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();

@@ -5,6 +5,7 @@ import Foundation
 
 class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var captureSession: AVCaptureSession?
+    private var runtimeErrorObserver: NSObjectProtocol?
     private var iosAudioOutput: AVCaptureAudioDataOutput?
     private var micCaptureSession: AVCaptureSession?
     private var micAudioOutput: AVCaptureAudioDataOutput?
@@ -46,8 +47,13 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     
     private var videoFrameCount: Int = 0
     private var pendingAudioBuffers: [CMSampleBuffer] = []
+    private let firstFrameLock = NSLock()
+    private var firstFrameContinuation: CheckedContinuation<Void, Error>?
+    private var firstFrameTimeoutTask: Task<Void, Never>?
+    private var firstFrameError: Error?
     
     var onFirstFrame: (() -> Void)?
+    var onError: ((Error) -> Void)?
     
     func configure(_ config: RecordingConfig) {
         self.config = config
@@ -66,6 +72,23 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             throw RecorderError.configuration("iOS device ID not set")
         }
         
+        do {
+            try await startCapture(
+                config,
+                deviceId: deviceId,
+                waitForFirstFrame: waitForFirstFrame
+            )
+        } catch {
+            rollbackFailedStart()
+            throw error
+        }
+    }
+
+    private func startCapture(
+        _ config: RecordingConfig,
+        deviceId: String,
+        waitForFirstFrame: Bool
+    ) async throws {
         enableScreenCaptureDevices()
         
         let fileManager = FileManager.default
@@ -77,7 +100,9 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             throw RecorderError.configuration("iOS device not found: \(config.iosDeviceName ?? deviceId)")
         }
         
-        captureSession = AVCaptureSession()
+        let session = AVCaptureSession()
+        captureSession = session
+        observeRuntimeErrors(for: session)
         
         let deviceInput = try AVCaptureDeviceInput(device: device)
         
@@ -116,19 +141,123 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         state = .recording
 
         if waitForFirstFrame {
-            let timeoutNs: UInt64 = 8_000_000_000
-            let pollIntervalNs: UInt64 = 50_000_000
-            var waitedNs: UInt64 = 0
+            try await waitForFirstFrame()
+        }
+    }
 
-            while !sessionStarted && waitedNs < timeoutNs {
-                try await Task.sleep(nanoseconds: pollIntervalNs)
-                waitedNs += pollIntervalNs
+    private func waitForFirstFrame() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                firstFrameLock.lock()
+                if Task.isCancelled {
+                    firstFrameLock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                if let error = firstFrameError {
+                    firstFrameLock.unlock()
+                    continuation.resume(throwing: error)
+                    return
+                }
+                if sessionStarted {
+                    firstFrameLock.unlock()
+                    continuation.resume()
+                    return
+                }
+                firstFrameContinuation = continuation
+                firstFrameLock.unlock()
+
+                let timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    self?.resolveFirstFrameWaiter(
+                        .failure(RecorderError.capture("Timed out waiting for iOS device frames"))
+                    )
+                }
+
+                firstFrameLock.lock()
+                if firstFrameContinuation == nil {
+                    firstFrameLock.unlock()
+                    timeoutTask.cancel()
+                    return
+                }
+                firstFrameTimeoutTask = timeoutTask
+                firstFrameLock.unlock()
             }
+        } onCancel: { [weak self] in
+            self?.resolveFirstFrameWaiter(.failure(CancellationError()))
+        }
+    }
 
-            if !sessionStarted {
-                throw RecorderError.capture("Timed out waiting for iOS device frames")
+    private func markFirstFrameReady() {
+        firstFrameLock.lock()
+        sessionStarted = true
+        firstFrameLock.unlock()
+        resolveFirstFrameWaiter(.success(()))
+    }
+
+    private func resolveFirstFrameWaiter(_ result: Result<Void, Error>) {
+        firstFrameLock.lock()
+        guard let continuation = firstFrameContinuation else {
+            if case .failure(let error) = result {
+                firstFrameError = error
+            }
+            firstFrameLock.unlock()
+            return
+        }
+        firstFrameContinuation = nil
+        firstFrameError = nil
+        let timeoutTask = firstFrameTimeoutTask
+        firstFrameTimeoutTask = nil
+        firstFrameLock.unlock()
+
+        timeoutTask?.cancel()
+        continuation.resume(with: result)
+    }
+
+    private func observeRuntimeErrors(for session: AVCaptureSession) {
+        removeRuntimeErrorObserver()
+        runtimeErrorObserver = NotificationCenter.default.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] notification in
+            let error = notification.userInfo?[AVCaptureSessionErrorKey] as? Error
+                ?? RecorderError.capture("iOS device capture failed")
+            Task { @MainActor [weak self] in
+                guard let self, self.state == .recording || self.state == .paused else { return }
+                _ = try? await self.stop()
+                self.onError?(error)
             }
         }
+    }
+
+    private func removeRuntimeErrorObserver() {
+        guard let runtimeErrorObserver else { return }
+        NotificationCenter.default.removeObserver(runtimeErrorObserver)
+        self.runtimeErrorObserver = nil
+    }
+
+    private func rollbackFailedStart() {
+        state = .idle
+        removeRuntimeErrorObserver()
+        if captureSession?.isRunning == true {
+            captureSession?.stopRunning()
+        }
+        captureSession = nil
+        stopMicrophoneCapture()
+        cameraRecorder.abort()
+        waitForPendingSamples()
+        if assetWriter?.status == .writing {
+            assetWriter?.cancelWriting()
+        }
+        if systemAudioAssetWriter?.status == .writing {
+            systemAudioAssetWriter?.cancelWriting()
+        }
+        if micAudioAssetWriter?.status == .writing {
+            micAudioAssetWriter?.cancelWriting()
+        }
+        resetState()
     }
 
     private func setupMicAndCameraIfNeeded(config: RecordingConfig) throws {
@@ -399,15 +528,21 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             do {
                 try setupAssetWriter(width: width, height: height)
             } catch {
-                print("Failed to setup asset writer: \(error)")
+                resolveFirstFrameWaiter(.failure(error))
                 return
             }
         }
         
         if !sessionStarted {
-            assetWriter?.startWriting()
+            guard assetWriter?.startWriting() == true else {
+                let message = assetWriter?.error?.localizedDescription ?? "unknown error"
+                resolveFirstFrameWaiter(
+                    .failure(RecorderError.capture("Failed to start video writer: \(message)"))
+                )
+                return
+            }
             assetWriter?.startSession(atSourceTime: presentationTime)
-            sessionStarted = true
+            markFirstFrameReady()
             firstFrameTime = presentationTime
             
             for audioBuffer in pendingAudioBuffers {
@@ -594,6 +729,13 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         guard state != .idle else {
             throw RecorderError.invalidState("Cannot stop: recorder is idle")
         }
+
+        state = .idle
+        resolveFirstFrameWaiter(
+            .failure(RecorderError.capture("iOS device capture stopped"))
+        )
+        defer { resetState() }
+        removeRuntimeErrorObserver()
         
         captureSession?.stopRunning()
         captureSession = nil
@@ -604,16 +746,26 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         if cameraEnabled, let result = cameraRecorder.stop() {
             cameraFilePath = result.videoPath
         }
+
+        waitForPendingSamples()
         
         if let assetWriter = assetWriter, assetWriter.status == .writing {
             videoInput?.markAsFinished()
             await assetWriter.finishWriting()
         }
 
+        if assetWriter?.status == .failed, let error = assetWriter?.error {
+            throw RecorderError.capture("Asset writer error: \(error.localizedDescription)")
+        }
+
         if systemAudioInputConfigured {
             systemAudioInput?.markAsFinished()
             if systemAudioAssetWriter?.status == .writing {
                 await systemAudioAssetWriter?.finishWriting()
+            }
+
+            if systemAudioAssetWriter?.status == .failed, let error = systemAudioAssetWriter?.error {
+                throw RecorderError.capture("System audio writer error: \(error.localizedDescription)")
             }
         } else {
             systemAudioAssetWriter?.cancelWriting()
@@ -636,8 +788,6 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         let outputPath = config?.outputPath ?? ""
         let finalMicAudioPath = micAudioOutputPath
         let finalSystemAudioPath = systemAudioOutputPath
-        
-        resetState()
         
         return RecordingResult(
             outputPath: outputPath,
@@ -753,8 +903,16 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     func setMicMuted(_ muted: Bool) {
         micMuted = muted
     }
+
+    private func waitForPendingSamples() {
+        videoQueue.sync {}
+        audioQueue.sync {}
+        micQueue.sync {}
+        writerQueue.sync {}
+    }
     
     private func resetState() {
+        removeRuntimeErrorObserver()
         state = .idle
         sessionStarted = false
         assetWriterConfigured = false
@@ -767,6 +925,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         videoWidth = 0
         videoHeight = 0
         pendingAudioBuffers.removeAll()
+        firstFrameError = nil
         firstMicTime = nil
         micAudioSessionStarted = false
         systemAudioSessionStarted = false

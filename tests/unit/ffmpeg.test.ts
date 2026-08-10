@@ -163,6 +163,38 @@ describe('FFmpeg Utilities', () => {
     });
   });
 
+  describe('preprocessImageForOcr', () => {
+    it('normalizes and sharpens the image for Windows OCR', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockSpawn.mockReturnValue(createMockProcess(0));
+
+      const { preprocessImageForOcr } = await import('@/main/utils/ffmpeg');
+      const result = await preprocessImageForOcr(
+        '/input/capture.png',
+        '/output/ocr.png'
+      );
+
+      expect(result).toBe(true);
+      expect(mockSpawn).toHaveBeenCalledWith(
+        devFFmpegPath,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-i',
+          '/input/capture.png',
+          '-vf',
+          'scale=iw*max(1\\,1300/max(iw\\,ih)):ih*max(1\\,1300/max(iw\\,ih)):flags=lanczos,format=gray,unsharp=5:5:1.2',
+          '-frames:v',
+          '1',
+          '/output/ocr.png',
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+    });
+  });
+
   describe('trimVideo', () => {
     it('should return error when ffmpeg binary not found', async () => {
       mockFs.existsSync.mockImplementation((p: string) => {

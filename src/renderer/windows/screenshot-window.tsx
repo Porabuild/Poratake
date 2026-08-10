@@ -161,8 +161,7 @@ export default function ScreenshotWindow({
     const loadImage = async () => {
       try {
         const base64Image = (await window.ipcRenderer.invoke(
-          'screenshot:read-file',
-          filePath
+          'screenshot:read-file'
         )) as string;
         setImage(base64Image);
 

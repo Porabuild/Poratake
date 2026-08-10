@@ -3,12 +3,13 @@ import {
   Output,
   BlobSource,
   Mp4OutputFormat,
-  BufferTarget,
+  StreamTarget,
   CanvasSource,
   VideoSampleSink,
   ALL_FORMATS,
   type VideoSample,
   type InputVideoTrack,
+  type StreamTargetChunk,
 } from 'mediabunny';
 import { VideoCompositionEngine } from '../composition';
 import { calculateDeviceFrameLayout } from '../composition/device-frame-canvas-renderer';
@@ -16,8 +17,18 @@ import { getTotalTimelineDuration, timelineToVideo } from '../utils';
 import { calculateBitrate } from './bitrate';
 import { calculateExportDimensions } from './export-dimensions';
 import { muxAudioWithVideo } from './audio-muxer';
-import { loadFileAsBlob, loadImage, writeBuffer } from './file-utils';
-import type { ExportOptions, ExportResult, AudioTrack } from './export-types';
+import {
+  createOutputFile,
+  loadFileAsBlob,
+  loadImage,
+  writeOutputChunk,
+} from './file-utils';
+import type {
+  ExportOptions,
+  ExportResult,
+  AudioTrack,
+  EmbeddedAudioConfig,
+} from './export-types';
 import type { MusicTrack } from '@/types/music';
 import { PREFETCH_BATCH_SIZE } from './export-types';
 
@@ -31,6 +42,7 @@ type PrefetchedFrame = {
 
 export class WebCodecsExporter {
   private isAborted = false;
+  private exportSessionId: string | null = null;
 
   async export(options: ExportOptions): Promise<ExportResult> {
     if (!options.sourceVideoPath || !options.outputPath) {
@@ -41,11 +53,15 @@ export class WebCodecsExporter {
       sourceVideoPath,
       systemAudioPath,
       micAudioPath,
+      systemAudioEnabled = true,
+      micAudioEnabled = true,
+      systemAudioVolume = 1,
+      micAudioVolume = 1,
       hasEmbeddedAudio = false,
       keyboardSoundPath,
       keyboardSoundVolume = 0.7,
       cameraVideoPath,
-      musicTracks = [],
+      musicTracks,
       outputPath,
       config,
       frameRate,
@@ -54,23 +70,34 @@ export class WebCodecsExporter {
       onProgress,
     } = options;
 
-    this.isAborted = false;
+    const ownsExportSession = !this.exportSessionId;
     let sourceInput: Input | null = null;
     let cameraInput: Input | null = null;
     let output: Output | null = null;
     let engine: VideoCompositionEngine | null = null;
     let videoSink: VideoSampleSink | null = null;
     let cameraSink: VideoSampleSink | null = null;
+    let tempVideoPath: string | null = null;
 
     try {
+      if (ownsExportSession) {
+        await this.begin();
+      }
+
       const { sourceVideoTrack, sourceInputInstance } =
         await this.initializeSourceInput(sourceVideoPath);
       sourceInput = sourceInputInstance;
+      this.throwIfAborted();
 
       const isCameraVisible = config.cameraStyle?.visible ?? true;
       const { cameraInputInstance, cameraVideoTrack } =
         await this.initializeCameraInput(cameraVideoPath, isCameraVisible);
       cameraInput = cameraInputInstance;
+
+      const [sourceFirstTimestamp, cameraFirstTimestamp] = await Promise.all([
+        sourceVideoTrack.getFirstTimestamp(),
+        cameraVideoTrack?.getFirstTimestamp() ?? Promise.resolve(0),
+      ]);
 
       engine = new VideoCompositionEngine(config);
       await this.loadBackgroundImageIfNeeded(engine, config);
@@ -95,9 +122,23 @@ export class WebCodecsExporter {
         bitrate,
       });
 
+      const streamingVideoPath = `${outputPath}.temp.mp4`;
+      tempVideoPath = streamingVideoPath;
+      await createOutputFile(streamingVideoPath);
+
+      const outputStream = new WritableStream<StreamTargetChunk>({
+        write: async chunk => {
+          this.throwIfAborted();
+          await writeOutputChunk(
+            streamingVideoPath,
+            chunk.position,
+            chunk.data
+          );
+        },
+      });
       output = new Output({
-        format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
-        target: new BufferTarget(),
+        format: new Mp4OutputFormat({ fastStart: false }),
+        target: new StreamTarget(outputStream, { chunked: true }),
       });
 
       output.addVideoTrack(videoSource, { frameRate });
@@ -113,25 +154,21 @@ export class WebCodecsExporter {
         frameRate,
         videoSink,
         cameraSink,
+        sourceFirstTimestamp,
+        cameraFirstTimestamp,
         engine,
         outputCtx,
         videoSource,
         onProgress,
       });
+      this.throwIfAborted();
 
       onProgress(92);
       videoSource.close();
       onProgress(94);
       await output.finalize();
+      this.throwIfAborted();
       onProgress(96);
-
-      const tempVideoPath = `${outputPath}.temp.mp4`;
-      const outputBuffer = (output.target as BufferTarget).buffer;
-      if (!outputBuffer) {
-        throw new Error('No output buffer generated');
-      }
-
-      await writeBuffer(tempVideoPath, new Uint8Array(outputBuffer));
 
       onProgress(97);
 
@@ -141,6 +178,10 @@ export class WebCodecsExporter {
         sourceVideoPath,
         systemAudioPath,
         micAudioPath,
+        systemAudioEnabled,
+        micAudioEnabled,
+        systemAudioVolume,
+        micAudioVolume,
         hasEmbeddedAudio,
         keyboardSoundPath,
         keyboardSoundVolume,
@@ -153,6 +194,14 @@ export class WebCodecsExporter {
         return { success: false, error: audioResult.error };
       }
 
+      if (this.isAborted) {
+        await window.ipcRenderer
+          .invoke('video-editor:delete-temp-file', { filePath: outputPath })
+          .catch(() => {});
+        throw new Error('Export cancelled');
+      }
+
+      tempVideoPath = null;
       onProgress(100);
       return { success: true, outputPath };
     } catch (error) {
@@ -160,14 +209,69 @@ export class WebCodecsExporter {
         error instanceof Error ? error.message : 'Unknown error';
       return { success: false, error: errorMessage };
     } finally {
+      if (
+        output &&
+        output.state !== 'finalized' &&
+        output.state !== 'canceled'
+      ) {
+        await output.cancel().catch(() => {});
+      }
       sourceInput?.dispose();
       cameraInput?.dispose();
       engine?.dispose();
+      if (tempVideoPath) {
+        await window.ipcRenderer
+          .invoke('video-editor:delete-temp-file', {
+            filePath: tempVideoPath,
+          })
+          .catch(() => {});
+      }
+      if (ownsExportSession) {
+        await this.finish().catch(() => {});
+      }
+    }
+  }
+
+  async begin(): Promise<void> {
+    this.isAborted = false;
+    this.exportSessionId = (await window.ipcRenderer.invoke(
+      'video-editor:export:begin'
+    )) as string;
+
+    if (this.isAborted) {
+      window.ipcRenderer.send(
+        'video-editor:export:cancel',
+        this.exportSessionId
+      );
     }
   }
 
   cancel(): void {
     this.isAborted = true;
+    if (this.exportSessionId) {
+      window.ipcRenderer.send(
+        'video-editor:export:cancel',
+        this.exportSessionId
+      );
+    }
+  }
+
+  async finish(): Promise<void> {
+    if (!this.exportSessionId) return;
+
+    const sessionId = this.exportSessionId;
+    this.exportSessionId = null;
+    await window.ipcRenderer.invoke('video-editor:export:finish', sessionId);
+  }
+
+  isCancelled(): boolean {
+    return this.isAborted;
+  }
+
+  private throwIfAborted(): void {
+    if (this.isAborted) {
+      throw new Error('Export cancelled');
+    }
   }
 
   private async initializeSourceInput(sourceVideoPath: string): Promise<{
@@ -308,6 +412,8 @@ export class WebCodecsExporter {
     frameRate: number;
     videoSink: VideoSampleSink;
     cameraSink: VideoSampleSink | null;
+    sourceFirstTimestamp: number;
+    cameraFirstTimestamp: number;
     engine: VideoCompositionEngine;
     outputCtx: OffscreenCanvasRenderingContext2D;
     videoSource: CanvasSource;
@@ -318,6 +424,8 @@ export class WebCodecsExporter {
       frameRate,
       videoSink,
       cameraSink,
+      sourceFirstTimestamp,
+      cameraFirstTimestamp,
       engine,
       outputCtx,
       videoSource,
@@ -329,9 +437,10 @@ export class WebCodecsExporter {
     const timelineDuration = firstFrameDuration + videoTimelineDuration;
     const totalFrames = Math.ceil(timelineDuration * frameRate);
     const frameDuration = 1 / frameRate;
+    const firstFrameCanvas =
+      firstFrameDuration > 0 ? new OffscreenCanvas(1, 1) : null;
 
     let frameIndex = 0;
-    let nullFrameCount = 0;
     let lastProgressPercent = -1;
 
     const reportProgress = (rawPercent: number): void => {
@@ -345,10 +454,17 @@ export class WebCodecsExporter {
       timestamps: number[]
     ): Promise<(VideoSample | null)[]> => {
       const samples: (VideoSample | null)[] = [];
-      for await (const sample of sink.samplesAtTimestamps(timestamps)) {
-        samples.push(sample);
+      try {
+        for await (const sample of sink.samplesAtTimestamps(timestamps)) {
+          samples.push(sample);
+        }
+        return samples;
+      } catch (error) {
+        for (const sample of samples) {
+          sample?.close();
+        }
+        throw error;
       }
-      return samples;
     };
 
     const prefetchBatch = async (
@@ -375,130 +491,144 @@ export class WebCodecsExporter {
       }
 
       const videoOnlyTimes = videoTimes.filter((_, i) => !isFirstFrameFlags[i]);
+      const sourceTimes = videoOnlyTimes.map(timestamp =>
+        Math.max(timestamp, sourceFirstTimestamp)
+      );
+      const cameraTimes = videoOnlyTimes.map(timestamp =>
+        Math.max(timestamp, cameraFirstTimestamp)
+      );
       const videoSamples =
-        videoOnlyTimes.length > 0
-          ? await prefetchSamples(videoSink, videoOnlyTimes)
+        sourceTimes.length > 0
+          ? await prefetchSamples(videoSink, sourceTimes)
           : [];
-      const cameraSamples =
-        cameraSink && videoOnlyTimes.length > 0
-          ? await prefetchSamples(cameraSink, videoOnlyTimes)
-          : null;
 
-      let videoIdx = 0;
-      return batchTimes.map((timelineTime, index) => {
-        if (isFirstFrameFlags[index]) {
-          return {
+      try {
+        const cameraSamples =
+          cameraSink && cameraTimes.length > 0
+            ? await prefetchSamples(cameraSink, cameraTimes)
+            : null;
+
+        let videoIdx = 0;
+        return batchTimes.map((timelineTime, index) => {
+          if (isFirstFrameFlags[index]) {
+            return {
+              timelineTime,
+              videoSample: null,
+              cameraSample: null,
+            };
+          }
+          const result = {
             timelineTime,
-            videoSample: null,
-            cameraSample: null,
+            videoSample: videoSamples[videoIdx] ?? null,
+            cameraSample: cameraSamples
+              ? (cameraSamples[videoIdx] ?? null)
+              : null,
           };
+          videoIdx++;
+          return result;
+        });
+      } catch (error) {
+        for (const sample of videoSamples) {
+          sample?.close();
         }
-        const result = {
-          timelineTime,
-          videoSample: videoSamples[videoIdx] ?? null,
-          cameraSample: cameraSamples
-            ? (cameraSamples[videoIdx] ?? null)
-            : null,
-        };
-        videoIdx++;
-        return result;
-      });
+        throw error;
+      }
+    };
+
+    const closePrefetchedFrames = (frames: PrefetchedFrame[]): void => {
+      for (const frame of frames) {
+        frame.videoSample?.close();
+        frame.cameraSample?.close();
+      }
     };
 
     let nextBatchPromise: Promise<PrefetchedFrame[]> | null = null;
 
     for (let i = 0; i < totalFrames; i += PREFETCH_BATCH_SIZE) {
-      if (this.isAborted) {
-        throw new Error('Export cancelled');
-      }
-
       nextBatchPromise ??= prefetchBatch(i);
 
       const prefetchedBatch = await nextBatchPromise;
 
       const nextIndex = i + PREFETCH_BATCH_SIZE;
       nextBatchPromise =
-        nextIndex < totalFrames ? prefetchBatch(nextIndex) : null;
+        !this.isAborted && nextIndex < totalFrames
+          ? prefetchBatch(nextIndex)
+          : null;
 
-      for (const {
-        timelineTime,
-        videoSample,
-        cameraSample,
-      } of prefetchedBatch) {
-        if (this.isAborted) {
-          videoSample?.close();
-          cameraSample?.close();
-          throw new Error('Export cancelled');
-        }
+      let processedFrames = 0;
 
-        const isFirstFrameRegion = timelineTime < firstFrameDuration;
-
-        if (isFirstFrameRegion) {
-          engine.renderFrame(
-            outputCtx,
-            timelineTime,
-            { video: new OffscreenCanvas(1, 1) },
-            { fps: frameRate }
-          );
-          await videoSource.add(timelineTime, 1 / frameRate);
-          frameIndex++;
-          reportProgress(Math.round((frameIndex / totalFrames) * 90));
-          continue;
-        }
-
-        if (!videoSample) {
-          nullFrameCount++;
-          if (frameIndex < 5) {
-            console.warn(
-              `WebCodecs Export: Frame ${frameIndex} is null`,
-              'timelineTime:',
-              timelineTime
-            );
-          }
-          frameIndex++;
-          reportProgress(Math.round((frameIndex / totalFrames) * 90));
-          continue;
-        }
-
-        if (
-          nullFrameCount === 0 &&
-          frameIndex === Math.ceil(firstFrameDuration * frameRate)
-        ) {
-          console.log('WebCodecs Export: First video sample info', {
-            timestamp: videoSample.timestamp,
-            duration: videoSample.duration,
-            codedWidth: videoSample.codedWidth,
-            codedHeight: videoSample.codedHeight,
-            format: videoSample.format,
-          });
-        }
-
-        const { videoFrame, cameraFrame } = this.renderFrameToCanvas(
-          engine,
-          outputCtx,
+      try {
+        for (const {
           timelineTime,
           videoSample,
           cameraSample,
-          frameRate,
-          frameIndex
-        );
+        } of prefetchedBatch) {
+          try {
+            this.throwIfAborted();
 
-        await videoSource.add(timelineTime, 1 / frameRate);
+            const isFirstFrameRegion = timelineTime < firstFrameDuration;
 
-        videoFrame?.close();
-        cameraFrame?.close();
-        videoSample?.close();
-        cameraSample?.close();
+            if (isFirstFrameRegion) {
+              engine.renderFrame(
+                outputCtx,
+                timelineTime,
+                { video: firstFrameCanvas! },
+                { fps: frameRate }
+              );
+              await videoSource.add(timelineTime, 1 / frameRate);
+              frameIndex++;
+              reportProgress(Math.round((frameIndex / totalFrames) * 90));
+              continue;
+            }
 
-        frameIndex++;
-        reportProgress(Math.round((frameIndex / totalFrames) * 90));
+            if (!videoSample) {
+              throw new Error(
+                `Unable to decode video frame at ${timelineTime.toFixed(3)} seconds`
+              );
+            }
+
+            if (frameIndex === Math.ceil(firstFrameDuration * frameRate)) {
+              console.log('WebCodecs Export: First video sample info', {
+                timestamp: videoSample.timestamp,
+                duration: videoSample.duration,
+                codedWidth: videoSample.codedWidth,
+                codedHeight: videoSample.codedHeight,
+                format: videoSample.format,
+              });
+            }
+
+            const { videoFrame, cameraFrame } = this.renderFrameToCanvas(
+              engine,
+              outputCtx,
+              timelineTime,
+              videoSample,
+              cameraSample,
+              frameRate,
+              frameIndex
+            );
+
+            try {
+              await videoSource.add(timelineTime, 1 / frameRate);
+            } finally {
+              videoFrame?.close();
+              cameraFrame?.close();
+            }
+
+            frameIndex++;
+            reportProgress(Math.round((frameIndex / totalFrames) * 90));
+          } finally {
+            videoSample?.close();
+            cameraSample?.close();
+            processedFrames++;
+          }
+        }
+      } catch (error) {
+        closePrefetchedFrames(prefetchedBatch.slice(processedFrames));
+        if (nextBatchPromise) {
+          closePrefetchedFrames(await nextBatchPromise.catch(() => []));
+        }
+        throw error;
       }
-    }
-
-    if (nullFrameCount > 0) {
-      console.warn(
-        `WebCodecs Export: ${nullFrameCount} frames were null out of ${totalFrames}`
-      );
     }
   }
 
@@ -512,33 +642,41 @@ export class WebCodecsExporter {
     frameIndex: number
   ): { videoFrame: VideoFrame | null; cameraFrame: VideoFrame | null } {
     const videoFrame = videoSample?.toVideoFrame() ?? null;
-    const cameraFrame = cameraSample?.toVideoFrame() ?? null;
+    let cameraFrame: VideoFrame | null = null;
 
-    if (frameIndex === 0 && videoFrame) {
-      console.log('WebCodecs Export: First VideoFrame info', {
-        displayWidth: videoFrame.displayWidth,
-        displayHeight: videoFrame.displayHeight,
-        codedWidth: videoFrame.codedWidth,
-        codedHeight: videoFrame.codedHeight,
-        format: videoFrame.format,
-      });
-    }
+    try {
+      cameraFrame = cameraSample?.toVideoFrame() ?? null;
 
-    if (!videoFrame) {
-      console.error(
-        'WebCodecs Export: videoFrame is null in renderFrameToCanvas'
+      if (frameIndex === 0 && videoFrame) {
+        console.log('WebCodecs Export: First VideoFrame info', {
+          displayWidth: videoFrame.displayWidth,
+          displayHeight: videoFrame.displayHeight,
+          codedWidth: videoFrame.codedWidth,
+          codedHeight: videoFrame.codedHeight,
+          format: videoFrame.format,
+        });
+      }
+
+      if (!videoFrame) {
+        console.error(
+          'WebCodecs Export: videoFrame is null in renderFrameToCanvas'
+        );
+      }
+
+      engine.renderFrame(
+        ctx,
+        timelineTime,
+        {
+          video: videoFrame as VideoFrame,
+          camera: cameraFrame,
+        },
+        { fps: frameRate }
       );
+    } catch (error) {
+      videoFrame?.close();
+      cameraFrame?.close();
+      throw error;
     }
-
-    engine.renderFrame(
-      ctx,
-      timelineTime,
-      {
-        video: videoFrame as VideoFrame,
-        camera: cameraFrame,
-      },
-      { fps: frameRate }
-    );
 
     return { videoFrame, cameraFrame };
   }
@@ -549,6 +687,10 @@ export class WebCodecsExporter {
     sourceVideoPath: string;
     systemAudioPath: string | null | undefined;
     micAudioPath: string | null | undefined;
+    systemAudioEnabled: boolean;
+    micAudioEnabled: boolean;
+    systemAudioVolume: number;
+    micAudioVolume: number;
     hasEmbeddedAudio: boolean;
     keyboardSoundPath?: string | null;
     keyboardSoundVolume?: number;
@@ -562,15 +704,42 @@ export class WebCodecsExporter {
       sourceVideoPath,
       systemAudioPath,
       micAudioPath,
+      systemAudioEnabled,
+      micAudioEnabled,
+      systemAudioVolume,
+      micAudioVolume,
       hasEmbeddedAudio,
       keyboardSoundPath,
       keyboardSoundVolume = 0.7,
-      musicTracks = [],
+      musicTracks,
       segments,
       firstFrameDuration = 0,
     } = params;
 
     const enabledAudioTracks: AudioTrack[] = [];
+    let embeddedAudio: EmbeddedAudioConfig | undefined;
+
+    if (!musicTracks) {
+      if (systemAudioEnabled && systemAudioPath) {
+        enabledAudioTracks.push({
+          path: systemAudioPath,
+          volume: systemAudioVolume,
+        });
+      } else if (systemAudioEnabled && hasEmbeddedAudio) {
+        embeddedAudio = {
+          sourcePath: sourceVideoPath,
+          volume: systemAudioVolume,
+        };
+      }
+
+      if (micAudioEnabled && micAudioPath) {
+        enabledAudioTracks.push({
+          path: micAudioPath,
+          volume: micAudioVolume,
+        });
+      }
+    }
+
     if (keyboardSoundPath) {
       enabledAudioTracks.push({
         path: keyboardSoundPath,
@@ -580,45 +749,59 @@ export class WebCodecsExporter {
     }
 
     const musicTempFiles: string[] = [];
-    for (let i = 0; i < musicTracks.length; i++) {
-      const track = musicTracks[i];
-      if (!track.enabled) continue;
+    const totalTimelineDuration = getTotalTimelineDuration(segments);
+    try {
+      const tracks = musicTracks ?? [];
+      const operationId = crypto.randomUUID();
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        if (!track.enabled) continue;
 
-      let audioFilePath: string | null = null;
-      if (track.source === 'system') {
-        audioFilePath = systemAudioPath ?? null;
-        if (!audioFilePath && hasEmbeddedAudio) {
-          audioFilePath = sourceVideoPath;
+        let audioFilePath: string | null = null;
+        if (track.source === 'system') {
+          audioFilePath = systemAudioPath ?? null;
+          if (!audioFilePath && hasEmbeddedAudio) {
+            audioFilePath = sourceVideoPath;
+          }
+        } else if (track.source === 'mic') {
+          audioFilePath = micAudioPath ?? null;
+        } else {
+          audioFilePath = (await window.ipcRenderer.invoke(
+            'video-editor:music:get-path',
+            { fileName: track.fileName }
+          )) as string | null;
         }
-      } else if (track.source === 'mic') {
-        audioFilePath = micAudioPath ?? null;
-      } else {
-        audioFilePath = (await window.ipcRenderer.invoke(
-          'video-editor:music:get-path',
-          { fileName: track.fileName }
-        )) as string | null;
-      }
 
-      if (!audioFilePath) continue;
-
-      const totalTimelineDuration = getTotalTimelineDuration(segments);
-      const tempMusicPath = `${outputPath}.temp_music_${i}.aac`;
-
-      const prepResult = (await window.ipcRenderer.invoke(
-        'video-editor:music:prepare-for-export',
-        {
-          musicFilePath: audioFilePath,
-          trimStart: track.trimStart,
-          trimEnd: track.trimEnd,
-          speed: track.speed,
-          startTime: track.startTime + firstFrameDuration,
-          trackDuration: track.endTime - track.startTime,
-          totalDuration: totalTimelineDuration + firstFrameDuration,
-          outputPath: tempMusicPath,
+        if (!audioFilePath) {
+          return {
+            success: false,
+            error: `Audio source not found: ${track.name}`,
+          };
         }
-      )) as { success: boolean; error?: string };
 
-      if (prepResult.success) {
+        const tempMusicPath = `${outputPath}.temp_music_${operationId}_${i}.aac`;
+
+        const prepResult = (await window.ipcRenderer.invoke(
+          'video-editor:music:prepare-for-export',
+          {
+            musicFilePath: audioFilePath,
+            trimStart: track.trimStart,
+            trimEnd: track.trimEnd,
+            speed: track.speed,
+            startTime: track.startTime,
+            trackDuration: track.endTime - track.startTime,
+            totalDuration: totalTimelineDuration,
+            outputPath: tempMusicPath,
+          }
+        )) as { success: boolean; error?: string };
+
+        if (!prepResult.success) {
+          return {
+            success: false,
+            error: prepResult.error ?? 'Failed to prepare music for export',
+          };
+        }
+
         musicTempFiles.push(tempMusicPath);
         enabledAudioTracks.push({
           path: tempMusicPath,
@@ -626,22 +809,23 @@ export class WebCodecsExporter {
           skipSegmentExtraction: true,
         });
       }
+
+      return await muxAudioWithVideo({
+        videoPath: tempVideoPath,
+        audioTracks: enabledAudioTracks,
+        outputPath,
+        segments,
+        embeddedAudio,
+        audioDelaySeconds: firstFrameDuration,
+      });
+    } finally {
+      await Promise.allSettled(
+        musicTempFiles.map(filePath =>
+          window.ipcRenderer.invoke('video-editor:delete-temp-file', {
+            filePath,
+          })
+        )
+      );
     }
-
-    const result = await muxAudioWithVideo({
-      videoPath: tempVideoPath,
-      audioTracks: enabledAudioTracks,
-      outputPath,
-      segments,
-      audioDelaySeconds: firstFrameDuration,
-    });
-
-    for (const tempFile of musicTempFiles) {
-      window.ipcRenderer
-        .invoke('video-editor:delete-temp-file', { filePath: tempFile })
-        .catch(() => {});
-    }
-
-    return result;
   }
 }

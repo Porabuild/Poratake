@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
 
 const mockSpawn = vi.fn();
 const mockExecFileSync = vi.fn();
@@ -93,6 +95,35 @@ describe('NativeDaemon platform support', () => {
     child.emit('exit', 0, null);
     await stopPromise;
   });
+
+  it('passes the macOS daemon path to pgrep without a shell', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    const child = makeMockChild();
+    mockSpawn.mockReturnValue(child);
+    mockExecFileSync.mockReturnValue('321\n');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+
+    const { daemon } = await import('@/main/daemon');
+    const startPromise = daemon.start();
+    child.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await startPromise;
+
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'pgrep',
+      ['-f', '/mock/bin/capty-daemon'],
+      { encoding: 'utf-8' }
+    );
+    expect(mockExecSync).not.toHaveBeenCalled();
+    expect(processKill).toHaveBeenCalledWith(321, 'SIGKILL');
+
+    const stopPromise = daemon.stop();
+    child.emit('exit', 0, null);
+    await stopPromise;
+    processKill.mockRestore();
+  });
 });
 
 describe('NativeDaemon on unsupported platforms', () => {
@@ -126,6 +157,99 @@ describe('NativeDaemon on unsupported platforms', () => {
     const { daemon } = await import('@/main/daemon');
     await expect(daemon.call('ocr', 'recognize')).rejects.toThrow(
       'Daemon not supported on this platform: ocr.recognize'
+    );
+  });
+});
+
+describe('native recording startup', () => {
+  it('clears completed camera paths before later abort cleanup', () => {
+    const source = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'src',
+        'main',
+        'daemon',
+        'ScreenRecorder',
+        'Recorders',
+        'CameraRecorder.swift'
+      ),
+      'utf8'
+    );
+    const stop = source.slice(
+      source.indexOf('func stop()'),
+      source.indexOf('func abort()')
+    );
+    const abort = source.slice(
+      source.indexOf('func abort()'),
+      source.indexOf('func captureOutput(')
+    );
+
+    expect(stop.indexOf('let finalOutputPath = outputPath')).toBeLessThan(
+      stop.indexOf('outputPath = nil')
+    );
+    expect(stop.indexOf('let finalMetadataPath = metadataPath')).toBeLessThan(
+      stop.indexOf('metadataPath = nil')
+    );
+    expect(abort).toMatch(/removeItem[\s\S]*outputPath = nil/);
+    expect(abort).toMatch(/removeItem[\s\S]*metadataPath = nil/);
+  });
+
+  it('resolves iOS startup from the first frame without polling', () => {
+    const source = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'src',
+        'main',
+        'daemon',
+        'ScreenRecorder',
+        'Recorders',
+        'IOSDeviceRecorder.swift'
+      ),
+      'utf8'
+    );
+
+    expect(source).toContain('withCheckedThrowingContinuation');
+    expect(source).toContain('markFirstFrameReady()');
+    expect(source).not.toContain('pollIntervalNs');
+  });
+
+  it('fails iOS startup when its video writer cannot start', () => {
+    const source = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'src',
+        'main',
+        'daemon',
+        'ScreenRecorder',
+        'Recorders',
+        'IOSDeviceRecorder.swift'
+      ),
+      'utf8'
+    );
+
+    expect(source).toContain('guard assetWriter?.startWriting() == true else');
+    expect(source).toContain('Failed to start video writer');
+  });
+
+  it('anchors a pre-first-frame screen pause to the first paused frame', () => {
+    const source = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'src',
+        'main',
+        'daemon',
+        'ScreenRecorder',
+        'Recorders',
+        'ScreenCaptureRecorder.swift'
+      ),
+      'utf8'
+    );
+
+    expect(source).toContain(
+      'pauseStartTime = videoFrameCount > 0 ? lastFrameTime : nil'
+    );
+    expect(source.indexOf('videoFrameCount = 0')).toBeLessThan(
+      source.indexOf('try await stream?.startCapture()')
     );
   });
 });

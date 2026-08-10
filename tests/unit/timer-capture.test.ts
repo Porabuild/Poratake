@@ -4,7 +4,6 @@ const mockGetConfig = vi.fn();
 const mockUpdateConfig = vi.fn();
 const mockStartAreaSelection = vi.fn();
 const mockCancelAreaSelection = vi.fn();
-const mockHideAreaSelector = vi.fn();
 const mockCaptureArea = vi.fn();
 const mockHideDesktopIcons = vi.fn();
 const mockShowDesktopIcons = vi.fn();
@@ -47,7 +46,6 @@ vi.mock('@/main/daemon', () => ({
 vi.mock('@/main/capture/area-selector', () => ({
   startAreaSelection: (...a: unknown[]) => mockStartAreaSelection(...a),
   cancelAreaSelection: (...a: unknown[]) => mockCancelAreaSelection(...a),
-  hideAreaSelector: (...a: unknown[]) => mockHideAreaSelector(...a),
 }));
 
 vi.mock('@/main/capture/screenshot', () => ({
@@ -64,18 +62,21 @@ vi.mock('@/main/capture/desktop-icons', () => ({
 
 describe('timer-capture', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     vi.resetModules();
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: false } });
     mockIsSupported.mockReturnValue(true);
     mockCheckAccessibility.mockReturnValue(true);
     mockDaemonCall.mockResolvedValue({});
+    mockStartAreaSelection.mockResolvedValue(null);
+    mockCaptureArea.mockResolvedValue(undefined);
   });
 
   it('starts and cancels when area selection cancelled', async () => {
     mockStartAreaSelection.mockImplementation(
       (opts: { onCancelled: () => Promise<void> }) => {
         setImmediate(() => opts.onCancelled());
+        return new Promise(() => {});
       }
     );
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
@@ -91,6 +92,7 @@ describe('timer-capture', () => {
     mockStartAreaSelection.mockImplementation(
       (opts: { onCancelled: () => Promise<void> }) => {
         setImmediate(() => opts.onCancelled());
+        return new Promise(() => {});
       }
     );
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
@@ -106,6 +108,7 @@ describe('timer-capture', () => {
     mockStartAreaSelection.mockImplementation(
       (opts: { onCancelled: () => Promise<void> }) => {
         setImmediate(() => opts.onCancelled());
+        return new Promise(() => {});
       }
     );
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
@@ -124,6 +127,7 @@ describe('timer-capture', () => {
           await opts.onSelected({ status: 'selected' });
           await opts.onCancelled();
         });
+        return new Promise(() => {});
       }
     );
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
@@ -147,7 +151,6 @@ describe('timer-capture', () => {
     mockCaptureArea.mockResolvedValue(undefined);
     mockStartAreaSelection.mockImplementation(
       (opts: { onSelected: (s: unknown) => Promise<void> }) => {
-        // Run async; fire completed event after handler attaches
         Promise.resolve().then(async () => {
           await opts.onSelected({
             status: 'selected',
@@ -157,10 +160,10 @@ describe('timer-capture', () => {
             height: 600,
           });
         });
-        // After microtask, queue event dispatch
         setTimeout(() => {
           [...handlers].forEach(h => h('timer-control:completed'));
         }, 10);
+        return new Promise(() => {});
       }
     );
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
@@ -195,12 +198,139 @@ describe('timer-capture', () => {
         setTimeout(() => {
           [...handlers].forEach(h => h('timer-control:cancel'));
         }, 10);
+        return new Promise(() => {});
       }
     );
     const timerCapture = (await import('@/main/capture/timer-capture')).default;
     await timerCapture();
     expect(mockCaptureArea).not.toHaveBeenCalled();
   }, 10000);
+
+  it('ignores a second timer request while area selection is active', async () => {
+    let cancelSelection: () => void = () => {};
+    mockStartAreaSelection.mockImplementation(
+      (opts: { onCancelled: () => void }) => {
+        cancelSelection = opts.onCancelled;
+        return new Promise(() => {});
+      }
+    );
+    const timerCapture = (await import('@/main/capture/timer-capture')).default;
+
+    const firstCapture = timerCapture();
+    await vi.waitFor(() => expect(mockStartAreaSelection).toHaveBeenCalled());
+    await timerCapture();
+
+    expect(mockStartAreaSelection).toHaveBeenCalledTimes(1);
+
+    cancelSelection();
+    await firstCapture;
+  });
+
+  it('settles and resets state when the timer control cannot open', async () => {
+    mockStartAreaSelection.mockImplementation(
+      (opts: { onSelected: (s: unknown) => Promise<void> }) => {
+        Promise.resolve().then(() =>
+          opts.onSelected({ x: 0, y: 0, width: 100, height: 100 })
+        );
+        return new Promise(() => {});
+      }
+    );
+    mockDaemonCall.mockImplementation(async (_module, method) => {
+      if (method === 'show') {
+        throw new Error('timer unavailable');
+      }
+      return {};
+    });
+    const timerCapture = (await import('@/main/capture/timer-capture')).default;
+
+    await expect(timerCapture()).resolves.toBeUndefined();
+    expect(mockCancelAreaSelection).toHaveBeenCalledWith(true);
+
+    mockStartAreaSelection.mockResolvedValue(null);
+    await timerCapture();
+    expect(mockStartAreaSelection).toHaveBeenCalledTimes(2);
+  });
+
+  it('restores icons and state when capture fails', async () => {
+    const handlers: Array<(event: string) => void> = [];
+    mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
+    mockDaemonOnEvent.mockImplementation((handler: (event: string) => void) => {
+      handlers.push(handler);
+    });
+    mockDaemonOffEvent.mockImplementation(
+      (handler: (event: string) => void) => {
+        const index = handlers.indexOf(handler);
+        if (index >= 0) handlers.splice(index, 1);
+      }
+    );
+    mockStartAreaSelection.mockImplementation(
+      (opts: { onSelected: (s: unknown) => Promise<void> }) => {
+        Promise.resolve().then(() =>
+          opts.onSelected({ x: 0, y: 0, width: 100, height: 100 })
+        );
+        setImmediate(() => {
+          [...handlers].forEach(handler => handler('timer-control:completed'));
+        });
+        return new Promise(() => {});
+      }
+    );
+    mockCaptureArea.mockRejectedValue(new Error('capture failed'));
+    const timerCapture = (await import('@/main/capture/timer-capture')).default;
+
+    await expect(timerCapture()).resolves.toBeUndefined();
+    expect(mockShowDesktopIcons).toHaveBeenCalledTimes(1);
+
+    mockStartAreaSelection.mockResolvedValue(null);
+    await timerCapture();
+    expect(mockStartAreaSelection).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for an in-flight timer show before settling cancellation', async () => {
+    let selectArea: (selection: unknown) => Promise<void> = async () => {};
+    let cancelArea: () => void = () => {};
+    let finishShow: () => void = () => {};
+    mockStartAreaSelection.mockImplementation(
+      (opts: {
+        onSelected: (selection: unknown) => Promise<void>;
+        onCancelled: () => void;
+      }) => {
+        selectArea = opts.onSelected;
+        cancelArea = opts.onCancelled;
+        return new Promise(() => {});
+      }
+    );
+    mockDaemonCall.mockImplementation((_module, method) => {
+      if (method !== 'show') {
+        return Promise.resolve({});
+      }
+      return new Promise(resolve => {
+        finishShow = () => resolve({});
+      });
+    });
+    const timerCapture = (await import('@/main/capture/timer-capture')).default;
+    let settled = false;
+    const capture = timerCapture().then(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() => expect(mockStartAreaSelection).toHaveBeenCalled());
+    void selectArea({ x: 0, y: 0, width: 100, height: 100 });
+    await vi.waitFor(() =>
+      expect(mockDaemonCall).toHaveBeenCalledWith(
+        'timer-control',
+        'show',
+        expect.any(Object)
+      )
+    );
+    cancelArea();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+
+    finishShow();
+    await capture;
+    expect(mockCancelAreaSelection).toHaveBeenCalledWith(true);
+  });
 });
 
 describe('timer-capture on Windows', () => {

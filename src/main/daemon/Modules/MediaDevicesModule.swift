@@ -22,7 +22,15 @@ class MediaDevicesModule: Module {
     private func handleList(requestId: String) {
         let microphones = MediaDeviceDiscovery.microphones().map { ["id": $0.id, "label": $0.label] }
         let cameras = MediaDeviceDiscovery.cameras().map { ["id": $0.id, "label": $0.label] }
-        respond(id: requestId, result: ["microphones": microphones, "cameras": cameras])
+
+        var result: [String: Any] = ["microphones": microphones, "cameras": cameras]
+        if let defaultMicrophoneId = MediaDeviceDiscovery.defaultMicrophoneId() {
+            result["defaultMicrophoneId"] = defaultMicrophoneId
+        }
+        if let defaultCameraId = MediaDeviceDiscovery.defaultCameraId() {
+            result["defaultCameraId"] = defaultCameraId
+        }
+        respond(id: requestId, result: result)
     }
 
     private func handleStartMicTest(params: [String: AnyCodable]?, requestId: String) {

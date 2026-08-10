@@ -108,6 +108,27 @@ describe('area-selector overlay backend', () => {
     expect(overlayOptions().preset).toEqual(primary.bounds);
   });
 
+  it('passes native freeze ownership through the interactive overlay', async () => {
+    const release = vi.fn().mockResolvedValue(undefined);
+    mockStartInteractiveOverlay.mockResolvedValue({
+      display: primary,
+      rect: { x: 10, y: 20, width: 300, height: 200 },
+      frozen: true,
+      release,
+    });
+    const m = await import('@/main/capture/area-selector/overlay-backend');
+
+    await expect(m.startAreaSelection({ freeze: true })).resolves.toEqual({
+      status: 'confirmed',
+      x: 10,
+      y: 20,
+      width: 300,
+      height: 200,
+    });
+    expect(overlayOptions().freeze).toBe(true);
+    expect(release).toHaveBeenCalled();
+  });
+
   it('presets the chosen display when several are connected', async () => {
     mockGetAllDisplays.mockReturnValue([primary, secondary]);
     mockSelectDisplay.mockResolvedValue({ status: 'selected', screenId: 2 });

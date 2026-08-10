@@ -9,6 +9,7 @@ import {
   Cloud,
   KeyRound,
   Info,
+  Palette,
 } from 'lucide-react';
 import type { SettingsConfig } from '@/types/settings';
 import type { FeatureId } from '@/types/capabilities';
@@ -20,12 +21,12 @@ import { DEVICES_ITEMS } from './registry/devices';
 import { STORAGE_ITEMS } from './registry/storage';
 import { SHORTCUTS_ITEMS } from './registry/shortcuts';
 import { CLOUD_ITEMS } from './registry/cloud';
+import { APPEARANCE_ITEMS } from './registry/appearance';
 
 export interface SettingsCategory {
   id: string;
   label: string;
   icon: LucideIcon;
-  description: string;
   searchable: boolean;
   feature?: FeatureId;
 }
@@ -138,21 +139,24 @@ const ALL_SETTINGS_CATEGORIES: SettingsCategory[] = [
     id: 'general',
     label: 'General',
     icon: Settings,
-    description: 'Manage your application preferences',
+    searchable: true,
+  },
+  {
+    id: 'appearance',
+    label: 'Appearance',
+    icon: Palette,
     searchable: true,
   },
   {
     id: 'screenshot',
     label: 'Screenshot',
     icon: Camera,
-    description: 'Configure screenshot capture behavior',
     searchable: true,
   },
   {
     id: 'recording',
     label: 'Recording',
     icon: Video,
-    description: 'Configure video recording behavior',
     searchable: true,
     feature: 'recording',
   },
@@ -160,7 +164,6 @@ const ALL_SETTINGS_CATEGORIES: SettingsCategory[] = [
     id: 'devices',
     label: 'Devices',
     icon: Webcam,
-    description: 'Select and test your microphone and camera',
     searchable: true,
     feature: 'recording',
   },
@@ -168,35 +171,30 @@ const ALL_SETTINGS_CATEGORIES: SettingsCategory[] = [
     id: 'storage',
     label: 'Storage',
     icon: HardDrive,
-    description: 'Configure where files are saved',
     searchable: true,
   },
   {
     id: 'shortcuts',
     label: 'Shortcuts',
     icon: Keyboard,
-    description: 'Customize keyboard shortcuts',
     searchable: true,
   },
   {
     id: 'cloud',
     label: 'Cloud',
     icon: Cloud,
-    description: 'Configure cloud uploads and shareable links',
     searchable: true,
   },
   {
     id: 'license',
     label: 'License',
     icon: KeyRound,
-    description: 'Manage your Capty license',
     searchable: false,
   },
   {
     id: 'about',
     label: 'About',
     icon: Info,
-    description: 'Application information and updates',
     searchable: false,
   },
 ];
@@ -217,6 +215,7 @@ export const SPECIAL_CATEGORIES = SETTINGS_CATEGORIES.filter(
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
   ...GENERAL_ITEMS,
+  ...APPEARANCE_ITEMS,
   ...SCREENSHOT_ITEMS,
   ...RECORDING_ITEMS,
   ...DEVICES_ITEMS,
@@ -229,79 +228,29 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
     (!item.feature || isFeatureSupported(item.feature))
 );
 
-const SECTION_DESCRIPTIONS: Record<string, Record<string, string>> = {
-  general: {
-    Application: 'Configure how Capty behaves on your system',
-    Preview:
-      'Choose where capture previews appear on screen and how long they stay',
-    History: 'Configure screenshot history settings',
-  },
-  screenshot: {
-    'Capture Mode': 'Choose how screenshots are captured',
-    'Window Behavior':
-      'Control when the screenshot window closes automatically',
-    Output: 'Configure screenshot export settings',
-  },
-  recording: {
-    Behavior: 'Configure default behavior for new recordings',
-  },
-  devices: {
-    Microphone: 'Choose which microphone recordings use and test its level',
-    Camera: 'Choose which camera recordings use and preview it',
-  },
-  storage: {
-    'File Naming': 'Customize how files are named using tokens',
-    'Save Locations': 'Choose where files are saved on disk',
-  },
-  shortcuts: {
-    'Screenshot Shortcuts':
-      'Configure keyboard shortcuts for different capture modes',
-    'Recording Shortcuts': 'Configure keyboard shortcuts for video recording',
-    'Other Shortcuts': 'Configure keyboard shortcuts for additional features',
-    'Editor Tool Shortcuts': 'Configure keyboard shortcuts for editor tools',
-    'Editor Action Shortcuts':
-      'Configure keyboard shortcuts for screenshot editor actions',
-    'Video Editor Shortcuts':
-      'Configure keyboard shortcuts for video editor sidebar panels',
-  },
-  cloud: {
-    'Cloud Upload': 'Choose where to upload screenshots and enable uploads',
-    'Capty Cloud':
-      'Hosted uploads and shareable links included with an active license',
-    'S3 Configuration':
-      'Works with AWS S3, Cloudflare R2, DigitalOcean Spaces, MinIO, and other S3-compatible providers',
-    'S3 Credentials': 'Authentication credentials for your S3 storage',
-    'S3 Options': 'Additional S3 configuration options',
-    'REST API Configuration':
-      'Upload to a custom HTTP endpoint that accepts multipart/form-data POSTs',
-    'REST API Response': 'How Capty extracts the public URL from the response',
-  },
-};
+export function matchesSettingsQuery(
+  item: SettingsItem,
+  query: string
+): boolean {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
 
-export function getSectionDescription(
-  category: string,
-  section: string
-): string | undefined {
-  return SECTION_DESCRIPTIONS[category]?.[section];
+  const searchable = [
+    item.label,
+    item.description,
+    item.section,
+    ...item.keywords,
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  return terms.every(term => searchable.includes(term));
 }
 
 export function searchSettings(query: string): SettingsItem[] {
   if (!query.trim()) return [];
 
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-
-  return SETTINGS_ITEMS.filter(item => {
-    const searchable = [
-      item.label,
-      item.description,
-      item.section,
-      ...item.keywords,
-    ]
-      .join(' ')
-      .toLowerCase();
-
-    return terms.every(term => searchable.includes(term));
-  });
+  return SETTINGS_ITEMS.filter(item => matchesSettingsQuery(item, query));
 }
 
 export function getItemsByCategory(category: string): SettingsItem[] {

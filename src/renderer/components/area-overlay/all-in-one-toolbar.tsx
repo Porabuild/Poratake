@@ -1,133 +1,177 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Camera, ChevronDown, Ruler, X } from 'lucide-react';
-import AspectRatioMenu from './aspect-ratio-menu';
-import SizeEditor from './size-editor';
+import { useCallback, useState } from 'react';
+import { Camera, Pipette, ScanText, Video, X } from 'lucide-react';
 import ToolbarButton from './toolbar-button';
+import ToolbarSurface from './toolbar-surface';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/renderer/components/ui/tooltip';
+import {
+  Tabs,
+  TabsIndicator,
+  TabsList,
+  TabsListContainer,
+  TabsTrigger,
+} from '@/renderer/components/ui/tabs';
 import type {
-  AreaOverlayRect,
   AreaOverlayToolbarAction,
+  AllInOneCaptureMode,
 } from '@/types/area-overlay';
-import { FREE_ASPECT_RATIO } from '@/types/aspect-ratio';
-import type { AspectRatio } from '@/types/aspect-ratio';
 
-type ToolbarPanel = 'ratio' | 'size' | null;
+interface EyeDropperResult {
+  sRGBHex: string;
+}
+
+interface EyeDropperInstance {
+  open: () => Promise<EyeDropperResult>;
+}
+
+type EyeDropperConstructor = new () => EyeDropperInstance;
+
+function getEyeDropper(): EyeDropperInstance | null {
+  const Constructor = (
+    window as Window & { EyeDropper?: EyeDropperConstructor }
+  ).EyeDropper;
+  return Constructor ? new Constructor() : null;
+}
+
+function isEyeDropperAvailable(): boolean {
+  return 'EyeDropper' in window;
+}
 
 export default function AllInOneToolbar({
   recordingEnabled,
-  rect,
+  ocrEnabled,
+  activeMode,
   onAction,
+  onPickingColorChange,
 }: {
   recordingEnabled: boolean;
-  rect: AreaOverlayRect | null;
+  ocrEnabled: boolean;
+  activeMode: AllInOneCaptureMode;
   onAction: (action: AreaOverlayToolbarAction) => void;
+  onPickingColorChange: (active: boolean) => void;
 }) {
-  const [openPanel, setOpenPanel] = useState<ToolbarPanel>(null);
-  const [activeRatio, setActiveRatio] = useState(FREE_ASPECT_RATIO);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const hasSelection = rect !== null;
+  const [isPickingColor, setIsPickingColor] = useState(false);
+  const colorPickerAvailable = isEyeDropperAvailable();
 
-  const switchPanel = useCallback(
-    (next: ToolbarPanel) => {
-      if (openPanel === next) return;
-      if (openPanel === 'size') onAction({ action: 'size-editor-closed' });
-      if (next === 'size') onAction({ action: 'size-editor-opened' });
-      setOpenPanel(next);
-    },
-    [onAction, openPanel]
+  const selectMode = useCallback(
+    (mode: AllInOneCaptureMode) =>
+      onAction({ action: 'select-capture-mode', mode }),
+    [onAction]
   );
 
-  useEffect(() => {
-    if (!openPanel) return;
+  const selectCaptureTab = useCallback(
+    (mode: string) => {
+      if (mode === 'screenshot' || mode === 'record') {
+        selectMode(mode);
+      }
+    },
+    [selectMode]
+  );
 
-    const handleMouseDown = (event: MouseEvent) => {
-      if (containerRef.current?.contains(event.target as Node)) return;
-      switchPanel(null);
-    };
+  const pickColor = useCallback(async () => {
+    const eyeDropper = getEyeDropper();
+    if (!eyeDropper || isPickingColor) return;
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.stopImmediatePropagation();
-      switchPanel(null);
-    };
-
-    window.addEventListener('mousedown', handleMouseDown);
-    window.addEventListener('keydown', handleKeyDown, true);
-
-    return () => {
-      window.removeEventListener('mousedown', handleMouseDown);
-      window.removeEventListener('keydown', handleKeyDown, true);
-    };
-  }, [openPanel, switchPanel]);
-
-  const selectRatio = (ratio: AspectRatio) => {
-    setActiveRatio(ratio);
-    switchPanel(null);
-    onAction({
-      action: 'select-aspect-ratio',
-      name: ratio.name,
-      width: ratio.width,
-      height: ratio.height,
-    });
-  };
-
-  const applySize = (size: { width: number; height: number }) => {
-    switchPanel(null);
-    onAction({ action: 'update-size', ...size });
-  };
+    setIsPickingColor(true);
+    onPickingColorChange(true);
+    try {
+      const result = await eyeDropper.open();
+      onAction({ action: 'copy-color', color: result.sRGBHex });
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        console.error('Failed to pick color:', error);
+      }
+    } finally {
+      setIsPickingColor(false);
+      onPickingColorChange(false);
+    }
+  }, [isPickingColor, onAction, onPickingColorChange]);
 
   return (
     <div
-      ref={containerRef}
-      className="absolute top-8 left-1/2 -translate-x-1/2 cursor-default"
+      className={`absolute top-6 left-1/2 -translate-x-1/2 cursor-default transition-opacity ${
+        isPickingColor ? 'pointer-events-none opacity-0' : 'opacity-100'
+      }`}
       onMouseDown={event => event.stopPropagation()}
     >
-      <div className="flex items-center gap-0.5 rounded-full bg-black/75 p-1 shadow-lg backdrop-blur-md">
-        <ToolbarButton
-          aria-label="Close"
-          className="w-8 px-0"
-          onClick={() => onAction({ action: 'close' })}
+      <ToolbarSurface>
+        <Tabs
+          aria-label="Capture mode"
+          variant="primary"
+          value={activeMode === 'ocr' ? '' : activeMode}
+          onValueChange={selectCaptureTab}
         >
-          <X className="size-4" />
-        </ToolbarButton>
-        <div className="relative">
-          <ToolbarButton onClick={() => switchPanel('ratio')}>
-            {activeRatio.name}
-            <ChevronDown className="size-3.5" />
-          </ToolbarButton>
-          {openPanel === 'ratio' ? (
-            <AspectRatioMenu activeRatio={activeRatio} onSelect={selectRatio} />
-          ) : null}
-        </div>
-        <div className="relative">
-          <ToolbarButton
-            disabled={!hasSelection}
-            onClick={() => switchPanel('size')}
-          >
-            <Ruler className="size-4" />
-            Size
-          </ToolbarButton>
-          {openPanel === 'size' && rect ? (
-            <SizeEditor rect={rect} onApply={applySize} />
-          ) : null}
-        </div>
-        <div className="h-5 w-px bg-white/20" />
-        <ToolbarButton
-          disabled={!hasSelection}
-          onClick={() => onAction({ action: 'screenshot' })}
-        >
-          <Camera className="size-4" />
-          Shot
-        </ToolbarButton>
-        {recordingEnabled ? (
-          <ToolbarButton
-            disabled={!hasSelection}
-            onClick={() => onAction({ action: 'record' })}
-          >
-            <span className="size-2.5 rounded-full bg-red-500" />
-            Rec
-          </ToolbarButton>
+          <TabsListContainer className="bg-muted-foreground/10 rounded-xl">
+            <TabsList className="p-0.5">
+              <TabsTrigger
+                value="screenshot"
+                aria-label="Screenshot"
+                className="text-muted-foreground/60 hover:text-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground data-[focus-visible=true]:outline-muted-foreground flex size-8 items-center justify-center rounded-lg p-0"
+              >
+                <TabsIndicator className="bg-muted-foreground/25 rounded-lg shadow-none" />
+                <Camera className="size-4" />
+                <span className="sr-only">Screenshot</span>
+              </TabsTrigger>
+              {recordingEnabled ? (
+                <TabsTrigger
+                  value="record"
+                  aria-label="Record"
+                  className="text-muted-foreground/60 hover:text-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground data-[focus-visible=true]:outline-muted-foreground flex size-8 items-center justify-center rounded-lg p-0"
+                >
+                  <TabsIndicator className="bg-muted-foreground/25 rounded-lg shadow-none" />
+                  <Video className="size-4" />
+                  <span className="sr-only">Record</span>
+                </TabsTrigger>
+              ) : null}
+            </TabsList>
+          </TabsListContainer>
+        </Tabs>
+        <div className="bg-border/70 mx-0.5 h-5 w-px" />
+        {ocrEnabled ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <ToolbarButton
+                aria-label="Capture text"
+                aria-pressed={activeMode === 'ocr'}
+                variant={activeMode === 'ocr' ? 'tertiary' : 'ghost'}
+                onClick={() => selectMode('ocr')}
+              >
+                <ScanText className="size-4" />
+              </ToolbarButton>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Capture text</TooltipContent>
+          </Tooltip>
         ) : null}
-      </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <ToolbarButton
+              aria-label="Pick color"
+              disabled={!colorPickerAvailable}
+              onClick={pickColor}
+            >
+              <Pipette className="size-4" />
+            </ToolbarButton>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {colorPickerAvailable ? 'Pick color' : 'Color picker unavailable'}
+          </TooltipContent>
+        </Tooltip>
+        <div className="bg-border/70 mx-0.5 h-5 w-px" />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <ToolbarButton
+              aria-label="Close"
+              onClick={() => onAction({ action: 'close' })}
+            >
+              <X className="size-4" />
+            </ToolbarButton>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Close</TooltipContent>
+        </Tooltip>
+      </ToolbarSurface>
     </div>
   );
 }
