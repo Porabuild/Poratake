@@ -50,8 +50,8 @@ vi.mock('@/main/menu/index', () => ({
 }));
 
 vi.mock('@/main/update/config', () => ({
-  UPDATE_OWNER: 'SDSLeon',
-  UPDATE_REPOSITORY: 'capty',
+  UPDATE_OWNER: 'Porabuild',
+  UPDATE_REPOSITORY: 'Poratake',
 }));
 
 const mockBroadcastUpdateEvent = vi.fn();

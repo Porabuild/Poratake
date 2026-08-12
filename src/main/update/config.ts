@@ -1,2 +1,2 @@
-export const UPDATE_OWNER = 'SDSLeon';
-export const UPDATE_REPOSITORY = 'capty';
+export const UPDATE_OWNER = 'Porabuild';
+export const UPDATE_REPOSITORY = 'Poratake';

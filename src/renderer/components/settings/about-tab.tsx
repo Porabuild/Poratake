@@ -23,7 +23,7 @@ import type { UpdateState, UpdateStatus } from '@/types/update';
 import appIcon from '@build/icon.png';
 import BrandLogo from '@/renderer/components/brand-logo';
 
-const SOURCE_URL = 'https://github.com/SDSLeon/capty';
+const SOURCE_URL = 'https://github.com/Porabuild/Poratake';
 const UPSTREAM_URL = 'https://github.com/capty-app/capty';
 
 export default function AboutTab() {

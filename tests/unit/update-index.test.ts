@@ -54,8 +54,8 @@ vi.mock('@/main/menu/index', () => ({
 }));
 
 vi.mock('@/main/update/config', () => ({
-  UPDATE_OWNER: 'SDSLeon',
-  UPDATE_REPOSITORY: 'capty',
+  UPDATE_OWNER: 'Porabuild',
+  UPDATE_REPOSITORY: 'Poratake',
 }));
 
 // Mock broadcast
@@ -144,8 +144,8 @@ describe('Update System', () => {
 
       expect(mockAutoUpdater.setFeedURL).toHaveBeenCalledWith({
         provider: 'github',
-        owner: 'SDSLeon',
-        repo: 'capty',
+        owner: 'Porabuild',
+        repo: 'Poratake',
       });
     });
 

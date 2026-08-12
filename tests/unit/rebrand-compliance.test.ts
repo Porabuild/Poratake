@@ -127,11 +127,19 @@ describe('Poratake rebrand compliance', () => {
   it('uses fork-owned release and support destinations', () => {
     const builder = read('electron-builder.json5');
     const updater = read('src/main/update/config.ts');
+    const readme = read('README.md');
+    const about = read('src/renderer/components/settings/about-tab.tsx');
+    const menu = read('src/main/menu/index.ts');
     const workflow = read('.github/workflows/release.yml');
     const releaseScript = read('scripts/release.sh');
 
-    expect(builder).toContain('"owner": "SDSLeon"');
-    expect(updater).toContain("UPDATE_OWNER = 'SDSLeon'");
+    expect(builder).toContain('"owner": "Porabuild"');
+    expect(builder).toContain('"repo": "Poratake"');
+    expect(updater).toContain("UPDATE_OWNER = 'Porabuild'");
+    expect(updater).toContain("UPDATE_REPOSITORY = 'Poratake'");
+    expect(readme).toContain('https://github.com/Porabuild/Poratake');
+    expect(about).toContain('https://github.com/Porabuild/Poratake');
+    expect(menu).toContain('https://github.com/Porabuild/Poratake/issues');
     expect(workflow).toContain('name: Poratake v${{ inputs.version }}');
     expect(workflow).toContain('release/${{ inputs.version }}/latest-mac.yml');
     expect(workflow).not.toContain('https://capty.app/api/versions');
