@@ -119,14 +119,14 @@ struct WindowSelectorInfo {
 
 func collectVisibleWindows() -> [WindowSelectorInfo] {
     var result: [WindowSelectorInfo] = []
-    
+
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
         return result
     }
-    
+
     let myPid = ProcessInfo.processInfo.processIdentifier
-    
+
     for windowDict in windowList {
         guard let windowId = windowDict[kCGWindowNumber as String] as? Int,
               let ownerPid = windowDict[kCGWindowOwnerPID as String] as? Int,
@@ -137,16 +137,16 @@ func collectVisibleWindows() -> [WindowSelectorInfo] {
               let height = boundsDict["Height"] as? CGFloat,
               let layer = windowDict[kCGWindowLayer as String] as? Int
         else { continue }
-        
+
         if ownerPid == Int(myPid) { continue }
         if layer != 0 { continue }
         if width < 50 || height < 50 { continue }
-        
+
         let ownerName = windowDict[kCGWindowOwnerName as String] as? String ?? "Unknown"
         let title = windowDict[kCGWindowName as String] as? String ?? ""
         let displayTitle = title.isEmpty ? ownerName : title
         let bounds = CGRect(x: x, y: y, width: width, height: height)
-        
+
         result.append(WindowSelectorInfo(
             windowId: windowId,
             title: displayTitle,
@@ -155,7 +155,7 @@ func collectVisibleWindows() -> [WindowSelectorInfo] {
             bounds: bounds
         ))
     }
-    
+
     return result
 }
 
