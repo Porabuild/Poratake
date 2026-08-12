@@ -52,4 +52,6 @@ src/main/daemon/capty-daemon.exe
 .plans/
 .agents/
 .claude/
+.commandcode/
+.poracode/
 skills-lock.json
