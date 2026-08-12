@@ -28,6 +28,7 @@ $processInfo.FileName = $bash
 $processInfo.UseShellExecute = $false
 $processInfo.Arguments = '--login -s'
 $processInfo.RedirectStandardInput = $true
+$processInfo.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
 $process = [System.Diagnostics.Process]::Start($processInfo)
 $process.StandardInput.WriteLine($command)
 $process.StandardInput.Close()
