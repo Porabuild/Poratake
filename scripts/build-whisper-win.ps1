@@ -53,7 +53,18 @@ try {
     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     Copy-Item -LiteralPath $builtCli.FullName -Destination $outputPath -Force
 
-    $helpOutput = (& $outputPath --help 2>&1 | Out-String)
+    $helpProcessInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $helpProcessInfo.FileName = $outputPath
+    $helpProcessInfo.Arguments = '--help'
+    $helpProcessInfo.UseShellExecute = $false
+    $helpProcessInfo.RedirectStandardOutput = $true
+    $helpProcessInfo.RedirectStandardError = $true
+    $helpProcessInfo.CreateNoWindow = $true
+    $helpProcess = [System.Diagnostics.Process]::Start($helpProcessInfo)
+    $standardOutput = $helpProcess.StandardOutput.ReadToEndAsync()
+    $standardError = $helpProcess.StandardError.ReadToEndAsync()
+    $helpProcess.WaitForExit()
+    $helpOutput = $standardOutput.Result + $standardError.Result
     if (-not $helpOutput.Contains('-dtw')) {
         throw 'whisper-cli.exe does not support DTW timestamps'
     }
