@@ -14,6 +14,7 @@ const mockShowCameraPreview = vi.fn();
 const mockUpdateCameraPreviewPosition = vi.fn();
 const mockHideCameraPreview = vi.fn();
 const mockGetCameraPreviewSettings = vi.fn();
+const mockEnableCameraContentProtection = vi.fn();
 
 const RECORDING_CONFIG = {
   includeAudio: true,
@@ -85,6 +86,7 @@ vi.mock('@/main/capture/video/camera-preview', () => ({
     mockUpdateCameraPreviewPosition(...a),
   hideCameraPreview: () => mockHideCameraPreview(),
   getCameraPreviewSettings: () => mockGetCameraPreviewSettings(),
+  enableCameraContentProtection: () => mockEnableCameraContentProtection(),
 }));
 
 const mockStartPendingRecording = vi.fn();
@@ -145,6 +147,7 @@ describe('recording-control', () => {
     mockPauseRecording.mockResolvedValue(undefined);
     mockResumeRecording.mockResolvedValue(undefined);
     mockShowCameraPreview.mockResolvedValue(undefined);
+    mockEnableCameraContentProtection.mockResolvedValue(undefined);
     mockUpdateCameraPreviewPosition.mockResolvedValue(undefined);
     mockShowRecordingError.mockResolvedValue(undefined);
     mockShowMessageBox.mockResolvedValue({ response: 1 });
@@ -1083,17 +1086,22 @@ describe('recording-control', () => {
       expect(mockUpdateConfig).not.toHaveBeenCalled();
     });
 
-    it('ignores camera changes when the recording has no camera track', async () => {
+    it('starts the fixed camera track when it was off at recording start', async () => {
       await startRecording(RECORDING_CONFIG);
 
       await daemonEventHandler!('recording-control:toggle-camera');
 
-      expect(mockDaemonCall).not.toHaveBeenCalledWith(
+      await vi.waitFor(() =>
+        expect(mockShowCameraPreview).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: true })
+        )
+      );
+      expect(mockEnableCameraContentProtection).toHaveBeenCalledTimes(1);
+      expect(mockDaemonCall).toHaveBeenCalledWith(
         'screen-recorder',
         'setCamera',
-        expect.anything()
+        { enabled: true }
       );
-      expect(mockShowCameraPreview).not.toHaveBeenCalled();
     });
 
     it('reports the camera device as locked on the Windows toolbar', async () => {
@@ -1117,7 +1125,7 @@ describe('recording-control', () => {
       );
     });
 
-    it('leaves the camera unlocked when the recording has no camera', async () => {
+    it('locks the selected camera while recording starts with it off', async () => {
       Object.defineProperty(process, 'platform', { value: 'win32' });
       vi.resetModules();
       const m = await import('@/main/capture/video/recording-control');
@@ -1126,7 +1134,7 @@ describe('recording-control', () => {
       await m.showRecordingControl(RECORDING_CONFIG);
 
       expect(mockShowBrowserWindow).toHaveBeenLastCalledWith(
-        expect.objectContaining({ mode: 'recording', cameraLocked: false }),
+        expect.objectContaining({ mode: 'recording', cameraLocked: true }),
         expect.anything(),
         expect.any(Function)
       );

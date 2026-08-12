@@ -5,7 +5,7 @@ import path from 'node:path';
 
 const IS_WINDOWS = process.platform === 'win32';
 const LOCK_DIR = ['node_modules', '.cache'];
-const LOCK_FILE = 'capty-dev.lock';
+const LOCK_FILE = 'poratake-dev.lock';
 const TERMINATION_TIMEOUT_MS = 5000;
 const POLL_INTERVAL_MS = 100;
 
@@ -30,9 +30,9 @@ const getProcessIdentity = pid => {
         [
           '-NoProfile',
           '-Command',
-          '$process = Get-CimInstance Win32_Process -Filter "ProcessId = $env:CAPTY_DEV_PID" -ErrorAction Stop; $started = (Get-Process -Id $env:CAPTY_DEV_PID -ErrorAction Stop).StartTime.ToUniversalTime().Ticks; "$started`t$($process.CommandLine)"',
+          '$process = Get-CimInstance Win32_Process -Filter "ProcessId = $env:PORATAKE_DEV_PID" -ErrorAction Stop; $started = (Get-Process -Id $env:PORATAKE_DEV_PID -ErrorAction Stop).StartTime.ToUniversalTime().Ticks; "$started`t$($process.CommandLine)"',
         ],
-        { ...process.env, CAPTY_DEV_PID: String(pid) }
+        { ...process.env, PORATAKE_DEV_PID: String(pid) }
       )
     : runQuery('ps', ['-p', String(pid), '-o', 'lstart=,args='], process.env);
 
@@ -270,7 +270,7 @@ const WINDOWS_PROCESS_QUERY = [
   'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine } | ForEach-Object { "$($_.ProcessId)`t$($_.CommandLine)" }',
 ];
 
-export const isCaptyDevCommand = (root, command) => {
+export const isPoratakeDevCommand = (root, command) => {
   const normalizedRoot = root.replaceAll('\\', '/').toLowerCase();
   const normalizedCommand = command.replaceAll('\\', '/').toLowerCase();
 
@@ -291,14 +291,14 @@ const listWindowsPids = root =>
   runQuery('powershell', WINDOWS_PROCESS_QUERY, process.env)
     .split(/\r?\n/)
     .map(line => line.trim().match(/^(\d+)\t(.+)$/))
-    .filter(match => match && isCaptyDevCommand(root, match[2]))
+    .filter(match => match && isPoratakeDevCommand(root, match[2]))
     .map(match => Number.parseInt(match[1], 10));
 
 const listUnixPids = root =>
   runQuery('ps', ['-A', '-o', 'pid=,args='], process.env)
     .split('\n')
     .map(line => line.trim().match(/^(\d+)\s+(.+)$/))
-    .filter(match => match && isCaptyDevCommand(root, match[2]))
+    .filter(match => match && isPoratakeDevCommand(root, match[2]))
     .map(match => Number.parseInt(match[1], 10));
 
 const listRootOwnedPids = root =>

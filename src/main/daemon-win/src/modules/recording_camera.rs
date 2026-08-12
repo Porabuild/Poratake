@@ -47,12 +47,14 @@ pub struct CameraRecordingConfig {
     pub device_id: Option<String>,
     pub device_name: Option<String>,
     pub frame_rate: u32,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct CameraSyncClock {
     pub monotonic_time: Instant,
     pub wall_time: SystemTime,
+    pub prior_pause: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -820,7 +822,7 @@ impl CameraRuntime {
             last_capture: None,
             last_written: None,
             first_written: None,
-            enabled: true,
+            enabled: config.enabled,
             visibility_changed: false,
             visible_start: None,
             visible_spans: Vec::new(),
@@ -875,6 +877,7 @@ impl CameraRuntime {
             .last_capture
             .ok_or_else(|| RecorderError::capture("Camera has not produced a frame"))?;
         self.source_origin = Some(bridge_source_time(capture, clock.monotonic_time));
+        self.total_pause = clock.prior_pause;
         self.sync_clock = Some(clock);
         while let Some(frame) = self.pending_frames.pop_front() {
             self.write_frame(frame)?;
@@ -904,6 +907,12 @@ impl CameraRuntime {
     fn resume(&mut self) -> Result<(), RecorderError> {
         if !self.paused {
             return Err(RecorderError::invalid_state("Camera is not paused"));
+        }
+        if let Some(pause_started) = self.pause_started.take() {
+            let pause_ended = self
+                .last_capture
+                .map_or(pause_started, |capture| capture.source_time);
+            self.total_pause = add_pause_duration(self.total_pause, pause_started, pause_ended);
         }
         self.paused = false;
         Ok(())
@@ -950,9 +959,8 @@ impl CameraRuntime {
             return Ok(());
         }
         if let Some(pause_started) = self.pause_started.take() {
-            self.total_pause = self
-                .total_pause
-                .saturating_add(frame.source_time.saturating_sub(pause_started));
+            self.total_pause =
+                add_pause_duration(self.total_pause, pause_started, frame.source_time);
         }
         let timestamp = adjusted_camera_timestamp(frame.source_time, origin, self.total_pause);
         if let Some(last_written) = self.last_written {
@@ -1500,6 +1508,10 @@ fn adjusted_camera_timestamp(source_time: i64, origin: i64, total_pause: i64) ->
         .max(0)
 }
 
+fn add_pause_duration(total_pause: i64, pause_started: i64, pause_ended: i64) -> i64 {
+    total_pause.saturating_add(pause_ended.saturating_sub(pause_started))
+}
+
 fn camera_duration_hns(last_written: i64, frame_duration: i64) -> i64 {
     last_written.saturating_add(frame_duration).max(0)
 }
@@ -1616,6 +1628,19 @@ mod tests {
         assert_eq!(
             adjusted_camera_timestamp(80_000_000, 20_000_000, 30_000_000),
             30_000_000
+        );
+    }
+
+    #[test]
+    fn camera_pause_gap_stops_at_resume_while_disabled() {
+        let pause_started = 20_000_000;
+        let resume_capture = 50_000_000;
+        let enabled_capture = 150_000_000;
+        let pause = add_pause_duration(0, pause_started, resume_capture);
+
+        assert_eq!(
+            adjusted_camera_timestamp(enabled_capture, 10_000_000, pause),
+            110_000_000
         );
     }
 

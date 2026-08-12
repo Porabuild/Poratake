@@ -5,7 +5,7 @@ import { isProduction } from './env';
 import { isWindows } from './platform';
 
 export function getConfigDir(): string {
-  const dirName = isProduction ? 'capty' : 'capty-dev';
+  const dirName = isProduction ? 'poratake' : 'poratake-dev';
   return path.join(app.getPath('home'), '.config', dirName);
 }
 

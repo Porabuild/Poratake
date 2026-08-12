@@ -1,7 +1,7 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "com.capty.app",
+  "appId": "com.porabuild.poratake",
   "asar": true,
   "productName": "Poratake",
   "directories": {
@@ -20,6 +20,10 @@
     {
       "from": "licenses/FFmpeg-LGPL-2.1.txt",
       "to": "licenses/FFmpeg-LGPL-2.1.txt"
+    },
+    {
+      "from": "licenses/Geist-OFL-1.1.txt",
+      "to": "licenses/Geist-OFL-1.1.txt"
     },
     {
       "from": "node_modules",
@@ -186,7 +190,7 @@
       ],
       "UTExportedTypeDeclarations": [
         {
-          "UTTypeIdentifier": "com.capty.recording",
+          "UTTypeIdentifier": "com.porabuild.poratake.recording",
           "UTTypeConformsTo": ["public.package", "public.composite-content"],
           "UTTypeDescription": "Poratake Recording Project",
           "UTTypeTagSpecification": {

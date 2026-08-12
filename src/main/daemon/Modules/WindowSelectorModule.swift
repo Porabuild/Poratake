@@ -5,7 +5,7 @@ class WindowSelectorModule: Module {
     let name = "window-selector"
     private var selector: WindowSelectorUI?
     private var currentRequestId: String?
-    
+
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
         switch method {
         case "list":
@@ -18,7 +18,7 @@ class WindowSelectorModule: Module {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
     }
-    
+
     private func handleList(requestId: String) {
         let windows = collectVisibleWindows().map { info -> [String: Any] in
             [
@@ -36,15 +36,15 @@ class WindowSelectorModule: Module {
         }
         respond(id: requestId, result: ["windows": windows])
     }
-    
+
     private func handleSelect(requestId: String) {
         if selector != nil {
             respondError(id: requestId, code: "ALREADY_ACTIVE", message: "Window selector is already active")
             return
         }
-        
+
         currentRequestId = requestId
-        
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.selector = WindowSelectorUI(
@@ -61,7 +61,7 @@ class WindowSelectorModule: Module {
             self.selector?.start()
         }
     }
-    
+
     private func handleCancel(requestId: String) {
         DispatchQueue.main.async { [weak self] in
             self?.selector?.cleanup()
@@ -69,7 +69,7 @@ class WindowSelectorModule: Module {
         }
         respond(id: requestId, result: ["cancelled": true])
     }
-    
+
     private func handleSelection(_ info: WindowSelectorInfo) {
         guard let requestId = currentRequestId else { return }
         respond(id: requestId, result: [

@@ -4,6 +4,7 @@ set -euo pipefail
 
 FFMPEG_VERSION="7.1"
 FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+FFMPEG_SHA256="40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="$PROJECT_ROOT/src/main/binaries/ffmpeg"
@@ -15,7 +16,7 @@ cleanup() {
 
 trap cleanup EXIT
 
-for command in curl tar make gcc nasm pkg-config; do
+for command in curl sha256sum tar make gcc nasm pkg-config; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Missing required MSYS2 UCRT64 command: $command" >&2
         exit 1
@@ -23,6 +24,7 @@ for command in curl tar make gcc nasm pkg-config; do
 done
 
 curl --fail --location --output "$BUILD_DIR/ffmpeg.tar.xz" "$FFMPEG_URL"
+echo "$FFMPEG_SHA256  $BUILD_DIR/ffmpeg.tar.xz" | sha256sum --check --status
 tar -xf "$BUILD_DIR/ffmpeg.tar.xz" -C "$BUILD_DIR"
 cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
 

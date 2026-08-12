@@ -49,7 +49,9 @@ describe('Path Utilities', () => {
 
       const { getConfigDir } = await import('@/main/utils/paths');
       const configDir = getConfigDir();
-      expect(configDir).toBe(path.join('/mock/home', '.config', 'capty-dev'));
+      expect(configDir).toBe(
+        path.join('/mock/home', '.config', 'poratake-dev')
+      );
     });
 
     it('should return production config directory when packaged', async () => {
@@ -57,7 +59,7 @@ describe('Path Utilities', () => {
 
       const { getConfigDir } = await import('@/main/utils/paths');
       const configDir = getConfigDir();
-      expect(configDir).toBe(path.join('/mock/home', '.config', 'capty'));
+      expect(configDir).toBe(path.join('/mock/home', '.config', 'poratake'));
     });
 
     it('should use home directory from Electron app', async () => {
@@ -80,7 +82,7 @@ describe('Path Utilities', () => {
       const { getConfigFilePath } = await import('@/main/utils/paths');
       const configPath = getConfigFilePath();
       expect(configPath).toBe(
-        path.join('/mock/home', '.config', 'capty-dev', 'config.json')
+        path.join('/mock/home', '.config', 'poratake-dev', 'config.json')
       );
     });
 
@@ -90,7 +92,7 @@ describe('Path Utilities', () => {
       const { getConfigFilePath } = await import('@/main/utils/paths');
       const configPath = getConfigFilePath();
       expect(configPath).toBe(
-        path.join('/mock/home', '.config', 'capty', 'config.json')
+        path.join('/mock/home', '.config', 'poratake', 'config.json')
       );
     });
 
@@ -108,7 +110,7 @@ describe('Path Utilities', () => {
       const { getLicenseFilePath } = await import('@/main/utils/paths');
       const licensePath = getLicenseFilePath();
       expect(licensePath).toBe(
-        path.join('/mock/home', '.config', 'capty-dev', 'license.json')
+        path.join('/mock/home', '.config', 'poratake-dev', 'license.json')
       );
     });
 
@@ -118,7 +120,7 @@ describe('Path Utilities', () => {
       const { getLicenseFilePath } = await import('@/main/utils/paths');
       const licensePath = getLicenseFilePath();
       expect(licensePath).toBe(
-        path.join('/mock/home', '.config', 'capty', 'license.json')
+        path.join('/mock/home', '.config', 'poratake', 'license.json')
       );
     });
 
@@ -136,7 +138,7 @@ describe('Path Utilities', () => {
       const { getHistoryFilePath } = await import('@/main/utils/paths');
       const historyPath = getHistoryFilePath();
       expect(historyPath).toBe(
-        path.join('/mock/home', '.config', 'capty-dev', 'history.json')
+        path.join('/mock/home', '.config', 'poratake-dev', 'history.json')
       );
     });
 
@@ -146,7 +148,7 @@ describe('Path Utilities', () => {
       const { getHistoryFilePath } = await import('@/main/utils/paths');
       const historyPath = getHistoryFilePath();
       expect(historyPath).toBe(
-        path.join('/mock/home', '.config', 'capty', 'history.json')
+        path.join('/mock/home', '.config', 'poratake', 'history.json')
       );
     });
 
@@ -189,9 +191,9 @@ describe('Path Utilities', () => {
       const prodConfigDir = getConfigDirProd();
 
       expect(devConfigDir).not.toBe(prodConfigDir);
-      expect(devConfigDir).toContain('capty-dev');
-      expect(prodConfigDir).toContain('capty');
-      expect(prodConfigDir).not.toContain('capty-dev');
+      expect(devConfigDir).toContain('poratake-dev');
+      expect(prodConfigDir).toContain('poratake');
+      expect(prodConfigDir).not.toContain('poratake-dev');
     });
   });
 

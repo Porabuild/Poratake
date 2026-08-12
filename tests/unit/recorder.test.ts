@@ -287,6 +287,46 @@ describe('recorder', () => {
       expect(m.getCurrentRecordingPath()).toBe('/out.mov');
     });
 
+    it('preserves a take when its window closes while startup UI is pending', async () => {
+      let resolveControl = () => {};
+      mockDaemonCall.mockResolvedValue({ success: true });
+      const m = await import('@/main/capture/video/recorder');
+      const onFailure = vi.fn();
+      const onTargetClosed = vi.fn();
+      const start = m.startRecordingWithConfig(
+        { outputPath: '/out.mov', windowId: 4242 },
+        () =>
+          new Promise<void>(resolve => {
+            resolveControl = resolve;
+          }),
+        vi.fn(),
+        onFailure,
+        true,
+        onTargetClosed
+      );
+
+      await vi.waitFor(() => expect(mockShowWindowOutline).toHaveBeenCalled());
+      for (const handler of daemonEventHandlers) {
+        handler('screen-recorder:error', {
+          code: 'TARGET_CLOSED',
+          message: 'The recorded window was closed',
+        });
+      }
+
+      resolveControl();
+      await start;
+
+      expect(onTargetClosed).toHaveBeenCalledTimes(1);
+      expect(onFailure).not.toHaveBeenCalled();
+      expect(m.getCurrentRecordingPath()).toBe('/out.mov');
+      expect(mockDaemonCall).not.toHaveBeenCalledWith(
+        'screen-recorder',
+        'stop',
+        undefined,
+        60000
+      );
+    });
+
     it('does not show overlay for iOS recordings', async () => {
       mockDaemonCall.mockResolvedValue({ success: true });
       const m = await import('@/main/capture/video/recorder');

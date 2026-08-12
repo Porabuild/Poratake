@@ -50,9 +50,7 @@ Rebuild the daemon whenever you change anything under `src/main/daemon/` on macO
 ## Before You Open a Pull Request
 
 ```bash
-bun lint
-bun run test:run
-bun run format
+bun run checks
 ```
 
 Write tests for new features and bug fixes. Main-process tests run with Vitest.

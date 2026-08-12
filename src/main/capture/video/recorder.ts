@@ -204,6 +204,7 @@ async function startRecording(
   clearRecordingErrorListener();
   const generation = ++recordingGeneration;
   let startupSettled = false;
+  let targetClosedDuringStartup = false;
   let rejectTerminalError: (error: Error) => void = () => {};
   const terminalError = new Promise<never>((_, reject) => {
     rejectTerminalError = reject;
@@ -227,6 +228,10 @@ async function startRecording(
     }
 
     if (!startupSettled) {
+      if (error.code === RECORDING_TARGET_CLOSED && onTargetClosed) {
+        targetClosedDuringStartup = true;
+        return;
+      }
       rejectTerminalError(error);
       return;
     }
@@ -320,6 +325,10 @@ async function startRecording(
     currentRecordingPath = config.outputPath;
     showRecordingTray();
     startupSettled = true;
+    if (targetClosedDuringStartup && onTargetClosed) {
+      clearRecordingErrorListener(generation);
+      onTargetClosed();
+    }
   } catch (error) {
     clearRecordingErrorListener(generation);
     await Promise.allSettled([
