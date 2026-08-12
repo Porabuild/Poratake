@@ -247,15 +247,21 @@ describe('Poratake rebrand compliance', () => {
     expect(releaseScript).toContain('trap restore_local_version EXIT');
   });
 
-  it('identifies Capty-operated license and cloud services', () => {
-    const activation = read('src/renderer/windows/activation-window.tsx');
-    const cloud = read(
-      'src/renderer/components/settings/capty-cloud-access.tsx'
-    );
-
-    expect(activation).toContain('Activation is provided by Capty');
-    expect(activation).toContain('are sent to');
-    expect(cloud).toContain('Capty operates this external service');
-    expect(cloud).toContain('Captures and');
+  it('makes no calls to Capty server infrastructure', () => {
+    const sourceDirs = ['src/main', 'src/renderer', 'src/preload', 'src/types'];
+    const extensions = /\.(ts|tsx|rs|swift)$/;
+    for (const dir of sourceDirs) {
+      const files = fs
+        .readdirSync(dir, { recursive: true })
+        .filter(
+          file =>
+            typeof file === 'string' &&
+            extensions.test(file) &&
+            !file.endsWith('.d.ts')
+        ) as string[];
+      for (const file of files) {
+        expect(read(`${dir}/${file}`)).not.toContain('capty.app');
+      }
+    }
   });
 });

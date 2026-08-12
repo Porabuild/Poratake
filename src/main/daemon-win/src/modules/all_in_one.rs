@@ -37,8 +37,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_VISIBLE,
 };
 
-const PANEL_CLASS_NAME: &str = "CaptyAllInOnePanel";
-const SIZE_EDITOR_CLASS_NAME: &str = "CaptyAllInOneSizeEditor";
+const PANEL_CLASS_NAME: &str = "PoratakeAllInOnePanel";
+const SIZE_EDITOR_CLASS_NAME: &str = "PoratakeAllInOneSizeEditor";
 const PANEL_WIDTH: i32 = 288;
 const PANEL_WIDTH_WITHOUT_RECORDING: i32 = 240;
 const PANEL_HEIGHT: i32 = 48;

@@ -21,7 +21,6 @@ import {
   Trash2,
 } from 'lucide-react';
 import ShortcutInput from './shortcut-input';
-import CaptyCloudAccess from './capty-cloud-access';
 import MicrophoneDeviceSetting from './devices/microphone-device-setting';
 import CameraDeviceSetting from './devices/camera-device-setting';
 import SettingsSelect from './settings-select';
@@ -237,9 +236,6 @@ type TestStatus = 'idle' | 'testing' | 'success' | 'error';
 
 function isActiveProviderConfigured(settings: SettingsConfig): boolean {
   const cloud = settings.cloud;
-  if (cloud.activeProvider === 'capty') {
-    return true;
-  }
   if (cloud.activeProvider === 'rest') {
     if (!cloud.rest.url) return false;
     if (cloud.rest.responseIsPlainText) return true;
@@ -434,10 +430,6 @@ export default function SettingItemRenderer({
 
   if (item.type === 'cloud-test-connection') {
     return <CloudTestConnectionControl settings={settings} />;
-  }
-
-  if (item.type === 'capty-cloud-access') {
-    return <CaptyCloudAccess />;
   }
 
   if (item.type === 'rest-headers') {

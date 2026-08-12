@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_PAINT, WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
-const CLASS_NAME: &str = "CaptyTimerControl";
+const CLASS_NAME: &str = "PoratakeTimerControl";
 const PANEL_WIDTH: i32 = 140;
 const PANEL_HEIGHT: i32 = 52;
 const CORNER_RADIUS: i32 = 10;

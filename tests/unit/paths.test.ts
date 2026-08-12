@@ -103,34 +103,6 @@ describe('Path Utilities', () => {
     });
   });
 
-  describe('getLicenseFilePath', () => {
-    it('should return correct license file path in dev mode', async () => {
-      mockApp.isPackaged = false;
-
-      const { getLicenseFilePath } = await import('@/main/utils/paths');
-      const licensePath = getLicenseFilePath();
-      expect(licensePath).toBe(
-        path.join('/mock/home', '.config', 'poratake-dev', 'license.json')
-      );
-    });
-
-    it('should return correct license file path in production', async () => {
-      mockApp.isPackaged = true;
-
-      const { getLicenseFilePath } = await import('@/main/utils/paths');
-      const licensePath = getLicenseFilePath();
-      expect(licensePath).toBe(
-        path.join('/mock/home', '.config', 'poratake', 'license.json')
-      );
-    });
-
-    it('should always end with license.json', async () => {
-      const { getLicenseFilePath } = await import('@/main/utils/paths');
-      const licensePath = getLicenseFilePath();
-      expect(licensePath).toMatch(/license\.json$/);
-    });
-  });
-
   describe('getHistoryFilePath', () => {
     it('should return correct history file path in dev mode', async () => {
       mockApp.isPackaged = false;
@@ -164,17 +136,14 @@ describe('Path Utilities', () => {
       const {
         getConfigDir,
         getConfigFilePath,
-        getLicenseFilePath,
         getHistoryFilePath,
       } = await import('@/main/utils/paths');
 
       const configDir = getConfigDir();
       const configPath = getConfigFilePath();
-      const licensePath = getLicenseFilePath();
       const historyPath = getHistoryFilePath();
 
       expect(configPath).toContain(configDir);
-      expect(licensePath).toContain(configDir);
       expect(historyPath).toContain(configDir);
     });
 

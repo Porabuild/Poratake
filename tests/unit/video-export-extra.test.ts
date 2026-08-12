@@ -173,7 +173,7 @@ describe('capture-preview video-export', () => {
       const result =
         ipcHandle['capture-preview:get-export-output-path'](previewEvent);
       const prefix = path
-        .join('/tmp', 'capty-clipboard-')
+        .join('/tmp', 'poratake-clipboard-')
         .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       expect(result).toMatch(new RegExp(`^${prefix}.*\\.mp4$`));
       expect(mockAuthorizeExportOutputPaths).toHaveBeenCalledWith(

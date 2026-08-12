@@ -37,8 +37,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
-const BOUNDARY_CLASS_NAME: &str = "CaptyScrollCaptureBoundary";
-const PANEL_CLASS_NAME: &str = "CaptyScrollCapturePanel";
+const BOUNDARY_CLASS_NAME: &str = "PoratakeScrollCaptureBoundary";
+const PANEL_CLASS_NAME: &str = "PoratakeScrollCapturePanel";
 const PANEL_BUTTON_WIDTHS: [i32; 3] = [76, 76, 76];
 const PANEL_GAP: i32 = 16;
 const BOUNDARY_THICKNESS: i32 = 2;

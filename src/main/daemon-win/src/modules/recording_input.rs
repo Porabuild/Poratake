@@ -579,12 +579,12 @@ impl InputTracker {
             .parent()
             .ok_or_else(|| RecorderError::capture("Recording output has no parent directory"))?;
         let cursor_path = parent.join("cursor.json");
-        let cursor_temporary_path = parent.join(".cursor.json.capty-staged");
+        let cursor_temporary_path = parent.join(".cursor.json.poratake-staged");
         write_json_atomically(&cursor_temporary_path, &cursor)?;
 
         let keys = if let Some(keyboard) = keyboard {
             let path = parent.join("keys.json");
-            let temporary_path = parent.join(".keys.json.capty-staged");
+            let temporary_path = parent.join(".keys.json.poratake-staged");
             if let Err(error) = write_json_atomically(&temporary_path, &keyboard) {
                 let _ = std::fs::remove_file(&cursor_temporary_path);
                 return Err(error);

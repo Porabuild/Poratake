@@ -632,7 +632,7 @@ describe('screenshot IPC handlers', () => {
       });
       expect(typeof result).toBe('string');
       expect(mockRmSync).toHaveBeenCalledWith(
-        expect.stringContaining('capty-editor-'),
+        expect.stringContaining('poratake-editor-'),
         { force: true }
       );
       expect(win.show).toHaveBeenCalled();

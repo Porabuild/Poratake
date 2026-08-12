@@ -17,7 +17,7 @@ class KeyboardTracker: SyncableTracker {
     private var isSynced: Bool = false
     private var syncTime: Date?
     private var pendingEvents: [(key: String, keyCode: Int, modifiers: [String], type: String, wallTime: Date)] = []
-    private let syncQueue = DispatchQueue(label: "com.capty.keyboard-tracker.sync")
+    private let syncQueue = DispatchQueue(label: "com.porabuild.poratake.keyboard-tracker.sync")
     
     func start(videoPath: String) {
         self.startTime = Date()

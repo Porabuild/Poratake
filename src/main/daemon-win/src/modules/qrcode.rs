@@ -221,7 +221,7 @@ mod tests {
     fn detects_payload_from_known_greyscale_qr() {
         let pixels = std::fs::read(fixture_path("qr-hello.gray")).expect("fixture grayscale");
         let payload = detect_payload_from_greyscale(&pixels, 264, 264);
-        assert_eq!(payload, "https://capty.app/qr-test");
+        assert_eq!(payload, "https://example.com/qr-test");
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert(
             "imagePath".to_string(),
-            json!("C:\\nonexistent\\capty-qr-missing.png"),
+            json!("C:\\nonexistent\\poratake-qr-missing.png"),
         );
         let request = Request {
             id: "missing-file".to_string(),
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn detect_returns_empty_payload_for_non_qr_image_bytes() {
-        let path = std::env::temp_dir().join("capty-qrcode-blank.png");
+        let path = std::env::temp_dir().join("poratake-qrcode-blank.png");
         write_minimal_png(&path, 32, 32, 255);
         let payload = detect_qr_code(&path.to_string_lossy()).expect("decode image");
         assert_eq!(payload, "");
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn detect_reports_invalid_image_data() {
-        let path = std::env::temp_dir().join("capty-qrcode-invalid.png");
+        let path = std::env::temp_dir().join("poratake-qrcode-invalid.png");
         std::fs::write(&path, b"invalid image").expect("write invalid image");
         let result = detect_qr_code(&path.to_string_lossy());
         assert!(result.is_err());

@@ -32,8 +32,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
-const OVERLAY_CLASS: &str = "CaptyWindowSelector";
-const DIM_CLASS: &str = "CaptyWindowSelectorDim";
+const OVERLAY_CLASS: &str = "PoratakeWindowSelector";
+const DIM_CLASS: &str = "PoratakeWindowSelectorDim";
 const IDLE_ALPHA: u8 = 1;
 const DIM_ALPHA: u8 = 160;
 const MIN_WINDOW_SIZE: i32 = 50;

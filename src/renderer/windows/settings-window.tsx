@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import LicenseTab from '@/renderer/components/settings/license-tab';
 import AboutTab from '@/renderer/components/settings/about-tab';
 import SettingsSidebar from '@/renderer/components/settings/settings-sidebar';
 import SettingsCategoryPage from '@/renderer/components/settings/settings-category-page';
@@ -108,8 +107,6 @@ export default function SettingsWindow() {
     }
 
     switch (activeTab) {
-      case 'license':
-        return <LicenseTab />;
       case 'about':
         return <AboutTab />;
       default:

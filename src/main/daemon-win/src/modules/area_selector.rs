@@ -34,8 +34,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
-const INPUT_CLASS_NAME: &str = "CaptyAreaSelectorInput";
-const VISUAL_CLASS_NAME: &str = "CaptyAreaSelectorVisual";
+const INPUT_CLASS_NAME: &str = "PoratakeAreaSelectorInput";
+const VISUAL_CLASS_NAME: &str = "PoratakeAreaSelectorVisual";
 const PROMPT_TEXT: &str = "Please select an area to begin";
 const MIN_SELECTION_SIZE: i32 = 10;
 const MIN_RESIZE_SIZE: i32 = 20;

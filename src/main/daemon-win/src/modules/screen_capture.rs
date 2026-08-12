@@ -1220,7 +1220,7 @@ fn transaction_backup_path(output_path: &Path) -> Result<PathBuf, RecorderError>
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| RecorderError::stop("Recording asset has an invalid file name"))?;
-    Ok(output_path.with_file_name(format!(".{name}.capty-backup")))
+    Ok(output_path.with_file_name(format!(".{name}.poratake-backup")))
 }
 
 struct VideoTimeline {
@@ -2509,7 +2509,7 @@ fn temporary_video_path(output_path: &Path) -> Result<PathBuf, RecorderError> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| RecorderError::configuration("outputPath has an invalid file name"))?;
-    Ok(output_path.with_file_name(format!(".{name}.capty-partial.mp4")))
+    Ok(output_path.with_file_name(format!(".{name}.poratake-partial.mp4")))
 }
 
 #[cfg(test)]

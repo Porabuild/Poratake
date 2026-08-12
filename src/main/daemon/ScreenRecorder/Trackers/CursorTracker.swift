@@ -19,7 +19,7 @@ class CursorTracker: SyncableTracker {
     private var recordingHeight: Int = 0
 
     private var pollingTimer: DispatchSourceTimer?
-    private let pollingQueue = DispatchQueue(label: "com.capty.cursor-tracker.polling")
+    private let pollingQueue = DispatchQueue(label: "com.porabuild.poratake.cursor-tracker.polling")
 
     private var leftMouseDownMonitor: Any?
     private var leftMouseUpMonitor: Any?
@@ -35,7 +35,7 @@ class CursorTracker: SyncableTracker {
     private var isSynced: Bool = false
     private var syncTime: Date?
     private var pendingEvents: [(position: NSPoint, type: String, button: String?, cursor: String?, wallTime: Date)] = []
-    private let syncQueue = DispatchQueue(label: "com.capty.cursor-tracker.sync")
+    private let syncQueue = DispatchQueue(label: "com.porabuild.poratake.cursor-tracker.sync")
     
     private let cursorTypeDetector = CursorTypeDetector()
     private var lastWrittenCursorType: CursorType? = nil
