@@ -252,7 +252,7 @@ private class CameraPreviewContentView: NSView {
     private var deviceId: String?
     private var deviceName: String?
     private var resolution: String
-    private var flipped: Bool
+    private var isMirrored: Bool
     private let padding: CGFloat
     private let cornerRadius: CGFloat = 65
     
@@ -263,7 +263,7 @@ private class CameraPreviewContentView: NSView {
         self.deviceId = deviceId
         self.deviceName = deviceName
         self.resolution = resolution
-        self.flipped = flipped
+        self.isMirrored = flipped
         self.padding = padding
         super.init(frame: frame)
         setupView()
@@ -359,7 +359,7 @@ private class CameraPreviewContentView: NSView {
                 previewLayer.videoGravity = .resizeAspectFill
                 previewLayer.frame = self.containerView.bounds
                 previewLayer.setAffineTransform(
-                    CGAffineTransform(scaleX: self.flipped ? -1 : 1, y: 1)
+                    CGAffineTransform(scaleX: self.isMirrored ? -1 : 1, y: 1)
                 )
                 
                 self.containerView.layer?.addSublayer(previewLayer)
@@ -408,7 +408,7 @@ private class CameraPreviewContentView: NSView {
     }
 
     func updateFlipped(_ flipped: Bool) {
-        self.flipped = flipped
+        self.isMirrored = flipped
         previewLayer?.setAffineTransform(
             CGAffineTransform(scaleX: flipped ? -1 : 1, y: 1)
         )
