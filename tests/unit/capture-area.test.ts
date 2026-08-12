@@ -22,6 +22,7 @@ const mockOpenScreenshotEditor = vi.fn();
 const mockFsExistsSync = vi.fn();
 const mockFsReadFileSync = vi.fn(() => Buffer.from('image-bytes'));
 const mockCaptureRegionToFile = vi.fn();
+const mockCaptureWindowToFile = vi.fn();
 const mockHideDesktopIcons = vi.fn();
 const mockShowDesktopIcons = vi.fn();
 const mockDesktopIconsSupported = vi.fn();
@@ -42,6 +43,7 @@ vi.mock('electron', () => ({
 
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureRegionToFile: (...a: unknown[]) => mockCaptureRegionToFile(...a),
+  captureWindowToFile: (...a: unknown[]) => mockCaptureWindowToFile(...a),
 }));
 
 vi.mock('@/main/capture/desktop-icons', () => ({
@@ -283,6 +285,7 @@ describe('captureArea on Windows', () => {
     mockFsExistsSync.mockReturnValue(true);
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
     mockCaptureRegionToFile.mockResolvedValue(true);
+    mockCaptureWindowToFile.mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -331,6 +334,39 @@ describe('captureArea on Windows', () => {
       { cached: true }
     );
     expect(onCaptured).toHaveBeenCalled();
+  });
+
+  it('captures a picked window instead of the pixels covering it', async () => {
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+
+    await captureArea(
+      { status: 'confirmed', x: 110, y: 70, width: 300, height: 200 },
+      { windowId: 4242 }
+    );
+
+    expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
+      4242,
+      '/path/Screenshot.png'
+    );
+    expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
+  });
+
+  it('masks the picked window out of the retained frame', async () => {
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+
+    await captureArea(
+      { status: 'confirmed', x: 110, y: 70, width: 300, height: 200 },
+      { cached: true, windowId: 4242 }
+    );
+
+    expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
+      { x: 110, y: 70, width: 300, height: 200 },
+      '/path/Screenshot.png',
+      { cached: true, windowId: 4242 }
+    );
+    expect(mockCaptureWindowToFile).not.toHaveBeenCalled();
   });
 
   it('hides desktop icons only while acquiring capture pixels', async () => {

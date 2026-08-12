@@ -10,10 +10,15 @@ export default function ToolbarButton({
       size="icon-sm"
       variant="ghost"
       className={cn(
-        'size-8 min-w-8 rounded-lg text-white/85 hover:bg-white/15 hover:text-white disabled:pointer-events-none disabled:opacity-35',
+        'size-8 min-w-8 rounded-3xl hover:bg-white/15 disabled:pointer-events-none disabled:opacity-35',
         className
       )}
       {...props}
+      style={
+        {
+          '--button-fg': 'rgb(255 255 255 / 0.85)',
+        } as React.CSSProperties & { '--button-fg': string }
+      }
     />
   );
 }

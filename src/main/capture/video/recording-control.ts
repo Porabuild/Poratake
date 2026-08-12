@@ -1,7 +1,12 @@
-import { dialog, screen, shell } from 'electron';
+import { screen, shell } from 'electron';
 import { daemon } from '@/main/daemon';
 import { getConfig, updateConfig } from '@/main/settings';
-import { showCameraPreview, hideCameraPreview } from './camera-preview';
+import {
+  showCameraPreview,
+  hideCameraPreview,
+  getCameraPreviewSettings,
+  updateCameraPreviewPosition,
+} from './camera-preview';
 import {
   startPendingRecording,
   cancelPendingRecording,
@@ -23,6 +28,7 @@ import {
 } from '@/main/capture/area-selector';
 import { isWindows } from '@/main/utils/platform';
 import {
+  clearRecordingControlBrowserWindowParent,
   getRecordingControlBrowserWindow,
   getRecordingControlWindowWidth,
   hideRecordingControlBrowserWindow,
@@ -33,9 +39,12 @@ import {
 } from './recording-control-window';
 import type {
   RecordingControlAction,
+  RecordingControlActionData,
   RecordingControlMode,
   RecordingControlState,
 } from '@/types/recording-control';
+import type { CameraSettings } from '@/types/settings';
+import type { RecordingConfig } from '@/types/video';
 
 let eventCleanup: (() => void) | null = null;
 let timerInterval: NodeJS.Timeout | null = null;
@@ -43,6 +52,7 @@ let recordingStartTime: number | null = null;
 let pausedElapsedTime: number = 0;
 let isPaused: boolean = false;
 let currentMode: RecordingControlMode = 'pre-recording';
+let recordingTarget: string | null = null;
 
 let currentAreaSelection: {
   x: number;
@@ -58,12 +68,15 @@ export function getCurrentRecordingAreaSelection() {
 const WINDOW_WIDTH_PRE_RECORDING = 468;
 const WINDOW_WIDTH_RECORDING = 352;
 const CONTROL_TOP_MARGIN = 24;
-const WINDOWS_CAMERA_PREVIEW_SIZE = 270;
-const WINDOWS_CAMERA_PREVIEW_MARGIN = 32;
+const CAMERA_PREVIEW_SIZE = 270;
+const CAMERA_PREVIEW_MARGIN = 32;
 
 function getWindowWidth(): number {
   if (isWindows) {
-    return getRecordingControlWindowWidth(currentMode);
+    return getRecordingControlWindowWidth(
+      currentMode,
+      recordingTarget !== null
+    );
   }
 
   return currentMode === 'pre-recording'
@@ -83,6 +96,22 @@ function calculateControlPosition(area: {
   return { x, y };
 }
 
+function calculateCameraPreviewPosition(area: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): { x: number; y: number } {
+  return {
+    x:
+      area.x +
+      Math.max(0, area.width - CAMERA_PREVIEW_SIZE - CAMERA_PREVIEW_MARGIN),
+    y:
+      area.y +
+      Math.max(0, area.height - CAMERA_PREVIEW_SIZE - CAMERA_PREVIEW_MARGIN),
+  };
+}
+
 function toNativePosition(position: { x: number; y: number }): {
   x: number;
   y: number;
@@ -97,15 +126,23 @@ let currentControlCenter = {
 
 function getRecordingSettings() {
   const config = getConfig();
+  const live = recordingSession;
   return {
-    systemAudio: config.recording.systemAudio,
-    micEnabled: config.recording.micEnabled,
+    systemAudio: live?.systemAudio ?? config.recording.systemAudio,
+    micEnabled: live?.micEnabled ?? config.recording.micEnabled,
     micMuted: micMuted,
-    selectedMicId: config.recording.selectedMicId,
-    selectedMicName: config.recording.selectedMicName,
-    cameraEnabled: config.recording.camera?.enabled ?? false,
-    selectedCameraId: config.recording.camera?.selectedDeviceId,
-    selectedCameraName: config.recording.camera?.selectedDeviceName,
+    selectedMicId: live ? live.selectedMicId : config.recording.selectedMicId,
+    selectedMicName: live
+      ? live.selectedMicName
+      : config.recording.selectedMicName,
+    cameraEnabled:
+      live?.cameraEnabled ?? config.recording.camera?.enabled ?? false,
+    selectedCameraId: live
+      ? live.camera?.selectedDeviceId
+      : config.recording.camera?.selectedDeviceId,
+    selectedCameraName: live
+      ? live.camera?.selectedDeviceName
+      : config.recording.camera?.selectedDeviceName,
     cameraSize: config.recording.camera?.size ?? 'medium',
     cameraShape: config.recording.camera?.shape ?? 'circle',
     cameraFlipped: config.recording.camera?.flipped ?? false,
@@ -118,10 +155,14 @@ function getRecordingControlState(): RecordingControlState {
   const settings = getRecordingSettings();
   return {
     mode: currentMode,
+    targetName: recordingTarget,
     systemAudio: settings.systemAudio,
     micEnabled: settings.micEnabled,
     micMuted: settings.micMuted,
+    selectedMicId: settings.selectedMicId ?? null,
     cameraEnabled: settings.cameraEnabled,
+    selectedCameraId: settings.selectedCameraId ?? null,
+    cameraLocked: recordingSession?.camera !== undefined,
     isPaused,
     isStarting: isHandlingStart,
     elapsedSeconds: pausedElapsedTime,
@@ -140,6 +181,17 @@ interface EventData {
 
 let micMuted: boolean = false;
 let isHandlingStart: boolean = false;
+
+interface RecordingSession {
+  systemAudio: boolean;
+  micEnabled: boolean;
+  selectedMicId: string | null;
+  selectedMicName: string | null;
+  cameraEnabled: boolean;
+  camera?: CameraSettings;
+}
+
+let recordingSession: RecordingSession | null = null;
 
 async function reportControlError(error: unknown): Promise<void> {
   const normalized = error instanceof Error ? error : new Error(String(error));
@@ -236,7 +288,68 @@ async function handleSelectAspectRatio(data?: EventData): Promise<void> {
   await setAreaSelectorAspectRatio(ratio);
 }
 
+async function applySessionSystemAudio(
+  session: RecordingSession,
+  enabled: boolean
+): Promise<void> {
+  await daemon.call('screen-recorder', 'setSystemAudio', { enabled });
+  session.systemAudio = enabled;
+  await updateNativeSettings();
+}
+
+async function applySessionMicrophone(
+  session: RecordingSession,
+  device: RecordingControlActionData | null
+): Promise<void> {
+  if (device && !(await checkAndRequestMicrophonePermission())) return;
+
+  await daemon.call('screen-recorder', 'setMicrophone', {
+    enabled: device !== null,
+    deviceId: device?.deviceId ?? null,
+    deviceName: device?.deviceName ?? null,
+  });
+
+  session.micEnabled = device !== null;
+  if (device) {
+    session.selectedMicId = device.deviceId;
+    session.selectedMicName = device.deviceName;
+  }
+  await updateNativeSettings();
+}
+
+async function applySessionCamera(
+  session: RecordingSession,
+  enabled: boolean
+): Promise<void> {
+  const camera = session.camera;
+  if (!camera) return;
+  if (enabled && !(await checkAndRequestCameraPermission())) return;
+
+  await daemon.call('screen-recorder', 'setCamera', { enabled });
+
+  if (enabled) {
+    await showCameraPreview({ ...camera, enabled: true });
+  } else {
+    session.camera = {
+      ...camera,
+      position: getCameraPreviewSettings()?.position ?? camera.position,
+    };
+    hideCameraPreview();
+  }
+
+  session.cameraEnabled = enabled;
+  await updateNativeSettings();
+}
+
 async function handleToggleSystemAudio(): Promise<void> {
+  if (recordingSession) {
+    await applySessionSystemAudio(
+      recordingSession,
+      !recordingSession.systemAudio
+    );
+    return;
+  }
+
   const config = getConfig();
   const newSystemAudio = !config.recording.systemAudio;
 
@@ -251,6 +364,19 @@ async function handleToggleSystemAudio(): Promise<void> {
 }
 
 async function handleToggleMic(): Promise<void> {
+  if (recordingSession) {
+    await applySessionMicrophone(
+      recordingSession,
+      recordingSession.micEnabled
+        ? null
+        : {
+            deviceId: recordingSession.selectedMicId,
+            deviceName: recordingSession.selectedMicName,
+          }
+    );
+    return;
+  }
+
   const config = getConfig();
   const newMicEnabled = !config.recording.micEnabled;
 
@@ -273,35 +399,34 @@ async function handleSelectMic(
   deviceId: string | null,
   deviceName: string | null
 ): Promise<void> {
+  if (recordingSession) {
+    await applySessionMicrophone(recordingSession, { deviceId, deviceName });
+    return;
+  }
+
+  const hasPermission = await checkAndRequestMicrophonePermission();
+  if (!hasPermission) return;
+
   const config = getConfig();
 
-  if (deviceId === null) {
-    updateConfig({
-      recording: {
-        ...config.recording,
-        micEnabled: false,
-        selectedMicId: null,
-        selectedMicName: null,
-      },
-    });
-  } else {
-    const hasPermission = await checkAndRequestMicrophonePermission();
-    if (!hasPermission) return;
-
-    updateConfig({
-      recording: {
-        ...config.recording,
-        micEnabled: true,
-        selectedMicId: deviceId,
-        selectedMicName: deviceName,
-      },
-    });
-  }
+  updateConfig({
+    recording: {
+      ...config.recording,
+      micEnabled: true,
+      selectedMicId: deviceId,
+      selectedMicName: deviceName,
+    },
+  });
 
   await updateNativeSettings();
 }
 
 async function handleToggleCamera(): Promise<void> {
+  if (recordingSession) {
+    await applySessionCamera(recordingSession, !recordingSession.cameraEnabled);
+    return;
+  }
+
   const config = getConfig();
   const newCameraEnabled = !config.recording.camera?.enabled;
 
@@ -335,44 +460,31 @@ async function handleSelectCamera(
   deviceId: string | null,
   deviceName: string | null
 ): Promise<void> {
+  if (recordingSession) {
+    await applySessionCamera(recordingSession, true);
+    return;
+  }
+
+  const hasPermission = await checkAndRequestCameraPermission();
+  if (!hasPermission) return;
+
   const config = getConfig();
 
-  if (deviceId === null) {
-    const updatedCamera = {
-      ...config.recording.camera,
-      enabled: false,
-      selectedDeviceId: null,
-      selectedDeviceName: null,
-    };
+  const updatedCamera = {
+    ...config.recording.camera,
+    enabled: true,
+    selectedDeviceId: deviceId,
+    selectedDeviceName: deviceName,
+  };
 
-    updateConfig({
-      recording: {
-        ...config.recording,
-        camera: updatedCamera,
-      },
-    });
+  await showCameraPreview(updatedCamera);
 
-    hideCameraPreview();
-  } else {
-    const hasPermission = await checkAndRequestCameraPermission();
-    if (!hasPermission) return;
-
-    const updatedCamera = {
-      ...config.recording.camera,
-      enabled: true,
-      selectedDeviceId: deviceId,
-      selectedDeviceName: deviceName,
-    };
-
-    await showCameraPreview(updatedCamera);
-
-    updateConfig({
-      recording: {
-        ...config.recording,
-        camera: updatedCamera,
-      },
-    });
-  }
+  updateConfig({
+    recording: {
+      ...config.recording,
+      camera: updatedCamera,
+    },
+  });
 
   await updateNativeSettings();
 }
@@ -454,24 +566,6 @@ async function handleRestart(): Promise<void> {
 }
 
 async function handleDelete(): Promise<void> {
-  if (isWindows) {
-    const options = {
-      type: 'warning' as const,
-      title: 'Discard Recording?',
-      message: 'Discard this recording?',
-      detail: 'The current recording will be permanently deleted.',
-      buttons: ['Discard', 'Keep Recording'],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true,
-    };
-    const window = getRecordingControlBrowserWindow();
-    const result = window
-      ? await dialog.showMessageBox(window, options)
-      : await dialog.showMessageBox(options);
-    if (result.response !== 0) return;
-  }
-
   await deleteRecordingAction();
 }
 
@@ -517,7 +611,9 @@ async function updateNativeSettings(): Promise<void> {
       systemAudio: settings.systemAudio,
       micEnabled: settings.micEnabled,
       micMuted: settings.micMuted,
+      selectedMicId: settings.selectedMicId ?? null,
       cameraEnabled: settings.cameraEnabled,
+      selectedCameraId: settings.selectedCameraId ?? null,
     });
     return;
   }
@@ -541,8 +637,13 @@ function setupEventListener(): void {
   eventCleanup = () => daemon.offEvent(handler);
 }
 
-function handleBrowserAction(action: RecordingControlAction): void {
-  void handleEvent(`recording-control:${action}`).catch(reportControlError);
+function handleBrowserAction(
+  action: RecordingControlAction,
+  data?: RecordingControlActionData
+): void {
+  void handleEvent(`recording-control:${action}`, data).catch(
+    reportControlError
+  );
 }
 
 function updateControlState(
@@ -646,37 +747,28 @@ export function prewarmRecordingControlWindow(): void {
   }
 }
 
-export function showPreRecordingControl(area?: {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}): void {
+export function showPreRecordingControl(
+  area?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  },
+  targetName?: string
+): void {
   currentAreaSelection = area || null;
+  recordingTarget = targetName ?? null;
   currentMode = 'pre-recording';
   setupEventListener();
 
   const config = getConfig();
   if (config.recording.camera?.enabled) {
-    let cameraSettings = config.recording.camera;
-    if (isWindows && area && !cameraSettings.position) {
-      const workArea = screen.getDisplayMatching(area).workArea;
-      cameraSettings = {
-        ...cameraSettings,
-        position: {
-          x:
-            workArea.x +
-            workArea.width -
-            WINDOWS_CAMERA_PREVIEW_SIZE -
-            WINDOWS_CAMERA_PREVIEW_MARGIN,
-          y:
-            workArea.y +
-            workArea.height -
-            WINDOWS_CAMERA_PREVIEW_SIZE -
-            WINDOWS_CAMERA_PREVIEW_MARGIN,
-        },
-      };
-    }
+    const cameraSettings = area
+      ? {
+          ...config.recording.camera,
+          position: calculateCameraPreviewPosition(area),
+        }
+      : config.recording.camera;
     void showCameraPreview(cameraSettings).catch(async error => {
       const current = getConfig();
       updateConfig({
@@ -732,6 +824,12 @@ export function updateRecordingControlPosition(area: {
 }): void {
   currentAreaSelection = area;
 
+  if (getConfig().recording.camera?.enabled) {
+    void updateCameraPreviewPosition(
+      calculateCameraPreviewPosition(area)
+    ).catch(reportControlError);
+  }
+
   const position = calculateControlPosition(area);
   currentControlCenter = {
     x: position.x + getWindowWidth() / 2,
@@ -750,12 +848,19 @@ export function updateRecordingControlPosition(area: {
   });
 }
 
+export function detachRecordingControlFromOverlay(): void {
+  if (!isWindows) return;
+
+  clearRecordingControlBrowserWindowParent();
+}
+
 export async function hidePreRecordingControl(
   hideCamera: boolean = true
 ): Promise<void> {
   cleanupEventListener();
 
   currentAreaSelection = null;
+  recordingTarget = null;
   currentMode = 'pre-recording';
 
   if (hideCamera) {
@@ -776,9 +881,32 @@ export async function hidePreRecordingControl(
   }
 }
 
-export async function showRecordingControl(): Promise<void> {
+function createRecordingSession(config: RecordingConfig): RecordingSession {
+  const cameraSettings = getCameraPreviewSettings();
+  return {
+    systemAudio: config.includeAudio ?? true,
+    micEnabled: config.micEnabled ?? false,
+    selectedMicId: config.micDeviceId ?? null,
+    selectedMicName: config.micDeviceName ?? null,
+    cameraEnabled: config.cameraEnabled ?? false,
+    camera:
+      config.cameraEnabled && cameraSettings
+        ? {
+            ...cameraSettings,
+            selectedDeviceId: config.cameraDeviceId ?? null,
+            selectedDeviceName: config.cameraDeviceName ?? null,
+          }
+        : undefined,
+  };
+}
+
+export async function showRecordingControl(
+  config: RecordingConfig
+): Promise<void> {
   currentMode = 'recording';
   micMuted = false;
+  recordingTarget = config.windowName ?? null;
+  recordingSession = createRecordingSession(config);
   setupEventListener();
 
   if (isWindows) {
@@ -811,8 +939,10 @@ export async function hideRecordingControl(): Promise<void> {
   stopTimer();
   cleanupEventListener();
   micMuted = false;
+  recordingSession = null;
 
   currentAreaSelection = null;
+  recordingTarget = null;
   currentMode = 'pre-recording';
 
   if (isWindows) {

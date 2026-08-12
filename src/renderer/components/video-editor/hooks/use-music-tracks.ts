@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { MusicTrack } from '@/types/music';
 import { DEFAULT_MUSIC_TRACK_VOLUME } from '@/types/music';
+import { splitMusicTrack } from '../timeline-split';
 import type { SliceController } from './use-editor-history';
 
 interface UseMusicTracksProps {
@@ -15,8 +16,11 @@ interface UseMusicTracksReturn {
   ) => void;
   selectedMusicTrackId: string | null;
   handleAddMusicTrack: () => Promise<void>;
-  handleRemoveMusicTrack: (id: string) => void;
-  handleUpdateMusicTrack: (id: string, updates: Partial<MusicTrack>) => void;
+  handleRemoveMusicTrackGroup: (groupId: string) => void;
+  handleUpdateMusicTrackGroup: (
+    groupId: string,
+    updates: Partial<MusicTrack>
+  ) => void;
   handleResizeMusicTrack: (
     id: string,
     startTime: number,
@@ -27,6 +31,7 @@ interface UseMusicTracksReturn {
     startTime: number,
     endTime: number
   ) => void;
+  handleSplitMusicTrack: (id: string, cutTime: number) => void;
   handleCommitMusicGesture: () => void;
   handleSelectMusicTrack: (id: string | null) => void;
   clearMusicSelection: () => void;
@@ -36,11 +41,58 @@ interface UseMusicTracksReturn {
 export const SYSTEM_TRACK_ID = 'system-audio';
 export const MIC_TRACK_ID = 'mic-audio';
 
+export function withDefaultGroupIds(
+  tracks: (MusicTrack & { groupId?: string })[]
+): MusicTrack[] {
+  return tracks.map(track => {
+    if (track.groupId) return track;
+
+    switch (track.source) {
+      case 'system':
+        return { ...track, groupId: SYSTEM_TRACK_ID };
+      case 'mic':
+        return { ...track, groupId: MIC_TRACK_ID };
+      default:
+        return { ...track, groupId: track.id };
+    }
+  });
+}
+
 interface BuildBuiltInTracksParams {
   systemAudioPath: string | null;
   micAudioPath: string | null;
   hasEmbeddedAudio: boolean;
   originalDuration: number;
+}
+
+interface BuildImportedMusicTrackParams {
+  fileName: string;
+  name: string;
+  originalDuration: number;
+}
+
+export function buildImportedMusicTrack({
+  fileName,
+  name,
+  originalDuration,
+}: BuildImportedMusicTrackParams): MusicTrack {
+  const id = crypto.randomUUID();
+
+  return {
+    id,
+    groupId: id,
+    name,
+    source: 'music',
+    fileName,
+    volume: DEFAULT_MUSIC_TRACK_VOLUME,
+    enabled: true,
+    startTime: 0,
+    endTime: originalDuration,
+    originalDuration,
+    trimStart: 0,
+    trimEnd: 0,
+    speed: 1,
+  };
 }
 
 export function buildBuiltInMusicTracks({
@@ -56,6 +108,7 @@ export function buildBuiltInMusicTracks({
   if (systemAudioPath || hasEmbeddedAudio) {
     builtIn.push({
       id: SYSTEM_TRACK_ID,
+      groupId: SYSTEM_TRACK_ID,
       name: hasEmbeddedAudio && !systemAudioPath ? 'Audio' : 'System Audio',
       source: 'system',
       fileName: '',
@@ -73,6 +126,7 @@ export function buildBuiltInMusicTracks({
   if (micAudioPath) {
     builtIn.push({
       id: MIC_TRACK_ID,
+      groupId: MIC_TRACK_ID,
       name: 'Microphone',
       source: 'mic',
       fileName: '',
@@ -88,6 +142,17 @@ export function buildBuiltInMusicTracks({
   }
 
   return builtIn;
+}
+
+export function mergeBuiltInMusicTracks(
+  existing: MusicTrack[],
+  builtIn: MusicTrack[]
+): MusicTrack[] {
+  const missing = builtIn.filter(
+    builtInTrack =>
+      !existing.some(track => track.source === builtInTrack.source)
+  );
+  return missing.length === 0 ? existing : [...missing, ...existing];
 }
 
 export function useMusicTracks({
@@ -116,21 +181,21 @@ export function useMusicTracks({
 
     const needsUpdate = musicTracksRef.current.some(
       track =>
-        track.startTime >= totalTimelineDuration ||
-        track.endTime > totalTimelineDuration
+        track.source !== 'music' &&
+        (track.startTime >= totalTimelineDuration ||
+          track.endTime > totalTimelineDuration)
     );
     if (!needsUpdate) return;
 
     setWithoutHistory(prev =>
-      prev
-        .filter(
-          track =>
-            track.source !== 'music' || track.startTime < totalTimelineDuration
-        )
-        .map(track => ({
-          ...track,
-          endTime: Math.min(track.endTime, totalTimelineDuration),
-        }))
+      prev.map(track =>
+        track.source === 'music'
+          ? track
+          : {
+              ...track,
+              endTime: Math.min(track.endTime, totalTimelineDuration),
+            }
+      )
     );
   }, [totalTimelineDuration, setWithoutHistory]);
 
@@ -149,47 +214,43 @@ export function useMusicTracks({
       return;
     }
 
-    const playableDuration = result.originalDuration;
-    const endTime = Math.min(playableDuration, totalTimelineDuration);
-
-    const newTrack: MusicTrack = {
-      id: crypto.randomUUID(),
-      name: result.name ?? result.fileName,
-      source: 'music',
+    const newTrack = buildImportedMusicTrack({
       fileName: result.fileName,
-      volume: DEFAULT_MUSIC_TRACK_VOLUME,
-      enabled: true,
-      startTime: 0,
-      endTime,
+      name: result.name ?? result.fileName,
       originalDuration: result.originalDuration,
-      trimStart: 0,
-      trimEnd: 0,
-      speed: 1,
-    };
+    });
 
     setMusicTracks(prev => [...prev, newTrack]);
-  }, [totalTimelineDuration, setMusicTracks]);
+  }, [setMusicTracks]);
 
-  const handleRemoveMusicTrack = useCallback(
-    (id: string) => {
-      const track = musicTracksRef.current.find(t => t.id === id);
-      if (!track || track.source !== 'music') return;
-
-      window.ipcRenderer
-        .invoke('video-editor:music:remove', {
-          fileName: track.fileName,
-        })
-        .catch(() => {});
-      setMusicTracks(prev => prev.filter(t => t.id !== id));
-      setSelectedMusicTrackId(prev => (prev === id ? null : prev));
+  const handleUpdateMusicTrackGroup = useCallback(
+    (groupId: string, updates: Partial<MusicTrack>) => {
+      setMusicTracks(prev =>
+        prev.map(track =>
+          track.groupId === groupId ? { ...track, ...updates } : track
+        )
+      );
     },
     [setMusicTracks]
   );
 
-  const handleUpdateMusicTrack = useCallback(
-    (id: string, updates: Partial<MusicTrack>) => {
-      setMusicTracks(prev =>
-        prev.map(track => (track.id === id ? { ...track, ...updates } : track))
+  const handleRemoveMusicTrackGroup = useCallback(
+    (groupId: string) => {
+      const group = musicTracksRef.current.filter(
+        track => track.groupId === groupId
+      );
+      if (group.length === 0 || group[0].source !== 'music') return;
+
+      for (const track of group) {
+        window.ipcRenderer
+          .invoke('video-editor:music:remove', {
+            fileName: track.fileName,
+          })
+          .catch(() => {});
+      }
+      setMusicTracks(prev => prev.filter(track => track.groupId !== groupId));
+      setSelectedMusicTrackId(prev =>
+        group.some(track => track.id === prev) ? null : prev
       );
     },
     [setMusicTracks]
@@ -210,7 +271,7 @@ export function useMusicTracks({
           const clampedEnd = Math.min(
             endTime,
             maxEndTime,
-            totalTimelineDuration
+            track.source === 'music' ? maxEndTime : totalTimelineDuration
           );
 
           const startDelta = clampedStart - track.startTime;
@@ -245,6 +306,8 @@ export function useMusicTracks({
         prev.map(track => {
           if (track.id !== id) return track;
           const duration = endTime - startTime;
+          if (duration > totalTimelineDuration) return track;
+
           const maxStart = Math.max(0, totalTimelineDuration - duration);
           const clampedStart = Math.max(0, Math.min(startTime, maxStart));
           return {
@@ -256,6 +319,22 @@ export function useMusicTracks({
       );
     },
     [totalTimelineDuration, setWithoutHistory]
+  );
+
+  const handleSplitMusicTrack = useCallback(
+    (id: string, cutTime: number) => {
+      const track = musicTracksRef.current.find(t => t.id === id);
+      if (!track) return;
+
+      const split = splitMusicTrack(track, cutTime);
+      if (!split) return;
+
+      const [left, right] = split;
+      setMusicTracks(prev =>
+        prev.flatMap(t => (t.id === id ? [left, right] : [t]))
+      );
+    },
+    [setMusicTracks]
   );
 
   const handleCommitMusicGesture = useCallback(() => {
@@ -286,10 +365,11 @@ export function useMusicTracks({
     setMusicTracks,
     selectedMusicTrackId,
     handleAddMusicTrack,
-    handleRemoveMusicTrack,
-    handleUpdateMusicTrack,
+    handleRemoveMusicTrackGroup,
+    handleUpdateMusicTrackGroup,
     handleResizeMusicTrack,
     handleMoveMusicTrack,
+    handleSplitMusicTrack,
     handleCommitMusicGesture,
     handleSelectMusicTrack,
     clearMusicSelection,

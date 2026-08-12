@@ -122,39 +122,29 @@ impl RecordingCamera {
     }
 
     pub fn sync_with_screen_start(&self, clock: CameraSyncClock) -> Result<(), RecorderError> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| RecorderError::invalid_state("Camera is not recording"))?;
-        let (response_sender, response_receiver) = std::sync::mpsc::channel();
-        session
-            .events
-            .send(WorkerEvent::Command(CameraCommand::Sync(
-                clock,
-                response_sender,
-            )))
-            .map_err(|_| RecorderError::capture("Camera worker is unavailable"))?;
-        response_receiver
-            .recv_timeout(COMMAND_TIMEOUT)
-            .map_err(|_| RecorderError::capture("Camera did not synchronize in time"))?
+        self.send_command("Camera did not synchronize in time", |response| {
+            CameraCommand::Sync(clock, response)
+        })
     }
 
     pub fn pause(&self) -> Result<(), RecorderError> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| RecorderError::invalid_state("Camera is not recording"))?;
-        let (response_sender, response_receiver) = std::sync::mpsc::channel();
-        session
-            .events
-            .send(WorkerEvent::Command(CameraCommand::Pause(response_sender)))
-            .map_err(|_| RecorderError::capture("Camera worker is unavailable"))?;
-        response_receiver
-            .recv_timeout(COMMAND_TIMEOUT)
-            .map_err(|_| RecorderError::capture("Camera did not pause in time"))?
+        self.send_command("Camera did not pause in time", CameraCommand::Pause)
     }
 
     pub fn resume(&self) -> Result<(), RecorderError> {
+        self.send_command("Camera did not resume in time", CameraCommand::Resume)
+    }
+
+    pub fn set_enabled(&self, enabled: bool) -> Result<(), RecorderError> {
+        self.send_command("Camera did not switch in time", |response| {
+            CameraCommand::SetEnabled(enabled, response)
+        })
+    }
+
+    fn send_command<F>(&self, timeout_message: &str, build: F) -> Result<(), RecorderError>
+    where
+        F: FnOnce(Sender<Result<(), RecorderError>>) -> CameraCommand,
+    {
         let session = self
             .session
             .as_ref()
@@ -162,11 +152,11 @@ impl RecordingCamera {
         let (response_sender, response_receiver) = std::sync::mpsc::channel();
         session
             .events
-            .send(WorkerEvent::Command(CameraCommand::Resume(response_sender)))
+            .send(WorkerEvent::Command(build(response_sender)))
             .map_err(|_| RecorderError::capture("Camera worker is unavailable"))?;
         response_receiver
             .recv_timeout(COMMAND_TIMEOUT)
-            .map_err(|_| RecorderError::capture("Camera did not resume in time"))?
+            .map_err(|_| RecorderError::capture(timeout_message))?
     }
 
     pub fn try_error(&self) -> Option<RecorderError> {
@@ -236,6 +226,7 @@ enum CameraCommand {
     Sync(CameraSyncClock, Sender<Result<(), RecorderError>>),
     Pause(Sender<Result<(), RecorderError>>),
     Resume(Sender<Result<(), RecorderError>>),
+    SetEnabled(bool, Sender<Result<(), RecorderError>>),
     Stop(Sender<Result<CameraRecordingResult, RecorderError>>),
     Abort(Sender<()>),
 }
@@ -520,6 +511,13 @@ fn handle_command(
             let _ = response.send(result);
             false
         }
+        CameraCommand::SetEnabled(enabled, response) => {
+            let result = terminal_error
+                .clone()
+                .map_or_else(|| runtime.set_enabled(enabled), Err);
+            let _ = response.send(result);
+            false
+        }
         CameraCommand::Stop(response) => {
             let result = if let Some(error) = terminal_error.as_ref() {
                 runtime.abort(events);
@@ -642,6 +640,10 @@ struct CameraRuntime {
     last_capture: Option<CameraCapturePoint>,
     last_written: Option<i64>,
     first_written: Option<i64>,
+    enabled: bool,
+    visibility_changed: bool,
+    visible_start: Option<i64>,
+    visible_spans: Vec<CameraVisibleSpan>,
     capture_stopped: bool,
     committed: bool,
 }
@@ -818,6 +820,10 @@ impl CameraRuntime {
             last_capture: None,
             last_written: None,
             first_written: None,
+            enabled: true,
+            visibility_changed: false,
+            visible_start: None,
+            visible_spans: Vec::new(),
             capture_stopped: false,
             committed: false,
         })
@@ -846,7 +852,7 @@ impl CameraRuntime {
             source_time: frame.source_time,
             arrived_at: frame.arrived_at,
         });
-        if self.paused {
+        if self.paused || !self.enabled {
             return Ok(());
         }
         if self.sync_clock.is_none() {
@@ -903,6 +909,39 @@ impl CameraRuntime {
         Ok(())
     }
 
+    fn set_enabled(&mut self, enabled: bool) -> Result<(), RecorderError> {
+        if self.sync_clock.is_none() {
+            return Err(RecorderError::invalid_state(
+                "Cannot switch the camera before screen synchronization",
+            ));
+        }
+        if self.enabled == enabled {
+            return Ok(());
+        }
+        self.enabled = enabled;
+        self.visibility_changed = true;
+        if !enabled {
+            self.close_visible_span();
+        }
+        Ok(())
+    }
+
+    fn close_visible_span(&mut self) {
+        let Some(start) = self.visible_start.take() else {
+            return;
+        };
+        let end = self
+            .last_written
+            .map_or(start, |last| last.saturating_add(self.frame_duration));
+        if end <= start {
+            return;
+        }
+        self.visible_spans.push(CameraVisibleSpan {
+            start: hns_to_seconds(start),
+            end: hns_to_seconds(end),
+        });
+    }
+
     fn write_frame(&mut self, frame: CameraFrame) -> Result<(), RecorderError> {
         let origin = self
             .source_origin
@@ -921,6 +960,7 @@ impl CameraRuntime {
                 return Ok(());
             }
         }
+        self.visible_start.get_or_insert(timestamp);
         let minimum_size = self.width.saturating_mul(self.height).saturating_mul(4) as usize;
         if frame.bytes.len() < minimum_size {
             return Err(RecorderError::capture(
@@ -1007,6 +1047,7 @@ impl CameraRuntime {
         let duration =
             camera_duration_hns(self.last_written.unwrap_or_default(), self.frame_duration) as f64
                 / HNS_PER_SECOND;
+        self.close_visible_span();
         self.write_metadata(duration)?;
         self.committed = true;
         Ok(CameraRecordingResult {
@@ -1041,6 +1082,9 @@ impl CameraRuntime {
                 frame_rate: self.metadata_frame_rate,
                 sync_offset_ms: round(offset, 1),
                 synced: true,
+                visible_ranges: self
+                    .visibility_changed
+                    .then_some(self.visible_spans.as_slice()),
             },
         };
         let file = OpenOptions::new()
@@ -1495,6 +1539,19 @@ struct CameraMetadata<'a> {
     frame_rate: u32,
     sync_offset_ms: f64,
     synced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visible_ranges: Option<&'a [CameraVisibleSpan]>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraVisibleSpan {
+    start: f64,
+    end: f64,
+}
+
+fn hns_to_seconds(value: i64) -> f64 {
+    round(value as f64 / HNS_PER_SECOND, 3)
 }
 
 fn round(value: f64, decimals: u32) -> f64 {

@@ -5,6 +5,7 @@ const mockExecFile =
   vi.fn<(file: string, args: string[], cb: ExecCallback) => void>();
 const mockPrewarmCapturePreview = vi.fn();
 const mockPrewarmAreaOverlay = vi.fn();
+const mockPrewarmFreezeScreen = vi.fn();
 const mockOnConfigUpdated = vi.fn();
 const mockPlatform = vi.hoisted(() => ({ isMac: true }));
 
@@ -19,6 +20,10 @@ vi.mock('@/main/capture/capture-preview', () => ({
 
 vi.mock('@/main/capture/area-overlay', () => ({
   prewarmAreaOverlay: () => mockPrewarmAreaOverlay(),
+}));
+
+vi.mock('@/main/capture/freeze-screen', () => ({
+  prewarmFreezeScreen: () => mockPrewarmFreezeScreen(),
 }));
 
 vi.mock('@/main/settings', () => ({
@@ -64,6 +69,13 @@ describe('capture index', () => {
     init();
     expect(mockPrewarmCapturePreview).toHaveBeenCalledTimes(1);
     expect(mockPrewarmAreaOverlay).toHaveBeenCalledTimes(1);
+    expect(mockPrewarmFreezeScreen).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the freeze prewarm on macOS', async () => {
+    const { init } = await import('@/main/capture');
+    init();
+    expect(mockPrewarmFreezeScreen).not.toHaveBeenCalled();
   });
 
   it('synchronizes the warm preview when preview settings change', async () => {

@@ -8,6 +8,7 @@ const mockGetPrimaryDisplay = vi.fn(() => ({
 }));
 const mockRegisterDockWindow = vi.fn().mockResolvedValue(undefined);
 const mockAppFocus = vi.fn();
+const mockProbeVideo = vi.fn().mockResolvedValue(null);
 
 const browserWindows: MockBrowserWindow[] = [];
 
@@ -74,6 +75,10 @@ vi.mock('@/main/utils/dock', () => ({
   registerDockWindow: (...a: unknown[]) => mockRegisterDockWindow(...a),
 }));
 
+vi.mock('@/main/utils/ffmpeg', () => ({
+  probeVideo: (...args: unknown[]) => mockProbeVideo(...args),
+}));
+
 describe('window-manager', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -102,6 +107,10 @@ describe('window-manager', () => {
       expect(browserWindows[0].options).toMatchObject({
         webPreferences: { webSecurity: false },
       });
+      expect(browserWindows[0].loadURL).toHaveBeenCalledWith(
+        'http://localhost:5173/?window=video-editor'
+      );
+      expect(mockProbeVideo).toHaveBeenCalledWith('/path/video.mov');
     });
 
     it('uses project recording path when path is a project folder', async () => {

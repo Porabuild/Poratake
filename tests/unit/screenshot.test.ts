@@ -31,6 +31,7 @@ vi.mock('child_process', () => ({
 const mockExistsSync = vi.fn();
 const mockMkdirSync = vi.fn();
 const mockReadFileSync = vi.fn();
+const mockReadFile = vi.fn();
 const mockWriteFileSync = vi.fn();
 const mockCopyFileSync = vi.fn();
 
@@ -42,6 +43,9 @@ vi.mock('fs', () => ({
     writeFileSync: (path: string, data: Buffer) =>
       mockWriteFileSync(path, data),
     copyFileSync: (src: string, dest: string) => mockCopyFileSync(src, dest),
+    promises: {
+      readFile: (path: string) => mockReadFile(path),
+    },
   },
   existsSync: (path: string) => mockExistsSync(path),
   mkdirSync: (path: string, options?: object) => mockMkdirSync(path, options),
@@ -942,12 +946,12 @@ describe('Screenshot Module', () => {
 
       const testBuffer = Buffer.from('test image data');
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(testBuffer);
+      mockReadFile.mockResolvedValue(testBuffer);
 
       const result = await handler({ sender: { id: 1 } });
 
       expect(result).toBe(testBuffer.toString('base64'));
-      expect(mockReadFileSync).toHaveBeenCalledWith('/path/to/image.png');
+      expect(mockReadFile).toHaveBeenCalledWith('/path/to/image.png');
     });
 
     it('should throw error when file not found', async () => {

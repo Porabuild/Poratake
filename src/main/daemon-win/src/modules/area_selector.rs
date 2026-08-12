@@ -1,6 +1,7 @@
 use crate::overlay::{
     add_key_handler, configure_overlay_window, create_popup_window, default_wndproc,
-    ensure_window_class, monitors, rect_height, rect_width, remove_key_handler, to_wide,
+    disable_window_transitions, ensure_window_class, monitors, rect_height, rect_width,
+    remove_key_handler, to_wide,
 };
 use crate::protocol::{
     param_bool, param_i32, param_str, respond_error, respond_success, send_event, Request,
@@ -11,13 +12,14 @@ use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
-use windows::core::PCWSTR;
+use windows::core::{Error, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    FrameRect, GetTextExtentPoint32W, InvalidateRect, SelectObject, SetBkMode, SetTextColor,
-    DT_CENTER, DT_SINGLELINE, DT_VCENTER, FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION,
-    FONT_QUALITY, FW_SEMIBOLD, HFONT, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, CombineRgn, CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteObject, DrawTextW,
+    EndPaint, FillRect, FrameRect, GetTextExtentPoint32W, InvalidateRect, SelectObject, SetBkMode,
+    SetTextColor, SetWindowRgn, DT_CENTER, DT_SINGLELINE, DT_VCENTER, ERROR, FONT_CHARSET,
+    FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_SEMIBOLD, HFONT, PAINTSTRUCT,
+    RGN_DIFF, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, LogicalToPhysicalPointForPerMonitorDPI, PhysicalToLogicalPointForPerMonitorDPI,
@@ -26,10 +28,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, GetClientRect, LoadCursorW, SetCursor, SetLayeredWindowAttributes, SetWindowPos,
     ShowWindow, HTTRANSPARENT, HWND_TOPMOST, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS,
-    IDC_SIZENWSE, IDC_SIZEWE, LWA_ALPHA, LWA_COLORKEY, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_NCHITTEST, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT,
+    IDC_SIZENWSE, IDC_SIZEWE, LWA_ALPHA, LWA_COLORKEY, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const INPUT_CLASS_NAME: &str = "CaptyAreaSelectorInput";
@@ -37,6 +39,86 @@ const VISUAL_CLASS_NAME: &str = "CaptyAreaSelectorVisual";
 const PROMPT_TEXT: &str = "Please select an area to begin";
 const MIN_SELECTION_SIZE: i32 = 10;
 const MIN_RESIZE_SIZE: i32 = 20;
+
+fn scaled_hole_rect(
+    hole: (i32, i32, i32, i32, i32, i32, i32),
+    client_width: i32,
+    client_height: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    let (x, y, width, height, window_width, window_height, inset) = hole;
+
+    if width - inset * 2 <= 0 || height - inset * 2 <= 0 {
+        return None;
+    }
+
+    let scale_x = client_width as f64 / window_width as f64;
+    let scale_y = client_height as f64 / window_height as f64;
+
+    Some((
+        ((x + inset) as f64 * scale_x).round() as i32,
+        ((y + inset) as f64 * scale_y).round() as i32,
+        ((x + width - inset) as f64 * scale_x).round() as i32,
+        ((y + height - inset) as f64 * scale_y).round() as i32,
+    ))
+}
+
+fn set_electron_window_region(
+    window: HWND,
+    hole: Option<(i32, i32, i32, i32, i32, i32, i32)>,
+) -> windows::core::Result<()> {
+    unsafe {
+        let Some(hole) = hole else {
+            if SetWindowRgn(window, None, true) == 0 {
+                return Err(Error::from_thread());
+            }
+            return Ok(());
+        };
+
+        let mut client = RECT::default();
+        GetClientRect(window, &mut client)?;
+        let client_width = rect_width(&client);
+        let client_height = rect_height(&client);
+        let (_, _, _, _, window_width, window_height, _) = hole;
+        if client_width <= 0 || client_height <= 0 || window_width <= 0 || window_height <= 0 {
+            return Err(Error::from_thread());
+        }
+
+        let Some((hole_left, hole_top, hole_right, hole_bottom)) =
+            scaled_hole_rect(hole, client_width, client_height)
+        else {
+            if SetWindowRgn(window, None, true) == 0 {
+                return Err(Error::from_thread());
+            }
+            return Ok(());
+        };
+
+        let region = CreateRectRgn(0, 0, client_width, client_height);
+        if region.0.is_null() {
+            return Err(Error::from_thread());
+        }
+        let hole_region = CreateRectRgn(hole_left, hole_top, hole_right, hole_bottom);
+        if hole_region.0.is_null() {
+            let error = Error::from_thread();
+            let _ = DeleteObject(region.into());
+            return Err(error);
+        }
+
+        let combined = CombineRgn(Some(region), Some(region), Some(hole_region), RGN_DIFF);
+        let _ = DeleteObject(hole_region.into());
+        if combined.0 == ERROR {
+            let error = Error::from_thread();
+            let _ = DeleteObject(region.into());
+            return Err(error);
+        }
+
+        if SetWindowRgn(window, Some(region), true) == 0 {
+            let error = Error::from_thread();
+            let _ = DeleteObject(region.into());
+            return Err(error);
+        }
+        Ok(())
+    }
+}
 const KEY_COLOR: COLORREF = COLORREF(0x00FF00FF);
 const INPUT_ALPHA: u8 = 1;
 const DEFAULT_ALPHA: u8 = 112;
@@ -1489,18 +1571,109 @@ impl Module for AreaSelectorModule {
                 run_on_ui(move || set_aspect_ratio(request_id, ratio));
                 Reply::Deferred
             }
-            "disableWindowTransitions" => {
+            "setWindowRegion" => {
                 let Some(window_handle) = param_str(&request.params, "windowHandle")
                     .and_then(|value| value.parse::<usize>().ok())
                     .filter(|value| *value != 0)
                 else {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
-                        "disableWindowTransitions requires a windowHandle".to_string(),
+                        "setWindowRegion requires a windowHandle".to_string(),
                     )));
                 };
+                let values = (
+                    param_i32(&request.params, "x"),
+                    param_i32(&request.params, "y"),
+                    param_i32(&request.params, "width"),
+                    param_i32(&request.params, "height"),
+                    param_i32(&request.params, "windowWidth"),
+                    param_i32(&request.params, "windowHeight"),
+                    param_i32(&request.params, "inset"),
+                );
+                let hole = match values {
+                    (None, None, None, None, None, None, None) => None,
+                    (
+                        Some(x),
+                        Some(y),
+                        Some(width),
+                        Some(height),
+                        Some(window_width),
+                        Some(window_height),
+                        Some(inset),
+                    ) if width > 0
+                        && height > 0
+                        && window_width > 0
+                        && window_height > 0
+                        && inset >= 0 =>
+                    {
+                        Some((x, y, width, height, window_width, window_height, inset))
+                    }
+                    _ => {
+                        return Reply::Now(Err((
+                            "INVALID_PARAMS".to_string(),
+                            "setWindowRegion requires complete region dimensions".to_string(),
+                        )));
+                    }
+                };
                 let window = HWND(window_handle as *mut c_void);
-                match configure_overlay_window(window) {
+                match set_electron_window_region(window, hole) {
+                    Ok(()) => Reply::Now(Ok(Some(json!({ "updated": true })))),
+                    Err(error) => Reply::Now(Err((
+                        "WINDOW_CONFIGURATION_FAILED".to_string(),
+                        error.to_string(),
+                    ))),
+                }
+            }
+            method @ ("disableWindowTransitions"
+            | "hideWindowWithoutTransitions"
+            | "showWindowWithoutTransitions") => {
+                let Some(window_handle) = param_str(&request.params, "windowHandle")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value != 0)
+                else {
+                    return Reply::Now(Err((
+                        "INVALID_PARAMS".to_string(),
+                        "window transition method requires a windowHandle".to_string(),
+                    )));
+                };
+                let no_activate = param_bool(&request.params, "noActivate").unwrap_or(true);
+                let window = HWND(window_handle as *mut c_void);
+                let result = if no_activate {
+                    configure_overlay_window(window)
+                } else {
+                    disable_window_transitions(window)
+                };
+                let result = result.and_then(|()| match method {
+                    "showWindowWithoutTransitions" => unsafe {
+                        SetWindowPos(
+                            window,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        )
+                    },
+                    "hideWindowWithoutTransitions" => unsafe {
+                        set_electron_window_region(window, None)?;
+                        SetWindowPos(
+                            window,
+                            None,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE
+                                | SWP_NOSIZE
+                                | SWP_NOACTIVATE
+                                | SWP_NOZORDER
+                                | SWP_HIDEWINDOW,
+                        )
+                    },
+                    _ => Ok(()),
+                });
+                match result {
                     Ok(()) => Reply::Now(Ok(Some(json!({ "disabled": true })))),
                     Err(error) => Reply::Now(Err((
                         "WINDOW_CONFIGURATION_FAILED".to_string(),
@@ -1510,5 +1683,46 @@ impl Module for AreaSelectorModule {
             }
             method => method_not_found(method),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scaled_hole_rect;
+
+    #[test]
+    fn maps_the_inset_hole_when_client_matches_the_window() {
+        assert_eq!(
+            scaled_hole_rect((100, 50, 400, 300, 1920, 1080, 16), 1920, 1080),
+            Some((116, 66, 484, 334))
+        );
+    }
+
+    #[test]
+    fn scales_the_hole_to_the_physical_client_area() {
+        assert_eq!(
+            scaled_hole_rect((100, 50, 400, 300, 1920, 1080, 16), 3840, 2160),
+            Some((232, 132, 968, 668))
+        );
+    }
+
+    #[test]
+    fn rounds_fractional_scaling_to_the_nearest_pixel() {
+        assert_eq!(
+            scaled_hole_rect((100, 100, 400, 400, 1000, 1000, 0), 1250, 1250),
+            Some((125, 125, 625, 625))
+        );
+    }
+
+    #[test]
+    fn reports_no_hole_when_the_inset_swallows_the_selection() {
+        assert_eq!(
+            scaled_hole_rect((0, 0, 32, 300, 1920, 1080, 16), 1920, 1080),
+            None
+        );
+        assert_eq!(
+            scaled_hole_rect((0, 0, 400, 20, 1920, 1080, 16), 1920, 1080),
+            None
+        );
     }
 }

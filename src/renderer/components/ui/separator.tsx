@@ -1,6 +1,5 @@
 import * as React from 'react';
-import { Separator as HeroSeparator } from '@heroui/react';
-import { separatorVariants } from '@heroui/styles';
+import { Separator as HeroSeparator, separatorVariants } from '@heroui/react';
 
 import { cn } from '@/renderer/lib/utils';
 

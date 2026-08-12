@@ -3,6 +3,7 @@ import {
   adjustTimelineRanges,
   adjustTimelineRangeSlices,
 } from '../../src/renderer/components/video-editor/utils';
+import type { CameraSegment } from '../../src/types/camera';
 import type { DrawingSegment } from '../../src/types/drawing';
 import type { ZoomSegment } from '../../src/types/zoom';
 import type { Segment } from '../../src/renderer/components/video-editor/types';
@@ -69,7 +70,7 @@ describe('adjustTimelineRanges', () => {
     expect(result).toEqual([]);
   });
 
-  it('returns adjusted segments, zooms, and drawings as one timeline slice update', () => {
+  it('returns adjusted segments, zooms, cameras, and drawings as one timeline slice update', () => {
     const nextSegments: Segment[] = [
       {
         id: 'video',
@@ -88,6 +89,13 @@ describe('adjustTimelineRanges', () => {
         zoomLevel: 2,
       },
     ];
+    const cameraSegments: CameraSegment[] = [
+      {
+        id: 'camera',
+        startTime: 3,
+        endTime: 5,
+      },
+    ];
     const drawingSegments: DrawingSegment[] = [
       {
         id: 'drawing',
@@ -102,6 +110,7 @@ describe('adjustTimelineRanges', () => {
     const result = adjustTimelineRangeSlices({
       nextSegments,
       zoomSegments,
+      cameraSegments,
       drawingSegments,
       adjustment: baseAdjustment,
       drawingMinDuration: 0.3,
@@ -110,6 +119,9 @@ describe('adjustTimelineRanges', () => {
     expect(result.segments).toBe(nextSegments);
     expect(result.zoomSegments).toEqual([
       { id: 'zoom', startTime: 2.5, endTime: 3.5, zoomLevel: 2 },
+    ]);
+    expect(result.cameraSegments).toEqual([
+      { id: 'camera', startTime: 2.5, endTime: 3.5 },
     ]);
     expect(result.drawingSegments).toEqual([
       {

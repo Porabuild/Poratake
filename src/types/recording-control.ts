@@ -10,14 +10,27 @@ export type RecordingControlAction =
   | 'toggle-system-audio'
   | 'toggle-mic'
   | 'toggle-camera'
-  | 'toggle-mic-mute';
+  | 'toggle-mic-mute'
+  | 'select-mic'
+  | 'select-camera';
+
+export type RecordingControlDeviceKind = 'microphone' | 'camera';
+
+export interface RecordingControlActionData {
+  deviceId: string | null;
+  deviceName: string | null;
+}
 
 export interface RecordingControlState {
   mode: RecordingControlMode;
+  targetName: string | null;
   systemAudio: boolean;
   micEnabled: boolean;
   micMuted: boolean;
+  selectedMicId: string | null;
   cameraEnabled: boolean;
+  selectedCameraId: string | null;
+  cameraLocked: boolean;
   isPaused: boolean;
   isStarting: boolean;
   elapsedSeconds: number;

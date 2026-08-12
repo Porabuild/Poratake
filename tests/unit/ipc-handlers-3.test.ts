@@ -132,6 +132,7 @@ vi.mock('@/main/utils/save-location', () => ({
 vi.mock('@/main/utils/ffmpeg', () => ({
   convertMp4ToGif: (...a: unknown[]) => mockConvertMp4ToGif(...a),
   getFFmpegPath: () => mockGetFFmpegPath(),
+  probeVideo: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('@/main/capture/video/ipc/export-session', () => ({
@@ -347,7 +348,7 @@ describe('state handlers', () => {
       filePath: '/p/Rec.capty/recording.mov',
     });
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('{}');
+    mockReadFileAsync.mockResolvedValue('{}');
     const { registerStateHandlers } =
       await import('@/main/capture/video/ipc/state-handlers');
     registerStateHandlers();

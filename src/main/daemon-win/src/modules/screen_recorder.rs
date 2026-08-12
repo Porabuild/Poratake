@@ -1,6 +1,7 @@
 use super::recorder_types::{RecorderError, RecordingConfig, RecordingResult};
+use super::recording_audio::AudioDevice;
 use super::screen_capture::CaptureController;
-use crate::protocol::{param_bool, respond_error, respond_success, send_event, Request};
+use crate::protocol::{param_bool, param_str, respond_error, respond_success, send_event, Request};
 use crate::router::{method_not_found, Module, Reply};
 use serde_json::json;
 use std::sync::mpsc::Receiver;
@@ -107,6 +108,25 @@ impl ScreenRecorderModule {
         Reply::Deferred
     }
 
+    fn set_microphone(&self, request: &Request) -> Reply {
+        let enabled = param_bool(&request.params, "enabled").unwrap_or(false);
+        let device = enabled.then(|| AudioDevice {
+            id: param_str(&request.params, "deviceId").map(str::to_owned),
+            name: param_str(&request.params, "deviceName").map(str::to_owned),
+        });
+        device_reply(self.recorder.set_microphone(device), enabled)
+    }
+
+    fn set_system_audio(&self, request: &Request) -> Reply {
+        let enabled = param_bool(&request.params, "enabled").unwrap_or(false);
+        device_reply(self.recorder.set_system_audio(enabled), enabled)
+    }
+
+    fn set_camera(&self, request: &Request) -> Reply {
+        let enabled = param_bool(&request.params, "enabled").unwrap_or(false);
+        device_reply(self.recorder.set_camera(enabled), enabled)
+    }
+
     fn stop(&self, request: &Request) -> Reply {
         let receiver = match self.recorder.stop() {
             Ok(receiver) => receiver,
@@ -144,8 +164,21 @@ impl Module for ScreenRecorderModule {
                     "muted": muted,
                 }))))
             }
+            "setMicrophone" => self.set_microphone(request),
+            "setSystemAudio" => self.set_system_audio(request),
+            "setCamera" => self.set_camera(request),
             method => method_not_found(method),
         }
+    }
+}
+
+fn device_reply(result: Result<(), RecorderError>, enabled: bool) -> Reply {
+    match result {
+        Ok(()) => Reply::Now(Ok(Some(json!({
+            "success": true,
+            "enabled": enabled,
+        })))),
+        Err(error) => Reply::Now(Err((error.code.to_string(), error.message))),
     }
 }
 

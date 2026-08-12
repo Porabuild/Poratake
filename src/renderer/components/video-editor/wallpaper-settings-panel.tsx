@@ -46,19 +46,25 @@ export default function WallpaperSettingsPanel({
           description="Add background and styling to your video"
         />
 
-        <div className="flex items-center justify-between">
-          <Label className="text-sm">Show Wallpaper</Label>
-          <Switch
-            checked={wallpaper.enabled}
-            onCheckedChange={onEnabledChange}
-          />
-        </div>
+        <BackgroundSelector
+          selectedGradient={wallpaper.gradient}
+          selectedBackgroundImage={wallpaper.backgroundImage}
+          onGradientChange={onGradientChange}
+          onBackgroundImageChange={onBackgroundImageChange}
+          showDesktopWallpaper={true}
+          showCustomBackgrounds={true}
+          noWallpaper={{
+            selected: !wallpaper.enabled,
+            onSelect: () => onEnabledChange(false),
+          }}
+        />
 
         {isIOSDevice && wallpaper.enabled && (
           <>
             <div className="flex items-center justify-between">
               <Label className="text-sm">Device Frame</Label>
               <Switch
+                size="sm"
                 checked={wallpaper.deviceFrame}
                 onCheckedChange={onDeviceFrameChange}
               />
@@ -70,15 +76,6 @@ export default function WallpaperSettingsPanel({
 
         {wallpaper.enabled && (
           <>
-            <BackgroundSelector
-              selectedGradient={wallpaper.gradient}
-              selectedBackgroundImage={wallpaper.backgroundImage}
-              onGradientChange={onGradientChange}
-              onBackgroundImageChange={onBackgroundImageChange}
-              showDesktopWallpaper={true}
-              showCustomBackgrounds={true}
-            />
-
             <Separator />
 
             <AspectRatioSelector

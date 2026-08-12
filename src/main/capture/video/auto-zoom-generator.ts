@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { loadCursorData } from './cursor-data';
 import { getEditorStatePath } from './recording-project';
-import { generateAutoZoomSegments } from './auto-zoom';
+import { generateAutoZoomSegments } from '@/types/auto-zoom';
 import type { VideoEditorState } from '@/types/video-editor-state';
 import { EDITOR_STATE_VERSION } from '@/types/video-editor-state';
 import type { RecordingType } from '@/types/video';

@@ -255,6 +255,26 @@ describe('metadata handlers', () => {
     expect(result).toEqual({ duration: 10, width: 1920, height: 1080 });
   });
 
+  it('getVideoMetadata reuses the editor window probe', async () => {
+    mockGetWindowData.mockReturnValue({
+      filePath: '/p/video.mov',
+      videoProbe: Promise.resolve({
+        metadata: { duration: 8, width: 1280, height: 720 },
+      }),
+    });
+    mockExistsSync.mockReturnValue(true);
+    const { registerMetadataHandlers } =
+      await import('@/main/capture/video/ipc/metadata-handlers');
+    registerMetadataHandlers();
+
+    const result = await ipcHandleHandlers['video-editor:getVideoMetadata']({
+      sender: { id: 1 },
+    });
+
+    expect(result).toEqual({ duration: 8, width: 1280, height: 720 });
+    expect(mockProbeVideo).not.toHaveBeenCalled();
+  });
+
   it('getVideoMetadata returns null when no data', async () => {
     mockGetWindowData.mockReturnValue(undefined);
     const { registerMetadataHandlers } =

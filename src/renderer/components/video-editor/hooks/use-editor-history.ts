@@ -10,7 +10,7 @@ import type { FirstFrameSettings } from '@/types/first-frame';
 import { DEFAULT_FIRST_FRAME_SETTINGS } from '@/types/first-frame';
 import type { CursorStyle } from '@/types/cursor';
 import { DEFAULT_CURSOR_STYLE } from '@/types/cursor';
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import { DEFAULT_CAMERA_STYLE } from '@/types/camera';
 import type { KeyboardStyle } from '@/types/keyboard';
 import { DEFAULT_KEYBOARD_STYLE } from '@/types/keyboard';
@@ -24,6 +24,7 @@ export interface EditorDocument {
   segments: Segment[];
   zoomSegments: ZoomSegment[];
   zoomSettings: ZoomSettings;
+  cameraSegments: CameraSegment[];
   drawingSegments: DrawingSegment[];
   musicTracks: MusicTrack[];
   wallpaper: VideoWallpaperSettings;
@@ -39,6 +40,7 @@ const INITIAL_DOCUMENT: EditorDocument = {
   segments: [],
   zoomSegments: [],
   zoomSettings: DEFAULT_ZOOM_SETTINGS,
+  cameraSegments: [],
   drawingSegments: [],
   musicTracks: [],
   wallpaper: DEFAULT_VIDEO_WALLPAPER,
@@ -117,6 +119,7 @@ export interface UseEditorHistoryReturn {
   segments: SliceController<Segment[]>;
   zoomSegments: SliceController<ZoomSegment[]>;
   zoomSettings: SliceController<ZoomSettings>;
+  cameraSegments: SliceController<CameraSegment[]>;
   drawingSegments: SliceController<DrawingSegment[]>;
   musicTracks: SliceController<MusicTrack[]>;
   wallpaper: SliceController<VideoWallpaperSettings>;
@@ -191,6 +194,7 @@ export function useEditorHistory(): UseEditorHistoryReturn {
       segments: build('segments'),
       zoomSegments: build('zoomSegments'),
       zoomSettings: build('zoomSettings'),
+      cameraSegments: build('cameraSegments'),
       drawingSegments: build('drawingSegments'),
       musicTracks: build('musicTracks'),
       wallpaper: build('wallpaper'),
@@ -220,6 +224,10 @@ export function useEditorHistory(): UseEditorHistoryReturn {
     zoomSettings: {
       value: document.zoomSettings,
       ...sliceSetters.zoomSettings,
+    },
+    cameraSegments: {
+      value: document.cameraSegments,
+      ...sliceSetters.cameraSegments,
     },
     drawingSegments: {
       value: document.drawingSegments,

@@ -475,7 +475,7 @@ export function registerIpcHandlers(): void {
     if (!data || !fs.existsSync(data.filePath)) {
       throw new Error('File not found');
     }
-    const imageBuffer = fs.readFileSync(data.filePath);
+    const imageBuffer = await fs.promises.readFile(data.filePath);
     return imageBuffer.toString('base64');
   });
 

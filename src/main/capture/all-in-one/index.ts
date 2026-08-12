@@ -1,10 +1,13 @@
 import {
   cancelAreaSelection,
+  hideAreaSelector,
+  setAreaSelectionMode,
   setAreaSelectorAspectRatio,
   startAreaSelection,
   updateAreaSelection,
   updateAreaSelectionCallbacks,
 } from '@/main/capture/area-selector';
+import type { AreaSelectionMode } from '@/main/capture/area-selector';
 import {
   showAllInOneControl,
   updateAllInOnePosition,
@@ -21,10 +24,16 @@ import {
   prewarmRecordingControlWindow,
 } from '@/main/capture/video/recording-control.ts';
 import { prewarmRecorder } from '@/main/capture/video/recorder.ts';
-import { prewarmOverlay } from '@/main/capture/video/overlay.ts';
+import {
+  hideRecordingOverlay,
+  prewarmOverlay,
+  showRecordedWindowOutline,
+} from '@/main/capture/video/overlay.ts';
 import type { AreaSelection } from '@/types/area.ts';
 import type {
   AllInOneCaptureMode,
+  AllInOneCaptureTarget,
+  AreaOverlayToolbar,
   AreaOverlayToolbarAction,
 } from '@/types/area-overlay.ts';
 import { clipboard, globalShortcut, Notification, screen } from 'electron';
@@ -42,8 +51,36 @@ const MIN_SELECTION_SIZE = 20;
 
 type AreaBounds = { x: number; y: number; width: number; height: number };
 type ManualSize = { width: number; height: number };
+type TargetableMode = Exclude<AllInOneCaptureMode, 'ocr'>;
+
+const SELECTION_MODES: Record<AllInOneCaptureTarget, AreaSelectionMode> = {
+  area: 'manual',
+  window: 'window',
+  screen: 'display',
+};
 
 let activeCaptureMode: AllInOneCaptureMode = 'screenshot';
+let captureTargets: Record<TargetableMode, AllInOneCaptureTarget> = {
+  screenshot: 'area',
+  record: 'area',
+};
+let currentSelection: AreaSelection | null = null;
+
+function activeCaptureTarget(): AllInOneCaptureTarget {
+  return activeCaptureMode === 'ocr'
+    ? 'area'
+    : captureTargets[activeCaptureMode];
+}
+
+function toolbarState(): AreaOverlayToolbar {
+  return {
+    kind: 'all-in-one',
+    recordingEnabled: isFeatureSupported('recording'),
+    ocrEnabled: isFeatureSupported('ocr'),
+    activeMode: activeCaptureMode,
+    activeTarget: activeCaptureTarget(),
+  };
+}
 
 function persistAreaSelection(bounds: AreaBounds): void {
   updateConfig({ allInOne: { lastArea: bounds } });
@@ -179,6 +216,7 @@ async function handleScreenshotAction(): Promise<void> {
     return;
   }
 
+  const windowId = currentSelection?.windowId;
   unregisterAllInOneShortcuts();
   const frozen = isScreenFrozen();
 
@@ -198,10 +236,11 @@ async function handleScreenshotAction(): Promise<void> {
     if (frozen) {
       await captureArea(selection, {
         cached: true,
+        windowId,
         onCaptured: closeAreaSelection,
       });
     } else {
-      await captureArea(selection);
+      await captureArea(selection, { windowId });
     }
     persistAreaSelection(area);
   } catch (error) {
@@ -223,6 +262,7 @@ function handleRecordAction(): void {
     return;
   }
 
+  const windowId = currentSelection?.windowId;
   unregisterAllInOneShortcuts();
   prewarmRecordingControlWindow();
   prewarmRecorder();
@@ -249,11 +289,21 @@ function handleRecordAction(): void {
     },
     onCancelled: () => {
       hidePreRecordingControl();
+      if (windowId !== undefined) {
+        void hideRecordingOverlay(true);
+      }
     },
   });
 
-  showPreRecordingControl(area);
+  showPreRecordingControl(area, currentSelection?.windowName);
   persistAreaSelection(area);
+
+  if (windowId === undefined) {
+    return;
+  }
+
+  void hideAreaSelector();
+  void showRecordedWindowOutline(windowId);
 }
 
 async function handleOcrAction(): Promise<void> {
@@ -294,17 +344,26 @@ function handleCopyColorAction(color: string): void {
   handleCloseAction();
 }
 
+function applyActiveCaptureTarget(): void {
+  void setAreaSelectionMode(SELECTION_MODES[activeCaptureTarget()]);
+  setOverlayToolbar(toolbarState());
+}
+
 function handleCaptureModeSelected(mode: AllInOneCaptureMode): void {
   if (mode === 'record' && !isFeatureSupported('recording')) return;
   if (mode === 'ocr' && !isFeatureSupported('ocr')) return;
+  if (mode === activeCaptureMode) return;
 
   activeCaptureMode = mode;
-  setOverlayToolbar({
-    kind: 'all-in-one',
-    recordingEnabled: isFeatureSupported('recording'),
-    ocrEnabled: isFeatureSupported('ocr'),
-    activeMode: activeCaptureMode,
-  });
+  applyActiveCaptureTarget();
+}
+
+function handleCaptureTargetSelected(target: AllInOneCaptureTarget): void {
+  if (activeCaptureMode === 'ocr') return;
+  if (captureTargets[activeCaptureMode] === target) return;
+
+  captureTargets = { ...captureTargets, [activeCaptureMode]: target };
+  applyActiveCaptureTarget();
 }
 
 function runActiveCaptureMode(): void {
@@ -355,6 +414,7 @@ function handleSizeEditorClosed(): void {
 }
 
 function handleCloseAction(): void {
+  currentSelection = null;
   unregisterAllInOneShortcuts();
   cancelAreaSelection();
   hideAllInOneControl();
@@ -379,6 +439,9 @@ function handleToolbarAction(action: AreaOverlayToolbarAction): void {
       break;
     case 'select-capture-mode':
       handleCaptureModeSelected(action.mode);
+      break;
+    case 'select-capture-target':
+      handleCaptureTargetSelected(action.target);
       break;
     case 'select-aspect-ratio':
       void setAreaSelectorAspectRatio({
@@ -417,10 +480,13 @@ export default async function startAllInOne(): Promise<void> {
   });
 
   activeCaptureMode = 'screenshot';
+  captureTargets = { screenshot: 'area', record: 'area' };
+  currentSelection = null;
 
   const handleSelected = (selection: AreaSelection) => {
     const bounds = extractBounds(selection);
     if (bounds) {
+      currentSelection = selection;
       showAllInOneControl(bounds);
       if (isWindows) {
         queueMicrotask(runActiveCaptureMode);
@@ -433,22 +499,19 @@ export default async function startAllInOne(): Promise<void> {
   const handleUpdate = (selection: AreaSelection) => {
     const bounds = extractBounds(selection);
     if (bounds) {
+      currentSelection = selection;
       updateAllInOnePosition(bounds);
     }
   };
 
   const handleCancelled = () => {
+    currentSelection = null;
     unregisterAllInOneShortcuts();
   };
 
   const selection = await startAreaSelection({
     freeze: isWindows && isFreezeScreenEnabled(),
-    toolbar: {
-      kind: 'all-in-one',
-      recordingEnabled: isFeatureSupported('recording'),
-      ocrEnabled: isFeatureSupported('ocr'),
-      activeMode: activeCaptureMode,
-    },
+    toolbar: toolbarState(),
     onSelected: handleSelected,
     onUpdate: handleUpdate,
     onCancelled: handleCancelled,

@@ -10,8 +10,10 @@ import {
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { isDev, devServerUrl } from '@/main/utils/env.ts';
 import { updateHistoryItemByPath, getHistoryItemByPath } from '@/main/history';
+import { getConfig } from '@/main/settings';
 import { registerDockWindow } from '@/main/utils/dock';
 import {
   titleBarWindowOptions,
@@ -143,6 +145,7 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       devTools: isDev,
+      webSecurity: !isDev,
     },
     alwaysOnTop: false,
     ...titleBarWindowOptions(),
@@ -165,13 +168,18 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
   });
 
   if (devServerUrl) {
-    newWindow.loadURL(devServerUrl);
+    const url = new URL(devServerUrl);
+    url.searchParams.set('window', 'screenshot');
+    newWindow.loadURL(url.toString());
   } else {
-    newWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    newWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
+      query: { window: 'screenshot' },
+    });
   }
 
   newWindow.webContents.on('did-finish-load', () => {
     const windowData = screenshotWindows.get(webContentsId);
+    const config = getConfig();
     const currentEditorState =
       windowData?.editorState ||
       getHistoryItemByPath(filePath)?.editorState ||
@@ -181,10 +189,15 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
       type: 'screenshot',
       params: {
         filePath,
+        imageUrl: pathToFileURL(filePath).href,
         width,
         height,
         editorState: currentEditorState,
         historyId,
+        initialPreferences: config.editor,
+        screenshotSettings: config.screenshot,
+        editorShortcuts: config.shortcuts.editor,
+        editorActionShortcuts: config.shortcuts.editorActions,
       },
     });
   });

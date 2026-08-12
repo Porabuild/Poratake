@@ -19,6 +19,7 @@ interface SliderProps extends Omit<
   disabled?: boolean;
   min?: number;
   max?: number;
+  size?: 'sm' | 'md';
 }
 
 function Slider({
@@ -29,6 +30,7 @@ function Slider({
   disabled,
   min = 0,
   max = 100,
+  size = 'md',
   ...props
 }: SliderProps) {
   const values = value ?? defaultValue ?? [min];
@@ -42,7 +44,7 @@ function Slider({
       isDisabled={disabled}
       minValue={min}
       maxValue={max}
-      className={cn('w-full', className)}
+      className={cn('w-full', size === 'sm' && 'slider--sm', className)}
       {...props}
     >
       <HeroSlider.Track>

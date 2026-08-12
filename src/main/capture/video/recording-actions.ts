@@ -2,6 +2,7 @@ import {
   showRecordingControl,
   hideRecordingControl,
   hidePreRecordingControl,
+  detachRecordingControlFromOverlay,
   prewarmRecordingControlWindow,
   showPreRecordingControl,
   updateRecordingControlPosition,
@@ -15,7 +16,10 @@ import {
 import {
   startAreaSelection,
   confirmAreaSelection,
+  concealAreaSelectorOverlay,
+  hasVisibleSelectorOverlay,
   cancelAreaSelection,
+  hideAreaSelector,
   killAreaSelector,
 } from '@/main/capture/area-selector';
 import {
@@ -26,7 +30,11 @@ import {
   createRecordingProject,
   prewarmRecorder,
 } from './recorder.ts';
-import { prewarmOverlay } from './overlay.ts';
+import {
+  hideRecordingOverlay,
+  prewarmOverlay,
+  showRecordedWindowOutline,
+} from './overlay.ts';
 import { createVideoEditorWindow } from './video-editor.ts';
 import {
   prepareCapturePreview,
@@ -51,6 +59,7 @@ import type {
   RecordingType,
 } from '@/types/video.ts';
 import { isFeatureSupported } from '@/main/system/capabilities';
+import { isWindows } from '@/main/utils/platform';
 
 let lastRecordingConfig: RecordingConfig | null = null;
 let currentRecordingType: RecordingType | undefined;
@@ -98,6 +107,7 @@ async function handleTerminalRecordingFailure(
 ): Promise<void> {
   currentRecordingType = undefined;
   lastRecordingConfig = null;
+  concealAreaSelectorOverlay();
   await Promise.allSettled([
     disableCameraContentProtection(),
     hideRecordingControl(),
@@ -112,6 +122,10 @@ async function handleTerminalRecordingFailure(
   await showRecordingError(error);
 }
 
+function stopRecordingWhenTargetClosed(): void {
+  void stopRecordingAction();
+}
+
 async function stopAndFinalizeRecording(): Promise<string | null> {
   if (pendingStartAction) {
     await pendingStartAction;
@@ -124,6 +138,7 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
     recordingResult = await stopRecording(hideRecordingControl);
   } finally {
     currentRecordingType = undefined;
+    concealAreaSelectorOverlay();
     await disableCameraContentProtection();
     hideCameraPreview();
     await hideRecordingControl();
@@ -172,12 +187,12 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
     if (preview) {
       void preview.revealed.then(startHistoryPersistence);
     } else {
-      await editorStatePromise;
-      createVideoEditorWindow(recordingResult.outputPath);
       startHistoryPersistence();
     }
 
-    await Promise.all([editorStatePromise, historyItemPromise]);
+    await editorStatePromise;
+    createVideoEditorWindow(recordingResult.outputPath);
+    await historyItemPromise;
   }
 
   return recordingResult?.outputPath ?? null;
@@ -227,6 +242,7 @@ export async function recordArea(): Promise<void> {
 
   try {
     await startAreaSelection({
+      freeze: false,
       onSelected: selection => {
         const bounds =
           selection.x !== undefined &&
@@ -292,9 +308,12 @@ async function startPendingRecordingInternal(
   let width: number | undefined;
   let height: number | undefined;
   let screenId: number | undefined;
+  let windowId: number | undefined;
+  let windowName: string | undefined;
 
   if (!isIOSRecording) {
-    const selection = await confirmAreaSelection();
+    detachRecordingControlFromOverlay();
+    const selection = await confirmAreaSelection({ keepOverlayVisible: true });
 
     if (!selection || selection.status === 'cancelled') {
       console.log('No pending selection to record');
@@ -306,6 +325,8 @@ async function startPendingRecordingInternal(
     width = selection.width;
     height = selection.height;
     screenId = selection.screenId;
+    windowId = selection.windowId;
+    windowName = selection.windowName;
 
     if (
       x === undefined ||
@@ -313,8 +334,13 @@ async function startPendingRecordingInternal(
       width === undefined ||
       height === undefined
     ) {
+      concealAreaSelectorOverlay();
       console.error('Invalid area selection');
       return;
+    }
+
+    if (windowId !== undefined) {
+      concealAreaSelectorOverlay();
     }
   }
 
@@ -343,6 +369,8 @@ async function startPendingRecordingInternal(
       width,
       height,
       displayId: screenId,
+      windowId,
+      windowName,
       includeAudio,
       micEnabled,
       micDeviceId,
@@ -361,11 +389,16 @@ async function startPendingRecordingInternal(
       await enableCameraContentProtection();
     }
 
+    const skipNativeRecordingOverlay =
+      isWindows || hasVisibleSelectorOverlay() || windowId !== undefined;
+
     await startRecordingWithConfig(
       recordingConfig,
-      showRecordingControl,
+      () => showRecordingControl(recordingConfig),
       hideRecordingControl,
-      handleTerminalRecordingFailure
+      handleTerminalRecordingFailure,
+      skipNativeRecordingOverlay,
+      stopRecordingWhenTargetClosed
     );
     lastRecordingConfig = recordingConfig;
     currentRecordingType = recordingType;
@@ -388,6 +421,7 @@ async function startPendingRecordingInternal(
     console.error('Error starting recording:', error);
     lastRecordingConfig = null;
     currentRecordingType = undefined;
+    concealAreaSelectorOverlay();
     if (outputPath) {
       await deleteVideo(outputPath, {
         showNotification: false,
@@ -431,6 +465,7 @@ export function startPendingRecording(
 export async function cancelPendingRecording(): Promise<void> {
   cancelAreaSelection();
   hidePreRecordingControl();
+  await hideRecordingOverlay(true);
 }
 
 async function deleteActiveRecording(): Promise<void> {
@@ -447,13 +482,14 @@ async function deleteActiveRecording(): Promise<void> {
     stopError = error;
   } finally {
     currentRecordingType = undefined;
+    concealAreaSelectorOverlay();
     await disableCameraContentProtection();
     hideCameraPreview();
     await hideRecordingControl();
   }
 
   if (currentPath) {
-    await deleteVideo(currentPath, { showNotification: true });
+    await deleteVideo(currentPath, { showNotification: false });
   }
 
   if (stopError) {
@@ -515,9 +551,11 @@ async function restartActiveRecording(): Promise<void> {
 
     await startRecordingWithConfig(
       recordingConfig,
-      showRecordingControl,
+      () => showRecordingControl(recordingConfig),
       hideRecordingControl,
-      handleTerminalRecordingFailure
+      handleTerminalRecordingFailure,
+      isWindows || hasVisibleSelectorOverlay() || config.windowId !== undefined,
+      stopRecordingWhenTargetClosed
     );
     lastRecordingConfig = recordingConfig;
     currentRecordingType = recordingType;
@@ -563,6 +601,8 @@ export async function recordScreen(): Promise<void> {
   try {
     await startAreaSelection({
       mode: 'display',
+      freeze: false,
+      visible: false,
       onSelected: selection => {
         const bounds =
           selection.x !== undefined &&
@@ -622,6 +662,7 @@ export async function recordWindow(): Promise<void> {
   try {
     await startAreaSelection({
       mode: 'window',
+      freeze: false,
       onSelected: selection => {
         const bounds =
           selection.x !== undefined &&
@@ -635,26 +676,15 @@ export async function recordWindow(): Promise<void> {
                 height: selection.height,
               }
             : undefined;
-        showPreRecordingControl(bounds);
-      },
-      onUpdate: selection => {
-        if (
-          selection.status === 'updated' &&
-          selection.x !== undefined &&
-          selection.y !== undefined &&
-          selection.width !== undefined &&
-          selection.height !== undefined
-        ) {
-          updateRecordingControlPosition({
-            x: selection.x,
-            y: selection.y,
-            width: selection.width,
-            height: selection.height,
-          });
-        }
+        showPreRecordingControl(bounds, selection.windowName);
+        if (selection.windowId === undefined) return;
+
+        void hideAreaSelector();
+        void showRecordedWindowOutline(selection.windowId);
       },
       onCancelled: () => {
         hidePreRecordingControl();
+        void hideRecordingOverlay(true);
       },
     });
   } catch (error) {

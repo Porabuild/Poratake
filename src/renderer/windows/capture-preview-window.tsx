@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   X,
+  Copy,
   Film,
   Image,
   Trash2,
@@ -15,6 +16,7 @@ import type {
 } from '@/types/capture-preview';
 import { useVideoClipboardExport } from '@/renderer/hooks/use-video-clipboard-export';
 import { useCloudFileUpload } from '@/renderer/hooks/use-cloud-file-upload';
+import { usePolishCopy } from '@/renderer/hooks/use-polish-copy';
 
 const UPLOAD_DONE_DISPLAY_MS = 800;
 
@@ -94,9 +96,16 @@ export default function CapturePreviewWindow({
     upload: uploadToCloud,
   } = useCloudFileUpload(filePath);
 
-  const canUploadToCloud = contentType === 'screenshot';
+  const isScreenshot = contentType === 'screenshot';
+
+  const {
+    preset: polishPreset,
+    isPolishing,
+    polish,
+  } = usePolishCopy(isScreenshot);
+
   const isUploaded = uploadState === 'success';
-  const isBusy = isCopying || isUploading;
+  const isBusy = isCopying || isUploading || isPolishing;
   const isFinished = isDone || isUploaded;
 
   useEffect(() => {
@@ -197,6 +206,15 @@ export default function CapturePreviewWindow({
       window.ipcRenderer.send('capture-preview:copy');
     },
     [contentType, isBusy, startExport]
+  );
+
+  const handlePolish = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (isBusy) return;
+      void polish();
+    },
+    [isBusy, polish]
   );
 
   const handleEdit = useCallback(
@@ -363,13 +381,26 @@ export default function CapturePreviewWindow({
               </button>
             </div>
             <div className="absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col gap-1">
-              <button
-                onClick={handleCopy}
-                disabled={isCopying}
-                className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isCopying ? 'Exporting...' : 'Copy'}
-              </button>
+              {isScreenshot ? (
+                polishPreset && (
+                  <button
+                    onClick={handlePolish}
+                    disabled={isBusy}
+                    title={`Copy with "${polishPreset.name}"`}
+                    className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {isPolishing ? 'Polishing...' : 'Polish'}
+                  </button>
+                )
+              ) : (
+                <button
+                  onClick={handleCopy}
+                  disabled={isCopying}
+                  className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isCopying ? 'Exporting...' : 'Copy'}
+                </button>
+              )}
               {isCopying ? (
                 <button
                   onClick={cancelExport}
@@ -386,7 +417,17 @@ export default function CapturePreviewWindow({
                 </button>
               )}
             </div>
-            {canUploadToCloud && (
+            {isScreenshot && (
+              <button
+                onClick={handleCopy}
+                disabled={isBusy}
+                title="Copy"
+                className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 absolute bottom-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {isScreenshot && (
               <button
                 onClick={handleUpload}
                 disabled={isBusy}

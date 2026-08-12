@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   tooltipTrigger: vi.fn(),
   tooltipContent: vi.fn(),
   separator: vi.fn(),
+  separatorVariants: vi.fn(() => 'separator'),
   button: vi.fn(),
   label: vi.fn(),
   switch: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('@heroui/react', () => ({
     Content: mocks.tooltipContent,
   }),
   Separator: mocks.separator,
+  separatorVariants: mocks.separatorVariants,
 }));
 
 vi.mock('@/renderer/components/ui/button', () => ({
@@ -87,13 +89,17 @@ describe('renderer UI adapters', () => {
     const onClick = vi.fn();
     const childFocus = vi.fn();
     const triggerFocus = vi.fn();
-    const child = React.createElement('button', {
-      'aria-label': 'Capture',
-      className: 'child',
-      onClick,
-      onFocus: childFocus,
-      ref: childRef,
-    });
+    const child = React.createElement(
+      'button',
+      {
+        'aria-label': 'Capture',
+        className: 'child',
+        onClick,
+        onFocus: childFocus,
+        ref: childRef,
+      },
+      'Capture icon'
+    );
     const trigger = TooltipTrigger({
       asChild: true,
       children: child,
@@ -106,6 +112,7 @@ describe('renderer UI adapters', () => {
       role: 'button',
       tabIndex: 0,
       ref: triggerRef,
+      children: undefined,
     } as React.HTMLAttributes<HTMLElement>);
     const element = {} as HTMLElement;
     const ref = rendered.props.ref as React.RefCallback<HTMLElement>;
@@ -115,6 +122,7 @@ describe('renderer UI adapters', () => {
     expect(rendered.type).toBe('button');
     expect(rendered.props['aria-label']).toBe('Capture');
     expect(rendered.props.className).toBe('trigger child');
+    expect(rendered.props.children).toBe('Capture icon');
     expect(rendered.props.onClick).toBe(onClick);
     expect(childFocus).toHaveBeenCalledOnce();
     expect(triggerFocus).toHaveBeenCalledOnce();
@@ -129,6 +137,7 @@ describe('renderer UI adapters', () => {
 
     expect(decorative.props.role).toBe('presentation');
     expect(decorative.props['aria-hidden']).toBe(true);
+    expect(mocks.separatorVariants).toHaveBeenCalledOnce();
     expect(semantic.props.role).toBeUndefined();
     expect(semantic.props['aria-hidden']).toBeUndefined();
   });

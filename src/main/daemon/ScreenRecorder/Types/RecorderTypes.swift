@@ -7,12 +7,32 @@ enum RecorderState: String {
     case paused
 }
 
+/// Places `source` inside `target` at the largest scale that keeps its aspect
+/// ratio, centring the letterbox. A recorded window keeps the video size it
+/// started with, so every later window size is fitted into that frame.
+func fitRect(source: CGSize, target: CGSize) -> CGRect {
+    guard source.width > 0, source.height > 0, target.width > 0, target.height > 0 else {
+        return .zero
+    }
+
+    let scale = min(target.width / source.width, target.height / source.height)
+    let size = CGSize(width: source.width * scale, height: source.height * scale)
+
+    return CGRect(
+        x: (target.width - size.width) / 2,
+        y: (target.height - size.height) / 2,
+        width: size.width,
+        height: size.height
+    )
+}
+
 struct RecordingConfig {
     var x: Int?
     var y: Int?
     var width: Int?
     var height: Int?
     var displayID: CGDirectDisplayID?
+    var windowID: CGWindowID?
     var includeAudio: Bool
     var micEnabled: Bool
     var micDeviceId: String?

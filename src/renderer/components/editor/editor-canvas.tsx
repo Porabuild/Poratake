@@ -1,7 +1,6 @@
 import React, {
   useRef,
   useEffect,
-  useState,
   forwardRef,
   useCallback,
   useImperativeHandle,
@@ -42,7 +41,7 @@ import { getFontFamilyCSS } from '@/renderer/components/editor/text/text-utils';
 import { getDisplayValue } from '@/renderer/components/editor/number/number-utils';
 
 interface EditorCanvasProps {
-  imageBase64: string;
+  image: HTMLImageElement | null;
   annotations: Annotation[];
   activeTool: ToolType;
   selectedColor: string;
@@ -89,7 +88,7 @@ export interface EditorCanvasHandle {
 const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
   (
     {
-      imageBase64,
+      image,
       annotations,
       activeTool,
       selectedColor,
@@ -123,7 +122,6 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
     },
     ref
   ) => {
-    const [image, setImage] = useState<HTMLImageElement | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<CanvasRendererHandle>(null);
     const svgRef = useRef<SvgAnnotationsOverlayHandle>(null);
@@ -206,12 +204,6 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
       redactStyle,
       highlightColor,
     });
-
-    useEffect(() => {
-      const img = new window.Image();
-      img.src = `data:image/png;base64,${imageBase64}`;
-      img.onload = () => setImage(img);
-    }, [imageBase64]);
 
     useKeyboardShortcuts({
       selectedAnnotationIds,

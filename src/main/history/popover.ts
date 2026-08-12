@@ -13,6 +13,7 @@ let isReady = false;
 
 const POPOVER_WIDTH = 400;
 const POPOVER_HEIGHT = 500;
+const POPOVER_GAP = 8;
 
 function calculatePosition(trayBounds?: Electron.Rectangle): {
   x: number;
@@ -26,8 +27,8 @@ function calculatePosition(trayBounds?: Electron.Rectangle): {
     const x = Math.round(
       trayBounds.x + trayBounds.width / 2 - POPOVER_WIDTH / 2
     );
-    const y = trayBounds.y + trayBounds.height + 4;
-    const maxY = screenHeight - POPOVER_HEIGHT;
+    const y = trayBounds.y + trayBounds.height + POPOVER_GAP;
+    const maxY = screenHeight - POPOVER_HEIGHT - POPOVER_GAP;
     return { x, y: Math.min(y, maxY) };
   }
 

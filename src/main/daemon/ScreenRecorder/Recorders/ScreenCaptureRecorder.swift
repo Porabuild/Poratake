@@ -81,6 +81,16 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
     }
 
+    private func displayContaining(
+        _ window: SCWindow?,
+        in content: SCShareableContent
+    ) -> CGDirectDisplayID? {
+        guard let window = window else { return nil }
+
+        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        return content.displays.first { $0.frame.contains(center) }?.displayID
+    }
+
     private func startCapture(_ config: RecordingConfig) async throws {
 
         let fileManager = FileManager.default
@@ -93,14 +103,25 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             onScreenWindowsOnly: true
         )
 
-        let displayID = config.displayID ?? CGMainDisplayID()
+        let capturedWindow = try config.windowID.map { windowID -> SCWindow in
+            guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
+                throw RecorderError.configuration("The window to record is no longer open")
+            }
+            return window
+        }
+
+        let displayID = displayContaining(capturedWindow, in: content) ?? config.displayID
+            ?? CGMainDisplayID()
         guard let display = content.displays.first(where: { $0.displayID == displayID })
                 ?? content.displays.first
         else {
             throw RecorderError.configuration("No display found")
         }
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // A window filter follows the window itself, so the recording keeps
+        // going when the window is moved to another place or another display.
+        let filter = capturedWindow.map { SCContentFilter(desktopIndependentWindow: $0) }
+            ?? SCContentFilter(display: display, excludingWindows: [])
 
         var scaleFactor: CGFloat = 2.0
         var targetScreen: NSScreen?
@@ -118,7 +139,10 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         let streamConfig = SCStreamConfiguration()
 
-        if let rect = config.captureRect {
+        if let window = capturedWindow {
+            videoWidth = Int(window.frame.width * scaleFactor)
+            videoHeight = Int(window.frame.height * scaleFactor)
+        } else if let rect = config.captureRect {
             videoWidth = Int(rect.width * scaleFactor)
             videoHeight = Int(rect.height * scaleFactor)
 
@@ -166,7 +190,9 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             streamConfig.capturesAudio = config.includeAudio
             streamConfig.sampleRate = 48000
             streamConfig.channelCount = 2
-            streamConfig.scalesToFit = false
+            // The video size is fixed at the size the window started with, so a
+            // resized window is letterboxed into it rather than cropped.
+            streamConfig.scalesToFit = capturedWindow != nil
         }
 
         let outputURL = URL(fileURLWithPath: config.outputPath)
@@ -288,7 +314,13 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             try cameraRecorder.start()
         }
 
-        if let rect = config.captureRect {
+        if let window = capturedWindow {
+            cursorTracker.start(
+                bounds: window.frame,
+                videoPath: config.outputPath,
+                windowID: window.windowID
+            )
+        } else if let rect = config.captureRect {
             cursorTracker.start(bounds: rect, videoPath: config.outputPath)
         } else {
             let screen = NSScreen.screens.first { screen in

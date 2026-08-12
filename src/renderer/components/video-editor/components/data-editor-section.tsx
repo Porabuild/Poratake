@@ -27,8 +27,8 @@ export default function DataEditorSection({
       <Label className="text-sm">{label}</Label>
       <div className="flex gap-2">
         <Button
-          variant="outline"
-          size="sm"
+          variant="tertiary"
+          size="xs"
           onClick={onEdit}
           className="flex-1 gap-1"
         >
@@ -36,8 +36,8 @@ export default function DataEditorSection({
           {editLabel}
         </Button>
         <Button
-          variant="outline"
-          size="sm"
+          variant="tertiary"
+          size="xs"
           onClick={onImport}
           disabled={isImporting}
           className="flex-1 gap-1"

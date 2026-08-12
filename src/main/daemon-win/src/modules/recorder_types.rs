@@ -1,4 +1,4 @@
-use crate::protocol::{param_bool, param_i32, param_str, Request};
+use crate::protocol::{param_bool, param_i32, param_i64, param_str, Request};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -38,10 +38,48 @@ impl CaptureRect {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Places `source` inside `target` at the largest scale that keeps its aspect
+/// ratio, centring the letterbox. A recorded window keeps the video size it
+/// started with, so every later window size is fitted into that frame.
+pub fn fit_rect(source: (u32, u32), target: (u32, u32)) -> FitRect {
+    let empty = FitRect {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
+    };
+    if source.0 == 0 || source.1 == 0 || target.0 == 0 || target.1 == 0 {
+        return empty;
+    }
+
+    let scale = f64::min(
+        f64::from(target.0) / f64::from(source.0),
+        f64::from(target.1) / f64::from(source.1),
+    );
+    let width = f64::from(source.0) * scale;
+    let height = f64::from(source.1) * scale;
+
+    FitRect {
+        x: (f64::from(target.0) - width) / 2.0,
+        y: (f64::from(target.1) - height) / 2.0,
+        width,
+        height,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RecordingConfig {
     pub capture_rect: Option<CaptureRect>,
     pub display_id: Option<i32>,
+    pub window_id: Option<isize>,
     pub frame_rate: u32,
     pub output_path: PathBuf,
     pub keyboard_enabled: bool,
@@ -129,9 +167,15 @@ impl RecordingConfig {
             ));
         }
 
+        let window_id = param_i64(&request.params, "windowId").map(|handle| handle as isize);
+        if window_id == Some(0) {
+            return Err(RecorderError::invalid_params("windowId is not a window"));
+        }
+
         Ok(Self {
             capture_rect,
             display_id: param_i32(&request.params, "displayId"),
+            window_id,
             frame_rate: frame_rate as u32,
             output_path,
             keyboard_enabled: param_bool(&request.params, "keyboardEnabled").unwrap_or(false),
@@ -220,6 +264,13 @@ impl RecorderError {
         }
     }
 
+    pub fn target_closed(message: impl Into<String>) -> Self {
+        Self {
+            code: "TARGET_CLOSED",
+            message: message.into(),
+        }
+    }
+
     pub fn start(message: impl Into<String>) -> Self {
         Self {
             code: "START_FAILED",
@@ -240,6 +291,109 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashMap;
+
+    fn start_request(params: HashMap<String, serde_json::Value>) -> Request {
+        Request {
+            id: "request".to_string(),
+            module: "screen-recorder".to_string(),
+            method: "start".to_string(),
+            params: Some(params),
+        }
+    }
+
+    #[test]
+    fn parses_a_window_handle_that_does_not_fit_in_32_bits() {
+        let handle: i64 = 0x0000_0002_0000_1234;
+        let params = HashMap::from([
+            (
+                "outputPath".to_string(),
+                json!(std::env::temp_dir().join("recording.mov")),
+            ),
+            ("windowId".to_string(), json!(handle)),
+        ]);
+
+        let Ok(config) = RecordingConfig::from_request(&start_request(params)) else {
+            panic!("window recording config should parse");
+        };
+
+        assert_eq!(config.window_id, Some(handle as isize));
+    }
+
+    #[test]
+    fn rejects_a_null_window_handle() {
+        let params = HashMap::from([
+            (
+                "outputPath".to_string(),
+                json!(std::env::temp_dir().join("recording.mov")),
+            ),
+            ("windowId".to_string(), json!(0)),
+        ]);
+
+        let Err(error) = RecordingConfig::from_request(&start_request(params)) else {
+            panic!("a null window handle should be rejected");
+        };
+
+        assert_eq!(error.code, "INVALID_PARAMS");
+    }
+
+    #[test]
+    fn fits_a_wider_window_against_the_frame_width() {
+        let fit = fit_rect((800, 200), (400, 400));
+
+        assert_eq!(
+            fit,
+            FitRect {
+                x: 0.0,
+                y: 150.0,
+                width: 400.0,
+                height: 100.0,
+            }
+        );
+    }
+
+    #[test]
+    fn fits_a_taller_window_against_the_frame_height() {
+        let fit = fit_rect((200, 800), (400, 400));
+
+        assert_eq!(
+            fit,
+            FitRect {
+                x: 150.0,
+                y: 0.0,
+                width: 100.0,
+                height: 400.0,
+            }
+        );
+    }
+
+    #[test]
+    fn fills_the_frame_when_the_window_keeps_its_size() {
+        let fit = fit_rect((1920, 1080), (1920, 1080));
+
+        assert_eq!(
+            fit,
+            FitRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+            }
+        );
+    }
+
+    #[test]
+    fn scales_a_shrunken_window_up_to_the_frame() {
+        let fit = fit_rect((960, 540), (1920, 1080));
+
+        assert_eq!(fit.width, 1920.0);
+        assert_eq!(fit.height, 1080.0);
+    }
+
+    #[test]
+    fn refuses_to_fit_an_empty_window() {
+        assert_eq!(fit_rect((0, 0), (1920, 1080)).width, 0.0);
+        assert_eq!(fit_rect((1920, 1080), (0, 0)).width, 0.0);
+    }
 
     #[test]
     fn parses_camera_config_and_derives_project_directory() {

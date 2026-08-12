@@ -27,6 +27,10 @@ const mockCaptureText = vi.fn();
 const mockClipboardWriteText = vi.fn();
 const mockNotificationShow = vi.fn();
 const mockSetOverlayToolbar = vi.fn();
+const mockSetAreaSelectionMode = vi.fn();
+const mockHideAreaSelector = vi.fn();
+const mockHideRecordingOverlay = vi.fn();
+const mockShowRecordedWindowOutline = vi.fn();
 const mockIsScreenFrozen = vi.fn();
 const mockIsFreezeScreenEnabled = vi.fn();
 
@@ -50,9 +54,11 @@ vi.mock('electron', () => ({
 vi.mock('@/main/capture/area-selector', () => ({
   startAreaSelection: (...a: unknown[]) => mockStartAreaSelection(...a),
   cancelAreaSelection: (...a: unknown[]) => mockCancelAreaSelection(...a),
+  hideAreaSelector: (...a: unknown[]) => mockHideAreaSelector(...a),
   updateAreaSelection: (...a: unknown[]) => mockUpdateAreaSelection(...a),
   updateAreaSelectionCallbacks: (...a: unknown[]) =>
     mockUpdateAreaSelectionCallbacks(...a),
+  setAreaSelectionMode: (...a: unknown[]) => mockSetAreaSelectionMode(...a),
   setAreaSelectorAspectRatio: (...a: unknown[]) =>
     mockSetAreaSelectorAspectRatio(...a),
 }));
@@ -100,6 +106,9 @@ vi.mock('@/main/capture/video/recorder.ts', () => ({
 
 vi.mock('@/main/capture/video/overlay.ts', () => ({
   prewarmOverlay: () => mockPrewarmOverlay(),
+  hideRecordingOverlay: (...a: unknown[]) => mockHideRecordingOverlay(...a),
+  showRecordedWindowOutline: (...a: unknown[]) =>
+    mockShowRecordedWindowOutline(...a),
 }));
 
 vi.mock('@/main/settings', () => ({
@@ -254,6 +263,7 @@ describe('all-in-one orchestrator', () => {
       recordingEnabled: true,
       ocrEnabled: true,
       activeMode: 'screenshot',
+      activeTarget: 'area',
     });
     expect(opts.freeze).toBe(process.platform === 'win32');
     expect(opts.onToolbarAction).toBeInstanceOf(Function);
@@ -291,13 +301,94 @@ describe('all-in-one orchestrator', () => {
       expect(mockSetOverlayToolbar).toHaveBeenCalledWith(
         expect.objectContaining({ activeMode: 'record' })
       );
-      expect(mockShowPreRecordingControl).toHaveBeenCalledWith({
-        x: 10,
-        y: 20,
-        width: 100,
-        height: 100,
-      });
+      expect(mockShowPreRecordingControl).toHaveBeenCalledWith(
+        { x: 10, y: 20, width: 100, height: 100 },
+        undefined
+      );
       expect(mockCaptureArea).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
+
+  it('hands a picked window to the recording control', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.resetModules();
+    mockGetCurrentAreaSelection.mockReturnValue({
+      x: 200,
+      y: 100,
+      width: 800,
+      height: 600,
+    });
+    mockStartAreaSelection.mockImplementation(
+      async ({ onSelected, onToolbarAction }) => {
+        onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
+        onToolbarAction({ action: 'select-capture-target', target: 'window' });
+        onSelected({
+          status: 'selected',
+          x: 200,
+          y: 100,
+          width: 800,
+          height: 600,
+          windowId: 4242,
+          windowName: 'Window',
+        });
+        return null;
+      }
+    );
+
+    try {
+      const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+      await startAllInOne();
+      await Promise.resolve();
+
+      expect(mockSetAreaSelectionMode).toHaveBeenCalledWith('window');
+      expect(mockShowPreRecordingControl).toHaveBeenCalledWith(
+        { x: 200, y: 100, width: 800, height: 600 },
+        'Window'
+      );
+      expect(mockHideAreaSelector).toHaveBeenCalled();
+      expect(mockShowRecordedWindowOutline).toHaveBeenCalledWith(4242);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
+
+  it('captures a picked window as a window screenshot', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.resetModules();
+    mockGetCurrentAreaSelection.mockReturnValue({
+      x: 200,
+      y: 100,
+      width: 800,
+      height: 600,
+    });
+    mockStartAreaSelection.mockImplementation(
+      async ({ onSelected, onToolbarAction }) => {
+        onToolbarAction({ action: 'select-capture-target', target: 'window' });
+        onSelected({
+          status: 'selected',
+          x: 200,
+          y: 100,
+          width: 800,
+          height: 600,
+          windowId: 4242,
+          windowName: 'Window',
+        });
+        return null;
+      }
+    );
+
+    try {
+      const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+      await startAllInOne();
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(mockCaptureArea).toHaveBeenCalledWith(expect.anything(), {
+        windowId: 4242,
+      });
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
     }
@@ -403,7 +494,51 @@ describe('all-in-one orchestrator', () => {
         recordingEnabled: true,
         ocrEnabled: true,
         activeMode: 'ocr',
+        activeTarget: 'area',
       });
+    });
+
+    it('switches the overlay to window picking for the active mode', async () => {
+      const handle = await getToolbarHandler();
+      handle({ action: 'select-capture-target', target: 'window' });
+
+      expect(mockSetAreaSelectionMode).toHaveBeenCalledWith('window');
+      expect(mockSetOverlayToolbar).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activeMode: 'screenshot',
+          activeTarget: 'window',
+        })
+      );
+    });
+
+    it('keeps a target per capture mode', async () => {
+      const handle = await getToolbarHandler();
+      handle({ action: 'select-capture-target', target: 'screen' });
+      handle({ action: 'select-capture-mode', mode: 'record' });
+
+      expect(mockSetAreaSelectionMode).toHaveBeenLastCalledWith('manual');
+      expect(mockSetOverlayToolbar).toHaveBeenLastCalledWith(
+        expect.objectContaining({ activeMode: 'record', activeTarget: 'area' })
+      );
+
+      handle({ action: 'select-capture-mode', mode: 'screenshot' });
+
+      expect(mockSetAreaSelectionMode).toHaveBeenLastCalledWith('display');
+      expect(mockSetOverlayToolbar).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          activeMode: 'screenshot',
+          activeTarget: 'screen',
+        })
+      );
+    });
+
+    it('ignores a target change while capturing text', async () => {
+      const handle = await getToolbarHandler();
+      handle({ action: 'select-capture-mode', mode: 'ocr' });
+      mockSetAreaSelectionMode.mockClear();
+      handle({ action: 'select-capture-target', target: 'window' });
+
+      expect(mockSetAreaSelectionMode).not.toHaveBeenCalled();
     });
 
     it('close action cancels the selection', async () => {
@@ -696,4 +831,33 @@ describe('all-in-one orchestrator', () => {
       expect(mockHideAllInOneControl).toHaveBeenCalled();
     });
   });
+
+  it('renders every all-in-one toolbar action', async () => {
+    const React = await import('react');
+    vi.stubGlobal('React', React);
+    vi.stubGlobal('window', { EyeDropper: class {} });
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { default: AllInOneToolbar } =
+      await import('@/renderer/components/area-overlay/all-in-one-toolbar');
+
+    const markup = renderToStaticMarkup(
+      React.createElement(AllInOneToolbar, {
+        recordingEnabled: true,
+        ocrEnabled: true,
+        activeMode: 'screenshot',
+        onAction: vi.fn(),
+        onPickingColorChange: vi.fn(),
+      })
+    );
+
+    expect(markup).toContain('aria-label="Capture text"');
+    expect(markup).toContain('aria-label="Pick color"');
+    expect(markup).toContain('aria-label="Close"');
+    expect(
+      markup.match(/--button-fg:rgb\(255 255 255 \/ 0\.85\)/g)
+    ).toHaveLength(3);
+    expect(markup).toContain('rounded-4xl border-2');
+    expect(markup.match(/size-8 min-w-8 rounded-3xl/g)).toHaveLength(3);
+    expect(markup).not.toContain('tooltip__trigger');
+  }, 30000);
 });

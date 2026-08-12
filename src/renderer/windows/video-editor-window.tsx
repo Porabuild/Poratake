@@ -1,46 +1,65 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
-  VideoTitleBar,
-  NativeVideoPlayer,
-  TimelineControls,
-  TimelineRuler,
-  TimelineTrack,
-  DrawingTrack,
-  TimelineTracks,
-  TimelineProvider,
-  ZoomTrack,
-  MusicTrack,
-  TrackRow,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+  type SyntheticEvent,
+} from 'react';
+import { Camera, Film, PenLine, TriangleAlert, ZoomIn } from 'lucide-react';
+import VideoTitleBar from '@/renderer/components/video-editor/video-title-bar';
+import NativeVideoPlayer from '@/renderer/components/video-editor/native-video-player';
+import EditorSidebar from '@/renderer/components/video-editor/editor-sidebar';
+import EditorSidebarTabs from '@/renderer/components/video-editor/editor-sidebar-tabs';
+import TimelineControls from '@/renderer/components/video-editor/timeline/timeline-controls';
+import TimelineRuler from '@/renderer/components/video-editor/timeline/timeline-ruler';
+import TimelineTrack from '@/renderer/components/video-editor/timeline/timeline-track';
+import DrawingTrack from '@/renderer/components/video-editor/timeline/drawing-track';
+import TimelineTracks from '@/renderer/components/video-editor/timeline/timeline-tracks';
+import { TimelineProvider } from '@/renderer/components/video-editor/timeline/timeline-context';
+import ZoomTrack from '@/renderer/components/video-editor/timeline/zoom-track';
+import CameraTrack from '@/renderer/components/video-editor/timeline/camera-track';
+import MusicTrack from '@/renderer/components/video-editor/timeline/music-track';
+import TrackRow, {
   TRACK_HEIGHT,
-  EditorSidebar,
-  EditorSidebarTabs,
-  useVideoHistory,
-  useEditorHistory,
-  useEditorStatePersistence,
-  useVideoWallpaper,
-  useEditorData,
-  useZoomSegments,
-  useDrawingSegments,
-  useSegmentOperations,
-  useVideoExport,
-  useEditorShortcuts,
-  usePlaybackControl,
-  useTimelineZoom,
-  useKeyboardSound,
-  useSidebarShortcuts,
-  useFirstFrame,
-  useMusicTracks,
-  buildBuiltInMusicTracks,
-  useMusicPlayback,
-  useResizableHeight,
+} from '@/renderer/components/video-editor/timeline/track-row';
+import { useTimelineZoom } from '@/renderer/components/video-editor/timeline/use-timeline-zoom';
+import {
   DEFAULT_PIXELS_PER_SECOND,
   MIN_PIXELS_PER_SECOND,
   MAX_PIXELS_PER_SECOND,
-} from '@/renderer/components/video-editor';
+} from '@/renderer/components/video-editor/timeline/timeline-constants';
+import { useVideoHistory } from '@/renderer/components/video-editor/hooks/use-video-history';
+import { useEditorHistory } from '@/renderer/components/video-editor/hooks/use-editor-history';
+import { useEditorStatePersistence } from '@/renderer/components/video-editor/hooks/use-editor-state-persistence';
+import { useVideoWallpaper } from '@/renderer/components/video-editor/hooks/use-video-wallpaper';
+import { useEditorData } from '@/renderer/components/video-editor/hooks/use-editor-data';
+import { useZoomSegments } from '@/renderer/components/video-editor/hooks/use-zoom-segments';
+import { useDrawingSegments } from '@/renderer/components/video-editor/hooks/use-drawing-segments';
+import { useSegmentOperations } from '@/renderer/components/video-editor/hooks/use-segment-operations';
+import { useVideoExport } from '@/renderer/components/video-editor/hooks/use-video-export';
+import { useEditorShortcuts } from '@/renderer/components/video-editor/hooks/use-editor-shortcuts';
+import { usePlaybackControl } from '@/renderer/components/video-editor/hooks/use-playback-control';
+import { useKeyboardSound } from '@/renderer/components/video-editor/hooks/use-keyboard-sound';
+import { useSidebarShortcuts } from '@/renderer/components/video-editor/hooks/use-sidebar-shortcuts';
+import { useFirstFrame } from '@/renderer/components/video-editor/hooks/use-first-frame';
+import { useCameraSegments } from '@/renderer/components/video-editor/hooks/use-camera-segments';
+import {
+  useMusicTracks,
+  buildBuiltInMusicTracks,
+  mergeBuiltInMusicTracks,
+  withDefaultGroupIds,
+} from '@/renderer/components/video-editor/hooks/use-music-tracks';
+import { useMusicPlayback } from '@/renderer/components/video-editor/hooks/use-music-playback';
+import { useResizablePane } from '@/renderer/components/video-editor/hooks/use-resizable-pane';
 import type { VideoEditorSidebarShortcuts } from '@/types/settings';
-import { Film, PenLine, TriangleAlert, ZoomIn } from 'lucide-react';
-import { SOURCE_ICONS } from '@/types/music';
-import type { MusicTrack as MusicTrackType } from '@/types/music';
+import { SOURCE_ICONS, groupMusicTracks } from '@/types/music';
+import {
+  splitVideoSegments,
+  splitTrackSegments,
+  splitDrawingSegments,
+  splitMusicTracks,
+} from '@/renderer/components/video-editor/timeline-split';
 import {
   DEFAULT_DRAWING_TOOL_SETTINGS,
   MIN_DRAWING_SEGMENT_DURATION,
@@ -49,9 +68,13 @@ import type { DrawingToolSettings, VideoDrawingTool } from '@/types/drawing';
 import type {
   NativeVideoPlayerHandle,
   Segment,
-  SidebarTab,
-} from '@/renderer/components/video-editor';
+} from '@/renderer/components/video-editor/types';
+import type { SidebarTab } from '@/renderer/components/video-editor/editor-sidebar-panel-loaders';
 import type { VideoExportOptions, ProjectRenameResult } from '@/types/video';
+import {
+  generateAutoZoomSegments,
+  mergeAutoZoomSegments,
+} from '@/types/auto-zoom';
 import {
   hasWallpaperEffect,
   DEFAULT_VIDEO_WALLPAPER,
@@ -63,8 +86,13 @@ import {
   getContentPlaybackState,
   getFileNameFromPath,
   getProjectPath,
+  timelineToVideo,
   toFileUrl,
 } from '@/renderer/components/video-editor/utils';
+
+const DEFAULT_SIDEBAR_WIDTH = 288;
+const MIN_SIDEBAR_WIDTH = 240;
+const MAX_SIDEBAR_WIDTH = 560;
 
 interface VideoEditorWindowProps {
   params: {
@@ -79,7 +107,16 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const isConfirming = useRef(false);
 
   const [originalDuration, setOriginalDuration] = useState(0);
-  const [videoSrc, setVideoSrc] = useState<string>('');
+  const [videoSrc, setVideoSrc] = useState(() =>
+    /^(https?|blob|data|file):/.test(params.filePath)
+      ? params.filePath
+      : toFileUrl(params.filePath)
+  );
+  const [videoDimensions, setVideoDimensions] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('cursor');
   const [isScrubAudioEnabled, setIsScrubAudioEnabled] = useState(false);
@@ -138,6 +175,10 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const [cloudConfigured, setCloudConfigured] = useState(false);
 
   useEffect(() => {
+    if (!isSidebarOpen || sidebarTab !== 'export') {
+      return;
+    }
+
     const refreshCloudConfigured = () => {
       window.ipcRenderer
         .invoke('cloud:isConfigured')
@@ -148,7 +189,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     refreshCloudConfigured();
     window.addEventListener('focus', refreshCloudConfigured);
     return () => window.removeEventListener('focus', refreshCloudConfigured);
-  }, []);
+  }, [isSidebarOpen, sidebarTab]);
 
   const previewFrameRate = useMemo(() => {
     const parsed = parseInt(videoExport.exportSettings.frameRate, 10);
@@ -189,6 +230,18 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     settingsSlice: history.zoomSettings,
   });
 
+  const { setZoomSegments } = zoomControl;
+
+  const handleGenerateAutoZoom = useCallback(() => {
+    const cursorData = editorData.cursorData;
+    if (!cursorData) return;
+
+    const generated = generateAutoZoomSegments(cursorData);
+    if (generated.length === 0) return;
+
+    setZoomSegments(prev => mergeAutoZoomSegments(prev, generated));
+  }, [editorData.cursorData, setZoomSegments]);
+
   const drawingControl = useDrawingSegments({
     totalTimelineDuration: playback.totalTimelineDuration,
     slice: history.drawingSegments,
@@ -198,6 +251,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     totalTimelineDuration: playback.totalTimelineDuration,
     slice: history.musicTracks,
   });
+  const setMusicTracksWithoutHistory = history.musicTracks.setWithoutHistory;
 
   useMusicPlayback({
     musicTracks: musicControl.musicTracks,
@@ -207,6 +261,45 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     micAudioPath: editorData.micAudioPath,
     embeddedAudioPath: editorData.hasEmbeddedAudio ? filePath : null,
   });
+
+  const { loadedState, isStateLoaded, recordingType, resetState } =
+    useEditorStatePersistence({
+      isReady: originalDuration > 0,
+      values: {
+        segments,
+        cursorStyle: editorData.cursorStyle,
+        cameraStyle: editorData.cameraStyle,
+        keyboardStyle: editorData.keyboardStyle,
+        subtitleStyle: editorData.subtitleStyle,
+        audioStyle: editorData.audioStyle,
+        zoomSegments: zoomControl.zoomSegments,
+        zoomSettings: zoomControl.zoomSettings,
+        cameraSegments: history.cameraSegments.value,
+        drawingSegments: drawingControl.drawingSegments,
+        wallpaper,
+        firstFrame: firstFrameControl.firstFrame,
+        musicTracks: musicControl.musicTracks,
+        exportSettings: videoExport.exportSettings,
+        timelineZoom: timelineZoomState.pixelsPerSecond,
+        sidebarOpen: isSidebarOpen,
+        sidebarTab,
+        scrubAudioEnabled: isScrubAudioEnabled,
+      },
+    });
+
+  const cameraControl = useCameraSegments({
+    ready: segments.length > 0,
+    hasCameraData: editorData.cameraData !== null,
+    hasSavedSegments: loadedState?.cameraSegments !== undefined,
+    initialVisibleRanges: editorData.cameraData?.meta?.visibleRanges ?? null,
+    segments,
+    totalTimelineDuration: playback.totalTimelineDuration,
+    slice: history.cameraSegments,
+  });
+
+  const cameraVisibleRanges = editorData.cameraData
+    ? cameraControl.cameraSegments
+    : null;
 
   const handleTimelineRangesAdjust = useCallback(
     (
@@ -230,13 +323,19 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
         adjustTimelineRangeSlices({
           nextSegments,
           zoomSegments: zoomControl.zoomSegments,
+          cameraSegments: cameraControl.cameraSegments,
           drawingSegments: drawingControl.drawingSegments,
           adjustment,
           drawingMinDuration: MIN_DRAWING_SEGMENT_DURATION,
         })
       );
     },
-    [drawingControl.drawingSegments, history, zoomControl.zoomSegments]
+    [
+      cameraControl.cameraSegments,
+      drawingControl.drawingSegments,
+      history,
+      zoomControl.zoomSegments,
+    ]
   );
 
   const segmentOps = useSegmentOperations({
@@ -254,6 +353,21 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   });
 
   const [displayTimelineDuration, setDisplayTimelineDuration] = useState(0);
+  const musicTimelineDuration = useMemo(
+    () =>
+      musicControl.musicTracks.reduce(
+        (duration, track) =>
+          track.source === 'music' && track.enabled
+            ? Math.max(duration, track.endTime)
+            : duration,
+        0
+      ),
+    [musicControl.musicTracks]
+  );
+  const editingTimelineDuration = Math.max(
+    displayTimelineDuration,
+    musicTimelineDuration
+  );
 
   useEffect(() => {
     setDisplayTimelineDuration(0);
@@ -282,6 +396,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
         cursorData: editorData.cursorData,
         cursorStyle: editorData.cursorStyle,
         cameraStyle: editorData.cameraStyle,
+        cameraVisibleRanges,
         cameraVideoPath: editorData.cameraVideoPath,
         systemAudioPath: editorData.systemAudioPath,
         micAudioPath: editorData.micAudioPath,
@@ -305,6 +420,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
       wallpaper,
       zoomControl.zoomSegments,
       zoomControl.zoomSettings,
+      cameraVisibleRanges,
       drawingControl.drawingSegments,
       firstFrameControl.firstFrame,
       musicControl.musicTracks,
@@ -347,30 +463,6 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     []
   );
 
-  const { loadedState, isStateLoaded, recordingType, resetState } =
-    useEditorStatePersistence({
-      isReady: originalDuration > 0,
-      values: {
-        segments,
-        cursorStyle: editorData.cursorStyle,
-        cameraStyle: editorData.cameraStyle,
-        keyboardStyle: editorData.keyboardStyle,
-        subtitleStyle: editorData.subtitleStyle,
-        audioStyle: editorData.audioStyle,
-        zoomSegments: zoomControl.zoomSegments,
-        zoomSettings: zoomControl.zoomSettings,
-        drawingSegments: drawingControl.drawingSegments,
-        wallpaper,
-        firstFrame: firstFrameControl.firstFrame,
-        musicTracks: musicControl.musicTracks,
-        exportSettings: videoExport.exportSettings,
-        timelineZoom: timelineZoomState.pixelsPerSecond,
-        sidebarOpen: isSidebarOpen,
-        sidebarTab,
-        scrubAudioEnabled: isScrubAudioEnabled,
-      },
-    });
-
   const handleReset = useCallback(async () => {
     if (isConfirming.current) return;
     isConfirming.current = true;
@@ -394,45 +486,72 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const handleEscape = useCallback(() => {
     segmentOps.clearSegmentSelection();
     zoomControl.clearZoomSelection();
+    cameraControl.clearCameraSelection();
     drawingControl.clearDrawingSelection();
     musicControl.clearMusicSelection();
-  }, [segmentOps, zoomControl, drawingControl, musicControl]);
+  }, [segmentOps, zoomControl, cameraControl, drawingControl, musicControl]);
 
   const handleSegmentSelect = useCallback(
     (segmentId: string | null) => {
       segmentOps.handleSegmentSelect(segmentId);
       if (segmentId !== null) {
         zoomControl.clearZoomSelection();
+        cameraControl.clearCameraSelection();
         drawingControl.clearDrawingSelection();
         musicControl.clearMusicSelection();
       }
     },
-    [segmentOps, zoomControl, drawingControl, musicControl]
+    [segmentOps, zoomControl, cameraControl, drawingControl, musicControl]
   );
 
   const handleZoomSelect = useCallback(
     (id: string | null) => {
+      if (segmentOps.isCutToolActive) return;
       zoomControl.handleZoomSelect(id);
       if (id !== null) {
         segmentOps.setSelectedSegmentId(null);
+        cameraControl.clearCameraSelection();
         drawingControl.clearDrawingSelection();
         musicControl.clearMusicSelection();
       }
     },
-    [zoomControl, segmentOps, drawingControl, musicControl]
+    [zoomControl, segmentOps, cameraControl, drawingControl, musicControl]
+  );
+
+  const handleCameraSelect = useCallback(
+    (id: string | null) => {
+      if (segmentOps.isCutToolActive) return;
+      cameraControl.handleCameraSelect(id);
+      if (id !== null) {
+        segmentOps.setSelectedSegmentId(null);
+        zoomControl.clearZoomSelection();
+        drawingControl.clearDrawingSelection();
+        musicControl.clearMusicSelection();
+      }
+    },
+    [cameraControl, segmentOps, zoomControl, drawingControl, musicControl]
   );
 
   const handleDrawingSelect = useCallback(
     (id: string | null, addToSelection = false) => {
+      if (segmentOps.isCutToolActive) return;
       drawingControl.handleSelectDrawingSegment(id, addToSelection);
       if (id !== null) {
         segmentOps.setSelectedSegmentId(null);
         zoomControl.clearZoomSelection();
+        cameraControl.clearCameraSelection();
         musicControl.clearMusicSelection();
         activateSidebarTab('drawing');
       }
     },
-    [drawingControl, segmentOps, zoomControl, musicControl, activateSidebarTab]
+    [
+      drawingControl,
+      segmentOps,
+      zoomControl,
+      cameraControl,
+      musicControl,
+      activateSidebarTab,
+    ]
   );
 
   const handleAnnotationAdded = useCallback((tool: VideoDrawingTool) => {
@@ -444,14 +563,118 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
 
   const handleMusicSelect = useCallback(
     (id: string | null) => {
+      if (segmentOps.isCutToolActive) return;
       musicControl.handleSelectMusicTrack(id);
       if (id !== null) {
         segmentOps.setSelectedSegmentId(null);
         zoomControl.clearZoomSelection();
+        cameraControl.clearCameraSelection();
         drawingControl.clearDrawingSelection();
       }
     },
-    [musicControl, segmentOps, zoomControl, drawingControl]
+    [musicControl, segmentOps, zoomControl, cameraControl, drawingControl]
+  );
+
+  const handleZoomCut = useCallback(
+    (cutTime: number) => {
+      zoomControl.handleSplitZoom(cutTime);
+      playback.seekToTimelinePosition(cutTime);
+    },
+    [zoomControl, playback]
+  );
+
+  const handleDrawingCut = useCallback(
+    (id: string, cutTime: number) => {
+      drawingControl.handleSplitDrawingSegment(id, cutTime);
+      playback.seekToTimelinePosition(cutTime);
+    },
+    [drawingControl, playback]
+  );
+
+  const handleMusicCut = useCallback(
+    (id: string, cutTime: number) => {
+      musicControl.handleSplitMusicTrack(id, cutTime);
+      playback.seekToTimelinePosition(cutTime);
+    },
+    [musicControl, playback]
+  );
+
+  const handleCameraCut = useCallback(
+    (cutTime: number) => {
+      cameraControl.handleSplitCamera(cutTime);
+      playback.seekToTimelinePosition(cutTime);
+    },
+    [cameraControl, playback]
+  );
+
+  const handleCutAll = useCallback(
+    (cutTime: number) => {
+      const { videoTime } = timelineToVideo(segments, cutTime);
+      const nextSegments = splitVideoSegments(segments, videoTime) ?? segments;
+      const nextZoomSegments = splitTrackSegments(
+        zoomControl.zoomSegments,
+        cutTime
+      );
+      const nextCameraSegments = splitTrackSegments(
+        cameraControl.cameraSegments,
+        cutTime
+      );
+      const nextDrawingSegments = splitDrawingSegments(
+        drawingControl.drawingSegments,
+        cutTime
+      );
+      const nextMusicTracks = splitMusicTracks(
+        musicControl.musicTracks,
+        cutTime
+      );
+
+      if (
+        nextSegments === segments &&
+        nextZoomSegments === zoomControl.zoomSegments &&
+        nextCameraSegments === cameraControl.cameraSegments &&
+        nextDrawingSegments === drawingControl.drawingSegments &&
+        nextMusicTracks === musicControl.musicTracks
+      ) {
+        return;
+      }
+
+      history.replaceDocument({
+        segments: nextSegments,
+        zoomSegments: nextZoomSegments,
+        cameraSegments: nextCameraSegments,
+        drawingSegments: nextDrawingSegments,
+        musicTracks: nextMusicTracks,
+      });
+      playback.seekToTimelinePosition(cutTime);
+    },
+    [
+      segments,
+      zoomControl.zoomSegments,
+      cameraControl.cameraSegments,
+      drawingControl.drawingSegments,
+      musicControl.musicTracks,
+      history,
+      playback,
+    ]
+  );
+
+  const handleToggleCutTool = useCallback(() => {
+    segmentOps.toggleCutTool();
+    zoomControl.clearZoomSelection();
+    cameraControl.clearCameraSelection();
+    drawingControl.clearDrawingSelection();
+    musicControl.clearMusicSelection();
+  }, [segmentOps, zoomControl, cameraControl, drawingControl, musicControl]);
+
+  const musicTrackGroups = useMemo(
+    () => groupMusicTracks(musicControl.musicTracks),
+    [musicControl.musicTracks]
+  );
+
+  const enabledMusicTrackGroups = useMemo(
+    () =>
+      groupMusicTracks(musicControl.musicTracks.filter(track => track.enabled)),
+    [musicControl.musicTracks]
   );
 
   const getSegmentIndex = useCallback(
@@ -486,14 +709,16 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   useEditorShortcuts({
     selectedSegmentId: segmentOps.selectedSegmentId,
     selectedZoomId: zoomControl.selectedZoomId,
+    selectedCameraId: cameraControl.selectedCameraId,
     selectedDrawingId: drawingControl.selectedDrawingId,
     segmentsLength: segments.length,
     onDeleteSegment: segmentOps.handleDeleteSegment,
     onDeleteZoom: zoomControl.handleDeleteZoom,
+    onDeleteCamera: cameraControl.handleDeleteCamera,
     onDeleteDrawing: drawingControl.handleDeleteSelectedDrawings,
     onDeleteVideo: handleDeleteVideo,
     onTogglePlayPause: playback.togglePlayPause,
-    onToggleCutTool: segmentOps.toggleCutTool,
+    onToggleCutTool: handleToggleCutTool,
     onUndo: undo,
     onRedo: redo,
     onEscape: handleEscape,
@@ -512,7 +737,6 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   useSidebarShortcuts({
     shortcuts: sidebarShortcuts ?? undefined,
     onTabChange: activateSidebarTab,
-    isZoomDisabled: zoomControl.selectedZoomId === null,
   });
 
   useEffect(() => {
@@ -539,31 +763,18 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   }, [fileName]);
 
   useEffect(() => {
-    if (filePath) {
-      if (/^(https?|blob|data|file):/.test(filePath)) {
-        setVideoSrc(filePath);
-      } else {
-        setVideoSrc(toFileUrl(filePath));
-      }
-    }
-  }, [filePath]);
-
-  useEffect(() => {
     if (
       editorData.videoMetadata?.duration &&
       editorData.videoMetadata.duration > 0
     ) {
-      setOriginalDuration(editorData.videoMetadata.duration);
+      setOriginalDuration(current =>
+        current > 0 ? current : editorData.videoMetadata!.duration
+      );
     }
   }, [editorData.videoMetadata]);
 
   useEffect(() => {
-    if (
-      originalDuration <= 0 ||
-      !isStateLoaded ||
-      !editorData.audioPathsLoaded ||
-      segments.length > 0
-    ) {
+    if (originalDuration <= 0 || !isStateLoaded || segments.length > 0) {
       return;
     }
 
@@ -589,24 +800,9 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
       };
     };
 
-    const builtInTracks = buildBuiltInMusicTracks({
-      systemAudioPath: editorData.systemAudioPath,
-      micAudioPath: editorData.micAudioPath,
-      hasEmbeddedAudio: editorData.hasEmbeddedAudio,
-      originalDuration,
-    });
-
-    const mergeBuiltIns = (existing: MusicTrackType[]): MusicTrackType[] => {
-      const missing = builtInTracks.filter(
-        b => !existing.some(t => t.source === b.source)
-      );
-      return missing.length === 0 ? existing : [...missing, ...existing];
-    };
-
     if (!loadedState) {
       history.initializeDocument({
         segments: defaultSegments,
-        musicTracks: builtInTracks.length > 0 ? builtInTracks : undefined,
         wallpaper:
           recordingType === 'ios-device'
             ? iosWallpaper()
@@ -622,14 +818,15 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
         seg.originalStart < seg.originalEnd
     );
 
-    const mergedMusicTracks = mergeBuiltIns(loadedState.musicTracks ?? []);
+    const savedMusicTracks = withDefaultGroupIds(loadedState.musicTracks ?? []);
 
     history.initializeDocument({
       segments: validSegments.length > 0 ? validSegments : defaultSegments,
       zoomSegments: loadedState.zoomSegments,
       zoomSettings: loadedState.zoomSettings,
+      cameraSegments: loadedState.cameraSegments,
       drawingSegments: loadedState.drawingSegments ?? [],
-      musicTracks: mergedMusicTracks.length > 0 ? mergedMusicTracks : undefined,
+      musicTracks: savedMusicTracks.length > 0 ? savedMusicTracks : undefined,
       wallpaper: loadedState.wallpaper
         ? loadedState.wallpaper
         : recordingType === 'ios-device'
@@ -660,11 +857,46 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     recordingType,
     history,
     videoExport,
+  ]);
+
+  useEffect(() => {
+    if (!editorData.audioPathsLoaded || segments.length === 0) return;
+
+    const builtInTracks = buildBuiltInMusicTracks({
+      systemAudioPath: editorData.systemAudioPath,
+      micAudioPath: editorData.micAudioPath,
+      hasEmbeddedAudio: editorData.hasEmbeddedAudio,
+      originalDuration,
+    });
+    setMusicTracksWithoutHistory(existing =>
+      mergeBuiltInMusicTracks(existing, builtInTracks)
+    );
+  }, [
     editorData.audioPathsLoaded,
     editorData.systemAudioPath,
     editorData.micAudioPath,
     editorData.hasEmbeddedAudio,
+    originalDuration,
+    segments.length,
+    setMusicTracksWithoutHistory,
   ]);
+
+  const handleBootstrapMetadata = useCallback(
+    (event: SyntheticEvent<HTMLVideoElement>) => {
+      const video = event.currentTarget;
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        setOriginalDuration(Math.round(video.duration * 100) / 100);
+      }
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setVideoDimensions({
+          width: video.videoWidth,
+          height: video.videoHeight,
+        });
+      }
+      setVideoLoadFailed(false);
+    },
+    []
+  );
 
   const handleLoadedMetadata = useCallback(() => {}, []);
 
@@ -705,14 +937,27 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     DEFAULT_TIMELINE_TRACKS * TRACK_HEIGHT + TIMELINE_SCROLLBAR_HEIGHT;
 
   const {
-    height: timelineHeight,
+    size: timelineHeight,
     isResizing: isResizingTimeline,
     startResize: startTimelineResize,
-  } = useResizableHeight({
+  } = useResizablePane({
     storageKey: 'video-editor:timeline-height',
-    defaultHeight: defaultTimelineHeight,
-    minHeight: minTimelineHeight,
-    maxHeight: maxTimelineHeight,
+    axis: 'vertical',
+    defaultSize: defaultTimelineHeight,
+    minSize: minTimelineHeight,
+    maxSize: maxTimelineHeight,
+  });
+
+  const {
+    size: sidebarWidth,
+    isResizing: isResizingSidebar,
+    startResize: startSidebarResize,
+  } = useResizablePane({
+    storageKey: 'video-editor:sidebar-width',
+    axis: 'horizontal',
+    defaultSize: DEFAULT_SIDEBAR_WIDTH,
+    minSize: MIN_SIDEBAR_WIDTH,
+    maxSize: MAX_SIDEBAR_WIDTH,
   });
 
   const hasScrubAudioSource =
@@ -728,7 +973,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const isEditorReady = isStateLoaded && segments.length > 0;
 
   if (!isEditorReady) {
-    if (editorData.videoMetadataStatus === 'unavailable') {
+    if (editorData.videoMetadataStatus === 'unavailable' && videoLoadFailed) {
       return (
         <div className="bg-background flex h-screen w-full flex-col items-center justify-center gap-3 px-10 text-center select-none">
           <TriangleAlert className="text-muted-foreground size-8" />
@@ -745,7 +990,20 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
       );
     }
 
-    return null;
+    return (
+      <div className="bg-background flex h-screen w-full items-center justify-center select-none">
+        <span className="text-muted-foreground text-sm">
+          Loading recording...
+        </span>
+        <video
+          src={videoSrc}
+          preload="metadata"
+          onLoadedMetadata={handleBootstrapMetadata}
+          onError={() => setVideoLoadFailed(true)}
+          className="hidden"
+        />
+      </div>
+    );
   }
 
   return (
@@ -777,8 +1035,16 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
               micAudioEnabled={false}
               hasEmbeddedAudio={false}
               segments={segments}
-              width={editorData.videoMetadata?.width ?? 1920}
-              height={editorData.videoMetadata?.height ?? 1080}
+              width={
+                editorData.videoMetadata?.width ??
+                videoDimensions?.width ??
+                1920
+              }
+              height={
+                editorData.videoMetadata?.height ??
+                videoDimensions?.height ??
+                1080
+              }
               fps={previewFrameRate}
               durationInSeconds={originalDuration}
               cursorData={editorData.cursorData}
@@ -807,6 +1073,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
               onAnnotationAdded={handleAnnotationAdded}
               cameraSrc={editorData.cameraSrc}
               cameraStyle={editorData.cameraStyle}
+              cameraVisibleRanges={cameraVisibleRanges}
               cameraDurationInFrames={
                 editorData.cameraData
                   ? Math.ceil(editorData.cameraData.meta.duration * 30)
@@ -852,7 +1119,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
               segmentCount={segments.length}
               selectedSegmentSpeed={segmentOps.selectedSegmentSpeed}
               onTogglePlayPause={playback.togglePlayPause}
-              onToggleCutTool={segmentOps.toggleCutTool}
+              onToggleCutTool={handleToggleCutTool}
               onDeleteSegment={segmentOps.handleDeleteSegment}
               onSpeedChange={segmentOps.handleSpeedChange}
               pixelsPerSecond={timelineZoomState.pixelsPerSecond}
@@ -873,7 +1140,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
             >
               <TimelineRuler
                 totalDuration={playback.totalTimelineDuration}
-                minDisplayDuration={displayTimelineDuration}
+                minDisplayDuration={editingTimelineDuration}
               />
 
               <div
@@ -888,6 +1155,11 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
                   <TrackRow className="flex items-center justify-center">
                     <ZoomIn className="text-muted-foreground size-4" />
                   </TrackRow>
+                  {editorData.cameraData && (
+                    <TrackRow className="flex items-center justify-center">
+                      <Camera className="text-muted-foreground size-4" />
+                    </TrackRow>
+                  )}
                   {drawingControl.drawingSegments.length === 0 ? (
                     <TrackRow className="flex items-center justify-center">
                       <PenLine className="text-muted-foreground size-4" />
@@ -902,24 +1174,22 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
                       </TrackRow>
                     ))
                   )}
-                  {musicControl.musicTracks
-                    .filter(track => track.enabled)
-                    .map(track => {
-                      const Icon = SOURCE_ICONS[track.source];
-                      return (
-                        <TrackRow
-                          key={track.id}
-                          className="flex items-center justify-center"
-                        >
-                          <Icon className="text-muted-foreground size-4" />
-                        </TrackRow>
-                      );
-                    })}
+                  {enabledMusicTrackGroups.map(group => {
+                    const Icon = SOURCE_ICONS[group[0].source];
+                    return (
+                      <TrackRow
+                        key={group[0].groupId}
+                        className="flex items-center justify-center"
+                      >
+                        <Icon className="text-muted-foreground size-4" />
+                      </TrackRow>
+                    );
+                  })}
                 </div>
                 <TimelineTracks
                   ref={timelineRef}
                   totalDuration={playback.totalTimelineDuration}
-                  minDisplayDuration={displayTimelineDuration}
+                  minDisplayDuration={editingTimelineDuration}
                   playheadPosition={playback.playheadPosition}
                   isPlaying={playback.isPlaying}
                   isTrimming={segmentOps.trimState !== null}
@@ -933,6 +1203,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
                     onSegmentSelect={handleSegmentSelect}
                     onTrimStart={segmentOps.handleTrimStart}
                     onCut={segmentOps.handleCut}
+                    onCutAll={handleCutAll}
                     onReorder={segmentOps.handleReorderSegment}
                     onSeek={playback.seekToTimelinePosition}
                   />
@@ -941,16 +1212,36 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
                     segments={zoomControl.zoomSegments}
                     totalDuration={playback.totalTimelineDuration}
                     selectedId={zoomControl.selectedZoomId}
+                    isCutToolActive={segmentOps.isCutToolActive}
                     onSelect={handleZoomSelect}
                     onResize={zoomControl.handleUpdateZoom}
                     onMove={zoomControl.handleUpdateZoom}
                     onGestureEnd={zoomControl.handleCommitZoomGesture}
                     onAdd={zoomControl.handleAddZoom}
+                    onCut={handleZoomCut}
+                    onCutAll={handleCutAll}
                     onUpdateZoomLevel={zoomControl.handleUpdateZoomLevel}
                     onDelete={zoomControl.handleDeleteZoom}
                     onApplyToAll={zoomControl.handleApplyZoomToAll}
                     onDeleteOthers={zoomControl.handleDeleteOtherZooms}
                   />
+
+                  {editorData.cameraData && (
+                    <CameraTrack
+                      segments={cameraControl.cameraSegments}
+                      totalDuration={playback.totalTimelineDuration}
+                      selectedId={cameraControl.selectedCameraId}
+                      isCutToolActive={segmentOps.isCutToolActive}
+                      onSelect={handleCameraSelect}
+                      onResize={cameraControl.handleUpdateCamera}
+                      onMove={cameraControl.handleUpdateCamera}
+                      onGestureEnd={cameraControl.handleCommitCameraGesture}
+                      onAdd={cameraControl.handleAddCamera}
+                      onCut={handleCameraCut}
+                      onCutAll={handleCutAll}
+                      onDelete={cameraControl.handleDeleteCamera}
+                    />
+                  )}
 
                   {drawingControl.drawingSegments.length === 0 ? (
                     <TrackRow />
@@ -965,33 +1256,39 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
                             ? drawing.id
                             : null
                         }
+                        isCutToolActive={segmentOps.isCutToolActive}
                         onSelect={handleDrawingSelect}
                         onResize={drawingControl.handleResizeDrawingSegment}
                         onMove={drawingControl.handleMoveDrawingSegment}
                         onGestureEnd={drawingControl.handleCommitDrawingGesture}
+                        onCut={handleDrawingCut}
+                        onCutAll={handleCutAll}
                         onDelete={drawingControl.handleDeleteDrawingSegment}
                       />
                     ))
                   )}
 
-                  {musicControl.musicTracks
-                    .filter(track => track.enabled)
-                    .map(track => (
-                      <MusicTrack
-                        key={track.id}
-                        track={track}
-                        totalDuration={playback.totalTimelineDuration}
-                        selectedId={musicControl.selectedMusicTrackId}
-                        onSelect={handleMusicSelect}
-                        onResize={musicControl.handleResizeMusicTrack}
-                        onMove={musicControl.handleMoveMusicTrack}
-                        onGestureEnd={musicControl.handleCommitMusicGesture}
-                        onSpeedChange={(id, speed) =>
-                          musicControl.handleUpdateMusicTrack(id, { speed })
-                        }
-                        onDelete={musicControl.handleRemoveMusicTrack}
-                      />
-                    ))}
+                  {enabledMusicTrackGroups.map(group => (
+                    <MusicTrack
+                      key={group[0].groupId}
+                      tracks={group}
+                      totalDuration={editingTimelineDuration}
+                      selectedId={musicControl.selectedMusicTrackId}
+                      isCutToolActive={segmentOps.isCutToolActive}
+                      onSelect={handleMusicSelect}
+                      onResize={musicControl.handleResizeMusicTrack}
+                      onMove={musicControl.handleMoveMusicTrack}
+                      onGestureEnd={musicControl.handleCommitMusicGesture}
+                      onSpeedChange={(groupId, speed) =>
+                        musicControl.handleUpdateMusicTrackGroup(groupId, {
+                          speed,
+                        })
+                      }
+                      onCut={handleMusicCut}
+                      onCutAll={handleCutAll}
+                      onDelete={musicControl.handleRemoveMusicTrackGroup}
+                    />
+                  ))}
                 </TimelineTracks>
               </div>
             </TimelineProvider>
@@ -1000,6 +1297,9 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
 
         <EditorSidebar
           isOpen={isSidebarOpen}
+          width={sidebarWidth}
+          isResizing={isResizingSidebar}
+          onStartResize={startSidebarResize}
           activeTab={sidebarTab}
           cursorStyle={editorData.cursorStyle}
           onCursorStyleChange={editorData.setCursorStyle}
@@ -1015,6 +1315,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
           zoomSettings={zoomControl.zoomSettings}
           onUpdateZoomSegment={zoomControl.handleUpdateZoomSegment}
           onUpdateZoomSettings={zoomControl.setZoomSettings}
+          onGenerateAutoZoom={handleGenerateAutoZoom}
           drawingSegments={drawingControl.drawingSegments}
           selectedDrawingId={drawingControl.selectedDrawingId}
           drawingToolSettings={drawingToolSettings}
@@ -1033,10 +1334,10 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
           onAudioStyleChange={editorData.setAudioStyle}
           hasMicAudio={!!editorData.micAudioPath}
           hasKeyboardData={editorData.keyboardData !== null}
-          musicTracks={musicControl.musicTracks}
+          musicTrackGroups={musicTrackGroups}
           onAddMusicTrack={musicControl.handleAddMusicTrack}
-          onRemoveMusicTrack={musicControl.handleRemoveMusicTrack}
-          onUpdateMusicTrack={musicControl.handleUpdateMusicTrack}
+          onRemoveMusicTrackGroup={musicControl.handleRemoveMusicTrackGroup}
+          onUpdateMusicTrackGroup={musicControl.handleUpdateMusicTrackGroup}
           onPlayDemo={keyboardSound.playDemo}
           onStopDemo={keyboardSound.stopDemo}
           isDemoPlaying={keyboardSound.isDemoPlaying}
@@ -1066,6 +1367,8 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
           onExportSettingsChange={videoExport.setExportSettings}
           onExport={handleExport}
           isExporting={videoExport.isExporting}
+          exportProgress={videoExport.exportProgress}
+          onCancelExport={videoExport.handleCancelExport}
           exportError={videoExport.exportError}
           videoDurationSeconds={playback.totalTimelineDuration}
           hasWallpaper={hasWallpaperEffect(wallpaper)}
@@ -1079,9 +1382,8 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
         />
 
         <EditorSidebarTabs
-          activeTab={sidebarTab}
+          activeTab={isSidebarOpen ? sidebarTab : null}
           onTabChange={activateSidebarTab}
-          isZoomDisabled={zoomControl.selectedZoomId === null}
           shortcuts={sidebarShortcuts ?? undefined}
         />
       </div>

@@ -57,10 +57,10 @@ function PositionGrid({
               key={position}
               onClick={() => onChange(position)}
               className={cn(
-                'h-6 flex-1 rounded border transition-colors',
+                'h-6 flex-1 rounded-lg transition-colors',
                 value === position
-                  ? 'border-primary bg-primary'
-                  : 'border-border bg-muted hover:bg-accent'
+                  ? 'bg-primary'
+                  : 'bg-default hover:bg-default-hover'
               )}
               title={position.replace('-', ' ')}
             />
@@ -102,6 +102,7 @@ export default function CameraSettingsPanel({
       <div className="flex items-center justify-between">
         <Label className="text-sm">Show Camera</Label>
         <Switch
+          size="sm"
           checked={cameraStyle.visible}
           onCheckedChange={checked => updateStyle({ visible: checked })}
         />
@@ -112,6 +113,7 @@ export default function CameraSettingsPanel({
           <div className="flex items-center justify-between">
             <Label className="text-sm">Mirror</Label>
             <Switch
+              size="sm"
               checked={cameraStyle.mirrored}
               onCheckedChange={checked => updateStyle({ mirrored: checked })}
             />

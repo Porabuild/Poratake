@@ -7,8 +7,7 @@ export const RECORDING_ITEMS: SettingsItem[] = [
     section: 'Behavior',
     type: 'switch',
     label: 'Show recording preview',
-    description:
-      'Show a preview window after recording instead of opening the editor directly',
+    description: 'Show a preview window after recording',
     keywords: ['preview', 'recording', 'video', 'record'],
     getValue: s => s.recording.showPreview,
     setValue: (s, v) => ({

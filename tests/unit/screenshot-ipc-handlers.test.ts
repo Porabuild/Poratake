@@ -15,6 +15,7 @@ const mockGetConfig = vi.fn(() => ({
 const mockUpdateConfig = vi.fn();
 const mockExistsSync = vi.fn(() => true);
 const mockReadFileSync = vi.fn(() => Buffer.from('image'));
+const mockReadFile = vi.fn(() => Promise.resolve(Buffer.from('image')));
 const mockWriteFileSync = vi.fn();
 const mockCopyFileSync = vi.fn();
 const mockStatSync = vi.fn(() => ({ isDirectory: () => true }));
@@ -78,6 +79,9 @@ vi.mock('fs', () => ({
     copyFileSync: (...a: unknown[]) => mockCopyFileSync(...a),
     rmSync: (...a: unknown[]) => mockRmSync(...a),
     statSync: (...a: unknown[]) => mockStatSync(...a),
+    promises: {
+      readFile: (...a: unknown[]) => mockReadFile(...a),
+    },
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
@@ -394,14 +398,14 @@ describe('screenshot IPC handlers', () => {
   describe('screenshot:read-file', () => {
     it('returns base64', async () => {
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(Buffer.from('img'));
+      mockReadFile.mockResolvedValue(Buffer.from('img'));
       mockGetWindowData.mockReturnValue({ filePath: '/p/x.png' });
       await registerHandlers();
       const result = await ipcHandle['screenshot:read-file']({
         sender: { id: 1 },
       });
       expect(typeof result).toBe('string');
-      expect(mockReadFileSync).toHaveBeenCalledWith('/p/x.png');
+      expect(mockReadFile).toHaveBeenCalledWith('/p/x.png');
     });
 
     it('throws when file missing', async () => {
@@ -423,7 +427,7 @@ describe('screenshot IPC handlers', () => {
           '/p/private.txt'
         )
       ).rejects.toThrow('File not found');
-      expect(mockReadFileSync).not.toHaveBeenCalled();
+      expect(mockReadFile).not.toHaveBeenCalled();
     });
   });
 

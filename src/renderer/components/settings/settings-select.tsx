@@ -1,18 +1,15 @@
-import { ListBox, Select } from '@heroui/react';
+import { Select } from '@/renderer/components/ui/select';
+import type { SelectOption } from '@/renderer/components/ui/select';
 
 import { cn } from '@/renderer/lib/utils';
 
-interface SettingsSelectOption {
-  value: string;
-  label: string;
-}
-
 interface SettingsSelectProps {
   label: string;
-  options: readonly SettingsSelectOption[];
+  options: readonly SelectOption[];
   value: string;
   onChange: (value: string) => void;
   onOpenChange?: (isOpen: boolean) => void;
+  size?: 'sm' | 'md';
   className?: string;
 }
 
@@ -22,41 +19,18 @@ export default function SettingsSelect({
   value,
   onChange,
   onOpenChange,
+  size,
   className,
 }: SettingsSelectProps) {
-  const selectedValue = options.some(option => option.value === value)
-    ? value
-    : null;
-
   return (
     <Select
-      aria-label={label}
-      className={cn('w-40 shrink-0', className)}
-      variant="secondary"
-      value={selectedValue}
-      onChange={nextValue =>
-        onChange(nextValue === null ? '' : String(nextValue))
-      }
+      label={label}
+      options={options}
+      value={value}
+      onChange={onChange}
       onOpenChange={onOpenChange}
-    >
-      <Select.Trigger>
-        <Select.Value />
-        <Select.Indicator />
-      </Select.Trigger>
-      <Select.Popover>
-        <ListBox>
-          {options.map(option => (
-            <ListBox.Item
-              key={option.value}
-              id={option.value}
-              textValue={option.label}
-            >
-              {option.label}
-              <ListBox.ItemIndicator />
-            </ListBox.Item>
-          ))}
-        </ListBox>
-      </Select.Popover>
-    </Select>
+      size={size}
+      className={cn('w-40 shrink-0', className)}
+    />
   );
 }

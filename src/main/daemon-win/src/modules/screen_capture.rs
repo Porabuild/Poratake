@@ -2,10 +2,12 @@ use super::recorder_types::{
     recording_project_dir, CaptureRect, RecorderError, RecorderState, RecorderStatus,
     RecordingConfig, RecordingResult, StagedAsset,
 };
-use super::recording_audio::AudioCaptureSet;
+use super::recording_audio::{AudioCaptureSet, AudioDevice};
 use super::recording_camera::{CameraRecordingConfig, CameraSyncClock, RecordingCamera};
-use super::recording_input::InputTracker;
+use super::recording_input::{InputTracker, TrackerBounds, TrackerSource};
 use crate::com::retain_process_mta;
+use crate::display_color::hdr_white_scale;
+use crate::tone_map::{source_view, target_view, FitStage, ToneMapStage};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -21,21 +23,23 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
-use windows::Win32::Foundation::{HMODULE, LPARAM, RECT};
+use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
     D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
 };
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Resource,
+    ID3D11ShaderResourceView, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO,
+    MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFAttributes,
@@ -53,10 +57,11 @@ use windows::Win32::System::WinRT::Direct3D11::{
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
-use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
+use windows::Win32::UI::WindowsAndMessaging::{IsWindow, MONITORINFOF_PRIMARY};
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const FRAME_WAIT: Duration = Duration::from_millis(20);
 const ENCODER_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
 const ENCODER_TEXTURE_COUNT: usize = 4;
@@ -82,6 +87,9 @@ enum WorkerCommand {
     Pause(Sender<Result<RecorderStatus, RecorderError>>),
     Resume(Sender<Result<RecorderStatus, RecorderError>>),
     SetMicMuted(bool),
+    SetMicrophone(Option<AudioDevice>, Sender<Result<(), RecorderError>>),
+    SetSystemAudio(bool, Sender<Result<(), RecorderError>>),
+    SetCamera(bool, Sender<Result<(), RecorderError>>),
     Stop(Sender<Result<RecordingResult, RecorderError>>),
 }
 
@@ -264,6 +272,65 @@ impl CaptureController {
         }
     }
 
+    pub fn set_microphone(&self, device: Option<AudioDevice>) -> Result<(), RecorderError> {
+        self.run_device_command("change the microphone", |response| {
+            WorkerCommand::SetMicrophone(device, response)
+        })
+    }
+
+    pub fn set_system_audio(&self, enabled: bool) -> Result<(), RecorderError> {
+        self.run_device_command("change system audio", |response| {
+            WorkerCommand::SetSystemAudio(enabled, response)
+        })
+    }
+
+    pub fn set_camera(&self, enabled: bool) -> Result<(), RecorderError> {
+        self.run_device_command("change the camera", |response| {
+            WorkerCommand::SetCamera(enabled, response)
+        })
+    }
+
+    fn run_device_command<F>(&self, operation: &str, build: F) -> Result<(), RecorderError>
+    where
+        F: FnOnce(Sender<Result<(), RecorderError>>) -> WorkerCommand,
+    {
+        let sender = self.active_command_sender(operation)?;
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        sender
+            .send(build(result_sender))
+            .map_err(|_| RecorderError::capture("Recorder worker is unavailable"))?;
+        result_receiver
+            .recv_timeout(DEVICE_COMMAND_TIMEOUT)
+            .map_err(|_| RecorderError::capture(format!("Recorder did not {operation} in time")))?
+    }
+
+    fn active_command_sender(
+        &self,
+        operation: &str,
+    ) -> Result<Sender<WorkerCommand>, RecorderError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| RecorderError::capture("Recorder state is unavailable"))?;
+
+        if state.phase != ControllerPhase::Running
+            || !matches!(
+                state.status.state,
+                RecorderState::Recording | RecorderState::Paused
+            )
+        {
+            return Err(RecorderError::invalid_state(format!(
+                "Cannot {operation}: recorder is {}",
+                state.status.state.as_str()
+            )));
+        }
+
+        state
+            .command_sender
+            .clone()
+            .ok_or_else(|| RecorderError::capture("Recorder worker is unavailable"))
+    }
+
     fn command_sender_for(
         &self,
         required_state: RecorderState,
@@ -441,6 +508,33 @@ fn run_worker(
                         break;
                     }
                 }
+            }
+            Ok(FrameMessage::Closed(records_window)) => {
+                // A closed window must not lose the recording: stop feeding the
+                // encoder, tell the app, and stay alive so its stop finalizes
+                // everything captured so far.
+                if records_window && start_sender.is_none() {
+                    if let Some(sender) = failure_sender.take() {
+                        let _ = sender.send(RecorderError::target_closed(
+                            "The recorded window was closed",
+                        ));
+                    }
+                    continue;
+                }
+
+                let message = match records_window {
+                    true => "The window to record was closed",
+                    false => "The captured display was disconnected",
+                };
+                fail_worker(
+                    RecorderError::capture(message),
+                    &mut runtime,
+                    &shared,
+                    &mut start_sender,
+                    &mut failure_sender,
+                    generation,
+                );
+                break;
             }
             Ok(FrameMessage::Error(error)) => {
                 fail_worker(
@@ -626,6 +720,18 @@ fn handle_command(
             }
             false
         }
+        WorkerCommand::SetMicrophone(device, response) => {
+            let _ = response.send(runtime.set_microphone(device));
+            false
+        }
+        WorkerCommand::SetSystemAudio(enabled, response) => {
+            let _ = response.send(runtime.set_system_audio(enabled));
+            false
+        }
+        WorkerCommand::SetCamera(enabled, response) => {
+            let _ = response.send(runtime.set_camera(enabled));
+            false
+        }
         WorkerCommand::Stop(response) => {
             let result = runtime.finish();
             set_idle(shared, generation);
@@ -667,6 +773,7 @@ fn set_idle(shared: &Arc<Mutex<ControllerState>>, generation: u64) {
 
 enum FrameMessage {
     Frame(Direct3D11CaptureFrame),
+    Closed(bool),
     Error(RecorderError),
 }
 
@@ -678,6 +785,7 @@ struct RecordingRuntime {
     camera: Option<RecordingCamera>,
     frames: Receiver<FrameMessage>,
     timeline: VideoTimeline,
+    follows_target: bool,
     output_path: PathBuf,
 }
 
@@ -685,8 +793,10 @@ impl RecordingRuntime {
     fn prepare(config: &RecordingConfig, mic_muted: bool) -> Result<Self, RecorderError> {
         let project_dir = recording_project_dir(&config.output_path)?.to_path_buf();
         let target = CaptureTarget::resolve(config)?;
+        let tracker_source = target.tracker_source();
         let (device, context, winrt_device) = create_d3d_device()?;
         let (capture, frames, layout) = WindowsCapture::prepare(winrt_device, target)?;
+        let follows_target = layout.fitted;
         let encoder = match MediaFoundationEncoder::new(
             &config.output_path,
             layout.width,
@@ -695,6 +805,8 @@ impl RecordingRuntime {
             device,
             context,
             layout.crop,
+            layout.white_scale,
+            layout.fitted,
         ) {
             Ok(encoder) => encoder,
             Err(error) => {
@@ -703,7 +815,10 @@ impl RecordingRuntime {
             }
         };
 
-        let input = match InputTracker::start(layout.tracker_bounds, config.keyboard_enabled) {
+        let input = match InputTracker::start(
+            TrackerBounds::new(tracker_source, layout.tracker_bounds),
+            config.keyboard_enabled,
+        ) {
             Ok(input) => input,
             Err(error) => {
                 capture.close();
@@ -747,6 +862,7 @@ impl RecordingRuntime {
             camera,
             frames,
             timeline: VideoTimeline::new(config.frame_rate),
+            follows_target,
             output_path: config.output_path.clone(),
         })
     }
@@ -771,17 +887,63 @@ impl RecordingRuntime {
                 input.resume();
             }
         }
+        let content = frame.ContentSize().map_err(|error| {
+            RecorderError::capture(format!("Failed to read captured frame size: {error}"))
+        })?;
         let Some(timestamp) = self.timeline.timestamp_for(source_time) else {
-            return Ok(None);
+            return self.follow_content_size(content).map(|_| None);
         };
 
         let encoder = self
             .encoder
             .as_mut()
             .ok_or_else(|| RecorderError::capture("Video encoder is unavailable"))?;
-        encoder.write(frame, timestamp, self.timeline.frame_duration())?;
+        encoder.write(frame, content, timestamp, self.timeline.frame_duration())?;
         self.timeline.commit(timestamp);
+        self.follow_content_size(content)?;
         Ok(Some(self.timeline.duration()))
+    }
+
+    fn follow_content_size(&mut self, content: SizeInt32) -> Result<(), RecorderError> {
+        if !self.follows_target {
+            return Ok(());
+        }
+        let Some(capture) = self.capture.as_mut() else {
+            return Ok(());
+        };
+        if !capture.resize_pool(content)? {
+            return Ok(());
+        }
+
+        // The recreated pool allocates new textures, so views cached against
+        // the old ones would keep rendering pixels nobody writes to any more.
+        if let Some(encoder) = self.encoder.as_mut() {
+            encoder.forget_source_views();
+        }
+        Ok(())
+    }
+
+    fn set_microphone(&mut self, device: Option<AudioDevice>) -> Result<(), RecorderError> {
+        self.audio_mut()?.set_microphone(device)
+    }
+
+    fn set_system_audio(&mut self, enabled: bool) -> Result<(), RecorderError> {
+        self.audio_mut()?.set_system_audio(enabled)
+    }
+
+    fn set_camera(&mut self, enabled: bool) -> Result<(), RecorderError> {
+        self.camera
+            .as_ref()
+            .ok_or_else(|| {
+                RecorderError::invalid_state("This recording was not started with a camera")
+            })?
+            .set_enabled(enabled)
+    }
+
+    fn audio_mut(&mut self) -> Result<&mut AudioCaptureSet, RecorderError> {
+        self.audio
+            .as_mut()
+            .ok_or_else(|| RecorderError::capture("Audio capture is unavailable"))
     }
 
     fn try_error(&self) -> Option<RecorderError> {
@@ -1120,10 +1282,11 @@ fn system_relative_time(
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MonitorTarget {
     handle: isize,
     rect: RECT,
+    device: String,
     device_number: i32,
     primary: bool,
 }
@@ -1131,6 +1294,7 @@ struct MonitorTarget {
 struct CaptureTarget {
     monitor: MonitorTarget,
     requested_area: Option<CaptureRect>,
+    window: Option<isize>,
 }
 
 impl CaptureTarget {
@@ -1140,11 +1304,15 @@ impl CaptureTarget {
             return Err(RecorderError::configuration("No display was found"));
         }
 
+        if let Some(handle) = config.window_id {
+            return Self::for_window(handle, &monitors);
+        }
+
         if let Some(area) = config.capture_rect {
             let Some(monitor) = monitors
                 .iter()
                 .find(|monitor| monitor_contains(monitor.rect, area))
-                .copied()
+                .cloned()
             else {
                 return Err(RecorderError::configuration(
                     "The recording area must be contained by one display",
@@ -1153,6 +1321,7 @@ impl CaptureTarget {
             return Ok(Self {
                 monitor,
                 requested_area: Some(area),
+                window: None,
             });
         }
 
@@ -1160,7 +1329,7 @@ impl CaptureTarget {
             let Some(monitor) = monitors
                 .iter()
                 .find(|monitor| monitor.device_number == display_id)
-                .copied()
+                .cloned()
             else {
                 return Err(RecorderError::configuration(format!(
                     "Display {display_id} was not found"
@@ -1169,18 +1338,50 @@ impl CaptureTarget {
             return Ok(Self {
                 monitor,
                 requested_area: None,
+                window: None,
             });
         }
 
         let monitor = monitors
             .iter()
             .find(|monitor| monitor.primary)
-            .copied()
-            .unwrap_or(monitors[0]);
+            .cloned()
+            .unwrap_or_else(|| monitors[0].clone());
         Ok(Self {
             monitor,
             requested_area: None,
+            window: None,
         })
+    }
+
+    fn for_window(handle: isize, monitors: &[MonitorTarget]) -> Result<Self, RecorderError> {
+        let window = HWND(handle as *mut c_void);
+        if !unsafe { IsWindow(Some(window)) }.as_bool() {
+            return Err(RecorderError::configuration(
+                "The window to record is no longer open",
+            ));
+        }
+
+        let display = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+        let monitor = monitors
+            .iter()
+            .find(|monitor| monitor.handle == display.0 as isize)
+            .or_else(|| monitors.iter().find(|monitor| monitor.primary))
+            .cloned()
+            .unwrap_or_else(|| monitors[0].clone());
+
+        Ok(Self {
+            monitor,
+            requested_area: None,
+            window: Some(handle),
+        })
+    }
+
+    fn tracker_source(&self) -> TrackerSource {
+        match self.window {
+            Some(handle) => TrackerSource::Window(handle),
+            None => TrackerSource::Screen,
+        }
     }
 
     fn layout(&self, content: SizeInt32) -> Result<CaptureLayout, RecorderError> {
@@ -1188,6 +1389,31 @@ impl CaptureTarget {
             return Err(RecorderError::capture(
                 "Captured display has invalid dimensions",
             ));
+        }
+
+        if self.window.is_some() {
+            let width = content.Width & !1;
+            let height = content.Height & !1;
+            return Ok(CaptureLayout {
+                width: width as u32,
+                height: height as u32,
+                crop: D3D11_BOX {
+                    left: 0,
+                    top: 0,
+                    front: 0,
+                    right: width as u32,
+                    bottom: height as u32,
+                    back: 1,
+                },
+                tracker_bounds: CaptureRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+                white_scale: hdr_white_scale(&self.monitor.device),
+                fitted: true,
+            });
         }
 
         let monitor_width = self.monitor.rect.right - self.monitor.rect.left;
@@ -1252,6 +1478,8 @@ impl CaptureTarget {
                 back: 1,
             },
             tracker_bounds,
+            white_scale: hdr_white_scale(&self.monitor.device),
+            fitted: false,
         })
     }
 }
@@ -1261,6 +1489,15 @@ struct CaptureLayout {
     height: u32,
     crop: D3D11_BOX,
     tracker_bounds: CaptureRect,
+    white_scale: Option<f32>,
+    fitted: bool,
+}
+
+fn capture_pixel_format(white_scale: Option<f32>) -> DirectXPixelFormat {
+    match white_scale {
+        Some(_) => DirectXPixelFormat::R16G16B16A16Float,
+        None => DirectXPixelFormat::B8G8R8A8UIntNormalized,
+    }
 }
 
 fn monitor_contains(rect: RECT, area: CaptureRect) -> bool {
@@ -1300,6 +1537,7 @@ fn enumerate_monitors() -> Result<Vec<MonitorTarget>, RecorderError> {
             monitors.push(MonitorTarget {
                 handle: monitor.0 as isize,
                 rect: info.monitorInfo.rcMonitor,
+                device: name,
                 device_number,
                 primary: (info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
             });
@@ -1325,6 +1563,9 @@ struct WindowsCapture {
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
     item: GraphicsCaptureItem,
+    device: IDirect3DDevice,
+    format: DirectXPixelFormat,
+    pool_size: SizeInt32,
     frame_token: i64,
     closed_token: i64,
 }
@@ -1344,24 +1585,27 @@ impl WindowsCapture {
             factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>().map_err(|error| {
                 RecorderError::capture(format!("Failed to open capture factory: {error}"))
             })?;
-        let monitor = HMONITOR(target.monitor.handle as *mut c_void);
-        let item: GraphicsCaptureItem =
-            unsafe { interop.CreateForMonitor(monitor) }.map_err(|error| {
-                RecorderError::capture(format!("Failed to open display capture: {error}"))
-            })?;
+        let item: GraphicsCaptureItem = match target.window {
+            Some(handle) => unsafe { interop.CreateForWindow(HWND(handle as *mut c_void)) }
+                .map_err(|error| {
+                    RecorderError::capture(format!("Failed to open window capture: {error}"))
+                })?,
+            None => {
+                let monitor = HMONITOR(target.monitor.handle as *mut c_void);
+                unsafe { interop.CreateForMonitor(monitor) }.map_err(|error| {
+                    RecorderError::capture(format!("Failed to open display capture: {error}"))
+                })?
+            }
+        };
         let content_size = item.Size().map_err(|error| {
-            RecorderError::capture(format!("Failed to read display size: {error}"))
+            RecorderError::capture(format!("Failed to read capture size: {error}"))
         })?;
         let layout = target.layout(content_size)?;
-        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-            &device,
-            DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            4,
-            content_size,
-        )
-        .map_err(|error| {
-            RecorderError::capture(format!("Failed to create capture frame pool: {error}"))
-        })?;
+        let format = capture_pixel_format(layout.white_scale);
+        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&device, format, 4, content_size)
+            .map_err(|error| {
+                RecorderError::capture(format!("Failed to create capture frame pool: {error}"))
+            })?;
         let session = pool.CreateCaptureSession(&item).map_err(|error| {
             RecorderError::capture(format!("Failed to create capture session: {error}"))
         })?;
@@ -1395,15 +1639,14 @@ impl WindowsCapture {
             RecorderError::capture(format!("Failed to subscribe to frames: {error}"))
         })?;
 
+        let records_window = target.window.is_some();
         let closed_handler =
             TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
-                let _ = sender.send(FrameMessage::Error(RecorderError::capture(
-                    "The captured display was disconnected",
-                )));
+                let _ = sender.send(FrameMessage::Closed(records_window));
                 Ok(())
             });
         let closed_token = item.Closed(&closed_handler).map_err(|error| {
-            RecorderError::capture(format!("Failed to monitor display capture: {error}"))
+            RecorderError::capture(format!("Failed to monitor the capture target: {error}"))
         })?;
 
         Ok((
@@ -1411,6 +1654,9 @@ impl WindowsCapture {
                 pool,
                 session,
                 item,
+                device,
+                format,
+                pool_size: content_size,
                 frame_token,
                 closed_token,
             },
@@ -1423,6 +1669,26 @@ impl WindowsCapture {
         self.session.StartCapture().map_err(|error| {
             RecorderError::capture(format!("Failed to start display capture: {error}"))
         })
+    }
+
+    /// Windows Graphics Capture keeps handing back frames sized to the pool it
+    /// was created with, so a window that has been resized must be re-pooled
+    /// before its new pixels can arrive.
+    fn resize_pool(&mut self, content: SizeInt32) -> Result<bool, RecorderError> {
+        if content.Width < 1
+            || content.Height < 1
+            || (content.Width == self.pool_size.Width && content.Height == self.pool_size.Height)
+        {
+            return Ok(false);
+        }
+
+        self.pool
+            .Recreate(&self.device, self.format, 4, content)
+            .map_err(|error| {
+                RecorderError::capture(format!("Failed to resize the capture frame pool: {error}"))
+            })?;
+        self.pool_size = content;
+        Ok(true)
     }
 
     fn close(self) {
@@ -1494,7 +1760,13 @@ fn create_d3d_device_with_levels(
 struct MediaFoundationEncoder {
     writer: Option<IMFSinkWriter>,
     stream_index: u32,
+    device: ID3D11Device,
     context: ID3D11DeviceContext,
+    tone_map: Option<ToneMapStage>,
+    fit: Option<FitStage>,
+    frame_size: (u32, u32),
+    target_views: Vec<ID3D11RenderTargetView>,
+    source_views: Vec<(isize, ID3D11ShaderResourceView)>,
     textures: Vec<ID3D11Texture2D>,
     texture_slots: TextureSlotPool,
     texture_releases: Receiver<usize>,
@@ -1567,6 +1839,8 @@ impl MediaFoundationEncoder {
         device: ID3D11Device,
         context: ID3D11DeviceContext,
         crop: D3D11_BOX,
+        white_scale: Option<f32>,
+        fitted: bool,
     ) -> Result<Self, RecorderError> {
         unsafe {
             MFStartup(MF_VERSION, MFSTARTUP_FULL).map_err(|error| {
@@ -1598,6 +1872,8 @@ impl MediaFoundationEncoder {
             device,
             context,
             crop,
+            white_scale,
+            fitted,
         );
         if result.is_err() {
             unsafe {
@@ -1617,6 +1893,8 @@ impl MediaFoundationEncoder {
         device: ID3D11Device,
         context: ID3D11DeviceContext,
         crop: D3D11_BOX,
+        white_scale: Option<f32>,
+        fitted: bool,
     ) -> Result<Self, RecorderError> {
         let mut manager = None;
         let mut reset_token = 0;
@@ -1743,10 +2021,33 @@ impl MediaFoundationEncoder {
             })
             .collect();
 
+        let fit = match fitted {
+            true => Some(FitStage::new(&device, white_scale).map_err(RecorderError::capture)?),
+            false => None,
+        };
+        let tone_map = match (fitted, white_scale) {
+            (false, Some(scale)) => {
+                Some(ToneMapStage::new(&device, scale).map_err(RecorderError::capture)?)
+            }
+            _ => None,
+        };
+        let mut target_views = Vec::new();
+        if tone_map.is_some() || fit.is_some() {
+            for texture in &textures {
+                target_views.push(target_view(&device, texture).map_err(RecorderError::capture)?);
+            }
+        }
+
         Ok(Self {
             writer: Some(writer),
             stream_index,
+            device,
             context,
+            tone_map,
+            fit,
+            frame_size: (width, height),
+            target_views,
+            source_views: Vec::new(),
             textures,
             texture_slots: TextureSlotPool::new(ENCODER_TEXTURE_COUNT),
             texture_releases,
@@ -1759,23 +2060,106 @@ impl MediaFoundationEncoder {
         })
     }
 
+    fn forget_source_views(&mut self) {
+        self.source_views.clear();
+    }
+
+    fn cached_source_view(
+        &mut self,
+        source: &ID3D11Texture2D,
+    ) -> Result<ID3D11ShaderResourceView, RecorderError> {
+        let key = source.as_raw() as isize;
+        if let Some((_, view)) = self.source_views.iter().find(|(cached, _)| *cached == key) {
+            return Ok(view.clone());
+        }
+
+        let view = source_view(&self.device, source).map_err(RecorderError::capture)?;
+        self.source_views.push((key, view.clone()));
+        Ok(view)
+    }
+
+    fn shaded_target_view(&self, slot: usize) -> Result<ID3D11RenderTargetView, RecorderError> {
+        self.target_views
+            .get(slot)
+            .cloned()
+            .ok_or_else(|| RecorderError::capture("Encoder texture view is missing"))
+    }
+
+    fn tone_map_frame(
+        &mut self,
+        source: &ID3D11Texture2D,
+        slot: usize,
+    ) -> Result<(), RecorderError> {
+        let view = self.cached_source_view(source)?;
+        let target = self.shaded_target_view(slot)?;
+        let stage = self
+            .tone_map
+            .as_ref()
+            .ok_or_else(|| RecorderError::capture("Tone mapping is not enabled"))?;
+
+        stage
+            .run(
+                &self.context,
+                &view,
+                &target,
+                (self.crop.left, self.crop.top),
+                (
+                    self.crop.right - self.crop.left,
+                    self.crop.bottom - self.crop.top,
+                ),
+            )
+            .map_err(RecorderError::capture)
+    }
+
+    fn fit_frame(
+        &mut self,
+        source: &ID3D11Texture2D,
+        content: SizeInt32,
+        slot: usize,
+    ) -> Result<(), RecorderError> {
+        let mut descriptor = D3D11_TEXTURE2D_DESC::default();
+        unsafe { source.GetDesc(&mut descriptor) };
+        let visible = (
+            (content.Width.max(0) as u32).min(descriptor.Width),
+            (content.Height.max(0) as u32).min(descriptor.Height),
+        );
+
+        let view = self.cached_source_view(source)?;
+        let target = self.shaded_target_view(slot)?;
+        let stage = self
+            .fit
+            .as_ref()
+            .ok_or_else(|| RecorderError::capture("Window scaling is not enabled"))?;
+
+        stage
+            .run(
+                &self.context,
+                &view,
+                &target,
+                visible,
+                (descriptor.Width, descriptor.Height),
+                self.frame_size,
+            )
+            .map_err(RecorderError::capture)
+    }
+
     fn write(
         &mut self,
         frame: &Direct3D11CaptureFrame,
+        content: SizeInt32,
         timestamp: i64,
         duration: i64,
     ) -> Result<(), RecorderError> {
-        let size = frame.ContentSize().map_err(|error| {
-            RecorderError::capture(format!("Failed to read captured frame size: {error}"))
-        })?;
-        if size.Width < self.crop.right as i32 || size.Height < self.crop.bottom as i32 {
+        if self.fit.is_none()
+            && (content.Width < self.crop.right as i32 || content.Height < self.crop.bottom as i32)
+        {
             return Err(RecorderError::capture(
                 "Captured display size changed during recording",
             ));
         }
 
         let slot = self.acquire_texture()?;
-        let texture = &self.textures[slot];
+        let texture = self.textures[slot].clone();
         let surface = frame.Surface().map_err(|error| {
             RecorderError::capture(format!("Failed to access captured surface: {error}"))
         })?;
@@ -1785,33 +2169,40 @@ impl MediaFoundationEncoder {
         let source: ID3D11Texture2D = unsafe { access.GetInterface() }.map_err(|error| {
             RecorderError::capture(format!("Failed to access captured D3D11 texture: {error}"))
         })?;
-        let source_resource: ID3D11Resource = source.cast().map_err(|error| {
-            RecorderError::capture(format!(
-                "Failed to access captured texture resource: {error}"
-            ))
-        })?;
-        let target_resource: ID3D11Resource = texture.cast().map_err(|error| {
-            RecorderError::capture(format!(
-                "Failed to access encoder texture resource: {error}"
-            ))
-        })?;
-        unsafe {
-            self.context.CopySubresourceRegion(
-                &target_resource,
-                0,
-                0,
-                0,
-                0,
-                &source_resource,
-                0,
-                Some(&self.crop),
-            );
+        if self.fit.is_some() {
+            self.fit_frame(&source, content, slot)?;
+        } else if self.tone_map.is_some() {
+            self.tone_map_frame(&source, slot)?;
+        } else {
+            let source_resource: ID3D11Resource = source.cast().map_err(|error| {
+                RecorderError::capture(format!(
+                    "Failed to access captured texture resource: {error}"
+                ))
+            })?;
+            let target_resource: ID3D11Resource = texture.cast().map_err(|error| {
+                RecorderError::capture(format!(
+                    "Failed to access encoder texture resource: {error}"
+                ))
+            })?;
+            unsafe {
+                self.context.CopySubresourceRegion(
+                    &target_resource,
+                    0,
+                    0,
+                    0,
+                    0,
+                    &source_resource,
+                    0,
+                    Some(&self.crop),
+                );
+            }
         }
 
-        let buffer = unsafe { MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, texture, 0, false) }
-            .map_err(|error| {
-                RecorderError::capture(format!("Failed to wrap encoder texture: {error}"))
-            })?;
+        let buffer =
+            unsafe { MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &texture, 0, false) }
+                .map_err(|error| {
+                    RecorderError::capture(format!("Failed to wrap encoder texture: {error}"))
+                })?;
         let plane: IMF2DBuffer = buffer.cast().map_err(|error| {
             RecorderError::capture(format!("Failed to access encoder texture planes: {error}"))
         })?;
@@ -2012,6 +2403,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn captures_float_pixels_only_on_hdr_displays() {
+        assert_eq!(
+            capture_pixel_format(Some(2.5)),
+            DirectXPixelFormat::R16G16B16A16Float
+        );
+        assert_eq!(
+            capture_pixel_format(None),
+            DirectXPixelFormat::B8G8R8A8UIntNormalized
+        );
+    }
+
+    #[test]
     fn video_timeline_starts_at_zero_on_first_frame() {
         let mut timeline = VideoTimeline::new(10);
 
@@ -2152,5 +2555,114 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(state.phase == ControllerPhase::Idle);
         assert_eq!(state.status.state, RecorderState::Idle);
+    }
+}
+
+#[cfg(test)]
+mod capture_surface_probe {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn captured_frames_can_be_bound_as_shader_resources() {
+        if retain_process_mta().is_err() {
+            eprintln!("skipping: could not join the process MTA");
+            return;
+        }
+        if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
+            eprintln!("skipping: Windows Graphics Capture is unavailable");
+            return;
+        }
+        let Ok((device, _context, winrt_device)) = create_d3d_device() else {
+            eprintln!("skipping: no D3D11 device available");
+            return;
+        };
+        let Ok(monitors) = enumerate_monitors() else {
+            eprintln!("skipping: no displays enumerated");
+            return;
+        };
+        let Some(monitor) = monitors.into_iter().find(|monitor| monitor.primary) else {
+            eprintln!("skipping: no primary display");
+            return;
+        };
+
+        let Ok(interop) = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>() else {
+            eprintln!("skipping: no capture interop");
+            return;
+        };
+        let handle = HMONITOR(monitor.handle as *mut c_void);
+        let Ok(item) = (unsafe { interop.CreateForMonitor::<GraphicsCaptureItem>(handle) }) else {
+            eprintln!("skipping: could not open the primary display for capture");
+            return;
+        };
+        let Ok(size) = item.Size() else {
+            eprintln!("skipping: could not read the capture size");
+            return;
+        };
+
+        for format in [
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            DirectXPixelFormat::R16G16B16A16Float,
+        ] {
+            let Ok(pool) =
+                Direct3D11CaptureFramePool::CreateFreeThreaded(&winrt_device, format, 2, size)
+            else {
+                eprintln!("skipping {format:?}: frame pool was refused");
+                continue;
+            };
+            let Ok(session) = pool.CreateCaptureSession(&item) else {
+                eprintln!("skipping {format:?}: capture session was refused");
+                continue;
+            };
+            let _ = session.SetIsCursorCaptureEnabled(false);
+            let _ = session.SetIsBorderRequired(false);
+            if session.StartCapture().is_err() {
+                eprintln!("skipping {format:?}: capture did not start");
+                continue;
+            }
+
+            let started = Instant::now();
+            let mut checked = false;
+            while started.elapsed() < Duration::from_secs(10) {
+                let Ok(frame) = pool.TryGetNextFrame() else {
+                    continue;
+                };
+                let surface = frame.Surface().expect("captured surface");
+                let access: IDirect3DDxgiInterfaceAccess =
+                    surface.cast().expect("captured dxgi surface");
+                let texture: ID3D11Texture2D =
+                    unsafe { access.GetInterface() }.expect("captured texture");
+
+                let mut descriptor = D3D11_TEXTURE2D_DESC::default();
+                unsafe { texture.GetDesc(&mut descriptor) };
+                let bind = descriptor.BindFlags;
+
+                assert!(
+                    bind & D3D11_BIND_SHADER_RESOURCE.0 as u32 != 0,
+                    "{format:?} capture texture lacks BIND_SHADER_RESOURCE (BindFlags {bind:#x})"
+                );
+
+                let mut view = None;
+                unsafe {
+                    device
+                        .CreateShaderResourceView(&texture, None, Some(&mut view))
+                        .unwrap_or_else(|error| {
+                            panic!("{format:?} capture texture rejected an SRV: {error}")
+                        });
+                }
+                assert!(
+                    view.is_some(),
+                    "{format:?} produced no shader resource view"
+                );
+                checked = true;
+                break;
+            }
+
+            let _ = session.Close();
+            let _ = pool.Close();
+            if !checked {
+                eprintln!("skipping {format:?}: no frame arrived within 10s");
+            }
+        }
     }
 }

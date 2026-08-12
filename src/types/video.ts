@@ -34,6 +34,8 @@ export interface RecordingConfig {
   width?: number;
   height?: number;
   displayId?: number;
+  windowId?: number;
+  windowName?: string;
   includeAudio?: boolean;
   micEnabled?: boolean;
   micDeviceId?: string | null;

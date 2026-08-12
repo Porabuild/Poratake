@@ -5,7 +5,7 @@ import { DEFAULT_CAMERA_STYLE } from '@/types/camera';
 import { DEFAULT_AUDIO_STYLE } from '@/types/audio';
 import { DEFAULT_ZOOM_SETTINGS } from '@/types/zoom';
 import type { CursorData, CursorStyle } from '@/types/cursor';
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import type { AudioStyle } from '@/types/audio';
 import type { VideoMetadata } from '@/types/video';
 import type { Segment } from '@/renderer/components/video-editor/types';
@@ -24,6 +24,7 @@ interface ExportData {
   cursorStyle: CursorStyle | null;
   cameraVideoPath: string | null;
   cameraStyle: CameraStyle | null;
+  cameraVisibleRanges?: CameraSegment[] | null;
   systemAudioPath: string | null;
   micAudioPath: string | null;
   hasEmbeddedAudio: boolean;
@@ -145,6 +146,7 @@ export function useVideoClipboardExport(): UseVideoClipboardExportReturn {
           cursorData: data.cursorData,
           cursorStyle,
           cameraStyle,
+          cameraVisibleRanges: data.cameraVisibleRanges ?? null,
           fps: 60,
         },
         frameRate: 60,

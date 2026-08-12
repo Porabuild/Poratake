@@ -122,6 +122,7 @@ export default function TextOptions({
             <div className="flex items-center justify-between px-2 py-1.5">
               <span className="text-muted-foreground text-xs">Background:</span>
               <Switch
+                size="sm"
                 checked={textBackground}
                 onCheckedChange={onTextBackgroundChange}
                 className="scale-75"

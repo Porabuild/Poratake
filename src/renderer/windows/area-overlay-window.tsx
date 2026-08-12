@@ -12,6 +12,7 @@ import SelectionScrim from '@/renderer/components/area-overlay/selection-scrim';
 import useAreaSelection from '@/renderer/hooks/use-area-selection';
 import type {
   AreaOverlayParams,
+  AreaOverlayPickTargetsMessage,
   AreaOverlayRect,
   AreaOverlayToolbarAction,
   AreaOverlayToolbarMessage,
@@ -24,17 +25,31 @@ export default function AreaOverlayWindow({
 }) {
   const frozenFrame = useRef<HTMLImageElement>(null);
   const [toolbar, setToolbar] = useState(params.toolbar);
+  const [prompt, setPrompt] = useState(params.prompt);
   const [isPickingColor, setIsPickingColor] = useState(false);
+  const [handedOff, setHandedOff] = useState(false);
 
   useLayoutEffect(() => {
     setToolbar(params.toolbar);
+    setPrompt(params.prompt);
     setIsPickingColor(false);
-  }, [params.sessionId, params.toolbar]);
+    setHandedOff(false);
+  }, [params.prompt, params.sessionId, params.toolbar]);
+
+  useEffect(() => {
+    const handleHandoff = () => setHandedOff(true);
+
+    window.ipcRenderer.on('area-overlay:handoff', handleHandoff);
+    return () => {
+      window.ipcRenderer.off('area-overlay:handoff', handleHandoff);
+    };
+  }, []);
 
   const send = useCallback(
-    (channel: string, rect: AreaOverlayRect) => {
+    (channel: string, rect: AreaOverlayRect, pickId?: number) => {
       window.ipcRenderer.send(channel, {
         displayId: params.displayId,
+        pickId,
         ...rect,
       });
     },
@@ -63,9 +78,19 @@ export default function AreaOverlayWindow({
       message: AreaOverlayToolbarMessage
     ) => setToolbar(message.toolbar);
 
+    const handlePickTargets = (
+      _event: unknown,
+      message: AreaOverlayPickTargetsMessage
+    ) => setPrompt(message.prompt);
+
     window.ipcRenderer.on('area-overlay:set-toolbar', handleToolbar);
+    window.ipcRenderer.on('area-overlay:set-pick-targets', handlePickTargets);
     return () => {
       window.ipcRenderer.off('area-overlay:set-toolbar', handleToolbar);
+      window.ipcRenderer.off(
+        'area-overlay:set-pick-targets',
+        handlePickTargets
+      );
     };
   }, []);
 
@@ -74,6 +99,9 @@ export default function AreaOverlayWindow({
     pointer,
     cursor,
     interacting,
+    picking,
+    locked,
+    hovered,
     bounds,
     startDrag,
     trackPointer,
@@ -83,10 +111,12 @@ export default function AreaOverlayWindow({
     interactive: params.interactive,
     initialRect: params.rect,
     initialAspectRatio: params.aspectRatio,
-    onSelected: selection =>
+    pickTargets: params.pickTargets,
+    onSelected: (selection, pickId) =>
       send(
         params.interactive ? 'area-overlay:selected' : 'area-overlay:confirm',
-        selection
+        selection,
+        pickId
       ),
     onUpdated: selection => send('area-overlay:updated', selection),
     onDiscarded: () => {
@@ -125,6 +155,16 @@ export default function AreaOverlayWindow({
   }, [cancel, isPickingColor]);
 
   const visibleRect = rect && rect.width > 0 && rect.height > 0 ? rect : null;
+  const selectionScrimRect =
+    handedOff && visibleRect
+      ? {
+          x: visibleRect.x - 1,
+          y: visibleRect.y - 1,
+          width: visibleRect.width + 2,
+          height: visibleRect.height + 2,
+        }
+      : visibleRect;
+  const scrimRect = picking ? hovered : selectionScrimRect;
 
   return (
     <div
@@ -145,31 +185,42 @@ export default function AreaOverlayWindow({
           draggable={false}
         />
       ) : null}
-      {!isPickingColor ? <SelectionScrim rect={visibleRect} /> : null}
-      {visibleRect && !isPickingColor ? (
+      {!isPickingColor ? <SelectionScrim rect={scrimRect} /> : null}
+      {visibleRect && !isPickingColor && !handedOff ? (
         <SelectionFrame
           rect={visibleRect}
           viewportHeight={bounds.height}
-          interactive={params.interactive}
+          interactive={params.interactive && !locked}
         />
       ) : null}
-      {!isPickingColor && !interacting && !visibleRect && pointer ? (
+      {!picking &&
+      !isPickingColor &&
+      !interacting &&
+      !visibleRect &&
+      pointer ? (
         <CrosshairGuides x={pointer.x} y={pointer.y} />
       ) : null}
-      {params.showPrompt && !isPickingColor && !interacting && !visibleRect ? (
+      {params.showPrompt &&
+      !isPickingColor &&
+      !interacting &&
+      !visibleRect &&
+      !handedOff ? (
         <div
           className={`pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm text-white shadow-lg ${
             toolbar ? 'top-24' : 'top-8'
           }`}
         >
-          Drag to select an area · Esc to cancel
+          {picking
+            ? (prompt ?? 'Click to select · Esc to cancel')
+            : 'Drag to select an area · Esc to cancel'}
         </div>
       ) : null}
-      {toolbar ? (
+      {toolbar && !handedOff ? (
         <AllInOneToolbar
           recordingEnabled={toolbar.recordingEnabled}
           ocrEnabled={toolbar.ocrEnabled}
           activeMode={toolbar.activeMode}
+          activeTarget={toolbar.activeTarget}
           onAction={sendToolbarAction}
           onPickingColorChange={handlePickingColorChange}
         />

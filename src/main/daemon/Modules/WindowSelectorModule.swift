@@ -8,6 +8,8 @@ class WindowSelectorModule: Module {
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
         switch method {
+        case "list":
+            handleList(requestId: requestId)
         case "select":
             handleSelect(requestId: requestId)
         case "cancel":
@@ -15,6 +17,24 @@ class WindowSelectorModule: Module {
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
+    }
+    
+    private func handleList(requestId: String) {
+        let windows = collectVisibleWindows().map { info -> [String: Any] in
+            [
+                "windowId": info.windowId,
+                "windowTitle": info.title,
+                "ownerName": info.ownerName,
+                "ownerPid": info.ownerPid,
+                "bounds": [
+                    "x": Int(info.bounds.origin.x),
+                    "y": Int(info.bounds.origin.y),
+                    "width": Int(info.bounds.width),
+                    "height": Int(info.bounds.height)
+                ]
+            ]
+        }
+        respond(id: requestId, result: ["windows": windows])
     }
     
     private func handleSelect(requestId: String) {
@@ -95,6 +115,48 @@ struct WindowSelectorInfo {
     let ownerName: String
     let ownerPid: Int
     let bounds: CGRect
+}
+
+func collectVisibleWindows() -> [WindowSelectorInfo] {
+    var result: [WindowSelectorInfo] = []
+    
+    let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+    guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+        return result
+    }
+    
+    let myPid = ProcessInfo.processInfo.processIdentifier
+    
+    for windowDict in windowList {
+        guard let windowId = windowDict[kCGWindowNumber as String] as? Int,
+              let ownerPid = windowDict[kCGWindowOwnerPID as String] as? Int,
+              let boundsDict = windowDict[kCGWindowBounds as String] as? [String: Any],
+              let x = boundsDict["X"] as? CGFloat,
+              let y = boundsDict["Y"] as? CGFloat,
+              let width = boundsDict["Width"] as? CGFloat,
+              let height = boundsDict["Height"] as? CGFloat,
+              let layer = windowDict[kCGWindowLayer as String] as? Int
+        else { continue }
+        
+        if ownerPid == Int(myPid) { continue }
+        if layer != 0 { continue }
+        if width < 50 || height < 50 { continue }
+        
+        let ownerName = windowDict[kCGWindowOwnerName as String] as? String ?? "Unknown"
+        let title = windowDict[kCGWindowName as String] as? String ?? ""
+        let displayTitle = title.isEmpty ? ownerName : title
+        let bounds = CGRect(x: x, y: y, width: width, height: height)
+        
+        result.append(WindowSelectorInfo(
+            windowId: windowId,
+            title: displayTitle,
+            ownerName: ownerName,
+            ownerPid: ownerPid,
+            bounds: bounds
+        ))
+    }
+    
+    return result
 }
 
 class WindowSelectorOverlayView: NSView {
@@ -220,7 +282,7 @@ class WindowSelectorUI {
     }
     
     func start() {
-        let windows = getVisibleWindows()
+        let windows = collectVisibleWindows()
         
         if windows.isEmpty {
             onError?("No visible windows found")
@@ -230,48 +292,6 @@ class WindowSelectorUI {
         createDimOverlay()
         createWindowOverlays(windows)
         NSApp.activate(ignoringOtherApps: true)
-    }
-    
-    private func getVisibleWindows() -> [WindowSelectorInfo] {
-        var result: [WindowSelectorInfo] = []
-        
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return result
-        }
-        
-        let myPid = ProcessInfo.processInfo.processIdentifier
-        
-        for windowDict in windowList {
-            guard let windowId = windowDict[kCGWindowNumber as String] as? Int,
-                  let ownerPid = windowDict[kCGWindowOwnerPID as String] as? Int,
-                  let boundsDict = windowDict[kCGWindowBounds as String] as? [String: Any],
-                  let x = boundsDict["X"] as? CGFloat,
-                  let y = boundsDict["Y"] as? CGFloat,
-                  let width = boundsDict["Width"] as? CGFloat,
-                  let height = boundsDict["Height"] as? CGFloat,
-                  let layer = windowDict[kCGWindowLayer as String] as? Int
-            else { continue }
-            
-            if ownerPid == Int(myPid) { continue }
-            if layer != 0 { continue }
-            if width < 50 || height < 50 { continue }
-            
-            let ownerName = windowDict[kCGWindowOwnerName as String] as? String ?? "Unknown"
-            let title = windowDict[kCGWindowName as String] as? String ?? ""
-            let displayTitle = title.isEmpty ? ownerName : title
-            let bounds = CGRect(x: x, y: y, width: width, height: height)
-            
-            result.append(WindowSelectorInfo(
-                windowId: windowId,
-                title: displayTitle,
-                ownerName: ownerName,
-                ownerPid: ownerPid,
-                bounds: bounds
-            ))
-        }
-        
-        return result
     }
     
     private func createDimOverlay() {

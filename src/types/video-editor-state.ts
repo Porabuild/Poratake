@@ -1,5 +1,5 @@
 import type { CursorStyle } from './cursor';
-import type { CameraStyle } from './camera';
+import type { CameraStyle, CameraSegment } from './camera';
 import type { KeyboardStyle } from './keyboard';
 import type { SubtitleStyle } from './subtitle';
 import type { AudioStyle } from './audio';
@@ -47,6 +47,8 @@ export interface VideoEditorState {
   zoomSegments: ZoomSegment[];
 
   zoomSettings: ZoomSettings;
+
+  cameraSegments?: CameraSegment[];
 
   drawingSegments?: DrawingSegment[];
 

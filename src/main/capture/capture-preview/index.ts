@@ -52,6 +52,17 @@ const MARGIN_X = 24;
 const MARGIN_Y = 24;
 const WINDOW_GAP = 12;
 
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+};
+
+function getImageMimeType(filePath: string): string {
+  return IMAGE_MIME_TYPES[path.extname(filePath).toLowerCase()] ?? 'image/png';
+}
+
 const CORNER_ANCHORS: Record<
   PreviewCorner,
   { fromRight: boolean; fromBottom: boolean }
@@ -510,6 +521,37 @@ export function registerCapturePreviewIpc(): void {
       data.window.close();
     }
   });
+
+  ipcMain.handle('capture-preview:get-source-image', event => {
+    const data = getPreviewDataByWebContentsId(event.sender.id);
+    if (!data || data.contentType === 'video') return null;
+
+    try {
+      const buffer = fs.readFileSync(data.filePath);
+      return `data:${getImageMimeType(data.filePath)};base64,${buffer.toString('base64')}`;
+    } catch (error) {
+      console.error('Failed to read preview source image:', error);
+      return null;
+    }
+  });
+
+  ipcMain.handle(
+    'capture-preview:copy-composited',
+    (event, dataUrl: string) => {
+      const data = getPreviewDataByWebContentsId(event.sender.id);
+      if (!data) return false;
+
+      const image = nativeImage.createFromDataURL(dataUrl);
+      if (image.isEmpty()) return false;
+
+      clipboard.writeImage(image);
+
+      if (!data.window.isDestroyed()) {
+        data.window.close();
+      }
+      return true;
+    }
+  );
 
   ipcMain.on('capture-preview:open-editor', async event => {
     const data = getPreviewDataByWebContentsId(event.sender.id);

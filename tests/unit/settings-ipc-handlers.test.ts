@@ -358,6 +358,41 @@ describe('settings IPC handlers', () => {
       expect(result.find(p => p.id === 'p3')).toBeUndefined();
     });
 
+    it('setDefaultPreset stores an existing preset id', async () => {
+      await loadAndInit();
+      ipcHandle['wallpaper:addPreset']({}, { id: 'p4', name: 'A' });
+      expect(ipcHandle['wallpaper:setDefaultPreset']({}, 'p4')).toBe('p4');
+      expect(ipcHandle['wallpaper:getSettings']()).toMatchObject({
+        defaultPresetId: 'p4',
+      });
+    });
+
+    it('setDefaultPreset rejects unknown ids and clears on null', async () => {
+      await loadAndInit();
+      ipcHandle['wallpaper:addPreset']({}, { id: 'p5', name: 'A' });
+      ipcHandle['wallpaper:setDefaultPreset']({}, 'p5');
+
+      expect(ipcHandle['wallpaper:setDefaultPreset']({}, 'missing')).toBeNull();
+      expect(ipcHandle['wallpaper:setDefaultPreset']({}, null)).toBeNull();
+    });
+
+    it('deletePreset clears the default when it is deleted', async () => {
+      await loadAndInit();
+      ipcHandle['wallpaper:addPreset']({}, { id: 'p6', name: 'A' });
+      ipcHandle['wallpaper:addPreset']({}, { id: 'p7', name: 'B' });
+      ipcHandle['wallpaper:setDefaultPreset']({}, 'p6');
+
+      ipcHandle['wallpaper:deletePreset']({}, 'p7');
+      expect(ipcHandle['wallpaper:getSettings']()).toMatchObject({
+        defaultPresetId: 'p6',
+      });
+
+      ipcHandle['wallpaper:deletePreset']({}, 'p6');
+      expect(ipcHandle['wallpaper:getSettings']()).toMatchObject({
+        defaultPresetId: null,
+      });
+    });
+
     it('selectImage returns null on cancel', async () => {
       mockShowOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
       await loadAndInit();

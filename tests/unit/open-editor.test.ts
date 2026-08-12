@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { pathToFileURL } from 'url';
 
 const browserWindows: MockBrowserWindow[] = [];
 const mockExistsSync = vi.fn();
@@ -10,6 +11,14 @@ const mockGetHistoryItemByPath = vi.fn();
 const mockUpdateHistoryItemByPath = vi.fn();
 const mockClipboardReadImage = vi.fn();
 const mockOsTmpdir = vi.fn(() => '/tmp');
+const mockConfig = {
+  editor: { defaultTool: 'arrow' },
+  screenshot: { closeOnCopy: true, closeOnSave: false, format: 'png' },
+  shortcuts: {
+    editor: { arrow: 'a' },
+    editorActions: { copy: 'CommandOrControl+C' },
+  },
+};
 
 class MockBrowserWindow {
   static webContentsCounter = 0;
@@ -25,6 +34,7 @@ class MockBrowserWindow {
   };
 
   destroyedFlag = false;
+  options: Electron.BrowserWindowConstructorOptions;
   loadURL = vi.fn();
   loadFile = vi.fn();
   show = vi.fn();
@@ -41,8 +51,8 @@ class MockBrowserWindow {
     this.windowHandlers[event].push(cb);
   });
 
-  constructor(_opts: unknown) {
-    void _opts;
+  constructor(opts: Electron.BrowserWindowConstructorOptions) {
+    this.options = opts;
     browserWindows.push(this);
   }
 }
@@ -106,6 +116,10 @@ vi.mock('@/main/history', () => ({
     mockUpdateHistoryItemByPath(...a),
 }));
 
+vi.mock('@/main/settings', () => ({
+  getConfig: () => mockConfig,
+}));
+
 describe('open-editor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -133,6 +147,34 @@ describe('open-editor', () => {
         height: 600,
       });
       expect(browserWindows.length).toBe(1);
+      expect(browserWindows[0].options.webPreferences).toMatchObject({
+        webSecurity: false,
+      });
+      expect(browserWindows[0].loadURL).toHaveBeenCalledWith(
+        'http://localhost:5173/?window=screenshot'
+      );
+    });
+
+    it('passes the direct image URL to the renderer', async () => {
+      const { openScreenshotWindow } =
+        await import('@/main/capture/screenshot/open-editor');
+      openScreenshotWindow({
+        filePath: '/p/img.png',
+        width: 800,
+        height: 600,
+      });
+      const window = browserWindows[0];
+      window.windowHandlers['wc:did-finish-load'][0]();
+      expect(window.webContents.send).toHaveBeenCalledWith('load', {
+        type: 'screenshot',
+        params: expect.objectContaining({
+          imageUrl: pathToFileURL('/p/img.png').href,
+          initialPreferences: mockConfig.editor,
+          screenshotSettings: mockConfig.screenshot,
+          editorShortcuts: mockConfig.shortcuts.editor,
+          editorActionShortcuts: mockConfig.shortcuts.editorActions,
+        }),
+      });
     });
 
     it('tracks window data', async () => {

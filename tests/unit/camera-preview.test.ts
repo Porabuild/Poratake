@@ -95,6 +95,31 @@ describe('camera-preview', () => {
     expect(m.isCameraPreviewVisible()).toBe(false);
   });
 
+  it('updates the visible camera preview position', async () => {
+    const m = await import('@/main/capture/video/camera-preview');
+    await m.showCameraPreview(sampleSettings);
+    mockDaemonCall.mockClear();
+
+    await m.updateCameraPreviewPosition({ x: 300, y: 400 });
+
+    expect(mockDaemonCall).toHaveBeenCalledWith('camera-preview', 'update', {
+      x: 300,
+      y: 400,
+    });
+    m.registerCameraPreviewIpcHandlers();
+    expect(ipcHandle['camera:get-settings']()).toEqual(
+      expect.objectContaining({ position: { x: 300, y: 400 } })
+    );
+  });
+
+  it('does not update a hidden camera preview position', async () => {
+    const m = await import('@/main/capture/video/camera-preview');
+
+    await m.updateCameraPreviewPosition({ x: 300, y: 400 });
+
+    expect(mockDaemonCall).not.toHaveBeenCalled();
+  });
+
   it('round-trips Windows camera positions through physical pixels', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     vi.resetModules();

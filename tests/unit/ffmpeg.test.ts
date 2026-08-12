@@ -38,6 +38,7 @@ const mockFs = {
   existsSync: vi.fn(),
   unlinkSync: vi.fn(),
   mkdirSync: vi.fn(),
+  statSync: vi.fn(() => ({ size: 500000 })),
   writeFileSync: vi.fn(),
   rmSync: vi.fn(),
 };
@@ -47,6 +48,7 @@ vi.mock('fs', () => ({
   existsSync: mockFs.existsSync,
   unlinkSync: mockFs.unlinkSync,
   mkdirSync: mockFs.mkdirSync,
+  statSync: mockFs.statSync,
   writeFileSync: mockFs.writeFileSync,
   rmSync: mockFs.rmSync,
 }));
@@ -192,6 +194,30 @@ describe('FFmpeg Utilities', () => {
         ],
         { stdio: ['pipe', 'pipe', 'pipe'] }
       );
+    });
+  });
+
+  describe('probeVideo', () => {
+    it('coalesces concurrent probes for the same video', async () => {
+      mockExecFile.mockRejectedValue(
+        Object.assign(new Error('probe complete'), {
+          stderr:
+            'Duration: 00:00:05.00, bitrate: 800 kb/s Video: h264, 1280x720 Audio: aac',
+        })
+      );
+
+      const { probeVideo } = await import('@/main/utils/ffmpeg');
+      const [first, second] = await Promise.all([
+        probeVideo('/recording.mp4'),
+        probeVideo('/recording.mp4'),
+      ]);
+
+      expect(mockExecFile).toHaveBeenCalledTimes(1);
+      expect(first).toEqual(second);
+      expect(first).toMatchObject({
+        hasAudio: true,
+        metadata: { width: 1280, height: 720, duration: 5 },
+      });
     });
   });
 

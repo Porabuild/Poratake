@@ -1,13 +1,6 @@
 import SelectionHandles from './selection-handles';
 import type { AreaOverlayRect } from '@/types/area-overlay';
 
-const CORNER_DOTS = [
-  '-top-1 -left-1',
-  '-top-1 -right-1',
-  '-bottom-1 -left-1',
-  '-bottom-1 -right-1',
-];
-
 const LABEL_CLEARANCE = 36;
 
 export default function SelectionFrame({
@@ -31,16 +24,7 @@ export default function SelectionFrame({
         height: rect.height,
       }}
     >
-      {interactive ? (
-        <SelectionHandles />
-      ) : (
-        CORNER_DOTS.map(position => (
-          <span
-            key={position}
-            className={`bg-primary absolute size-2 rounded-full ring-1 ring-white/80 ${position}`}
-          />
-        ))
-      )}
+      {interactive ? <SelectionHandles /> : null}
       <div
         className={`absolute left-1/2 -translate-x-1/2 rounded-md bg-black/75 px-2 py-1 font-mono text-xs whitespace-nowrap text-white ${
           labelBelow ? '-bottom-8' : 'top-1'

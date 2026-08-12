@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Trash2, Gauge } from 'lucide-react';
 import {
   PLAYBACK_SPEED_PRESETS,
@@ -20,18 +20,21 @@ import Track, { type TrackSegment } from './track';
 import TrackRow from './track-row';
 import type { TrackColors } from './track-colors';
 import { TRACK_COLORS } from './track-colors';
-import { formatDuration } from '../utils';
+import { formatDuration, SCISSORS_CURSOR } from '../utils';
 
 interface MusicTrackProps {
-  track: MusicTrackType;
+  tracks: MusicTrackType[];
   totalDuration: number;
   selectedId: string | null;
+  isCutToolActive: boolean;
   onSelect: (id: string | null) => void;
   onResize: (id: string, startTime: number, endTime: number) => void;
   onMove: (id: string, startTime: number, endTime: number) => void;
   onGestureEnd?: () => void;
-  onSpeedChange: (id: string, speed: number) => void;
-  onDelete: (id: string) => void;
+  onSpeedChange: (groupId: string, speed: number) => void;
+  onCut: (id: string, cutTime: number) => void;
+  onCutAll: (cutTime: number) => void;
+  onDelete: (groupId: string) => void;
 }
 
 const DISABLED_COLORS: TrackColors = {
@@ -41,29 +44,44 @@ const DISABLED_COLORS: TrackColors = {
 };
 
 export default function MusicTrack({
-  track,
+  tracks,
   totalDuration,
   selectedId,
+  isCutToolActive,
   onSelect,
   onResize,
   onMove,
   onGestureEnd,
   onSpeedChange,
+  onCut,
+  onCutAll,
   onDelete,
 }: MusicTrackProps) {
-  const segments: TrackSegment[] = [
-    {
-      id: track.id,
-      startTime: track.startTime,
-      endTime: track.endTime,
-    },
-  ];
+  const group = tracks[0];
 
-  const Icon = SOURCE_ICONS[track.source];
-  const colors = track.enabled ? TRACK_COLORS.purple : DISABLED_COLORS;
+  const segments: TrackSegment[] = useMemo(
+    () =>
+      tracks.map(track => ({
+        id: track.id,
+        startTime: track.startTime,
+        endTime: track.endTime,
+      })),
+    [tracks]
+  );
+
+  const trackById = useMemo(
+    () => new Map(tracks.map(track => [track.id, track])),
+    [tracks]
+  );
+
+  const Icon = SOURCE_ICONS[group.source];
+  const colors = group.enabled ? TRACK_COLORS.purple : DISABLED_COLORS;
 
   const renderLabel = useCallback(
-    (_segment: TrackSegment, widthPixels: number) => {
+    (segment: TrackSegment, widthPixels: number) => {
+      const track = trackById.get(segment.id);
+      if (!track) return null;
+
       const hasSpeedChange = track.speed !== 1;
       const duration = track.endTime - track.startTime;
 
@@ -90,21 +108,21 @@ export default function MusicTrack({
         </span>
       );
     },
-    [track.name, track.speed, track.startTime, track.endTime, Icon]
+    [trackById, Icon]
   );
 
   const handleDelete = useCallback(() => {
-    onDelete(track.id);
-  }, [onDelete, track.id]);
+    onDelete(group.groupId);
+  }, [onDelete, group.groupId]);
 
   const handleSpeedChange = useCallback(
     (speed: number) => {
-      onSpeedChange(track.id, speed);
+      onSpeedChange(group.groupId, speed);
     },
-    [onSpeedChange, track.id]
+    [onSpeedChange, group.groupId]
   );
 
-  const isRemovable = track.source === 'music';
+  const isRemovable = group.source === 'music';
 
   return (
     <TrackRow>
@@ -119,11 +137,27 @@ export default function MusicTrack({
             features={{
               canMove: true,
               renderLabel,
+              allowTrackClickOnSegments: isCutToolActive,
+              toolCursor: isCutToolActive ? SCISSORS_CURSOR : undefined,
             }}
             onSelect={onSelect}
             onResize={onResize}
             onMove={onMove}
             onGestureEnd={onGestureEnd}
+            onTrackClick={
+              isCutToolActive
+                ? (time, shiftKey) => {
+                    if (!shiftKey) {
+                      onCutAll(time);
+                      return;
+                    }
+                    const target = tracks.find(
+                      track => time >= track.startTime && time <= track.endTime
+                    );
+                    if (target) onCut(target.id, time);
+                  }
+                : undefined
+            }
           />
         </ContextMenuTrigger>
         <ContextMenuContent className="w-48">
@@ -137,10 +171,10 @@ export default function MusicTrack({
                 <ContextMenuItem
                   key={speed}
                   onClick={() => handleSpeedChange(speed)}
-                  className={track.speed === speed ? 'bg-accent' : ''}
+                  className={group.speed === speed ? 'bg-accent' : ''}
                 >
                   {formatPlaybackSpeed(speed)}
-                  {track.speed === speed && (
+                  {group.speed === speed && (
                     <span className="ml-auto text-xs">*</span>
                   )}
                 </ContextMenuItem>

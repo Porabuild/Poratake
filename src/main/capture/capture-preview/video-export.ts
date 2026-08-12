@@ -20,7 +20,11 @@ import {
 } from '@/main/capture/video/camera-data';
 import type { VideoMetadata } from '@/types/video';
 import type { CursorData, CursorStyle } from '@/types/cursor';
-import type { CameraStyle } from '@/types/camera';
+import {
+  mapVideoRangesToCameraSegments,
+  type CameraStyle,
+  type CameraSegment,
+} from '@/types/camera';
 import type { AudioStyle } from '@/types/audio';
 import type { MusicTrack } from '@/types/music';
 import type { VideoEditorState } from '@/types/video-editor-state';
@@ -40,6 +44,7 @@ interface PreviewExportData {
   cursorStyle: CursorStyle | null;
   cameraVideoPath: string | null;
   cameraStyle: CameraStyle | null;
+  cameraVisibleRanges: CameraSegment[] | null;
   systemAudioPath: string | null;
   micAudioPath: string | null;
   hasEmbeddedAudio: boolean;
@@ -132,6 +137,15 @@ export function registerPreviewExportIpc(
             ? cameraVideoPath
             : null,
         cameraStyle: (editorState?.cameraStyle as CameraStyle) ?? null,
+        cameraVisibleRanges:
+          editorState?.cameraSegments ??
+          (cameraData
+            ? mapVideoRangesToCameraSegments(
+                cameraData.meta?.visibleRanges ?? null,
+                editorState?.segments ?? [],
+                probeResult.metadata.duration
+              )
+            : null),
         systemAudioPath: systemAudioExists ? systemAudioFilePath : null,
         micAudioPath: micAudioExists ? micAudioFilePath : null,
         hasEmbeddedAudio,
