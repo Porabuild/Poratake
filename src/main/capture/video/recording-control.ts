@@ -6,6 +6,7 @@ import {
   hideCameraPreview,
   getCameraPreviewSettings,
   updateCameraPreviewPosition,
+  enableCameraContentProtection,
 } from './camera-preview';
 import {
   startPendingRecording,
@@ -325,6 +326,10 @@ async function applySessionCamera(
   if (!camera) return;
   if (enabled && !(await checkAndRequestCameraPermission())) return;
 
+  if (enabled) {
+    await enableCameraContentProtection();
+  }
+
   await daemon.call('screen-recorder', 'setCamera', { enabled });
 
   if (enabled) {
@@ -521,12 +526,8 @@ async function handleStart(): Promise<void> {
         ? config.recording.selectedMicName
         : null,
       cameraEnabled: config.recording.camera?.enabled ?? false,
-      cameraDeviceId: config.recording.camera?.enabled
-        ? config.recording.camera?.selectedDeviceId
-        : null,
-      cameraDeviceName: config.recording.camera?.enabled
-        ? config.recording.camera?.selectedDeviceName
-        : null,
+      cameraDeviceId: config.recording.camera?.selectedDeviceId,
+      cameraDeviceName: config.recording.camera?.selectedDeviceName,
       keyboardEnabled: true,
       iosDeviceId: config.recording.iosDevice?.id ?? null,
       iosDeviceName: config.recording.iosDevice?.name ?? null,
@@ -882,21 +883,21 @@ export async function hidePreRecordingControl(
 }
 
 function createRecordingSession(config: RecordingConfig): RecordingSession {
-  const cameraSettings = getCameraPreviewSettings();
+  const cameraSettings =
+    getCameraPreviewSettings() ?? getConfig().recording.camera;
   return {
     systemAudio: config.includeAudio ?? true,
     micEnabled: config.micEnabled ?? false,
     selectedMicId: config.micDeviceId ?? null,
     selectedMicName: config.micDeviceName ?? null,
     cameraEnabled: config.cameraEnabled ?? false,
-    camera:
-      config.cameraEnabled && cameraSettings
-        ? {
-            ...cameraSettings,
-            selectedDeviceId: config.cameraDeviceId ?? null,
-            selectedDeviceName: config.cameraDeviceName ?? null,
-          }
-        : undefined,
+    camera: cameraSettings
+      ? {
+          ...cameraSettings,
+          selectedDeviceId: config.cameraDeviceId ?? null,
+          selectedDeviceName: config.cameraDeviceName ?? null,
+        }
+      : undefined,
   };
 }
 

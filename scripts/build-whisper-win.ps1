@@ -5,9 +5,10 @@ $projectRoot = Split-Path -Parent $scriptDir
 $outputDir = Join-Path $projectRoot 'src\main\binaries\whisper'
 $outputPath = Join-Path $outputDir 'whisper.exe'
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-$buildRoot = Join-Path $tempRoot ("capty-whisper-" + [guid]::NewGuid().ToString('N'))
+$buildRoot = Join-Path $tempRoot ("poratake-whisper-" + [guid]::NewGuid().ToString('N'))
 $sourceDir = Join-Path $buildRoot 'whisper.cpp'
 $buildDir = Join-Path $sourceDir 'build'
+$whisperCommit = '2eeeba56e9edd762b4b38467bab96c2517163158'
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw 'git is required to build whisper.cpp'
@@ -20,9 +21,15 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 New-Item -ItemType Directory -Path $buildRoot | Out-Null
 
 try {
-    git clone --depth 1 --branch v1.8.3 https://github.com/ggerganov/whisper.cpp.git $sourceDir
+    git init $sourceDir
     if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to clone whisper.cpp'
+        throw 'Failed to initialize the whisper.cpp source directory'
+    }
+    git -C $sourceDir remote add origin https://github.com/ggml-org/whisper.cpp.git
+    git -C $sourceDir fetch --depth 1 origin $whisperCommit
+    git -C $sourceDir checkout --detach FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to fetch the pinned whisper.cpp commit'
     }
 
     cmake -S $sourceDir -B $buildDir -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON

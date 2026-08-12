@@ -95,13 +95,17 @@ This file must list every third-party component that ships inside a Poratake rel
 
 The package manager-provided license files for these components ship under `licenses/node_modules`. The `client-only`, `lazy-val`, and `react-remove-scroll-bar` npm archives omit a license file, so their authoritative MIT texts ship under `licenses/npm`.
 
+## Geist fonts
+
+Poratake bundles Geist Sans and Geist Mono from the [Geist font project](https://github.com/vercel/geist-font), copyright 2024 The Geist Project Authors and licensed under the SIL Open Font License 1.1. The full license text ships with the app at `licenses/Geist-OFL-1.1.txt`.
+
 ## FFmpeg
 
-Poratake bundles an FFmpeg binary built from the unmodified FFmpeg 7.1 release, configured LGPL-only (`--disable-gpl --disable-nonfree`). FFmpeg is licensed under the GNU Lesser General Public License v2.1; the full license text ships with the app at `licenses/FFmpeg-LGPL-2.1.txt`. The exact corresponding source is the official release archive at <https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz>, and the complete build configuration is `scripts/build-ffmpeg.sh` in the Poratake source repository.
+Poratake bundles an FFmpeg binary built from the unmodified FFmpeg 7.1 release archive with SHA-256 `40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6`, configured LGPL-only (`--disable-gpl --disable-nonfree`). FFmpeg is licensed under the GNU Lesser General Public License v2.1; the full license text ships with the app at `licenses/FFmpeg-LGPL-2.1.txt`. The exact corresponding source is the official release archive at <https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz>, and the complete build configuration is `scripts/build-ffmpeg.sh` in the Poratake source repository.
 
 ## whisper.cpp
 
-Poratake bundles a `whisper-cli` binary built from [whisper.cpp](https://github.com/ggml-org/whisper.cpp) v1.8.3 using `scripts/build-whisper.sh`. Speech-recognition models are not distributed with Poratake; they are downloaded from Hugging Face at the user's request.
+Poratake bundles a `whisper-cli` binary built from [whisper.cpp](https://github.com/ggml-org/whisper.cpp) v1.8.3 at commit `2eeeba56e9edd762b4b38467bab96c2517163158` using `scripts/build-whisper.sh`. Speech-recognition models are not distributed with Poratake; they are downloaded from Hugging Face at the user's request.
 
 MIT License
 

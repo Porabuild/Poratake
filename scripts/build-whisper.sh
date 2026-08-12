@@ -13,7 +13,8 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 WHISPER_VERSION="v1.8.3"
-WHISPER_REPO="https://github.com/ggerganov/whisper.cpp.git"
+WHISPER_REPO="https://github.com/ggml-org/whisper.cpp.git"
+WHISPER_COMMIT="2eeeba56e9edd762b4b38467bab96c2517163158"
 
 cleanup() {
     if [ -d "$BUILD_DIR" ]; then
@@ -31,7 +32,10 @@ mkdir -p "$BUILD_DIR"
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 
 echo -e "${YELLOW}Cloning whisper.cpp...${NC}"
-git clone --depth 1 --branch "$WHISPER_VERSION" "$WHISPER_REPO" "$BUILD_DIR/whisper.cpp"
+git init "$BUILD_DIR/whisper.cpp"
+git -C "$BUILD_DIR/whisper.cpp" remote add origin "$WHISPER_REPO"
+git -C "$BUILD_DIR/whisper.cpp" fetch --depth 1 origin "$WHISPER_COMMIT"
+git -C "$BUILD_DIR/whisper.cpp" checkout --detach FETCH_HEAD
 
 cd "$BUILD_DIR/whisper.cpp"
 

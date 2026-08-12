@@ -54,7 +54,21 @@ describe('Poratake rebrand compliance', () => {
 
     expect(builder).toContain('licenses/Poratake-AGPL-3.0.txt');
     expect(builder).toContain('licenses/THIRD_PARTY_NOTICES.md');
+    expect(builder).toContain('licenses/Geist-OFL-1.1.txt');
     expect(builder).toContain('@heroui/**/LICENSE*');
+    expect(fs.existsSync('licenses/Geist-OFL-1.1.txt')).toBe(true);
+    expect(read('THIRD_PARTY_NOTICES.md')).toContain('## Geist fonts');
+  });
+
+  it('uses fork-owned application and data identities', () => {
+    const builder = read('electron-builder.json5');
+    const paths = read('src/main/utils/paths.ts');
+
+    expect(builder).toContain('"appId": "com.porabuild.poratake"');
+    expect(builder).toContain(
+      '"UTTypeIdentifier": "com.porabuild.poratake.recording"'
+    );
+    expect(paths).toContain("isProduction ? 'poratake' : 'poratake-dev'");
   });
 
   it('inventories every bundled npm package and packages its license', () => {
@@ -167,6 +181,17 @@ describe('Poratake rebrand compliance', () => {
     expect(releaseScript).toContain('set -eo pipefail');
     expect(releaseScript).not.toContain('git push || log_warning');
     expect(packageJson).toContain('bun run build-native-mac');
+    expect(packageJson).toContain('"packageManager": "bun@1.3.8"');
+    expect(workflow).toContain('bun-version: 1.3.8');
+    expect(read('.github/workflows/checks.yml')).toContain(
+      'run: ./scripts/build-daemon.sh'
+    );
+    expect(read('scripts/build-ffmpeg.sh')).toContain(
+      '40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6'
+    );
+    expect(read('scripts/build-whisper.sh')).toContain(
+      '2eeeba56e9edd762b4b38467bab96c2517163158'
+    );
   });
 
   it('does not publish release refs before validating built assets', () => {

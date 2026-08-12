@@ -165,6 +165,7 @@ class RecordingOverlayModule: Module {
     private func windowBounds(of windowID: CGWindowID) -> CGRect? {
         guard let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID)
                 as? [[String: Any]],
+              windows.first?[kCGWindowIsOnscreen as String] as? Bool == true,
               let boundsDict = windows.first?[kCGWindowBounds as String] as? [String: Any],
               let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
               rect.width > 0, rect.height > 0

@@ -729,7 +729,7 @@ fn handle_command(
             false
         }
         WorkerCommand::SetCamera(enabled, response) => {
-            let _ = response.send(runtime.set_camera(enabled));
+            let _ = response.send(runtime.set_camera(enabled, *paused));
             false
         }
         WorkerCommand::Stop(response) => {
@@ -783,6 +783,8 @@ struct RecordingRuntime {
     input: Option<InputTracker>,
     audio: Option<AudioCaptureSet>,
     camera: Option<RecordingCamera>,
+    camera_config: CameraRecordingConfig,
+    camera_clock: Option<CameraSyncClock>,
     frames: Receiver<FrameMessage>,
     timeline: VideoTimeline,
     follows_target: bool,
@@ -835,14 +837,16 @@ impl RecordingRuntime {
                 return Err(error);
             }
         };
+        let camera_config = CameraRecordingConfig {
+            project_dir,
+            device_id: config.camera_device_id.clone(),
+            device_name: config.camera_device_name.clone(),
+            frame_rate: config.frame_rate,
+            enabled: config.camera_enabled,
+        };
         let camera = if config.camera_enabled {
             let mut camera = RecordingCamera::new();
-            if let Err(error) = camera.start(CameraRecordingConfig {
-                project_dir,
-                device_id: config.camera_device_id.clone(),
-                device_name: config.camera_device_name.clone(),
-                frame_rate: config.frame_rate,
-            }) {
+            if let Err(error) = camera.start(camera_config.clone()) {
                 capture.close();
                 encoder.abort();
                 input.abort();
@@ -860,6 +864,8 @@ impl RecordingRuntime {
             input: Some(input),
             audio: Some(audio),
             camera,
+            camera_config,
+            camera_clock: None,
             frames,
             timeline: VideoTimeline::new(config.frame_rate),
             follows_target,
@@ -890,8 +896,12 @@ impl RecordingRuntime {
         let content = frame.ContentSize().map_err(|error| {
             RecorderError::capture(format!("Failed to read captured frame size: {error}"))
         })?;
+        if self.refresh_window_capture(content)? {
+            self.timeline.observe(source_time);
+            return Ok(None);
+        }
         let Some(timestamp) = self.timeline.timestamp_for(source_time) else {
-            return self.follow_content_size(content).map(|_| None);
+            return Ok(None);
         };
 
         let encoder = self
@@ -900,27 +910,28 @@ impl RecordingRuntime {
             .ok_or_else(|| RecorderError::capture("Video encoder is unavailable"))?;
         encoder.write(frame, content, timestamp, self.timeline.frame_duration())?;
         self.timeline.commit(timestamp);
-        self.follow_content_size(content)?;
         Ok(Some(self.timeline.duration()))
     }
 
-    fn follow_content_size(&mut self, content: SizeInt32) -> Result<(), RecorderError> {
+    fn refresh_window_capture(&mut self, content: SizeInt32) -> Result<bool, RecorderError> {
         if !self.follows_target {
-            return Ok(());
+            return Ok(false);
         }
         let Some(capture) = self.capture.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
-        if !capture.resize_pool(content)? {
-            return Ok(());
+        let refresh = capture.refresh_window_pool(content)?;
+        if !refresh.recreated {
+            return Ok(false);
         }
 
-        // The recreated pool allocates new textures, so views cached against
-        // the old ones would keep rendering pixels nobody writes to any more.
         if let Some(encoder) = self.encoder.as_mut() {
+            if refresh.white_scale_changed {
+                encoder.set_fit_white_scale(refresh.white_scale)?;
+            }
             encoder.forget_source_views();
         }
-        Ok(())
+        Ok(true)
     }
 
     fn set_microphone(&mut self, device: Option<AudioDevice>) -> Result<(), RecorderError> {
@@ -931,13 +942,27 @@ impl RecordingRuntime {
         self.audio_mut()?.set_system_audio(enabled)
     }
 
-    fn set_camera(&mut self, enabled: bool) -> Result<(), RecorderError> {
-        self.camera
-            .as_ref()
-            .ok_or_else(|| {
-                RecorderError::invalid_state("This recording was not started with a camera")
-            })?
-            .set_enabled(enabled)
+    fn set_camera(&mut self, enabled: bool, paused: bool) -> Result<(), RecorderError> {
+        if let Some(camera) = self.camera.as_ref() {
+            return camera.set_enabled(enabled);
+        }
+        if !enabled {
+            return Ok(());
+        }
+
+        let mut clock = self.camera_clock.ok_or_else(|| {
+            RecorderError::invalid_state("Camera cannot start before the first screen frame")
+        })?;
+        clock.prior_pause = self.timeline.pause_duration();
+        let mut camera = RecordingCamera::new();
+        camera.start(self.camera_config.clone())?;
+        camera.sync_with_screen_start(clock)?;
+        camera.set_enabled(true)?;
+        if paused {
+            camera.pause()?;
+        }
+        self.camera = Some(camera);
+        Ok(())
     }
 
     fn audio_mut(&mut self) -> Result<&mut AudioCaptureSet, RecorderError> {
@@ -956,15 +981,18 @@ impl RecordingRuntime {
         self.camera.as_ref().and_then(RecordingCamera::try_error)
     }
 
-    fn sync_with_first_frame(&self, source_time: i64) -> Result<(), RecorderError> {
+    fn sync_with_first_frame(&mut self, source_time: i64) -> Result<(), RecorderError> {
         let before = Instant::now();
         let wall_time = SystemTime::now();
         let after = Instant::now();
+        let clock = CameraSyncClock {
+            monotonic_time: before + after.duration_since(before) / 2,
+            wall_time,
+            prior_pause: 0,
+        };
+        self.camera_clock = Some(clock);
         if let Some(camera) = self.camera.as_ref() {
-            camera.sync_with_screen_start(CameraSyncClock {
-                monotonic_time: before + after.duration_since(before) / 2,
-                wall_time,
-            })?;
+            camera.sync_with_screen_start(clock)?;
         }
         if let Some(input) = self.input.as_ref() {
             input.sync_with_first_frame();
@@ -1260,6 +1288,13 @@ impl VideoTimeline {
 
     fn is_resuming(&self) -> bool {
         self.pause_start.is_some()
+    }
+
+    fn pause_duration(&self) -> i64 {
+        self.total_pause.saturating_add(
+            self.pause_start
+                .map_or(0, |start| self.last_source.saturating_sub(start)),
+        )
     }
 
     fn duration(&self) -> f64 {
@@ -1566,6 +1601,9 @@ struct WindowsCapture {
     device: IDirect3DDevice,
     format: DirectXPixelFormat,
     pool_size: SizeInt32,
+    target_window: Option<isize>,
+    monitor_handle: isize,
+    white_scale: Option<f32>,
     frame_token: i64,
     closed_token: i64,
 }
@@ -1601,6 +1639,8 @@ impl WindowsCapture {
             RecorderError::capture(format!("Failed to read capture size: {error}"))
         })?;
         let layout = target.layout(content_size)?;
+        let target_window = target.window;
+        let monitor_handle = target.monitor.handle;
         let format = capture_pixel_format(layout.white_scale);
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&device, format, 4, content_size)
             .map_err(|error| {
@@ -1657,6 +1697,9 @@ impl WindowsCapture {
                 device,
                 format,
                 pool_size: content_size,
+                target_window,
+                monitor_handle,
+                white_scale: layout.white_scale,
                 frame_token,
                 closed_token,
             },
@@ -1671,24 +1714,60 @@ impl WindowsCapture {
         })
     }
 
-    /// Windows Graphics Capture keeps handing back frames sized to the pool it
-    /// was created with, so a window that has been resized must be re-pooled
-    /// before its new pixels can arrive.
-    fn resize_pool(&mut self, content: SizeInt32) -> Result<bool, RecorderError> {
-        if content.Width < 1
-            || content.Height < 1
-            || (content.Width == self.pool_size.Width && content.Height == self.pool_size.Height)
-        {
-            return Ok(false);
+    fn refresh_window_pool(
+        &mut self,
+        content: SizeInt32,
+    ) -> Result<WindowPoolRefresh, RecorderError> {
+        let Some(handle) = self.target_window else {
+            return Ok(WindowPoolRefresh::unchanged(self.white_scale));
+        };
+        if content.Width < 1 || content.Height < 1 {
+            return Ok(WindowPoolRefresh::unchanged(self.white_scale));
+        }
+
+        let monitor =
+            unsafe { MonitorFromWindow(HWND(handle as *mut c_void), MONITOR_DEFAULTTONEAREST) };
+        let next_monitor = monitor.0 as isize;
+        let monitor_changed = next_monitor != self.monitor_handle;
+        let next_white_scale = if monitor_changed {
+            let monitors = enumerate_monitors()?;
+            let target = monitors
+                .iter()
+                .find(|candidate| candidate.handle == next_monitor)
+                .ok_or_else(|| {
+                    RecorderError::capture("Failed to resolve the window's current display")
+                })?;
+            hdr_white_scale(&target.device)
+        } else {
+            self.white_scale
+        };
+        let next_format = capture_pixel_format(next_white_scale);
+        if !pool_needs_recreation(
+            self.monitor_handle,
+            self.pool_size,
+            self.format,
+            next_monitor,
+            content,
+            next_format,
+        ) {
+            return Ok(WindowPoolRefresh::unchanged(self.white_scale));
         }
 
         self.pool
-            .Recreate(&self.device, self.format, 4, content)
+            .Recreate(&self.device, next_format, 4, content)
             .map_err(|error| {
-                RecorderError::capture(format!("Failed to resize the capture frame pool: {error}"))
+                RecorderError::capture(format!("Failed to refresh the capture frame pool: {error}"))
             })?;
+        let white_scale_changed = next_white_scale != self.white_scale;
+        self.monitor_handle = next_monitor;
+        self.format = next_format;
         self.pool_size = content;
-        Ok(true)
+        self.white_scale = next_white_scale;
+        Ok(WindowPoolRefresh {
+            recreated: true,
+            white_scale: next_white_scale,
+            white_scale_changed,
+        })
     }
 
     fn close(self) {
@@ -1697,6 +1776,36 @@ impl WindowsCapture {
         let _ = self.session.Close();
         let _ = self.pool.Close();
     }
+}
+
+struct WindowPoolRefresh {
+    recreated: bool,
+    white_scale: Option<f32>,
+    white_scale_changed: bool,
+}
+
+impl WindowPoolRefresh {
+    fn unchanged(white_scale: Option<f32>) -> Self {
+        Self {
+            recreated: false,
+            white_scale,
+            white_scale_changed: false,
+        }
+    }
+}
+
+fn pool_needs_recreation(
+    current_monitor: isize,
+    current_size: SizeInt32,
+    current_format: DirectXPixelFormat,
+    next_monitor: isize,
+    next_size: SizeInt32,
+    next_format: DirectXPixelFormat,
+) -> bool {
+    current_monitor != next_monitor
+        || current_size.Width != next_size.Width
+        || current_size.Height != next_size.Height
+        || current_format != next_format
 }
 
 fn create_d3d_device() -> Result<(ID3D11Device, ID3D11DeviceContext, IDirect3DDevice), RecorderError>
@@ -2064,6 +2173,11 @@ impl MediaFoundationEncoder {
         self.source_views.clear();
     }
 
+    fn set_fit_white_scale(&mut self, white_scale: Option<f32>) -> Result<(), RecorderError> {
+        self.fit = Some(FitStage::new(&self.device, white_scale).map_err(RecorderError::capture)?);
+        Ok(())
+    }
+
     fn cached_source_view(
         &mut self,
         source: &ID3D11Texture2D,
@@ -2415,6 +2529,39 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_window_to_another_display_recreates_its_pool() {
+        let size = SizeInt32 {
+            Width: 1280,
+            Height: 720,
+        };
+
+        assert!(pool_needs_recreation(
+            1,
+            size,
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            2,
+            size,
+            DirectXPixelFormat::R16G16B16A16Float,
+        ));
+        assert!(pool_needs_recreation(
+            1,
+            size,
+            DirectXPixelFormat::R16G16B16A16Float,
+            2,
+            size,
+            DirectXPixelFormat::R16G16B16A16Float,
+        ));
+        assert!(!pool_needs_recreation(
+            1,
+            size,
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            1,
+            size,
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+        ));
+    }
+
+    #[test]
     fn video_timeline_starts_at_zero_on_first_frame() {
         let mut timeline = VideoTimeline::new(10);
 
@@ -2439,6 +2586,19 @@ mod tests {
         assert_eq!(timeline.timestamp_for(52_000_000), None);
         assert!(!timeline.is_resuming());
         assert_eq!(timeline.timestamp_for(53_000_000), Some(3_000_000));
+    }
+
+    #[test]
+    fn late_tracks_inherit_completed_and_active_pause_time() {
+        let mut timeline = VideoTimeline::new(10);
+        timeline.timestamp_for(10_000_000);
+        timeline.pause();
+        timeline.observe(30_000_000);
+        assert_eq!(timeline.pause_duration(), 20_000_000);
+        timeline.timestamp_for(40_000_000);
+        timeline.pause();
+        timeline.observe(45_000_000);
+        assert_eq!(timeline.pause_duration(), 35_000_000);
     }
 
     #[test]

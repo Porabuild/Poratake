@@ -7,19 +7,19 @@ Object.defineProperty(process, 'platform', {
   value: process.env.OS === 'Windows_NT' ? 'win32' : 'darwin',
 });
 
-const { claimDevLock, clearDevLock, isCaptyDevCommand, writeDevLock } =
+const { claimDevLock, clearDevLock, isPoratakeDevCommand, writeDevLock } =
   await import('../../scripts/dev-lock.mjs');
 
 const roots: string[] = [];
 
 function createRoot(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'capty-dev-lock-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'poratake-dev-lock-'));
   roots.push(root);
   return root;
 }
 
 function lockPath(root: string): string {
-  return path.join(root, 'node_modules', '.cache', 'capty-dev.lock');
+  return path.join(root, 'node_modules', '.cache', 'poratake-dev.lock');
 }
 
 afterEach(() => {
@@ -76,23 +76,26 @@ describe('dev lock', () => {
     const root = 'C:\\work\\capty';
 
     expect(
-      isCaptyDevCommand(root, `node ${root}\\node_modules\\vite\\bin\\vite.js`)
+      isPoratakeDevCommand(
+        root,
+        `node ${root}\\node_modules\\vite\\bin\\vite.js`
+      )
     ).toBe(true);
-    expect(isCaptyDevCommand(root, `git -C ${root} status`)).toBe(false);
+    expect(isPoratakeDevCommand(root, `git -C ${root} status`)).toBe(false);
     expect(
-      isCaptyDevCommand(
+      isPoratakeDevCommand(
         root,
         `node ${root}\\node_modules\\vite\\bin\\vite.js build`
       )
     ).toBe(false);
     expect(
-      isCaptyDevCommand(
+      isPoratakeDevCommand(
         root,
         `node ${root}\\node_modules\\vite\\bin\\vite.js preview`
       )
     ).toBe(false);
     expect(
-      isCaptyDevCommand(
+      isPoratakeDevCommand(
         root,
         `node C:\\other\\node_modules\\vite\\bin\\vite.js`
       )
