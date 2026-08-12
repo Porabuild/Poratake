@@ -4,6 +4,7 @@
   "appId": "com.porabuild.poratake",
   "asar": true,
   "productName": "Poratake",
+  "copyright": "Copyright © 2026 Serhii Vecherenko. Based on Capty, Copyright © 2026 Capty.",
   "directories": {
     "output": "release/${version}"
   },

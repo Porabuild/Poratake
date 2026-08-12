@@ -44,8 +44,14 @@ describe('Poratake rebrand compliance', () => {
     const about = read('src/renderer/components/settings/about-tab.tsx');
 
     expect(readme).toContain('Copyright (C) 2026 Capty');
+    expect(readme).toContain(
+      'Copyright (C) 2026 Serhii Vecherenko for Poratake modifications'
+    );
     expect(readme).toContain('Poratake modifications were made in 2026');
     expect(about).toContain('Poratake is a modified version of Capty');
+    expect(about).toContain(
+      'Copyright &copy; 2026 Serhii Vecherenko for Poratake'
+    );
     expect(about).toContain('Licensed under GNU AGPL v3.0, without warranty');
   });
 
@@ -146,6 +152,7 @@ describe('Poratake rebrand compliance', () => {
     const menu = read('src/main/menu/index.ts');
     const workflow = read('.github/workflows/release.yml');
     const releaseScript = read('scripts/release.sh');
+    const packageJson = read('package.json');
 
     expect(builder).toContain('"owner": "Porabuild"');
     expect(builder).toContain('"repo": "Poratake"');
@@ -154,6 +161,14 @@ describe('Poratake rebrand compliance', () => {
     expect(readme).toContain('https://github.com/Porabuild/Poratake');
     expect(about).toContain('https://github.com/Porabuild/Poratake');
     expect(menu).toContain('https://github.com/Porabuild/Poratake/issues');
+    expect(packageJson).toContain('https://porabuild.com');
+    expect(packageJson).toContain(
+      'git+https://github.com/Porabuild/Poratake.git'
+    );
+    expect(packageJson).toContain(
+      'https://github.com/Porabuild/Poratake/issues'
+    );
+    expect(about).toContain("PORABUILD_URL = 'https://porabuild.com'");
     expect(workflow).toContain('name: Poratake v${{ inputs.version }}');
     expect(workflow).toContain('release/${{ inputs.version }}/latest-mac.yml');
     expect(workflow).not.toContain('https://capty.app/api/versions');

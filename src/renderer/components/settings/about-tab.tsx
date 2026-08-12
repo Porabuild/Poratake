@@ -25,6 +25,7 @@ import BrandLogo from '@/renderer/components/brand-logo';
 
 const SOURCE_URL = 'https://github.com/Porabuild/Poratake';
 const UPSTREAM_URL = 'https://github.com/capty-app/capty';
+const PORABUILD_URL = 'https://porabuild.com';
 
 export default function AboutTab() {
   const [version, setVersion] = useState('0.0.0');
@@ -235,6 +236,19 @@ export default function AboutTab() {
                 href="#"
                 onClick={e => {
                   e.preventDefault();
+                  window.ipcRenderer.send('open-external', PORABUILD_URL);
+                }}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Porabuild website
+              </a>
+            </div>
+            <div className="flex items-center gap-3 text-sm">
+              <Code2 className="text-muted-foreground h-4 w-4" />
+              <a
+                href="#"
+                onClick={e => {
+                  e.preventDefault();
                   window.ipcRenderer.send('open-external', versionSourceUrl);
                 }}
                 className="text-muted-foreground hover:text-foreground transition-colors"
@@ -271,9 +285,12 @@ export default function AboutTab() {
                 Poratake is a modified version of Capty. Modifications made in
                 2026.
               </p>
+              <p>Copyright &copy; 2026 Capty.</p>
               <p>
-                Copyright &copy; 2026 Capty. Copyright in Poratake modifications
-                is held by their respective contributors.
+                Copyright &copy; 2026 Serhii Vecherenko for Poratake
+                modifications. Poratake is developed as part of Porabuild.
+                Copyright in other contributions remains with their respective
+                contributors.
               </p>
               <p>
                 Licensed under GNU AGPL v3.0, without warranty. You may

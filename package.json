@@ -2,6 +2,16 @@
   "name": "poratake",
   "private": true,
   "version": "1.14.0",
+  "description": "Capture, annotate, record, edit, and share on macOS and Windows.",
+  "author": "Serhii Vecherenko",
+  "homepage": "https://porabuild.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Porabuild/Poratake.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Porabuild/Poratake/issues"
+  },
   "packageManager": "bun@1.3.8",
   "license": "AGPL-3.0-only",
   "scripts": {
