@@ -5,4 +5,6 @@ export interface AreaSelection {
   width?: number;
   height?: number;
   screenId?: number;
+  windowId?: number;
+  windowName?: string;
 }

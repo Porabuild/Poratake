@@ -28,12 +28,12 @@ describe('Freeze Screen Module', () => {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
     });
 
-    it('should return false on non-darwin platform', async () => {
+    it('should return true on win32 platform', async () => {
       const originalPlatform = process.platform;
       Object.defineProperty(process, 'platform', { value: 'win32' });
 
       const { isSupported } = await import('@/main/capture/freeze-screen');
-      expect(isSupported()).toBe(false);
+      expect(isSupported()).toBe(true);
 
       Object.defineProperty(process, 'platform', { value: originalPlatform });
     });
@@ -63,15 +63,18 @@ describe('Freeze Screen Module', () => {
       });
     });
 
-    it('should return false on non-darwin platform', async () => {
+    it('should call daemon on win32 platform', async () => {
       const originalPlatform = process.platform;
       Object.defineProperty(process, 'platform', { value: 'win32' });
+      mockDaemonCall.mockResolvedValue({ success: true });
 
       const { freezeScreen } = await import('@/main/capture/freeze-screen');
       const result = await freezeScreen();
 
-      expect(result).toBe(false);
-      expect(mockDaemonCall).not.toHaveBeenCalled();
+      expect(result).toBe(true);
+      expect(mockDaemonCall).toHaveBeenCalledWith('freeze-screen', 'freeze', {
+        watchSpaceKey: false,
+      });
 
       Object.defineProperty(process, 'platform', { value: originalPlatform });
     });
@@ -125,9 +128,9 @@ describe('Freeze Screen Module', () => {
       expect(mockDaemonCall).not.toHaveBeenCalled();
     });
 
-    it('should return false on non-darwin platform', async () => {
+    it('should return false on unsupported platform', async () => {
       const originalPlatform = process.platform;
-      Object.defineProperty(process, 'platform', { value: 'win32' });
+      Object.defineProperty(process, 'platform', { value: 'linux' });
 
       const { releaseScreen } = await import('@/main/capture/freeze-screen');
       const result = await releaseScreen();

@@ -1,6 +1,6 @@
 import Vision
 import Foundation
-import AppKit
+import ImageIO
 
 class OCRModule: Module {
     let name = "ocr"
@@ -25,27 +25,41 @@ class OCRModule: Module {
             return
         }
         
-        let text = recognizeText(from: imagePath)
-        respond(id: requestId, result: ["text": text])
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let result = Result { try self.recognizeText(from: imagePath) }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let text):
+                    self.respond(id: requestId, result: ["text": text])
+                case .failure(let error):
+                    self.respondError(id: requestId, code: "OCR_FAILED", message: error.localizedDescription)
+                }
+            }
+        }
     }
     
-    private func recognizeText(from imagePath: String) -> String {
-        guard let image = NSImage(contentsOfFile: imagePath),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return ""
+    private func recognizeText(from imagePath: String) throws -> String {
+        let imageUrl = URL(fileURLWithPath: imagePath) as CFURL
+        guard let source = CGImageSourceCreateWithURL(imageUrl, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw OCRError.imageDecodeFailed
         }
 
-        let mixedLanguageText = performRecognition(cgImage: cgImage) { request in
+        let mixedLanguageText = try performRecognition(cgImage: cgImage) { request in
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = false
             request.revision = VNRecognizeTextRequestRevision3
-            request.recognitionLanguages = recognitionLanguages(for: request)
+            let languages = recognitionLanguages(for: request)
+            if !languages.isEmpty {
+                request.recognitionLanguages = languages
+            }
         }
         if !mixedLanguageText.isEmpty {
             return mixedLanguageText
         }
 
-        return performRecognition(cgImage: cgImage) { request in
+        return try performRecognition(cgImage: cgImage) { request in
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true
             request.revision = VNRecognizeTextRequestRevision3
@@ -56,15 +70,20 @@ class OCRModule: Module {
     private func performRecognition(
         cgImage: CGImage,
         configure: (VNRecognizeTextRequest) -> Void
-    ) -> String {
+    ) throws -> String {
         var recognizedText = ""
+        var recognitionError: Error?
         let semaphore = DispatchSemaphore(value: 0)
 
         let request = VNRecognizeTextRequest { request, error in
             defer { semaphore.signal() }
 
-            guard error == nil,
-                  let observations = request.results as? [VNRecognizedTextObservation] else {
+            if let error = error {
+                recognitionError = error
+                return
+            }
+
+            guard let observations = request.results as? [VNRecognizedTextObservation] else {
                 return
             }
 
@@ -78,11 +97,11 @@ class OCRModule: Module {
         configure(request)
 
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        do {
-            try handler.perform([request])
-            semaphore.wait()
-        } catch {
-            return ""
+        try handler.perform([request])
+        semaphore.wait()
+
+        if let recognitionError = recognitionError {
+            throw recognitionError
         }
 
         return recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -102,17 +121,7 @@ class OCRModule: Module {
             "fr-FR"
         ]
         let supportedLanguages = Set((try? request.supportedRecognitionLanguages()) ?? [])
-        let selectedLanguages = preferredLanguages.filter { supportedLanguages.contains($0) }
-
-        if !selectedLanguages.isEmpty {
-            return selectedLanguages
-        }
-
-        if supportedLanguages.contains("en-US") {
-            return ["en-US"]
-        }
-
-        return ["en-US", "zh-Hans", "zh-Hant"]
+        return preferredLanguages.filter { supportedLanguages.contains($0) }
     }
 
     private func bestCandidateString(from observation: VNRecognizedTextObservation) -> String? {
@@ -131,5 +140,13 @@ class OCRModule: Module {
                 (value >= 0x4E00 && value <= 0x9FFF) ||
                 (value >= 0xF900 && value <= 0xFAFF)
         }
+    }
+}
+
+private enum OCRError: LocalizedError {
+    case imageDecodeFailed
+
+    var errorDescription: String? {
+        "Failed to decode image"
     }
 }

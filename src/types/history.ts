@@ -17,6 +17,11 @@ export interface HistoryItem {
   duration?: number;
 }
 
+export type HistoryItemSummary = Pick<
+  HistoryItem,
+  'id' | 'timestamp' | 'type' | 'duration'
+>;
+
 export interface HistoryConfig {
   enabled: boolean;
   maxItems: number;

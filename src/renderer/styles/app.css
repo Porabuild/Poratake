@@ -8,6 +8,13 @@
   -webkit-app-region: no-drag;
 }
 
+.window-controls-spacer {
+  width: calc(
+    100vw - env(titlebar-area-x, 0px) -
+      env(titlebar-area-width, calc(100vw - 138px))
+  );
+}
+
 /* Custom range slider styles */
 input[type='range'] {
   -webkit-appearance: none;
@@ -21,7 +28,7 @@ input[type='range']::-webkit-slider-thumb {
   height: 14px;
   border-radius: 50%;
   background: #007aff;
-  cursor: pointer;
+  cursor: default;
   border: 2px solid white;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
@@ -31,7 +38,7 @@ input[type='range']::-moz-range-thumb {
   height: 14px;
   border-radius: 50%;
   background: #007aff;
-  cursor: pointer;
+  cursor: default;
   border: 2px solid white;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# FFmpeg LGPL Build Script for Capty
+# FFmpeg LGPL Build Script for Poratake
 # =============================================================================
 # This script builds an LGPL-compliant FFmpeg universal binary for macOS.
 # The resulting binary uses VideoToolbox for H.264 encoding instead of libx264,
@@ -23,6 +23,7 @@ set -e
 # Configuration
 FFMPEG_VERSION="7.1"
 FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+FFMPEG_SHA256="40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6"
 BUILD_DIR="/tmp/ffmpeg-build-$$"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -85,7 +86,8 @@ download_ffmpeg() {
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
     
-    curl -L -o ffmpeg.tar.xz "$FFMPEG_URL"
+    curl --fail --location --retry 5 --retry-delay 2 --retry-all-errors --retry-max-time 120 --output ffmpeg.tar.xz "$FFMPEG_URL"
+    echo "$FFMPEG_SHA256  ffmpeg.tar.xz" | shasum -a 256 -c -
     tar xf ffmpeg.tar.xz
     cd "ffmpeg-${FFMPEG_VERSION}"
 }
@@ -224,7 +226,7 @@ create_universal_binary() {
 
 # Main build process
 main() {
-    log_info "=== FFmpeg LGPL Build Script for Capty ==="
+    log_info "=== FFmpeg LGPL Build Script for Poratake ==="
     log_info "Building FFmpeg ${FFMPEG_VERSION} for macOS (universal binary)"
     log_info ""
     

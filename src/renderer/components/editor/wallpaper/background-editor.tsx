@@ -220,7 +220,7 @@ export default function BackgroundEditor({
                     type="text"
                     value={color}
                     onChange={e => handleColorChange(index, e.target.value)}
-                    className="border-input bg-background h-8 flex-1 rounded-md border px-2 font-mono text-xs"
+                    className="bg-field text-field-foreground rounded-field h-8 flex-1 border-0 px-2 font-mono text-xs outline-none"
                   />
                   {colors.length > 2 && (
                     <button
@@ -264,6 +264,7 @@ export default function BackgroundEditor({
               </span>
             </div>
             <Slider
+              size="sm"
               value={[angle]}
               onValueChange={([value]) => setAngle(value)}
               min={0}
@@ -330,11 +331,11 @@ export default function BackgroundEditor({
       )}
 
       <div className="flex gap-2">
-        <Button variant="ghost" size="sm" onClick={onCancel} className="flex-1">
+        <Button variant="ghost" size="xs" onClick={onCancel} className="flex-1">
           Cancel
         </Button>
         <Button
-          size="sm"
+          size="xs"
           onClick={handleSave}
           disabled={backgroundType === 'image' && !imageUrl}
           className="flex-1"

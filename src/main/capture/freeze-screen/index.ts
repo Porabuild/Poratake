@@ -1,4 +1,5 @@
 import { daemon } from '@/main/daemon';
+import { isFeatureSupported } from '@/main/system/capabilities';
 
 let isFrozen = false;
 
@@ -7,7 +8,15 @@ export function isScreenFrozen(): boolean {
 }
 
 export function isSupported(): boolean {
-  return process.platform === 'darwin';
+  return isFeatureSupported('freeze-screen');
+}
+
+export function prewarmFreezeScreen(): void {
+  if (!isSupported()) {
+    return;
+  }
+
+  daemon.call('freeze-screen', 'prewarm').catch(() => {});
 }
 
 export async function freezeScreen(

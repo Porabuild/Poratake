@@ -7,12 +7,6 @@ on:
         description: 'Version number (e.g., 1.1.0)'
         required: true
         type: string
-      notarize:
-        description: 'Notarize the app with Apple'
-        required: true
-        type: boolean
-        default: true
-
 jobs:
   release:
     runs-on: macos-latest
@@ -36,10 +30,10 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.8
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Update package.json version
         run: |
@@ -52,13 +46,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json
-          git commit -m "chore: bump version to ${{ inputs.version }}"
-          git push
-
-      - name: Create and push tag
-        run: |
-          git tag "v${{ inputs.version }}"
-          git push origin "v${{ inputs.version }}"
+          if git diff --cached --quiet; then
+            echo "Version is already set to ${{ inputs.version }}"
+          else
+            git commit -m "chore: bump version to ${{ inputs.version }}"
+          fi
+          echo "BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Generate release notes from commits
         id: release_notes
@@ -152,130 +145,87 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
-          if [ "${{ inputs.notarize }}" = "true" ]; then
-            bun run build-mac
-          else
-            bun run build-mac:local
+          set -o pipefail
+          BUILD_LOG=$(mktemp)
+          bun run build-mac 2>&1 | tee "$BUILD_LOG"
+          if grep -qiE "notarize skipped|skipped macOS notarization|notarize.*options were unable to be generated" "$BUILD_LOG"; then
+            rm -f "$BUILD_LOG"
+            exit 1
           fi
+          APP_PATH=$(find "release/${{ inputs.version }}" -type d -path "*/Poratake.app" -print -quit)
+          test -n "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          rm -f "$BUILD_LOG"
+
+      - name: Validate release assets
+        run: |
+          VERSION="${{ inputs.version }}"
+          RELEASE_DIR="release/$VERSION"
+          DMG="$RELEASE_DIR/Poratake-$VERSION-universal.dmg"
+          ZIP="$RELEASE_DIR/Poratake-$VERSION-universal-mac.zip"
+          METADATA="$RELEASE_DIR/latest-mac.yml"
+          BLOCKMAP="$ZIP.blockmap"
+          APP_RESOURCES=$(find "$RELEASE_DIR" -type d -path "*/Poratake.app/Contents/Resources" -print -quit)
+          test -n "$APP_RESOURCES"
+          node scripts/validate-release-assets.mjs "$VERSION" "$DMG" "$ZIP" "$METADATA" "$BLOCKMAP" "$APP_RESOURCES"
+
+      - name: Push release commit and tag
+        run: |
+          VERSION="${{ inputs.version }}"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$(git rev-parse HEAD)" = "$BUILD_COMMIT"
+          if git rev-parse --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "v$VERSION")" = "$BUILD_COMMIT"
+          else
+            git tag "v$VERSION"
+          fi
+          git push origin "HEAD:${GITHUB_REF}"
+          git push origin "v$VERSION"
+          REMOTE_TAG_COMMIT=$(git ls-remote origin "refs/tags/v$VERSION^{}" | awk '{print $1}')
+          if [ -z "$REMOTE_TAG_COMMIT" ]; then
+            REMOTE_TAG_COMMIT=$(git ls-remote origin "refs/tags/v$VERSION" | awk '{print $1}')
+          fi
+          test "$REMOTE_TAG_COMMIT" = "$BUILD_COMMIT"
 
       - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.version }}
-          name: Capty v${{ inputs.version }}
+          name: Poratake v${{ inputs.version }}
           body_path: release_notes.txt
-          draft: false
+          draft: true
           prerelease: false
+          fail_on_unmatched_files: true
           files: |
-            release/${{ inputs.version }}/*.dmg
-            release/${{ inputs.version }}/*.zip
+            release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal.dmg
+            release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal-mac.zip
+            release/${{ inputs.version }}/latest-mac.yml
+            release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal-mac.zip.blockmap
 
-      - name: Upload to capty.app
+      - name: Verify and publish GitHub Release
         env:
-          CAPTY_RELEASE_SECRET: ${{ secrets.CAPTY_RELEASE_SECRET }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
-          RELEASE_NOTES=$(cat release_notes.txt)
-
-          DMG_NAME="Capty-${VERSION}-universal.dmg"
-          DMG_PATH="release/${VERSION}/${DMG_NAME}"
-          ZIP_NAME="Capty-${VERSION}-universal-mac.zip"
-          ZIP_PATH="release/${VERSION}/${ZIP_NAME}"
-
-          # Calculate SHA512 hash of the DMG file (base64 encoded, as electron-builder expects)
-          echo "Calculating SHA512 hash of ${DMG_PATH}..."
-          DMG_SHA512=$(shasum -a 512 "${DMG_PATH}" | awk '{print $1}' | xxd -r -p | base64)
-          echo "DMG SHA512 (base64): ${DMG_SHA512}"
-          DMG_SIZE=$(stat -f%z "${DMG_PATH}")
-          echo "DMG size: ${DMG_SIZE}"
-
-          # Calculate SHA512 hash of the ZIP file (required for macOS auto-update)
-          echo "Calculating SHA512 hash of ${ZIP_PATH}..."
-          ZIP_SHA512=$(shasum -a 512 "${ZIP_PATH}" | awk '{print $1}' | xxd -r -p | base64)
-          echo "ZIP SHA512 (base64): ${ZIP_SHA512}"
-          ZIP_SIZE=$(stat -f%z "${ZIP_PATH}")
-          echo "ZIP size: ${ZIP_SIZE}"
-
-          # Get the asset IDs from GitHub API
-          echo "Fetching release assets from GitHub..."
-          RELEASE_DATA=$(gh api repos/${{ github.repository }}/releases/tags/v${VERSION})
-
-          DMG_ASSET_ID=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name == \"${DMG_NAME}\") | .id")
-          ZIP_ASSET_ID=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name == \"${ZIP_NAME}\") | .id")
-
-          if [ -z "$DMG_ASSET_ID" ] || [ "$DMG_ASSET_ID" = "null" ]; then
-            echo "Error: Could not find asset ${DMG_NAME} in release v${VERSION}"
-            echo "Available assets:"
-            echo "$RELEASE_DATA" | jq -r '.assets[].name'
-            exit 1
-          fi
-
-          if [ -z "$ZIP_ASSET_ID" ] || [ "$ZIP_ASSET_ID" = "null" ]; then
-            echo "Error: Could not find asset ${ZIP_NAME} in release v${VERSION}"
-            echo "Available assets:"
-            echo "$RELEASE_DATA" | jq -r '.assets[].name'
-            exit 1
-          fi
-
-          # GitHub API asset URL format
-          DMG_URL="https://api.github.com/repos/${{ github.repository }}/releases/assets/${DMG_ASSET_ID}"
-          ZIP_URL="https://api.github.com/repos/${{ github.repository }}/releases/assets/${ZIP_ASSET_ID}"
-
-          echo "Found DMG asset ID: $DMG_ASSET_ID"
-          echo "Found ZIP asset ID: $ZIP_ASSET_ID"
-          echo "Notifying capty.app to download releases..."
-
-          # Escape release notes for JSON
-          RELEASE_NOTES_ESCAPED=$(echo "$RELEASE_NOTES" | jq -Rs .)
-
-          # Build JSON payload
-          JSON_PAYLOAD=$(cat <<EOF
-          {
-            "secret": "${CAPTY_RELEASE_SECRET}",
-            "version": "${VERSION}",
-            "release_notes": ${RELEASE_NOTES_ESCAPED},
-            "files": [
-              {
-                "url": "${DMG_URL}",
-                "name": "${DMG_NAME}",
-                "platform": "macos",
-                "arch": "universal",
-                "sha512": "${DMG_SHA512}",
-                "size": ${DMG_SIZE}
-              },
-              {
-                "url": "${ZIP_URL}",
-                "name": "${ZIP_NAME}",
-                "platform": "macos",
-                "arch": "universal",
-                "sha512": "${ZIP_SHA512}",
-                "size": ${ZIP_SIZE}
-              }
-            ]
-          }
-          EOF
-          )
-
-          echo "Sending request to capty.app..."
-          echo "Request payload:"
-          echo "$JSON_PAYLOAD" | jq 'del(.secret)' # Print payload without secret
-
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://capty.app/api/versions" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            --data-raw "$JSON_PAYLOAD")
-
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
-
-          echo "Response status: $HTTP_CODE"
-          echo "Response body: $BODY"
-
-          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-            echo "Upload successful!"
-          else
-            echo "Upload failed with status $HTTP_CODE"
-            exit 1
-          fi
+          TAG="v$VERSION"
+          RELEASE_DIR="release/$VERSION"
+          EXPECTED_ASSETS=$(printf '%s\n' \
+            "Poratake-$VERSION-universal.dmg" \
+            "Poratake-$VERSION-universal-mac.zip" \
+            "latest-mac.yml" \
+            "Poratake-$VERSION-universal-mac.zip.blockmap" | sort)
+          ACTUAL_ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)
+          test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
+          for ASSET_PATH in \
+            "$RELEASE_DIR/Poratake-$VERSION-universal.dmg" \
+            "$RELEASE_DIR/Poratake-$VERSION-universal-mac.zip" \
+            "$RELEASE_DIR/latest-mac.yml" \
+            "$RELEASE_DIR/Poratake-$VERSION-universal-mac.zip.blockmap"; do
+            ASSET_NAME=$(basename "$ASSET_PATH")
+            ASSET_SIZE=$(stat -f%z "$ASSET_PATH")
+            REMOTE_SIZE=$(gh release view "$TAG" --json assets --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .size")
+            test "$REMOTE_SIZE" = "$ASSET_SIZE"
+          done
+          gh release edit "$TAG" --draft=false

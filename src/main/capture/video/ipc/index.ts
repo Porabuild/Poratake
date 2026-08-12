@@ -9,8 +9,10 @@ import { registerMetadataHandlers } from './metadata-handlers';
 import { registerKeyboardSoundHandlers } from './keyboard-sound-handlers';
 import { registerProjectHandlers } from './project-handlers';
 import { registerMusicHandlers } from './music-handlers';
+import { registerExportSessionHandlers } from './export-session';
 
 export function registerAllVideoEditorHandlers(): void {
+  registerExportSessionHandlers();
   registerDialogHandlers();
   registerDataHandlers();
   registerStateHandlers();

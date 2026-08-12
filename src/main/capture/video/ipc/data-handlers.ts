@@ -6,31 +6,11 @@ import { loadCursorData, saveCursorData } from '../cursor-data';
 import { loadCameraData, getAbsoluteCameraVideoPath } from '../camera-data';
 import { loadKeyboardData } from '../keyboard-data';
 import { getSystemAudioPath, getMicAudioPath } from '../recording-project';
-import { getFFmpegPath } from '@/main/utils/ffmpeg';
+import { probeVideo } from '@/main/utils/ffmpeg';
 import { validateCursorData } from '@/types/cursor';
 import type { CursorData } from '@/types/cursor';
 import type { CameraData } from '@/types/camera';
 import type { KeyboardData } from '@/types/keyboard';
-
-async function videoHasAudio(videoPath: string): Promise<boolean> {
-  try {
-    const ffmpegPath = getFFmpegPath();
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
-
-    let stderr = '';
-    try {
-      await execFileAsync(ffmpegPath, ['-i', videoPath], { timeout: 10000 });
-    } catch (error) {
-      stderr = (error as { stderr?: string }).stderr || '';
-    }
-
-    return stderr.includes('Audio:');
-  } catch {
-    return false;
-  }
-}
 
 export function registerDataHandlers(): void {
   ipcMain.handle('video-editor:getVideoPath', event => {
@@ -103,7 +83,9 @@ export function registerDataHandlers(): void {
 
       let hasEmbeddedAudio = false;
       if (!systemAudioExists && !micAudioExists) {
-        hasEmbeddedAudio = await videoHasAudio(data.filePath);
+        hasEmbeddedAudio =
+          (await (data.videoProbe ?? probeVideo(data.filePath)))?.hasAudio ??
+          false;
       }
 
       return {

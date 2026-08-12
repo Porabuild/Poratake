@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { Segment, TrimState, NativeVideoPlayerHandle } from '../types';
 import { getSegmentDuration } from '../utils';
+import { splitVideoSegments } from '../timeline-split';
 
 interface UseSegmentOperationsProps {
   segments: Segment[];
@@ -209,47 +210,8 @@ export function useSegmentOperations({
 
   const handleCut = useCallback(
     (cutVideoTime: number) => {
-      const segmentIndex = segments.findIndex(
-        seg =>
-          cutVideoTime >= seg.originalStart && cutVideoTime <= seg.originalEnd
-      );
-
-      if (segmentIndex === -1) return;
-
-      const segment = segments[segmentIndex];
-
-      if (
-        cutVideoTime > segment.originalStart + 0.1 &&
-        cutVideoTime < segment.originalEnd - 0.1
-      ) {
-        const newSegments: Segment[] = [];
-
-        for (let i = 0; i < segments.length; i++) {
-          const seg = segments[i];
-          if (i === segmentIndex) {
-            newSegments.push({
-              id: seg.id,
-              originalStart: seg.originalStart,
-              originalEnd: cutVideoTime,
-              trimMinStart: seg.trimMinStart,
-              trimMaxEnd: cutVideoTime,
-              speed: seg.speed,
-            });
-            newSegments.push({
-              id: crypto.randomUUID(),
-              originalStart: cutVideoTime,
-              originalEnd: seg.originalEnd,
-              trimMinStart: cutVideoTime,
-              trimMaxEnd: seg.trimMaxEnd,
-              speed: seg.speed,
-            });
-          } else {
-            newSegments.push(seg);
-          }
-        }
-
-        setSegments(newSegments);
-      }
+      const newSegments = splitVideoSegments(segments, cutVideoTime);
+      if (newSegments) setSegments(newSegments);
     },
     [segments, setSegments]
   );

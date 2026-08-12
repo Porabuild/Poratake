@@ -1,10 +1,4 @@
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import { ListBox, Select } from '@heroui/react';
 import type { ArrowStyle } from '@/types/editor';
 import ArrowStylePreview from './arrow-style-preview';
 
@@ -27,24 +21,32 @@ export default function ArrowOptions({
   return (
     <>
       <Select
+        aria-label="Arrow style"
+        variant="secondary"
         value={arrowStyle}
-        onValueChange={value => onArrowStyleChange(value as ArrowStyle)}
+        onChange={value => {
+          if (value === null) {
+            return;
+          }
+
+          onArrowStyleChange(value as ArrowStyle);
+        }}
       >
-        <SelectTrigger size="sm" className="h-7! w-auto gap-1 px-2">
-          <SelectValue>
-            <ArrowStylePreview style={arrowStyle} size={20} />
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent align="center">
-          {ARROW_STYLES.map(({ value, label }) => (
-            <SelectItem key={value} value={value}>
-              <div className="flex items-center gap-2">
+        <Select.Trigger className="h-7 min-h-7 items-center rounded-3xl py-0 ps-2">
+          <ArrowStylePreview style={arrowStyle} size={20} />
+          <Select.Indicator />
+        </Select.Trigger>
+        <Select.Popover placement="bottom">
+          <ListBox>
+            {ARROW_STYLES.map(({ value, label }) => (
+              <ListBox.Item key={value} id={value} textValue={label}>
                 <ArrowStylePreview style={value} size={24} />
-                <span>{label}</span>
-              </div>
-            </SelectItem>
-          ))}
-        </SelectContent>
+                <span className="flex-1">{label}</span>
+                <ListBox.ItemIndicator />
+              </ListBox.Item>
+            ))}
+          </ListBox>
+        </Select.Popover>
       </Select>
       <div className="bg-border mx-1 h-[18px] w-px" />
     </>

@@ -12,6 +12,8 @@ import { toggleHistoryPopover } from '@/main/history';
 import { getTray, rebuildTrayMenu } from '@/main/menu';
 import { getConfig } from '@/main/settings';
 import startAllInOne from '@/main/capture/all-in-one';
+import { isFeatureSupported } from '@/main/system/capabilities';
+import type { FeatureId } from '@/types/capabilities';
 
 type ShortcutAction =
   | CaptureMode
@@ -27,6 +29,22 @@ type ShortcutAction =
   | 'clipboardInEditor';
 
 const registeredShortcuts = new Map<string, string>();
+
+const ACTION_FEATURES: Partial<Record<ShortcutAction, FeatureId>> = {
+  window: 'screenshot-window',
+  captureText: 'ocr',
+  scanQRCode: 'qrcode',
+  timerCapture: 'timer-capture',
+  recordArea: 'recording',
+  recordScreen: 'recording',
+  recordWindow: 'recording',
+  allInOne: 'all-in-one',
+};
+
+function isActionSupported(action: ShortcutAction): boolean {
+  const feature = ACTION_FEATURES[action];
+  return !feature || isFeatureSupported(feature);
+}
 
 function registerScreenshotShortcut(
   action: CaptureMode,
@@ -314,6 +332,10 @@ function registerShortcut(
   action: ShortcutAction,
   accelerator: string
 ): boolean {
+  if (!isActionSupported(action)) {
+    return false;
+  }
+
   switch (action) {
     case 'captureText':
       return registerCaptureTextShortcut(accelerator);
@@ -342,19 +364,19 @@ export function registerAllShortcuts(): void {
   const config = getConfig();
   const shortcuts = config.shortcuts;
 
-  registerScreenshotShortcut('area', shortcuts.screenshot.area);
-  registerScreenshotShortcut('window', shortcuts.screenshot.window);
-  registerScreenshotShortcut('screen', shortcuts.screenshot.screen);
-  registerCaptureTextShortcut(shortcuts.captureText);
-  registerScanQRCodeShortcut(shortcuts.scanQRCode ?? '');
-  registerTimerCaptureShortcut(shortcuts.timerCapture ?? '');
-  registerRecordingShortcut('recordArea', shortcuts.recording.area);
-  registerRecordingShortcut('recordScreen', shortcuts.recording.screen);
-  registerRecordingShortcut('recordWindow', shortcuts.recording.window);
-  registerHistoryShortcut(shortcuts.history ?? '');
-  registerAllInOneShortcut(shortcuts.allInOne ?? '');
-  registerOpenInEditorShortcut(shortcuts.openInEditor ?? '');
-  registerClipboardInEditorShortcut(shortcuts.clipboardInEditor ?? '');
+  registerShortcut('area', shortcuts.screenshot.area);
+  registerShortcut('window', shortcuts.screenshot.window);
+  registerShortcut('screen', shortcuts.screenshot.screen);
+  registerShortcut('captureText', shortcuts.captureText);
+  registerShortcut('scanQRCode', shortcuts.scanQRCode ?? '');
+  registerShortcut('timerCapture', shortcuts.timerCapture ?? '');
+  registerShortcut('recordArea', shortcuts.recording.area);
+  registerShortcut('recordScreen', shortcuts.recording.screen);
+  registerShortcut('recordWindow', shortcuts.recording.window);
+  registerShortcut('history', shortcuts.history ?? '');
+  registerShortcut('allInOne', shortcuts.allInOne ?? '');
+  registerShortcut('openInEditor', shortcuts.openInEditor ?? '');
+  registerShortcut('clipboardInEditor', shortcuts.clipboardInEditor ?? '');
 }
 
 export function unregisterAllShortcuts(): void {

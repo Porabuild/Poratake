@@ -1,27 +1,52 @@
-import { ipcMain } from 'electron';
+import { ipcMain, screen } from 'electron';
 import { daemon } from '@/main/daemon';
+import { isWindows } from '@/main/utils/platform';
 import type { CameraSettings } from '@/types/settings';
 
 let currentSettings: CameraSettings | null = null;
 let isContentProtected = false;
 
-export function showCameraPreview(settings: CameraSettings): void {
-  currentSettings = settings;
+function toNativePosition(position: { x: number; y: number }): {
+  x: number;
+  y: number;
+} {
+  return isWindows ? screen.dipToScreenPoint(position) : position;
+}
 
-  daemon
-    .call('camera-preview', 'show', {
+function fromNativePosition(position: { x: number; y: number }): {
+  x: number;
+  y: number;
+} {
+  return isWindows ? screen.screenToDipPoint(position) : position;
+}
+
+export async function showCameraPreview(
+  settings: CameraSettings
+): Promise<void> {
+  const position = settings.position
+    ? toNativePosition(settings.position)
+    : undefined;
+
+  try {
+    await daemon.call('camera-preview', 'show', {
       deviceId: settings.selectedDeviceId,
       deviceName: settings.selectedDeviceName,
       resolution: settings.resolution || '720p',
-    })
-    .catch(error => {
-      console.error('Failed to show camera preview:', error);
+      flipped: settings.flipped ?? false,
+      x: position?.x,
+      y: position?.y,
     });
 
-  if (isContentProtected) {
-    daemon
-      .call('camera-preview', 'setContentProtection', { enabled: true })
-      .catch(() => {});
+    if (isContentProtected) {
+      await daemon.call('camera-preview', 'setContentProtection', {
+        enabled: true,
+      });
+    }
+    currentSettings = settings;
+  } catch (error) {
+    currentSettings = null;
+    await daemon.call('camera-preview', 'hide').catch(() => {});
+    throw error;
   }
 }
 
@@ -33,67 +58,45 @@ export function hideCameraPreview(): void {
   currentSettings = null;
 }
 
-export function updateCameraPreview(settings: CameraSettings): void {
-  currentSettings = settings;
+export async function updateCameraPreviewPosition(position: {
+  x: number;
+  y: number;
+}): Promise<void> {
+  if (!currentSettings) return;
 
-  const params: Record<string, unknown> = {
-    deviceId: settings.selectedDeviceId,
-    deviceName: settings.selectedDeviceName,
-    resolution: settings.resolution,
-  };
-
-  if (settings.position) {
-    params.x = settings.position.x;
-    params.y = settings.position.y;
-  }
-
-  daemon.call('camera-preview', 'update', params).catch(error => {
-    console.error('Failed to update camera preview:', error);
-  });
-}
-
-export function getCameraPreviewWindow(): null {
-  return null;
+  await daemon.call('camera-preview', 'update', toNativePosition(position));
+  currentSettings = { ...currentSettings, position };
 }
 
 export function isCameraPreviewVisible(): boolean {
   return currentSettings !== null;
 }
 
-export async function getCameraPreviewPosition(): Promise<{
-  x: number;
-  y: number;
-} | null> {
+export function getCameraPreviewSettings(): CameraSettings | null {
+  return currentSettings;
+}
+
+export async function enableCameraContentProtection(): Promise<void> {
+  isContentProtected = true;
   try {
-    const result = (await daemon.call('camera-preview', 'getPosition')) as {
-      x?: number;
-      y?: number;
-    } | null;
-    if (
-      result &&
-      typeof result.x === 'number' &&
-      typeof result.y === 'number'
-    ) {
-      return { x: result.x, y: result.y };
-    }
-    return null;
-  } catch {
-    return null;
+    await daemon.call('camera-preview', 'setContentProtection', {
+      enabled: true,
+    });
+  } catch (error) {
+    isContentProtected = false;
+    throw error;
   }
 }
 
-export function enableCameraContentProtection(): void {
-  isContentProtected = true;
-  daemon
-    .call('camera-preview', 'setContentProtection', { enabled: true })
-    .catch(() => {});
-}
-
-export function disableCameraContentProtection(): void {
+export async function disableCameraContentProtection(): Promise<void> {
   isContentProtected = false;
-  daemon
-    .call('camera-preview', 'setContentProtection', { enabled: false })
-    .catch(() => {});
+  try {
+    await daemon.call('camera-preview', 'setContentProtection', {
+      enabled: false,
+    });
+  } catch (error) {
+    console.error('Failed to disable camera content protection:', error);
+  }
 }
 
 export function isCameraContentProtectionEnabled(): boolean {
@@ -108,13 +111,14 @@ export function registerCameraPreviewIpcHandlers(): void {
       data
     ) {
       const pos = data as { x?: number; y?: number };
-      currentSettings.position = { x: pos.x ?? 0, y: pos.y ?? 0 };
+      currentSettings.position = fromNativePosition({
+        x: pos.x ?? 0,
+        y: pos.y ?? 0,
+      });
     }
   };
 
   daemon.onEvent(positionHandler);
 
-  ipcMain.handle('camera:get-settings', () => {
-    return currentSettings;
-  });
+  ipcMain.handle('camera:get-settings', getCameraPreviewSettings);
 }

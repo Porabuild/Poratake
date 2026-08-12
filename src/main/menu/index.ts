@@ -4,6 +4,7 @@ import {
   Menu,
   nativeImage,
   NativeImage,
+  nativeTheme,
   dialog,
   BrowserWindow,
   shell,
@@ -41,9 +42,48 @@ import {
 } from '@/main/capture/screenshot/open-editor';
 import { openImageToPin } from '@/main/capture/screenshot/pin';
 import { openVideoInEditor } from '@/main/capture/video/video-editor';
+import { isFeatureSupported } from '@/main/system/capabilities';
+import type { FeatureId } from '@/types/capabilities';
+import { isMac, isWindows } from '@/main/utils/platform';
+import { getPublicAssetPath } from '@/main/utils/paths';
+
+if (!isMac) {
+  Menu.setApplicationMenu(null);
+}
+
+type GatedMenuItem = Electron.MenuItemConstructorOptions & {
+  feature?: FeatureId;
+};
+
+function pruneMenuItems(
+  items: GatedMenuItem[]
+): Electron.MenuItemConstructorOptions[] {
+  const result: Electron.MenuItemConstructorOptions[] = [];
+
+  for (const { feature, ...item } of items) {
+    if (feature && !isFeatureSupported(feature)) {
+      continue;
+    }
+
+    const isSeparator = item.type === 'separator';
+    const previous = result[result.length - 1];
+    if (isSeparator && (!previous || previous.type === 'separator')) {
+      continue;
+    }
+
+    result.push(item);
+  }
+
+  while (result.length && result[result.length - 1].type === 'separator') {
+    result.pop();
+  }
+
+  return result;
+}
 
 let tray: Tray | null = null;
 let menuIcons: Record<string, NativeImage | undefined> | null = null;
+let isThemeListenerAttached = false;
 
 const MENU_ICON_SIZE = 16;
 
@@ -52,6 +92,24 @@ function getIconsDir(): string {
     return path.join(process.resourcesPath, 'menu-icons');
   }
   return path.join(app.getAppPath(), 'src/main/menu/icons');
+}
+
+function tintToMenuForeground(icon: NativeImage): NativeImage {
+  if (!nativeTheme.shouldUseDarkColors) {
+    return icon;
+  }
+
+  const { width, height } = icon.getSize();
+  const bitmap = icon.toBitmap();
+
+  for (let i = 0; i < bitmap.length; i += 4) {
+    const alpha = bitmap[i + 3];
+    bitmap[i] = alpha;
+    bitmap[i + 1] = alpha;
+    bitmap[i + 2] = alpha;
+  }
+
+  return nativeImage.createFromBuffer(bitmap, { width, height });
 }
 
 function createMenuIcon(iconName: string): NativeImage | undefined {
@@ -72,8 +130,13 @@ function createMenuIcon(iconName: string): NativeImage | undefined {
       width: MENU_ICON_SIZE,
       height: MENU_ICON_SIZE,
     });
-    resized.setTemplateImage(true);
-    return resized;
+
+    if (isMac) {
+      resized.setTemplateImage(true);
+      return resized;
+    }
+
+    return tintToMenuForeground(resized);
   } catch (e) {
     console.error(`Failed to load menu icon: ${iconName}`, e);
     return undefined;
@@ -112,12 +175,12 @@ function buildContextMenu(): Menu {
   const recordingShortcuts = config.shortcuts.recording;
   const updateState = getUpdateState();
 
-  const menuItems: Electron.MenuItemConstructorOptions[] = [];
+  const menuItems: GatedMenuItem[] = [];
 
   if (!isPro()) {
     menuItems.push(
       {
-        label: 'Upgrade to Capty Pro',
+        label: 'Get Capty License',
         click: () => {
           createOrShowSettingsWindow('license');
         },
@@ -159,6 +222,7 @@ function buildContextMenu(): Menu {
 
   menuItems.push(
     {
+      feature: 'all-in-one',
       label: 'All-in-one',
       icon: icons.allInOne,
       accelerator: config.shortcuts.allInOne || undefined,
@@ -186,6 +250,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'screenshot-window',
       label: 'Capture Window',
       icon: icons.captureWindow,
       accelerator: screenshotShortcuts.window || undefined,
@@ -194,6 +259,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'scroll-capture',
       label: 'Scroll Capture',
       icon: icons.scrollCapture,
       accelerator: config.shortcuts.scrollCapture || undefined,
@@ -202,6 +268,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'ocr',
       label: 'Capture Text (OCR)',
       icon: icons.captureText,
       accelerator: config.shortcuts.captureText || undefined,
@@ -210,6 +277,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'qrcode',
       label: 'Scan QR Code',
       icon: icons.scanQRCode,
       accelerator: config.shortcuts.scanQRCode || undefined,
@@ -218,6 +286,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'timer-capture',
       label: 'Timer Capture',
       icon: icons.timerCapture,
       accelerator: config.shortcuts.timerCapture || undefined,
@@ -252,6 +321,7 @@ function buildContextMenu(): Menu {
       type: 'separator',
     },
     {
+      feature: 'recording',
       label: 'Record Screen',
       icon: icons.captureScreen,
       accelerator: recordingShortcuts.screen || undefined,
@@ -263,6 +333,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'recording',
       label: 'Record Area',
       icon: icons.captureArea,
       accelerator: recordingShortcuts.area || undefined,
@@ -274,6 +345,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'recording',
       label: 'Record Window',
       icon: icons.captureWindow,
       accelerator: recordingShortcuts.window || undefined,
@@ -285,6 +357,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'video-editor',
       label: 'Open in Video Editor',
       icon: icons.openInVideoEditor,
       click: () => {
@@ -305,6 +378,7 @@ function buildContextMenu(): Menu {
       },
     },
     {
+      feature: 'desktop-icons',
       label: areDesktopIconsHidden()
         ? 'Show Desktop Icons'
         : 'Hide Desktop Icons',
@@ -337,15 +411,18 @@ function buildContextMenu(): Menu {
       },
     },
     {
-      label: 'Hide Menu Bar Icon',
+      label: isWindows ? 'Hide Tray Icon' : 'Hide Menu Bar Icon',
       icon: createMenuIcon('eye-off'),
       click: async () => {
         const options = {
           type: 'warning' as const,
-          title: 'Hide Menu Bar Icon',
-          message: 'Are you sure you want to hide the menu bar icon?',
-          detail:
-            'The app will continue running in the background. To restore the menu bar icon, launch the app again (double-click Capty in Applications).',
+          title: isWindows ? 'Hide Tray Icon' : 'Hide Menu Bar Icon',
+          message: isWindows
+            ? 'Are you sure you want to hide the tray icon?'
+            : 'Are you sure you want to hide the menu bar icon?',
+          detail: isWindows
+            ? 'The app will continue running in the background. To restore the tray icon, launch Poratake again from the Start menu.'
+            : 'The app will continue running in the background. To restore the menu bar icon, launch the app again (double-click Poratake in Applications).',
           buttons: ['Hide Icon', 'Cancel'],
           defaultId: 0,
           cancelId: 1,
@@ -367,10 +444,10 @@ function buildContextMenu(): Menu {
       },
     },
     {
-      label: 'Feature Request / Bug Report',
+      label: 'Poratake Issues',
       icon: icons.aperture,
       click: () => {
-        shell.openExternal('https://capty.app/roadmap');
+        shell.openExternal('https://github.com/Porabuild/Poratake/issues');
       },
     },
     {
@@ -382,14 +459,25 @@ function buildContextMenu(): Menu {
     }
   );
 
-  return Menu.buildFromTemplate(menuItems);
+  return Menu.buildFromTemplate(pruneMenuItems(menuItems));
 }
 
 function getTrayIconPath(): string {
+  if (isWindows) {
+    return getPublicAssetPath('tray-icon.png');
+  }
   if (isProduction) {
     return path.join(process.resourcesPath, 'menu-icons', 'iconTemplate.png');
   }
   return path.join(app.getAppPath(), 'src/main/menu/dev/iconTemplate.png');
+}
+
+function createTrayIcon(): NativeImage {
+  const icon = nativeImage.createFromPath(getTrayIconPath());
+  if (isWindows && !icon.isEmpty()) {
+    return icon.resize({ width: 16, height: 16 });
+  }
+  return icon;
 }
 
 export const init = async () => {
@@ -403,10 +491,17 @@ export const init = async () => {
     return;
   }
 
-  const trayIconPath = getTrayIconPath();
-  tray = new Tray(nativeImage.createFromPath(trayIconPath));
+  tray = new Tray(createTrayIcon());
 
   tray.setContextMenu(buildContextMenu());
+
+  if (!isMac && !isThemeListenerAttached) {
+    isThemeListenerAttached = true;
+    nativeTheme.on('updated', () => {
+      menuIcons = null;
+      rebuildTrayMenu();
+    });
+  }
 
   preloadHistoryPopover();
 };

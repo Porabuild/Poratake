@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 const mockExistsSync = vi.fn();
 const mockReadFile = vi.fn();
@@ -101,18 +102,15 @@ describe('handleAppUpdate', () => {
   });
 
   it('resets cache when version differs from stored', async () => {
+    const versionFile = path.join('/cfg', '.last-version');
     mockExistsSync.mockImplementation(
-      (p: string) => p === '/cfg' || p === '/cfg/.last-version'
+      (p: string) => p === '/cfg' || p === versionFile
     );
     mockReadFile.mockResolvedValue('1.0.0');
     const { handleAppUpdate } = await import('@/main/update');
     await handleAppUpdate();
     expect(mockResetScreenCaptureCache).toHaveBeenCalled();
-    expect(mockWriteFile).toHaveBeenCalledWith(
-      '/cfg/.last-version',
-      '1.2.3',
-      'utf-8'
-    );
+    expect(mockWriteFile).toHaveBeenCalledWith(versionFile, '1.2.3', 'utf-8');
   });
 
   it('does not reset when version matches', async () => {

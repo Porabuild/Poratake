@@ -8,15 +8,22 @@ export { useEditorStatePersistence } from './use-editor-state-persistence';
 export { useVideoWallpaper } from './use-video-wallpaper';
 export { useEditorData } from './use-editor-data';
 export { useZoomSegments } from './use-zoom-segments';
+export { useCameraSegments } from './use-camera-segments';
 export { useDrawingSegments } from './use-drawing-segments';
 export { useSegmentOperations } from './use-segment-operations';
 export { useVideoExport } from './use-video-export';
+export { useExportProgress } from './use-export-progress';
 export { useEditorShortcuts } from './use-editor-shortcuts';
 export { usePlaybackControl } from './use-playback-control';
 export { useStyleUpdater } from './use-style-updater';
 export { useKeyboardSound } from './use-keyboard-sound';
 export { useSidebarShortcuts } from './use-sidebar-shortcuts';
 export { useFirstFrame } from './use-first-frame';
-export { useMusicTracks, buildBuiltInMusicTracks } from './use-music-tracks';
+export {
+  useMusicTracks,
+  buildBuiltInMusicTracks,
+  mergeBuiltInMusicTracks,
+  withDefaultGroupIds,
+} from './use-music-tracks';
 export { useMusicPlayback } from './use-music-playback';
-export { useResizableHeight } from './use-resizable-height';
+export { useResizablePane } from './use-resizable-pane';

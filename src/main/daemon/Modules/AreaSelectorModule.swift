@@ -59,6 +59,8 @@ class AreaSelectorModule: Module {
             handleStatus(requestId: requestId)
         case "setAspectRatio":
             handleSetAspectRatio(params: params, requestId: requestId)
+        case "disableWindowTransitions", "hideWindowWithoutTransitions", "showWindowWithoutTransitions", "setWindowRegion":
+            respond(id: requestId, result: ["disabled": false])
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -86,6 +88,7 @@ class AreaSelectorModule: Module {
         let presetHeight = params?["presetHeight"]?.int()
         let showPrompt = params?["showPrompt"]?.bool() ?? true
         let style = params?["style"]?.string() ?? "default"
+        let locked = params?["locked"]?.bool() ?? false
         
         var presetBounds: NSRect? = nil
         if let x = presetX, let y = presetY, let w = presetWidth, let h = presetHeight {
@@ -117,7 +120,7 @@ class AreaSelectorModule: Module {
             
             let targetDisplayId: CGDirectDisplayID? = displayId.map { CGDirectDisplayID($0) }
             let useSimpleStyle = style == "simple"
-            self.selector?.start(fullscreen: fullscreen, targetDisplayId: targetDisplayId, presetBounds: presetBounds, showPrompt: showPrompt, simpleStyle: useSimpleStyle)
+            self.selector?.start(fullscreen: fullscreen, targetDisplayId: targetDisplayId, presetBounds: presetBounds, showPrompt: showPrompt, simpleStyle: useSimpleStyle, locked: locked)
             
             self.respond(id: requestId, result: ["started": true])
         }
@@ -235,6 +238,7 @@ private class SelectionOverlayView: NSView {
     var dragOffset: NSPoint = .zero
     var showPrompt: Bool = true
     var simpleStyle: Bool = false
+    var locked: Bool = false
     var aspectRatio: Double? = nil
     
     static let overlayOpacity: CGFloat = 0.25
@@ -262,9 +266,10 @@ private class SelectionOverlayView: NSView {
         layer?.backgroundColor = NSColor.clear.cgColor
     }
     
-    func configure(showPrompt: Bool, simpleStyle: Bool) {
+    func configure(showPrompt: Bool, simpleStyle: Bool, locked: Bool = false) {
         self.showPrompt = showPrompt
         self.simpleStyle = simpleStyle
+        self.locked = locked
         if simpleStyle {
             layer?.backgroundColor = NSColor.clear.cgColor
         } else {
@@ -526,10 +531,21 @@ private class SelectionOverlayView: NSView {
         NSColor.clear.setFill()
         rectToDraw.fill()
         
-        drawHandles(for: rectToDraw)
+        if locked {
+            drawLockedBorder(for: rectToDraw)
+        } else {
+            drawHandles(for: rectToDraw)
+        }
         drawDimensionLabel(for: rectToDraw)
     }
-    
+
+    private func drawLockedBorder(for rect: NSRect) {
+        let border = NSBezierPath(rect: rect)
+        border.lineWidth = 2
+        NSColor.white.setStroke()
+        border.stroke()
+    }
+
     private func drawHandles(for rect: NSRect) {
         NSColor.white.setStroke()
         
@@ -683,8 +699,12 @@ private class SelectionOverlayView: NSView {
     }
     
     override func mouseDown(with event: NSEvent) {
+        // A locked selection was chosen elsewhere — a picked window — so the
+        // box is a readout of that choice, not something to redraw.
+        guard !locked else { return }
+
         let point = convert(event.locationInWindow, from: nil)
-        
+
         if isSelectionComplete, let rect = normalizedSelectionRect() {
             activeHandle = hitTestHandle(at: point)
             
@@ -837,8 +857,12 @@ private class SelectionOverlayView: NSView {
     }
     
     override func mouseMoved(with event: NSEvent) {
+        guard !locked else {
+            NSCursor.arrow.set()
+            return
+        }
         guard isSelectionComplete, let rect = selectionRect else { return }
-        
+
         let point = convert(event.locationInWindow, from: nil)
         let handle = hitTestHandle(at: point)
         
@@ -854,6 +878,10 @@ private class SelectionOverlayView: NSView {
     override func mouseEntered(with event: NSEvent) {
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if locked {
+            NSCursor.arrow.set()
+            return
+        }
         if !isSelectionComplete {
             NSCursor.crosshair.set()
         }
@@ -925,7 +953,7 @@ private class AreaSelector {
     var onInitialSelectionComplete: ((NSRect, NSScreen) -> Void)?
     var onCancel: (() -> Void)?
     
-    func start(fullscreen: Bool = false, targetDisplayId: CGDirectDisplayID? = nil, presetBounds: NSRect? = nil, showPrompt: Bool = true, simpleStyle: Bool = false) {
+    func start(fullscreen: Bool = false, targetDisplayId: CGDirectDisplayID? = nil, presetBounds: NSRect? = nil, showPrompt: Bool = true, simpleStyle: Bool = false, locked: Bool = false) {
         let targetScreen: NSScreen? = {
             if let displayId = targetDisplayId {
                 return NSScreen.screens.first { screen in
@@ -960,7 +988,7 @@ private class AreaSelector {
 
             let viewBounds = NSRect(x: 0, y: 0, width: screen.frame.width, height: screen.frame.height)
             let overlayView = SelectionOverlayView(frame: viewBounds)
-            overlayView.configure(showPrompt: showPrompt, simpleStyle: simpleStyle)
+            overlayView.configure(showPrompt: showPrompt, simpleStyle: simpleStyle, locked: locked)
 
             overlayView.onInitialSelectionComplete = { [weak self] rect in
                 self?.currentScreen = screen

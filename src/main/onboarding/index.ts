@@ -1,11 +1,20 @@
 import { BrowserWindow, ipcMain, screen, shell } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
+import { openExternalUrl } from '@/main/utils/external-url';
+import { getWindowData } from '@/main/capture/video/window-manager';
+import {
+  titleBarColors,
+  titleBarWindowOptions,
+  trackTitleBarTheme,
+} from '@/main/utils/title-bar';
 import {
   markOnboardingCompleted,
   markOnboardingSkipped,
   needsOnboarding,
 } from '@/main/settings';
+
+const TITLE_BAR_HEIGHT = 32;
 
 let onboardingWindow: BrowserWindow | null = null;
 let onCompletedCallback: (() => Promise<void>) | null = null;
@@ -33,12 +42,15 @@ export function createOnboardingWindow(): BrowserWindow {
     maximizable: false,
     fullscreenable: false,
     show: false,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 18 },
+    ...titleBarWindowOptions({
+      height: TITLE_BAR_HEIGHT,
+      surface: 'background',
+      trafficLightPosition: { x: 16, y: 18 },
+    }),
     x: Math.floor((screenWidth - windowWidth) / 2),
     y: Math.floor((screenHeight - windowHeight) / 2),
-    backgroundColor: '#1e1e1e',
-    title: 'Setup Capty',
+    backgroundColor: titleBarColors('background').color,
+    title: 'Set up Poratake',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -62,6 +74,12 @@ export function createOnboardingWindow(): BrowserWindow {
 
   onboardingWindow.once('ready-to-show', () => {
     onboardingWindow?.show();
+  });
+
+  trackTitleBarTheme(onboardingWindow, {
+    height: TITLE_BAR_HEIGHT,
+    surface: 'background',
+    syncBackground: true,
   });
 
   onboardingWindow.on('closed', () => {
@@ -103,12 +121,15 @@ export function init(): void {
     }
   });
 
-  ipcMain.on('shell:open-external', (_, url: string) => {
-    shell.openExternal(url);
+  ipcMain.on('shell:open-external', (_, url: unknown) => {
+    openExternalUrl(url);
   });
 
-  ipcMain.on('shell:reveal-in-finder', (_, path: string) => {
-    shell.showItemInFolder(`${path}/recording.mov`);
+  ipcMain.on('shell:reveal-in-finder', event => {
+    const data = getWindowData(event.sender.id);
+    if (!data) return;
+
+    shell.showItemInFolder(data.filePath);
   });
 }
 

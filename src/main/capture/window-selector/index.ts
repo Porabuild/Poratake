@@ -16,6 +16,22 @@ export interface WindowSelection {
   bounds?: WindowBounds;
 }
 
+export interface WindowListItem {
+  windowId: number;
+  title: string;
+  ownerName: string;
+  ownerPid: number;
+  bounds: WindowBounds;
+}
+
+export async function listWindows(): Promise<WindowListItem[]> {
+  const result = await daemon.call<{ windows?: WindowListItem[] }>(
+    'window-selector',
+    'list'
+  );
+  return result.windows ?? [];
+}
+
 let isSelecting = false;
 
 export async function selectWindow(): Promise<WindowSelection> {

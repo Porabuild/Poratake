@@ -1,11 +1,5 @@
+import SettingsSelect from '@/renderer/components/settings/settings-select';
 import { ASPECT_RATIO_OPTIONS, type AspectRatioOption } from '@/types/editor';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
 
 interface AspectRatioSelectorProps {
   value: AspectRatioOption;
@@ -25,6 +19,11 @@ const ASPECT_RATIO_LABELS: Record<AspectRatioOption, string> = {
   '2:3': '2:3',
 };
 
+const ASPECT_RATIO_SELECT_OPTIONS = ASPECT_RATIO_OPTIONS.map(option => ({
+  value: option,
+  label: ASPECT_RATIO_LABELS[option],
+}));
+
 export default function AspectRatioSelector({
   value,
   onChange,
@@ -32,18 +31,14 @@ export default function AspectRatioSelector({
   return (
     <div className="flex items-center justify-between">
       <span className="text-xs font-medium">Aspect Ratio</span>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="h-7 w-24">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {ASPECT_RATIO_OPTIONS.map(option => (
-            <SelectItem key={option} value={option}>
-              {ASPECT_RATIO_LABELS[option]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <SettingsSelect
+        label="Aspect Ratio"
+        options={ASPECT_RATIO_SELECT_OPTIONS}
+        value={value}
+        onChange={option => onChange(option as AspectRatioOption)}
+        size="sm"
+        className="w-24"
+      />
     </div>
   );
 }

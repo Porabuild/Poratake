@@ -1,6 +1,8 @@
 import type { Segment, VideoToTimelineResult } from './types';
+import type { CameraSegment } from '@/types/camera';
 import type { DrawingSegment } from '@/types/drawing';
 import type { ZoomSegment } from '@/types/zoom';
+import { PROJECT_EXTENSION } from '@/types/video';
 
 interface TimelineRange {
   startTime: number;
@@ -19,6 +21,7 @@ export interface TimelineRangeAdjustment {
 interface TimelineRangeSliceAdjustment {
   nextSegments: Segment[];
   zoomSegments: ZoomSegment[];
+  cameraSegments: CameraSegment[];
   drawingSegments: DrawingSegment[];
   adjustment: TimelineRangeAdjustment;
   drawingMinDuration: number;
@@ -27,12 +30,57 @@ interface TimelineRangeSliceAdjustment {
 export interface AdjustedTimelineRangeSlices {
   segments: Segment[];
   zoomSegments: ZoomSegment[];
+  cameraSegments: CameraSegment[];
   drawingSegments: DrawingSegment[];
 }
 
 export interface SegmentBoundaryTransition {
   isFinalSegment: boolean;
   nextSegmentIndex: number | null;
+}
+
+const PATH_SEPARATORS = /[/\\]/;
+
+function lastSeparatorIndex(filePath: string): number {
+  return Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+}
+
+export function toFileUrl(filePath: string): string {
+  if (/^file:/i.test(filePath)) return filePath;
+
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const encodedPath = encodeURI(normalizedPath)
+    .replace(/\?/g, '%3F')
+    .replace(/#/g, '%23');
+
+  if (encodedPath.startsWith('//')) {
+    return `file://${encodedPath.slice(2)}`;
+  }
+
+  return `file://${encodedPath.startsWith('/') ? '' : '/'}${encodedPath}`;
+}
+
+export function getFileNameFromPath(
+  filePath: string | null | undefined
+): string {
+  if (!filePath) return '';
+  const parts = filePath.split(PATH_SEPARATORS);
+
+  const dirName = parts[parts.length - 2] || '';
+  if (dirName.endsWith(PROJECT_EXTENSION)) {
+    return dirName.slice(0, -PROJECT_EXTENSION.length);
+  }
+
+  const fullName = parts[parts.length - 1] || '';
+  const lastDot = fullName.lastIndexOf('.');
+  return lastDot > 0 ? fullName.substring(0, lastDot) : fullName;
+}
+
+export function getProjectPath(filePath: string | null | undefined): string {
+  if (!filePath) return '';
+
+  const separatorIndex = lastSeparatorIndex(filePath);
+  return separatorIndex > 0 ? filePath.slice(0, separatorIndex) : '';
 }
 
 export function formatTime(seconds: number): string {
@@ -57,6 +105,18 @@ export function getSegmentDuration(segment: Segment): number {
 
 export function getTotalTimelineDuration(segments: Segment[]): number {
   return segments.reduce((sum, seg) => sum + getSegmentDuration(seg), 0);
+}
+
+export function getContentPlaybackState(
+  timelinePosition: number,
+  firstFrameDuration: number,
+  isPlaying: boolean
+): { timelinePosition: number; isPlaying: boolean } {
+  const contentPosition = timelinePosition - firstFrameDuration;
+  return {
+    timelinePosition: Math.max(0, contentPosition),
+    isPlaying: isPlaying && contentPosition >= 0,
+  };
 }
 
 export function adjustTimelineRanges<T extends TimelineRange>(
@@ -126,6 +186,7 @@ export function adjustTimelineRanges<T extends TimelineRange>(
 export function adjustTimelineRangeSlices({
   nextSegments,
   zoomSegments,
+  cameraSegments,
   drawingSegments,
   adjustment,
   drawingMinDuration,
@@ -133,6 +194,7 @@ export function adjustTimelineRangeSlices({
   return {
     segments: nextSegments,
     zoomSegments: adjustTimelineRanges(zoomSegments, adjustment),
+    cameraSegments: adjustTimelineRanges(cameraSegments, adjustment),
     drawingSegments: adjustTimelineRanges(drawingSegments, {
       ...adjustment,
       minDuration: drawingMinDuration,

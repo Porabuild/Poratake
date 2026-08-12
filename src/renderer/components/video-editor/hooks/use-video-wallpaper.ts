@@ -28,6 +28,7 @@ export function useVideoWallpaper(
         const newPadding = gradient && prev.padding === 0 ? 50 : prev.padding;
         return {
           ...prev,
+          enabled: gradient ? true : prev.enabled,
           gradient,
           backgroundImage: null,
           padding: newPadding,
@@ -44,6 +45,7 @@ export function useVideoWallpaper(
           backgroundImage && prev.padding === 0 ? 50 : prev.padding;
         return {
           ...prev,
+          enabled: backgroundImage ? true : prev.enabled,
           backgroundImage,
           gradient: null,
           padding: newPadding,

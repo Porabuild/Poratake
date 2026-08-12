@@ -65,7 +65,8 @@ export default function FirstFrameSettingsPanel({
 
         {!firstFrame.imageData ? (
           <Button
-            variant="outline"
+            variant="tertiary"
+            size="xs"
             className="w-full gap-2"
             onClick={handleUpload}
           >
@@ -84,18 +85,15 @@ export default function FirstFrameSettingsPanel({
 
             <div className="flex gap-2">
               <Button
-                variant="outline"
+                variant="tertiary"
+                size="xs"
                 className="flex-1 gap-2"
                 onClick={handleUpload}
               >
                 <Frame className="size-4" />
                 Replace
               </Button>
-              <Button
-                variant="outline"
-                className="gap-2"
-                onClick={handleRemove}
-              >
+              <Button variant="tertiary" size="icon-xs" onClick={handleRemove}>
                 <Trash2 className="size-4" />
               </Button>
             </div>

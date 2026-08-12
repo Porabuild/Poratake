@@ -73,8 +73,8 @@ export default function ProjectPathIndicator({
   }, [projectPath]);
 
   const handleOpenInFinder = useCallback(() => {
-    window.ipcRenderer.send('shell:reveal-in-finder', projectPath);
-  }, [projectPath]);
+    window.ipcRenderer.send('shell:reveal-in-finder');
+  }, []);
 
   const handleSaveRename = useCallback(async () => {
     const trimmed = editName.trim();
@@ -111,17 +111,15 @@ export default function ProjectPathIndicator({
     <div className="no-drag relative flex items-center">
       <Tooltip>
         <TooltipTrigger asChild>
-          <button
+          <Button
             ref={triggerRef}
+            variant={isOpen ? 'tertiary' : 'ghost'}
+            size="icon-xs"
+            className="size-7!"
             onClick={handleToggle}
-            className={cn(
-              'relative flex size-7 items-center justify-center rounded-md transition-colors',
-              'hover:bg-accent hover:text-accent-foreground',
-              isOpen && 'bg-accent text-accent-foreground'
-            )}
           >
             <FolderOpen className="size-4" />
-          </button>
+          </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom">Project Info</TooltipContent>
       </Tooltip>
@@ -152,7 +150,7 @@ export default function ProjectPathIndicator({
                   />
                   <Button
                     variant="default"
-                    size="sm"
+                    size="xs"
                     onClick={handleSaveRename}
                     disabled={!isNameChanged}
                     className="h-8"
@@ -177,8 +175,8 @@ export default function ProjectPathIndicator({
 
             <div className="flex gap-2">
               <Button
-                variant="outline"
-                size="sm"
+                variant="tertiary"
+                size="xs"
                 onClick={handleCopy}
                 className="h-8 flex-1"
               >
@@ -190,8 +188,8 @@ export default function ProjectPathIndicator({
                 <span className="ml-1.5">Copy Path</span>
               </Button>
               <Button
-                variant="outline"
-                size="sm"
+                variant="tertiary"
+                size="xs"
                 onClick={handleOpenInFinder}
                 className="h-8 flex-1"
               >

@@ -1,5 +1,10 @@
 import type { WindowFrameStyle } from '@/types/editor';
 import { cn } from '@/renderer/lib/utils';
+import {
+  isWindowsFrame,
+  WINDOW_FRAME_THEMES,
+  type FramedWindowStyle,
+} from '@/renderer/utils/window-frame';
 
 interface WindowFramePreviewProps {
   style: WindowFrameStyle;
@@ -42,70 +47,107 @@ function TrafficLights({ size = 6 }: TrafficLightProps) {
   );
 }
 
+function WindowsControls({ color }: { color: string }) {
+  return (
+    <div className="ml-auto flex h-full items-center">
+      <span className="flex h-full w-3 items-center justify-center">
+        <span className="h-px w-1.5" style={{ backgroundColor: color }} />
+      </span>
+      <span className="flex h-full w-3 items-center justify-center">
+        <span className="size-1.5 border" style={{ borderColor: color }} />
+      </span>
+      <span className="relative flex h-full w-3 items-center justify-center">
+        <span
+          className="absolute h-px w-2 rotate-45"
+          style={{ backgroundColor: color }}
+        />
+        <span
+          className="absolute h-px w-2 -rotate-45"
+          style={{ backgroundColor: color }}
+        />
+      </span>
+    </div>
+  );
+}
+
 export default function WindowFramePreview({
   style,
   isSelected,
   onClick,
 }: WindowFramePreviewProps) {
-  const isDark = style === 'macos-dark';
   const isNone = style === 'none';
+  const isWindows = isWindowsFrame(style);
+  const theme = isNone ? null : WINDOW_FRAME_THEMES[style as FramedWindowStyle];
 
   const getLabel = () => {
     switch (style) {
       case 'none':
         return 'None';
       case 'macos-light':
-        return 'Light';
+        return 'macOS Light';
       case 'macos-dark':
-        return 'Dark';
+        return 'macOS Dark';
+      case 'windows-light':
+        return 'Windows Light';
+      case 'windows-dark':
+        return 'Windows Dark';
     }
   };
 
   return (
     <button
+      type="button"
       onClick={onClick}
+      aria-pressed={isSelected}
       className={cn(
-        'flex w-full flex-col items-center gap-1.5 rounded-lg p-2 transition-all',
+        'focus-visible:ring-foreground flex w-full flex-col items-center gap-1.5 rounded-lg border p-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
         isSelected
-          ? 'bg-accent ring-ring ring-2 ring-offset-1'
-          : 'hover:bg-accent/50'
+          ? 'border-foreground bg-muted'
+          : 'hover:border-border hover:bg-muted/50 border-transparent'
       )}
     >
       <div
         className={cn(
           'flex h-12 w-full flex-col overflow-hidden rounded-md border',
-          isNone && 'border-dashed',
-          !isNone && isDark && 'border-neutral-700',
-          !isNone && !isDark && 'border-neutral-300'
+          isNone && 'border-border border-dashed'
         )}
+        style={theme ? { borderColor: theme.frameBorder } : undefined}
       >
-        {!isNone && (
+        {theme && (
           <>
-            {}
             <div
-              className={cn(
-                'flex items-center px-1.5 py-1',
-                isDark ? 'bg-neutral-800' : 'bg-neutral-200'
-              )}
+              className="flex h-3.5 items-center px-1.5"
+              style={{
+                backgroundColor: theme.titleBar,
+                borderBottom: `1px solid ${theme.titleBarBorder}`,
+              }}
             >
-              <TrafficLights size={4} />
-            </div>
-            {}
-            <div
-              className={cn(
-                'flex-1',
-                isDark ? 'bg-neutral-900' : 'bg-neutral-50'
+              {isWindows ? (
+                <WindowsControls color={theme.control} />
+              ) : (
+                <TrafficLights size={4} />
               )}
+            </div>
+            <div
+              className="flex-1"
+              style={{ backgroundColor: theme.content }}
             />
           </>
         )}
         {isNone && (
           <div className="bg-muted/50 flex flex-1 items-center justify-center">
-            <span className="text-muted-foreground text-[8px]">No frame</span>
+            <span className="text-foreground text-xs">No frame</span>
           </div>
         )}
       </div>
-      <span className="text-muted-foreground text-[10px]">{getLabel()}</span>
+      <span
+        className={cn(
+          'text-center text-xs leading-tight',
+          isSelected ? 'text-foreground' : 'text-muted-foreground'
+        )}
+      >
+        {getLabel()}
+      </span>
     </button>
   );
 }

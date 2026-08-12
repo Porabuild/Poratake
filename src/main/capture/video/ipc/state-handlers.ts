@@ -4,6 +4,7 @@ import { getWindowData } from '../window-manager';
 import { getEditorStatePath } from '../recording-project';
 import { generateInitialEditorState } from '../auto-zoom-generator';
 import type { VideoEditorState } from '@/types/video-editor-state';
+import { EDITOR_STATE_VERSION } from '@/types/video-editor-state';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object';
@@ -132,7 +133,7 @@ function isValidEditorState(state: unknown): state is VideoEditorState {
 
   const s = state as Record<string, unknown>;
 
-  if (s.version !== 1) return false;
+  if (s.version !== 1 && s.version !== 2) return false;
   if (typeof s.savedAt !== 'string') return false;
   if (!Array.isArray(s.segments)) return false;
   if (!s.cursorStyle || typeof s.cursorStyle !== 'object') return false;
@@ -209,6 +210,18 @@ function isValidEditorState(state: unknown): state is VideoEditorState {
   return true;
 }
 
+function migrateEditorState(state: VideoEditorState): VideoEditorState {
+  if (state.version === EDITOR_STATE_VERSION) return state;
+
+  const size = state.cursorStyle?.size;
+  const cursorStyle =
+    typeof size === 'number' && Number.isFinite(size)
+      ? { ...state.cursorStyle, size: Math.round(size / 2) }
+      : state.cursorStyle;
+
+  return { ...state, version: EDITOR_STATE_VERSION, cursorStyle };
+}
+
 function getRecordingTypeFromStateFile(
   statePath: string
 ): VideoEditorState['recordingType'] {
@@ -236,7 +249,7 @@ export function registerStateHandlers(): void {
       if (!statePath || !fs.existsSync(statePath)) return null;
 
       try {
-        const content = fs.readFileSync(statePath, 'utf-8');
+        const content = await fs.promises.readFile(statePath, 'utf-8');
         const parsed = JSON.parse(content);
 
         if (!isValidEditorState(parsed)) {
@@ -244,7 +257,7 @@ export function registerStateHandlers(): void {
           return null;
         }
 
-        return parsed;
+        return migrateEditorState(parsed);
       } catch (error) {
         console.error('Failed to load editor state:', error);
         return null;

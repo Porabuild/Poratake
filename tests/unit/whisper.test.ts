@@ -1,16 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 const mockExistsSync = vi.fn();
 const mockUnlinkSync = vi.fn();
+const mockRenameSync = vi.fn();
 const mockCreateWriteStream = vi.fn();
 
 vi.mock('fs', () => ({
   default: {
     existsSync: (...a: unknown[]) => mockExistsSync(...a),
     unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
+    renameSync: (...a: unknown[]) => mockRenameSync(...a),
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
+  renameSync: (...a: unknown[]) => mockRenameSync(...a),
   createWriteStream: (...a: unknown[]) => mockCreateWriteStream(...a),
 }));
 
@@ -30,7 +34,7 @@ describe('whisper utilities', () => {
   describe('path helpers', () => {
     it('getWhisperDir composes config dir', async () => {
       const { getWhisperDir } = await import('@/main/utils/whisper');
-      expect(getWhisperDir()).toBe('/mock/config/whisper');
+      expect(getWhisperDir()).toBe(path.join('/mock/config', 'whisper'));
     });
 
     it('getWhisperCliPath returns binary path', async () => {
@@ -41,13 +45,13 @@ describe('whisper utilities', () => {
     it('getWhisperModelPath returns model path for each model', async () => {
       const { getWhisperModelPath } = await import('@/main/utils/whisper');
       expect(getWhisperModelPath('base')).toBe(
-        '/mock/config/whisper/ggml-base.bin'
+        path.join('/mock/config', 'whisper', 'ggml-base.bin')
       );
       expect(getWhisperModelPath('small')).toBe(
-        '/mock/config/whisper/ggml-small.bin'
+        path.join('/mock/config', 'whisper', 'ggml-small.bin')
       );
       expect(getWhisperModelPath('medium')).toBe(
-        '/mock/config/whisper/ggml-medium.bin'
+        path.join('/mock/config', 'whisper', 'ggml-medium.bin')
       );
     });
   });
@@ -66,7 +70,7 @@ describe('whisper utilities', () => {
       const { isWhisperModelAvailable } = await import('@/main/utils/whisper');
       expect(isWhisperModelAvailable('base')).toBe(true);
       expect(mockExistsSync).toHaveBeenCalledWith(
-        '/mock/config/whisper/ggml-base.bin'
+        path.join('/mock/config', 'whisper', 'ggml-base.bin')
       );
     });
 

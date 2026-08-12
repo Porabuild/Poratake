@@ -10,6 +10,7 @@ import {
   type VideoQualityPreset,
 } from '@/types/video';
 import { getNativeBinaryPath } from './paths';
+import { isWindows } from './platform';
 
 const execFileAsync = promisify(execFile);
 
@@ -115,20 +116,69 @@ export function getFFmpegPath(): string {
   return getNativeBinaryPath('ffmpeg');
 }
 
+function ensureFFmpegExists(ffmpegPath: string): boolean {
+  if (fs.existsSync(ffmpegPath)) return true;
+
+  console.error(
+    `FFmpeg binary not found at: ${ffmpegPath}. ` +
+      'Build it with `bun run build-ffmpeg-win` (Windows) or ' +
+      '`./scripts/build-ffmpeg.sh` (macOS).'
+  );
+  return false;
+}
+
+export async function preprocessImageForOcr(
+  inputPath: string,
+  outputPath: string
+): Promise<boolean> {
+  const ffmpegPath = getFFmpegPath();
+  if (!ensureFFmpegExists(ffmpegPath) || !fs.existsSync(inputPath)) {
+    return false;
+  }
+
+  try {
+    await execFFmpegWithAbort(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-i',
+        inputPath,
+        '-vf',
+        'scale=iw*max(1\\,1300/max(iw\\,ih)):ih*max(1\\,1300/max(iw\\,ih)):flags=lanczos,format=gray,unsharp=5:5:1.2',
+        '-frames:v',
+        '1',
+        outputPath,
+      ],
+      { timeout: 10000 }
+    );
+    return fs.existsSync(outputPath);
+  } catch (error) {
+    console.error('OCR image preprocessing failed:', error);
+    return false;
+  }
+}
+
 export interface VideoProbeResult {
   metadata: VideoMetadata;
   hasAudio: boolean;
 }
 
-export async function probeVideo(
+const pendingVideoProbes = new Map<string, Promise<VideoProbeResult | null>>();
+
+async function runVideoProbe(
   videoPath: string
 ): Promise<VideoProbeResult | null> {
   if (!fs.existsSync(videoPath)) return null;
 
+  const ffmpegPath = getFFmpegPath();
+  if (!ensureFFmpegExists(ffmpegPath)) return null;
+
   try {
     const stats = fs.statSync(videoPath);
     const fileSize = stats.size;
-    const ffmpegPath = getFFmpegPath();
 
     let stderr = '';
     try {
@@ -169,6 +219,21 @@ export async function probeVideo(
   } catch {
     return null;
   }
+}
+
+export function probeVideo(
+  videoPath: string
+): Promise<VideoProbeResult | null> {
+  const pending = pendingVideoProbes.get(videoPath);
+  if (pending) return pending;
+
+  const probe = runVideoProbe(videoPath).finally(() => {
+    if (pendingVideoProbes.get(videoPath) === probe) {
+      pendingVideoProbes.delete(videoPath);
+    }
+  });
+  pendingVideoProbes.set(videoPath, probe);
+  return probe;
 }
 
 export interface TrimOptions {
@@ -225,66 +290,117 @@ function getOutputEncodingArgs(
   const mp4Filters = [...videoFilters];
   mp4Filters.push(`fps=${fps}`);
 
-  if (socialOptions) {
-    const h264Level = socialOptions.resolution === '4k' ? '5.2' : '4.2';
+  return {
+    filters: mp4Filters,
+    args: getVideoEncodingArgs(crf, fps, socialOptions),
+  };
+}
 
-    return {
-      filters: mp4Filters,
-      args: [
+function getVideoEncodingArgs(
+  crf: string,
+  fps: string,
+  socialOptions?: SocialMediaEncodingOptions
+): string[] {
+  const qualityValue = getEncoderQuality(crf);
+
+  if (isWindows) {
+    if (socialOptions) {
+      return [
         '-c:v',
-        'h264_videotoolbox',
-        '-profile:v',
-        'high',
-        '-level',
-        h264Level,
+        'h264_mf',
+        '-rate_control',
+        'pc_vbr',
+        '-scenario',
+        'archive',
         '-b:v',
         `${socialOptions.bitrate}k`,
-        '-coder',
-        'cabac',
         '-pix_fmt',
-        'yuv420p',
+        'nv12',
         '-g',
         String(parseInt(fps) * 2),
-        '-bf',
-        '2',
         '-c:a',
-        'aac_at',
+        'aac',
         '-b:a',
         '256k',
         '-ar',
         '48000',
         '-movflags',
         '+faststart',
-      ],
-    };
-  }
+      ];
+    }
 
-  const qualityValue = getVideoToolboxQuality(
-    crf as '18' | '23' | '28' | string
-  );
-
-  return {
-    filters: mp4Filters,
-    args: [
+    return [
       '-c:v',
-      'h264_videotoolbox',
-      '-q:v',
+      'h264_mf',
+      '-rate_control',
+      'quality',
+      '-scenario',
+      'archive',
+      '-quality',
       qualityValue,
       '-pix_fmt',
-      'yuv420p',
+      'nv12',
       '-force_key_frames',
       'expr:eq(t,0)',
       '-c:a',
-      'aac_at',
+      'aac',
       '-b:a',
       '192k',
       '-movflags',
       '+faststart',
-    ],
-  };
+    ];
+  }
+
+  if (socialOptions) {
+    const h264Level = socialOptions.resolution === '4k' ? '5.2' : '4.2';
+
+    return [
+      '-c:v',
+      'h264_videotoolbox',
+      '-profile:v',
+      'high',
+      '-level',
+      h264Level,
+      '-b:v',
+      `${socialOptions.bitrate}k`,
+      '-coder',
+      'cabac',
+      '-pix_fmt',
+      'yuv420p',
+      '-g',
+      String(parseInt(fps) * 2),
+      '-bf',
+      '2',
+      '-c:a',
+      'aac_at',
+      '-b:a',
+      '256k',
+      '-ar',
+      '48000',
+      '-movflags',
+      '+faststart',
+    ];
+  }
+
+  return [
+    '-c:v',
+    'h264_videotoolbox',
+    '-q:v',
+    qualityValue,
+    '-pix_fmt',
+    'yuv420p',
+    '-force_key_frames',
+    'expr:eq(t,0)',
+    '-c:a',
+    'aac_at',
+    '-b:a',
+    '192k',
+    '-movflags',
+    '+faststart',
+  ];
 }
 
-function getVideoToolboxQuality(crf: string): string {
+function getEncoderQuality(crf: string): string {
   switch (crf) {
     case '18':
       return '85';
@@ -398,6 +514,13 @@ export async function trimVideo(options: TrimOptions): Promise<FFmpegResult> {
       };
     }
   } catch (error) {
+    try {
+      if (fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath);
+      }
+    } catch {
+      console.warn(`Failed to remove incomplete output: ${outputPath}`);
+    }
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown FFmpeg error';
     return {
@@ -425,7 +548,7 @@ export async function generateVideoThumbnail(
 
   const ffmpegPath = getFFmpegPath();
 
-  if (!fs.existsSync(ffmpegPath)) {
+  if (!ensureFFmpegExists(ffmpegPath)) {
     return {
       success: false,
       message: `FFmpeg binary not found at: ${ffmpegPath}`,
@@ -600,53 +723,8 @@ export async function processVideoSegments(
 
       args.push('-r', fps);
 
-      if (socialOptions) {
-        args.push(
-          '-c:v',
-          'h264_videotoolbox',
-          '-profile:v',
-          'high',
-          '-level',
-          '4.2',
-          '-b:v',
-          `${socialOptions.bitrate}k`,
-          '-coder',
-          'cabac',
-          '-pix_fmt',
-          'yuv420p',
-          '-g',
-          String(parseInt(fps) * 2),
-          '-bf',
-          '2',
-          '-c:a',
-          'aac_at',
-          '-b:a',
-          '256k',
-          '-ar',
-          '48000',
-          '-y',
-          segmentPath
-        );
-      } else {
-        const qualityValue = getVideoToolboxQuality(crf);
-
-        args.push(
-          '-c:v',
-          'h264_videotoolbox',
-          '-q:v',
-          qualityValue,
-          '-pix_fmt',
-          'yuv420p',
-          '-force_key_frames',
-          'expr:eq(t,0)',
-          '-c:a',
-          'aac_at',
-          '-b:a',
-          '192k',
-          '-y',
-          segmentPath
-        );
-      }
+      args.push(...getVideoEncodingArgs(crf, fps, socialOptions));
+      args.push('-y', segmentPath);
 
       const segmentProgressCallback = onProgress
         ? (segmentProgress: number) => {
@@ -822,6 +900,7 @@ export async function convertMp4ToGif(
   try {
     await execFileAsync(ffmpegPath, ['-i', inputPath, '-f', 'null', '-'], {
       timeout: 30000,
+      signal: abortSignal,
     }).catch(err => {
       const durationMatch = err.stderr?.match(
         /Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/
@@ -836,6 +915,10 @@ export async function convertMp4ToGif(
     });
   } catch {
     totalDuration = 0;
+  }
+
+  if (abortSignal?.aborted) {
+    return { success: false, message: 'Aborted' };
   }
 
   try {
@@ -876,6 +959,13 @@ export async function convertMp4ToGif(
       };
     }
   } catch (error) {
+    try {
+      if (fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath);
+      }
+    } catch {
+      console.warn(`Failed to remove incomplete output: ${outputPath}`);
+    }
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown FFmpeg error';
     return {

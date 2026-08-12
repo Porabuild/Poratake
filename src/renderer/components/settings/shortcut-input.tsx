@@ -2,13 +2,18 @@ import { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
-import { formatAccelerator } from '@/renderer/utils/shortcuts';
+import { cn } from '@/renderer/lib/utils';
+import {
+  acceleratorKeyFromCode,
+  formatAccelerator,
+} from '@/renderer/utils/shortcuts';
 
 interface ShortcutInputProps {
   value: string;
   onChange: (shortcut: string) => void;
   label: string;
   singleKey?: boolean;
+  compact?: boolean;
 }
 
 function formatShortcut(shortcut: string, singleKey = false): string {
@@ -21,31 +26,38 @@ function formatShortcut(shortcut: string, singleKey = false): string {
   return formatAccelerator(shortcut, ' ');
 }
 
+const MODIFIER_KEYS = ['META', 'CONTROL', 'SHIFT', 'ALT', 'ALTGRAPH'];
+
+function eventKeyToAccelerator(key: string): string {
+  switch (key) {
+    case ' ':
+      return 'Space';
+    case 'ARROWUP':
+      return 'Up';
+    case 'ARROWDOWN':
+      return 'Down';
+    case 'ARROWLEFT':
+      return 'Left';
+    case 'ARROWRIGHT':
+      return 'Right';
+    default:
+      return key;
+  }
+}
+
 function eventToAccelerator(e: KeyboardEvent): string {
   const parts: string[] = [];
 
-  if (e.metaKey) parts.push('Command');
+  if (e.metaKey) {
+    parts.push(window.appPlatform === 'darwin' ? 'Command' : 'Super');
+  }
   if (e.ctrlKey) parts.push('Control');
   if (e.shiftKey) parts.push('Shift');
   if (e.altKey) parts.push('Alt');
 
   const key = e.key.toUpperCase();
-  if (!['META', 'CONTROL', 'SHIFT', 'ALT'].includes(key)) {
-    if (key.length === 1) {
-      parts.push(key);
-    } else if (key === ' ') {
-      parts.push('Space');
-    } else if (key === 'ARROWUP') {
-      parts.push('Up');
-    } else if (key === 'ARROWDOWN') {
-      parts.push('Down');
-    } else if (key === 'ARROWLEFT') {
-      parts.push('Left');
-    } else if (key === 'ARROWRIGHT') {
-      parts.push('Right');
-    } else {
-      parts.push(key);
-    }
+  if (!MODIFIER_KEYS.includes(key)) {
+    parts.push(acceleratorKeyFromCode(e.code) ?? eventKeyToAccelerator(key));
   }
 
   return parts.join('+');
@@ -56,6 +68,7 @@ export default function ShortcutInput({
   onChange,
   label,
   singleKey = false,
+  compact = false,
 }: ShortcutInputProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [tempShortcut, setTempShortcut] = useState('');
@@ -121,14 +134,20 @@ export default function ShortcutInput({
   };
 
   return (
-    <div className="flex items-center justify-between py-2">
+    <div
+      className={cn(
+        'flex items-center justify-between',
+        compact ? 'min-h-10 py-1' : 'py-2'
+      )}
+    >
       <Label className="text-sm font-normal">{label}</Label>
-      <div className="flex items-center gap-2">
+      <div className={cn('flex items-center', compact ? 'gap-1' : 'gap-2')}>
         {value && !isRecording && (
           <Button
             variant="ghost"
             size="icon-sm"
             onClick={handleClear}
+            aria-label={`Clear ${label} shortcut`}
             className="text-muted-foreground hover:text-foreground"
           >
             <X size={16} />
@@ -136,12 +155,19 @@ export default function ShortcutInput({
         )}
         <Button
           variant={isRecording ? 'default' : 'outline'}
+          size={compact ? 'sm' : 'default'}
           onClick={() => setIsRecording(true)}
-          className={
+          className={cn(
+            'font-normal tracking-wide',
+            compact ? 'text-sm' : 'text-base',
             singleKey
-              ? 'min-w-[80px] text-base font-normal tracking-wide'
-              : 'min-w-[180px] text-base font-normal tracking-wide'
-          }
+              ? compact
+                ? 'min-w-16'
+                : 'min-w-[80px]'
+              : compact
+                ? 'min-w-36'
+                : 'min-w-[180px]'
+          )}
         >
           {isRecording
             ? tempShortcut

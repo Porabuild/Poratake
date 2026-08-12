@@ -1,6 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'path';
 import type { ChildProcess } from 'child_process';
 import type { VideoExportOptions } from '@/types/video';
+
+const devFFmpegPath = path.join(
+  '/mock/app',
+  'src',
+  'main',
+  'binaries',
+  'ffmpeg',
+  'ffmpeg'
+);
+const prodFFmpegPath = path.join(
+  '/mock/resources',
+  'binaries',
+  'ffmpeg',
+  'ffmpeg'
+);
+const tempEditDirPrefix = path.join('/mock/tmp', 'video-edit-');
 
 // Mock child_process
 const mockSpawn = vi.fn();
@@ -21,6 +38,7 @@ const mockFs = {
   existsSync: vi.fn(),
   unlinkSync: vi.fn(),
   mkdirSync: vi.fn(),
+  statSync: vi.fn(() => ({ size: 500000 })),
   writeFileSync: vi.fn(),
   rmSync: vi.fn(),
 };
@@ -30,6 +48,7 @@ vi.mock('fs', () => ({
   existsSync: mockFs.existsSync,
   unlinkSync: mockFs.unlinkSync,
   mkdirSync: mockFs.mkdirSync,
+  statSync: mockFs.statSync,
   writeFileSync: mockFs.writeFileSync,
   rmSync: mockFs.rmSync,
 }));
@@ -113,7 +132,7 @@ describe('FFmpeg Utilities', () => {
       const { getFFmpegPath } = await import('@/main/utils/ffmpeg');
       const ffmpegPath = getFFmpegPath();
 
-      expect(ffmpegPath).toBe('/mock/app/src/main/binaries/ffmpeg/ffmpeg');
+      expect(ffmpegPath).toBe(devFFmpegPath);
     });
 
     it('should return production path when dev path not found', async () => {
@@ -127,21 +146,77 @@ describe('FFmpeg Utilities', () => {
 
       // Mock fs.existsSync to simulate production: dev path doesn't exist, prod path does
       mockFs.existsSync.mockImplementation((p: string) => {
-        if (p === '/mock/app/src/main/binaries/ffmpeg/ffmpeg') return false;
-        if (p === '/mock/resources/binaries/ffmpeg/ffmpeg') return true;
+        if (p === devFFmpegPath) return false;
+        if (p === prodFFmpegPath) return true;
         return true;
       });
 
       const { getFFmpegPath } = await import('@/main/utils/ffmpeg');
       const ffmpegPath = getFFmpegPath();
 
-      expect(ffmpegPath).toBe('/mock/resources/binaries/ffmpeg/ffmpeg');
+      expect(ffmpegPath).toBe(prodFFmpegPath);
 
       // Restore
       Object.defineProperty(process, 'resourcesPath', {
         value: originalResourcesPath,
         writable: true,
         configurable: true,
+      });
+    });
+  });
+
+  describe('preprocessImageForOcr', () => {
+    it('normalizes and sharpens the image for Windows OCR', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockSpawn.mockReturnValue(createMockProcess(0));
+
+      const { preprocessImageForOcr } = await import('@/main/utils/ffmpeg');
+      const result = await preprocessImageForOcr(
+        '/input/capture.png',
+        '/output/ocr.png'
+      );
+
+      expect(result).toBe(true);
+      expect(mockSpawn).toHaveBeenCalledWith(
+        devFFmpegPath,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-i',
+          '/input/capture.png',
+          '-vf',
+          'scale=iw*max(1\\,1300/max(iw\\,ih)):ih*max(1\\,1300/max(iw\\,ih)):flags=lanczos,format=gray,unsharp=5:5:1.2',
+          '-frames:v',
+          '1',
+          '/output/ocr.png',
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+    });
+  });
+
+  describe('probeVideo', () => {
+    it('coalesces concurrent probes for the same video', async () => {
+      mockExecFile.mockRejectedValue(
+        Object.assign(new Error('probe complete'), {
+          stderr:
+            'Duration: 00:00:05.00, bitrate: 800 kb/s Video: h264, 1280x720 Audio: aac',
+        })
+      );
+
+      const { probeVideo } = await import('@/main/utils/ffmpeg');
+      const [first, second] = await Promise.all([
+        probeVideo('/recording.mp4'),
+        probeVideo('/recording.mp4'),
+      ]);
+
+      expect(mockExecFile).toHaveBeenCalledTimes(1);
+      expect(first).toEqual(second);
+      expect(first).toMatchObject({
+        hasAudio: true,
+        metadata: { width: 1280, height: 720, duration: 5 },
       });
     });
   });
@@ -523,7 +598,7 @@ describe('FFmpeg Utilities', () => {
       });
 
       expect(mockFs.mkdirSync).toHaveBeenCalledWith(
-        expect.stringContaining('/mock/tmp/video-edit-'),
+        expect.stringContaining(tempEditDirPrefix),
         { recursive: true }
       );
     });
@@ -543,7 +618,7 @@ describe('FFmpeg Utilities', () => {
       });
 
       expect(mockFs.rmSync).toHaveBeenCalledWith(
-        expect.stringContaining('/mock/tmp/video-edit-'),
+        expect.stringContaining(tempEditDirPrefix),
         { recursive: true, force: true }
       );
     });
@@ -579,7 +654,7 @@ describe('FFmpeg Utilities', () => {
       expect(result.success).toBe(false);
       // Should still clean up temp directory on error
       expect(mockFs.rmSync).toHaveBeenCalledWith(
-        expect.stringContaining('/mock/tmp/video-edit-'),
+        expect.stringContaining(tempEditDirPrefix),
         { recursive: true, force: true }
       );
     });
@@ -865,6 +940,58 @@ describe('FFmpeg Utilities', () => {
       expect(firstSegmentArgs[firstSegmentArgs.indexOf('-coder') + 1]).toBe(
         'cabac'
       );
+    });
+  });
+
+  describe('Windows encoding', () => {
+    it('uses Media Foundation H.264 and native AAC for trim export', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      mockSpawn.mockReturnValue(createMockProcess(0));
+
+      try {
+        const { trimVideo } = await import('@/main/utils/ffmpeg');
+        await trimVideo({
+          inputPath: '/input/video.mov',
+          outputPath: '/output/video.mp4',
+          startTime: 0,
+          endTime: 10,
+        });
+
+        const args = mockSpawn.mock.calls[0][1];
+        expect(args).toContain('h264_mf');
+        expect(args).toContain('aac');
+        expect(args).toContain('nv12');
+        expect(args).not.toContain('h264_videotoolbox');
+        expect(args).not.toContain('aac_at');
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
+    });
+
+    it('uses the same Windows encoder for extracted segments', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      mockSpawn.mockReturnValue(createMockProcess(0));
+
+      try {
+        const { processVideoSegments } = await import('@/main/utils/ffmpeg');
+        await processVideoSegments({
+          inputPath: '/input/video.mov',
+          outputPath: '/output/video.mp4',
+          segments: [
+            { start: 0, end: 5 },
+            { start: 10, end: 15 },
+          ],
+        });
+
+        const firstSegmentArgs = mockSpawn.mock.calls[0][1];
+        expect(firstSegmentArgs).toContain('h264_mf');
+        expect(firstSegmentArgs).toContain('aac');
+        expect(firstSegmentArgs).not.toContain('h264_videotoolbox');
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
     });
   });
 });

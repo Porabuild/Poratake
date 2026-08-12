@@ -2,7 +2,7 @@ import type { Segment } from '../types';
 import type { VideoSegment } from '@/types/video';
 import type { CursorData, CursorStyle } from '@/types/cursor';
 import type { ZoomSegment, ZoomSettings } from '@/types/zoom';
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import type { KeyboardData, KeyboardStyle } from '@/types/keyboard';
 import type { SubtitleData, SubtitleStyle } from '@/types/subtitle';
 import type { VideoWallpaperSettings } from '@/types/video-wallpaper';
@@ -21,6 +21,7 @@ export interface CompositionConfig {
   cursorData?: CursorData | null;
   cursorStyle?: CursorStyle | null;
   cameraStyle?: CameraStyle | null;
+  cameraVisibleRanges?: CameraSegment[] | null;
   keyboardData?: KeyboardData | null;
   keyboardStyle?: KeyboardStyle | null;
   subtitleData?: SubtitleData | null;

@@ -41,10 +41,10 @@ export default function UpgradeDialog({
           <div className="bg-primary/10 mb-1 flex h-12 w-12 items-center justify-center rounded-full">
             <Sparkles className="text-primary h-6 w-6" />
           </div>
-          <DialogTitle>Upgrade to Capty Pro</DialogTitle>
+          <DialogTitle>Unlock Pro with a Capty License</DialogTitle>
           <DialogDescription>
             {reason ??
-              'Unlock the full power of Capty with a one-time Pro license.'}
+              'A Capty license unlocks Pro features in Poratake. Purchase and activation are provided by capty.app.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -67,7 +67,7 @@ export default function UpgradeDialog({
           </Button>
           <Button onClick={handleUpgrade}>
             <ExternalLink className="mr-2 h-4 w-4" />
-            Upgrade to Pro
+            Get Capty License
           </Button>
         </DialogFooter>
       </DialogContent>

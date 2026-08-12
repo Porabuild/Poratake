@@ -1,10 +1,14 @@
 import { ipcMain, BrowserWindow, dialog, Notification, shell } from 'electron';
-import fs from 'fs';
 import { convertMp4ToGif } from '@/main/utils/ffmpeg';
 import {
   rememberSaveDirectory,
   resolveSaveDialogPath,
 } from '@/main/utils/save-location';
+import {
+  authorizeExportOutputPaths,
+  getExportAbortSignal,
+  isExportOutputPathAllowed,
+} from './export-session';
 
 function formatExportDuration(seconds: number): string {
   if (seconds < 60) {
@@ -39,37 +43,30 @@ export function registerExportHandlers(): void {
         : await dialog.showSaveDialog(options);
 
       if (!result.canceled && result.filePath) {
-        rememberSaveDirectory('video', result.filePath);
+        const filePath =
+          format === 'gif' && !result.filePath.match(/\.gif$/i)
+            ? `${result.filePath.replace(/\.[^/.]+$/, '')}.gif`
+            : result.filePath;
+        const outputPaths =
+          format === 'gif'
+            ? [filePath, filePath.replace(/\.gif$/i, '-temp.mp4')]
+            : [filePath];
+        authorizeExportOutputPaths(event.sender, outputPaths);
+        rememberSaveDirectory('video', filePath);
+
+        return { canceled: false, filePath };
       }
 
       return {
         canceled: result.canceled,
-        filePath: result.filePath,
       };
-    }
-  );
-
-  ipcMain.handle(
-    'video-editor:save-export',
-    async (
-      _,
-      { buffer, outputPath }: { buffer: Uint8Array; outputPath: string }
-    ): Promise<{ success: boolean; error?: string }> => {
-      try {
-        await fs.promises.writeFile(outputPath, Buffer.from(buffer));
-        return { success: true };
-      } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : 'Unknown error';
-        return { success: false, error: errorMessage };
-      }
     }
   );
 
   ipcMain.handle(
     'video-export:show-completion',
     async (
-      _,
+      event,
       {
         durationSeconds,
         filePath,
@@ -82,7 +79,11 @@ export function registerExportHandlers(): void {
       });
       notification.show();
 
-      if (openInFinder && filePath) {
+      if (
+        openInFinder &&
+        filePath &&
+        isExportOutputPathAllowed(event.sender.id, filePath)
+      ) {
         shell.showItemInFolder(filePath);
       }
     }
@@ -91,7 +92,7 @@ export function registerExportHandlers(): void {
   ipcMain.handle(
     'video-editor:convert-to-gif',
     async (
-      _,
+      event,
       {
         inputPath,
         outputPath,
@@ -105,11 +106,18 @@ export function registerExportHandlers(): void {
       }
     ): Promise<{ success: boolean; error?: string; outputPath?: string }> => {
       try {
+        if (
+          !isExportOutputPathAllowed(event.sender.id, inputPath) ||
+          !isExportOutputPathAllowed(event.sender.id, outputPath)
+        ) {
+          return { success: false, error: 'Export path is not authorized' };
+        }
         const result = await convertMp4ToGif({
           inputPath,
           outputPath,
           resolution,
           frameRate,
+          abortSignal: getExportAbortSignal(event.sender.id),
         });
         if (result.success) {
           return { success: true, outputPath: result.outputPath };

@@ -1,5 +1,6 @@
 import { app } from 'electron';
 import { daemon } from '@/main/daemon';
+import { isLinux } from '@/main/utils/platform';
 
 if (!process.env.HOME) {
   process.env.HOME = app.getPath('home');
@@ -23,6 +24,7 @@ import * as update from '@/main/update/index.ts';
 import * as permissions from '@/main/system/permissions.ts';
 import * as cloud from '@/main/cloud/index.ts';
 import * as capture from '@/main/capture';
+import * as devices from '@/main/devices';
 import * as activation from '@/main/activation';
 import * as onboarding from '@/main/onboarding';
 import * as allInOne from '@/main/capture/all-in-one';
@@ -88,9 +90,9 @@ app.on('activate', (_event, hasVisibleWindows) => {
 });
 
 const initializeRuntimeModules = async () => {
+  await history.init();
   shortcuts.init();
   await menu.init();
-  history.init();
   update.init();
 };
 
@@ -105,6 +107,7 @@ const initializeModules = async () => {
   onboarding.init();
   permissions.initPermissionsIPC();
   capture.init();
+  devices.init();
   preferences.init();
   cloud.init();
   allInOne.init();
@@ -128,7 +131,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (isLinux) {
     app.quit();
   }
 });

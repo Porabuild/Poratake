@@ -15,8 +15,7 @@ import {
   findPrimaryRect,
   type LayerRect,
 } from '@/renderer/utils/layer-layout';
-
-const WINDOW_FRAME_TITLE_BAR_HEIGHT = 28;
+import { WINDOW_FRAME_TITLE_BAR_HEIGHT } from '@/renderer/utils/window-frame';
 
 interface UseContentDimensionsProps {
   image: HTMLImageElement | null;

@@ -282,7 +282,8 @@ export class VideoCompositionEngine {
     _layout: WallpaperRenderResult,
     zoomTransform: ZoomTransform
   ): void {
-    const { cameraStyle, cursorData, segments } = this.config;
+    const { cameraStyle, cameraVisibleRanges, cursorData, segments } =
+      this.config;
 
     if (!source.camera) return;
 
@@ -301,6 +302,7 @@ export class VideoCompositionEngine {
 
     renderCamera(ctx, timelineTime, source.camera, {
       cameraStyle: effectiveStyle,
+      cameraVisibleRanges,
       cursorData,
       segments: videoSegments,
       videoWidth: compositionWidth,

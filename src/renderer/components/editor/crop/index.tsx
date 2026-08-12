@@ -246,7 +246,7 @@ export default function CropOverlay({
     fill: 'white',
     stroke: '#007AFF',
     strokeWidth: 2,
-    cursor: 'pointer',
+    cursor: 'default',
   };
 
   const handles: { pos: ResizeHandle; x: number; y: number; cursor: string }[] =

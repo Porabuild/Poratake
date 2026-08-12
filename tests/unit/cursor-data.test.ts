@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 import type { CursorData } from '@/types/cursor';
+
+const projectCursorJsonPath = path.join(
+  '/path/to/Recording.capty',
+  'cursor.json'
+);
 
 // Mock fs/promises
 vi.mock('fs/promises', () => ({
@@ -23,10 +29,10 @@ describe('Cursor Data Utilities', () => {
 
       // Project folder structure: cursor.json is in the .capty folder
       expect(getCursorDataPath('/path/to/Recording.capty/recording.mov')).toBe(
-        '/path/to/Recording.capty/cursor.json'
+        projectCursorJsonPath
       );
       expect(getCursorDataPath('/path/to/Recording.capty')).toBe(
-        '/path/to/Recording.capty/cursor.json'
+        projectCursorJsonPath
       );
     });
 
@@ -72,7 +78,7 @@ describe('Cursor Data Utilities', () => {
       );
 
       expect(fs.default.readFile).toHaveBeenCalledWith(
-        '/path/to/Recording.capty/cursor.json',
+        projectCursorJsonPath,
         'utf-8'
       );
       expect(result).toEqual(mockCursorData);
@@ -143,9 +149,7 @@ describe('Cursor Data Utilities', () => {
 
       await deleteCursorData('/path/to/Recording.capty/recording.mov');
 
-      expect(fs.default.unlink).toHaveBeenCalledWith(
-        '/path/to/Recording.capty/cursor.json'
-      );
+      expect(fs.default.unlink).toHaveBeenCalledWith(projectCursorJsonPath);
     });
 
     it('should delete cursor data file from legacy path', async () => {

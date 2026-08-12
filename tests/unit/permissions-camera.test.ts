@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockSystemPreferences = {
   getMediaAccessStatus: vi.fn(),
@@ -42,11 +42,17 @@ vi.mock('@/main/capture/area-selector', () => ({
 }));
 
 describe('permissions camera + extras', () => {
+  const originalPlatform = process.platform;
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
     Object.keys(ipcOn).forEach(k => delete ipcOn[k]);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
   describe('getCameraStatus', () => {
@@ -87,6 +93,20 @@ describe('permissions camera + extras', () => {
       expect(mockSystemPreferences.askForMediaAccess).toHaveBeenCalledWith(
         'camera'
       );
+    });
+
+    it('allows native Windows capture to trigger first camera access', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      mockSystemPreferences.getMediaAccessStatus.mockReturnValue(
+        'not-determined'
+      );
+
+      const { requestCameraPermission } =
+        await import('@/main/system/permissions');
+
+      expect(await requestCameraPermission()).toBe(true);
+      expect(mockSystemPreferences.askForMediaAccess).not.toHaveBeenCalled();
     });
   });
 

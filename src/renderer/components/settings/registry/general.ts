@@ -1,4 +1,5 @@
 import type { SettingsItem } from '../settings-registry';
+import type { PreviewCorner } from '@/types/settings';
 
 export const GENERAL_ITEMS: SettingsItem[] = [
   {
@@ -7,7 +8,7 @@ export const GENERAL_ITEMS: SettingsItem[] = [
     section: 'Application',
     type: 'switch',
     label: 'Start on login',
-    description: 'Launch Capty automatically when you log in',
+    description: 'Launch Poratake automatically when you log in',
     keywords: ['startup', 'launch', 'boot', 'login', 'auto start'],
     getValue: s => s.general.startOnLogin,
     setValue: (s, v) => ({
@@ -16,6 +17,7 @@ export const GENERAL_ITEMS: SettingsItem[] = [
   },
   {
     id: 'general.playSound',
+    feature: 'capture-sound',
     category: 'general',
     section: 'Application',
     type: 'switch',
@@ -48,6 +50,90 @@ export const GENERAL_ITEMS: SettingsItem[] = [
     setValue: (s, v) => ({
       general: { ...s.general, showDeletionNotifications: v },
     }),
+  },
+  {
+    id: 'general.previewCorner',
+    category: 'general',
+    section: 'Preview',
+    type: 'select',
+    label: 'Preview corner',
+    description:
+      'Corner of the screen where capture previews appear and stack up',
+    keywords: [
+      'preview',
+      'corner',
+      'position',
+      'placement',
+      'thumbnail',
+      'bottom',
+      'top',
+      'left',
+      'right',
+    ],
+    options: [
+      { value: 'bottom-right', label: 'Bottom right' },
+      { value: 'bottom-left', label: 'Bottom left' },
+      { value: 'top-right', label: 'Top right' },
+      { value: 'top-left', label: 'Top left' },
+    ],
+    getValue: s => s.preview.corner,
+    setValue: (s, v) => ({
+      preview: { ...s.preview, corner: v as PreviewCorner },
+    }),
+  },
+  {
+    id: 'general.previewAutoDismiss',
+    category: 'general',
+    section: 'Preview',
+    type: 'switch',
+    label: 'Dismiss previews automatically',
+    description:
+      'Hide capture previews after a delay, unless you are hovering or an action is running',
+    keywords: [
+      'preview',
+      'auto',
+      'dismiss',
+      'hide',
+      'close',
+      'timeout',
+      'duration',
+      'disappear',
+    ],
+    getValue: s => s.preview.autoDismiss,
+    setValue: (s, v) => ({
+      preview: { ...s.preview, autoDismiss: v },
+    }),
+  },
+  {
+    id: 'general.previewAutoDismissSeconds',
+    category: 'general',
+    section: 'Preview',
+    type: 'select',
+    label: 'Dismiss after',
+    description: 'How long a capture preview stays on screen',
+    keywords: [
+      'preview',
+      'auto',
+      'dismiss',
+      'delay',
+      'seconds',
+      'timeout',
+      'duration',
+      'disappear',
+    ],
+    options: [
+      { value: '3', label: '3 seconds' },
+      { value: '5', label: '5 seconds' },
+      { value: '10', label: '10 seconds' },
+      { value: '15', label: '15 seconds' },
+      { value: '30', label: '30 seconds' },
+      { value: '60', label: '1 minute' },
+    ],
+    getValue: s => String(s.preview.autoDismissSeconds),
+    setValue: (s, v) => ({
+      preview: { ...s.preview, autoDismissSeconds: Number(v) },
+    }),
+    visibleWhen: s => s.preview.autoDismiss,
   },
   {
     id: 'general.historyEnabled',

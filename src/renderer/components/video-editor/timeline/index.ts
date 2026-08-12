@@ -4,6 +4,7 @@ export { default as TimelineTrack } from './timeline-track';
 export { default as TimelineTracks } from './timeline-tracks';
 export { default as Track } from './track';
 export { default as ZoomTrack } from './zoom-track';
+export { default as CameraTrack } from './camera-track';
 export { default as DrawingTrack } from './drawing-track';
 export { default as MusicTrack } from './music-track';
 export { default as TrackRow, TRACK_HEIGHT } from './track-row';

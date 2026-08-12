@@ -111,6 +111,22 @@ export function preloadCustomCursorImage(dataUrl: string): void {
   loadCustomCursorImage(dataUrl);
 }
 
+const LIFE_SIZE_SPRITE_PX = 49;
+const MAX_DISPLAY_SCALE = 2.5;
+
+export function resolveCursorSpriteSize(
+  sizePercent: number,
+  videoHeight: number,
+  recordingHeight: number
+): number {
+  const scale =
+    Number.isFinite(recordingHeight) && recordingHeight > 0
+      ? videoHeight / recordingHeight
+      : 1;
+  const displayScale = Math.min(Math.max(scale, 1), MAX_DISPLAY_SCALE);
+  return (sizePercent / 100) * LIFE_SIZE_SPRITE_PX * displayScale;
+}
+
 const MOTION_BLUR_SAMPLES = 9;
 const MOTION_BLUR_SHUTTER = 0.04;
 const MOTION_BLUR_MIN_TRAVEL = 1.5;
@@ -195,7 +211,11 @@ export function renderCursor(
     ? calculateClickBounceScale(cursorState.clickProgress)
     : 1;
 
-  const size = cursorStyle.size;
+  const size = resolveCursorSpriteSize(
+    cursorStyle.size,
+    videoHeight,
+    cursorData.recordingArea.height
+  );
 
   const hasCustomCursor = !!cursorStyle.customCursorImage;
   const image = hasCustomCursor

@@ -10,15 +10,15 @@ import {
 } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import type {
-  HistoryItem as HistoryItemType,
+  HistoryItemSummary,
   VideoRecordingFeatures,
 } from '@/types/history';
 import { formatRelativeTime } from '@/renderer/components/history/utils';
 
 interface HistoryListItemProps {
-  item: HistoryItemType;
+  item: HistoryItemSummary;
   isSelected?: boolean;
-  onOpen: (item: HistoryItemType) => void;
+  onOpen: (item: HistoryItemSummary) => void;
   onDelete: (id: string) => void;
 }
 
@@ -75,8 +75,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
         try {
           const base64 = (await window.ipcRenderer.invoke(
             'history:getThumbnail',
-            item.originalPath,
-            item.type
+            item.id
           )) as string | null;
 
           if (base64) {
@@ -89,7 +88,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
         }
       };
       loadThumbnail();
-    }, [isVisible, item.originalPath, item.type]);
+    }, [isVisible, item.id]);
 
     useEffect(() => {
       if (!isVisible || !isVideo) return;
@@ -98,7 +97,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
         try {
           const features = (await window.ipcRenderer.invoke(
             'history:getVideoFeatures',
-            item.originalPath
+            item.id
           )) as VideoRecordingFeatures;
           setVideoFeatures(features);
         } catch (error) {
@@ -106,7 +105,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
         }
       };
       loadVideoFeatures();
-    }, [isVisible, isVideo, item.originalPath]);
+    }, [isVisible, isVideo, item.id]);
 
     const handleClick = useCallback(() => {
       onOpen(item);
@@ -123,7 +122,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
     return (
       <div
         ref={setRefs}
-        className={`group bg-secondary hover:bg-accent flex cursor-pointer items-center gap-3 rounded-lg p-2 transition-all ${
+        className={`group bg-secondary hover:bg-muted flex cursor-default items-center gap-3 rounded-lg p-2 transition-all ${
           isSelected
             ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-transparent'
             : ''

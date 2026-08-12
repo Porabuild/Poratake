@@ -25,6 +25,7 @@ function SliderControl({ config }: { config: SliderConfig }) {
         <span className="text-xs tabular-nums">{config.value}</span>
       </div>
       <Slider
+        size="sm"
         value={[config.value]}
         onValueChange={([value]) => config.onChange(value)}
         min={config.min}

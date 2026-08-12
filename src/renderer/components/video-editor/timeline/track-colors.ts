@@ -22,6 +22,11 @@ export const TRACK_COLORS: Record<string, TrackColors> = {
     gradient: ['#c084fc', '#7e22ce'],
     selectedGradient: ['#3b82f6', '#1d4ed8'],
   },
+  pink: {
+    border: 'border-pink-600',
+    gradient: ['#f472b6', '#be185d'],
+    selectedGradient: ['#3b82f6', '#1d4ed8'],
+  },
 };
 
 const SELECTED_GRADIENT: [string, string] = ['#3b82f6', '#1d4ed8'];

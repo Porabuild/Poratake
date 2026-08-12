@@ -12,6 +12,7 @@ import { Button } from '@/renderer/components/ui/button';
 import { Separator } from '@/renderer/components/ui/separator';
 import { Slider } from '@/renderer/components/ui/slider';
 import { Switch } from '@/renderer/components/ui/switch';
+import { formatAccelerator } from '@/renderer/utils/shortcuts';
 import {
   Tooltip,
   TooltipContent,
@@ -80,8 +81,8 @@ export default function TimelineControls({
           <Button
             onClick={onTogglePlayPause}
             variant="ghost"
-            size="icon"
-            className="size-8"
+            size="icon-sm"
+            className="size-8!"
           >
             {isPlaying ? (
               <Pause className="size-4" fill="currentColor" />
@@ -101,9 +102,9 @@ export default function TimelineControls({
         <TooltipTrigger asChild>
           <Button
             onClick={onToggleCutTool}
-            variant={isCutToolActive ? 'secondary' : 'ghost'}
-            size="icon"
-            className="size-8"
+            variant={isCutToolActive ? 'tertiary' : 'ghost'}
+            size="icon-sm"
+            className="size-8!"
           >
             <Scissors className="size-4" />
           </Button>
@@ -119,8 +120,8 @@ export default function TimelineControls({
               <Button
                 onClick={onDeleteSegment}
                 variant="ghost"
-                size="icon"
-                className="text-destructive hover:text-destructive size-8"
+                size="icon-sm"
+                className="text-destructive hover:text-destructive size-8!"
               >
                 <Trash2 className="size-4" />
               </Button>
@@ -161,17 +162,20 @@ export default function TimelineControls({
             <Button
               onClick={onZoomOut}
               variant="ghost"
-              size="icon"
-              className="size-7"
+              size="icon-sm"
+              className="size-7!"
               disabled={!canZoomOut}
             >
               <Minus className="size-3.5" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="top">Zoom Out (Cmd -)</TooltipContent>
+          <TooltipContent side="top">
+            Zoom Out ({formatAccelerator('CommandOrControl+-')})
+          </TooltipContent>
         </Tooltip>
 
         <Slider
+          size="sm"
           value={[pixelsPerSecond]}
           min={MIN_PIXELS_PER_SECOND}
           max={MAX_PIXELS_PER_SECOND}
@@ -185,14 +189,16 @@ export default function TimelineControls({
             <Button
               onClick={onZoomIn}
               variant="ghost"
-              size="icon"
-              className="size-7"
+              size="icon-sm"
+              className="size-7!"
               disabled={!canZoomIn}
             >
               <Plus className="size-3.5" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="top">Zoom In (Cmd +)</TooltipContent>
+          <TooltipContent side="top">
+            Zoom In ({formatAccelerator('CommandOrControl+=')})
+          </TooltipContent>
         </Tooltip>
 
         <Tooltip>
@@ -200,8 +206,8 @@ export default function TimelineControls({
             <Button
               onClick={onFitToView}
               variant="ghost"
-              size="icon"
-              className="size-7"
+              size="icon-sm"
+              className="size-7!"
             >
               <Maximize2 className="size-3.5" />
             </Button>
@@ -215,6 +221,7 @@ export default function TimelineControls({
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground text-xs">Scrub Audio</span>
         <Switch
+          size="sm"
           checked={scrubAudioEnabled}
           onCheckedChange={onScrubAudioChange}
           disabled={!isScrubAudioAvailable}
@@ -225,13 +232,13 @@ export default function TimelineControls({
 
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon" className="size-8">
+          <Button variant="ghost" size="icon-sm" className="size-8!">
             <HelpCircle className="text-muted-foreground size-4" />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="top" className="max-w-xs text-center">
           {isCutToolActive
-            ? 'Click on timeline to cut at that position'
+            ? 'Click a track to cut all tracks at that position | Shift+Click to cut a single track'
             : 'Drag edges to trim | Hover to scrub | Click to select | Backspace to delete | ←/→ seek 1s (Shift 5s) | , . step frame | Home/End jump | F fit to view'}
         </TooltipContent>
       </Tooltip>

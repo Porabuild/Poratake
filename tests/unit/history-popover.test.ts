@@ -93,7 +93,13 @@ describe('history popover', () => {
   it('showHistoryPopover positions near tray bounds when supplied', async () => {
     const m = await import('@/main/history/popover');
     m.showHistoryPopover({ x: 1000, y: 0, width: 40, height: 40 });
-    expect(browserWindows[0].setPosition).toHaveBeenCalledWith(820, 44);
+    expect(browserWindows[0].setPosition).toHaveBeenCalledWith(820, 48);
+  });
+
+  it('showHistoryPopover leaves a gap above a bottom taskbar', async () => {
+    const m = await import('@/main/history/popover');
+    m.showHistoryPopover({ x: 1000, y: 1080, width: 40, height: 40 });
+    expect(browserWindows[0].setPosition).toHaveBeenCalledWith(820, 572);
   });
 
   it('closeHistoryPopover closes the window', async () => {
@@ -127,8 +133,28 @@ describe('history popover', () => {
     const m = await import('@/main/history/popover');
     m.preloadHistoryPopover();
     expect(ipcOn['history:closePopover']).toBeDefined();
-    ipcOn['history:closePopover']();
+    ipcOn['history:closePopover']({ sender: browserWindows[0].webContents });
     expect(browserWindows[0].close).toHaveBeenCalled();
+  });
+
+  it('history:closePopover ignores another renderer', async () => {
+    const m = await import('@/main/history/popover');
+    m.preloadHistoryPopover();
+    ipcOn['history:closePopover']({ sender: {} });
+    expect(browserWindows[0].close).not.toHaveBeenCalled();
+  });
+
+  it('history:ready refreshes only a visible popover', async () => {
+    const m = await import('@/main/history/popover');
+    m.preloadHistoryPopover();
+    const win = browserWindows[0];
+
+    ipcOn['history:ready']({ sender: win.webContents });
+    expect(win.webContents.send).not.toHaveBeenCalled();
+
+    win.show();
+    ipcOn['history:ready']({ sender: win.webContents });
+    expect(win.webContents.send).toHaveBeenCalledWith('history:refresh');
   });
 
   it('window blur closes popover', async () => {

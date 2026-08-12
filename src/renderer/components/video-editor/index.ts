@@ -4,12 +4,6 @@ export { default as ExportProgressIndicator } from './export-progress-indicator'
 export { default as EditorSidebar } from './editor-sidebar';
 export { default as EditorSidebarTabs } from './editor-sidebar-tabs';
 export type { SidebarTab } from './editor-sidebar';
-export { default as CursorSettingsPanel } from './cursor-settings-panel';
-export { default as ZoomSettingsPanel } from './zoom-settings-panel';
-export { default as DrawingSettingsPanel } from './drawing-settings-panel';
-export { default as CameraSettingsPanel } from './camera-settings-panel';
-export { default as WallpaperSettingsPanel } from './wallpaper-settings-panel';
-export { default as ExportSettingsPanel } from './export-settings-panel';
 export * from './components';
 export * from './timeline';
 export * from './hooks';

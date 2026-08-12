@@ -8,6 +8,7 @@ import {
 } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { pathToFileURL } from 'url';
 import { isDev, devServerUrl } from '@/main/utils/env';
 import { getThumbnail } from '@/main/utils/thumbnails';
 import { deleteHistoryItem, getHistoryItemByPath } from '@/main/history';
@@ -16,29 +17,61 @@ import { createVideoEditorWindow } from '@/main/capture/video/video-editor';
 import { deleteVideo } from '@/main/capture/video/delete-video';
 import * as settings from '@/main/settings';
 import { registerPreviewExportIpc } from './video-export';
-import {
-  animateWindowIn,
-  animateWindowMove,
-  getInitialBounds,
-} from '@/main/utils/window-animation';
+import { animateWindowMove } from '@/main/utils/window-animation';
 import type { ContentType, PreviewDisplayInfo } from '@/types/capture-preview';
+import type { PreviewCorner } from '@/types/settings';
 
 interface PreviewWindowData {
   window: BrowserWindow;
   filePath: string;
   contentType: ContentType;
   historyId?: string;
+  historyIdPromise?: Promise<string | undefined>;
+  actionReadyPromise?: Promise<unknown>;
+  setAutoDismissPaused: (paused: boolean) => void;
+}
+
+export interface CapturePreviewHandle {
+  revealed: Promise<void>;
+}
+
+export interface CapturePreviewPreparation {
+  window: BrowserWindow;
+  loaded: Promise<boolean>;
+  claimed: boolean;
+  dispose: () => void;
 }
 
 const previewWindows: PreviewWindowData[] = [];
+let preparedCapturePreview: CapturePreviewPreparation | null = null;
 
 const MAX_PREVIEW_WINDOWS = 4;
 const PREVIEW_WIDTH = 200;
 const PREVIEW_HEIGHT = 140;
-const MARGIN_BOTTOM = 24;
-const MARGIN_LEFT = 24;
+const MARGIN_X = 24;
+const MARGIN_Y = 24;
 const WINDOW_GAP = 12;
 
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+};
+
+function getImageMimeType(filePath: string): string {
+  return IMAGE_MIME_TYPES[path.extname(filePath).toLowerCase()] ?? 'image/png';
+}
+
+const CORNER_ANCHORS: Record<
+  PreviewCorner,
+  { fromRight: boolean; fromBottom: boolean }
+> = {
+  'top-left': { fromRight: false, fromBottom: false },
+  'top-right': { fromRight: true, fromBottom: false },
+  'bottom-left': { fromRight: false, fromBottom: true },
+  'bottom-right': { fromRight: true, fromBottom: true },
+};
 function getSelectedPreviewDisplay(): Electron.Display {
   const displays = screen.getAllDisplays();
   const selectedDisplayId = settings.getConfig().preview.displayId;
@@ -58,15 +91,18 @@ function getDisplayLabel(display: Electron.Display, index: number): string {
 
 function getPreviewPosition(index: number): { x: number; y: number } {
   const display = getSelectedPreviewDisplay();
-  const { x: displayX, y: displayY, height } = display.workArea;
+  const { x: displayX, y: displayY, width, height } = display.workArea;
+  const anchor =
+    CORNER_ANCHORS[settings.getConfig().preview.corner] ??
+    CORNER_ANCHORS['bottom-right'];
+  const stackOffset = index * (PREVIEW_HEIGHT + WINDOW_GAP);
 
-  const x = displayX + MARGIN_LEFT;
-  const y =
-    displayY +
-    height -
-    MARGIN_BOTTOM -
-    PREVIEW_HEIGHT -
-    index * (PREVIEW_HEIGHT + WINDOW_GAP);
+  const x = anchor.fromRight
+    ? displayX + width - MARGIN_X - PREVIEW_WIDTH
+    : displayX + MARGIN_X;
+  const y = anchor.fromBottom
+    ? displayY + height - MARGIN_Y - PREVIEW_HEIGHT - stackOffset
+    : displayY + MARGIN_Y + stackOffset;
 
   return { x, y };
 }
@@ -89,7 +125,9 @@ function movePreviewsToDisplay(displayId: number): PreviewDisplayInfo[] {
     return getPreviewDisplays();
   }
 
-  settings.updateConfig({ preview: { displayId } });
+  settings.updateConfig({
+    preview: { ...settings.getConfig().preview, displayId },
+  });
   repositionAllWindows();
 
   return getPreviewDisplays();
@@ -102,7 +140,9 @@ function persistPreviewDisplayForWindow(window: BrowserWindow): void {
 
   if (settings.getConfig().preview.displayId === display.id) return;
 
-  settings.updateConfig({ preview: { displayId: display.id } });
+  settings.updateConfig({
+    preview: { ...settings.getConfig().preview, displayId: display.id },
+  });
 }
 
 function broadcastDisplaysChanged(): void {
@@ -147,34 +187,16 @@ function cleanupDestroyedWindows(): void {
   }
 }
 
-export async function showCapturePreview(
-  filePath: string,
-  contentType: ContentType = 'screenshot',
-  historyId?: string
-): Promise<void> {
-  cleanupDestroyedWindows();
-
-  if (previewWindows.length >= MAX_PREVIEW_WINDOWS) {
-    const oldest = previewWindows.shift();
-    if (oldest && !oldest.window.isDestroyed()) {
-      oldest.window.close();
-    }
-    repositionAllWindows();
-  }
-
-  const thumbnailResult = await getThumbnail(filePath, contentType);
-
-  const newIndex = previewWindows.length;
-  const { x, y } = getPreviewPosition(newIndex);
-
-  const targetBounds = { x, y, width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT };
-  const initialBounds = getInitialBounds(targetBounds);
-
-  const previewWindow = new BrowserWindow({
-    width: initialBounds.width,
-    height: initialBounds.height,
-    x: initialBounds.x,
-    y: initialBounds.y,
+function createPreviewBrowserWindow(index: number): {
+  window: BrowserWindow;
+  loaded: Promise<boolean>;
+} {
+  const { x, y } = getPreviewPosition(index);
+  const window = new BrowserWindow({
+    width: PREVIEW_WIDTH,
+    height: PREVIEW_HEIGHT,
+    x,
+    y,
     frame: false,
     transparent: false,
     backgroundColor: '#1e1e1e',
@@ -190,48 +212,241 @@ export async function showCapturePreview(
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       devTools: isDev,
-      webSecurity: false,
+      webSecurity: !isDev,
+      backgroundThrottling: false,
     },
   });
 
-  previewWindow.setVisibleOnAllWorkspaces(true, {
+  window.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
   });
+  window.setAlwaysOnTop(true, 'screen-saver');
 
-  previewWindow.setAlwaysOnTop(true, 'screen-saver');
+  const loaded = new Promise<boolean>(resolve => {
+    const fail = () => {
+      resolve(false);
+      if (!window.isDestroyed()) {
+        window.close();
+      }
+    };
+
+    window.webContents.ipc.once('capture-preview:renderer-failed', fail);
+    window.webContents.once(
+      'did-fail-load',
+      (_event, _errorCode, _errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) {
+          fail();
+        }
+      }
+    );
+    window.webContents.once('render-process-gone', fail);
+    window.webContents.ipc.once('capture-preview:renderer-mounted', () => {
+      resolve(true);
+      if (!window.isDestroyed()) {
+        window.webContents.send('capture-preview:prepare-renderer');
+      }
+    });
+  });
+
+  if (devServerUrl) {
+    const url = new URL(devServerUrl);
+    url.searchParams.set('window', 'capture-preview');
+    window.loadURL(url.toString());
+  } else {
+    window.loadFile(path.join(__dirname, '../dist/index.html'), {
+      query: { window: 'capture-preview' },
+    });
+  }
+
+  return { window, loaded };
+}
+
+function createCapturePreviewPreparation(): CapturePreviewPreparation {
+  const prepared = createPreviewBrowserWindow(previewWindows.length);
+  const preparation: CapturePreviewPreparation = {
+    ...prepared,
+    claimed: false,
+    dispose: () => {
+      if (preparation.claimed) return;
+
+      if (!preparation.window.isDestroyed()) {
+        preparation.window.close();
+      }
+      prewarmCapturePreview();
+    },
+  };
+
+  return preparation;
+}
+
+function scheduleCapturePreviewPrewarm(): void {
+  setImmediate(prewarmCapturePreview);
+}
+
+export function prewarmCapturePreview(): void {
+  const { screenshot, recording } = settings.getConfig();
+  const shouldPrewarm =
+    (screenshot?.showPreview && !screenshot.captureToClipboard) ||
+    recording?.showPreview;
+  if (!shouldPrewarm) {
+    const prepared = preparedCapturePreview;
+    preparedCapturePreview = null;
+    if (prepared && !prepared.window.isDestroyed()) {
+      prepared.window.close();
+    }
+    return;
+  }
+
+  if (
+    preparedCapturePreview &&
+    !preparedCapturePreview.claimed &&
+    !preparedCapturePreview.window.isDestroyed()
+  ) {
+    return;
+  }
+
+  preparedCapturePreview = createCapturePreviewPreparation();
+}
+
+export function prepareCapturePreview(): CapturePreviewPreparation {
+  cleanupDestroyedWindows();
+  const prepared = preparedCapturePreview;
+  preparedCapturePreview = null;
+
+  if (prepared && !prepared.claimed && !prepared.window.isDestroyed()) {
+    return prepared;
+  }
+
+  return createCapturePreviewPreparation();
+}
+
+export function showCapturePreview(
+  filePath: string,
+  contentType: ContentType = 'screenshot',
+  historyId?: string,
+  preparation?: CapturePreviewPreparation,
+  historyIdPromise?: Promise<string | undefined>,
+  actionReadyPromise?: Promise<unknown>
+): CapturePreviewHandle {
+  cleanupDestroyedWindows();
+
+  if (previewWindows.length >= MAX_PREVIEW_WINDOWS) {
+    const oldest = previewWindows.shift();
+    if (oldest && !oldest.window.isDestroyed()) {
+      oldest.window.close();
+    }
+    repositionAllWindows();
+  }
+
+  const newIndex = previewWindows.length;
+  const { x, y } = getPreviewPosition(newIndex);
+  const candidate = preparation ?? preparedCapturePreview;
+  if (!preparation) {
+    preparedCapturePreview = null;
+  }
+  const preparedWindow =
+    candidate && !candidate.window.isDestroyed() ? candidate : null;
+  const preview =
+    preparedWindow ?? createPreviewBrowserWindow(previewWindows.length);
+  const previewWindow = preview.window;
+  if (preparedWindow) {
+    previewWindow.setPosition(x, y);
+  }
 
   const webContentsId = previewWindow.webContents.id;
+
+  let isRevealed = false;
+  let dismissTimer: NodeJS.Timeout | null = null;
+  let dismissPaused = false;
+  let resolveRevealed: () => void = () => {};
+  const revealed = new Promise<void>(resolve => {
+    resolveRevealed = resolve;
+  });
+
+  const clearDismissTimer = () => {
+    if (dismissTimer) {
+      clearTimeout(dismissTimer);
+      dismissTimer = null;
+    }
+  };
+
+  const scheduleAutoDismiss = () => {
+    clearDismissTimer();
+    if (!isRevealed || dismissPaused || previewWindow.isDestroyed()) return;
+
+    const { autoDismiss, autoDismissSeconds } = settings.getConfig().preview;
+    if (!autoDismiss || autoDismissSeconds <= 0) return;
+
+    dismissTimer = setTimeout(() => {
+      dismissTimer = null;
+      if (!previewWindow.isDestroyed()) {
+        previewWindow.close();
+      }
+    }, autoDismissSeconds * 1000);
+  };
+
+  const setAutoDismissPaused = (paused: boolean) => {
+    if (dismissPaused === paused) return;
+
+    dismissPaused = paused;
+    if (paused) {
+      clearDismissTimer();
+      return;
+    }
+    scheduleAutoDismiss();
+  };
+
+  const reveal = () => {
+    if (isRevealed || previewWindow.isDestroyed()) return;
+
+    isRevealed = true;
+    previewWindow.showInactive();
+    scheduleAutoDismiss();
+    resolveRevealed();
+    scheduleCapturePreviewPrewarm();
+  };
 
   const previewData: PreviewWindowData = {
     window: previewWindow,
     filePath,
     contentType,
     historyId,
+    historyIdPromise,
+    actionReadyPromise,
+    setAutoDismissPaused,
   };
 
   previewWindows.push(previewData);
 
-  if (devServerUrl) {
-    previewWindow.loadURL(devServerUrl);
-  } else {
-    previewWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
+  previewWindow.webContents.ipc.once('capture-preview:content-ready', reveal);
 
-  previewWindow.webContents.on('did-finish-load', () => {
+  const initialImageUrl =
+    contentType === 'screenshot' ? pathToFileURL(filePath).href : null;
+
+  const sendPreviewData = (thumbnailUrl?: string) => {
+    if (previewWindow.isDestroyed()) return;
+
     previewWindow.webContents.send('load', {
       type: 'capture-preview',
       params: {
         filePath,
         contentType,
-        thumbnailBase64: thumbnailResult.base64,
+        imageUrl: initialImageUrl,
+        thumbnailUrl,
         historyId,
       },
     });
-  });
+  };
 
-  previewWindow.once('ready-to-show', () => {
-    previewWindow.showInactive();
-    animateWindowIn(previewWindow, targetBounds);
+  void preview.loaded.then(async loaded => {
+    if (!loaded) return;
+
+    sendPreviewData();
+    if (previewWindow.isDestroyed()) return;
+
+    const result = await getThumbnail(filePath, contentType).catch(() => null);
+    if (!result?.base64) return;
+    sendPreviewData(`data:image/jpeg;base64,${result.base64}`);
   });
 
   previewWindow.on('moved', () => {
@@ -239,8 +454,16 @@ export async function showCapturePreview(
   });
 
   previewWindow.on('closed', () => {
+    resolveRevealed();
+    clearDismissTimer();
     removePreviewWindow(webContentsId);
+    scheduleCapturePreviewPrewarm();
   });
+
+  if (preparedWindow) {
+    preparedWindow.claimed = true;
+  }
+  return { revealed };
 }
 
 function getPreviewDataByWebContentsId(
@@ -252,8 +475,30 @@ function getPreviewDataByWebContentsId(
   );
 }
 
+export function getCapturePreviewUploadPath(
+  webContentsId: number
+): string | null {
+  return getPreviewDataByWebContentsId(webContentsId)?.filePath ?? null;
+}
+
 export function registerCapturePreviewIpc(): void {
-  registerPreviewExportIpc();
+  registerPreviewExportIpc(webContentsId => {
+    const data = getPreviewDataByWebContentsId(webContentsId);
+    return data?.contentType === 'video' ? data.filePath : null;
+  });
+
+  ipcMain.on('capture-preview:reposition', () => {
+    repositionAllWindows();
+  });
+
+  ipcMain.on(
+    'capture-preview:set-auto-dismiss-paused',
+    (event, paused: boolean) => {
+      getPreviewDataByWebContentsId(event.sender.id)?.setAutoDismissPaused(
+        paused
+      );
+    }
+  );
 
   ipcMain.on('capture-preview:close', event => {
     const data = getPreviewDataByWebContentsId(event.sender.id);
@@ -277,49 +522,102 @@ export function registerCapturePreviewIpc(): void {
     }
   });
 
-  ipcMain.on('capture-preview:open-editor', event => {
+  ipcMain.handle('capture-preview:get-source-image', event => {
+    const data = getPreviewDataByWebContentsId(event.sender.id);
+    if (!data || data.contentType === 'video') return null;
+
+    try {
+      const buffer = fs.readFileSync(data.filePath);
+      return `data:${getImageMimeType(data.filePath)};base64,${buffer.toString('base64')}`;
+    } catch (error) {
+      console.error('Failed to read preview source image:', error);
+      return null;
+    }
+  });
+
+  ipcMain.handle(
+    'capture-preview:copy-composited',
+    (event, dataUrl: string) => {
+      const data = getPreviewDataByWebContentsId(event.sender.id);
+      if (!data) return false;
+
+      const image = nativeImage.createFromDataURL(dataUrl);
+      if (image.isEmpty()) return false;
+
+      clipboard.writeImage(image);
+
+      if (!data.window.isDestroyed()) {
+        data.window.close();
+      }
+      return true;
+    }
+  );
+
+  ipcMain.on('capture-preview:open-editor', async event => {
     const data = getPreviewDataByWebContentsId(event.sender.id);
     if (!data) return;
 
-    const { filePath, contentType, historyId } = data;
+    const {
+      filePath,
+      contentType,
+      historyId,
+      historyIdPromise,
+      actionReadyPromise,
+    } = data;
 
     if (!data.window.isDestroyed()) {
       data.window.close();
     }
 
     if (contentType === 'video') {
+      await actionReadyPromise;
       createVideoEditorWindow(filePath);
       return;
     }
 
-    openScreenshotEditor(filePath, historyId);
+    const resolvedHistoryId =
+      historyId ??
+      (await historyIdPromise) ??
+      getHistoryItemByPath(filePath)?.id;
+    openScreenshotEditor(filePath, resolvedHistoryId);
   });
 
   ipcMain.on('capture-preview:delete', async event => {
     const data = getPreviewDataByWebContentsId(event.sender.id);
     if (!data) return;
 
-    const { filePath, contentType } = data;
+    const {
+      filePath,
+      contentType,
+      historyId,
+      historyIdPromise,
+      actionReadyPromise,
+    } = data;
 
     if (!data.window.isDestroyed()) {
       data.window.close();
     }
 
     if (contentType === 'video') {
+      await Promise.allSettled([historyIdPromise, actionReadyPromise]);
       await deleteVideo(filePath, { showNotification: false });
       return;
     }
 
-    const historyItem = getHistoryItemByPath(filePath);
-    if (!historyItem) return;
+    const resolvedHistoryId =
+      historyId ??
+      (await historyIdPromise) ??
+      getHistoryItemByPath(filePath)?.id;
+    if (!resolvedHistoryId) return;
 
-    await deleteHistoryItem(historyItem.id);
+    await deleteHistoryItem(resolvedHistoryId);
   });
 
-  ipcMain.on('capture-preview:start-drag', (event, filePath: string) => {
+  ipcMain.on('capture-preview:start-drag', event => {
     const data = getPreviewDataByWebContentsId(event.sender.id);
     if (!data) return;
 
+    const { filePath } = data;
     const icon = nativeImage.createFromPath(filePath);
     event.sender.startDrag({
       file: filePath,
@@ -351,6 +649,12 @@ export function registerCapturePreviewIpc(): void {
 }
 
 export function closeAllPreviewWindows(): void {
+  const prepared = preparedCapturePreview;
+  preparedCapturePreview = null;
+  if (prepared && !prepared.window.isDestroyed()) {
+    prepared.window.close();
+  }
+
   [...previewWindows].forEach(data => {
     if (!data.window.isDestroyed()) {
       data.window.close();

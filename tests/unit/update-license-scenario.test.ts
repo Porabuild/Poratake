@@ -29,7 +29,7 @@ const autoUpdaterEventHandlers = new Map<string, AutoUpdaterEventHandler>();
 const mockAutoUpdater = {
   setFeedURL: vi.fn(),
   checkForUpdates: vi.fn(() => Promise.resolve()),
-  downloadUpdate: vi.fn(),
+  downloadUpdate: vi.fn(() => Promise.resolve([])),
   quitAndInstall: vi.fn(),
   autoDownload: false,
   autoInstallOnAppQuit: false,
@@ -42,13 +42,16 @@ vi.mock('electron-updater', () => ({
   autoUpdater: mockAutoUpdater,
 }));
 
+vi.mock('@/main/utils/platform', () => ({ isMac: true }));
+
 const mockRebuildTrayMenu = vi.fn();
 vi.mock('@/main/menu/index', () => ({
   rebuildTrayMenu: mockRebuildTrayMenu,
 }));
 
 vi.mock('@/main/update/config', () => ({
-  API_URL: 'https://test.capty.app',
+  UPDATE_OWNER: 'Porabuild',
+  UPDATE_REPOSITORY: 'Poratake',
 }));
 
 const mockBroadcastUpdateEvent = vi.fn();

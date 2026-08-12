@@ -133,13 +133,26 @@ vi.mock('@/main/settings', () => ({
   getConfig: () => mockGetConfig(),
 }));
 
+const mockGetCapturePreviewUploadPath = vi.fn();
+const mockIsExportOutputPathAllowed = vi.fn();
+
+vi.mock('@/main/capture/capture-preview', () => ({
+  getCapturePreviewUploadPath: (senderId: number) =>
+    mockGetCapturePreviewUploadPath(senderId),
+}));
+
+vi.mock('@/main/capture/video/ipc/export-session', () => ({
+  isExportOutputPathAllowed: (senderId: number, filePath: string) =>
+    mockIsExportOutputPathAllowed(senderId, filePath),
+}));
+
 function invokeUploadFile(
   senderId: number,
-  filePath: string
+  filePath: unknown
 ): Promise<unknown> {
   const handler = mockIpcMainHandle.mock.calls.find(
     call => call[0] === 'cloud:uploadFile'
-  )?.[1] as (event: unknown, filePath: string) => Promise<unknown>;
+  )?.[1] as (event: unknown, filePath: unknown) => Promise<unknown>;
 
   return handler({ sender: { id: senderId } }, filePath);
 }
@@ -176,6 +189,8 @@ describe('Cloud Upload Module', () => {
     mockHeadBucket.mockResolvedValue(undefined);
     mockCaptyUpload.mockResolvedValue('https://capty.test/s/share-slug');
     mockCaptyTestConnection.mockResolvedValue(undefined);
+    mockGetCapturePreviewUploadPath.mockReturnValue(null);
+    mockIsExportOutputPathAllowed.mockReturnValue(true);
     mockGetCachedLicense.mockReturnValue({
       email: 'user@example.com',
       licenseKey: 'license-key',
@@ -799,6 +814,50 @@ describe('Cloud Upload Module', () => {
         'cloud:uploadFile',
         expect.any(Function)
       );
+    });
+
+    it('rejects file paths not authorized for the requesting window', async () => {
+      mockIsExportOutputPathAllowed.mockReturnValue(false);
+      const { init } = await import('@/main/cloud/index');
+      init();
+
+      const result = (await invokeUploadFile(1, '/tmp/private.txt')) as {
+        success: boolean;
+        error?: string;
+      };
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Upload file is not authorized',
+      });
+      expect(mockPutObject).not.toHaveBeenCalled();
+    });
+
+    it('rejects non-string upload paths at the IPC boundary', async () => {
+      const { init } = await import('@/main/cloud/index');
+      init();
+
+      const result = await invokeUploadFile(1, { path: '/tmp/private.txt' });
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Upload file is not authorized',
+      });
+      expect(mockPutObject).not.toHaveBeenCalled();
+    });
+
+    it('allows the authoritative capture preview file', async () => {
+      mockIsExportOutputPathAllowed.mockReturnValue(false);
+      mockGetCapturePreviewUploadPath.mockReturnValue('/tmp/screenshot.png');
+      const { init } = await import('@/main/cloud/index');
+      init();
+
+      const result = (await invokeUploadFile(2, '/tmp/screenshot.png')) as {
+        success: boolean;
+      };
+
+      expect(result.success).toBe(true);
+      expect(mockGetCapturePreviewUploadPath).toHaveBeenCalledWith(2);
     });
 
     it('registers cloud:testConnection handler', async () => {

@@ -27,7 +27,7 @@ const autoUpdaterEventHandlers = new Map<string, AutoUpdaterEventHandler>();
 const mockAutoUpdater = {
   setFeedURL: vi.fn(),
   checkForUpdates: vi.fn(() => Promise.resolve()),
-  downloadUpdate: vi.fn(),
+  downloadUpdate: vi.fn(() => Promise.resolve([])),
   quitAndInstall: vi.fn(),
   autoDownload: false,
   autoInstallOnAppQuit: false,
@@ -40,15 +40,22 @@ vi.mock('electron-updater', () => ({
   autoUpdater: mockAutoUpdater,
 }));
 
+const mockPlatform = { isMac: true };
+vi.mock('@/main/utils/platform', () => ({
+  get isMac() {
+    return mockPlatform.isMac;
+  },
+}));
+
 // Mock menu
 const mockRebuildTrayMenu = vi.fn();
 vi.mock('@/main/menu/index', () => ({
   rebuildTrayMenu: mockRebuildTrayMenu,
 }));
 
-// Mock config - for API_URL
 vi.mock('@/main/update/config', () => ({
-  API_URL: 'https://test.capty.app',
+  UPDATE_OWNER: 'Porabuild',
+  UPDATE_REPOSITORY: 'Poratake',
 }));
 
 // Mock broadcast
@@ -85,6 +92,9 @@ describe('Update System', () => {
     vi.useFakeTimers();
     autoUpdaterEventHandlers.clear();
     mockIpcMainHandlers.clear();
+    mockPlatform.isMac = true;
+    mockAutoUpdater.checkForUpdates.mockResolvedValue(undefined);
+    mockAutoUpdater.downloadUpdate.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -133,8 +143,9 @@ describe('Update System', () => {
       init();
 
       expect(mockAutoUpdater.setFeedURL).toHaveBeenCalledWith({
-        provider: 'generic',
-        url: 'https://test.capty.app/api/versions',
+        provider: 'github',
+        owner: 'Porabuild',
+        repo: 'Poratake',
       });
     });
 
@@ -196,6 +207,18 @@ describe('Update System', () => {
       // Second periodic check
       vi.advanceTimersByTime(30 * 60 * 1000);
       expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(3);
+    });
+
+    it('should report unsupported without configuring update checks on Windows', async () => {
+      mockPlatform.isMac = false;
+      const { init, getUpdateState } = await import('@/main/update/index');
+
+      init();
+      vi.advanceTimersByTime(30 * 60 * 1000);
+
+      expect(getUpdateState().status).toBe('unsupported');
+      expect(mockAutoUpdater.setFeedURL).not.toHaveBeenCalled();
+      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
     });
   });
 
@@ -353,7 +376,7 @@ describe('Update System', () => {
       expect(state.error).toBe('Download failed');
     });
 
-    it('should suppress 404 errors silently', async () => {
+    it('should report a missing channel file', async () => {
       const { init, getUpdateState } = await import('@/main/update/index');
       init();
 
@@ -364,11 +387,11 @@ describe('Update System', () => {
       handler?.(error);
 
       const state = getUpdateState();
-      expect(state.status).toBe('up_to_date');
-      expect(state.error).toBeNull();
+      expect(state.status).toBe('error');
+      expect(state.error).toBe('Not Found 404');
     });
 
-    it('should suppress errors with 404 in message', async () => {
+    it('should report asset 404 errors', async () => {
       const { init, getUpdateState } = await import('@/main/update/index');
       init();
 
@@ -376,7 +399,24 @@ describe('Update System', () => {
       handler?.(new Error('HTTP error 404 not found'));
 
       const state = getUpdateState();
-      expect(state.status).toBe('up_to_date');
+      expect(state.status).toBe('error');
+      expect(state.error).toBe('HTTP error 404 not found');
+    });
+
+    it('should consume download promise rejections', async () => {
+      mockAutoUpdater.downloadUpdate.mockRejectedValueOnce(
+        new Error('Download failed')
+      );
+      const { init } = await import('@/main/update/index');
+      init();
+
+      autoUpdaterEventHandlers.get('update-available')?.({
+        version: '2.0.0',
+        releaseNotes: null,
+      });
+      await Promise.resolve();
+
+      expect(mockAutoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -400,7 +440,7 @@ describe('Update System', () => {
       expect(state).toHaveProperty('currentVersion');
     });
 
-    it('should handle 404 error gracefully', async () => {
+    it('should report a channel metadata 404', async () => {
       mockAutoUpdater.checkForUpdates.mockRejectedValueOnce(
         Object.assign(new Error('Not found'), {
           code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
@@ -413,7 +453,20 @@ describe('Update System', () => {
 
       await checkForUpdate();
 
-      expect(getUpdateState().status).toBe('up_to_date');
+      expect(getUpdateState().status).toBe('error');
+      expect(getUpdateState().error).toBe('Failed to check for updates');
+    });
+
+    it('should not check for updates on Windows', async () => {
+      mockPlatform.isMac = false;
+      const { init, checkForUpdate, getUpdateState } =
+        await import('@/main/update/index');
+      init();
+
+      await checkForUpdate();
+
+      expect(getUpdateState().status).toBe('unsupported');
+      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
     });
 
     it('should handle generic error', async () => {
@@ -442,6 +495,18 @@ describe('Update System', () => {
       installDownloadedUpdate();
 
       expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    });
+
+    it('should not install updates on Windows', async () => {
+      mockPlatform.isMac = false;
+      const { init, installDownloadedUpdate, getUpdateState } =
+        await import('@/main/update/index');
+      init();
+
+      installDownloadedUpdate();
+
+      expect(getUpdateState().status).toBe('unsupported');
+      expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled();
     });
   });
 

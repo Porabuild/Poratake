@@ -1,8 +1,7 @@
 import path from 'path';
-import fs from 'fs';
+import fs, { createWriteStream } from 'fs';
 import https from 'https';
 import http from 'http';
-import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
 import {
   getConfigDir,
@@ -13,6 +12,7 @@ import type { WhisperModel } from '@/types/subtitle';
 
 const HUGGINGFACE_MODEL_BASE =
   'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
+const MAX_DOWNLOAD_REDIRECTS = 5;
 
 const MODEL_FILES: Record<WhisperModel, string> = {
   base: 'ggml-base.bin',
@@ -49,60 +49,79 @@ export function isWhisperReady(model: WhisperModel): boolean {
 async function downloadFile(
   url: string,
   destPath: string,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  redirectsRemaining = MAX_DOWNLOAD_REDIRECTS
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const makeRequest = (requestUrl: string) => {
       const protocol = requestUrl.startsWith('https') ? https : http;
 
       protocol
-        .get(requestUrl, { headers: { 'User-Agent': 'Capty' } }, response => {
-          if (
-            response.statusCode &&
-            response.statusCode >= 300 &&
-            response.statusCode < 400 &&
-            response.headers.location
-          ) {
-            makeRequest(response.headers.location);
-            return;
-          }
+        .get(
+          requestUrl,
+          { headers: { 'User-Agent': 'Poratake' } },
+          response => {
+            if (
+              response.statusCode &&
+              response.statusCode >= 300 &&
+              response.statusCode < 400 &&
+              response.headers.location
+            ) {
+              response.resume();
+              if (redirectsRemaining === 0) {
+                reject(new Error('Too many redirects while downloading'));
+                return;
+              }
 
-          if (response.statusCode !== 200) {
-            reject(
-              new Error(`Failed to download: HTTP ${response.statusCode}`)
-            );
-            return;
-          }
+              let redirectUrl: string;
+              try {
+                redirectUrl = new URL(
+                  response.headers.location,
+                  requestUrl
+                ).toString();
+              } catch (error) {
+                reject(error);
+                return;
+              }
 
-          const totalSize = parseInt(
-            response.headers['content-length'] || '0',
-            10
-          );
-          let downloadedSize = 0;
-
-          const fileStream = createWriteStream(destPath);
-
-          response.on('data', chunk => {
-            downloadedSize += chunk.length;
-            if (totalSize > 0 && onProgress) {
-              const percent = Math.round((downloadedSize / totalSize) * 100);
-              onProgress(percent);
+              void downloadFile(
+                redirectUrl,
+                destPath,
+                onProgress,
+                redirectsRemaining - 1
+              ).then(resolve, reject);
+              return;
             }
-          });
 
-          response.on('error', err => {
-            fileStream.close();
-            fs.unlinkSync(destPath);
-            reject(err);
-          });
+            if (response.statusCode !== 200) {
+              response.resume();
+              reject(
+                new Error(`Failed to download: HTTP ${response.statusCode}`)
+              );
+              return;
+            }
 
-          pipeline(response, fileStream)
-            .then(() => resolve())
-            .catch(err => {
-              fs.unlinkSync(destPath);
-              reject(err);
+            const totalSize = parseInt(
+              response.headers['content-length'] || '0',
+              10
+            );
+            let downloadedSize = 0;
+
+            const fileStream = createWriteStream(destPath);
+
+            response.on('data', chunk => {
+              downloadedSize += chunk.length;
+              if (totalSize > 0 && onProgress) {
+                const percent = Math.round((downloadedSize / totalSize) * 100);
+                onProgress(percent);
+              }
             });
-        })
+
+            pipeline(response, fileStream)
+              .then(() => resolve())
+              .catch(reject);
+          }
+        )
         .on('error', reject);
     };
 
@@ -120,8 +139,21 @@ export async function downloadWhisperModel(
   const modelFile = MODEL_FILES[model];
   const modelUrl = `${HUGGINGFACE_MODEL_BASE}/${modelFile}`;
   const modelPath = getWhisperModelPath(model);
+  const partialPath = `${modelPath}.download`;
 
-  await downloadFile(modelUrl, modelPath, onProgress);
+  if (fs.existsSync(partialPath)) {
+    fs.unlinkSync(partialPath);
+  }
+
+  try {
+    await downloadFile(modelUrl, partialPath, onProgress);
+    fs.renameSync(partialPath, modelPath);
+  } catch (error) {
+    if (fs.existsSync(partialPath)) {
+      fs.unlinkSync(partialPath);
+    }
+    throw error;
+  }
 }
 
 export async function ensureWhisperReady(

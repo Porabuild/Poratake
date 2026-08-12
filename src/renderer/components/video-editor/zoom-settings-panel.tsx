@@ -1,4 +1,6 @@
 import { useCallback, useMemo } from 'react';
+import { MousePointerClick } from 'lucide-react';
+import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
 import { Slider } from '@/renderer/components/ui/slider';
 import {
@@ -28,6 +30,42 @@ interface ZoomSettingsPanelProps {
   onUpdateZoomSettings: (settings: ZoomSettings) => void;
   videoSrc: string;
   timelinePosition: number;
+  hasCursorData: boolean;
+  onGenerateAutoZoom: () => void;
+}
+
+interface AutoZoomSectionProps {
+  hasCursorData: boolean;
+  onGenerateAutoZoom: () => void;
+}
+
+function AutoZoomSection({
+  hasCursorData,
+  onGenerateAutoZoom,
+}: AutoZoomSectionProps) {
+  return (
+    <div className="border-border space-y-3 border-b p-4">
+      <SettingsPanelHeader
+        title="Auto Zoom"
+        description="Highlight clicks, drags and scrolls with zoom"
+      />
+      <Button
+        variant="tertiary"
+        size="xs"
+        onClick={onGenerateAutoZoom}
+        disabled={!hasCursorData}
+        className="w-full gap-2"
+      >
+        <MousePointerClick className="size-4" />
+        Generate from Interactions
+      </Button>
+      {!hasCursorData && (
+        <p className="text-muted-foreground text-xs">
+          No cursor data recorded for this video
+        </p>
+      )}
+    </div>
+  );
 }
 
 function formatZoomLevel(value: number): string {
@@ -50,6 +88,8 @@ export default function ZoomSettingsPanel({
   onUpdateZoomSettings,
   videoSrc,
   timelinePosition,
+  hasCursorData,
+  onGenerateAutoZoom,
 }: ZoomSettingsPanelProps) {
   const selectedZoom = useMemo(
     () => zoomSegments.find(seg => seg.id === selectedZoomId),
@@ -137,126 +177,151 @@ export default function ZoomSettingsPanel({
 
   if (!selectedZoom) {
     return (
-      <EmptyState message="Select a zoom segment on the timeline to edit its settings" />
+      <div className="flex h-full flex-col">
+        <AutoZoomSection
+          hasCursorData={hasCursorData}
+          onGenerateAutoZoom={onGenerateAutoZoom}
+        />
+        <EmptyState
+          className="h-auto flex-1"
+          message="Select a zoom segment on the timeline to edit its settings"
+        />
+      </div>
     );
   }
 
   return (
-    <div className="space-y-4 p-4">
-      <SettingsPanelHeader
-        title="Zoom Settings"
-        description="Configure settings for the selected zoom segment"
+    <div className="flex h-full flex-col">
+      <AutoZoomSection
+        hasCursorData={hasCursorData}
+        onGenerateAutoZoom={onGenerateAutoZoom}
       />
+      <div className="space-y-4 p-4">
+        <SettingsPanelHeader
+          title="Zoom Settings"
+          description="Configure settings for the selected zoom segment"
+        />
 
-      <div className="space-y-2">
-        <Label className="text-sm">Zoom Target</Label>
-        <Tabs value={targetMode} onValueChange={handleTargetModeChange}>
-          <TabsList className="w-full">
-            <TabsTrigger value="cursor" className="flex-1">
-              Cursor
-            </TabsTrigger>
-            <TabsTrigger value="manual" className="flex-1">
-              Manual
-            </TabsTrigger>
-          </TabsList>
-          <TabsContent value="cursor">
-            <p className="text-muted-foreground text-xs">
-              Zoom follows cursor position and movement
-            </p>
-          </TabsContent>
-          <TabsContent value="manual">
-            <div className="space-y-3">
-              <ManualZoomPreview
-                videoSrc={videoSrc}
-                timelinePosition={timelinePosition}
-                focusPoint={focusPoint}
-                onFocusPointChange={handleFocusPointChange}
-              />
+        <div className="space-y-2">
+          <Label className="text-sm">Zoom Target</Label>
+          <Tabs value={targetMode} onValueChange={handleTargetModeChange}>
+            <TabsList className="w-full">
+              <TabsTrigger value="cursor" className="flex-1">
+                Cursor
+              </TabsTrigger>
+              <TabsTrigger value="manual" className="flex-1">
+                Manual
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="cursor">
+              <p className="text-muted-foreground text-xs">
+                Zoom follows cursor position and movement
+              </p>
+            </TabsContent>
+            <TabsContent value="manual">
+              <div className="space-y-3">
+                <ManualZoomPreview
+                  videoSrc={videoSrc}
+                  timelinePosition={timelinePosition}
+                  focusPoint={focusPoint}
+                  onFocusPointChange={handleFocusPointChange}
+                />
+              </div>
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm">Zoom Level</Label>
+            <span className="text-muted-foreground text-xs">
+              {formatZoomLevel(selectedZoom.zoomLevel)}
+            </span>
+          </div>
+          <Slider
+            size="sm"
+            value={[selectedZoom.zoomLevel]}
+            onValueChange={([value]) => handleZoomLevelChange(value)}
+            min={MIN_ZOOM_LEVEL}
+            max={MAX_ZOOM_LEVEL}
+            step={ZOOM_LEVEL_STEP}
+          />
+          <p className="text-muted-foreground text-xs">
+            Magnification level (100% = no zoom, {MAX_ZOOM_LEVEL * 100}% ={' '}
+            {MAX_ZOOM_LEVEL}x)
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm">Zoom Speed</Label>
+            <span className="text-muted-foreground text-xs">
+              {formatZoomSpeed(effectiveSpeed)}
+            </span>
+          </div>
+          <Slider
+            size="sm"
+            value={[effectiveSpeed]}
+            onValueChange={([value]) => handleZoomSpeedChange(value)}
+            min={0.2}
+            max={2.0}
+            step={0.1}
+          />
+          <p className="text-muted-foreground text-xs">
+            Duration of zoom in/out transitions
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-sm">Smooth Follow</Label>
+              <span className="text-muted-foreground text-xs">
+                {formatZoomSpeed(zoomSettings.followSmoothness)}
+              </span>
             </div>
-          </TabsContent>
-        </Tabs>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label className="text-sm">Zoom Level</Label>
-          <span className="text-muted-foreground text-xs">
-            {formatZoomLevel(selectedZoom.zoomLevel)}
-          </span>
-        </div>
-        <Slider
-          value={[selectedZoom.zoomLevel]}
-          onValueChange={([value]) => handleZoomLevelChange(value)}
-          min={MIN_ZOOM_LEVEL}
-          max={MAX_ZOOM_LEVEL}
-          step={ZOOM_LEVEL_STEP}
-        />
-        <p className="text-muted-foreground text-xs">
-          Magnification level (100% = no zoom, {MAX_ZOOM_LEVEL * 100}% ={' '}
-          {MAX_ZOOM_LEVEL}x)
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label className="text-sm">Zoom Speed</Label>
-          <span className="text-muted-foreground text-xs">
-            {formatZoomSpeed(effectiveSpeed)}
-          </span>
-        </div>
-        <Slider
-          value={[effectiveSpeed]}
-          onValueChange={([value]) => handleZoomSpeedChange(value)}
-          min={0.2}
-          max={2.0}
-          step={0.1}
-        />
-        <p className="text-muted-foreground text-xs">
-          Duration of zoom in/out transitions
-        </p>
-      </div>
-
-      <div className="space-y-3">
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Smooth Follow</Label>
-            <span className="text-muted-foreground text-xs">
-              {formatZoomSpeed(zoomSettings.followSmoothness)}
-            </span>
+            <Slider
+              size="sm"
+              value={[zoomSettings.followSmoothness]}
+              onValueChange={([value]) =>
+                handleZoomSettingsChange({ followSmoothness: value })
+              }
+              min={0.08}
+              max={0.8}
+              step={0.02}
+            />
           </div>
-          <Slider
-            value={[zoomSettings.followSmoothness]}
-            onValueChange={([value]) =>
-              handleZoomSettingsChange({ followSmoothness: value })
-            }
-            min={0.08}
-            max={0.8}
-            step={0.02}
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-sm">Look Ahead</Label>
+              <span className="text-muted-foreground text-xs">
+                {Math.round(zoomSettings.lookAhead * 1000)}ms
+              </span>
+            </div>
+            <Slider
+              size="sm"
+              value={[zoomSettings.lookAhead]}
+              onValueChange={([value]) =>
+                handleZoomSettingsChange({ lookAhead: value })
+              }
+              min={0}
+              max={0.3}
+              step={0.02}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <ResetButton
+            label="Reset zoom level"
+            onClick={handleResetToDefault}
+          />
+          <ResetButton
+            label="Reset zoom speed"
+            onClick={handleResetZoomSpeed}
           />
         </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Look Ahead</Label>
-            <span className="text-muted-foreground text-xs">
-              {Math.round(zoomSettings.lookAhead * 1000)}ms
-            </span>
-          </div>
-          <Slider
-            value={[zoomSettings.lookAhead]}
-            onValueChange={([value]) =>
-              handleZoomSettingsChange({ lookAhead: value })
-            }
-            min={0}
-            max={0.3}
-            step={0.02}
-          />
-        </div>
-      </div>
-
-      <div className="space-y-1">
-        <ResetButton label="Reset zoom level" onClick={handleResetToDefault} />
-        <ResetButton label="Reset zoom speed" onClick={handleResetZoomSpeed} />
       </div>
     </div>
   );

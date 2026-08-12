@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  acceleratorKeyFromCode,
   formatAccelerator,
   matchesAccelerator,
 } from '../../../src/renderer/utils/shortcuts';
 
 interface FakeKeyboardEvent {
   key: string;
+  code?: string;
   metaKey: boolean;
   ctrlKey: boolean;
   shiftKey: boolean;
@@ -125,5 +127,55 @@ describe('matchesAccelerator', () => {
       false
     );
     expect(matchesAccelerator(keyEvent('U'), 'U')).toBe(false);
+  });
+
+  it('matches the physical key when shift rewrites the character', () => {
+    expect(
+      matchesAccelerator(
+        keyEvent('№', {
+          code: 'Digit3',
+          shiftKey: true,
+          altKey: true,
+        }),
+        'Shift+Alt+3'
+      )
+    ).toBe(true);
+  });
+
+  it('matches the physical key on a non-latin layout', () => {
+    expect(
+      matchesAccelerator(
+        keyEvent('г', { code: 'KeyU', metaKey: true }),
+        'Command+U'
+      )
+    ).toBe(true);
+  });
+});
+
+describe('acceleratorKeyFromCode', () => {
+  it('maps letter, digit and function codes', () => {
+    expect(acceleratorKeyFromCode('KeyU')).toBe('U');
+    expect(acceleratorKeyFromCode('Digit3')).toBe('3');
+    expect(acceleratorKeyFromCode('F12')).toBe('F12');
+  });
+
+  it('maps named and punctuation codes to accelerator tokens', () => {
+    expect(acceleratorKeyFromCode('Space')).toBe('Space');
+    expect(acceleratorKeyFromCode('ArrowUp')).toBe('Up');
+    expect(acceleratorKeyFromCode('Escape')).toBe('Esc');
+    expect(acceleratorKeyFromCode('Enter')).toBe('Return');
+    expect(acceleratorKeyFromCode('Semicolon')).toBe(';');
+    expect(acceleratorKeyFromCode('Quote')).toBe("'");
+  });
+
+  it('maps numpad codes to their electron names', () => {
+    expect(acceleratorKeyFromCode('Numpad7')).toBe('num7');
+    expect(acceleratorKeyFromCode('NumpadAdd')).toBe('numadd');
+  });
+
+  it('returns null for unsupported or missing codes', () => {
+    expect(acceleratorKeyFromCode('')).toBeNull();
+    expect(acceleratorKeyFromCode('IntlBackslash')).toBeNull();
+    expect(acceleratorKeyFromCode('ShiftLeft')).toBeNull();
   });
 });

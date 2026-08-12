@@ -13,16 +13,20 @@ import {
 } from '@/renderer/components/ui/context-menu';
 import Track, { type TrackSegment } from './track';
 import TrackRow from './track-row';
+import { SCISSORS_CURSOR } from '../utils';
 
 interface ZoomTrackProps {
   segments: ZoomSegment[];
   totalDuration: number;
   selectedId: string | null;
+  isCutToolActive: boolean;
   onSelect: (id: string | null) => void;
   onResize: (id: string, startTime: number, endTime: number) => void;
   onMove: (id: string, startTime: number, endTime: number) => void;
   onGestureEnd?: () => void;
   onAdd: (startTime: number, endTime: number) => void;
+  onCut: (cutTime: number) => void;
+  onCutAll: (cutTime: number) => void;
   onUpdateZoomLevel: (id: string, zoomLevel: number) => void;
   onDelete: (id: string) => void;
   onApplyToAll: (id: string) => void;
@@ -35,11 +39,14 @@ const ZoomTrack = forwardRef<HTMLDivElement, ZoomTrackProps>(
       segments,
       totalDuration,
       selectedId,
+      isCutToolActive,
       onSelect,
       onResize,
       onMove,
       onGestureEnd,
       onAdd,
+      onCut,
+      onCutAll,
       onUpdateZoomLevel,
       onDelete,
       onApplyToAll,
@@ -127,12 +134,25 @@ const ZoomTrack = forwardRef<HTMLDivElement, ZoomTrackProps>(
                 canMove: true,
                 emptyText: 'Click or drag to add zoom',
                 renderLabel,
+                allowTrackClickOnSegments: isCutToolActive,
+                toolCursor: isCutToolActive ? SCISSORS_CURSOR : undefined,
               }}
               onSelect={onSelect}
               onResize={onResize}
               onMove={onMove}
               onGestureEnd={onGestureEnd}
               onAdd={onAdd}
+              onTrackClick={
+                isCutToolActive
+                  ? (time, shiftKey) => {
+                      if (shiftKey) {
+                        onCut(time);
+                        return;
+                      }
+                      onCutAll(time);
+                    }
+                  : undefined
+              }
             />
           </ContextMenuTrigger>
           <ContextMenuContent className="w-48">

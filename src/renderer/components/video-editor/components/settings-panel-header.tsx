@@ -25,7 +25,7 @@ export default function SettingsPanelHeader({
         <p className="text-muted-foreground text-xs">{description}</p>
       </div>
       {showToggle && (
-        <Switch checked={enabled} onCheckedChange={onEnabledChange} />
+        <Switch size="sm" checked={enabled} onCheckedChange={onEnabledChange} />
       )}
       {!showToggle && action}
     </div>
