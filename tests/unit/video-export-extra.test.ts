@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
@@ -227,20 +228,22 @@ describe('capture-preview video-export', () => {
       );
     });
 
-    it('encodes Windows paths as valid file URLs', async () => {
+    it('encodes special characters in file URLs', async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
       mockExistsSync.mockReturnValue(true);
+      const outputPath = path.join(process.cwd(), 'Test User', 'clip #1.mp4');
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc(() => 'C:\\recording.mov');
+      registerPreviewExportIpc(() => outputPath);
 
       await ipcHandle['capture-preview:copy-video-to-clipboard'](
         previewEvent,
-        'C:\\Users\\Test User\\clip #1.mp4'
+        outputPath
       );
 
       expect(mockClipboardWriteBuffer).toHaveBeenCalledWith(
         'public.file-url',
-        Buffer.from('file:///C:/Users/Test%20User/clip%20%231.mp4')
+        Buffer.from(pathToFileURL(outputPath).href)
       );
     });
 
