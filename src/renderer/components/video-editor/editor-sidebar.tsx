@@ -1,13 +1,4 @@
-import CursorSettingsPanel from './cursor-settings-panel';
-import ZoomSettingsPanel from './zoom-settings-panel';
-import DrawingSettingsPanel from './drawing-settings-panel';
-import CameraSettingsPanel from './camera-settings-panel';
-import AudioSettingsPanel from './audio-settings-panel';
-import KeyboardSettingsPanel from './keyboard-settings-panel';
-import SubtitleSettingsPanel from './subtitle-settings-panel';
-import WallpaperSettingsPanel from './wallpaper-settings-panel';
-import ExportSettingsPanel from './export-settings-panel';
-import FirstFrameSettingsPanel from './first-frame-settings-panel';
+import { lazy, Suspense } from 'react';
 import type { CursorData, CursorStyle } from '@/types/cursor';
 import type { ZoomSegment, ZoomSettings } from '@/types/zoom';
 import type { CameraStyle } from '@/types/camera';
@@ -28,21 +19,38 @@ import type { CloudUploadState } from '@/types/cloud';
 import type { RecordingType } from '@/types/video';
 import type { FirstFrameSettings, FirstFrameFit } from '@/types/first-frame';
 import type { DrawingSegment, DrawingToolSettings } from '@/types/drawing';
+import {
+  loadAudioSettingsPanel,
+  loadCameraSettingsPanel,
+  loadCursorSettingsPanel,
+  loadDrawingSettingsPanel,
+  loadExportSettingsPanel,
+  loadFirstFrameSettingsPanel,
+  loadKeyboardSettingsPanel,
+  loadSubtitleSettingsPanel,
+  loadWallpaperSettingsPanel,
+  loadZoomSettingsPanel,
+  type SidebarTab,
+} from './editor-sidebar-panel-loaders';
 
-export type SidebarTab =
-  | 'cursor'
-  | 'zoom'
-  | 'drawing'
-  | 'camera'
-  | 'audio'
-  | 'wallpaper'
-  | 'keyboard'
-  | 'subtitle'
-  | 'first-frame'
-  | 'export';
+export type { SidebarTab } from './editor-sidebar-panel-loaders';
+
+const CursorSettingsPanel = lazy(loadCursorSettingsPanel);
+const ZoomSettingsPanel = lazy(loadZoomSettingsPanel);
+const DrawingSettingsPanel = lazy(loadDrawingSettingsPanel);
+const CameraSettingsPanel = lazy(loadCameraSettingsPanel);
+const AudioSettingsPanel = lazy(loadAudioSettingsPanel);
+const WallpaperSettingsPanel = lazy(loadWallpaperSettingsPanel);
+const KeyboardSettingsPanel = lazy(loadKeyboardSettingsPanel);
+const SubtitleSettingsPanel = lazy(loadSubtitleSettingsPanel);
+const FirstFrameSettingsPanel = lazy(loadFirstFrameSettingsPanel);
+const ExportSettingsPanel = lazy(loadExportSettingsPanel);
 
 interface EditorSidebarProps {
   isOpen: boolean;
+  width: number;
+  isResizing: boolean;
+  onStartResize: (event: React.MouseEvent) => void;
   activeTab: SidebarTab;
   cursorStyle: CursorStyle;
   onCursorStyleChange: (style: CursorStyle) => void;
@@ -60,6 +68,7 @@ interface EditorSidebarProps {
   zoomSettings: ZoomSettings;
   onUpdateZoomSegment: (id: string, updates: Partial<ZoomSegment>) => void;
   onUpdateZoomSettings: (settings: ZoomSettings) => void;
+  onGenerateAutoZoom: () => void;
   drawingSegments: DrawingSegment[];
   selectedDrawingId: string | null;
   drawingToolSettings: DrawingToolSettings;
@@ -76,10 +85,13 @@ interface EditorSidebarProps {
   onAudioStyleChange: (style: AudioStyle) => void;
   hasMicAudio: boolean;
   hasKeyboardData: boolean;
-  musicTracks: MusicTrack[];
+  musicTrackGroups: MusicTrack[][];
   onAddMusicTrack: () => void;
-  onRemoveMusicTrack: (id: string) => void;
-  onUpdateMusicTrack: (id: string, updates: Partial<MusicTrack>) => void;
+  onRemoveMusicTrackGroup: (groupId: string) => void;
+  onUpdateMusicTrackGroup: (
+    groupId: string,
+    updates: Partial<MusicTrack>
+  ) => void;
   onPlayDemo: () => void;
   onStopDemo: () => void;
   isDemoPlaying: boolean;
@@ -111,6 +123,8 @@ interface EditorSidebarProps {
   onExportSettingsChange: (settings: ExportSettings) => void;
   onExport: (options: VideoExportOptions) => void;
   isExporting: boolean;
+  exportProgress: number;
+  onCancelExport: () => void;
   exportError: string | null;
   videoDurationSeconds: number;
   hasWallpaper: boolean;
@@ -125,6 +139,9 @@ interface EditorSidebarProps {
 
 export default function EditorSidebar({
   isOpen,
+  width,
+  isResizing,
+  onStartResize,
   activeTab,
   cursorStyle,
   onCursorStyleChange,
@@ -140,6 +157,7 @@ export default function EditorSidebar({
   zoomSettings,
   onUpdateZoomSegment,
   onUpdateZoomSettings,
+  onGenerateAutoZoom,
   drawingSegments,
   selectedDrawingId,
   drawingToolSettings,
@@ -156,10 +174,10 @@ export default function EditorSidebar({
   onAudioStyleChange,
   hasMicAudio,
   hasKeyboardData,
-  musicTracks,
+  musicTrackGroups,
   onAddMusicTrack,
-  onRemoveMusicTrack,
-  onUpdateMusicTrack,
+  onRemoveMusicTrackGroup,
+  onUpdateMusicTrackGroup,
   onPlayDemo,
   onStopDemo,
   isDemoPlaying,
@@ -189,6 +207,8 @@ export default function EditorSidebar({
   onExportSettingsChange,
   onExport,
   isExporting,
+  exportProgress,
+  onCancelExport,
   exportError,
   videoDurationSeconds,
   hasWallpaper,
@@ -230,6 +250,8 @@ export default function EditorSidebar({
             onUpdateZoomSettings={onUpdateZoomSettings}
             videoSrc={videoSrc}
             timelinePosition={timelinePosition}
+            hasCursorData={hasCursorData}
+            onGenerateAutoZoom={onGenerateAutoZoom}
           />
         );
       case 'drawing':
@@ -261,10 +283,10 @@ export default function EditorSidebar({
             onPlayDemo={onPlayDemo}
             onStopDemo={onStopDemo}
             isDemoPlaying={isDemoPlaying}
-            musicTracks={musicTracks}
+            musicTrackGroups={musicTrackGroups}
             onAddMusicTrack={onAddMusicTrack}
-            onRemoveMusicTrack={onRemoveMusicTrack}
-            onUpdateMusicTrack={onUpdateMusicTrack}
+            onRemoveMusicTrackGroup={onRemoveMusicTrackGroup}
+            onUpdateMusicTrackGroup={onUpdateMusicTrackGroup}
           />
         );
       case 'wallpaper':
@@ -319,6 +341,8 @@ export default function EditorSidebar({
             onExportSettingsChange={onExportSettingsChange}
             onExport={onExport}
             isExporting={isExporting}
+            exportProgress={exportProgress}
+            onCancelExport={onCancelExport}
             exportError={exportError}
             videoDurationSeconds={videoDurationSeconds}
             hasCamera={hasCameraData}
@@ -336,8 +360,38 @@ export default function EditorSidebar({
   };
 
   return (
-    <div className="bg-card border-border flex h-full w-72 shrink-0 flex-col overflow-y-auto border-l">
-      {renderContent()}
+    <div
+      className="bg-card border-border flex h-full shrink-0 border-l"
+      style={{ width }}
+    >
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        onMouseDown={onStartResize}
+        className={`group flex w-1.5 shrink-0 cursor-ew-resize justify-center ${
+          isResizing ? 'bg-primary/40' : 'hover:bg-primary/20'
+        }`}
+      >
+        <div
+          className={`my-auto h-8 w-0.5 rounded-full transition-colors ${
+            isResizing
+              ? 'bg-primary'
+              : 'bg-muted-foreground/30 group-hover:bg-muted-foreground/50'
+          }`}
+        />
+      </div>
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        <Suspense
+          fallback={
+            <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+              Loading...
+            </div>
+          }
+        >
+          {renderContent()}
+        </Suspense>
+      </div>
     </div>
   );
 }

@@ -5,7 +5,7 @@ import type { CloudUploadState } from '@/types/cloud';
 import type { Segment } from '../types';
 import type { ZoomSegment, ZoomSettings } from '@/types/zoom';
 import type { CursorData, CursorStyle } from '@/types/cursor';
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import type { KeyboardData, KeyboardStyle } from '@/types/keyboard';
 import type { SubtitleData, SubtitleStyle } from '@/types/subtitle';
 import type { AudioStyle } from '@/types/audio';
@@ -14,7 +14,7 @@ import type { VideoWallpaperSettings as VideoWallpaper } from '@/types/video-wal
 import type { FirstFrameSettings } from '@/types/first-frame';
 import type { DrawingSegment } from '@/types/drawing';
 import { clampExportOptionsToFree } from '@/types/entitlements';
-import { WebCodecsExporter } from '../export';
+import type { WebCodecsExporter } from '../export';
 import { videoToTimeline, getTotalTimelineDuration } from '../utils';
 
 const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
@@ -37,6 +37,7 @@ interface ExportConfig {
   cursorData: CursorData | null;
   cursorStyle: CursorStyle;
   cameraStyle: CameraStyle;
+  cameraVisibleRanges: CameraSegment[] | null;
   cameraVideoPath: string | null;
   systemAudioPath: string | null;
   micAudioPath: string | null;
@@ -203,7 +204,18 @@ export function useVideoExport(): UseVideoExportReturn {
       setCloudUploadState('idle');
       setUploadedUrl(null);
 
-      const exporter = new WebCodecsExporter();
+      let WebCodecsExporterClass: typeof WebCodecsExporter;
+      try {
+        ({ WebCodecsExporter: WebCodecsExporterClass } =
+          await import('../export'));
+      } catch (error) {
+        exportPendingRef.current = false;
+        setIsExporting(false);
+        showExportError(error);
+        return;
+      }
+
+      const exporter = new WebCodecsExporterClass();
       exporterRef.current = exporter;
 
       const exportStartTime = Date.now();
@@ -287,6 +299,7 @@ export function useVideoExport(): UseVideoExportReturn {
             cursorData: config.cursorData,
             cursorStyle: config.cursorStyle,
             cameraStyle: config.cameraStyle,
+            cameraVisibleRanges: config.cameraVisibleRanges,
             keyboardData: config.keyboardData,
             keyboardStyle: config.keyboardStyle,
             subtitleData: config.subtitleData,

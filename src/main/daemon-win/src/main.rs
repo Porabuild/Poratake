@@ -6,6 +6,7 @@ mod overlay;
 mod panel;
 mod protocol;
 mod router;
+mod tone_map;
 mod ui;
 
 use modules::all_in_one::AllInOneModule;

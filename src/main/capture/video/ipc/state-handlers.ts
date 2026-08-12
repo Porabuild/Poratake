@@ -249,7 +249,7 @@ export function registerStateHandlers(): void {
       if (!statePath || !fs.existsSync(statePath)) return null;
 
       try {
-        const content = fs.readFileSync(statePath, 'utf-8');
+        const content = await fs.promises.readFile(statePath, 'utf-8');
         const parsed = JSON.parse(content);
 
         if (!isValidEditorState(parsed)) {

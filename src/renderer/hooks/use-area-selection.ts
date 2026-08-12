@@ -24,6 +24,8 @@ import type {
 } from '@/renderer/utils/area-selection';
 import type {
   AreaOverlayAspectRatioMessage,
+  AreaOverlayPickTarget,
+  AreaOverlayPickTargetsMessage,
   AreaOverlayRect,
   AreaOverlayRectMessage,
 } from '@/types/area-overlay';
@@ -38,7 +40,8 @@ export interface AreaSelectionOptions {
   interactive: boolean;
   initialRect: AreaOverlayRect | null;
   initialAspectRatio: number | null;
-  onSelected: (rect: AreaOverlayRect) => void;
+  pickTargets: AreaOverlayPickTarget[] | null;
+  onSelected: (rect: AreaOverlayRect, pickId?: number) => void;
   onUpdated: (rect: AreaOverlayRect) => void;
   onDiscarded: () => void;
 }
@@ -55,10 +58,16 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
   const [pointer, setPointer] = useState<Point | null>(null);
   const [cursor, setCursor] = useState('crosshair');
   const [interacting, setInteracting] = useState(false);
+  const [picking, setPicking] = useState(options.pickTargets !== null);
+  const [locked, setLocked] = useState(false);
+  const [hovered, setHovered] = useState<AreaOverlayRect | null>(null);
 
   const rectRef = useRef(options.initialRect);
   const ratioRef = useRef(options.initialAspectRatio);
   const interactionRef = useRef<Interaction | null>(null);
+  const pickTargetsRef = useRef(options.pickTargets);
+  const pickingRef = useRef(options.pickTargets !== null);
+  const lockedRef = useRef(false);
 
   const applyRect = useCallback((next: AreaOverlayRect | null) => {
     rectRef.current = next;
@@ -68,17 +77,51 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
   useLayoutEffect(() => {
     ratioRef.current = options.initialAspectRatio;
     interactionRef.current = null;
+    pickTargetsRef.current = options.pickTargets;
+    pickingRef.current = options.pickTargets !== null;
+    lockedRef.current = false;
     setBounds({ width: window.innerWidth, height: window.innerHeight });
     applyRect(options.initialRect);
     setPointer(null);
     setCursor('crosshair');
     setInteracting(false);
+    setPicking(options.pickTargets !== null);
+    setLocked(false);
+    setHovered(null);
   }, [
     applyRect,
     options.initialAspectRatio,
     options.initialRect,
+    options.pickTargets,
     options.resetKey,
   ]);
+
+  const pickTargetAt = useCallback(
+    (point: Point): AreaOverlayPickTarget | null => {
+      const targets = pickTargetsRef.current;
+      if (!targets) return null;
+      return targets.find(target => containsPoint(target, point)) ?? null;
+    },
+    []
+  );
+
+  const applyPickTargets = useCallback(
+    (targets: AreaOverlayPickTarget[] | null) => {
+      const isPicking = targets !== null;
+
+      pickTargetsRef.current = targets;
+      pickingRef.current = isPicking;
+      lockedRef.current = false;
+      interactionRef.current = null;
+      applyRect(null);
+      setInteracting(false);
+      setPicking(isPicking);
+      setLocked(false);
+      setHovered(null);
+      setCursor(isPicking ? 'default' : 'crosshair');
+    },
+    [applyRect]
+  );
 
   useEffect(() => {
     const handleRect = (_event: unknown, message: AreaOverlayRectMessage) => {
@@ -102,8 +145,16 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
       optionsRef.current.onUpdated(next);
     };
 
+    const handlePickTargets = (
+      _event: unknown,
+      message: AreaOverlayPickTargetsMessage
+    ) => {
+      applyPickTargets(message.pickTargets);
+    };
+
     window.ipcRenderer.on('area-overlay:set-rect', handleRect);
     window.ipcRenderer.on('area-overlay:set-aspect-ratio', handleAspectRatio);
+    window.ipcRenderer.on('area-overlay:set-pick-targets', handlePickTargets);
 
     return () => {
       window.ipcRenderer.off('area-overlay:set-rect', handleRect);
@@ -111,13 +162,32 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
         'area-overlay:set-aspect-ratio',
         handleAspectRatio
       );
+      window.ipcRenderer.off(
+        'area-overlay:set-pick-targets',
+        handlePickTargets
+      );
     };
-  }, [applyRect, bounds]);
+  }, [applyPickTargets, applyRect, bounds]);
 
-  const trackPointer = useCallback((point: Point) => {
-    setPointer(point);
-    setCursor(cursorFor(rectRef.current, point));
-  }, []);
+  const trackPointer = useCallback(
+    (point: Point) => {
+      setPointer(point);
+
+      if (pickingRef.current) {
+        setHovered(pickTargetAt(point));
+        setCursor('default');
+        return;
+      }
+
+      if (lockedRef.current) {
+        setCursor('default');
+        return;
+      }
+
+      setCursor(cursorFor(rectRef.current, point));
+    },
+    [pickTargetAt]
+  );
 
   const dragTo = useCallback(
     (point: Point) => {
@@ -203,6 +273,32 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
       if (event.button !== 0) return;
 
       const point = clampPoint({ x: event.clientX, y: event.clientY }, bounds);
+
+      if (pickingRef.current) {
+        const target = pickTargetAt(point);
+        if (!target) return;
+
+        const picked: AreaOverlayRect = {
+          x: target.x,
+          y: target.y,
+          width: target.width,
+          height: target.height,
+        };
+        // What was picked is what gets captured, so the box must not turn
+        // back into a free-form area the moment it is committed.
+        pickingRef.current = false;
+        lockedRef.current = true;
+        setPicking(false);
+        setLocked(true);
+        setHovered(null);
+        applyRect(picked);
+        setCursor('default');
+        optionsRef.current.onSelected(picked, target.id);
+        return;
+      }
+
+      if (lockedRef.current) return;
+
       const current = rectRef.current;
 
       if (optionsRef.current.interactive && current) {
@@ -225,7 +321,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
 
       setInteracting(true);
     },
-    [applyRect, bounds]
+    [applyRect, bounds, pickTargetAt]
   );
 
   const clearPointer = useCallback(() => setPointer(null), []);
@@ -235,6 +331,9 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
     pointer,
     cursor,
     interacting,
+    picking,
+    locked,
+    hovered,
     bounds,
     startDrag,
     trackPointer,

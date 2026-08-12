@@ -1,5 +1,7 @@
 use crate::com::{retain_process_mta, MtaInterface};
-use crate::overlay::{create_popup_window, default_wndproc, ensure_window_class, monitors};
+use crate::overlay::{
+    create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class, monitors,
+};
 use crate::protocol::{param_bool, param_i32, param_str, respond_error, respond_success, Request};
 use crate::router::{method_not_found, Module, Reply};
 use crate::ui::run_on_ui;
@@ -462,6 +464,7 @@ fn create_or_update_window(
     };
     let styles = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED;
     let window = create_popup_window(CLASS_NAME, styles, &rect).ok_or(CameraWindowError::Create)?;
+    let _ = disable_window_transitions(window);
     let dpi = unsafe { GetDpiForWindow(window) }.max(96);
     let size = scale(TOTAL_SIZE, dpi);
     let position = match (x, y) {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Plus, Pencil, Trash2, Monitor } from 'lucide-react';
+import { Plus, Pencil, Trash2, Monitor, Ban } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -18,6 +18,11 @@ interface BackgroundSelectorProps {
   onBackgroundImageChange: (image: string | null) => void;
   showDesktopWallpaper?: boolean;
   showCustomBackgrounds?: boolean;
+  /** Renders a leading "No wallpaper" tile when provided. */
+  noWallpaper?: {
+    selected: boolean;
+    onSelect: () => void;
+  };
 }
 
 export default function BackgroundSelector({
@@ -27,6 +32,7 @@ export default function BackgroundSelector({
   onBackgroundImageChange,
   showDesktopWallpaper = true,
   showCustomBackgrounds = true,
+  noWallpaper,
 }: BackgroundSelectorProps) {
   const [customBackgrounds, setCustomBackgrounds] = useState<
     CustomBackground[]
@@ -216,6 +222,10 @@ export default function BackgroundSelector({
     onGradientChange(null);
   }, [onBackgroundImageChange, onGradientChange]);
 
+  // With a "No wallpaper" tile present, that tile owns the selection ring while
+  // it is active so the underlying background choice stays visually unselected.
+  const hasBackground = !noWallpaper?.selected;
+
   if (showBackgroundEditor) {
     return (
       <BackgroundEditor
@@ -283,6 +293,26 @@ export default function BackgroundSelector({
       </div>
       <div className="grid grid-cols-5 gap-2">
         {}
+        {noWallpaper && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={noWallpaper.onSelect}
+                className={cn(
+                  'bg-muted flex aspect-square items-center justify-center rounded-lg transition-all',
+                  noWallpaper.selected
+                    ? 'ring-ring ring-2 ring-offset-2'
+                    : 'hover:scale-105'
+                )}
+              >
+                <Ban className="text-muted-foreground size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>No Wallpaper</TooltipContent>
+          </Tooltip>
+        )}
+
+        {}
         {showDesktopWallpaper && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -291,7 +321,8 @@ export default function BackgroundSelector({
                 disabled={isLoadingDesktopWallpaper || desktopWallpaperError}
                 className={cn(
                   'relative aspect-square overflow-hidden rounded-lg transition-all',
-                  selectedBackgroundImage &&
+                  hasBackground &&
+                    selectedBackgroundImage &&
                     selectedBackgroundImage === desktopWallpaperPreview
                     ? 'ring-ring ring-2 ring-offset-2'
                     : 'hover:scale-105',
@@ -338,7 +369,7 @@ export default function BackgroundSelector({
             }}
             className={cn(
               'aspect-square rounded-lg transition-all',
-              selectedBackgroundImage === preset.imageUrl
+              hasBackground && selectedBackgroundImage === preset.imageUrl
                 ? 'ring-ring ring-2 ring-offset-2'
                 : 'hover:scale-105'
             )}
@@ -361,7 +392,7 @@ export default function BackgroundSelector({
                   onClick={() => handleSelectCustomBackground(background)}
                   className={cn(
                     'aspect-square rounded-lg transition-all',
-                    selectedGradient?.id === background.id
+                    hasBackground && selectedGradient?.id === background.id
                       ? 'ring-ring ring-2 ring-offset-2'
                       : 'hover:scale-105'
                   )}
@@ -373,6 +404,7 @@ export default function BackgroundSelector({
             }
             if (background.type === 'image') {
               const isSelected =
+                hasBackground &&
                 selectedBackgroundImage === background.data.imageUrl;
               return (
                 <button
@@ -396,7 +428,7 @@ export default function BackgroundSelector({
           })}
       </div>
 
-      {(selectedBackgroundImage || selectedGradient) && (
+      {!noWallpaper && (selectedBackgroundImage || selectedGradient) && (
         <button
           onClick={handleClearBackground}
           className="text-muted-foreground hover:text-foreground text-xs"

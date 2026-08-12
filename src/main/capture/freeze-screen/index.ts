@@ -11,6 +11,14 @@ export function isSupported(): boolean {
   return isFeatureSupported('freeze-screen');
 }
 
+export function prewarmFreezeScreen(): void {
+  if (!isSupported()) {
+    return;
+  }
+
+  daemon.call('freeze-screen', 'prewarm').catch(() => {});
+}
+
 export async function freezeScreen(
   watchSpaceKey: boolean = false
 ): Promise<boolean> {

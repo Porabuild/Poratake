@@ -36,6 +36,7 @@ export default function AspectRatioSelector({
         options={ASPECT_RATIO_SELECT_OPTIONS}
         value={value}
         onChange={option => onChange(option as AspectRatioOption)}
+        size="sm"
         className="w-24"
       />
     </div>

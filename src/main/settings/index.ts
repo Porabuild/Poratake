@@ -122,10 +122,16 @@ function migrateWallpaperConfig(
     ...savedWallpaper,
   };
 
+  const presets = base.presets ?? [];
+  const defaultPresetId = presets.some(p => p.id === base.defaultPresetId)
+    ? base.defaultPresetId
+    : null;
+
   if (base.customBackgrounds && base.customBackgrounds.length > 0) {
     return {
       customBackgrounds: base.customBackgrounds,
-      presets: base.presets ?? [],
+      presets,
+      defaultPresetId,
     };
   }
 
@@ -145,7 +151,8 @@ function migrateWallpaperConfig(
 
   return {
     customBackgrounds: migratedBackgrounds,
-    presets: base.presets ?? [],
+    presets,
+    defaultPresetId,
   };
 }
 
@@ -615,8 +622,19 @@ export function init() {
   ipcMain.handle('wallpaper:deletePreset', (_event, id: string) => {
     const wallpaper = currentConfig.wallpaper;
     wallpaper.presets = wallpaper.presets.filter(p => p.id !== id);
+    if (wallpaper.defaultPresetId === id) {
+      wallpaper.defaultPresetId = null;
+    }
     updateConfig({ wallpaper });
     return wallpaper.presets;
+  });
+
+  ipcMain.handle('wallpaper:setDefaultPreset', (_event, id: string | null) => {
+    const wallpaper = currentConfig.wallpaper;
+    wallpaper.defaultPresetId =
+      id && wallpaper.presets.some(p => p.id === id) ? id : null;
+    updateConfig({ wallpaper });
+    return wallpaper.defaultPresetId;
   });
 
   ipcMain.handle('wallpaper:selectImage', async () => {

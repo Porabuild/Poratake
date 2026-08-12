@@ -1,4 +1,12 @@
-import { useEffect, useCallback, useRef, useState, useMemo } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useCallback,
+  useRef,
+  useState,
+  useMemo,
+} from 'react';
 import TitleBar from '@/renderer/components/title-bar';
 import EditorCanvas, {
   type EditorCanvasHandle,
@@ -9,7 +17,6 @@ import ZoomControl, {
   MIN_ZOOM,
   ZOOM_STEP,
 } from '@/renderer/components/editor/zoom';
-import { WallpaperSheetContent } from '@/renderer/components/editor/wallpaper';
 import DropZoneOverlay from '@/renderer/components/editor/drop-zone-overlay';
 import CaptureEdgeOverlay from '@/renderer/components/editor/capture-edge-overlay';
 import { copyImageToClipboard } from '@/renderer/utils/clipboard';
@@ -54,10 +61,19 @@ import type { CloudUploadState } from '@/types/cloud';
 import type { EditorState } from '@/types/history';
 import { shouldIgnoreGlobalKeyboardShortcuts } from '@/renderer/utils/keyboard';
 import { isMacPlatform } from '@/renderer/utils/platform';
+import {
+  loadImageSource,
+  loadScreenshotImage,
+} from '@/renderer/utils/screenshot-image';
+
+const loadWallpaperSheetContent = () =>
+  import('@/renderer/components/editor/wallpaper');
+const WallpaperSheetContent = lazy(loadWallpaperSheetContent);
 
 interface ScreenshotWindowProps {
   params: {
     filePath: string;
+    imageUrl?: string;
     width?: number;
     height?: number;
     editorState?: EditorState;
@@ -82,6 +98,7 @@ export default function ScreenshotWindow({
 }: ScreenshotWindowProps) {
   const {
     filePath,
+    imageUrl,
     width: initialWidth,
     height: initialHeight,
     editorState: initialEditorState,
@@ -89,7 +106,6 @@ export default function ScreenshotWindow({
   const canvasRef = useRef<EditorCanvasHandle>(null);
   const dropTargetRef = useRef<HTMLDivElement>(null);
   const pan = usePanOnDrag(dropTargetRef);
-  const [image, setImage] = useState<string>('');
   const [imageElement, setImageElement] = useState<HTMLImageElement | null>(
     null
   );
@@ -113,6 +129,15 @@ export default function ScreenshotWindow({
   );
   const [isCaptureMode, setIsCaptureMode] = useState(false);
   const [isMetaHeld, setIsMetaHeld] = useState(false);
+  const [hasOpenedWallpaperSheet, setHasOpenedWallpaperSheet] = useState(false);
+
+  const updateImageSource = useCallback(async (source: string) => {
+    try {
+      setImageElement(await loadImageSource(source));
+    } catch (error) {
+      console.error('Failed to load screenshot:', error);
+    }
+  }, []);
 
   useEffect(() => {
     if (isCopied) {
@@ -151,41 +176,33 @@ export default function ScreenshotWindow({
   }, []);
 
   const lastCropStateRef = useRef<{
-    image: string;
+    imageSource: string;
     width: number | undefined;
     height: number | undefined;
     annotations: Annotation[];
   } | null>(null);
 
   useEffect(() => {
-    const loadImage = async () => {
-      try {
-        const base64Image = (await window.ipcRenderer.invoke(
-          'screenshot:read-file'
-        )) as string;
-        setImage(base64Image);
+    let cancelled = false;
 
-        const img = new window.Image();
-        img.src = `data:image/png;base64,${base64Image}`;
-        img.onload = () => {
-          setImageElement(img);
-        };
-      } catch (error) {
-        console.error('Failed to load screenshot:', error);
-      }
+    void loadScreenshotImage(imageUrl, () =>
+      window.ipcRenderer.invoke('screenshot:read-file')
+    )
+      .then(loadedImage => {
+        if (!cancelled) {
+          setImageElement(loadedImage);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          console.error('Failed to load screenshot:', error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
     };
-    loadImage();
-  }, [filePath]);
-
-  useEffect(() => {
-    if (image) {
-      const img = new window.Image();
-      img.src = `data:image/png;base64,${image}`;
-      img.onload = () => {
-        setImageElement(img);
-      };
-    }
-  }, [image]);
+  }, [filePath, imageUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -577,10 +594,19 @@ export default function ScreenshotWindow({
 
   const isWallpaperSheetOpen = activeTool === 'wallpaper';
 
+  const preloadWallpaperSheet = useCallback(() => {
+    void loadWallpaperSheetContent();
+  }, []);
+
   const handleToolChange = useCallback(
     (tool: typeof activeTool) => {
       const wasWallpaperOpen = activeTool === 'wallpaper';
       const willWallpaperOpen = tool === 'wallpaper';
+
+      if (willWallpaperOpen) {
+        setHasOpenedWallpaperSheet(true);
+        preloadWallpaperSheet();
+      }
 
       if (wasWallpaperOpen && willWallpaperOpen) {
         setActiveTool('select');
@@ -592,7 +618,7 @@ export default function ScreenshotWindow({
         }
       }
     },
-    [activeTool, setActiveTool, calculateOptimalZoom]
+    [activeTool, setActiveTool, calculateOptimalZoom, preloadWallpaperSheet]
   );
 
   useEditorToolShortcuts({
@@ -629,7 +655,7 @@ export default function ScreenshotWindow({
   const handleUndo = useCallback(() => {
     if (lastCropStateRef.current) {
       const restored = lastCropStateRef.current;
-      setImage(restored.image);
+      void updateImageSource(restored.imageSource);
       setWidth(restored.width);
       setHeight(restored.height);
       setAnnotations(restored.annotations);
@@ -638,7 +664,7 @@ export default function ScreenshotWindow({
     }
 
     undo();
-  }, [undo, setAnnotations]);
+  }, [undo, setAnnotations, updateImageSource]);
 
   const handleRedo = useCallback(() => {
     redo();
@@ -815,8 +841,10 @@ export default function ScreenshotWindow({
       cropData: { x: number; y: number; width: number; height: number },
       adjustedAnnotations: Annotation[]
     ) => {
+      if (!imageElement) return;
+
       lastCropStateRef.current = {
-        image,
+        imageSource: imageElement.src,
         width,
         height,
         annotations,
@@ -826,56 +854,52 @@ export default function ScreenshotWindow({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const img = new window.Image();
-      img.src = `data:image/png;base64,${image}`;
-      img.onload = () => {
-        const scaleX = img.naturalWidth / (width || img.naturalWidth);
-        const scaleY = img.naturalHeight / (height || img.naturalHeight);
+      const scaleX =
+        imageElement.naturalWidth / (width || imageElement.naturalWidth);
+      const scaleY =
+        imageElement.naturalHeight / (height || imageElement.naturalHeight);
 
-        const actualCropX = cropData.x * scaleX + nativeBalanceCrop.left;
-        const actualCropY = cropData.y * scaleY + nativeBalanceCrop.top;
-        const actualCropWidth = cropData.width * scaleX;
-        const actualCropHeight = cropData.height * scaleY;
+      const actualCropX = cropData.x * scaleX + nativeBalanceCrop.left;
+      const actualCropY = cropData.y * scaleY + nativeBalanceCrop.top;
+      const actualCropWidth = cropData.width * scaleX;
+      const actualCropHeight = cropData.height * scaleY;
 
-        canvas.width = actualCropWidth;
-        canvas.height = actualCropHeight;
+      canvas.width = actualCropWidth;
+      canvas.height = actualCropHeight;
 
-        ctx.drawImage(
-          img,
-          actualCropX,
-          actualCropY,
-          actualCropWidth,
-          actualCropHeight,
-          0,
-          0,
-          actualCropWidth,
-          actualCropHeight
-        );
+      ctx.drawImage(
+        imageElement,
+        actualCropX,
+        actualCropY,
+        actualCropWidth,
+        actualCropHeight,
+        0,
+        0,
+        actualCropWidth,
+        actualCropHeight
+      );
 
-        const croppedImage = canvas.toDataURL('image/png').split(',')[1];
-        setImage(croppedImage);
-        setWidth(cropData.width);
-        setHeight(cropData.height);
-
-        setAnnotations(adjustedAnnotations);
-
-        setActiveTool('select');
-      };
+      void updateImageSource(canvas.toDataURL('image/png'));
+      setWidth(cropData.width);
+      setHeight(cropData.height);
+      setAnnotations(adjustedAnnotations);
+      setActiveTool('select');
     },
     [
-      image,
+      imageElement,
       width,
       height,
       annotations,
       nativeBalanceCrop,
       setAnnotations,
       setActiveTool,
+      updateImageSource,
     ]
   );
 
   const handleImageDrop = useCallback(
     async (droppedBase64: string, edge: DropEdge) => {
-      if (!edge || !image) return;
+      if (!edge || !imageElement) return;
 
       try {
         const droppedImg = await loadImageFromBase64(droppedBase64);
@@ -893,7 +917,7 @@ export default function ScreenshotWindow({
         console.error('Failed to add dropped image layer:', error);
       }
     },
-    [image]
+    [imageElement]
   );
 
   const { isDragging, dropEdge } = useImageDrop({
@@ -1191,7 +1215,7 @@ export default function ScreenshotWindow({
     async (
       edge: NonNullable<import('@/renderer/hooks/useImageDrop').DropEdge>
     ) => {
-      if (!image) return;
+      if (!imageElement) return;
 
       setIsCaptureMode(false);
       setIsMetaHeld(false);
@@ -1201,7 +1225,7 @@ export default function ScreenshotWindow({
           'screenshot:capture-for-editor'
         )) as string | null;
 
-        if (!capturedBase64 || !image) return;
+        if (!capturedBase64 || !imageElement) return;
 
         const capturedImg = await loadImageFromBase64(capturedBase64);
         setExtraLayers(prev => [
@@ -1218,7 +1242,7 @@ export default function ScreenshotWindow({
         console.error('Failed to capture and attach:', error);
       }
     },
-    [image]
+    [imageElement]
   );
 
   const handleCaptureToggle = useCallback(() => {
@@ -1274,28 +1298,35 @@ export default function ScreenshotWindow({
         editorShortcuts={editorShortcuts}
         isCaptureMode={isCaptureMode}
         onCaptureClick={handleCaptureToggle}
+        onWallpaperIntent={preloadWallpaperSheet}
       />
       <div className="relative flex h-full w-full">
         <div className="absolute top-0 left-0 z-10 h-full">
-          <WallpaperSheetContent
-            wallpaper={wallpaper}
-            hasMultipleLayers={extraLayers.length > 0}
-            onGradientChange={setGradient}
-            onBackgroundImageChange={setBackgroundImage}
-            onBackgroundBlurChange={setBackgroundBlur}
-            onNoiseChange={setNoise}
-            onPaddingChange={setPadding}
-            onInsetChange={setInset}
-            onCornersChange={setCorners}
-            onShadowChange={setShadow}
-            onSpacingChange={setSpacing}
-            onWindowFrameChange={setWindowFrame}
-            onBalanceChange={setBalance}
-            onAspectRatioChange={setAspectRatio}
-            onApplyPreset={applyPreset}
-            onClose={() => setActiveTool('select')}
-            isOpen={isWallpaperSheetOpen}
-          />
+          {hasOpenedWallpaperSheet && (
+            <Suspense
+              fallback={<div className="bg-popover h-full w-80 border-r" />}
+            >
+              <WallpaperSheetContent
+                wallpaper={wallpaper}
+                hasMultipleLayers={extraLayers.length > 0}
+                onGradientChange={setGradient}
+                onBackgroundImageChange={setBackgroundImage}
+                onBackgroundBlurChange={setBackgroundBlur}
+                onNoiseChange={setNoise}
+                onPaddingChange={setPadding}
+                onInsetChange={setInset}
+                onCornersChange={setCorners}
+                onShadowChange={setShadow}
+                onSpacingChange={setSpacing}
+                onWindowFrameChange={setWindowFrame}
+                onBalanceChange={setBalance}
+                onAspectRatioChange={setAspectRatio}
+                onApplyPreset={applyPreset}
+                onClose={() => setActiveTool('select')}
+                isOpen={isWallpaperSheetOpen}
+              />
+            </Suspense>
+          )}
         </div>
         <div
           ref={dropTargetRef}
@@ -1329,7 +1360,7 @@ export default function ScreenshotWindow({
             >
               <EditorCanvas
                 ref={canvasRef}
-                imageBase64={image}
+                image={imageElement}
                 imageWidth={width}
                 imageHeight={height}
                 extraLayers={extraLayers}

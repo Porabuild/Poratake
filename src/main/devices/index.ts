@@ -28,6 +28,19 @@ interface CameraTestSession {
 let micTestSession: MicTestSession | null = null;
 let cameraTestSession: CameraTestSession | null = null;
 
+export async function listMediaDevices(): Promise<MediaDeviceLists> {
+  const result = await daemon.call<Partial<MediaDeviceLists>>(
+    'media-devices',
+    'list'
+  );
+  return {
+    microphones: result?.microphones ?? [],
+    cameras: result?.cameras ?? [],
+    defaultMicrophoneId: result?.defaultMicrophoneId ?? null,
+    defaultCameraId: result?.defaultCameraId ?? null,
+  };
+}
+
 function forwardMicLevel(event: string, data?: unknown): void {
   if (event !== 'media-devices:mic-level') return;
   if (!micTestSession?.active || micTestSession.sender.isDestroyed()) {
@@ -94,16 +107,7 @@ export function init(): void {
       };
     }
 
-    const result = await daemon.call<Partial<MediaDeviceLists>>(
-      'media-devices',
-      'list'
-    );
-    return {
-      microphones: result?.microphones ?? [],
-      cameras: result?.cameras ?? [],
-      defaultMicrophoneId: result?.defaultMicrophoneId ?? null,
-      defaultCameraId: result?.defaultCameraId ?? null,
-    };
+    return listMediaDevices();
   });
 
   ipcMain.handle(

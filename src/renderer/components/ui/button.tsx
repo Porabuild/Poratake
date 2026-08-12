@@ -12,7 +12,8 @@ type LegacyVariant =
   | 'tertiary'
   | 'ghost'
   | 'link';
-type LegacySize = 'default' | 'sm' | 'lg' | 'icon' | 'icon-sm' | 'icon-lg';
+type LegacySize =
+  'default' | 'xs' | 'sm' | 'lg' | 'icon' | 'icon-xs' | 'icon-sm' | 'icon-lg';
 
 interface ButtonProps extends Omit<
   HeroButtonProps,
@@ -35,11 +36,14 @@ const VARIANTS: Record<LegacyVariant, HeroButtonProps['variant']> = {
   link: 'ghost',
 };
 
+// HeroUI stops at `sm`; `xs` layers a compact modifier on top of it.
 const SIZES: Record<LegacySize, HeroButtonProps['size']> = {
   default: 'md',
+  xs: 'sm',
   sm: 'sm',
   lg: 'lg',
   icon: 'md',
+  'icon-xs': 'sm',
   'icon-sm': 'sm',
   'icon-lg': 'lg',
 };
@@ -58,6 +62,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       isDisabled={disabled}
       className={cn(
         'shrink-0 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*="size-"])]:size-4',
+        size.endsWith('xs') && 'button--xs',
         variant === 'link' && 'text-accent underline-offset-4 hover:underline',
         className
       )}

@@ -3,6 +3,7 @@ import path from 'path';
 
 const mockDaemonCall = vi.fn();
 const mockShowOverlay = vi.fn();
+const mockShowWindowOutline = vi.fn();
 const mockHideOverlay = vi.fn();
 const mockShowTray = vi.fn();
 const mockHideTray = vi.fn();
@@ -38,6 +39,7 @@ vi.mock('@/main/daemon', () => ({
 
 vi.mock('@/main/capture/video/overlay.ts', () => ({
   showRecordingOverlay: (...a: unknown[]) => mockShowOverlay(...a),
+  showRecordedWindowOutline: (...a: unknown[]) => mockShowWindowOutline(...a),
   hideRecordingOverlay: (...a: unknown[]) => mockHideOverlay(...a),
 }));
 
@@ -182,6 +184,107 @@ describe('recorder', () => {
       expect(mockShowOverlay).toHaveBeenCalledWith(10, 20, 800, 600);
       expect(mockShowTray).toHaveBeenCalled();
       expect(m.isRecording()).toBe(true);
+    });
+
+    it('skips the recording overlay when it is managed externally', async () => {
+      mockDaemonCall.mockResolvedValue({ success: true, state: 'recording' });
+      const m = await import('@/main/capture/video/recorder');
+      const showControl = vi.fn();
+
+      await m.startRecordingWithConfig(
+        {
+          x: 10,
+          y: 20,
+          width: 800,
+          height: 600,
+          outputPath: '/path/out.mov',
+        },
+        showControl,
+        undefined,
+        undefined,
+        true
+      );
+
+      expect(mockShowOverlay).not.toHaveBeenCalled();
+      expect(showControl).toHaveBeenCalled();
+      expect(m.isRecording()).toBe(true);
+    });
+
+    it('asks the daemon to follow the picked window', async () => {
+      mockDaemonCall.mockResolvedValue({ success: true, state: 'recording' });
+      const m = await import('@/main/capture/video/recorder');
+
+      await m.startRecordingWithConfig(
+        {
+          x: 10,
+          y: 20,
+          width: 800,
+          height: 600,
+          windowId: 4242,
+          outputPath: '/path/out.mov',
+        },
+        vi.fn(),
+        undefined,
+        undefined,
+        true
+      );
+
+      expect(mockDaemonCall).toHaveBeenCalledWith(
+        'screen-recorder',
+        'start',
+        expect.objectContaining({ windowId: 4242 }),
+        60000
+      );
+    });
+
+    it('outlines the recorded window instead of dimming its starting area', async () => {
+      mockDaemonCall.mockResolvedValue({ success: true, state: 'recording' });
+      const m = await import('@/main/capture/video/recorder');
+
+      await m.startRecordingWithConfig(
+        {
+          x: 10,
+          y: 20,
+          width: 800,
+          height: 600,
+          windowId: 4242,
+          outputPath: '/path/out.mov',
+        },
+        vi.fn(),
+        undefined,
+        undefined,
+        true
+      );
+
+      expect(mockShowWindowOutline).toHaveBeenCalledWith(4242);
+      expect(mockShowOverlay).not.toHaveBeenCalled();
+    });
+
+    it('finalizes the recording when the window it follows is closed', async () => {
+      mockDaemonCall.mockResolvedValue({ success: true });
+      const m = await import('@/main/capture/video/recorder');
+      const onFailure = vi.fn();
+      const onTargetClosed = vi.fn();
+
+      await m.startRecordingWithConfig(
+        { outputPath: '/out.mov', windowId: 4242 },
+        vi.fn(),
+        vi.fn(),
+        onFailure,
+        true,
+        onTargetClosed
+      );
+
+      for (const handler of daemonEventHandlers) {
+        handler('screen-recorder:error', {
+          code: 'TARGET_CLOSED',
+          message: 'The recorded window was closed',
+        });
+      }
+
+      await vi.waitFor(() => expect(onTargetClosed).toHaveBeenCalledTimes(1));
+      expect(onFailure).not.toHaveBeenCalled();
+      expect(m.getCurrentRecordingPath()).toBe('/out.mov');
     });
 
     it('does not show overlay for iOS recordings', async () => {

@@ -122,7 +122,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
     return (
       <div
         ref={setRefs}
-        className={`group bg-secondary hover:bg-accent flex cursor-default items-center gap-3 rounded-lg p-2 transition-all ${
+        className={`group bg-secondary hover:bg-muted flex cursor-default items-center gap-3 rounded-lg p-2 transition-all ${
           isSelected
             ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-transparent'
             : ''

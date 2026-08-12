@@ -3,13 +3,7 @@ import { Label } from '@/renderer/components/ui/label';
 import { Slider } from '@/renderer/components/ui/slider';
 import { Switch } from '@/renderer/components/ui/switch';
 import { Button } from '@/renderer/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import { Select } from '@/renderer/components/ui/select';
 import { SettingsPanelHeader } from './components';
 import { useStyleUpdater } from './hooks/use-style-updater';
 import type { AudioStyle, KeyboardSoundType } from '@/types/audio';
@@ -21,6 +15,11 @@ import {
   formatPlaybackSpeed,
 } from '@/types/playback-speed';
 
+const PLAYBACK_SPEED_OPTIONS = PLAYBACK_SPEED_PRESETS.map(speed => ({
+  value: speed.toString(),
+  label: formatPlaybackSpeed(speed),
+}));
+
 interface AudioSettingsPanelProps {
   audioStyle: AudioStyle;
   onStyleChange: (style: AudioStyle) => void;
@@ -28,10 +27,13 @@ interface AudioSettingsPanelProps {
   onPlayDemo: () => void;
   onStopDemo: () => void;
   isDemoPlaying: boolean;
-  musicTracks: MusicTrack[];
+  musicTrackGroups: MusicTrack[][];
   onAddMusicTrack: () => void;
-  onRemoveMusicTrack: (id: string) => void;
-  onUpdateMusicTrack: (id: string, updates: Partial<MusicTrack>) => void;
+  onRemoveMusicTrackGroup: (groupId: string) => void;
+  onUpdateMusicTrackGroup: (
+    groupId: string,
+    updates: Partial<MusicTrack>
+  ) => void;
 }
 
 export default function AudioSettingsPanel({
@@ -41,10 +43,10 @@ export default function AudioSettingsPanel({
   onPlayDemo,
   onStopDemo,
   isDemoPlaying,
-  musicTracks,
+  musicTrackGroups,
   onAddMusicTrack,
-  onRemoveMusicTrack,
-  onUpdateMusicTrack,
+  onRemoveMusicTrackGroup,
+  onUpdateMusicTrackGroup,
 }: AudioSettingsPanelProps) {
   const updateStyle = useStyleUpdater(audioStyle, onStyleChange);
 
@@ -54,22 +56,23 @@ export default function AudioSettingsPanel({
         title="Audio Tracks"
         description="Manage audio tracks in your project"
         action={
-          <Button variant="ghost" size="icon-sm" onClick={onAddMusicTrack}>
+          <Button variant="ghost" size="icon-xs" onClick={onAddMusicTrack}>
             <Plus className="size-4" />
           </Button>
         }
       />
 
-      {musicTracks.length === 0 && (
+      {musicTrackGroups.length === 0 && (
         <p className="text-muted-foreground text-xs">No audio tracks.</p>
       )}
 
-      {musicTracks.map(track => {
+      {musicTrackGroups.map(group => {
+        const track = group[0];
         const Icon = SOURCE_ICONS[track.source];
         const isRemovable = track.source === 'music';
 
         return (
-          <div key={track.id} className="space-y-2 rounded-md border p-3">
+          <div key={track.groupId} className="space-y-2 rounded-md border p-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <Icon className="text-muted-foreground size-4 shrink-0" />
@@ -79,16 +82,19 @@ export default function AudioSettingsPanel({
               </div>
               <div className="flex items-center gap-1">
                 <Switch
+                  size="sm"
                   checked={track.enabled}
                   onCheckedChange={checked =>
-                    onUpdateMusicTrack(track.id, { enabled: checked })
+                    onUpdateMusicTrackGroup(track.groupId, {
+                      enabled: checked,
+                    })
                   }
                 />
                 {isRemovable && (
                   <Button
                     variant="ghost"
-                    size="icon-sm"
-                    onClick={() => onRemoveMusicTrack(track.id)}
+                    size="icon-xs"
+                    onClick={() => onRemoveMusicTrackGroup(track.groupId)}
                   >
                     <Trash2 className="size-3.5" />
                   </Button>
@@ -103,9 +109,12 @@ export default function AudioSettingsPanel({
                     Volume
                   </Label>
                   <Slider
+                    size="sm"
                     value={[track.volume * 100]}
                     onValueChange={([value]) =>
-                      onUpdateMusicTrack(track.id, { volume: value / 100 })
+                      onUpdateMusicTrackGroup(track.groupId, {
+                        volume: value / 100,
+                      })
                     }
                     min={0}
                     max={100}
@@ -122,24 +131,17 @@ export default function AudioSettingsPanel({
                     Speed
                   </Label>
                   <Select
+                    label="Speed"
+                    size="sm"
+                    className="flex-1"
                     value={track.speed.toString()}
-                    onValueChange={value =>
-                      onUpdateMusicTrack(track.id, {
+                    options={PLAYBACK_SPEED_OPTIONS}
+                    onChange={value =>
+                      onUpdateMusicTrackGroup(track.groupId, {
                         speed: parseFloat(value),
                       })
                     }
-                  >
-                    <SelectTrigger size="sm" className="flex-1">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {PLAYBACK_SPEED_PRESETS.map(speed => (
-                        <SelectItem key={speed} value={speed.toString()}>
-                          {formatPlaybackSpeed(speed)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  />
                 </div>
               </>
             )}
@@ -155,6 +157,7 @@ export default function AudioSettingsPanel({
               <Label className="text-sm">Keyboard Sound</Label>
             </div>
             <Switch
+              size="sm"
               checked={audioStyle.keyboardSoundEnabled}
               onCheckedChange={checked =>
                 updateStyle({ keyboardSoundEnabled: checked })
@@ -165,25 +168,20 @@ export default function AudioSettingsPanel({
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Select
+                  label="Keyboard sound"
+                  size="sm"
+                  className="flex-1"
                   value={audioStyle.keyboardSoundType}
-                  onValueChange={(value: KeyboardSoundType) =>
-                    updateStyle({ keyboardSoundType: value })
+                  options={KEYBOARD_SOUND_OPTIONS}
+                  onChange={value =>
+                    updateStyle({
+                      keyboardSoundType: value as KeyboardSoundType,
+                    })
                   }
-                >
-                  <SelectTrigger size="sm" className="flex-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {KEYBOARD_SOUND_OPTIONS.map(option => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                />
                 <Button
-                  variant="outline"
-                  size="icon-sm"
+                  variant="tertiary"
+                  size="icon-xs"
                   onClick={isDemoPlaying ? onStopDemo : onPlayDemo}
                 >
                   {isDemoPlaying ? (
@@ -195,6 +193,7 @@ export default function AudioSettingsPanel({
               </div>
               <div className="flex items-center gap-3">
                 <Slider
+                  size="sm"
                   value={[audioStyle.keyboardSoundVolume * 100]}
                   onValueChange={([value]) =>
                     updateStyle({ keyboardSoundVolume: value / 100 })

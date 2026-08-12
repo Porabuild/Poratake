@@ -14,6 +14,7 @@ const mockGetDisplayNearestPoint = vi.fn();
 const ipcHandlers = new Map<string, (event: unknown, data?: unknown) => void>();
 const overlayWindows: MockBrowserWindow[] = [];
 const loadHandlers = new Map<number, () => void>();
+const commandLineSwitches = new Set<string>();
 
 class MockBrowserWindow {
   static nextWebContentsId = 1;
@@ -64,7 +65,14 @@ class MockBrowserWindow {
 }
 
 vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp' },
+  app: {
+    commandLine: {
+      appendSwitch: (value: string) => commandLineSwitches.add(value),
+      hasSwitch: (value: string) => commandLineSwitches.has(value),
+      removeSwitch: (value: string) => commandLineSwitches.delete(value),
+    },
+    getPath: () => '/tmp',
+  },
   BrowserWindow: MockBrowserWindow,
   globalShortcut: {
     register: (...a: unknown[]) => mockGlobalShortcutRegister(...a),
@@ -132,6 +140,7 @@ describe('area overlay', () => {
     ipcHandlers.clear();
     overlayWindows.length = 0;
     loadHandlers.clear();
+    commandLineSwitches.clear();
     mockGetAllDisplays.mockReturnValue([display]);
     mockGetCursorScreenPoint.mockReturnValue({ x: 200, y: 100 });
     mockGetDisplayNearestPoint.mockReturnValue(display);
@@ -139,7 +148,23 @@ describe('area overlay', () => {
     mockFreezeScreen.mockResolvedValue(true);
     mockReleaseScreen.mockResolvedValue(true);
     mockIsFreezeScreenEnabled.mockReturnValue(true);
-    mockDaemonCall.mockResolvedValue({ disabled: true });
+    mockDaemonCall.mockImplementation(
+      (_module: string, method: string, params: { windowHandle?: string }) => {
+        if (method === 'showWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = true;
+        }
+        if (method === 'hideWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = false;
+        }
+        return Promise.resolve({ disabled: true });
+      }
+    );
     mockGlobalShortcutRegister.mockReturnValue(true);
   });
 
@@ -149,15 +174,18 @@ describe('area overlay', () => {
     await settle();
 
     expect(overlayWindows).toHaveLength(1);
+    expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
+    expect(overlayWindows[0].hide).not.toHaveBeenCalled();
     expect(mockDaemonCall).toHaveBeenCalledWith(
       'area-selector',
-      'disableWindowTransitions',
+      'hideWindowWithoutTransitions',
       { windowHandle: overlayWindows[0].webContents.id.toString() }
     );
-    expect(overlayWindows[0].showInactive).not.toHaveBeenCalled();
-    expect(overlayWindows[0].hide).toHaveBeenCalled();
     expect(overlayWindows[0].isVisible()).toBe(false);
-    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(1);
+    expect(commandLineSwitches.has('wm-window-animations-disabled')).toBe(
+      false
+    );
 
     fire('area-overlay:renderer-mounted', overlayWindows[0].webContents.id);
     prepare(overlayWindows[0]);
@@ -173,8 +201,20 @@ describe('area overlay', () => {
         aspectRatio: null,
         toolbar: null,
         rect: null,
+        pickTargets: null,
+        prompt: null,
       },
     });
+  });
+
+  it('preserves an existing global window-animation switch when priming', async () => {
+    commandLineSwitches.add('wm-window-animations-disabled');
+    const module = await import('@/main/capture/area-overlay');
+
+    module.prewarmAreaOverlay();
+    await settle();
+
+    expect(commandLineSwitches.has('wm-window-animations-disabled')).toBe(true);
   });
 
   it('blocks input without activating the selected app', async () => {
@@ -194,8 +234,13 @@ describe('area overlay', () => {
       webPreferences: { webSecurity: true },
     });
     expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
+    expect(
+      mockDaemonCall.mock.calls.filter(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toHaveLength(0);
     expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
-      false
+      true
     );
     expect(mockGlobalShortcutRegister).toHaveBeenCalledWith(
       'Escape',
@@ -203,6 +248,12 @@ describe('area overlay', () => {
     );
 
     fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    await settle();
+    expect(mockDaemonCall).toHaveBeenCalledWith(
+      'area-selector',
+      'showWindowWithoutTransitions',
+      { windowHandle: overlayWindows[0].webContents.id.toString() }
+    );
     expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
     expect(overlayWindows[0].setOpacity).toHaveBeenCalledWith(1);
     expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
@@ -210,9 +261,13 @@ describe('area overlay', () => {
     );
     expect(overlayWindows[0].focus).not.toHaveBeenCalled();
     expect(overlayWindows[0].moveTop).toHaveBeenCalled();
+    expect(module.getActiveOverlayWindowAtPoint({ x: 400, y: 100 })).toBe(
+      overlayWindows[0]
+    );
 
     fire('area-overlay:cancel', overlayWindows[0].webContents.id);
     expect(await selection).toBeNull();
+    expect(module.getActiveOverlayWindowAtPoint({ x: 400, y: 100 })).toBeNull();
     expect(mockGlobalShortcutUnregister).toHaveBeenCalledWith('Escape');
   });
 
@@ -264,8 +319,8 @@ describe('area overlay', () => {
     await selection;
 
     expect(mockReleaseScreen).toHaveBeenCalled();
-    expect(overlayWindows[0].hide).toHaveBeenCalled();
-    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
+    expect(overlayWindows[0].hide).not.toHaveBeenCalled();
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(1);
     expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
       true
     );
@@ -320,7 +375,10 @@ describe('area overlay', () => {
     expect(mockFreezeScreen).toHaveBeenCalled();
     expect(overlayWindows).toHaveLength(1);
     expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
-    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
+    expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
+      true
+    );
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(1);
 
     finishFreeze(true);
     await settle();
@@ -378,6 +436,8 @@ describe('area overlay', () => {
       ([channel]) => channel === 'load'
     );
     const firstSessionId = firstLoad?.[1].params.sessionId;
+    fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    await settle();
 
     fire('area-overlay:selected', overlayWindows[0].webContents.id, {
       displayId: display.id,
@@ -402,11 +462,99 @@ describe('area overlay', () => {
     );
     expect(loadCalls).toHaveLength(2);
     expect(loadCalls[1][1].params.sessionId).not.toBe(firstSessionId);
-    expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(2);
-    expect(overlayWindows[0].hide).toHaveBeenCalled();
+    fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    await settle();
+    expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
+    expect(overlayWindows[0].hide).not.toHaveBeenCalled();
+    expect(
+      mockDaemonCall.mock.calls.filter(
+        ([, method]) => method === 'disableWindowTransitions'
+      )
+    ).toHaveLength(0);
+    expect(
+      mockDaemonCall.mock.calls.filter(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toHaveLength(2);
 
     fire('area-overlay:cancel', overlayWindows[0].webContents.id);
     await secondSelection;
+  });
+
+  it('keeps input disabled until the native show completes', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const firstSelection = module.startInteractiveOverlay();
+    await settle();
+
+    fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    await settle();
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await firstSelection;
+
+    const secondSelection = module.startInteractiveOverlay();
+    await settle();
+    vi.clearAllMocks();
+
+    let resolveTransitions!: () => void;
+    mockDaemonCall.mockImplementation((_module: string, method: string) => {
+      if (method !== 'showWindowWithoutTransitions') {
+        return Promise.resolve({ disabled: true });
+      }
+
+      return new Promise(resolve => {
+        resolveTransitions = () => {
+          overlayWindows[0].visible = true;
+          resolve({ disabled: true });
+        };
+      });
+    });
+
+    fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    await settle();
+    expect(mockDaemonCall).toHaveBeenCalledWith(
+      'area-selector',
+      'showWindowWithoutTransitions',
+      { windowHandle: overlayWindows[0].webContents.id.toString() }
+    );
+    expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
+      true
+    );
+
+    resolveTransitions();
+    await settle();
+    expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
+      false
+    );
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await secondSelection;
+  });
+
+  it('does not resurrect a reveal that was followed by a hide', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+
+    fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    module.setOverlayVisible(false);
+
+    let resolveReveal!: (value: { disabled: boolean }) => void;
+    mockDaemonCall.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveReveal = resolve;
+        })
+    );
+
+    module.setOverlayVisible(true);
+    module.setOverlayVisible(false);
+    resolveReveal({ disabled: true });
+    await settle();
+
+    expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
+
+    module.cancelOverlaySelection();
+    await session;
   });
 
   it('selects on a live transparent overlay when freezing is disabled', async () => {
@@ -432,6 +580,8 @@ describe('area overlay', () => {
         aspectRatio: null,
         toolbar: null,
         rect: null,
+        pickTargets: null,
+        prompt: null,
       },
     });
 
@@ -450,7 +600,7 @@ describe('area overlay', () => {
     expect(mockReleaseScreen).not.toHaveBeenCalled();
   });
 
-  it('leaves the daemon untouched when a live overlay is cancelled', async () => {
+  it('leaves the daemon freeze state untouched for a live overlay', async () => {
     const module = await import('@/main/capture/area-overlay');
     const selection = module.selectAreaWithOverlay({ freeze: false });
     await settle();
@@ -459,8 +609,8 @@ describe('area overlay', () => {
 
     expect(await selection).toBeNull();
     expect(mockReleaseScreen).not.toHaveBeenCalled();
-    expect(overlayWindows[0].hide).toHaveBeenCalled();
-    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
+    expect(overlayWindows[0].hide).not.toHaveBeenCalled();
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(1);
   });
 
   it('crops the saved file from the retained frame and then releases it', async () => {
@@ -509,8 +659,8 @@ describe('area overlay', () => {
       '/tmp/shot.png',
       { cached: false }
     );
-    expect(overlayWindows[0].hide).toHaveBeenCalled();
-    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(0);
+    expect(overlayWindows[0].hide).not.toHaveBeenCalled();
+    expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(1);
     expect(mockReleaseScreen).not.toHaveBeenCalled();
   });
 });

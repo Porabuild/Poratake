@@ -22,6 +22,8 @@ export default function HistoryWindow() {
   const [items, setItems] = useState<HistoryItemSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [isKeyboardNavigationActive, setIsKeyboardNavigationActive] =
+    useState(false);
   const [filter, setFilter] = useState<HistoryFilterType>('all');
   const [sortOrder, setSortOrder] = useState<HistorySortOrder>('newest');
   const [layout, setLayout] = useState<HistoryLayout>('grid');
@@ -206,6 +208,7 @@ export default function HistoryWindow() {
         ].includes(key)
       ) {
         e.preventDefault();
+        setIsKeyboardNavigationActive(true);
         setSelectedIndex(prev => {
           let newIndex = prev;
 
@@ -352,7 +355,9 @@ export default function HistoryWindow() {
                   }
                 }}
                 item={item}
-                isSelected={index === selectedIndex}
+                isSelected={
+                  isKeyboardNavigationActive && index === selectedIndex
+                }
                 onOpen={handleOpenItem}
                 onDelete={handleDelete}
               />

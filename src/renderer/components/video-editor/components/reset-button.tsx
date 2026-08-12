@@ -14,7 +14,7 @@ export default function ResetButton({
   return (
     <Button
       variant="ghost"
-      size="sm"
+      size="xs"
       onClick={onClick}
       className={
         className ??

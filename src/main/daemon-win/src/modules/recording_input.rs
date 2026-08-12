@@ -1,5 +1,7 @@
-use super::recorder_types::{CaptureRect, RecorderError, StagedAsset};
+use super::recorder_types::{fit_rect, CaptureRect, RecorderError, StagedAsset};
+use super::window_selector::window_bounds;
 use serde::Serialize;
+use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -9,7 +11,8 @@ use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
-    CloseHandle, HANDLE, HINSTANCE, LPARAM, LRESULT, POINT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
+    CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WAIT_FAILED, WAIT_OBJECT_0,
+    WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{CreateEventW, SetEvent};
@@ -110,8 +113,85 @@ struct RawKeyboardEvent {
     event_type: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackerSource {
+    Screen,
+    Window(isize),
+}
+
+/// Maps screen cursor positions into the recorded video frame. A window
+/// recording keeps the frame it started with while the window itself moves and
+/// resizes, so its cursor positions are read against the live window and then
+/// placed inside the same letterbox the video frames go through.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackerBounds {
+    source: TrackerSource,
+    frame: CaptureRect,
+}
+
+impl TrackerBounds {
+    pub fn new(source: TrackerSource, frame: CaptureRect) -> Self {
+        Self { source, frame }
+    }
+
+    fn area(&self) -> Option<CaptureRect> {
+        let TrackerSource::Window(handle) = self.source else {
+            return Some(self.frame);
+        };
+
+        let rect = window_bounds(HWND(handle as *mut c_void))?;
+        Some(CaptureRect {
+            x: rect.left,
+            y: rect.top,
+            width: rect.right - rect.left,
+            height: rect.bottom - rect.top,
+        })
+    }
+
+    fn normalize(&self, point: POINT) -> Option<(f64, f64)> {
+        let area = self.area()?;
+        let relative = relative_position(point, area)?;
+
+        if self.source == TrackerSource::Screen {
+            return Some(relative);
+        }
+
+        Some(place_in_frame(relative, area, self.frame))
+    }
+}
+
+fn relative_position(point: POINT, area: CaptureRect) -> Option<(f64, f64)> {
+    if area.width <= 0 || area.height <= 0 {
+        return None;
+    }
+
+    Some((
+        ((point.x - area.x) as f64 / area.width as f64).clamp(0.0, 1.0),
+        ((point.y - area.y) as f64 / area.height as f64).clamp(0.0, 1.0),
+    ))
+}
+
+fn place_in_frame(relative: (f64, f64), area: CaptureRect, frame: CaptureRect) -> (f64, f64) {
+    if frame.width <= 0 || frame.height <= 0 {
+        return relative;
+    }
+
+    let fit = fit_rect(
+        (area.width as u32, area.height as u32),
+        (frame.width as u32, frame.height as u32),
+    );
+    if fit.width <= 0.0 || fit.height <= 0.0 {
+        return relative;
+    }
+
+    (
+        (fit.x + relative.0 * fit.width) / frame.width as f64,
+        (fit.y + relative.1 * fit.height) / frame.height as f64,
+    )
+}
+
 struct TrackerInner {
-    bounds: CaptureRect,
+    bounds: TrackerBounds,
     keyboard_enabled: bool,
     synced_at: Option<Instant>,
     synced_system_time: Option<SystemTime>,
@@ -177,7 +257,7 @@ struct TrackerShared {
 }
 
 impl TrackerShared {
-    fn new(bounds: CaptureRect, keyboard_enabled: bool) -> Self {
+    fn new(bounds: TrackerBounds, keyboard_enabled: bool) -> Self {
         Self {
             inner: Mutex::new(TrackerInner {
                 bounds,
@@ -254,8 +334,9 @@ impl TrackerShared {
             return;
         }
 
-        let x = ((point.x - inner.bounds.x) as f64 / inner.bounds.width as f64).clamp(0.0, 1.0);
-        let y = ((point.y - inner.bounds.y) as f64 / inner.bounds.height as f64).clamp(0.0, 1.0);
+        let Some((x, y)) = inner.bounds.normalize(point) else {
+            return;
+        };
 
         if event_type == "move"
             && (x - inner.last_x).abs() < MOVEMENT_THRESHOLD
@@ -349,8 +430,8 @@ impl TrackerShared {
 
         let cursor_file = CursorFile {
             recording_area: RecordingArea {
-                width: inner.bounds.width,
-                height: inner.bounds.height,
+                width: inner.bounds.frame.width,
+                height: inner.bounds.frame.height,
             },
             events: cursor_events,
             meta: EventMeta {
@@ -397,7 +478,7 @@ pub struct InputTracker {
 }
 
 impl InputTracker {
-    pub fn start(bounds: CaptureRect, keyboard_enabled: bool) -> Result<Self, RecorderError> {
+    pub fn start(bounds: TrackerBounds, keyboard_enabled: bool) -> Result<Self, RecorderError> {
         let shared = Arc::new(TrackerShared::new(bounds, keyboard_enabled));
         let active = ACTIVE_TRACKER.get_or_init(|| Mutex::new(None));
         let mut current = active
@@ -976,6 +1057,61 @@ fn civil_date(days_since_epoch: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn rect(x: i32, y: i32, width: i32, height: i32) -> CaptureRect {
+        CaptureRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn a_moved_window_keeps_the_cursor_at_the_same_spot_in_the_frame() {
+        let frame = rect(0, 0, 800, 600);
+        let start = rect(100, 100, 800, 600);
+        let moved = rect(500, 300, 800, 600);
+
+        let before = place_in_frame(
+            relative_position(POINT { x: 500, y: 400 }, start).expect("relative"),
+            start,
+            frame,
+        );
+        let after = place_in_frame(
+            relative_position(POINT { x: 900, y: 600 }, moved).expect("relative"),
+            moved,
+            frame,
+        );
+
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn a_resized_window_places_the_cursor_inside_the_letterbox() {
+        let frame = rect(0, 0, 800, 600);
+        let narrow = rect(0, 0, 400, 600);
+
+        let centre = place_in_frame((0.5, 0.5), narrow, frame);
+        let left_edge = place_in_frame((0.0, 0.0), narrow, frame);
+
+        assert_eq!(centre, (0.5, 0.5));
+        assert_eq!(left_edge, (0.25, 0.0));
+    }
+
+    #[test]
+    fn cursor_positions_stay_inside_the_recorded_area() {
+        let area = rect(100, 100, 400, 400);
+
+        assert_eq!(
+            relative_position(POINT { x: -50, y: 5_000 }, area),
+            Some((0.0, 1.0))
+        );
+        assert_eq!(
+            relative_position(POINT { x: 0, y: 0 }, rect(0, 0, 0, 0)),
+            None
+        );
+    }
 
     #[test]
     fn modifier_state_serializes_control_alt_k_chord_in_contract_order() {

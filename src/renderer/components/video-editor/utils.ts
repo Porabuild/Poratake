@@ -1,4 +1,5 @@
 import type { Segment, VideoToTimelineResult } from './types';
+import type { CameraSegment } from '@/types/camera';
 import type { DrawingSegment } from '@/types/drawing';
 import type { ZoomSegment } from '@/types/zoom';
 import { PROJECT_EXTENSION } from '@/types/video';
@@ -20,6 +21,7 @@ export interface TimelineRangeAdjustment {
 interface TimelineRangeSliceAdjustment {
   nextSegments: Segment[];
   zoomSegments: ZoomSegment[];
+  cameraSegments: CameraSegment[];
   drawingSegments: DrawingSegment[];
   adjustment: TimelineRangeAdjustment;
   drawingMinDuration: number;
@@ -28,6 +30,7 @@ interface TimelineRangeSliceAdjustment {
 export interface AdjustedTimelineRangeSlices {
   segments: Segment[];
   zoomSegments: ZoomSegment[];
+  cameraSegments: CameraSegment[];
   drawingSegments: DrawingSegment[];
 }
 
@@ -183,6 +186,7 @@ export function adjustTimelineRanges<T extends TimelineRange>(
 export function adjustTimelineRangeSlices({
   nextSegments,
   zoomSegments,
+  cameraSegments,
   drawingSegments,
   adjustment,
   drawingMinDuration,
@@ -190,6 +194,7 @@ export function adjustTimelineRangeSlices({
   return {
     segments: nextSegments,
     zoomSegments: adjustTimelineRanges(zoomSegments, adjustment),
+    cameraSegments: adjustTimelineRanges(cameraSegments, adjustment),
     drawingSegments: adjustTimelineRanges(drawingSegments, {
       ...adjustment,
       minDuration: drawingMinDuration,

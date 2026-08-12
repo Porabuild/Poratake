@@ -19,10 +19,6 @@ function applyVariant(
   mode: 'light' | 'dark'
 ): void {
   const content = variant.content ?? mix(variant.bg, 84, variant.surface);
-  const fieldBackground =
-    mode === 'dark'
-      ? mix(variant.surface, 96, variant.fg)
-      : mix(variant.surface, 97, variant.bg);
   const fieldBorder =
     mode === 'dark'
       ? mix(variant.border, 84, variant.fg)
@@ -35,6 +31,10 @@ function applyVariant(
     mode === 'dark'
       ? mix(variant.surface, 91, variant.fg)
       : mix(variant.surface, 86, variant.fg);
+  // Dark fields sit on the button surface so they read as button-like rather
+  // than as black holes; light fields stay near the surface tone.
+  const fieldBackground =
+    mode === 'dark' ? defaultSurface : mix(variant.surface, 97, variant.bg);
   const accentHoverTarget =
     variant.accentFg.toLowerCase() === '#ffffff' ? '#000000' : '#ffffff';
   const variables: Record<string, string> = {
@@ -52,7 +52,11 @@ function applyVariant(
     '--accent-hover': mix(variant.accent, 90, accentHoverTarget),
     '--field-background': fieldBackground,
     '--field-foreground': variant.fg,
-    '--field-placeholder': mix(variant.fg, 73, variant.bg),
+    '--field-placeholder': mix(
+      variant.fg,
+      mode === 'dark' ? 82 : 73,
+      variant.bg
+    ),
     '--field-border': fieldBorder,
     '--segment': mix(variant.surface, 82, variant.bg),
     '--border': border,

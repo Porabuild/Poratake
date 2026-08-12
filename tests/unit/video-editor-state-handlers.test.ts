@@ -14,6 +14,9 @@ const mockFs = {
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
   unlinkSync: vi.fn(),
+  promises: {
+    readFile: vi.fn(),
+  },
 };
 
 const mockGetWindowData = vi.fn(() => ({ filePath: '/project/video.cap' }));
@@ -201,7 +204,7 @@ describe('video editor state handlers', () => {
 
   it('migrates v1 cursor size from sprite pixels to a percentage', async () => {
     mockFs.existsSync.mockReturnValue(true);
-    mockFs.readFileSync.mockReturnValue(
+    mockFs.promises.readFile.mockResolvedValue(
       JSON.stringify(
         createState({
           version: 1,
@@ -225,7 +228,7 @@ describe('video editor state handlers', () => {
 
   it('leaves v2 cursor size untouched', async () => {
     mockFs.existsSync.mockReturnValue(true);
-    mockFs.readFileSync.mockReturnValue(
+    mockFs.promises.readFile.mockResolvedValue(
       JSON.stringify(
         createState({
           version: 2,

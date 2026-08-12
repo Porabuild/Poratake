@@ -9,7 +9,7 @@ const mockReadFile = vi.fn();
 const mockValidateCursorData = vi.fn();
 const mockSaveCursorData = vi.fn();
 const mockBrowserWindowFromWebContents = vi.fn();
-const mockExecFileAsync = vi.fn();
+const mockProbeVideo = vi.fn();
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -32,15 +32,6 @@ vi.mock('fs', () => ({
 vi.mock('fs/promises', () => ({
   default: { readFile: (...a: unknown[]) => mockReadFile(...a) },
   readFile: (...a: unknown[]) => mockReadFile(...a),
-}));
-
-vi.mock('child_process', () => ({ execFile: vi.fn() }));
-
-vi.mock('util', () => ({
-  promisify:
-    () =>
-    (...a: unknown[]) =>
-      mockExecFileAsync(...a),
 }));
 
 vi.mock('@/main/capture/video/window-manager', () => ({
@@ -67,7 +58,7 @@ vi.mock('@/main/capture/video/recording-project', () => ({
 }));
 
 vi.mock('@/main/utils/ffmpeg', () => ({
-  getFFmpegPath: () => '/bin/ffmpeg',
+  probeVideo: (...a: unknown[]) => mockProbeVideo(...a),
 }));
 
 vi.mock('@/types/cursor', () => ({
@@ -183,11 +174,7 @@ describe('data-handlers extra', () => {
 
   it('getAudioPaths probes for embedded audio when no separate files', async () => {
     mockGetWindowData.mockReturnValue({ filePath: '/p/x.mov' });
-    mockExecFileAsync.mockRejectedValue(
-      Object.assign(new Error('fail'), {
-        stderr: '  Stream: Audio: aac, 44100 Hz',
-      })
-    );
+    mockProbeVideo.mockResolvedValue({ hasAudio: true });
     const { registerDataHandlers } =
       await import('@/main/capture/video/ipc/data-handlers');
     registerDataHandlers();
@@ -195,5 +182,23 @@ describe('data-handlers extra', () => {
       sender: { id: 1 },
     })) as { hasEmbeddedAudio: boolean };
     expect(result.hasEmbeddedAudio).toBe(true);
+    expect(mockProbeVideo).toHaveBeenCalledWith('/p/x.mov');
+  });
+
+  it('getAudioPaths reuses the editor window probe', async () => {
+    mockGetWindowData.mockReturnValue({
+      filePath: '/p/x.mov',
+      videoProbe: Promise.resolve({ hasAudio: true }),
+    });
+    const { registerDataHandlers } =
+      await import('@/main/capture/video/ipc/data-handlers');
+    registerDataHandlers();
+
+    const result = (await ipcHandle['video-editor:getAudioPaths']({
+      sender: { id: 1 },
+    })) as { hasEmbeddedAudio: boolean };
+
+    expect(result.hasEmbeddedAudio).toBe(true);
+    expect(mockProbeVideo).not.toHaveBeenCalled();
   });
 });

@@ -22,15 +22,19 @@ import {
 import Track, { type TrackSegment } from './track';
 import TrackRow from './track-row';
 import { getDrawingTrackColors } from './track-colors';
+import { SCISSORS_CURSOR } from '../utils';
 
 interface DrawingTrackProps {
   segment: DrawingSegment;
   totalDuration: number;
   selectedId: string | null;
+  isCutToolActive: boolean;
   onSelect: (id: string | null) => void;
   onResize: (id: string, startTime: number, endTime: number) => void;
   onMove: (id: string, startTime: number, endTime: number) => void;
   onGestureEnd?: () => void;
+  onCut: (id: string, cutTime: number) => void;
+  onCutAll: (cutTime: number) => void;
   onDelete: (id: string) => void;
 }
 
@@ -86,10 +90,13 @@ export default function DrawingTrack({
   segment,
   totalDuration,
   selectedId,
+  isCutToolActive,
   onSelect,
   onResize,
   onMove,
   onGestureEnd,
+  onCut,
+  onCutAll,
   onDelete,
 }: DrawingTrackProps) {
   const segments: TrackSegment[] = [
@@ -142,11 +149,24 @@ export default function DrawingTrack({
             features={{
               canMove: true,
               renderLabel,
+              allowTrackClickOnSegments: isCutToolActive,
+              toolCursor: isCutToolActive ? SCISSORS_CURSOR : undefined,
             }}
             onSelect={onSelect}
             onResize={onResize}
             onMove={onMove}
             onGestureEnd={onGestureEnd}
+            onTrackClick={
+              isCutToolActive
+                ? (time, shiftKey) => {
+                    if (shiftKey) {
+                      onCut(segment.id, time);
+                      return;
+                    }
+                    onCutAll(time);
+                  }
+                : undefined
+            }
           />
         </ContextMenuTrigger>
         <ContextMenuContent className="w-40">

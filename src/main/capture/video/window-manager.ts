@@ -8,12 +8,14 @@ import {
   titleBarWindowOptions,
   trackTitleBarTheme,
 } from '@/main/utils/title-bar';
+import { probeVideo, type VideoProbeResult } from '@/main/utils/ffmpeg';
 
 export interface VideoEditorWindowData {
   window: BrowserWindow;
   filePath: string;
   isClosingConfirmed: boolean;
   isExporting: boolean;
+  videoProbe?: Promise<VideoProbeResult | null>;
 }
 
 const videoEditorWindows = new Map<number, VideoEditorWindowData>();
@@ -42,6 +44,7 @@ export function updateWindowFilePath(
   const data = videoEditorWindows.get(webContentsId);
   if (data) {
     data.filePath = newFilePath;
+    data.videoProbe = probeVideo(newFilePath);
   }
 }
 
@@ -108,12 +111,17 @@ export function createVideoEditorWindow(
     filePath: videoPath,
     isClosingConfirmed: false,
     isExporting: false,
+    videoProbe: probeVideo(videoPath),
   });
 
   if (devServerUrl) {
-    newWindow.loadURL(devServerUrl);
+    const url = new URL(devServerUrl);
+    url.searchParams.set('window', 'video-editor');
+    newWindow.loadURL(url.toString());
   } else {
-    newWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    newWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
+      query: { window: 'video-editor' },
+    });
   }
 
   newWindow.webContents.on('did-finish-load', () => {

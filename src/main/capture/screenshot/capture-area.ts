@@ -7,7 +7,10 @@ import {
   prepareScreenshotPreview,
 } from '@/main/capture/screenshot/finalize';
 import { isMac } from '@/main/utils/platform';
-import { captureRegionToFile } from '@/main/capture/screenshot/native-capture';
+import {
+  captureRegionToFile,
+  captureWindowToFile,
+} from '@/main/capture/screenshot/native-capture';
 import {
   hideDesktopIcons,
   showDesktopIcons,
@@ -17,6 +20,7 @@ import { runScreencapture } from '@/main/capture/screenshot/screencapture';
 
 export interface CaptureAreaOptions {
   cached?: boolean;
+  windowId?: number;
   onCaptured?: () => void | Promise<void>;
 }
 
@@ -58,6 +62,25 @@ async function captureRegionWithScreencapture(
     );
     throw error;
   }
+}
+
+function captureRegion(
+  rect: AreaRect,
+  screenshotPath: string,
+  options?: CaptureAreaOptions
+): Promise<boolean> {
+  if (options?.windowId !== undefined && !options.cached) {
+    return captureWindowToFile(options.windowId, screenshotPath);
+  }
+
+  if (options?.cached === undefined) {
+    return captureRegionToFile(rect, screenshotPath);
+  }
+
+  return captureRegionToFile(rect, screenshotPath, {
+    cached: options.cached,
+    ...(options.windowId === undefined ? {} : { windowId: options.windowId }),
+  });
 }
 
 export async function captureArea(
@@ -103,12 +126,7 @@ export async function captureArea(
 
       let captured: boolean;
       try {
-        captured =
-          options?.cached === undefined
-            ? await captureRegionToFile(rect, screenshotPath)
-            : await captureRegionToFile(rect, screenshotPath, {
-                cached: options.cached,
-              });
+        captured = await captureRegion(rect, screenshotPath, options);
       } catch (error) {
         if (shouldHideIcons) {
           await showDesktopIcons('capture');

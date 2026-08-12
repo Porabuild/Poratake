@@ -41,8 +41,8 @@ export default function SpeedSelector({
         <TooltipTrigger asChild>
           <Button
             variant="ghost"
-            size="icon"
-            className="size-7"
+            size="icon-sm"
+            className="size-7!"
             onClick={handleDecrease}
             disabled={disabled || !canDecrease}
           >
@@ -65,8 +65,8 @@ export default function SpeedSelector({
         <TooltipTrigger asChild>
           <Button
             variant="ghost"
-            size="icon"
-            className="size-7"
+            size="icon-sm"
+            className="size-7!"
             onClick={handleIncrease}
             disabled={disabled || !canIncrease}
           >

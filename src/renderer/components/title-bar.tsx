@@ -80,6 +80,7 @@ interface TitleBarProps {
   editorShortcuts?: EditorShortcuts;
   isCaptureMode?: boolean;
   onCaptureClick?: () => void;
+  onWallpaperIntent?: () => void;
 }
 
 export default function TitleBar({
@@ -127,6 +128,7 @@ export default function TitleBar({
   editorShortcuts,
   isCaptureMode,
   onCaptureClick,
+  onWallpaperIntent,
 }: TitleBarProps) {
   const isMac = isMacPlatform();
   const cloudUploadHint = cloudUploadShortcut
@@ -196,6 +198,7 @@ export default function TitleBar({
           shortcuts={editorShortcuts}
           isCaptureMode={isCaptureMode}
           onCaptureClick={onCaptureClick}
+          onWallpaperIntent={onWallpaperIntent}
         />
         <Tooltip>
           <TooltipTrigger asChild>

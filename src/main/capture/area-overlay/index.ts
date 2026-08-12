@@ -6,16 +6,22 @@ import type { OverlayOptions, OverlaySelection } from './session';
 export type {
   OverlayCallbacks,
   OverlayOptions,
+  OverlayPickTarget,
   OverlayRegion,
   OverlaySelection,
 } from './session';
 
 export {
   cancelOverlaySelection,
+  concealOverlayHandoff,
   confirmOverlaySelection,
+  getActiveOverlayWindowAtPoint,
+  getOverlayWindowIds,
+  hasOverlayHandoff,
   isOverlayActive,
   prewarmAreaOverlay,
   setOverlayAspectRatio,
+  setOverlayPickTargets,
   setOverlayToolbar,
   setOverlayVisible,
   updateOverlaySelection,

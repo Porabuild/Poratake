@@ -211,10 +211,10 @@ class RecordingControlModule: Module {
         settings.micMuted = dict["micMuted"] as? Bool ?? settings.micMuted
         settings.cameraEnabled = dict["cameraEnabled"] as? Bool ?? settings.cameraEnabled
         settings.keyboardEnabled = dict["keyboardEnabled"] as? Bool ?? settings.keyboardEnabled
-        settings.selectedMicId = dict["selectedMicId"] as? String ?? settings.selectedMicId
-        settings.selectedMicName = dict["selectedMicName"] as? String ?? settings.selectedMicName
-        settings.selectedCameraId = dict["selectedCameraId"] as? String ?? settings.selectedCameraId
-        settings.selectedCameraName = dict["selectedCameraName"] as? String ?? settings.selectedCameraName
+        settings.selectedMicId = dict["selectedMicId"] as? String
+        settings.selectedMicName = dict["selectedMicName"] as? String
+        settings.selectedCameraId = dict["selectedCameraId"] as? String
+        settings.selectedCameraName = dict["selectedCameraName"] as? String
         settings.cameraSize = dict["cameraSize"] as? String ?? settings.cameraSize
         settings.cameraShape = dict["cameraShape"] as? String ?? settings.cameraShape
         settings.cameraFlipped = dict["cameraFlipped"] as? Bool ?? settings.cameraFlipped
@@ -795,33 +795,44 @@ private class RecordingControlContentView: BlurredPanelView {
     
     private func showMicMenu(from view: NSView) {
         TooltipManager.shared.hide()
-        
+
         let menu = NSMenu()
         menu.autoenablesItems = false
-        
-        let headerItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
-        headerItem.isEnabled = false
-        menu.addItem(headerItem)
-        
-        let noneItem = NSMenuItem(title: "None", action: #selector(micNoneSelected), keyEquivalent: "")
-        noneItem.target = self
-        noneItem.state = !settings.micEnabled ? .on : .off
-        menu.addItem(noneItem)
-        
+
+        let toggleItem = NSMenuItem(title: "Microphone", action: #selector(micToggleSelected), keyEquivalent: "")
+        toggleItem.target = self
+        toggleItem.state = settings.micEnabled ? .on : .off
+        menu.addItem(toggleItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let defaultItem = NSMenuItem(title: "System Default", action: #selector(micDefaultSelected), keyEquivalent: "")
+        defaultItem.target = self
+        defaultItem.state = settings.selectedMicId == nil ? .on : .off
+        menu.addItem(defaultItem)
+
         for device in micDevices {
             let item = NSMenuItem(title: device.label, action: #selector(micDeviceSelected(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = device
-            item.state = (settings.micEnabled && settings.selectedMicId == device.id) ? .on : .off
+            item.state = settings.selectedMicId == device.id ? .on : .off
             menu.addItem(item)
         }
-        
+
         let point = NSPoint(x: 0, y: view.bounds.height)
         menu.popUp(positioning: nil, at: point, in: view)
     }
-    
-    @objc private func micNoneSelected() {
-        settings.micEnabled = false
+
+    @objc private func micToggleSelected() {
+        settings.micEnabled.toggle()
+        callbacks.onToggleMic?()
+        setupContent()
+    }
+
+    @objc private func micDefaultSelected() {
+        settings.micEnabled = true
+        settings.selectedMicId = nil
+        settings.selectedMicName = nil
         callbacks.onSelectMic?(nil, nil)
         setupContent()
     }
@@ -837,33 +848,44 @@ private class RecordingControlContentView: BlurredPanelView {
     
     private func showCameraMenu(from button: IconButton) {
         TooltipManager.shared.hide()
-        
+
         let menu = NSMenu()
         menu.autoenablesItems = false
-        
-        let cameraHeader = NSMenuItem(title: "Camera", action: nil, keyEquivalent: "")
-        cameraHeader.isEnabled = false
-        menu.addItem(cameraHeader)
-        
-        let noneItem = NSMenuItem(title: "None", action: #selector(cameraNoneSelected), keyEquivalent: "")
-        noneItem.target = self
-        noneItem.state = !settings.cameraEnabled ? .on : .off
-        menu.addItem(noneItem)
-        
+
+        let toggleItem = NSMenuItem(title: "Camera", action: #selector(cameraToggleSelected), keyEquivalent: "")
+        toggleItem.target = self
+        toggleItem.state = settings.cameraEnabled ? .on : .off
+        menu.addItem(toggleItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let defaultItem = NSMenuItem(title: "System Default", action: #selector(cameraDefaultSelected), keyEquivalent: "")
+        defaultItem.target = self
+        defaultItem.state = settings.selectedCameraId == nil ? .on : .off
+        menu.addItem(defaultItem)
+
         for device in cameraDevices {
             let item = NSMenuItem(title: device.label, action: #selector(cameraDeviceSelected(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = device
-            item.state = (settings.cameraEnabled && settings.selectedCameraId == device.id) ? .on : .off
+            item.state = settings.selectedCameraId == device.id ? .on : .off
             menu.addItem(item)
         }
-        
+
         let point = NSPoint(x: 0, y: button.bounds.height)
         menu.popUp(positioning: nil, at: point, in: button)
     }
-    
-    @objc private func cameraNoneSelected() {
-        settings.cameraEnabled = false
+
+    @objc private func cameraToggleSelected() {
+        settings.cameraEnabled.toggle()
+        callbacks.onToggleCamera?()
+        setupContent()
+    }
+
+    @objc private func cameraDefaultSelected() {
+        settings.cameraEnabled = true
+        settings.selectedCameraId = nil
+        settings.selectedCameraName = nil
         callbacks.onSelectCamera?(nil, nil)
         setupContent()
     }

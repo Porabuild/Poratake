@@ -14,7 +14,7 @@ import {
   Camera,
 } from 'lucide-react';
 import UndoRedoButtons from '@/renderer/components/editor/undo-redo';
-import { WallpaperSheetTrigger } from '@/renderer/components/editor/wallpaper';
+import WallpaperSheetTrigger from '@/renderer/components/editor/wallpaper/wallpaper-sheet-trigger';
 import type { ToolType } from '@/types/editor';
 import type { EditorShortcuts } from '@/types/settings';
 import { DEFAULT_SETTINGS } from '@/types/settings';
@@ -35,6 +35,7 @@ interface ToolbarProps {
   shortcuts?: EditorShortcuts;
   isCaptureMode?: boolean;
   onCaptureClick?: () => void;
+  onWallpaperIntent?: () => void;
 }
 
 interface ToolButtonProps {
@@ -54,11 +55,14 @@ function ToolButton({
   shortcut,
   icon,
 }: ToolButtonProps) {
+  // Selected tools use the same treatment as the video editor's sidebar tabs.
+  const isActive = activeTool === tool;
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          variant={activeTool === tool ? 'default' : 'ghost'}
+          variant={isActive ? 'tertiary' : 'ghost'}
           size="icon-sm"
           className="size-7!"
           onClick={() => onToolChange(tool)}
@@ -83,6 +87,7 @@ export default function Toolbar({
   shortcuts,
   isCaptureMode,
   onCaptureClick,
+  onWallpaperIntent,
 }: ToolbarProps) {
   const s = shortcuts ?? DEFAULT_SETTINGS.shortcuts.editor;
 
@@ -183,11 +188,12 @@ export default function Toolbar({
         onClick={() => onToolChange('wallpaper')}
         isOpen={activeTool === 'wallpaper'}
         shortcut={s.wallpaper}
+        onIntent={onWallpaperIntent}
       />
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
-            variant={isCaptureMode ? 'default' : 'ghost'}
+            variant={isCaptureMode ? 'tertiary' : 'ghost'}
             size="icon-sm"
             className="size-7!"
             onClick={onCaptureClick}

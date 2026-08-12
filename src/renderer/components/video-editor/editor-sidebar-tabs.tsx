@@ -10,13 +10,16 @@ import {
   ZoomIn,
   Wallpaper,
 } from 'lucide-react';
+import { Button } from '@/renderer/components/ui/button';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/renderer/components/ui/tooltip';
-import { cn } from '@/renderer/lib/utils';
-import type { SidebarTab } from './editor-sidebar';
+import {
+  preloadEditorSidebarTab,
+  type SidebarTab,
+} from './editor-sidebar-panel-loaders';
 import type { VideoEditorSidebarShortcuts } from '@/types/settings';
 import { DEFAULT_SETTINGS } from '@/types/settings';
 
@@ -24,20 +27,18 @@ interface TabItem {
   id: SidebarTab;
   label: string;
   icon: React.ReactNode;
-  disabled?: boolean;
 }
 
 interface EditorSidebarTabsProps {
-  activeTab: SidebarTab;
+  /** Null while the sidebar is closed, so no tab reads as selected. */
+  activeTab: SidebarTab | null;
   onTabChange: (tab: SidebarTab) => void;
-  isZoomDisabled: boolean;
   shortcuts?: VideoEditorSidebarShortcuts;
 }
 
 export default function EditorSidebarTabs({
   activeTab,
   onTabChange,
-  isZoomDisabled,
   shortcuts,
 }: EditorSidebarTabsProps) {
   const sidebarShortcuts =
@@ -58,7 +59,6 @@ export default function EditorSidebarTabs({
       id: 'zoom',
       label: 'Zoom',
       icon: <ZoomIn className="size-4" />,
-      disabled: isZoomDisabled,
     },
     { id: 'drawing', label: 'Drawing', icon: <PenLine className="size-4" /> },
     { id: 'camera', label: 'Camera', icon: <Camera className="size-4" /> },
@@ -93,19 +93,16 @@ export default function EditorSidebarTabs({
         return (
           <Tooltip key={tab.id}>
             <TooltipTrigger asChild>
-              <button
-                onClick={() => !tab.disabled && onTabChange(tab.id)}
-                disabled={tab.disabled}
-                className={cn(
-                  'flex size-8 items-center justify-center rounded-md transition-colors',
-                  activeTab === tab.id
-                    ? 'bg-accent text-accent-foreground'
-                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-                  tab.disabled && 'cursor-not-allowed opacity-50'
-                )}
+              <Button
+                variant={activeTab === tab.id ? 'tertiary' : 'ghost'}
+                size="icon-sm"
+                className="size-8!"
+                onMouseEnter={() => preloadEditorSidebarTab(tab.id)}
+                onFocus={() => preloadEditorSidebarTab(tab.id)}
+                onClick={() => onTabChange(tab.id)}
               >
                 {tab.icon}
-              </button>
+              </Button>
             </TooltipTrigger>
             <TooltipContent side="left" sideOffset={8}>
               {tab.label}

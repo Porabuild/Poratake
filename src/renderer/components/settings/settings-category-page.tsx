@@ -51,7 +51,7 @@ export default function SettingsCategoryPage({
         </h1>
 
         {isShortcutsCategory && (
-          <label className="border-border bg-background text-muted-foreground focus-within:border-ring focus-within:text-foreground flex h-8 w-64 items-center gap-2 rounded-lg border px-2.5 transition-colors">
+          <label className="bg-field text-muted-foreground focus-within:text-foreground rounded-field flex h-8 w-64 items-center gap-2 border-0 px-2.5 transition-colors">
             <Search className="size-3.5 shrink-0" />
             <input
               value={shortcutSearchQuery}

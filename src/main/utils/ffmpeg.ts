@@ -166,7 +166,9 @@ export interface VideoProbeResult {
   hasAudio: boolean;
 }
 
-export async function probeVideo(
+const pendingVideoProbes = new Map<string, Promise<VideoProbeResult | null>>();
+
+async function runVideoProbe(
   videoPath: string
 ): Promise<VideoProbeResult | null> {
   if (!fs.existsSync(videoPath)) return null;
@@ -217,6 +219,21 @@ export async function probeVideo(
   } catch {
     return null;
   }
+}
+
+export function probeVideo(
+  videoPath: string
+): Promise<VideoProbeResult | null> {
+  const pending = pendingVideoProbes.get(videoPath);
+  if (pending) return pending;
+
+  const probe = runVideoProbe(videoPath).finally(() => {
+    if (pendingVideoProbes.get(videoPath) === probe) {
+      pendingVideoProbes.delete(videoPath);
+    }
+  });
+  pendingVideoProbes.set(videoPath, probe);
+  return probe;
 }
 
 export interface TrimOptions {

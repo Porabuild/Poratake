@@ -142,7 +142,9 @@ fn is_cloaked(window: HWND) -> bool {
     result.is_ok() && cloaked != 0
 }
 
-fn window_bounds(window: HWND) -> Option<RECT> {
+/// The frame Windows actually paints, which excludes the invisible resize
+/// border `GetWindowRect` reports and matches what Graphics Capture hands back.
+pub fn window_bounds(window: HWND) -> Option<RECT> {
     let mut rect = RECT::default();
     let result = unsafe {
         DwmGetWindowAttribute(
@@ -549,6 +551,26 @@ impl Module for WindowSelectorModule {
 
     fn handle(&mut self, request: &Request) -> Reply {
         match request.method.as_str() {
+            "list" => {
+                let windows: Vec<serde_json::Value> = collect_target_windows()
+                    .iter()
+                    .map(|target| {
+                        json!({
+                            "windowId": target.window_id as i64,
+                            "title": target.title.as_str(),
+                            "ownerName": target.owner_name.as_str(),
+                            "ownerPid": target.owner_pid,
+                            "bounds": {
+                                "x": target.rect.left,
+                                "y": target.rect.top,
+                                "width": rect_width(&target.rect),
+                                "height": rect_height(&target.rect),
+                            },
+                        })
+                    })
+                    .collect();
+                Reply::Now(Ok(Some(json!({ "windows": windows }))))
+            }
             "select" => {
                 {
                     let Ok(mut pending) = self.pending.lock() else {

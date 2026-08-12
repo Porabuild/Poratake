@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { Camera, Pipette, ScanText, Video, X } from 'lucide-react';
+import CaptureTargetMenu from './capture-target-menu';
 import ToolbarButton from './toolbar-button';
 import ToolbarSurface from './toolbar-surface';
 import {
@@ -17,6 +18,7 @@ import {
 import type {
   AreaOverlayToolbarAction,
   AllInOneCaptureMode,
+  AllInOneCaptureTarget,
 } from '@/types/area-overlay';
 
 interface EyeDropperResult {
@@ -44,12 +46,14 @@ export default function AllInOneToolbar({
   recordingEnabled,
   ocrEnabled,
   activeMode,
+  activeTarget,
   onAction,
   onPickingColorChange,
 }: {
   recordingEnabled: boolean;
   ocrEnabled: boolean;
   activeMode: AllInOneCaptureMode;
+  activeTarget: AllInOneCaptureTarget;
   onAction: (action: AreaOverlayToolbarAction) => void;
   onPickingColorChange: (active: boolean) => void;
 }) {
@@ -59,6 +63,12 @@ export default function AllInOneToolbar({
   const selectMode = useCallback(
     (mode: AllInOneCaptureMode) =>
       onAction({ action: 'select-capture-mode', mode }),
+    [onAction]
+  );
+
+  const selectTarget = useCallback(
+    (target: AllInOneCaptureTarget) =>
+      onAction({ action: 'select-capture-target', target }),
     [onAction]
   );
 
@@ -104,14 +114,14 @@ export default function AllInOneToolbar({
           value={activeMode === 'ocr' ? '' : activeMode}
           onValueChange={selectCaptureTab}
         >
-          <TabsListContainer className="bg-muted-foreground/10 rounded-xl">
-            <TabsList className="p-0.5">
+          <TabsListContainer className="bg-muted-foreground/10 rounded-3xl">
+            <TabsList className="p-0">
               <TabsTrigger
                 value="screenshot"
                 aria-label="Screenshot"
-                className="text-muted-foreground/60 hover:text-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground data-[focus-visible=true]:outline-muted-foreground flex size-8 items-center justify-center rounded-lg p-0"
+                className="text-muted-foreground/60 hover:text-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground data-[focus-visible=true]:outline-muted-foreground flex size-8 items-center justify-center rounded-3xl p-0"
               >
-                <TabsIndicator className="bg-muted-foreground/25 rounded-lg shadow-none" />
+                <TabsIndicator className="bg-muted-foreground/25 rounded-3xl shadow-none" />
                 <Camera className="size-4" />
                 <span className="sr-only">Screenshot</span>
               </TabsTrigger>
@@ -119,9 +129,9 @@ export default function AllInOneToolbar({
                 <TabsTrigger
                   value="record"
                   aria-label="Record"
-                  className="text-muted-foreground/60 hover:text-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground data-[focus-visible=true]:outline-muted-foreground flex size-8 items-center justify-center rounded-lg p-0"
+                  className="text-muted-foreground/60 hover:text-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground data-[focus-visible=true]:outline-muted-foreground flex size-8 items-center justify-center rounded-3xl p-0"
                 >
-                  <TabsIndicator className="bg-muted-foreground/25 rounded-lg shadow-none" />
+                  <TabsIndicator className="bg-muted-foreground/25 rounded-3xl shadow-none" />
                   <Video className="size-4" />
                   <span className="sr-only">Record</span>
                 </TabsTrigger>
@@ -129,6 +139,9 @@ export default function AllInOneToolbar({
             </TabsList>
           </TabsListContainer>
         </Tabs>
+        {activeMode === 'ocr' ? null : (
+          <CaptureTargetMenu target={activeTarget} onSelect={selectTarget} />
+        )}
         <div className="bg-border/70 mx-0.5 h-5 w-px" />
         {ocrEnabled ? (
           <Tooltip>

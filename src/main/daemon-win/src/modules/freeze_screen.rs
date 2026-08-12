@@ -1,4 +1,6 @@
-use crate::desktop_frame::{capture_monitors, clear_frozen, store_frozen, to_hbitmap};
+use crate::desktop_frame::{
+    capture_monitors, clear_frozen, prewarm_capture, store_frozen, to_hbitmap,
+};
 use crate::overlay::{
     add_key_handler, create_popup_window, default_wndproc, disable_window_transitions,
     ensure_window_class, remove_key_handler,
@@ -215,6 +217,10 @@ impl Module for FreezeScreenModule {
                 });
 
                 Reply::Deferred
+            }
+            "prewarm" => {
+                prewarm_capture();
+                Reply::Now(Ok(Some(json!({ "prewarmed": true }))))
             }
             "release" => {
                 let frozen = self.frozen.clone();

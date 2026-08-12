@@ -93,7 +93,13 @@ describe('history popover', () => {
   it('showHistoryPopover positions near tray bounds when supplied', async () => {
     const m = await import('@/main/history/popover');
     m.showHistoryPopover({ x: 1000, y: 0, width: 40, height: 40 });
-    expect(browserWindows[0].setPosition).toHaveBeenCalledWith(820, 44);
+    expect(browserWindows[0].setPosition).toHaveBeenCalledWith(820, 48);
+  });
+
+  it('showHistoryPopover leaves a gap above a bottom taskbar', async () => {
+    const m = await import('@/main/history/popover');
+    m.showHistoryPopover({ x: 1000, y: 1080, width: 40, height: 40 });
+    expect(browserWindows[0].setPosition).toHaveBeenCalledWith(820, 572);
   });
 
   it('closeHistoryPopover closes the window', async () => {

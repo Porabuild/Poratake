@@ -1,5 +1,7 @@
 import { Minus, Plus } from 'lucide-react';
 
+import { Button } from '@/renderer/components/ui/button';
+
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 4;
 export const MAX_FIT_ZOOM = 2;
@@ -20,34 +22,39 @@ export default function ZoomControl({
 }: ZoomControlProps) {
   const zoomPercentage = Math.round(zoom * 100);
 
+  // `rounded-3xl` is the button radius here: HeroUI maps the radius scale onto --radius.
   return (
     <div
-      className="bg-background border-border fixed right-4 bottom-4 flex items-center gap-1 rounded-lg border p-1 shadow-lg"
+      className="bg-surface/90 fixed right-4 bottom-4 flex items-center gap-0.5 rounded-3xl p-1 shadow-lg backdrop-blur-md"
       style={{ zIndex: 9999999 }}
     >
-      <button
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={onZoomOut}
-        className="hover:bg-accent flex size-7 items-center justify-center rounded transition-colors disabled:opacity-50"
         disabled={zoom <= MIN_ZOOM}
         title="Zoom Out"
       >
-        <Minus className="size-4" />
-      </button>
-      <button
+        <Minus className="size-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
         onClick={onZoomReset}
-        className="hover:bg-accent text-muted-foreground min-w-14 rounded px-2 py-1 text-xs font-medium transition-colors"
         title="Reset Zoom"
+        className="text-muted-foreground min-w-14 tabular-nums"
       >
         {zoomPercentage}%
-      </button>
-      <button
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={onZoomIn}
-        className="hover:bg-accent flex size-7 items-center justify-center rounded transition-colors disabled:opacity-50"
         disabled={zoom >= MAX_ZOOM}
         title="Zoom In"
       >
-        <Plus className="size-4" />
-      </button>
+        <Plus className="size-3.5" />
+      </Button>
     </div>
   );
 }

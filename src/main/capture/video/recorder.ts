@@ -1,7 +1,11 @@
 import { app, screen } from 'electron';
 import path from 'path';
 import { existsSync } from 'fs';
-import { showRecordingOverlay, hideRecordingOverlay } from './overlay.ts';
+import {
+  hideRecordingOverlay,
+  showRecordedWindowOutline,
+  showRecordingOverlay,
+} from './overlay.ts';
 import {
   showRecordingTray,
   hideRecordingTray,
@@ -20,6 +24,8 @@ import {
 } from '@/types/video';
 import { daemon } from '@/main/daemon';
 import { isWindows } from '@/main/utils/platform';
+
+const RECORDING_TARGET_CLOSED = 'TARGET_CLOSED';
 
 let recorderState: RecorderState = 'idle';
 let currentRecordingPath: string | null = null;
@@ -163,7 +169,9 @@ async function startRecording(
   config: RecordingConfig,
   showControl: () => void | Promise<void>,
   hideControl?: () => void | Promise<void>,
-  onFailure?: RecordingFailureHandler
+  onFailure?: RecordingFailureHandler,
+  skipRecordingOverlay = false,
+  onTargetClosed?: () => void
 ): Promise<void> {
   if (pendingFailureCleanup) {
     await pendingFailureCleanup;
@@ -223,6 +231,12 @@ async function startRecording(
       return;
     }
 
+    if (error.code === RECORDING_TARGET_CLOSED && onTargetClosed) {
+      clearRecordingErrorListener(generation);
+      onTargetClosed();
+      return;
+    }
+
     const cleanup = handleTerminalRecordingError(generation, error, onFailure);
     pendingFailureCleanup = cleanup;
     const clearPendingCleanup = () => {
@@ -250,6 +264,7 @@ async function startRecording(
             width: nativeBounds?.width ?? config.width,
             height: nativeBounds?.height ?? config.height,
             displayId: config.displayId,
+            windowId: config.windowId,
             includeAudio: config.includeAudio ?? true,
             micEnabled: config.micEnabled ?? false,
             micDeviceId: config.micDeviceId,
@@ -266,16 +281,20 @@ async function startRecording(
           60000
         )
       ),
-      Promise.resolve().then(() =>
-        nativeBounds && !isIOSRecording
-          ? showRecordingOverlay(
-              nativeBounds.x,
-              nativeBounds.y,
-              nativeBounds.width,
-              nativeBounds.height
-            )
-          : undefined
-      ),
+      Promise.resolve().then(() => {
+        if (config.windowId !== undefined) {
+          return showRecordedWindowOutline(config.windowId);
+        }
+        if (!nativeBounds || isIOSRecording || skipRecordingOverlay) {
+          return undefined;
+        }
+        return showRecordingOverlay(
+          nativeBounds.x,
+          nativeBounds.y,
+          nativeBounds.width,
+          nativeBounds.height
+        );
+      }),
     ] as const);
     pendingStartup = startup;
     const [startResult, overlayResult] = await Promise.race([
@@ -326,13 +345,22 @@ export function startRecordingWithConfig(
   config: RecordingConfig,
   showControl: () => void | Promise<void>,
   hideControl?: () => void | Promise<void>,
-  onFailure?: RecordingFailureHandler
+  onFailure?: RecordingFailureHandler,
+  skipRecordingOverlay = false,
+  onTargetClosed?: () => void
 ): Promise<void> {
   if (pendingStart) {
     return Promise.reject(new Error('A recording is already active'));
   }
 
-  const start = startRecording(config, showControl, hideControl, onFailure);
+  const start = startRecording(
+    config,
+    showControl,
+    hideControl,
+    onFailure,
+    skipRecordingOverlay,
+    onTargetClosed
+  );
   pendingStart = start;
 
   return start.finally(() => {

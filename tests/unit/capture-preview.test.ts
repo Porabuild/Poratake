@@ -18,6 +18,9 @@ const mockNativeImageCreateFromBuffer = vi.fn(() => ({ image: true }));
 const mockNativeImageCreateFromPath = vi.fn(() => ({
   resize: () => ({ image: true }),
 }));
+const mockNativeImageCreateFromDataURL = vi.fn(() => ({
+  isEmpty: () => false,
+}));
 
 class MockBrowserWindow {
   static webContentsCounter = 0;
@@ -112,6 +115,8 @@ vi.mock('electron', () => ({
     createFromBuffer: (...a: unknown[]) =>
       mockNativeImageCreateFromBuffer(...a),
     createFromPath: (...a: unknown[]) => mockNativeImageCreateFromPath(...a),
+    createFromDataURL: (...a: unknown[]) =>
+      mockNativeImageCreateFromDataURL(...a),
   },
 }));
 
@@ -715,6 +720,70 @@ describe('capture-preview index', () => {
       const id = browserWindows[0].webContents.id;
       ipcOn['capture-preview:copy']({ sender: { id } });
       expect(mockClipboardWriteImage).not.toHaveBeenCalled();
+    });
+
+    it('get-source-image returns a data URL for screenshots', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/img.jpg', 'screenshot');
+      const id = browserWindows[0].webContents.id;
+
+      const result = ipcHandle['capture-preview:get-source-image']({
+        sender: { id },
+      });
+
+      expect(result).toBe(
+        `data:image/jpeg;base64,${Buffer.from('image').toString('base64')}`
+      );
+    });
+
+    it('get-source-image returns null for videos', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/v.mov', 'video');
+      const id = browserWindows[0].webContents.id;
+
+      expect(
+        ipcHandle['capture-preview:get-source-image']({ sender: { id } })
+      ).toBeNull();
+    });
+
+    it('copy-composited writes the rendered image and closes the preview', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/img.png', 'screenshot');
+      const id = browserWindows[0].webContents.id;
+
+      const result = ipcHandle['capture-preview:copy-composited'](
+        { sender: { id } },
+        'data:image/png;base64,abc'
+      );
+
+      expect(result).toBe(true);
+      expect(mockNativeImageCreateFromDataURL).toHaveBeenCalledWith(
+        'data:image/png;base64,abc'
+      );
+      expect(mockClipboardWriteImage).toHaveBeenCalled();
+      expect(browserWindows[0].close).toHaveBeenCalled();
+    });
+
+    it('copy-composited ignores an empty image', async () => {
+      mockNativeImageCreateFromDataURL.mockReturnValueOnce({
+        isEmpty: () => true,
+      });
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/img.png', 'screenshot');
+      const id = browserWindows[0].webContents.id;
+
+      const result = ipcHandle['capture-preview:copy-composited'](
+        { sender: { id } },
+        'data:image/png;base64,abc'
+      );
+
+      expect(result).toBe(false);
+      expect(mockClipboardWriteImage).not.toHaveBeenCalled();
+      expect(browserWindows[0].close).not.toHaveBeenCalled();
     });
 
     it('open-editor opens screenshot editor for screenshots', async () => {

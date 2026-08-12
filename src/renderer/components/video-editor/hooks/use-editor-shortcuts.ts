@@ -5,10 +5,12 @@ import type { SidebarTab } from '../editor-sidebar';
 interface UseEditorShortcutsProps {
   selectedSegmentId: string | null;
   selectedZoomId: string | null;
+  selectedCameraId: string | null;
   selectedDrawingId: string | null;
   segmentsLength: number;
   onDeleteSegment: () => void;
   onDeleteZoom: (id: string) => void;
+  onDeleteCamera: (id: string) => void;
   onDeleteDrawing: () => void;
   onDeleteVideo: () => void;
   onTogglePlayPause: () => void;
@@ -35,10 +37,12 @@ const LONG_STEP = 5;
 export function useEditorShortcuts({
   selectedSegmentId,
   selectedZoomId,
+  selectedCameraId,
   selectedDrawingId,
   segmentsLength,
   onDeleteSegment,
   onDeleteZoom,
+  onDeleteCamera,
   onDeleteDrawing,
   onDeleteVideo,
   onTogglePlayPause,
@@ -58,11 +62,16 @@ export function useEditorShortcuts({
   onSeekTimeline,
 }: UseEditorShortcutsProps): void {
   const selectedZoomIdRef = useRef<string | null>(selectedZoomId);
+  const selectedCameraIdRef = useRef<string | null>(selectedCameraId);
   const selectedDrawingIdRef = useRef<string | null>(selectedDrawingId);
 
   useEffect(() => {
     selectedZoomIdRef.current = selectedZoomId;
   }, [selectedZoomId]);
+
+  useEffect(() => {
+    selectedCameraIdRef.current = selectedCameraId;
+  }, [selectedCameraId]);
 
   useEffect(() => {
     selectedDrawingIdRef.current = selectedDrawingId;
@@ -102,6 +111,12 @@ export function useEditorShortcuts({
         if (currentZoomId) {
           e.preventDefault();
           onDeleteZoom(currentZoomId);
+          return;
+        }
+        const currentCameraId = selectedCameraIdRef.current;
+        if (currentCameraId) {
+          e.preventDefault();
+          onDeleteCamera(currentCameraId);
           return;
         }
         const currentDrawingId = selectedDrawingIdRef.current;
@@ -232,6 +247,7 @@ export function useEditorShortcuts({
       segmentsLength,
       onDeleteSegment,
       onDeleteZoom,
+      onDeleteCamera,
       onDeleteDrawing,
       onDeleteVideo,
       onEscape,

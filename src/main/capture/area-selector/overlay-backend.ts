@@ -2,37 +2,54 @@ import { screen } from 'electron';
 import type { Rectangle } from 'electron';
 import type { AreaSelection } from '@/types/area';
 import type { AspectRatio } from '@/types/aspect-ratio';
-import {
-  displayFromSelection,
-  selectDisplay,
-} from '@/main/capture/display-selector';
-import { selectWindow } from '@/main/capture/window-selector';
+import { listWindows } from '@/main/capture/window-selector';
 import {
   cancelOverlaySelection,
+  concealOverlayHandoff,
   confirmOverlaySelection,
+  getOverlayWindowIds,
+  hasOverlayHandoff,
   isOverlayActive,
   setOverlayAspectRatio,
+  setOverlayPickTargets,
   setOverlayVisible,
   startInteractiveOverlay,
   updateOverlaySelection,
 } from '@/main/capture/area-overlay';
-import type { OverlayRegion } from '@/main/capture/area-overlay';
+import type {
+  OverlayPickTarget,
+  OverlayRegion,
+} from '@/main/capture/area-overlay';
 import { isWindows } from '@/main/utils/platform';
-import type { PresetArea, StartAreaSelectionOptions } from './types';
+import type {
+  AreaSelectionMode,
+  ConfirmAreaSelectionOptions,
+  PresetArea,
+  StartAreaSelectionOptions,
+} from './types';
 
 let pendingAreaSelection: AreaSelection | null = null;
 let callbacks: StartAreaSelectionOptions | undefined;
+let pickedWindowNames: Map<number, string> | null = null;
 
 function toAreaSelection(
   region: OverlayRegion,
   status: AreaSelection['status']
 ): AreaSelection {
+  const windowId =
+    region.pickId !== undefined && pickedWindowNames?.has(region.pickId)
+      ? region.pickId
+      : undefined;
+
   return {
     status,
     x: region.rect.x,
     y: region.rect.y,
     width: region.rect.width,
     height: region.rect.height,
+    windowId,
+    windowName:
+      windowId === undefined ? undefined : pickedWindowNames?.get(windowId),
   };
 }
 
@@ -42,57 +59,100 @@ export function updateAreaSelectionCallbacks(
   callbacks = options;
 }
 
-async function resolvePreset(
+interface ResolvedStart {
+  preset?: Rectangle;
+  pickTargets?: OverlayPickTarget[];
+  windowNames?: Map<number, string>;
+  prompt?: string;
+}
+
+async function resolveWindowTargets(): Promise<ResolvedStart | null> {
+  const overlayWindowIds = getOverlayWindowIds();
+  const windows = (await listWindows()).filter(
+    window => !overlayWindowIds.has(window.windowId)
+  );
+
+  if (windows.length === 0) {
+    console.error('Window selection failed: no visible windows found');
+    return null;
+  }
+
+  return {
+    pickTargets: windows.map(window => ({
+      id: window.windowId,
+      rect: isWindows
+        ? screen.screenToDipRect(null, window.bounds)
+        : window.bounds,
+    })),
+    windowNames: new Map(
+      windows.map(window => [window.windowId, window.title || window.ownerName])
+    ),
+    prompt: 'Click a window to select it · Esc to cancel',
+  };
+}
+
+function resolveDisplayTargets(): ResolvedStart {
+  return {
+    pickTargets: screen.getAllDisplays().map(display => ({
+      id: display.id,
+      rect: display.bounds,
+    })),
+    prompt: 'Click a display to select it · Esc to cancel',
+  };
+}
+
+async function resolveStart(
   options?: StartAreaSelectionOptions
-): Promise<Rectangle | null | undefined> {
+): Promise<ResolvedStart | null> {
   const mode = options?.mode ?? 'manual';
 
   if (mode === 'manual') {
-    return options?.preset;
+    return { preset: options?.preset };
   }
 
   if (mode === 'window') {
-    const windowSelection = await selectWindow();
-
-    if (windowSelection.status === 'cancelled') {
-      return null;
-    }
-
-    if (windowSelection.status === 'error' || !windowSelection.bounds) {
-      console.error('Window selection failed:', windowSelection);
-      return null;
-    }
-
-    return isWindows
-      ? screen.screenToDipRect(null, windowSelection.bounds)
-      : windowSelection.bounds;
+    return resolveWindowTargets();
   }
 
   if (screen.getAllDisplays().length === 1) {
-    return screen.getPrimaryDisplay().bounds;
+    return { preset: screen.getPrimaryDisplay().bounds };
   }
 
-  const displaySelection = await selectDisplay();
-  const display = displayFromSelection(displaySelection);
+  return resolveDisplayTargets();
+}
 
-  return display ? display.bounds : null;
+async function resolveModeSwitch(
+  mode: AreaSelectionMode
+): Promise<ResolvedStart | null> {
+  switch (mode) {
+    case 'window':
+      return resolveWindowTargets();
+    case 'display':
+      return resolveDisplayTargets();
+    case 'manual':
+      return {};
+  }
 }
 
 export async function startAreaSelection(
   options?: StartAreaSelectionOptions
 ): Promise<AreaSelection | null> {
-  const preset = await resolvePreset(options);
+  const resolved = await resolveStart(options);
 
-  if (preset === null || isOverlayActive()) {
+  if (resolved === null || isOverlayActive()) {
     return null;
   }
 
   callbacks = options;
   pendingAreaSelection = null;
+  pickedWindowNames = resolved.windowNames ?? null;
 
   const selection = await startInteractiveOverlay({
     freeze: options?.freeze,
-    preset,
+    visible: resolved.pickTargets ? true : options?.visible,
+    preset: resolved.preset,
+    pickTargets: resolved.pickTargets,
+    prompt: resolved.prompt,
     showPrompt: options?.showPrompt ?? true,
     toolbar: options?.toolbar ?? null,
     callbacks: {
@@ -129,7 +189,9 @@ export async function startAreaSelection(
   }
 }
 
-export async function confirmAreaSelection(): Promise<AreaSelection | null> {
+export async function confirmAreaSelection(
+  options?: ConfirmAreaSelectionOptions
+): Promise<AreaSelection | null> {
   if (!pendingAreaSelection) {
     return null;
   }
@@ -139,9 +201,17 @@ export async function confirmAreaSelection(): Promise<AreaSelection | null> {
     status: 'confirmed',
   };
   pendingAreaSelection = null;
-  confirmOverlaySelection();
+  confirmOverlaySelection(options?.keepOverlayVisible ?? false);
 
   return selection;
+}
+
+export function concealAreaSelectorOverlay(): void {
+  concealOverlayHandoff();
+}
+
+export function hasVisibleSelectorOverlay(): boolean {
+  return hasOverlayHandoff();
 }
 
 export async function cancelAreaSelection(
@@ -171,6 +241,23 @@ export async function updateAreaSelection(
   }
 
   return updateOverlaySelection(bounds);
+}
+
+export async function setAreaSelectionMode(
+  mode: AreaSelectionMode
+): Promise<void> {
+  if (!isOverlayActive()) {
+    return;
+  }
+
+  const resolved = await resolveModeSwitch(mode);
+  if (!resolved || !isOverlayActive()) {
+    return;
+  }
+
+  pendingAreaSelection = null;
+  pickedWindowNames = resolved.windowNames ?? null;
+  setOverlayPickTargets(resolved.pickTargets ?? null, resolved.prompt ?? null);
 }
 
 export async function setAreaSelectorAspectRatio(

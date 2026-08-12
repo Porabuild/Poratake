@@ -5,9 +5,10 @@ use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 use windows::core::PCWSTR;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
@@ -43,6 +44,10 @@ const AAC_BLOCK_ALIGN: u32 = AAC_CHANNELS * AAC_BITS_PER_SAMPLE / 8;
 const CAPTURE_WAIT_MS: u32 = 100;
 const SILENCE_CHUNK_FRAMES: u32 = 4_096;
 const MAX_PENDING_AUDIO_BYTES: usize = 16 * 1024 * 1024;
+const SYSTEM_AUDIO_FILE: &str = "system.m4a";
+const MICROPHONE_AUDIO_FILE: &str = "mic.m4a";
+const IDLE_COMMAND_WAIT: Duration = Duration::from_millis(CAPTURE_WAIT_MS as u64);
+const RECONFIGURE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 pub(super) enum AudioKind {
@@ -59,7 +64,14 @@ impl AudioKind {
     }
 }
 
+#[derive(Clone, Default, Debug, Eq, PartialEq)]
+pub struct AudioDevice {
+    pub id: Option<String>,
+    pub name: Option<String>,
+}
+
 enum AudioCommand {
+    Reconfigure(Option<AudioDevice>, Sender<Result<(), RecorderError>>),
     Stop(f64),
     Abort,
 }
@@ -178,72 +190,121 @@ struct AudioSegment {
 }
 
 pub struct AudioCaptureSet {
+    parent: PathBuf,
+    clock: Arc<Mutex<AudioClockState>>,
+    mic_muted: Arc<AtomicBool>,
     system: Option<AudioTrack>,
     microphone: Option<AudioTrack>,
 }
 
 impl AudioCaptureSet {
     pub fn start(config: &RecordingConfig, mic_muted: bool) -> Result<Self, RecorderError> {
-        let parent = config.output_path.parent().ok_or_else(|| {
-            RecorderError::configuration("Recording output has no parent directory")
-        })?;
-        let mut system = None;
-
-        if config.include_audio {
-            system = Some(AudioTrack::start(
-                AudioKind::System,
-                parent.join("system.m4a"),
-                None,
-                None,
-                false,
-            )?);
-        }
-
-        let microphone = if config.mic_enabled {
-            match AudioTrack::start(
-                AudioKind::Microphone,
-                parent.join("mic.m4a"),
-                config.mic_device_id.clone(),
-                config.mic_device_name.clone(),
-                mic_muted,
-            ) {
-                Ok(track) => Some(track),
-                Err(error) => {
-                    if let Some(track) = system.take() {
-                        track.abort();
-                    }
-                    return Err(error);
-                }
-            }
-        } else {
-            None
+        let parent = config
+            .output_path
+            .parent()
+            .ok_or_else(|| {
+                RecorderError::configuration("Recording output has no parent directory")
+            })?
+            .to_path_buf();
+        let mut set = Self {
+            parent,
+            clock: Arc::new(Mutex::new(AudioClockState::default())),
+            mic_muted: Arc::new(AtomicBool::new(mic_muted)),
+            system: None,
+            microphone: None,
         };
 
-        Ok(Self { system, microphone })
+        if let Err(error) = set.open_initial_tracks(config) {
+            set.abort_tracks();
+            return Err(error);
+        }
+
+        Ok(set)
+    }
+
+    fn open_initial_tracks(&mut self, config: &RecordingConfig) -> Result<(), RecorderError> {
+        if config.include_audio {
+            self.set_system_audio(true)?;
+        }
+        if !config.mic_enabled {
+            return Ok(());
+        }
+        self.set_microphone(Some(AudioDevice {
+            id: config.mic_device_id.clone(),
+            name: config.mic_device_name.clone(),
+        }))
     }
 
     pub fn sync_with_first_frame(&self, source_time: i64) {
-        for track in self.tracks() {
-            track.sync(source_time);
+        if let Ok(mut clock) = self.clock.lock() {
+            clock.sync(source_time);
         }
     }
 
     pub fn pause(&self, source_time: i64) {
-        for track in self.tracks() {
-            track.pause(source_time);
+        if let Ok(mut clock) = self.clock.lock() {
+            clock.pause(source_time);
         }
     }
 
     pub fn resume(&self, source_time: i64) {
-        for track in self.tracks() {
-            track.resume(source_time);
+        if let Ok(mut clock) = self.clock.lock() {
+            clock.resume(source_time);
         }
     }
 
     pub fn set_mic_muted(&self, muted: bool) {
-        if let Some(microphone) = &self.microphone {
-            microphone.set_muted(muted);
+        self.mic_muted.store(muted, Ordering::Release);
+    }
+
+    pub fn set_microphone(&mut self, device: Option<AudioDevice>) -> Result<(), RecorderError> {
+        if let Some(track) = &self.microphone {
+            return track.reconfigure(device);
         }
+
+        let Some(device) = device else {
+            return Ok(());
+        };
+        self.microphone = Some(self.open_track(
+            AudioKind::Microphone,
+            MICROPHONE_AUDIO_FILE,
+            device,
+            self.mic_muted.clone(),
+        )?);
+        Ok(())
+    }
+
+    pub fn set_system_audio(&mut self, enabled: bool) -> Result<(), RecorderError> {
+        if let Some(track) = &self.system {
+            return track.reconfigure(enabled.then(AudioDevice::default));
+        }
+
+        if !enabled {
+            return Ok(());
+        }
+        self.system = Some(self.open_track(
+            AudioKind::System,
+            SYSTEM_AUDIO_FILE,
+            AudioDevice::default(),
+            Arc::new(AtomicBool::new(false)),
+        )?);
+        Ok(())
+    }
+
+    fn open_track(
+        &self,
+        kind: AudioKind,
+        file_name: &str,
+        device: AudioDevice,
+        muted: Arc<AtomicBool>,
+    ) -> Result<AudioTrack, RecorderError> {
+        AudioTrack::start(
+            kind,
+            self.parent.join(file_name),
+            device,
+            self.clock.clone(),
+            muted,
+        )
     }
 
     pub fn try_error(&self) -> Option<RecorderError> {
@@ -279,6 +340,10 @@ impl AudioCaptureSet {
     }
 
     pub fn abort(mut self) {
+        self.abort_tracks();
+    }
+
+    fn abort_tracks(&mut self) {
         if let Some(track) = self.system.take() {
             track.abort();
         }
@@ -311,38 +376,31 @@ struct AudioTrack {
     completion: Receiver<Result<StagedAsset, RecorderError>>,
     health: Receiver<RecorderError>,
     thread: Option<JoinHandle<()>>,
-    clock: Arc<Mutex<AudioClockState>>,
-    muted: Arc<AtomicBool>,
 }
 
 impl AudioTrack {
     fn start(
         kind: AudioKind,
         output_path: PathBuf,
-        device_id: Option<String>,
-        device_name: Option<String>,
-        muted: bool,
+        device: AudioDevice,
+        clock: Arc<Mutex<AudioClockState>>,
+        muted: Arc<AtomicBool>,
     ) -> Result<Self, RecorderError> {
         let (command_sender, command_receiver) = std::sync::mpsc::channel();
         let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
         let (completion_sender, completion_receiver) = std::sync::mpsc::channel();
         let (health_sender, health_receiver) = std::sync::mpsc::channel();
-        let clock = Arc::new(Mutex::new(AudioClockState::default()));
-        let muted = Arc::new(AtomicBool::new(muted));
-        let worker_clock = clock.clone();
-        let worker_muted = muted.clone();
         let thread = std::thread::spawn(move || {
             run_audio_worker(
                 kind,
                 output_path,
-                device_id,
-                device_name,
+                device,
                 command_receiver,
                 ready_sender,
                 completion_sender,
                 health_sender,
-                worker_clock,
-                worker_muted,
+                clock,
+                muted,
             );
         });
 
@@ -352,8 +410,6 @@ impl AudioTrack {
                 completion: completion_receiver,
                 health: health_receiver,
                 thread: Some(thread),
-                clock,
-                muted,
             }),
             Ok(Err(error)) => {
                 let _ = thread.join();
@@ -369,26 +425,14 @@ impl AudioTrack {
         }
     }
 
-    fn sync(&self, source_time: i64) {
-        if let Ok(mut clock) = self.clock.lock() {
-            clock.sync(source_time);
-        }
-    }
-
-    fn pause(&self, source_time: i64) {
-        if let Ok(mut clock) = self.clock.lock() {
-            clock.pause(source_time);
-        }
-    }
-
-    fn resume(&self, source_time: i64) {
-        if let Ok(mut clock) = self.clock.lock() {
-            clock.resume(source_time);
-        }
-    }
-
-    fn set_muted(&self, muted: bool) {
-        self.muted.store(muted, Ordering::Release);
+    fn reconfigure(&self, device: Option<AudioDevice>) -> Result<(), RecorderError> {
+        let (response_sender, response_receiver) = std::sync::mpsc::channel();
+        self.commands
+            .send(AudioCommand::Reconfigure(device, response_sender))
+            .map_err(|_| RecorderError::capture("Audio capture worker is unavailable"))?;
+        response_receiver
+            .recv_timeout(RECONFIGURE_TIMEOUT)
+            .map_err(|_| RecorderError::capture("Audio device did not switch in time"))?
     }
 
     fn request_stop(&self, duration: f64) {
@@ -438,8 +482,7 @@ impl Drop for AudioTrack {
 fn run_audio_worker(
     kind: AudioKind,
     output_path: PathBuf,
-    device_id: Option<String>,
-    device_name: Option<String>,
+    device: AudioDevice,
     commands: Receiver<AudioCommand>,
     ready: Sender<Result<(), RecorderError>>,
     completion: Sender<Result<StagedAsset, RecorderError>>,
@@ -460,7 +503,7 @@ fn run_audio_worker(
         }
     };
 
-    let mut capture = match WasapiCapture::new(kind, device_id.as_deref(), device_name.as_deref()) {
+    let mut capture = match WasapiCapture::new(kind, device.id.as_deref(), device.name.as_deref()) {
         Ok(capture) => capture,
         Err(error) => {
             let _ = ready.send(Err(error.clone()));
@@ -490,35 +533,47 @@ fn run_audio_worker(
 
     let _ = ready.send(Ok(()));
     let mut processor = AudioProcessor::new(encoder, capture.format, clock, muted);
+    let mut capture = Some(capture);
     let mut fatal = false;
     let result = loop {
-        match commands.try_recv() {
-            Ok(AudioCommand::Stop(duration)) => {
-                capture.stop();
+        match receive_audio_command(&commands, capture.is_some()) {
+            Ok(Some(AudioCommand::Reconfigure(device, response))) => {
+                let _ = response.send(reconfigure_capture(
+                    kind,
+                    device,
+                    &mut capture,
+                    &mut processor,
+                ));
+                continue;
+            }
+            Ok(Some(AudioCommand::Stop(duration))) => {
+                capture = None;
                 break processor.finish(duration);
             }
-            Ok(AudioCommand::Abort) => {
-                capture.stop();
+            Ok(Some(AudioCommand::Abort)) => {
+                capture = None;
                 processor.abort();
                 break Err(RecorderError::stop("Audio recording was aborted"));
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                capture.stop();
+            Ok(None) => {}
+            Err(error) => {
+                capture = None;
                 processor.abort();
                 fatal = true;
-                break Err(RecorderError::stop(
-                    "Audio recording controller disconnected",
-                ));
+                break Err(error);
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
 
-        let wait = unsafe { WaitForSingleObject(capture.event.handle, CAPTURE_WAIT_MS) };
+        let Some(active) = capture.as_ref() else {
+            continue;
+        };
+
+        let wait = unsafe { WaitForSingleObject(active.event.handle, CAPTURE_WAIT_MS) };
         if wait == WAIT_TIMEOUT {
             continue;
         }
         if wait != WAIT_OBJECT_0 {
-            capture.stop();
+            capture = None;
             processor.abort();
             fatal = true;
             break Err(RecorderError::capture(format!(
@@ -526,8 +581,8 @@ fn run_audio_worker(
                 kind.label()
             )));
         }
-        if let Err(error) = capture.drain(&mut processor) {
-            capture.stop();
+        if let Err(error) = active.drain(&mut processor) {
+            capture = None;
             processor.abort();
             fatal = true;
             break Err(error);
@@ -542,6 +597,47 @@ fn run_audio_worker(
     let _ = completion.send(result);
     drop(capture);
     drop(apartment);
+}
+
+fn receive_audio_command(
+    commands: &Receiver<AudioCommand>,
+    is_capturing: bool,
+) -> Result<Option<AudioCommand>, RecorderError> {
+    if is_capturing {
+        return match commands.try_recv() {
+            Ok(command) => Ok(Some(command)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err(audio_controller_disconnected()),
+        };
+    }
+
+    match commands.recv_timeout(IDLE_COMMAND_WAIT) {
+        Ok(command) => Ok(Some(command)),
+        Err(RecvTimeoutError::Timeout) => Ok(None),
+        Err(RecvTimeoutError::Disconnected) => Err(audio_controller_disconnected()),
+    }
+}
+
+fn audio_controller_disconnected() -> RecorderError {
+    RecorderError::stop("Audio recording controller disconnected")
+}
+
+fn reconfigure_capture(
+    kind: AudioKind,
+    device: Option<AudioDevice>,
+    capture: &mut Option<WasapiCapture>,
+    processor: &mut AudioProcessor,
+) -> Result<(), RecorderError> {
+    *capture = None;
+    let Some(device) = device else {
+        return Ok(());
+    };
+
+    let mut active = WasapiCapture::new(kind, device.id.as_deref(), device.name.as_deref())?;
+    active.start()?;
+    processor.switch_format(active.format);
+    *capture = Some(active);
+    Ok(())
 }
 
 struct ComApartment;
@@ -995,6 +1091,13 @@ impl AudioProcessor {
             pending: VecDeque::new(),
             pending_bytes: 0,
         }
+    }
+
+    fn switch_format(&mut self, format: AudioFormat) {
+        self.format = format;
+        self.last_source_end = None;
+        self.pending.clear();
+        self.pending_bytes = 0;
     }
 
     fn process(&mut self, packet: AudioPacket) -> Result<(), RecorderError> {

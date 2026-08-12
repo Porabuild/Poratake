@@ -61,15 +61,25 @@ pub struct DesktopFrame {
 pub fn capture_monitors() -> Vec<DesktopFrame> {
     let entries = monitors();
     let captured = run_isolated(CAPTURE_TIMEOUT, || {
-        let device = CaptureDevice::create().ok();
-        monitors()
-            .iter()
-            .map(|monitor| {
-                device
-                    .as_ref()
-                    .and_then(|device| capture_monitor(device, monitor).ok())
-            })
-            .collect::<Vec<Option<DesktopFrame>>>()
+        let targets = monitors();
+        if targets.len() < 2 {
+            return targets.iter().map(capture_one_monitor).collect();
+        }
+
+        // Each display needs its own capture device and waits a frame for its
+        // first sample, so capturing them one after another makes the freeze
+        // take as long as the whole set combined.
+        std::thread::scope(|scope| {
+            let workers = targets
+                .iter()
+                .map(|monitor| scope.spawn(|| capture_one_monitor(monitor)))
+                .collect::<Vec<_>>();
+
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap_or(None))
+                .collect::<Vec<Option<DesktopFrame>>>()
+        })
     })
     .unwrap_or_default();
 
@@ -78,6 +88,22 @@ pub fn capture_monitors() -> Vec<DesktopFrame> {
         .zip(captured.into_iter().chain(std::iter::repeat_with(|| None)))
         .filter_map(|(monitor, frame)| frame.or_else(|| capture_with_gdi(monitor.rect)))
         .collect()
+}
+
+fn capture_one_monitor(monitor: &MonitorEntry) -> Option<DesktopFrame> {
+    let device = CaptureDevice::create().ok()?;
+    capture_monitor(&device, monitor).ok()
+}
+
+/// Loads the graphics stack ahead of the first capture. The initial
+/// `D3D11CreateDevice` pulls in the driver DLLs and dominates a cold freeze;
+/// every later device creation reuses the already loaded modules.
+pub fn prewarm_capture() {
+    let _ = std::thread::Builder::new().spawn(|| {
+        ensure_multithreaded_apartment();
+        let _ = capture_interop();
+        let _ = CaptureDevice::create();
+    });
 }
 
 pub fn capture_rect(bounds: RECT) -> Result<DesktopFrame, String> {
@@ -933,7 +959,7 @@ mod tests {
 
     #[test]
     fn makes_monitor_capture_opaque() {
-        let mut source = vec![1, 2, 3, 0, 4, 5, 6, 128];
+        let mut source: Vec<u8> = vec![1, 2, 3, 0, 4, 5, 6, 128];
         let mapped = D3D11_MAPPED_SUBRESOURCE {
             pData: source.as_mut_ptr().cast(),
             RowPitch: source.len() as u32,

@@ -1,5 +1,4 @@
-import { Wallpaper, XIcon, Plus, Pencil, Trash2, Monitor } from 'lucide-react';
-import { Button } from '@/renderer/components/ui/button';
+import { XIcon, Plus, Pencil, Trash2, Monitor } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -49,34 +48,6 @@ interface WallpaperSheetProps {
   onApplyPreset?: (preset: WallpaperPreset) => void;
 }
 
-export function WallpaperSheetTrigger({
-  onClick,
-  isOpen,
-  shortcut,
-}: {
-  onClick: () => void;
-  isOpen: boolean;
-  shortcut?: string;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant={isOpen ? 'default' : 'ghost'}
-          size="icon-sm"
-          className="size-7!"
-          onClick={onClick}
-        >
-          <Wallpaper className="size-4" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>
-        Wallpaper {shortcut ? `(${shortcut.toUpperCase()})` : ''}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 export function WallpaperSheetContent({
   wallpaper,
   hasMultipleLayers = false,
@@ -103,6 +74,7 @@ export function WallpaperSheetContent({
     CustomBackground[]
   >([]);
   const [presets, setPresets] = useState<WallpaperPreset[]>([]);
+  const [defaultPresetId, setDefaultPresetId] = useState<string | null>(null);
 
   const [showBackgroundEditor, setShowBackgroundEditor] = useState(false);
   const [editingBackground, setEditingBackground] =
@@ -135,6 +107,7 @@ export function WallpaperSheetContent({
         );
         setCustomBackgrounds(settings.customBackgrounds ?? []);
         setPresets(settings.presets ?? []);
+        setDefaultPresetId(settings.defaultPresetId ?? null);
       } catch (error) {
         console.error('Failed to load wallpaper settings:', error);
       }
@@ -273,8 +246,21 @@ export function WallpaperSheetContent({
         id
       );
       setPresets(updatedPresets);
+      setDefaultPresetId(current => (current === id ? null : current));
     } catch (error) {
       console.error('Failed to delete preset:', error);
+    }
+  }, []);
+
+  const handleSetDefaultPreset = useCallback(async (id: string | null) => {
+    try {
+      const nextId = await window.ipcRenderer.invoke(
+        'wallpaper:setDefaultPreset',
+        id
+      );
+      setDefaultPresetId(nextId ?? null);
+    } catch (error) {
+      console.error('Failed to set default preset:', error);
     }
   }, []);
 
@@ -400,9 +386,11 @@ export function WallpaperSheetContent({
         <PresetManager
           presets={presets}
           currentSettings={wallpaper}
+          defaultPresetId={defaultPresetId}
           onLoadPreset={handleLoadPreset}
           onSavePreset={handleSavePreset}
           onDeletePreset={handleDeletePreset}
+          onSetDefaultPreset={handleSetDefaultPreset}
         />
 
         <Separator />
@@ -571,6 +559,7 @@ export function WallpaperSheetContent({
                 </span>
               </div>
               <Slider
+                size="sm"
                 value={[wallpaper.backgroundBlur ?? 0]}
                 onValueChange={([value]) => onBackgroundBlurChange(value)}
                 min={0}
@@ -589,6 +578,7 @@ export function WallpaperSheetContent({
                 </span>
               </div>
               <Slider
+                size="sm"
                 value={[wallpaper.noise ?? 0]}
                 onValueChange={([value]) => onNoiseChange(value)}
                 min={0}
@@ -623,6 +613,7 @@ export function WallpaperSheetContent({
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium">Balance</span>
           <Switch
+            size="sm"
             checked={wallpaper.balance}
             onCheckedChange={onBalanceChange}
           />
@@ -634,6 +625,7 @@ export function WallpaperSheetContent({
             <span className="text-xs tabular-nums">{wallpaper.padding}</span>
           </div>
           <Slider
+            size="sm"
             value={[wallpaper.padding]}
             onValueChange={([value]) => onPaddingChange(value)}
             min={0}
@@ -648,6 +640,7 @@ export function WallpaperSheetContent({
             <span className="text-xs tabular-nums">{wallpaper.inset}</span>
           </div>
           <Slider
+            size="sm"
             value={[wallpaper.inset]}
             onValueChange={([value]) => onInsetChange(value)}
             min={0}
@@ -662,6 +655,7 @@ export function WallpaperSheetContent({
             <span className="text-xs tabular-nums">{wallpaper.corners}</span>
           </div>
           <Slider
+            size="sm"
             value={[wallpaper.corners]}
             onValueChange={([value]) => onCornersChange(value)}
             min={0}
@@ -676,6 +670,7 @@ export function WallpaperSheetContent({
             <span className="text-xs tabular-nums">{wallpaper.shadow}</span>
           </div>
           <Slider
+            size="sm"
             value={[wallpaper.shadow]}
             onValueChange={([value]) => onShadowChange(value)}
             min={0}
@@ -697,6 +692,7 @@ export function WallpaperSheetContent({
             <span className="text-xs tabular-nums">{wallpaper.spacing}</span>
           </div>
           <Slider
+            size="sm"
             value={[wallpaper.spacing]}
             onValueChange={([value]) => onSpacingChange(value)}
             min={0}

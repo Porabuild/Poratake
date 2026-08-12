@@ -22,7 +22,8 @@
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "checks": "bun run typecheck && bun run lint && bun run format:check && bun run test:run"
+    "test:daemon-win": "node scripts/check-daemon-win.mjs",
+    "checks": "bun run typecheck && bun run lint && bun run format:check && bun run test:run && bun run test:daemon-win"
   },
   "dependencies": {
     "@heroui/react": "^3.2.2",

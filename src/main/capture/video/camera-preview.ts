@@ -58,8 +58,22 @@ export function hideCameraPreview(): void {
   currentSettings = null;
 }
 
+export async function updateCameraPreviewPosition(position: {
+  x: number;
+  y: number;
+}): Promise<void> {
+  if (!currentSettings) return;
+
+  await daemon.call('camera-preview', 'update', toNativePosition(position));
+  currentSettings = { ...currentSettings, position };
+}
+
 export function isCameraPreviewVisible(): boolean {
   return currentSettings !== null;
+}
+
+export function getCameraPreviewSettings(): CameraSettings | null {
+  return currentSettings;
 }
 
 export async function enableCameraContentProtection(): Promise<void> {
@@ -106,7 +120,5 @@ export function registerCameraPreviewIpcHandlers(): void {
 
   daemon.onEvent(positionHandler);
 
-  ipcMain.handle('camera:get-settings', () => {
-    return currentSettings;
-  });
+  ipcMain.handle('camera:get-settings', getCameraPreviewSettings);
 }

@@ -38,6 +38,12 @@ class ScreenRecorderModule: Module {
             handleStatus(requestId: requestId)
         case "setMicMuted":
             handleSetMicMuted(params: params, requestId: requestId)
+        case "setMicrophone", "setSystemAudio", "setCamera":
+            respondError(
+                id: requestId,
+                code: "UNSUPPORTED",
+                message: "\(method) is not supported on macOS yet"
+            )
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -63,6 +69,7 @@ class ScreenRecorderModule: Module {
             width: params["width"]?.int(),
             height: params["height"]?.int(),
             displayID: params["displayId"]?.int().map { CGDirectDisplayID($0) },
+            windowID: params["windowId"]?.int().map { CGWindowID($0) },
             includeAudio: params["includeAudio"]?.bool() ?? true,
             micEnabled: params["micEnabled"]?.bool() ?? false,
             micDeviceId: params["micDeviceId"]?.string(),

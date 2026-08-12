@@ -108,6 +108,40 @@ describe('Config Management', () => {
       );
     });
 
+    it('should keep the saved default wallpaper preset', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          wallpaper: {
+            customBackgrounds: [],
+            presets: [{ id: 'p1', name: 'Mine' }],
+            defaultPresetId: 'p1',
+          },
+        })
+      );
+
+      const { loadConfig } = await import('@/main/settings');
+
+      expect(loadConfig().wallpaper.defaultPresetId).toBe('p1');
+    });
+
+    it('should drop a default wallpaper preset that no longer exists', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          wallpaper: {
+            customBackgrounds: [{ id: 'bg1', type: 'gradient', data: {} }],
+            presets: [],
+            defaultPresetId: 'gone',
+          },
+        })
+      );
+
+      const { loadConfig } = await import('@/main/settings');
+
+      expect(loadConfig().wallpaper.defaultPresetId).toBeNull();
+    });
+
     it('should normalize invalid saved appearance values', async () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue(

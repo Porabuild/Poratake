@@ -21,7 +21,7 @@ vi.mock('../../src/main/capture/video/cursor-data', () => ({
   loadCursorData: mockLoadCursorData,
 }));
 
-vi.mock('../../src/main/capture/video/auto-zoom', () => ({
+vi.mock('../../src/types/auto-zoom', () => ({
   generateAutoZoomSegments: mockGenerateAutoZoomSegments,
 }));
 

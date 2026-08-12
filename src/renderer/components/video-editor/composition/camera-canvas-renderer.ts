@@ -1,4 +1,4 @@
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import type { CursorData, CursorEvent } from '@/types/cursor';
 import type { VideoSegment } from '@/types/video';
 import {
@@ -10,6 +10,7 @@ import {
   DEFAULT_CAMERA_STYLE,
   getCameraPositionCoords,
   getCameraOverlayDimensions,
+  isCameraVisibleAt,
 } from '@/types/camera';
 import { calculateShadowConfig } from './wallpaper-canvas-renderer';
 
@@ -29,6 +30,7 @@ const CAMERA_SHADOW_COLOR = 'rgba(0, 0, 0, 1)';
 
 export interface CameraRenderConfig {
   cameraStyle: CameraStyle;
+  cameraVisibleRanges?: CameraSegment[] | null;
   cursorData?: CursorData | null;
   segments: VideoSegment[];
   videoWidth: number;
@@ -441,6 +443,7 @@ export function renderCamera(
 ): void {
   const {
     cameraStyle,
+    cameraVisibleRanges,
     cursorData,
     segments,
     videoWidth,
@@ -450,6 +453,13 @@ export function renderCamera(
   const effectiveStyle = cameraStyle ?? DEFAULT_CAMERA_STYLE;
 
   if (!effectiveStyle.visible) return;
+
+  if (
+    cameraVisibleRanges &&
+    !isCameraVisibleAt(cameraVisibleRanges, timelineTime)
+  ) {
+    return;
+  }
 
   const layout = calculateCameraLayout(
     effectiveStyle,

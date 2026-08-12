@@ -86,7 +86,12 @@ export default function VideoTitleBar({
         />
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button onClick={onReset} className="size-7" variant="ghost">
+            <Button
+              onClick={onReset}
+              variant="ghost"
+              size="icon-sm"
+              className="size-7!"
+            >
               <RefreshCcw className="size-4" />
             </Button>
           </TooltipTrigger>
@@ -95,7 +100,12 @@ export default function VideoTitleBar({
 
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button onClick={onDelete} className="size-7" variant="ghost">
+            <Button
+              onClick={onDelete}
+              variant="ghost"
+              size="icon-sm"
+              className="size-7!"
+            >
               <Trash2 className="size-4" />
             </Button>
           </TooltipTrigger>
@@ -109,8 +119,9 @@ export default function VideoTitleBar({
             <TooltipTrigger asChild>
               <Button
                 onClick={onToggleSidebar}
-                className="size-7"
                 variant="ghost"
+                size="icon-sm"
+                className="size-7!"
               >
                 {isSidebarOpen ? (
                   <PanelRightClose className="size-4" />

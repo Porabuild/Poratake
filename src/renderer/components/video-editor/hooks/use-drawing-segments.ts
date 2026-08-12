@@ -5,6 +5,7 @@ import {
   DEFAULT_DRAWING_SEGMENT_DURATION,
   MIN_DRAWING_SEGMENT_DURATION,
 } from '@/types/drawing';
+import { splitDrawingSegment } from '../timeline-split';
 import type { SliceController } from './use-editor-history';
 
 interface UseDrawingSegmentsProps {
@@ -45,6 +46,7 @@ interface UseDrawingSegmentsReturn {
     startTime: number,
     endTime: number
   ) => void;
+  handleSplitDrawingSegment: (id: string, cutTime: number) => void;
   handleUpdateDrawingAnnotationsMultiple: (
     updates: Array<{ id: string; updates: Partial<Annotation> }>
   ) => void;
@@ -271,6 +273,24 @@ export function useDrawingSegments({
     [totalTimelineDuration, setWithoutHistory]
   );
 
+  const handleSplitDrawingSegment = useCallback(
+    (id: string, cutTime: number) => {
+      const drawing = drawingSegmentsRef.current.find(
+        segment => segment.id === id
+      );
+      if (!drawing) return;
+
+      const split = splitDrawingSegment(drawing, cutTime);
+      if (!split) return;
+
+      const [left, right] = split;
+      setDrawingSegments(prev =>
+        prev.flatMap(segment => (segment.id === id ? [left, right] : [segment]))
+      );
+    },
+    [setDrawingSegments]
+  );
+
   const handleCommitDrawingGesture = useCallback(() => {
     if (!gestureActiveRef.current) return;
     gestureActiveRef.current = false;
@@ -338,6 +358,7 @@ export function useDrawingSegments({
     handleUpdateDrawingAnnotationsMultiple,
     handleResizeDrawingSegment,
     handleMoveDrawingSegment,
+    handleSplitDrawingSegment,
     handleCommitDrawingGesture,
     handleDeleteDrawingSegment,
     handleDeleteSelectedDrawings,

@@ -12,6 +12,8 @@ import type {
 } from './types';
 
 let pendingAreaSelection: AreaSelection | null = null;
+let pickedWindowId: number | undefined;
+let pickedWindowName: string | undefined;
 let callbackCleanup: (() => void) | null = null;
 let completionCleanup: (() => void) | null = null;
 let completePendingSelection:
@@ -29,18 +31,32 @@ function handleDaemonEvent(
 
   switch (eventType) {
     case 'selected':
-      pendingAreaSelection = { ...selection, status: 'selected' };
+      pendingAreaSelection = {
+        ...selection,
+        status: 'selected',
+        windowId: pickedWindowId,
+        windowName: pickedWindowName,
+      };
       options?.onSelected?.(pendingAreaSelection);
       options?.onUpdate?.(pendingAreaSelection);
       break;
     case 'updated':
+      pickedWindowId = undefined;
+      pickedWindowName = undefined;
       pendingAreaSelection = { ...selection, status: 'updated' };
       options?.onUpdate?.(pendingAreaSelection);
       break;
     case 'confirmed':
-      pendingAreaSelection = { ...selection, status: 'confirmed' };
+      pendingAreaSelection = {
+        ...selection,
+        status: 'confirmed',
+        windowId: pickedWindowId,
+        windowName: pickedWindowName,
+      };
       break;
     case 'cancelled':
+      pickedWindowId = undefined;
+      pickedWindowName = undefined;
       pendingAreaSelection = null;
       options?.onCancelled?.();
       break;
@@ -84,6 +100,7 @@ async function startDaemonAreaSelector(
     presetHeight?: number;
     showPrompt?: boolean;
     style?: AreaSelectionStyle;
+    locked?: boolean;
   },
   options?: StartAreaSelectionOptions
 ): Promise<AreaSelection | null> {
@@ -95,7 +112,12 @@ async function startDaemonAreaSelector(
     let isPending = true;
     const handler = (event: string, data: unknown) => {
       if (event === 'area-selector:confirmed') {
-        settle({ ...(data as AreaSelection), status: 'confirmed' });
+        settle({
+          ...(data as AreaSelection),
+          status: 'confirmed',
+          windowId: pickedWindowId,
+          windowName: pickedWindowName,
+        });
       } else if (event === 'area-selector:cancelled') {
         settle(null);
       }
@@ -131,6 +153,8 @@ export async function startAreaSelection(
   options?: StartAreaSelectionOptions
 ): Promise<AreaSelection | null> {
   const mode = options?.mode ?? 'manual';
+  pickedWindowId = undefined;
+  pickedWindowName = undefined;
 
   if (mode === 'display') {
     const displays = screen.getAllDisplays();
@@ -177,6 +201,8 @@ export async function startAreaSelection(
       return null;
     }
 
+    pickedWindowId = windowSelection.windowId;
+    pickedWindowName = windowSelection.windowTitle || windowSelection.ownerName;
     const windowBounds = isWindows
       ? screen.screenToDipRect(null, windowSelection.bounds)
       : windowSelection.bounds;
@@ -204,6 +230,7 @@ export async function startAreaSelection(
         presetHeight: windowBounds.height,
         showPrompt: options?.showPrompt,
         style: options?.style,
+        locked: true,
       },
       options
     );
@@ -267,6 +294,12 @@ export async function confirmAreaSelection(): Promise<AreaSelection | null> {
   }
 }
 
+export function concealAreaSelectorOverlay(): void {}
+
+export function hasVisibleSelectorOverlay(): boolean {
+  return false;
+}
+
 export async function cancelAreaSelection(
   silent: boolean = false
 ): Promise<void> {
@@ -281,6 +314,8 @@ export async function cancelAreaSelection(
     console.error('Failed to cancel area selection:', error);
   }
   pendingAreaSelection = null;
+  pickedWindowId = undefined;
+  pickedWindowName = undefined;
 
   if (!silent) {
     completePendingSelection?.(null);
@@ -323,6 +358,10 @@ export async function updateAreaSelection(
     console.error('Failed to update area selection:', error);
     return false;
   }
+}
+
+export async function setAreaSelectionMode(): Promise<void> {
+  console.warn('Switching the selection mode mid-session is not supported');
 }
 
 export async function setAreaSelectorAspectRatio(

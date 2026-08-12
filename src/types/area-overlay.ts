@@ -5,14 +5,21 @@ export interface AreaOverlayRect {
   height: number;
 }
 
+export interface AreaOverlayPickTarget extends AreaOverlayRect {
+  id: number;
+}
+
 export interface AreaOverlayToolbar {
   kind: 'all-in-one';
   recordingEnabled: boolean;
   ocrEnabled: boolean;
   activeMode: AllInOneCaptureMode;
+  activeTarget: AllInOneCaptureTarget;
 }
 
 export type AllInOneCaptureMode = 'screenshot' | 'record' | 'ocr';
+
+export type AllInOneCaptureTarget = 'area' | 'window' | 'screen';
 
 export type AreaOverlayToolbarAction =
   | { action: 'close' }
@@ -21,6 +28,7 @@ export type AreaOverlayToolbarAction =
   | { action: 'ocr' }
   | { action: 'copy-color'; color: string }
   | { action: 'select-capture-mode'; mode: AllInOneCaptureMode }
+  | { action: 'select-capture-target'; target: AllInOneCaptureTarget }
   | {
       action: 'select-aspect-ratio';
       name: string;
@@ -40,10 +48,13 @@ export interface AreaOverlayParams {
   rect: AreaOverlayRect | null;
   aspectRatio: number | null;
   toolbar: AreaOverlayToolbar | null;
+  pickTargets: AreaOverlayPickTarget[] | null;
+  prompt: string | null;
 }
 
 export interface AreaOverlayResult extends AreaOverlayRect {
   displayId: number;
+  pickId?: number;
 }
 
 export interface AreaOverlayRectMessage {
@@ -56,4 +67,9 @@ export interface AreaOverlayAspectRatioMessage {
 
 export interface AreaOverlayToolbarMessage {
   toolbar: AreaOverlayToolbar | null;
+}
+
+export interface AreaOverlayPickTargetsMessage {
+  pickTargets: AreaOverlayPickTarget[] | null;
+  prompt: string | null;
 }

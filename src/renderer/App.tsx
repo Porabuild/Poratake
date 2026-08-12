@@ -4,7 +4,6 @@ import type {
   EditorPreferences,
   EditorShortcuts,
   ScreenshotFormat,
-  SettingsUiConfig,
 } from '@/types/settings';
 import type { EditorState } from '@/types/history';
 import type { CapturePreviewParams } from '@/types/capture-preview';
@@ -13,9 +12,9 @@ import type { RecordingControlState } from '@/types/recording-control';
 import { useAccentColor } from '@/renderer/hooks/useAccentColor';
 import { useAppTheme } from '@/renderer/hooks/use-app-theme';
 
-const ScreenshotWindow = lazy(
-  () => import('@/renderer/windows/screenshot-window')
-);
+const loadScreenshotWindow = () =>
+  import('@/renderer/windows/screenshot-window');
+const ScreenshotWindow = lazy(loadScreenshotWindow);
 const SettingsWindow = lazy(() => import('@/renderer/windows/settings-window'));
 const ActivationWindow = lazy(
   () => import('@/renderer/windows/activation-window')
@@ -24,9 +23,9 @@ const OnboardingWindow = lazy(
   () => import('@/renderer/windows/onboarding-window')
 );
 const PinWindow = lazy(() => import('@/renderer/windows/pin-window'));
-const VideoEditorWindow = lazy(
-  () => import('@/renderer/windows/video-editor-window')
-);
+const loadVideoEditorWindow = () =>
+  import('@/renderer/windows/video-editor-window');
+const VideoEditorWindow = lazy(loadVideoEditorWindow);
 const loadCapturePreviewWindow = () =>
   import('@/renderer/windows/capture-preview-window');
 const CapturePreviewWindow = lazy(loadCapturePreviewWindow);
@@ -36,11 +35,22 @@ const AreaOverlayWindow = lazy(loadAreaOverlayWindow);
 const RecordingControlWindow = lazy(
   () => import('@/renderer/windows/recording-control-window')
 );
-const isCapturePreviewWindow =
-  new URLSearchParams(window.location.search).get('window') ===
-  'capture-preview';
-const isAreaOverlayWindow =
-  new URLSearchParams(window.location.search).get('window') === 'area-overlay';
+const windowType = new URLSearchParams(window.location.search).get('window');
+const isCapturePreviewWindow = windowType === 'capture-preview';
+const isAreaOverlayWindow = windowType === 'area-overlay';
+const isRecordingControlWindow = windowType === 'recording-control';
+
+if (windowType === 'screenshot') {
+  void loadScreenshotWindow();
+}
+
+if (windowType === 'video-editor') {
+  void loadVideoEditorWindow();
+}
+
+if (isRecordingControlWindow) {
+  document.body.classList.add('window-transparent');
+}
 
 function CapturePreviewFallback({ params }: { params: CapturePreviewParams }) {
   const previewImageUrl = params.thumbnailUrl ?? params.imageUrl;
@@ -73,10 +83,19 @@ function CapturePreviewFallback({ params }: { params: CapturePreviewParams }) {
 
 interface ScreenshotParams {
   filePath: string;
+  imageUrl?: string;
   width?: number;
   height?: number;
   editorState?: EditorState;
   historyId?: string;
+  initialPreferences: EditorPreferences;
+  screenshotSettings: {
+    closeOnCopy: boolean;
+    closeOnSave: boolean;
+    format: ScreenshotFormat;
+  };
+  editorShortcuts: EditorShortcuts;
+  editorActionShortcuts: EditorActionShortcuts;
 }
 
 interface PinParams {
@@ -120,22 +139,29 @@ interface LoadEvent {
     | Record<string, never>;
 }
 
+function WindowFallback({ data }: { data: LoadEvent }) {
+  if (data.type === 'recording-control') {
+    return null;
+  }
+
+  if (data.type === 'capture-preview') {
+    return (
+      <CapturePreviewFallback params={data.params as CapturePreviewParams} />
+    );
+  }
+
+  return (
+    <div className="bg-background flex h-screen w-full items-center justify-center">
+      <div className="text-muted-foreground">Loading...</div>
+    </div>
+  );
+}
+
 function App() {
   useAccentColor();
   useAppTheme();
 
   const [windowData, setWindowData] = useState<LoadEvent | null>(null);
-  const [editorPreferences, setEditorPreferences] =
-    useState<EditorPreferences | null>(null);
-  const [screenshotSettings, setScreenshotSettings] = useState<{
-    closeOnCopy: boolean;
-    closeOnSave: boolean;
-    format: ScreenshotFormat;
-  } | null>(null);
-  const [editorShortcuts, setEditorShortcuts] =
-    useState<EditorShortcuts | null>(null);
-  const [editorActionShortcuts, setEditorActionShortcuts] =
-    useState<EditorActionShortcuts | null>(null);
 
   useEffect(() => {
     const handlePrepareCapturePreview = () => {
@@ -158,20 +184,9 @@ function App() {
         });
     };
 
-    const handleLoad = async (_event: unknown, data: LoadEvent) => {
-      if (data.type === 'screenshot') {
-        const [prefs, settings] = await Promise.all([
-          window.ipcRenderer.invoke(
-            'editor:getPreferences'
-          ) as Promise<EditorPreferences>,
-          window.ipcRenderer.invoke(
-            'settings:get-ui'
-          ) as Promise<SettingsUiConfig>,
-        ]);
-        setEditorPreferences(prefs);
-        setScreenshotSettings(settings.screenshot);
-        setEditorShortcuts(settings.shortcuts.editor);
-        setEditorActionShortcuts(settings.shortcuts.editorActions);
+    const handleLoad = (_event: unknown, data: LoadEvent) => {
+      if (data.type === 'video-editor') {
+        void loadVideoEditorWindow();
       }
 
       if (data.type === 'settings') {
@@ -229,21 +244,14 @@ function App() {
   }, []);
 
   if (!windowData) {
+    if (isRecordingControlWindow) {
+      return null;
+    }
+
     if (isCapturePreviewWindow) {
       return <div className="bg-background h-screen w-full" />;
     }
 
-    return (
-      <div className="bg-background flex h-screen w-full items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
-  if (
-    windowData.type === 'screenshot' &&
-    (!editorPreferences || !screenshotSettings)
-  ) {
     return (
       <div className="bg-background flex h-screen w-full items-center justify-center">
         <div className="text-muted-foreground">Loading...</div>
@@ -259,10 +267,10 @@ function App() {
           <ScreenshotWindow
             key={screenshotParams.filePath}
             params={screenshotParams}
-            initialPreferences={editorPreferences!}
-            screenshotSettings={screenshotSettings!}
-            editorShortcuts={editorShortcuts ?? undefined}
-            editorActionShortcuts={editorActionShortcuts ?? undefined}
+            initialPreferences={screenshotParams.initialPreferences}
+            screenshotSettings={screenshotParams.screenshotSettings}
+            editorShortcuts={screenshotParams.editorShortcuts}
+            editorActionShortcuts={screenshotParams.editorActionShortcuts}
           />
         );
       }
@@ -304,19 +312,7 @@ function App() {
   };
 
   return (
-    <Suspense
-      fallback={
-        windowData.type === 'capture-preview' ? (
-          <CapturePreviewFallback
-            params={windowData.params as CapturePreviewParams}
-          />
-        ) : (
-          <div className="bg-background flex h-screen w-full items-center justify-center">
-            <div className="text-muted-foreground">Loading...</div>
-          </div>
-        )
-      }
-    >
+    <Suspense fallback={<WindowFallback data={windowData} />}>
       {renderWindow()}
     </Suspense>
   );

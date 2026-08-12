@@ -38,11 +38,25 @@ function mergeRefs<T>(
   };
 }
 
+const TRIGGER_PRESENTATION_CLASS = 'tooltip__trigger';
+
+function stripTriggerPresentation(className: unknown): string {
+  if (typeof className !== 'string') return '';
+  return className
+    .split(' ')
+    .filter(token => token && token !== TRIGGER_PRESENTATION_CLASS)
+    .join(' ');
+}
+
 function mergeTriggerProps(
   childProps: Record<string, unknown>,
   triggerProps: Record<string, unknown>
 ): Record<string, unknown> {
-  const merged = { ...childProps, ...triggerProps };
+  const merged: Record<string, unknown> = {
+    ...childProps,
+    ...triggerProps,
+    children: childProps.children,
+  };
   Object.keys(triggerProps).forEach(key => {
     const childHandler = childProps[key];
     const triggerHandler = triggerProps[key];
@@ -89,7 +103,10 @@ function TooltipTrigger({
         );
         return React.cloneElement(child, {
           ...mergedProps,
-          className: [triggerProps.className, child.props.className]
+          className: [
+            stripTriggerPresentation(triggerProps.className),
+            child.props.className,
+          ]
             .filter(Boolean)
             .join(' '),
           ref: mergeRefs(

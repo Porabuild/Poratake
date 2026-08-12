@@ -268,6 +268,7 @@ export interface SettingsConfig {
     customBackgrounds: CustomBackground[];
     presets: WallpaperPreset[];
     customGradients?: CustomGradient[];
+    defaultPresetId?: string | null;
   };
   history: HistoryConfig;
   onboarding: OnboardingConfig;
@@ -498,6 +499,7 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
   wallpaper: {
     customBackgrounds: [],
     presets: [],
+    defaultPresetId: null,
   },
   history: DEFAULT_HISTORY_CONFIG,
   onboarding: DEFAULT_ONBOARDING_CONFIG,
