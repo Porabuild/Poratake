@@ -23,7 +23,14 @@ $env:CAPTY_PROJECT_ROOT = $projectRoot
 $env:CAPTY_FFMPEG_BUILD_SCRIPT = $buildScript
 $command = 'export PATH=/ucrt64/bin:/usr/bin:$PATH; cd "$(cygpath -u "$CAPTY_PROJECT_ROOT")"; bash "$(cygpath -u "$CAPTY_FFMPEG_BUILD_SCRIPT")"'
 
-& $bash -lc $command
-if ($LASTEXITCODE -ne 0) {
-    throw "FFmpeg build failed with exit code $LASTEXITCODE"
+$processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+$processInfo.FileName = $bash
+$processInfo.UseShellExecute = $false
+$processInfo.ArgumentList.Add('-lc')
+$processInfo.ArgumentList.Add($command)
+$process = [System.Diagnostics.Process]::Start($processInfo)
+$process.WaitForExit()
+
+if ($process.ExitCode -ne 0) {
+    throw "FFmpeg build failed with exit code $($process.ExitCode)"
 }
