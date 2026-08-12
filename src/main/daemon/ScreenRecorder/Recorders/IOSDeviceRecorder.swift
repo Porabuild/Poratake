@@ -87,7 +87,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private func startCapture(
         _ config: RecordingConfig,
         deviceId: String,
-        waitForFirstFrame: Bool
+        waitForFirstFrame shouldWaitForFirstFrame: Bool
     ) async throws {
         enableScreenCaptureDevices()
         
@@ -140,14 +140,14 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         captureSession?.startRunning()
         state = .recording
 
-        if waitForFirstFrame {
+        if shouldWaitForFirstFrame {
             try await waitForFirstFrame()
         }
     }
 
     private func waitForFirstFrame() async throws {
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 firstFrameLock.lock()
                 if Task.isCancelled {
                     firstFrameLock.unlock()
