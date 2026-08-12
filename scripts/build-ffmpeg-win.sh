@@ -46,7 +46,8 @@ cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
     --disable-ffplay \
     --disable-ffprobe \
     --disable-debug \
-    --enable-pthreads \
+    --disable-pthreads \
+    --enable-w32threads \
     --extra-ldflags=-static \
     --enable-encoder=h264_mf \
     --enable-encoder=aac \
