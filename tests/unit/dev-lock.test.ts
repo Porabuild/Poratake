@@ -1,7 +1,13 @@
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+const { execFileSync } = vi.hoisted(() => ({
+  execFileSync: vi.fn(() => 'process-identity'),
+}));
+
+vi.mock('node:child_process', () => ({ execFileSync }));
 
 Object.defineProperty(process, 'platform', {
   value: process.env.OS === 'Windows_NT' ? 'win32' : 'darwin',
