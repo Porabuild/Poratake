@@ -26,9 +26,11 @@ $command = 'export PATH=/ucrt64/bin:/usr/bin:$PATH; cd "$(cygpath -u "$CAPTY_PRO
 $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $processInfo.FileName = $bash
 $processInfo.UseShellExecute = $false
-$processInfo.ArgumentList.Add('-lc')
-$processInfo.ArgumentList.Add($command)
+$processInfo.Arguments = '--login -s'
+$processInfo.RedirectStandardInput = $true
 $process = [System.Diagnostics.Process]::Start($processInfo)
+$process.StandardInput.WriteLine($command)
+$process.StandardInput.Close()
 $process.WaitForExit()
 
 if ($process.ExitCode -ne 0) {
