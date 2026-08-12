@@ -257,7 +257,7 @@ describe('menu click handlers', () => {
     const item = getMenuItems().find(i => i.label === 'Poratake Issues');
     await item!.click!();
     expect(mockShellOpenExternal).toHaveBeenCalledWith(
-      'https://github.com/SDSLeon/capty/issues'
+      'https://github.com/Porabuild/Poratake/issues'
     );
   });
 

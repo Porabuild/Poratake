@@ -8,7 +8,7 @@ Windows source builds support full-screen, area, and window screenshots; the edi
 
 <img width="3434" height="1928" alt="image" src="https://github.com/user-attachments/assets/2b00d1c6-fff4-49db-b44d-64d07466e8ae" />
 
-https://github.com/SDSLeon/capty
+https://github.com/Porabuild/Poratake
 
 ## Development
 
@@ -20,6 +20,6 @@ Poratake is a modified version of [Capty](https://github.com/capty-app/capty). P
 
 Copyright (C) 2026 Capty. Copyright in Poratake modifications is held by their respective contributors.
 
-Poratake is licensed as a whole under the [GNU AGPL v3.0](LICENSE), without warranty of any kind. You may redistribute it under the same license. Corresponding source for Poratake releases is available from this repository; release downloads and their source are published together on the [releases page](https://github.com/SDSLeon/capty/releases).
+Poratake is licensed as a whole under the [GNU AGPL v3.0](LICENSE), without warranty of any kind. You may redistribute it under the same license. Corresponding source for Poratake releases is available from this repository; release downloads and their source are published together on the [releases page](https://github.com/Porabuild/Poratake/releases).
 
 Uses [FFmpeg](https://ffmpeg.org/) under the LGPL v2.1. See [third-party notices](THIRD_PARTY_NOTICES.md) for bundled dependency licenses.

@@ -5,7 +5,7 @@ describe('Update Config', () => {
     const { UPDATE_OWNER, UPDATE_REPOSITORY } =
       await import('@/main/update/config');
 
-    expect(UPDATE_OWNER).toBe('SDSLeon');
-    expect(UPDATE_REPOSITORY).toBe('capty');
+    expect(UPDATE_OWNER).toBe('Porabuild');
+    expect(UPDATE_REPOSITORY).toBe('Poratake');
   });
 });

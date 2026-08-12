@@ -447,7 +447,7 @@ function buildContextMenu(): Menu {
       label: 'Poratake Issues',
       icon: icons.aperture,
       click: () => {
-        shell.openExternal('https://github.com/SDSLeon/capty/issues');
+        shell.openExternal('https://github.com/Porabuild/Poratake/issues');
       },
     },
     {
