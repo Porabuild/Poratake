@@ -15,6 +15,12 @@ import type {
 } from './editor';
 import type { HistoryConfig } from './history';
 import { DEFAULT_HISTORY_CONFIG } from './history';
+import type { ThemeMode } from './theme';
+
+export interface AppearanceConfig {
+  mode: ThemeMode;
+  theme: string;
+}
 
 export interface StorageConfig {
   screenshotsPath: string;
@@ -31,8 +37,14 @@ export const DEFAULT_SAVE_LOCATIONS_CONFIG: SaveLocationsConfig = {
   video: '',
 };
 
+export type PreviewCorner =
+  'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
 export interface PreviewConfig {
   displayId: number | null;
+  corner: PreviewCorner;
+  autoDismiss: boolean;
+  autoDismissSeconds: number;
 }
 
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
@@ -43,6 +55,9 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
 
 export const DEFAULT_PREVIEW_CONFIG: PreviewConfig = {
   displayId: null,
+  corner: 'bottom-right',
+  autoDismiss: true,
+  autoDismissSeconds: 10,
 };
 
 export type ScreenshotFormat = 'png' | 'jpeg';
@@ -176,7 +191,18 @@ export interface EditorShortcuts {
   wallpaper: string;
 }
 
-export const DEFAULT_UPLOAD_TO_CLOUD_SHORTCUT = 'Command+Shift+U';
+export const DEFAULT_UPLOAD_TO_CLOUD_SHORTCUT = 'CommandOrControl+Shift+U';
+
+function getRuntimePlatform(): NodeJS.Platform | undefined {
+  if (typeof process !== 'undefined' && process.platform) {
+    return process.platform;
+  }
+
+  return typeof window === 'undefined' ? undefined : window.appPlatform;
+}
+
+export const DEFAULT_GLOBAL_SHORTCUT_MODIFIERS =
+  getRuntimePlatform() === 'win32' ? 'Alt+Shift' : 'CommandOrControl+Shift';
 
 export interface EditorActionShortcuts {
   uploadToCloud: string;
@@ -196,6 +222,7 @@ export interface VideoEditorSidebarShortcuts {
 }
 
 export interface SettingsConfig {
+  appearance: AppearanceConfig;
   general: {
     startOnLogin: boolean;
     playSoundOnScreenshot: boolean;
@@ -206,6 +233,7 @@ export interface SettingsConfig {
     closeOnCopy: boolean;
     closeOnSave: boolean;
     captureToClipboard: boolean;
+    autoCopyToClipboard: boolean;
     showPreview: boolean;
     hideDesktopIcons: boolean;
     freezeScreen: boolean;
@@ -240,6 +268,7 @@ export interface SettingsConfig {
     customBackgrounds: CustomBackground[];
     presets: WallpaperPreset[];
     customGradients?: CustomGradient[];
+    defaultPresetId?: string | null;
   };
   history: HistoryConfig;
   onboarding: OnboardingConfig;
@@ -251,6 +280,8 @@ export interface SettingsConfig {
   allInOne: AllInOneConfig;
   scrollCapture: ScrollCaptureConfig;
 }
+
+export type SettingsUiConfig = Omit<SettingsConfig, 'wallpaper'>;
 
 export const DEFAULT_ONBOARDING_CONFIG: OnboardingConfig = {
   completed: false,
@@ -378,6 +409,10 @@ export const DEFAULT_SCROLL_CAPTURE_CONFIG: ScrollCaptureConfig = {
 };
 
 export const DEFAULT_SETTINGS: SettingsConfig = {
+  appearance: {
+    mode: 'dark',
+    theme: 'default',
+  },
   general: {
     startOnLogin: false,
     playSoundOnScreenshot: true,
@@ -388,17 +423,18 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
     closeOnCopy: false,
     closeOnSave: false,
     captureToClipboard: false,
+    autoCopyToClipboard: true,
     showPreview: true,
     hideDesktopIcons: true,
-    freezeScreen: false,
+    freezeScreen: true,
     format: 'png',
     multiImageAttachEdge: 'right',
   },
   shortcuts: {
     screenshot: {
-      area: 'CommandOrControl+Shift+4',
-      window: 'CommandOrControl+Shift+5',
-      screen: 'CommandOrControl+Shift+3',
+      area: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+4`,
+      window: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+5`,
+      screen: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+3`,
     },
     captureText: '',
     scanQRCode: '',
@@ -410,7 +446,7 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
       window: '',
     },
     history: '',
-    allInOne: '',
+    allInOne: 'Alt+Shift+S',
     openInEditor: '',
     clipboardInEditor: '',
     editor: {
@@ -463,6 +499,7 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
   wallpaper: {
     customBackgrounds: [],
     presets: [],
+    defaultPresetId: null,
   },
   history: DEFAULT_HISTORY_CONFIG,
   onboarding: DEFAULT_ONBOARDING_CONFIG,

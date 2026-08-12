@@ -5,13 +5,6 @@ import { Slider } from '@/renderer/components/ui/slider';
 import { Input } from '@/renderer/components/ui/input';
 import { Button } from '@/renderer/components/ui/button';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -29,6 +22,9 @@ import {
 } from 'lucide-react';
 import ShortcutInput from './shortcut-input';
 import CaptyCloudAccess from './capty-cloud-access';
+import MicrophoneDeviceSetting from './devices/microphone-device-setting';
+import CameraDeviceSetting from './devices/camera-device-setting';
+import SettingsSelect from './settings-select';
 import type { SettingsItem } from './settings-registry';
 import type { SettingsConfig, StorageConfig } from '@/types/settings';
 import { DEFAULT_STORAGE_CONFIG } from '@/types/settings';
@@ -37,6 +33,7 @@ interface SettingItemRendererProps {
   item: SettingsItem;
   settings: SettingsConfig;
   onUpdate: (updates: Partial<SettingsConfig>) => void;
+  compact?: boolean;
 }
 
 function getStorageConfig(settings: SettingsConfig): StorageConfig {
@@ -145,7 +142,7 @@ function NamingPatternControl({
           />
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="icon" onClick={handleReset}>
+              <Button variant="tertiary" size="icon" onClick={handleReset}>
                 <RotateCcw className="size-4" />
               </Button>
             </TooltipTrigger>
@@ -214,7 +211,7 @@ function PathPickerControl({
           <Input value={displayPath} readOnly className="flex-1 text-sm" />
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="icon" onClick={handleSelect}>
+              <Button variant="tertiary" size="icon" onClick={handleSelect}>
                 <FolderOpen className="size-4" />
               </Button>
             </TooltipTrigger>
@@ -223,7 +220,7 @@ function PathPickerControl({
           {customPath && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="icon" onClick={handleReset}>
+                <Button variant="tertiary" size="icon" onClick={handleReset}>
                   <RotateCcw className="size-4" />
                 </Button>
               </TooltipTrigger>
@@ -411,6 +408,7 @@ export default function SettingItemRenderer({
   item,
   settings,
   onUpdate,
+  compact = false,
 }: SettingItemRendererProps) {
   if (
     'visibleWhen' in item &&
@@ -446,6 +444,14 @@ export default function SettingItemRenderer({
     return <RestHeadersControl settings={settings} onUpdate={onUpdate} />;
   }
 
+  if (item.type === 'microphone-device') {
+    return <MicrophoneDeviceSetting settings={settings} onUpdate={onUpdate} />;
+  }
+
+  if (item.type === 'camera-device') {
+    return <CameraDeviceSetting settings={settings} onUpdate={onUpdate} />;
+  }
+
   const handleSwitchChange = async (checked: boolean) => {
     if (item.type !== 'switch') return;
     if (item.onBeforeChange) {
@@ -458,12 +464,13 @@ export default function SettingItemRenderer({
   switch (item.type) {
     case 'switch':
       return (
-        <div className="flex items-center justify-between gap-4 py-2">
-          <div className="flex-1 space-y-0.5">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
             <Label className="text-sm">{item.label}</Label>
             <p className="text-muted-foreground text-xs">{item.description}</p>
           </div>
           <Switch
+            aria-label={item.label}
             checked={item.getValue(settings)}
             onCheckedChange={handleSwitchChange}
             disabled={item.disabled?.(settings)}
@@ -473,26 +480,17 @@ export default function SettingItemRenderer({
 
     case 'select':
       return (
-        <div className="flex items-center justify-between gap-4 py-2">
-          <div className="flex-1 space-y-0.5">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
             <Label className="text-sm">{item.label}</Label>
             <p className="text-muted-foreground text-xs">{item.description}</p>
           </div>
-          <Select
+          <SettingsSelect
+            label={item.label}
+            options={item.options}
             value={item.getValue(settings)}
-            onValueChange={v => onUpdate(item.setValue(settings, v))}
-          >
-            <SelectTrigger className="w-auto min-w-24">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {item.options.map(opt => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            onChange={v => onUpdate(item.setValue(settings, v))}
+          />
         </div>
       );
 
@@ -523,6 +521,7 @@ export default function SettingItemRenderer({
           value={item.getValue(settings)}
           onChange={v => onUpdate(item.setValue(settings, v))}
           singleKey={item.singleKey}
+          compact={compact}
         />
       );
 

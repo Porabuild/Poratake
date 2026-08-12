@@ -1,16 +1,17 @@
 import { useState, useCallback, useRef } from 'react';
-import { WebCodecsExporter } from '@/renderer/components/video-editor/export';
+import type { WebCodecsExporter } from '@/renderer/components/video-editor/export';
 import { DEFAULT_CURSOR_STYLE } from '@/types/cursor';
 import { DEFAULT_CAMERA_STYLE } from '@/types/camera';
 import { DEFAULT_AUDIO_STYLE } from '@/types/audio';
 import { DEFAULT_ZOOM_SETTINGS } from '@/types/zoom';
 import type { CursorData, CursorStyle } from '@/types/cursor';
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import type { AudioStyle } from '@/types/audio';
 import type { VideoMetadata } from '@/types/video';
 import type { Segment } from '@/renderer/components/video-editor/types';
 import type { ZoomSegment, ZoomSettings } from '@/types/zoom';
 import type { DrawingSegment } from '@/types/drawing';
+import type { MusicTrack } from '@/types/music';
 
 interface ExportData {
   videoPath: string;
@@ -23,10 +24,12 @@ interface ExportData {
   cursorStyle: CursorStyle | null;
   cameraVideoPath: string | null;
   cameraStyle: CameraStyle | null;
+  cameraVisibleRanges?: CameraSegment[] | null;
   systemAudioPath: string | null;
   micAudioPath: string | null;
   hasEmbeddedAudio: boolean;
   audioStyle: AudioStyle | null;
+  musicTracks: MusicTrack[] | null;
 }
 
 interface UseVideoClipboardExportReturn {
@@ -50,44 +53,51 @@ function createDefaultSegment(duration: number): Segment {
   };
 }
 
-export function useVideoClipboardExport(
-  filePath: string
-): UseVideoClipboardExportReturn {
+export function useVideoClipboardExport(): UseVideoClipboardExportReturn {
   const [isCopying, setIsCopying] = useState(false);
   const [isDone, setIsDone] = useState(false);
   const [copyProgress, setCopyProgress] = useState(0);
   const exporterRef = useRef<WebCodecsExporter | null>(null);
+  const isCopyingRef = useRef(false);
+  const cancelRequestedRef = useRef(false);
+  const exportSequenceRef = useRef(0);
 
   const resetState = useCallback(() => {
     setIsCopying(false);
     setIsDone(false);
     setCopyProgress(0);
-    exporterRef.current = null;
   }, []);
 
   const cancelExport = useCallback(() => {
+    cancelRequestedRef.current = true;
     exporterRef.current?.cancel();
-    resetState();
-  }, [resetState]);
+    setCopyProgress(0);
+  }, []);
 
   const startExport = useCallback(async () => {
-    if (isCopying) return;
+    if (isCopyingRef.current) return;
 
+    isCopyingRef.current = true;
+    cancelRequestedRef.current = false;
+    const exportSequence = ++exportSequenceRef.current;
     setIsCopying(true);
+    setIsDone(false);
     setCopyProgress(0);
+
+    let exporter: WebCodecsExporter | null = null;
+    let outputPath: string | null = null;
+    let completed = false;
 
     try {
       const data = (await window.ipcRenderer.invoke(
-        'capture-preview:load-export-data',
-        filePath
+        'capture-preview:load-export-data'
       )) as ExportData | null;
 
       if (!data) {
-        setIsCopying(false);
         return;
       }
 
-      const outputPath = (await window.ipcRenderer.invoke(
+      outputPath = (await window.ipcRenderer.invoke(
         'capture-preview:get-export-output-path'
       )) as string;
 
@@ -103,8 +113,15 @@ export function useVideoClipboardExport(
       const zoomSettings = data.zoomSettings ?? DEFAULT_ZOOM_SETTINGS;
       const drawingSegments = data.drawingSegments ?? [];
 
-      const exporter = new WebCodecsExporter();
+      const { WebCodecsExporter } =
+        await import('@/renderer/components/video-editor/export');
+      exporter = new WebCodecsExporter();
       exporterRef.current = exporter;
+      await exporter.begin();
+
+      if (cancelRequestedRef.current) {
+        exporter.cancel();
+      }
 
       const result = await exporter.export({
         sourceVideoPath: data.videoPath,
@@ -115,6 +132,7 @@ export function useVideoClipboardExport(
         systemAudioVolume: audioStyle.systemAudioVolume,
         micAudioVolume: audioStyle.micAudioVolume,
         hasEmbeddedAudio: data.hasEmbeddedAudio,
+        musicTracks: data.musicTracks ?? undefined,
         cameraVideoPath: data.cameraVideoPath,
         outputPath,
         config: {
@@ -128,6 +146,7 @@ export function useVideoClipboardExport(
           cursorData: data.cursorData,
           cursorStyle,
           cameraStyle,
+          cameraVisibleRanges: data.cameraVisibleRanges ?? null,
           fps: 60,
         },
         frameRate: 60,
@@ -138,12 +157,10 @@ export function useVideoClipboardExport(
         },
       });
 
-      exporterRef.current = null;
+      if (exporter.isCancelled()) return;
 
       if (!result.success) {
         console.error('Preview export failed:', result.error);
-        setIsCopying(false);
-        setCopyProgress(0);
         return;
       }
 
@@ -154,24 +171,44 @@ export function useVideoClipboardExport(
         outputPath
       )) as boolean;
 
+      if (exporter.isCancelled()) return;
+
       if (copied) {
-        setIsCopying(false);
+        completed = true;
         setIsDone(true);
         setTimeout(() => {
-          window.ipcRenderer.send('capture-preview:close');
+          if (exportSequenceRef.current === exportSequence) {
+            window.ipcRenderer.send('capture-preview:close');
+          }
         }, DONE_DISPLAY_MS);
-        setTimeout(resetState, DONE_SAFETY_TIMEOUT_MS);
-      } else {
-        setIsCopying(false);
-        setCopyProgress(0);
+        setTimeout(() => {
+          if (exportSequenceRef.current === exportSequence) {
+            resetState();
+          }
+        }, DONE_SAFETY_TIMEOUT_MS);
       }
     } catch (error) {
-      console.error('Preview export error:', error);
+      if (!exporter?.isCancelled()) {
+        console.error('Preview export error:', error);
+      }
+    } finally {
+      if (!completed && outputPath) {
+        await window.ipcRenderer
+          .invoke('video-editor:delete-temp-file', { filePath: outputPath })
+          .catch(() => {});
+      }
+      await exporter?.finish().catch(() => {});
+      if (exporterRef.current === exporter) {
+        exporterRef.current = null;
+      }
+      isCopyingRef.current = false;
+      cancelRequestedRef.current = false;
       setIsCopying(false);
-      setCopyProgress(0);
-      exporterRef.current = null;
+      if (!completed) {
+        setCopyProgress(0);
+      }
     }
-  }, [filePath, isCopying, resetState]);
+  }, [resetState]);
 
   return { isCopying, isDone, copyProgress, startExport, cancelExport };
 }

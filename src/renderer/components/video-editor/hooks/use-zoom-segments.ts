@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import type { ZoomSegment, ZoomSettings } from '@/types/zoom';
 import { DEFAULT_ZOOM_LEVEL } from '@/types/zoom';
 import type { SidebarTab } from '../editor-sidebar';
+import { splitTrackSegments } from '../timeline-split';
 import type { SliceController } from './use-editor-history';
 
 interface UseZoomSegmentsProps {
@@ -23,6 +24,7 @@ interface UseZoomSegmentsReturn {
   ) => void;
   handleAddZoom: (startTime: number, endTime: number) => void;
   handleUpdateZoom: (id: string, startTime: number, endTime: number) => void;
+  handleSplitZoom: (cutTime: number) => void;
   handleCommitZoomGesture: () => void;
   handleDeleteZoom: (id: string) => void;
   handleApplyZoomToAll: (id: string) => void;
@@ -117,6 +119,15 @@ export function useZoomSegments({
     [wouldOverlap, setWithoutHistory]
   );
 
+  const handleSplitZoom = useCallback(
+    (cutTime: number) => {
+      const next = splitTrackSegments(zoomSegmentsRef.current, cutTime);
+      if (next === zoomSegmentsRef.current) return;
+      setZoomSegments(next);
+    },
+    [setZoomSegments]
+  );
+
   const handleCommitZoomGesture = useCallback(() => {
     if (!gestureActiveRef.current) return;
     gestureActiveRef.current = false;
@@ -199,6 +210,7 @@ export function useZoomSegments({
     setZoomSettings,
     handleAddZoom,
     handleUpdateZoom,
+    handleSplitZoom,
     handleCommitZoomGesture,
     handleDeleteZoom,
     handleApplyZoomToAll,

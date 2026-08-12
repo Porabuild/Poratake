@@ -14,6 +14,7 @@ class CursorTracker: SyncableTracker {
     private var totalPausedTime: TimeInterval = 0
 
     private var bounds: CGRect = .zero
+    private var trackedWindowID: CGWindowID?
     private var recordingWidth: Int = 0
     private var recordingHeight: Int = 0
 
@@ -39,8 +40,9 @@ class CursorTracker: SyncableTracker {
     private let cursorTypeDetector = CursorTypeDetector()
     private var lastWrittenCursorType: CursorType? = nil
 
-    func start(bounds: CGRect, videoPath: String) {
+    func start(bounds: CGRect, videoPath: String, windowID: CGWindowID? = nil) {
         self.bounds = bounds
+        self.trackedWindowID = windowID
         self.recordingWidth = Int(bounds.width)
         self.recordingHeight = Int(bounds.height)
         self.startTime = Date()
@@ -265,14 +267,40 @@ class CursorTracker: SyncableTracker {
     private func normalizePosition(_ screenPos: NSPoint) -> (x: Double, y: Double) {
         let mainScreenHeight = NSScreen.screens.first?.frame.height ?? bounds.height
         let topLeftY = mainScreenHeight - screenPos.y
+        let area = trackedArea()
 
-        let relX = screenPos.x - bounds.origin.x
-        let relY = topLeftY - bounds.origin.y
+        let relX = max(0, min(1, (screenPos.x - area.origin.x) / area.width))
+        let relY = max(0, min(1, (topLeftY - area.origin.y) / area.height))
 
-        let normalizedX = max(0, min(1, relX / bounds.width))
-        let normalizedY = max(0, min(1, relY / bounds.height))
+        guard trackedWindowID != nil else {
+            return (relX, relY)
+        }
 
-        return (normalizedX, normalizedY)
+        // The video keeps the size the window started with, so a resized window
+        // lands inside the same letterbox its frames are scaled into.
+        let fit = fitRect(source: area.size, target: bounds.size)
+        guard fit.width > 0, fit.height > 0 else {
+            return (relX, relY)
+        }
+
+        return (
+            (fit.origin.x + relX * fit.width) / bounds.width,
+            (fit.origin.y + relY * fit.height) / bounds.height
+        )
+    }
+
+    private func trackedArea() -> CGRect {
+        guard let windowID = trackedWindowID,
+              let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID)
+                as? [[String: Any]],
+              let boundsDict = windows.first?[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+              rect.width > 0, rect.height > 0
+        else {
+            return bounds
+        }
+
+        return rect
     }
 
     private func recordMove(at screenPos: NSPoint, force: Bool = false) {

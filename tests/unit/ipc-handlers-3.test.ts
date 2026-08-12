@@ -30,11 +30,13 @@ const mockGetAbsoluteCameraVideoPath = vi.fn();
 const mockLoadKeyboardData = vi.fn();
 const mockConvertMp4ToGif = vi.fn();
 const mockGetFFmpegPath = vi.fn(() => '/bin/ffmpeg');
+const mockGetExportAbortSignal = vi.fn();
 const mockValidateCursorData = vi.fn();
 const mockResolveSaveDialogPath = vi.fn(
   (_kind: unknown, fileName: string) => fileName
 );
 const mockRememberSaveDirectory = vi.fn();
+const mockAuthorizeExportOutputPaths = vi.fn();
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -130,6 +132,15 @@ vi.mock('@/main/utils/save-location', () => ({
 vi.mock('@/main/utils/ffmpeg', () => ({
   convertMp4ToGif: (...a: unknown[]) => mockConvertMp4ToGif(...a),
   getFFmpegPath: () => mockGetFFmpegPath(),
+  probeVideo: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock('@/main/capture/video/ipc/export-session', () => ({
+  authorizeExportOutputPaths: (...a: unknown[]) =>
+    mockAuthorizeExportOutputPaths(...a),
+  getExportAbortSignal: (...args: unknown[]) =>
+    mockGetExportAbortSignal(...args),
+  isExportOutputPathAllowed: () => true,
 }));
 
 vi.mock('@/types/cursor', () => ({
@@ -337,7 +348,7 @@ describe('state handlers', () => {
       filePath: '/p/Rec.capty/recording.mov',
     });
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('{}');
+    mockReadFileAsync.mockResolvedValue('{}');
     const { registerStateHandlers } =
       await import('@/main/capture/video/ipc/state-handlers');
     registerStateHandlers();
@@ -396,6 +407,7 @@ describe('export handlers', () => {
     vi.clearAllMocks();
     vi.resetModules();
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
+    mockGetExportAbortSignal.mockReturnValue(undefined);
   });
 
   it('show-save-dialog returns canceled state', async () => {
@@ -450,13 +462,40 @@ describe('export handlers', () => {
       await import('@/main/capture/video/ipc/export-handlers');
     registerExportHandlers();
     await ipcHandle['video-editor:show-save-dialog'](
-      { sender: {} },
+      { sender: { id: 7 } },
       { defaultName: 'My.mp4', format: 'mp4' }
     );
     expect(mockRememberSaveDirectory).toHaveBeenCalledWith(
       'video',
       '/Users/me/Desktop/My.mp4'
     );
+    expect(mockAuthorizeExportOutputPaths).toHaveBeenCalledWith({ id: 7 }, [
+      '/Users/me/Desktop/My.mp4',
+    ]);
+  });
+
+  it('normalizes and authorizes GIF output and its MP4 intermediate', async () => {
+    mockShowSaveDialog.mockResolvedValue({
+      canceled: false,
+      filePath: '/Users/me/Desktop/My.mov',
+    });
+    const { registerExportHandlers } =
+      await import('@/main/capture/video/ipc/export-handlers');
+    registerExportHandlers();
+
+    const result = await ipcHandle['video-editor:show-save-dialog'](
+      { sender: { id: 7 } },
+      { defaultName: 'My.gif', format: 'gif' }
+    );
+
+    expect(result).toEqual({
+      canceled: false,
+      filePath: '/Users/me/Desktop/My.gif',
+    });
+    expect(mockAuthorizeExportOutputPaths).toHaveBeenCalledWith({ id: 7 }, [
+      '/Users/me/Desktop/My.gif',
+      '/Users/me/Desktop/My-temp.mp4',
+    ]);
   });
 
   it('show-save-dialog does not persist when canceled', async () => {
@@ -471,36 +510,12 @@ describe('export handlers', () => {
     expect(mockRememberSaveDirectory).not.toHaveBeenCalled();
   });
 
-  it('save-export writes buffer to disk', async () => {
-    mockWriteFileAsync.mockResolvedValue(undefined);
-    const { registerExportHandlers } =
-      await import('@/main/capture/video/ipc/export-handlers');
-    registerExportHandlers();
-    const result = await ipcHandle['video-editor:save-export'](
-      {},
-      { buffer: new Uint8Array([1, 2]), outputPath: '/p/out.mp4' }
-    );
-    expect(result).toEqual({ success: true });
-  });
-
-  it('save-export returns error on failure', async () => {
-    mockWriteFileAsync.mockRejectedValue(new Error('disk full'));
-    const { registerExportHandlers } =
-      await import('@/main/capture/video/ipc/export-handlers');
-    registerExportHandlers();
-    const result = (await ipcHandle['video-editor:save-export'](
-      {},
-      { buffer: new Uint8Array(), outputPath: '/p/x' }
-    )) as { success: boolean; error?: string };
-    expect(result.error).toBe('disk full');
-  });
-
   it('show-completion shows notification and reveals in finder', async () => {
     const { registerExportHandlers } =
       await import('@/main/capture/video/ipc/export-handlers');
     registerExportHandlers();
     await ipcHandle['video-export:show-completion'](
-      {},
+      { sender: { id: 1 } },
       { durationSeconds: 30, filePath: '/p/x.mp4', openInFinder: true }
     );
     expect(mockNotificationShow).toHaveBeenCalled();
@@ -519,6 +534,8 @@ describe('export handlers', () => {
   });
 
   it('convert-to-gif delegates to ffmpeg', async () => {
+    const controller = new AbortController();
+    mockGetExportAbortSignal.mockReturnValue(controller.signal);
     mockConvertMp4ToGif.mockResolvedValue({
       success: true,
       outputPath: '/p/x.gif',
@@ -527,7 +544,7 @@ describe('export handlers', () => {
       await import('@/main/capture/video/ipc/export-handlers');
     registerExportHandlers();
     const result = await ipcHandle['video-editor:convert-to-gif'](
-      {},
+      { sender: { id: 1 } },
       {
         inputPath: '/p/in.mp4',
         outputPath: '/p/out.gif',
@@ -536,6 +553,13 @@ describe('export handlers', () => {
       }
     );
     expect(result).toEqual({ success: true, outputPath: '/p/x.gif' });
+    expect(mockConvertMp4ToGif).toHaveBeenCalledWith({
+      inputPath: '/p/in.mp4',
+      outputPath: '/p/out.gif',
+      resolution: '720p',
+      frameRate: '30',
+      abortSignal: controller.signal,
+    });
   });
 
   it('convert-to-gif returns error on failure', async () => {
@@ -547,7 +571,7 @@ describe('export handlers', () => {
       await import('@/main/capture/video/ipc/export-handlers');
     registerExportHandlers();
     const result = (await ipcHandle['video-editor:convert-to-gif'](
-      {},
+      { sender: { id: 1 } },
       {
         inputPath: '/p/in.mp4',
         outputPath: '/p/out.gif',
@@ -564,7 +588,7 @@ describe('export handlers', () => {
       await import('@/main/capture/video/ipc/export-handlers');
     registerExportHandlers();
     const result = (await ipcHandle['video-editor:convert-to-gif'](
-      {},
+      { sender: { id: 1 } },
       {
         inputPath: '/p/in.mp4',
         outputPath: '/p/out.gif',

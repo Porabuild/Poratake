@@ -26,6 +26,7 @@ interface TimelineTrackProps {
     edge: 'start' | 'end'
   ) => void;
   onCut: (cutVideoTime: number) => void;
+  onCutAll: (timelineTime: number) => void;
   onReorder: (segmentId: string, newIndex: number) => void;
   onSeek?: (timelinePosition: number) => void;
 }
@@ -38,6 +39,7 @@ export default function TimelineTrack({
   onSegmentSelect,
   onTrimStart,
   onCut,
+  onCutAll,
   onReorder,
   onSeek,
 }: TimelineTrackProps) {
@@ -167,7 +169,11 @@ export default function TimelineTrack({
           onSegmentSelect(id);
         }}
         onSegmentMouseDown={handleReorderMouseDown}
-        onTrackClick={time => {
+        onTrackClick={(time, shiftKey) => {
+          if (!shiftKey) {
+            onCutAll(time);
+            return;
+          }
           const { videoTime } = timelineToVideo(segments, time);
           onCut(videoTime);
           onSeek?.(time);

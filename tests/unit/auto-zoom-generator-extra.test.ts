@@ -25,7 +25,7 @@ vi.mock('@/main/capture/video/recording-project', () => ({
   getEditorStatePath: (...a: unknown[]) => mockGetEditorStatePath(...a),
 }));
 
-vi.mock('@/main/capture/video/auto-zoom', () => ({
+vi.mock('@/types/auto-zoom', () => ({
   generateAutoZoomSegments: (...a: unknown[]) =>
     mockGenerateAutoZoomSegments(...a),
 }));

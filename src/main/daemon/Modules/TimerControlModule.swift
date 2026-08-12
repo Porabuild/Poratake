@@ -94,16 +94,13 @@ class TimerControlModule: Module {
     }
     
     private func startCountdown() {
-        playBeep()
-        
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            
+
             self.remainingSeconds -= 1
-            
+
             if self.remainingSeconds > 0 {
                 self.timerButton?.remainingSeconds = self.remainingSeconds
-                self.playBeep()
             } else {
                 self.stopCountdown()
                 self.hidePanel()
@@ -121,9 +118,5 @@ class TimerControlModule: Module {
         stopCountdown()
         hidePanel()
         emit(event: "cancel")
-    }
-    
-    private func playBeep() {
-        NSSound.beep()
     }
 }

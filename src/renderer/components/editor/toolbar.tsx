@@ -1,3 +1,4 @@
+import { getPrimaryModifierLabel } from '@/renderer/utils/shortcuts';
 import {
   MousePointer2,
   Pencil,
@@ -13,7 +14,7 @@ import {
   Camera,
 } from 'lucide-react';
 import UndoRedoButtons from '@/renderer/components/editor/undo-redo';
-import { WallpaperSheetTrigger } from '@/renderer/components/editor/wallpaper';
+import WallpaperSheetTrigger from '@/renderer/components/editor/wallpaper/wallpaper-sheet-trigger';
 import type { ToolType } from '@/types/editor';
 import type { EditorShortcuts } from '@/types/settings';
 import { DEFAULT_SETTINGS } from '@/types/settings';
@@ -34,6 +35,7 @@ interface ToolbarProps {
   shortcuts?: EditorShortcuts;
   isCaptureMode?: boolean;
   onCaptureClick?: () => void;
+  onWallpaperIntent?: () => void;
 }
 
 interface ToolButtonProps {
@@ -53,12 +55,16 @@ function ToolButton({
   shortcut,
   icon,
 }: ToolButtonProps) {
+  // Selected tools use the same treatment as the video editor's sidebar tabs.
+  const isActive = activeTool === tool;
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          variant={activeTool === tool ? 'default' : 'ghost'}
-          className="size-7"
+          variant={isActive ? 'tertiary' : 'ghost'}
+          size="icon-sm"
+          className="size-7!"
           onClick={() => onToolChange(tool)}
         >
           {icon}
@@ -81,6 +87,7 @@ export default function Toolbar({
   shortcuts,
   isCaptureMode,
   onCaptureClick,
+  onWallpaperIntent,
 }: ToolbarProps) {
   const s = shortcuts ?? DEFAULT_SETTINGS.shortcuts.editor;
 
@@ -181,19 +188,21 @@ export default function Toolbar({
         onClick={() => onToolChange('wallpaper')}
         isOpen={activeTool === 'wallpaper'}
         shortcut={s.wallpaper}
+        onIntent={onWallpaperIntent}
       />
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
-            variant={isCaptureMode ? 'default' : 'ghost'}
-            className="size-7"
+            variant={isCaptureMode ? 'tertiary' : 'ghost'}
+            size="icon-sm"
+            className="size-7!"
             onClick={onCaptureClick}
           >
             <Camera className="size-4" />
           </Button>
         </TooltipTrigger>
         <TooltipContent>
-          Capture & Attach (hold ⌘ for edge picker)
+          Capture & Attach (hold {getPrimaryModifierLabel()} for edge picker)
         </TooltipContent>
       </Tooltip>
 

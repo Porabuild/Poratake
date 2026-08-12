@@ -13,10 +13,19 @@ const mockClipboardWriteImage = vi.fn();
 const mockShowCapturePreview = vi.fn();
 const mockOpenScreenshotEditor = vi.fn();
 const mockAddToHistory = vi.fn();
+const mockDipToScreenRect = vi.fn();
+const mockGetDisplayMatching = vi.fn();
+const mockSelectAreaWithOverlay = vi.fn();
+const mockCancelOverlaySelection = vi.fn();
+const mockReleaseSelection = vi.fn();
 
 vi.mock('electron', () => ({
   clipboard: { writeImage: (...a: unknown[]) => mockClipboardWriteImage(...a) },
-  nativeImage: { createFromBuffer: vi.fn() },
+  nativeImage: { createFromBuffer: vi.fn(() => ({ isEmpty: () => false })) },
+  screen: {
+    dipToScreenRect: (...a: unknown[]) => mockDipToScreenRect(...a),
+    getDisplayMatching: (...a: unknown[]) => mockGetDisplayMatching(...a),
+  },
 }));
 
 vi.mock('fs', () => ({
@@ -70,6 +79,11 @@ vi.mock('@/main/capture/area-selector', () => ({
   cancelAreaSelection: vi.fn(),
 }));
 
+vi.mock('@/main/capture/area-overlay', () => ({
+  cancelOverlaySelection: (...a: unknown[]) => mockCancelOverlaySelection(...a),
+  selectAreaWithOverlay: (...a: unknown[]) => mockSelectAreaWithOverlay(...a),
+}));
+
 describe('scroll-capture', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,6 +95,9 @@ describe('scroll-capture', () => {
     mockIsSupported.mockReturnValue(true);
     mockCheckAccessibility.mockReturnValue(true);
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
+    mockDipToScreenRect.mockImplementation((_window, bounds) => bounds);
+    mockGetDisplayMatching.mockReturnValue({ scaleFactor: 1 });
+    mockReleaseSelection.mockResolvedValue(undefined);
   });
 
   describe('cancelScrollCapture', () => {
@@ -97,6 +114,20 @@ describe('scroll-capture', () => {
       const { cancelScrollCapture } =
         await import('@/main/capture/scroll-capture');
       await expect(cancelScrollCapture()).resolves.toBeUndefined();
+    });
+
+    it('cancels a pending Windows overlay selection', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+
+      try {
+        const { cancelScrollCapture } =
+          await import('@/main/capture/scroll-capture');
+        await cancelScrollCapture();
+        expect(mockCancelOverlaySelection).toHaveBeenCalledWith(true);
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
     });
   });
 
@@ -181,6 +212,138 @@ describe('scroll-capture', () => {
       await expect(startScrollCapture()).resolves.toBeUndefined();
     });
 
+    it('keeps the session active after internal selector cancellation', async () => {
+      const daemonModule = await import('@/main/daemon');
+      const areaSelector = await import('@/main/capture/area-selector');
+      let options:
+        | {
+            onSelected: (selection: unknown) => Promise<void>;
+            onCancelled: () => Promise<void>;
+          }
+        | undefined;
+      let resolveSelector: ((selection: null) => void) | undefined;
+      let daemonHandler: ((event: string, data?: unknown) => void) | null =
+        null;
+
+      vi.mocked(areaSelector.startAreaSelection).mockImplementation((opts => {
+        options = opts as typeof options;
+        return new Promise<null>(resolve => {
+          resolveSelector = resolve;
+        });
+      }) as never);
+      vi.mocked(areaSelector.cancelAreaSelection).mockImplementation(
+        (async () => {
+          await options?.onCancelled();
+          resolveSelector?.(null);
+        }) as never
+      );
+      vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
+        daemonHandler = handler as typeof daemonHandler;
+      }) as never);
+      mockDaemonCall.mockResolvedValue({});
+
+      const { startScrollCapture } =
+        await import('@/main/capture/scroll-capture');
+      let settled = false;
+      const capture = startScrollCapture().then(() => {
+        settled = true;
+      });
+
+      await options?.onSelected({
+        status: 'selected',
+        x: 10,
+        y: 20,
+        width: 200,
+        height: 100,
+        screenId: 7,
+      });
+      await Promise.resolve();
+
+      expect(settled).toBe(false);
+      expect(mockDaemonCall).toHaveBeenCalledWith(
+        'scroll-capture',
+        'start',
+        expect.anything()
+      );
+
+      await daemonHandler?.('scroll-capture:cancelled');
+      await capture;
+      expect(settled).toBe(true);
+    });
+
+    it('restores desktop icons when selector startup returns null', async () => {
+      mockGetConfig.mockReturnValue({
+        screenshot: { hideDesktopIcons: true },
+      });
+      const areaSelector = await import('@/main/capture/area-selector');
+      vi.mocked(areaSelector.startAreaSelection).mockResolvedValue(null);
+
+      const { startScrollCapture } =
+        await import('@/main/capture/scroll-capture');
+      await startScrollCapture();
+
+      expect(mockHideDesktopIcons).toHaveBeenCalledWith('capture');
+      expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
+      expect(mockDaemonCall).not.toHaveBeenCalledWith(
+        'scroll-capture',
+        'start',
+        expect.anything()
+      );
+    });
+
+    it('does not replace an active session or its event handler', async () => {
+      const daemonModule = await import('@/main/daemon');
+      const areaSelector = await import('@/main/capture/area-selector');
+      let options:
+        | {
+            onSelected: (selection: unknown) => Promise<void>;
+            onCancelled: () => Promise<void>;
+          }
+        | undefined;
+      let resolveSelector: ((selection: null) => void) | undefined;
+      let daemonHandler: ((event: string, data?: unknown) => void) | null =
+        null;
+
+      vi.mocked(areaSelector.startAreaSelection).mockImplementation((opts => {
+        options = opts as typeof options;
+        return new Promise<null>(resolve => {
+          resolveSelector = resolve;
+        });
+      }) as never);
+      vi.mocked(areaSelector.cancelAreaSelection).mockImplementation(
+        (async () => {
+          await options?.onCancelled();
+          resolveSelector?.(null);
+        }) as never
+      );
+      vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
+        daemonHandler = handler as typeof daemonHandler;
+      }) as never);
+      mockDaemonCall.mockResolvedValue({});
+
+      const { startScrollCapture } =
+        await import('@/main/capture/scroll-capture');
+      const first = startScrollCapture();
+      await options?.onSelected({
+        status: 'selected',
+        x: 10,
+        y: 20,
+        width: 200,
+        height: 100,
+      });
+      const second = startScrollCapture();
+
+      expect(areaSelector.startAreaSelection).toHaveBeenCalledTimes(1);
+      expect(daemonModule.daemon.onEvent).toHaveBeenCalledTimes(1);
+
+      await daemonHandler?.('scroll-capture:cancelled');
+      await Promise.all([first, second]);
+
+      vi.mocked(areaSelector.startAreaSelection).mockResolvedValueOnce(null);
+      await startScrollCapture();
+      expect(areaSelector.startAreaSelection).toHaveBeenCalledTimes(2);
+    });
+
     it('processes area selection then triggers daemon scroll-capture start', async () => {
       const daemonModule = await import('@/main/daemon');
       const areaSelector = await import('@/main/capture/area-selector');
@@ -202,6 +365,7 @@ describe('scroll-capture', () => {
             y: 20,
             width: 200,
             height: 100,
+            screenId: 7,
           });
           // Fire scroll-capture:done event after async setup
           await new Promise(res => setImmediate(res));
@@ -222,8 +386,96 @@ describe('scroll-capture', () => {
       expect(mockDaemonCall).toHaveBeenCalledWith(
         'scroll-capture',
         'start',
-        expect.objectContaining({ x: 10, y: 20, width: 200, height: 100 })
+        expect.objectContaining({
+          x: 10,
+          y: 20,
+          width: 200,
+          height: 100,
+          displayId: 7,
+        })
       );
+    });
+
+    it('selects with the Electron overlay on Windows and converts DIP bounds', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const daemonModule = await import('@/main/daemon');
+      const areaSelector = await import('@/main/capture/area-selector');
+      let daemonHandler: ((event: string) => void) | null = null;
+      vi.mocked(daemonModule.daemon.onEvent).mockImplementation(((
+        handler: (event: string) => void
+      ) => {
+        daemonHandler = handler;
+      }) as never);
+      mockDaemonCall.mockResolvedValue({});
+      mockDipToScreenRect.mockReturnValue({
+        x: 20,
+        y: 40,
+        width: 400,
+        height: 200,
+      });
+      mockSelectAreaWithOverlay.mockImplementation(async () => {
+        setImmediate(() => daemonHandler?.('scroll-capture:cancelled'));
+        return {
+          display: {
+            id: 7,
+            scaleFactor: 2,
+            bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+          },
+          rect: { x: 10, y: 20, width: 200, height: 100 },
+          release: (...a: unknown[]) => mockReleaseSelection(...a),
+        };
+      });
+
+      try {
+        const { startScrollCapture } =
+          await import('@/main/capture/scroll-capture');
+        await startScrollCapture();
+
+        expect(mockSelectAreaWithOverlay).toHaveBeenCalledWith({
+          freeze: false,
+        });
+        expect(mockReleaseSelection).not.toHaveBeenCalled();
+        expect(mockDipToScreenRect).toHaveBeenCalledWith(null, {
+          x: 10,
+          y: 20,
+          width: 200,
+          height: 100,
+        });
+        expect(mockDaemonCall).toHaveBeenCalledWith(
+          'scroll-capture',
+          'start',
+          expect.objectContaining({
+            x: 20,
+            y: 40,
+            width: 400,
+            height: 200,
+            scaleFactor: 2,
+          })
+        );
+        expect(areaSelector.startAreaSelection).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
+    });
+
+    it('completes without starting when the overlay selection is cancelled on Windows', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      mockSelectAreaWithOverlay.mockResolvedValue(null);
+
+      try {
+        const { startScrollCapture } =
+          await import('@/main/capture/scroll-capture');
+        await expect(startScrollCapture()).resolves.toBeUndefined();
+        expect(mockDaemonCall).not.toHaveBeenCalledWith(
+          'scroll-capture',
+          'start',
+          expect.anything()
+        );
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
     });
 
     it('handles scroll-capture:cancelled event', async () => {

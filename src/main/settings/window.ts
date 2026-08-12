@@ -1,9 +1,20 @@
 import { BrowserWindow, screen, app } from 'electron';
+import type { WebContents } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
 import { registerDockWindow } from '@/main/utils/dock';
+import {
+  nativeWindowMaterialOptions,
+  supportsNativeWindowMaterial,
+  titleBarWindowOptions,
+  trackTitleBarTheme,
+} from '@/main/utils/title-bar';
 
 let settingsWindow: BrowserWindow | null = null;
+
+export function isSettingsWindowWebContents(sender: WebContents): boolean {
+  return settingsWindow?.webContents === sender;
+}
 
 export function createOrShowSettingsWindow(tab?: string) {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
@@ -21,6 +32,7 @@ export function createOrShowSettingsWindow(tab?: string) {
 
   const windowWidth = 880;
   const windowHeight = 700;
+  const nativeMaterial = supportsNativeWindowMaterial();
 
   settingsWindow = new BrowserWindow({
     width: windowWidth,
@@ -34,13 +46,21 @@ export function createOrShowSettingsWindow(tab?: string) {
       preload: path.join(__dirname, 'preload.js'),
       devTools: isDev,
     },
-    titleBarStyle: 'hiddenInset',
-    frame: true,
+    ...titleBarWindowOptions({
+      surface: 'background',
+      transparent: nativeMaterial,
+    }),
     x: Math.floor((screenWidth - windowWidth) / 2),
     y: Math.floor((screenHeight - windowHeight) / 2),
     show: false,
-    backgroundColor: '#1e1e1e',
-    title: 'Settings',
+    backgroundColor: nativeMaterial ? '#00000000' : '#070709',
+    ...nativeWindowMaterialOptions(),
+    title: 'Poratake Settings',
+  });
+
+  trackTitleBarTheme(settingsWindow, {
+    surface: 'background',
+    transparent: nativeMaterial,
   });
 
   const hash = tab ? `#${tab}` : '';
@@ -55,7 +75,7 @@ export function createOrShowSettingsWindow(tab?: string) {
   settingsWindow.webContents.on('did-finish-load', () => {
     settingsWindow?.webContents.send('load', {
       type: 'settings',
-      params: {},
+      params: { nativeMaterial },
     });
   });
 

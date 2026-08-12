@@ -49,7 +49,9 @@ describe('Path Utilities', () => {
 
       const { getConfigDir } = await import('@/main/utils/paths');
       const configDir = getConfigDir();
-      expect(configDir).toBe(path.join('/mock/home', '.config', 'capty-dev'));
+      expect(configDir).toBe(
+        path.join('/mock/home', '.config', 'poratake-dev')
+      );
     });
 
     it('should return production config directory when packaged', async () => {
@@ -57,7 +59,7 @@ describe('Path Utilities', () => {
 
       const { getConfigDir } = await import('@/main/utils/paths');
       const configDir = getConfigDir();
-      expect(configDir).toBe(path.join('/mock/home', '.config', 'capty'));
+      expect(configDir).toBe(path.join('/mock/home', '.config', 'poratake'));
     });
 
     it('should use home directory from Electron app', async () => {
@@ -68,7 +70,7 @@ describe('Path Utilities', () => {
 
       const { getConfigDir } = await import('@/main/utils/paths');
       const configDir = getConfigDir();
-      expect(configDir).toContain('/custom/home/path');
+      expect(configDir).toContain(path.join('/custom/home/path'));
       expect(mockApp.getPath).toHaveBeenCalledWith('home');
     });
   });
@@ -80,7 +82,7 @@ describe('Path Utilities', () => {
       const { getConfigFilePath } = await import('@/main/utils/paths');
       const configPath = getConfigFilePath();
       expect(configPath).toBe(
-        path.join('/mock/home', '.config', 'capty-dev', 'config.json')
+        path.join('/mock/home', '.config', 'poratake-dev', 'config.json')
       );
     });
 
@@ -90,7 +92,7 @@ describe('Path Utilities', () => {
       const { getConfigFilePath } = await import('@/main/utils/paths');
       const configPath = getConfigFilePath();
       expect(configPath).toBe(
-        path.join('/mock/home', '.config', 'capty', 'config.json')
+        path.join('/mock/home', '.config', 'poratake', 'config.json')
       );
     });
 
@@ -108,7 +110,7 @@ describe('Path Utilities', () => {
       const { getLicenseFilePath } = await import('@/main/utils/paths');
       const licensePath = getLicenseFilePath();
       expect(licensePath).toBe(
-        path.join('/mock/home', '.config', 'capty-dev', 'license.json')
+        path.join('/mock/home', '.config', 'poratake-dev', 'license.json')
       );
     });
 
@@ -118,7 +120,7 @@ describe('Path Utilities', () => {
       const { getLicenseFilePath } = await import('@/main/utils/paths');
       const licensePath = getLicenseFilePath();
       expect(licensePath).toBe(
-        path.join('/mock/home', '.config', 'capty', 'license.json')
+        path.join('/mock/home', '.config', 'poratake', 'license.json')
       );
     });
 
@@ -136,7 +138,7 @@ describe('Path Utilities', () => {
       const { getHistoryFilePath } = await import('@/main/utils/paths');
       const historyPath = getHistoryFilePath();
       expect(historyPath).toBe(
-        path.join('/mock/home', '.config', 'capty-dev', 'history.json')
+        path.join('/mock/home', '.config', 'poratake-dev', 'history.json')
       );
     });
 
@@ -146,7 +148,7 @@ describe('Path Utilities', () => {
       const { getHistoryFilePath } = await import('@/main/utils/paths');
       const historyPath = getHistoryFilePath();
       expect(historyPath).toBe(
-        path.join('/mock/home', '.config', 'capty', 'history.json')
+        path.join('/mock/home', '.config', 'poratake', 'history.json')
       );
     });
 
@@ -189,26 +191,25 @@ describe('Path Utilities', () => {
       const prodConfigDir = getConfigDirProd();
 
       expect(devConfigDir).not.toBe(prodConfigDir);
-      expect(devConfigDir).toContain('capty-dev');
-      expect(prodConfigDir).toContain('capty');
-      expect(prodConfigDir).not.toContain('capty-dev');
+      expect(devConfigDir).toContain('poratake-dev');
+      expect(prodConfigDir).toContain('poratake');
+      expect(prodConfigDir).not.toContain('poratake-dev');
     });
   });
 
   describe('getNativeBinaryPath', () => {
     it('should return dev path when it exists', async () => {
-      mockExistsSync.mockImplementation((p: string) => {
-        if (p === '/mock/app/src/main/binaries/test-binary/test-binary')
-          return true;
-        return false;
-      });
+      const devPath = path.join(
+        '/mock/app',
+        'src/main/binaries/test-binary',
+        'test-binary'
+      );
+      mockExistsSync.mockImplementation((p: string) => p === devPath);
 
       const { getNativeBinaryPath } = await import('@/main/utils/paths');
       const binaryPath = getNativeBinaryPath('test-binary');
 
-      expect(binaryPath).toBe(
-        '/mock/app/src/main/binaries/test-binary/test-binary'
-      );
+      expect(binaryPath).toBe(devPath);
     });
 
     it('should return prod path when dev path does not exist', async () => {
@@ -219,20 +220,17 @@ describe('Path Utilities', () => {
         configurable: true,
       });
 
-      mockExistsSync.mockImplementation((p: string) => {
-        if (p === '/mock/app/src/main/binaries/test-binary/test-binary')
-          return false;
-        if (p === '/mock/resources/binaries/test-binary/test-binary')
-          return true;
-        return false;
-      });
+      const prodPath = path.join(
+        '/mock/resources',
+        'binaries/test-binary',
+        'test-binary'
+      );
+      mockExistsSync.mockImplementation((p: string) => p === prodPath);
 
       const { getNativeBinaryPath } = await import('@/main/utils/paths');
       const binaryPath = getNativeBinaryPath('test-binary');
 
-      expect(binaryPath).toBe(
-        '/mock/resources/binaries/test-binary/test-binary'
-      );
+      expect(binaryPath).toBe(prodPath);
 
       Object.defineProperty(process, 'resourcesPath', {
         value: originalResourcesPath,
@@ -248,7 +246,11 @@ describe('Path Utilities', () => {
       const binaryPath = getNativeBinaryPath('missing-binary');
 
       expect(binaryPath).toBe(
-        '/mock/app/src/main/binaries/missing-binary/missing-binary'
+        path.join(
+          '/mock/app',
+          'src/main/binaries/missing-binary',
+          'missing-binary'
+        )
       );
     });
 
@@ -258,10 +260,10 @@ describe('Path Utilities', () => {
       const { getNativeBinaryPath } = await import('@/main/utils/paths');
 
       expect(getNativeBinaryPath('ffmpeg')).toBe(
-        '/mock/app/src/main/binaries/ffmpeg/ffmpeg'
+        path.join('/mock/app', 'src/main/binaries/ffmpeg', 'ffmpeg')
       );
       expect(getNativeBinaryPath('capty-daemon')).toBe(
-        '/mock/app/src/main/daemon/capty-daemon'
+        path.join('/mock/app', 'src/main/daemon', 'capty-daemon')
       );
     });
   });

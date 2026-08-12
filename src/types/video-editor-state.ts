@@ -1,5 +1,5 @@
 import type { CursorStyle } from './cursor';
-import type { CameraStyle } from './camera';
+import type { CameraStyle, CameraSegment } from './camera';
 import type { KeyboardStyle } from './keyboard';
 import type { SubtitleStyle } from './subtitle';
 import type { AudioStyle } from './audio';
@@ -25,8 +25,10 @@ export interface ExportSettings {
   openInFinder: boolean;
 }
 
+export const EDITOR_STATE_VERSION = 2;
+
 export interface VideoEditorState {
-  version: 1;
+  version: 1 | 2;
   savedAt: string;
   recordingType?: RecordingType;
 
@@ -45,6 +47,8 @@ export interface VideoEditorState {
   zoomSegments: ZoomSegment[];
 
   zoomSettings: ZoomSettings;
+
+  cameraSegments?: CameraSegment[];
 
   drawingSegments?: DrawingSegment[];
 

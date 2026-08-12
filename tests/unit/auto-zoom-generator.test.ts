@@ -21,7 +21,7 @@ vi.mock('../../src/main/capture/video/cursor-data', () => ({
   loadCursorData: mockLoadCursorData,
 }));
 
-vi.mock('../../src/main/capture/video/auto-zoom', () => ({
+vi.mock('../../src/types/auto-zoom', () => ({
   generateAutoZoomSegments: mockGenerateAutoZoomSegments,
 }));
 
@@ -113,5 +113,25 @@ describe('auto zoom generator', () => {
       },
     ]);
     expect(parsed.ui.sidebarOpen).toBe(true);
+  });
+
+  it('uses the camera mirror setting for the initial editor state', async () => {
+    mockGetConfig.mockReturnValue({
+      recording: {
+        autoZoom: false,
+        camera: { flipped: false },
+      },
+    });
+
+    const { generateInitialEditorState } =
+      await import('../../src/main/capture/video/auto-zoom-generator');
+
+    await generateInitialEditorState({ projectPath: '/project' });
+
+    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const parsed = JSON.parse(writtenContent as string) as {
+      cameraStyle: { mirrored: boolean };
+    };
+    expect(parsed.cameraStyle.mirrored).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ class CameraPreviewModule: Module {
     private var deviceId: String?
     private var deviceName: String?
     private var resolution: String = "720p"
+    private var flipped: Bool = false
     private var isContentProtected: Bool = false
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
@@ -36,6 +37,7 @@ class CameraPreviewModule: Module {
         let newDeviceId = params?["deviceId"]?.string()
         let newDeviceName = params?["deviceName"]?.string()
         let newResolution = params?["resolution"]?.string() ?? "720p"
+        let newFlipped = params?["flipped"]?.bool() ?? false
         
         let deviceChanged = newDeviceId != deviceId || newDeviceName != deviceName
         let resolutionChanged = newResolution != resolution
@@ -43,6 +45,7 @@ class CameraPreviewModule: Module {
         deviceId = newDeviceId
         deviceName = newDeviceName
         resolution = newResolution
+        flipped = newFlipped
         
         let x = params?["x"]?.int()
         let y = params?["y"]?.int()
@@ -83,6 +86,12 @@ class CameraPreviewModule: Module {
         }
         if let newResolution = params?["resolution"]?.string() {
             resolution = newResolution
+        }
+        if let newFlipped = params?["flipped"]?.bool() {
+            flipped = newFlipped
+            DispatchQueue.main.async { [weak self] in
+                self?.contentView?.updateFlipped(newFlipped)
+            }
         }
         
         if let x = params?["x"]?.int(), let y = params?["y"]?.int() {
@@ -137,6 +146,7 @@ class CameraPreviewModule: Module {
     
     private func showPanel(x: Int?, y: Int?) {
         if panel != nil {
+            contentView?.updateFlipped(flipped)
             if let x = x, let y = y {
                 updatePosition(x: x, y: y)
             }
@@ -171,6 +181,7 @@ class CameraPreviewModule: Module {
             deviceId: deviceId,
             deviceName: deviceName,
             resolution: resolution,
+            flipped: flipped,
             padding: shadowPadding
         )
         
@@ -241,16 +252,18 @@ private class CameraPreviewContentView: NSView {
     private var deviceId: String?
     private var deviceName: String?
     private var resolution: String
+    private var isMirrored: Bool
     private let padding: CGFloat
     private let cornerRadius: CGFloat = 65
     
     private let cameraQueue = DispatchQueue(label: "com.capty.camera-preview")
     private var isStopped: Bool = false
     
-    init(frame: NSRect, deviceId: String?, deviceName: String?, resolution: String, padding: CGFloat) {
+    init(frame: NSRect, deviceId: String?, deviceName: String?, resolution: String, flipped: Bool, padding: CGFloat) {
         self.deviceId = deviceId
         self.deviceName = deviceName
         self.resolution = resolution
+        self.isMirrored = flipped
         self.padding = padding
         super.init(frame: frame)
         setupView()
@@ -345,7 +358,9 @@ private class CameraPreviewContentView: NSView {
                 let previewLayer = AVCaptureVideoPreviewLayer(session: session)
                 previewLayer.videoGravity = .resizeAspectFill
                 previewLayer.frame = self.containerView.bounds
-                previewLayer.setAffineTransform(CGAffineTransform(scaleX: -1, y: 1))
+                previewLayer.setAffineTransform(
+                    CGAffineTransform(scaleX: self.isMirrored ? -1 : 1, y: 1)
+                )
                 
                 self.containerView.layer?.addSublayer(previewLayer)
                 self.previewLayer = previewLayer
@@ -390,6 +405,13 @@ private class CameraPreviewContentView: NSView {
         self.deviceName = deviceName
         self.resolution = resolution
         startCamera()
+    }
+
+    func updateFlipped(_ flipped: Bool) {
+        self.isMirrored = flipped
+        previewLayer?.setAffineTransform(
+            CGAffineTransform(scaleX: flipped ? -1 : 1, y: 1)
+        )
     }
     
     private func findCamera() -> AVCaptureDevice? {

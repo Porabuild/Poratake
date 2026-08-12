@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'path';
 import type { SettingsConfig } from '@/types/settings';
 import type { HistoryItem, EditorState } from '@/types/history';
 import type { RectAnnotation, WallpaperSettings } from '@/types/editor';
@@ -19,13 +20,18 @@ vi.mock('@/main/daemon', () => ({
 // Mock child_process
 const mockExec = vi.fn();
 vi.mock('child_process', () => ({
-  exec: mockExec,
+  execFile: (
+    file: string,
+    args: string[],
+    callback: (err: Error | null, stdout: string, stderr: string) => void
+  ) => mockExec([file, ...args].join(' '), callback),
 }));
 
 // Mock fs
 const mockExistsSync = vi.fn();
 const mockMkdirSync = vi.fn();
 const mockReadFileSync = vi.fn();
+const mockReadFile = vi.fn();
 const mockWriteFileSync = vi.fn();
 const mockCopyFileSync = vi.fn();
 
@@ -37,6 +43,9 @@ vi.mock('fs', () => ({
     writeFileSync: (path: string, data: Buffer) =>
       mockWriteFileSync(path, data),
     copyFileSync: (src: string, dest: string) => mockCopyFileSync(src, dest),
+    promises: {
+      readFile: (path: string) => mockReadFile(path),
+    },
   },
   existsSync: (path: string) => mockExistsSync(path),
   mkdirSync: (path: string, options?: object) => mockMkdirSync(path, options),
@@ -133,6 +142,7 @@ vi.mock('electron', () => ({
 // Mock env
 vi.mock('@/main/utils/env', () => ({
   isDev: false,
+  isProduction: false,
   devServerUrl: null,
 }));
 
@@ -191,6 +201,12 @@ vi.mock('@/main/capture/freeze-screen', () => ({
   isSupported: () => mockIsFreezeScreenSupported(),
 }));
 
+vi.mock('@/main/capture/freeze-screen/preference', () => ({
+  isFreezeScreenEnabled: () =>
+    Boolean(mockGetConfig().screenshot?.freezeScreen) &&
+    mockIsFreezeScreenSupported(),
+}));
+
 // Mock history
 const mockAddToHistory = vi.fn();
 const mockUpdateHistoryItemByPath = vi.fn();
@@ -203,6 +219,7 @@ vi.mock('@/main/history', () => ({
     mockUpdateHistoryItemByPath(path, state),
   getHistoryItemByPath: (path: string) => mockGetHistoryItemByPath(path),
   deleteHistoryItem: (id: string) => mockDeleteHistoryItem(id),
+  isHistoryPopoverWebContents: vi.fn(() => true),
 }));
 
 // Mock settings window
@@ -214,15 +231,18 @@ const mockKillDisplaySelector = vi.fn();
 
 vi.mock('@/main/capture/display-selector', () => ({
   selectDisplay: () => mockSelectDisplay(),
+  displayFromSelection: vi.fn(),
   killDisplaySelector: () => mockKillDisplaySelector(),
 }));
 
 // Mock capture-preview
 const mockShowCapturePreview = vi.fn();
+const mockPrepareCapturePreview = vi.fn();
+const mockDisposeCapturePreview = vi.fn();
 
 vi.mock('@/main/capture/capture-preview', () => ({
-  showCapturePreview: (filePath: string, historyId?: string) =>
-    mockShowCapturePreview(filePath, historyId),
+  prepareCapturePreview: () => mockPrepareCapturePreview(),
+  showCapturePreview: (...args: unknown[]) => mockShowCapturePreview(...args),
   registerCapturePreviewIpc: vi.fn(),
 }));
 
@@ -323,6 +343,10 @@ describe('Screenshot Module', () => {
         if (callback) callback(null, '', '');
       }
     );
+    mockPrepareCapturePreview.mockReturnValue({
+      dispose: mockDisposeCapturePreview,
+    });
+    mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
 
     mockGetConfig.mockReturnValue({
       screenshot: { ...mockScreenshotConfig },
@@ -460,9 +484,9 @@ describe('Screenshot Module', () => {
   });
 
   describe('screenshot() function', () => {
-    it('should create Capty directory if it does not exist', async () => {
+    it('should create Poratake directory if it does not exist', async () => {
       mockExistsSync.mockImplementation((path: string) => {
-        if (path.includes('Capty')) return false;
+        if (path.includes('Poratake')) return false;
         return true;
       });
 
@@ -470,12 +494,12 @@ describe('Screenshot Module', () => {
       await screenshot('screen');
 
       expect(mockMkdirSync).toHaveBeenCalledWith(
-        expect.stringContaining('Capty'),
+        expect.stringContaining('Poratake'),
         { recursive: true }
       );
     });
 
-    it('should not create Capty directory if it already exists', async () => {
+    it('should not create Poratake directory if it already exists', async () => {
       mockExistsSync.mockReturnValue(true);
 
       const { default: screenshot } = await import('@/main/capture/screenshot');
@@ -676,7 +700,7 @@ describe('Screenshot Module', () => {
       expect(mockFreezeScreen).not.toHaveBeenCalled();
     });
 
-    it('should not freeze screen in window mode', async () => {
+    it('should freeze and release the screen in window mode when enabled', async () => {
       mockGetConfig.mockReturnValue({
         screenshot: { ...mockScreenshotConfig, freezeScreen: true },
         general: { ...mockGeneralConfig },
@@ -686,7 +710,8 @@ describe('Screenshot Module', () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('window');
 
-      expect(mockFreezeScreen).not.toHaveBeenCalled();
+      expect(mockFreezeScreen).toHaveBeenCalledWith(true);
+      expect(mockReleaseScreen).toHaveBeenCalled();
     });
 
     it('should not freeze screen in screen mode', async () => {
@@ -740,6 +765,31 @@ describe('Screenshot Module', () => {
   });
 
   describe('screenshot() exec callback behavior', () => {
+    it('should wait for screencapture to finish before resolving', async () => {
+      let finishCapture:
+        | ((err: Error | null, stdout: string, stderr: string) => void)
+        | undefined;
+      mockExec.mockImplementation(
+        (
+          _cmd: string,
+          callback: (err: Error | null, stdout: string, stderr: string) => void
+        ) => {
+          finishCapture = callback;
+        }
+      );
+
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+      const capture = screenshot('screen');
+      await Promise.resolve();
+
+      expect(mockAddToHistory).not.toHaveBeenCalled();
+
+      finishCapture?.(null, '', '');
+      await capture;
+
+      expect(mockAddToHistory).toHaveBeenCalled();
+    });
+
     it('should log error when exec returns error', async () => {
       const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
       const testError = new Error('Test error');
@@ -780,6 +830,7 @@ describe('Screenshot Module', () => {
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('stderr: stderr message')
       );
+      expect(mockAddToHistory).toHaveBeenCalled();
       consoleSpy.mockRestore();
     });
 
@@ -804,6 +855,7 @@ describe('Screenshot Module', () => {
       const mockImage = {
         toPNG: vi.fn(),
         getSize: () => ({ width: 100, height: 100 }),
+        isEmpty: () => false,
       };
       mockNativeImageCreateFromBuffer.mockReturnValue(mockImage);
 
@@ -877,6 +929,13 @@ describe('Screenshot Module', () => {
 
   describe('IPC Handler: screenshot:read-file', () => {
     it('should return base64 encoded file content', async () => {
+      const { openScreenshotWindow } =
+        await import('@/main/capture/screenshot/open-editor');
+      openScreenshotWindow({
+        filePath: '/path/to/image.png',
+        width: 100,
+        height: 100,
+      });
       await import('@/main/capture/screenshot');
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -887,14 +946,22 @@ describe('Screenshot Module', () => {
 
       const testBuffer = Buffer.from('test image data');
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(testBuffer);
+      mockReadFile.mockResolvedValue(testBuffer);
 
-      const result = await handler(null, '/path/to/image.png');
+      const result = await handler({ sender: { id: 1 } });
 
       expect(result).toBe(testBuffer.toString('base64'));
+      expect(mockReadFile).toHaveBeenCalledWith('/path/to/image.png');
     });
 
     it('should throw error when file not found', async () => {
+      const { openScreenshotWindow } =
+        await import('@/main/capture/screenshot/open-editor');
+      openScreenshotWindow({
+        filePath: '/nonexistent/file.png',
+        width: 100,
+        height: 100,
+      });
       await import('@/main/capture/screenshot');
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -905,7 +972,7 @@ describe('Screenshot Module', () => {
 
       mockExistsSync.mockReturnValue(false);
 
-      await expect(handler(null, '/nonexistent/file.png')).rejects.toThrow(
+      await expect(handler({ sender: { id: 1 } })).rejects.toThrow(
         'File not found'
       );
     });
@@ -1197,13 +1264,15 @@ describe('Screenshot Module', () => {
       expect(mockExec).toHaveBeenCalled();
     });
 
-    it('should save to Capty folder in Pictures directory', async () => {
+    it('should save to Poratake folder in Pictures directory', async () => {
       mockExec.mockImplementation(
         (
           cmd: string,
           callback: (err: Error | null, stdout: string, stderr: string) => void
         ) => {
-          expect(cmd).toMatch(/\/mock\/Pictures\/Capty\//);
+          expect(cmd).toContain(
+            path.join('/mock/Pictures', 'Poratake') + path.sep
+          );
           if (callback) callback(null, '', '');
         }
       );

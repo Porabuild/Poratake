@@ -2,13 +2,7 @@ import { useCallback, useState } from 'react';
 import { Edit3, FileUp, Upload, X } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import { Select } from '@/renderer/components/ui/select';
 import { Slider } from '@/renderer/components/ui/slider';
 import { Switch } from '@/renderer/components/ui/switch';
 import CursorDataEditorDialog from './cursor-data-editor-dialog';
@@ -68,8 +62,8 @@ function getSmoothingLabel(value: number): string {
 
 function ColorSwatch({ color }: { color: string }) {
   return (
-    <div
-      className="size-4 rounded-full border border-gray-300"
+    <span
+      className="size-3 shrink-0 rounded-full border border-gray-300"
       style={{ backgroundColor: color }}
     />
   );
@@ -86,31 +80,29 @@ function ColorSelect({
   options: ColorOption[];
   onChange: (value: string) => void;
 }) {
-  const selectedName = options.find(c => c.value === value)?.name || 'Custom';
+  const selectOptions = options.map(option => ({
+    value: option.value,
+    label: option.name,
+    content: (
+      <span className="flex flex-1 items-center gap-2 text-xs">
+        <ColorSwatch color={option.value} />
+        {option.name}
+      </span>
+    ),
+  }));
 
   return (
     <div className="space-y-2">
       <Label className="text-sm">{label}</Label>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="h-8 w-full">
-          <SelectValue>
-            <div className="flex items-center gap-2">
-              <ColorSwatch color={value} />
-              <span className="text-sm">{selectedName}</span>
-            </div>
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {options.map(option => (
-            <SelectItem key={option.value} value={option.value}>
-              <div className="flex items-center gap-2">
-                <ColorSwatch color={option.value} />
-                <span className="text-sm">{option.name}</span>
-              </div>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Select
+        label={label}
+        size="sm"
+        className="w-full"
+        placeholder="Custom"
+        value={value}
+        options={selectOptions}
+        onChange={onChange}
+      />
     </div>
   );
 }
@@ -175,8 +167,8 @@ export default function CursorSettingsPanel({
 
           <div className="flex flex-col gap-2">
             <Button
-              variant="outline"
-              size="sm"
+              variant="tertiary"
+              size="xs"
               onClick={handleImport}
               disabled={isImporting}
               className="w-full gap-2"
@@ -186,8 +178,8 @@ export default function CursorSettingsPanel({
             </Button>
 
             <Button
-              variant="outline"
-              size="sm"
+              variant="tertiary"
+              size="xs"
               onClick={() => setIsEditorOpen(true)}
               className="w-full gap-2"
             >
@@ -248,8 +240,8 @@ export default function CursorSettingsPanel({
                   />
                 </div>
                 <Button
-                  variant="outline"
-                  size="sm"
+                  variant="tertiary"
+                  size="xs"
                   onClick={handleRemoveCustomCursor}
                   className="gap-1"
                 >
@@ -259,8 +251,8 @@ export default function CursorSettingsPanel({
               </div>
             ) : (
               <Button
-                variant="outline"
-                size="sm"
+                variant="tertiary"
+                size="xs"
                 onClick={handleSelectCustomCursor}
                 disabled={isLoadingImage}
                 className="w-full gap-2"
@@ -280,14 +272,15 @@ export default function CursorSettingsPanel({
             <div className="flex items-center justify-between">
               <Label className="text-sm">Size</Label>
               <span className="text-muted-foreground text-xs">
-                {cursorStyle.size}px
+                {cursorStyle.size}%
               </span>
             </div>
             <Slider
+              size="sm"
               value={[cursorStyle.size]}
               onValueChange={([value]) => updateStyle({ size: value })}
-              min={100}
-              max={300}
+              min={50}
+              max={250}
               step={5}
             />
           </div>
@@ -300,6 +293,7 @@ export default function CursorSettingsPanel({
               </span>
             </div>
             <Slider
+              size="sm"
               value={[cursorStyle.smoothing]}
               onValueChange={([value]) => updateStyle({ smoothing: value })}
               min={0}
@@ -320,6 +314,7 @@ export default function CursorSettingsPanel({
                 </p>
               </div>
               <Switch
+                size="sm"
                 checked={cursorStyle.motionBlur}
                 onCheckedChange={checked =>
                   updateStyle({ motionBlur: checked })
@@ -335,6 +330,7 @@ export default function CursorSettingsPanel({
                   </span>
                 </div>
                 <Slider
+                  size="sm"
                   value={[cursorStyle.motionBlurStrength]}
                   onValueChange={([value]) =>
                     updateStyle({ motionBlurStrength: value })
@@ -373,6 +369,7 @@ export default function CursorSettingsPanel({
                 </p>
               </div>
               <Switch
+                size="sm"
                 checked={cursorStyle.hideOnIdle}
                 onCheckedChange={checked =>
                   updateStyle({ hideOnIdle: checked })
@@ -388,6 +385,7 @@ export default function CursorSettingsPanel({
                   </span>
                 </div>
                 <Slider
+                  size="sm"
                   value={[cursorStyle.hideOnIdleTimeout]}
                   onValueChange={([value]) =>
                     updateStyle({ hideOnIdleTimeout: value })

@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'path';
+import { pathToFileURL } from 'url';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
@@ -11,6 +13,14 @@ const mockClipboardWriteBuffer = vi.fn();
 const mockLoadCursorData = vi.fn();
 const mockLoadCameraData = vi.fn();
 const mockGetAbsoluteCameraVideoPath = vi.fn();
+const mockAuthorizeExportOutputPaths = vi.fn();
+const mockIsExportOutputPathAllowed = vi.fn(() => true);
+const mockExecFile = vi.fn((...args: unknown[]) => {
+  const callback = args[3] as (error: Error | null) => void;
+  callback(null);
+});
+const previewEvent = { sender: { id: 1 } };
+const originalPlatform = process.platform;
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -28,6 +38,10 @@ vi.mock('fs', () => ({
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
   readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
+}));
+
+vi.mock('child_process', () => ({
+  execFile: (...args: unknown[]) => mockExecFile(...args),
 }));
 
 vi.mock('@/main/utils/ffmpeg', () => ({
@@ -54,12 +68,25 @@ vi.mock('@/main/capture/video/camera-data', () => ({
     mockGetAbsoluteCameraVideoPath(...a),
 }));
 
+vi.mock('@/main/capture/video/ipc/export-session', () => ({
+  authorizeExportOutputPaths: (...a: unknown[]) =>
+    mockAuthorizeExportOutputPaths(...a),
+  isExportOutputPathAllowed: (...a: unknown[]) =>
+    mockIsExportOutputPathAllowed(...a),
+}));
+
 describe('capture-preview video-export', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     vi.useFakeTimers();
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
+    mockIsExportOutputPathAllowed.mockReturnValue(true);
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
   describe('load-export-data', () => {
@@ -67,12 +94,13 @@ describe('capture-preview video-export', () => {
       mockProbeVideo.mockResolvedValue(null);
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
+      registerPreviewExportIpc(() => '/p/video.mov');
       const result = await ipcHandle['capture-preview:load-export-data'](
-        {},
-        '/p/video.mov'
+        previewEvent,
+        '/p/unrelated.mov'
       );
       expect(result).toBeNull();
+      expect(mockProbeVideo).toHaveBeenCalledWith('/p/video.mov');
     });
 
     it('returns payload with paths when files exist', async () => {
@@ -93,10 +121,9 @@ describe('capture-preview video-export', () => {
       );
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
+      registerPreviewExportIpc(() => '/p/Rec.capty');
       const result = (await ipcHandle['capture-preview:load-export-data'](
-        {},
-        '/p/Rec.capty'
+        previewEvent
       )) as Record<string, unknown>;
       expect(result.videoPath).toBe('/p/Rec.capty/recording.mov');
       expect(result.cameraVideoPath).toBe('/p/camera.mov');
@@ -112,10 +139,9 @@ describe('capture-preview video-export', () => {
       mockExistsSync.mockReturnValue(false);
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
+      registerPreviewExportIpc(() => '/p/video.mov');
       const result = (await ipcHandle['capture-preview:load-export-data'](
-        {},
-        '/p/video.mov'
+        previewEvent
       )) as Record<string, unknown>;
       expect(result.hasEmbeddedAudio).toBe(true);
     });
@@ -131,33 +157,56 @@ describe('capture-preview video-export', () => {
       mockReadFileSync.mockReturnValue('not-json');
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
+      registerPreviewExportIpc(() => '/p/Rec.capty');
       const result = (await ipcHandle['capture-preview:load-export-data'](
-        {},
-        '/p/Rec.capty'
+        previewEvent
       )) as Record<string, unknown>;
       expect(result.segments).toBeNull();
     });
   });
 
   describe('get-export-output-path', () => {
-    it('returns temp path with timestamp', async () => {
+    it('returns and authorizes a unique temp path', async () => {
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
-      const result = ipcHandle['capture-preview:get-export-output-path']();
-      expect(result).toMatch(/^\/tmp\/capty-clipboard-.*\.mp4$/);
+      registerPreviewExportIpc(() => '/p/video.mov');
+      const result =
+        ipcHandle['capture-preview:get-export-output-path'](previewEvent);
+      const prefix = path
+        .join('/tmp', 'capty-clipboard-')
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      expect(result).toMatch(new RegExp(`^${prefix}.*\\.mp4$`));
+      expect(mockAuthorizeExportOutputPaths).toHaveBeenCalledWith(
+        previewEvent.sender,
+        [result]
+      );
     });
   });
 
   describe('copy-video-to-clipboard', () => {
+    it('rejects paths outside the active export', async () => {
+      mockIsExportOutputPathAllowed.mockReturnValue(false);
+      mockExistsSync.mockReturnValue(true);
+      const { registerPreviewExportIpc } =
+        await import('@/main/capture/capture-preview/video-export');
+      registerPreviewExportIpc(() => '/p/video.mov');
+
+      const result = await ipcHandle['capture-preview:copy-video-to-clipboard'](
+        previewEvent,
+        '/p/unrelated.mp4'
+      );
+
+      expect(result).toBe(false);
+      expect(mockClipboardWriteBuffer).not.toHaveBeenCalled();
+    });
+
     it('returns false when output missing', async () => {
       mockExistsSync.mockReturnValue(false);
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
+      registerPreviewExportIpc(() => '/p/video.mov');
       const result = await ipcHandle['capture-preview:copy-video-to-clipboard'](
-        {},
+        previewEvent,
         '/p/out.mp4'
       );
       expect(result).toBe(false);
@@ -167,9 +216,9 @@ describe('capture-preview video-export', () => {
       mockExistsSync.mockReturnValue(true);
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
+      registerPreviewExportIpc(() => '/p/video.mov');
       const result = await ipcHandle['capture-preview:copy-video-to-clipboard'](
-        {},
+        previewEvent,
         '/p/out.mp4'
       );
       expect(result).toBe(true);
@@ -179,13 +228,64 @@ describe('capture-preview video-export', () => {
       );
     });
 
+    it('encodes special characters in file URLs', async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      mockExistsSync.mockReturnValue(true);
+      const outputPath = path.join(process.cwd(), 'Test User', 'clip #1.mp4');
+      const { registerPreviewExportIpc } =
+        await import('@/main/capture/capture-preview/video-export');
+      registerPreviewExportIpc(() => outputPath);
+
+      await ipcHandle['capture-preview:copy-video-to-clipboard'](
+        previewEvent,
+        outputPath
+      );
+
+      expect(mockClipboardWriteBuffer).toHaveBeenCalledWith(
+        'public.file-url',
+        Buffer.from(pathToFileURL(outputPath).href)
+      );
+    });
+
+    it('uses the Windows file-drop clipboard path', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      mockExistsSync.mockReturnValue(true);
+      const { registerPreviewExportIpc } =
+        await import('@/main/capture/capture-preview/video-export');
+      registerPreviewExportIpc(() => 'C:\\recording.mov');
+
+      const result = await ipcHandle['capture-preview:copy-video-to-clipboard'](
+        previewEvent,
+        'C:\\Users\\Test User\\clip #1.mp4'
+      );
+
+      expect(result).toBe(true);
+      expect(mockClipboardWriteBuffer).not.toHaveBeenCalled();
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'Set-Clipboard -LiteralPath $env:PORATAKE_CLIPBOARD_FILE',
+        ],
+        expect.objectContaining({
+          env: expect.objectContaining({
+            PORATAKE_CLIPBOARD_FILE: 'C:\\Users\\Test User\\clip #1.mp4',
+          }),
+          windowsHide: true,
+        }),
+        expect.any(Function)
+      );
+    });
+
     it('schedules cleanup that unlinks file', async () => {
       mockExistsSync.mockReturnValue(true);
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
+      registerPreviewExportIpc(() => '/p/video.mov');
       await ipcHandle['capture-preview:copy-video-to-clipboard'](
-        {},
+        previewEvent,
         '/p/out.mp4'
       );
       vi.advanceTimersByTime(5 * 60 * 1000);
@@ -199,9 +299,9 @@ describe('capture-preview video-export', () => {
       });
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc();
+      registerPreviewExportIpc(() => '/p/video.mov');
       const result = await ipcHandle['capture-preview:copy-video-to-clipboard'](
-        {},
+        previewEvent,
         '/p/out.mp4'
       );
       expect(result).toBe(false);

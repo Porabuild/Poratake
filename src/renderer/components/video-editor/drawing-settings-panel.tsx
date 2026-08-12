@@ -254,9 +254,9 @@ export default function DrawingSettingsPanel({
             <Button
               key={item.id}
               type="button"
-              variant={isActive ? 'secondary' : 'ghost'}
-              size="icon"
-              className="size-8"
+              variant={isActive ? 'tertiary' : 'ghost'}
+              size="icon-xs"
+              className="size-8!"
               onClick={() => updateSettings({ activeTool: item.id })}
               title={item.label}
             >
@@ -301,6 +301,7 @@ export default function DrawingSettingsPanel({
           configType === 'arrow') && (
           <SettingRow label="Thickness">
             <Slider
+              size="sm"
               className="w-32"
               value={[displayStrokeWidth]}
               min={1}
@@ -483,7 +484,7 @@ export default function DrawingSettingsPanel({
             <Button
               type="button"
               variant="ghost"
-              size="icon-sm"
+              size="icon-xs"
               className="text-destructive hover:text-destructive"
               onClick={handleDelete}
             >

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 import type { CameraData } from '@/types/camera';
 
 vi.mock('fs/promises', () => ({
@@ -33,7 +34,7 @@ describe('camera-data', () => {
       const { getCameraDataPath } =
         await import('@/main/capture/video/camera-data');
       expect(getCameraDataPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/camera.json'
+        path.join('/path/to/Rec.capty', 'camera.json')
       );
     });
 
@@ -51,7 +52,7 @@ describe('camera-data', () => {
       const { getCameraVideoPath } =
         await import('@/main/capture/video/camera-data');
       expect(getCameraVideoPath('/path/to/Rec.capty/recording.mov')).toBe(
-        '/path/to/Rec.capty/camera.mov'
+        path.join('/path/to/Rec.capty', 'camera.mov')
       );
     });
 
@@ -76,7 +77,7 @@ describe('camera-data', () => {
       const result = await loadCameraData('/path/to/Rec.capty/recording.mov');
       expect(result).toEqual(sampleCameraData);
       expect(fs.default.access).toHaveBeenCalledWith(
-        '/path/to/Rec.capty/camera.mov'
+        path.join('/path/to/Rec.capty', 'camera.mov')
       );
     });
 
@@ -136,7 +137,7 @@ describe('camera-data', () => {
         '/path/to/Rec.capty/recording.mov',
         sampleCameraData
       );
-      expect(result).toBe('/path/to/Rec.capty/camera.mov');
+      expect(result).toBe(path.join('/path/to/Rec.capty', 'camera.mov'));
     });
 
     it('joins relative videoFile to legacy video directory', async () => {
@@ -146,7 +147,7 @@ describe('camera-data', () => {
         '/path/to/video.mov',
         sampleCameraData
       );
-      expect(result).toBe('/path/to/camera.mov');
+      expect(result).toBe(path.join('/path/to', 'camera.mov'));
     });
   });
 
@@ -158,10 +159,10 @@ describe('camera-data', () => {
         await import('@/main/capture/video/camera-data');
       await deleteCameraData('/path/to/Rec.capty/recording.mov');
       expect(fs.default.unlink).toHaveBeenCalledWith(
-        '/path/to/Rec.capty/camera.json'
+        path.join('/path/to/Rec.capty', 'camera.json')
       );
       expect(fs.default.unlink).toHaveBeenCalledWith(
-        '/path/to/Rec.capty/camera.mov'
+        path.join('/path/to/Rec.capty', 'camera.mov')
       );
     });
 

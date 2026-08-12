@@ -6,19 +6,14 @@ import {
   Check,
   Copy,
   ExternalLink,
+  X,
 } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
 import { Separator } from '@/renderer/components/ui/separator';
 import { Switch } from '@/renderer/components/ui/switch';
 import { Progress } from '@/renderer/components/ui/progress';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import { Select } from '@/renderer/components/ui/select';
 import {
   FORMAT_CONFIGS,
   type VideoExportOptions,
@@ -42,12 +37,19 @@ import {
   formatDuration,
   formatFileSize,
 } from './export-estimation';
+import {
+  useExportProgress,
+  formatExportTime,
+} from './hooks/use-export-progress';
 
 interface ExportSettingsPanelProps {
   exportSettings: ExportSettings;
   onExportSettingsChange: (settings: ExportSettings) => void;
   onExport: (options: VideoExportOptions) => void;
   isExporting: boolean;
+  exportProgress: number;
+  onCancelExport: () => void;
+  exportError: string | null;
   videoDurationSeconds: number;
   hasCamera: boolean;
   hasWallpaper: boolean;
@@ -148,7 +150,7 @@ function CloudUploadStatus({
           </span>
           <Button
             variant="ghost"
-            size="sm"
+            size="xs"
             className="text-muted-foreground h-6 px-2 text-xs"
             onClick={onCancel}
           >
@@ -183,8 +185,8 @@ function CloudUploadStatus({
       </p>
       <div className="flex gap-2">
         <Button
-          variant="outline"
-          size="sm"
+          variant="tertiary"
+          size="xs"
           className="h-7 flex-1"
           onClick={handleCopy}
         >
@@ -201,8 +203,8 @@ function CloudUploadStatus({
           )}
         </Button>
         <Button
-          variant="outline"
-          size="sm"
+          variant="tertiary"
+          size="xs"
           className="h-7 flex-1"
           onClick={openUrl}
         >
@@ -220,6 +222,9 @@ interface ExportEstimateSectionProps {
   hasCamera: boolean;
   hasWallpaper: boolean;
   isExporting: boolean;
+  exportProgress: number;
+  onCancelExport: () => void;
+  exportError: string | null;
   onExport: () => void;
   onOpenInFinderChange: (value: boolean) => void;
   uploadToCloud: boolean;
@@ -237,6 +242,9 @@ function ExportEstimateSection({
   hasCamera,
   hasWallpaper,
   isExporting,
+  exportProgress,
+  onCancelExport,
+  exportError,
   onExport,
   onOpenInFinderChange,
   uploadToCloud,
@@ -257,6 +265,11 @@ function ExportEstimateSection({
       ),
     [exportSettings, videoDurationSeconds, hasCamera, hasWallpaper]
   );
+
+  const { elapsedSeconds, remainingSeconds } = useExportProgress({
+    isExporting,
+    progress: exportProgress,
+  });
 
   const buttonText =
     exportSettings.format === 'gif' ? 'Export GIF' : 'Export Video';
@@ -289,6 +302,7 @@ function ExportEstimateSection({
           Reveal in Finder after export
         </Label>
         <Switch
+          size="sm"
           id="open-in-finder"
           checked={exportSettings.openInFinder}
           onCheckedChange={onOpenInFinderChange}
@@ -300,6 +314,7 @@ function ExportEstimateSection({
             Upload to cloud after export
           </Label>
           <Switch
+            size="sm"
             id="upload-to-cloud"
             checked={cloudConfigured && uploadToCloud}
             disabled={!cloudConfigured}
@@ -312,9 +327,50 @@ function ExportEstimateSection({
           </p>
         )}
       </div>
-      <Button className="w-full" onClick={onExport} disabled={isExporting}>
-        {buttonText}
-      </Button>
+      {isExporting ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium">Exporting...</span>
+            <span className="text-muted-foreground text-xs tabular-nums">
+              {Math.round(exportProgress)}%
+            </span>
+          </div>
+          <Progress value={exportProgress} className="h-1.5" />
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground text-xs tabular-nums">
+              {formatExportTime(elapsedSeconds)} elapsed
+            </span>
+            <span className="text-muted-foreground text-xs tabular-nums">
+              {remainingSeconds !== null
+                ? `${formatExportTime(remainingSeconds)} remaining`
+                : 'Calculating...'}
+            </span>
+          </div>
+          <Button
+            variant="tertiary"
+            size="xs"
+            className="w-full"
+            onClick={onCancelExport}
+          >
+            <X className="mr-1 size-3.5" />
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <Button
+          variant="tertiary"
+          size="xs"
+          className="w-full"
+          onClick={onExport}
+        >
+          {buttonText}
+        </Button>
+      )}
+      {exportError && (
+        <p className="text-destructive text-xs" role="alert">
+          {exportError}
+        </p>
+      )}
       <CloudUploadStatus
         uploadState={cloudUploadState}
         uploadedUrl={uploadedUrl}
@@ -330,6 +386,9 @@ export default function ExportSettingsPanel({
   onExportSettingsChange,
   onExport,
   isExporting,
+  exportProgress,
+  onCancelExport,
+  exportError,
   videoDurationSeconds,
   hasCamera,
   hasWallpaper,
@@ -505,7 +564,6 @@ export default function ExportSettingsPanel({
   ]);
 
   const renderSelect = <T extends string>(
-    id: string,
     label: string,
     value: T,
     options: SelectOption<T>[],
@@ -520,36 +578,38 @@ export default function ExportSettingsPanel({
       onChange(v as T);
     };
 
+    const selectOptions = options.map(opt => {
+      const locked = opt.isPro && !isPro;
+      return {
+        value: opt.value,
+        label: opt.label,
+        content: (
+          <span className="flex flex-1 items-center justify-between gap-2">
+            <span className={locked ? 'text-muted-foreground' : ''}>
+              {opt.label}
+            </span>
+            {locked && (
+              <span className="text-primary flex items-center gap-1 text-xs">
+                <Sparkles className="size-3" />
+                Pro
+              </span>
+            )}
+          </span>
+        ),
+      };
+    });
+
     return (
       <div className="space-y-2">
-        <Label htmlFor={id} className="text-xs">
-          {label}
-        </Label>
-        <Select value={value} onValueChange={handleChange}>
-          <SelectTrigger id={id} className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {options.map(opt => {
-              const locked = opt.isPro && !isPro;
-              return (
-                <SelectItem key={opt.value} value={opt.value}>
-                  <span className="flex w-full items-center justify-between gap-2">
-                    <span className={locked ? 'text-muted-foreground' : ''}>
-                      {opt.label}
-                    </span>
-                    {locked && (
-                      <span className="text-primary flex items-center gap-1 text-xs">
-                        <Sparkles className="h-3 w-3" />
-                        Pro
-                      </span>
-                    )}
-                  </span>
-                </SelectItem>
-              );
-            })}
-          </SelectContent>
-        </Select>
+        <Label className="text-xs">{label}</Label>
+        <Select
+          label={label}
+          size="sm"
+          className="w-full"
+          value={value}
+          options={selectOptions}
+          onChange={handleChange}
+        />
       </div>
     );
   };
@@ -564,15 +624,8 @@ export default function ExportSettingsPanel({
           </p>
         </div>
 
+        {renderSelect('Format', resolvedFormat, FORMAT_OPTIONS, setFormat)}
         {renderSelect(
-          'format',
-          'Format',
-          resolvedFormat,
-          FORMAT_OPTIONS,
-          setFormat
-        )}
-        {renderSelect(
-          'resolution',
           'Resolution',
           resolvedResolution,
           resolutionOptions,
@@ -581,7 +634,6 @@ export default function ExportSettingsPanel({
 
         {formatConfig.hasQuality &&
           renderSelect(
-            'compression',
             'Compression',
             resolvedQualityPreset,
             QUALITY_PRESET_OPTIONS,
@@ -589,7 +641,6 @@ export default function ExportSettingsPanel({
           )}
 
         {renderSelect(
-          'framerate',
           'Frame Rate',
           resolvedFrameRate,
           frameRateOptions,
@@ -603,7 +654,10 @@ export default function ExportSettingsPanel({
         hasCamera={hasCamera}
         hasWallpaper={hasWallpaper}
         isExporting={isExporting}
+        exportProgress={exportProgress}
+        onCancelExport={onCancelExport}
         onExport={handleExport}
+        exportError={exportError}
         onOpenInFinderChange={setOpenInFinder}
         uploadToCloud={uploadToCloud}
         onUploadToCloudChange={onUploadToCloudChange}
@@ -617,7 +671,7 @@ export default function ExportSettingsPanel({
       <UpgradeDialog
         open={upgradeOpen}
         onOpenChange={setUpgradeOpen}
-        reason="Export in 4K, 60fps, Studio quality and GIF with Capty Pro."
+        reason="A Capty license unlocks 4K, 60fps, Studio quality, and GIF export in Poratake."
       />
     </div>
   );

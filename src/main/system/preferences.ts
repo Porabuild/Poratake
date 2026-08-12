@@ -1,4 +1,6 @@
-import { systemPreferences, ipcMain, BrowserWindow, shell } from 'electron';
+import { systemPreferences, ipcMain, BrowserWindow } from 'electron';
+import { isMac, isWindows } from '@/main/utils/platform';
+import { openExternalUrl } from '@/main/utils/external-url';
 
 export function getAccentColor(): string {
   try {
@@ -15,23 +17,23 @@ export function init() {
     return getAccentColor();
   });
 
-  ipcMain.on('open-external', (_event, url: string) => {
-    shell.openExternal(url);
+  ipcMain.on('open-external', (_event, url: unknown) => {
+    openExternalUrl(url);
   });
 
-  if (process.platform === 'darwin') {
-    const notifyAccentColorChange = () => {
-      setTimeout(() => {
-        const newColor = getAccentColor();
-        BrowserWindow.getAllWindows().forEach(window => {
-          window.webContents.send(
-            'system:preferences:accent-color-changed',
-            newColor
-          );
-        });
-      }, 50);
-    };
+  const notifyAccentColorChange = () => {
+    setTimeout(() => {
+      const newColor = getAccentColor();
+      BrowserWindow.getAllWindows().forEach(window => {
+        window.webContents.send(
+          'system:preferences:accent-color-changed',
+          newColor
+        );
+      });
+    }, 50);
+  };
 
+  if (isMac) {
     systemPreferences.subscribeNotification(
       'AppleColorPreferencesChangedNotification',
       notifyAccentColorChange
@@ -40,5 +42,9 @@ export function init() {
       'AppleAquaColorVariantChanged',
       notifyAccentColorChange
     );
+  }
+
+  if (isWindows) {
+    systemPreferences.on('accent-color-changed', notifyAccentColorChange);
   }
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 const mockGetConfig = vi.fn();
 const mockUpdateConfig = vi.fn();
@@ -78,7 +79,7 @@ describe('save location', () => {
       });
       const { resolveSaveDialogPath } = await importModule();
       expect(resolveSaveDialogPath('screenshot', 'Shot.png', '/Pictures')).toBe(
-        '/Users/me/Desktop/Shot.png'
+        path.join('/Users/me/Desktop', 'Shot.png')
       );
     });
 
@@ -86,7 +87,7 @@ describe('save location', () => {
       mockGetConfig.mockReturnValue({ saveLocations: {} });
       const { resolveSaveDialogPath } = await importModule();
       expect(resolveSaveDialogPath('screenshot', 'Shot.png', '/Pictures')).toBe(
-        '/Pictures/Shot.png'
+        path.join('/Pictures', 'Shot.png')
       );
     });
 

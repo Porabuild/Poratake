@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import LicenseTab from '@/renderer/components/settings/license-tab';
 import AboutTab from '@/renderer/components/settings/about-tab';
 import SettingsSidebar from '@/renderer/components/settings/settings-sidebar';
 import SettingsCategoryPage from '@/renderer/components/settings/settings-category-page';
 import SettingsSearchResults from '@/renderer/components/settings/settings-search-results';
-import type { SettingsConfig } from '@/types/settings';
+import type { SettingsConfig, SettingsUiConfig } from '@/types/settings';
 import { DEFAULT_SETTINGS } from '@/types/settings';
 import { SETTINGS_CATEGORIES } from '@/renderer/components/settings/settings-registry';
 
@@ -16,6 +16,7 @@ export default function SettingsWindow() {
   const [activeTab, setActiveTab] = useState(DEFAULT_TAB);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const updateSequence = useRef(0);
 
   const getTabFromHash = useCallback(() => {
     const hash = window.location.hash.slice(1);
@@ -24,8 +25,10 @@ export default function SettingsWindow() {
 
   useEffect(() => {
     const loadInitialData = async () => {
-      const loadedSettings = await window.ipcRenderer.invoke('settings:get');
-      setSettings(loadedSettings);
+      const loadedSettings = (await window.ipcRenderer.invoke(
+        'settings:get-ui'
+      )) as SettingsUiConfig;
+      setSettings({ ...DEFAULT_SETTINGS, ...loadedSettings });
       setIsLoading(false);
     };
     loadInitialData();
@@ -65,14 +68,21 @@ export default function SettingsWindow() {
   }, []);
 
   const handleUpdate = useCallback(async (updates: Partial<SettingsConfig>) => {
-    const updatedSettings = await window.ipcRenderer.invoke(
+    const sequence = ++updateSequence.current;
+    const updatedSettings = (await window.ipcRenderer.invoke(
       'settings:update',
       updates
-    );
-    setSettings(updatedSettings);
+    )) as SettingsUiConfig;
+    if (sequence === updateSequence.current) {
+      setSettings({ ...DEFAULT_SETTINGS, ...updatedSettings });
+    }
 
     if (updates.shortcuts) {
       window.ipcRenderer.send('shortcuts:reload');
+    }
+
+    if (updates.preview) {
+      window.ipcRenderer.send('capture-preview:reposition');
     }
   }, []);
 
@@ -114,25 +124,22 @@ export default function SettingsWindow() {
   };
 
   return (
-    <div className="bg-background flex h-screen w-full flex-col">
-      <div
-        className="flex h-10 w-full shrink-0 items-center justify-center border-b"
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        <span className="text-muted-foreground text-xs font-medium">
-          Settings
-        </span>
-      </div>
+    <div className="poratake-settings-shell bg-content flex h-screen w-full">
+      <SettingsSidebar
+        activeCategory={activeTab}
+        searchQuery={searchQuery}
+        onCategoryChange={handleTabChange}
+        onSearchChange={setSearchQuery}
+      />
 
-      <div className="flex min-h-0 flex-1">
-        <SettingsSidebar
-          activeCategory={activeTab}
-          searchQuery={searchQuery}
-          onCategoryChange={handleTabChange}
-          onSearchChange={setSearchQuery}
+      <div className="poratake-settings-content bg-content flex min-w-0 flex-1 flex-col">
+        <div
+          className="h-10 w-full shrink-0"
+          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         />
-
-        <div className="flex-1 overflow-auto px-6 py-4">{renderContent()}</div>
+        <main className="min-h-0 flex-1 overflow-auto px-6 pt-3 pb-8">
+          {renderContent()}
+        </main>
       </div>
     </div>
   );

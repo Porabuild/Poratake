@@ -1,23 +1,46 @@
 import * as React from 'react';
-import * as SeparatorPrimitive from '@radix-ui/react-separator';
+import { Separator as HeroSeparator, separatorVariants } from '@heroui/react';
 
 import { cn } from '@/renderer/lib/utils';
+
+interface SeparatorProps extends Omit<
+  React.ComponentProps<typeof HeroSeparator>,
+  'orientation'
+> {
+  orientation?: 'horizontal' | 'vertical';
+  decorative?: boolean;
+}
 
 function Separator({
   className,
   orientation = 'horizontal',
   decorative = true,
+  variant,
   ...props
-}: React.ComponentProps<typeof SeparatorPrimitive.Root>) {
+}: SeparatorProps) {
+  const separatorClassName = cn('shrink-0', className);
+  if (decorative) {
+    return (
+      <div
+        data-slot="separator"
+        data-orientation={orientation}
+        className={separatorVariants({
+          orientation,
+          variant,
+          className: separatorClassName,
+        })}
+        role="presentation"
+        aria-hidden
+      />
+    );
+  }
+
   return (
-    <SeparatorPrimitive.Root
+    <HeroSeparator
       data-slot="separator"
-      decorative={decorative}
       orientation={orientation}
-      className={cn(
-        'bg-border shrink-0 data-[orientation=horizontal]:h-px data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-px',
-        className
-      )}
+      variant={variant}
+      className={separatorClassName}
       {...props}
     />
   );

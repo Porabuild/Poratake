@@ -2,8 +2,9 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { loadCursorData } from './cursor-data';
 import { getEditorStatePath } from './recording-project';
-import { generateAutoZoomSegments } from './auto-zoom';
+import { generateAutoZoomSegments } from '@/types/auto-zoom';
 import type { VideoEditorState } from '@/types/video-editor-state';
+import { EDITOR_STATE_VERSION } from '@/types/video-editor-state';
 import type { RecordingType } from '@/types/video';
 import { DEFAULT_CURSOR_STYLE } from '@/types/cursor';
 import { DEFAULT_CAMERA_STYLE } from '@/types/camera';
@@ -36,7 +37,9 @@ export async function generateInitialEditorState({
   }
 
   const cursorData = await loadCursorData(projectPath);
-  const shouldGenerateAutoZoom = getConfig().recording.autoZoom;
+  const recordingSettings = getConfig().recording;
+  const shouldGenerateAutoZoom = recordingSettings.autoZoom;
+  const cameraMirrored = recordingSettings.camera?.flipped ?? false;
   const zoomSegments =
     shouldGenerateAutoZoom && cursorData
       ? generateAutoZoomSegments(cursorData)
@@ -47,12 +50,12 @@ export async function generateInitialEditorState({
   }
 
   const initialState: VideoEditorState = {
-    version: 1,
+    version: EDITOR_STATE_VERSION,
     savedAt: new Date().toISOString(),
     recordingType,
     segments: [],
     cursorStyle: DEFAULT_CURSOR_STYLE,
-    cameraStyle: DEFAULT_CAMERA_STYLE,
+    cameraStyle: { ...DEFAULT_CAMERA_STYLE, mirrored: cameraMirrored },
     keyboardStyle: DEFAULT_KEYBOARD_STYLE,
     subtitleStyle: DEFAULT_SUBTITLE_STYLE,
     audioStyle: DEFAULT_AUDIO_STYLE,

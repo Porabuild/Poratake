@@ -17,10 +17,12 @@ interface MockChild extends EventEmitter {
 
 let mockChild: MockChild;
 const mockSpawn = vi.fn();
+const mockExecFileSync = vi.fn();
 const mockExecSync = vi.fn();
 
 vi.mock('child_process', () => ({
   spawn: (...a: unknown[]) => mockSpawn(...a),
+  execFileSync: (...a: unknown[]) => mockExecFileSync(...a),
   execSync: (...a: unknown[]) => mockExecSync(...a),
 }));
 
@@ -48,6 +50,9 @@ describe('NativeDaemon', () => {
     vi.resetModules();
     mockChild = makeMockChild();
     mockSpawn.mockReturnValue(mockChild);
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error('no stale');
+    });
     mockExecSync.mockImplementation(() => {
       throw new Error('no stale');
     });
@@ -153,6 +158,29 @@ describe('NativeDaemon', () => {
     await stopPromise;
   });
 
+  it('call rejects immediately when the daemon pipe write fails', async () => {
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    setImmediate(() => {
+      mockChild.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+      );
+    });
+    await start;
+    mockChild.stdin.write = vi.fn(() => {
+      throw new Error('broken pipe');
+    });
+
+    await expect(daemon.call('mymod', 'method')).rejects.toThrow(
+      'Daemon stdin write failed'
+    );
+
+    const stopPromise = daemon.stop();
+    mockChild.emit('exit', 0, null);
+    await stopPromise;
+  });
+
   it('event handlers receive daemon-event messages', async () => {
     const { daemon } = await import('@/main/daemon');
     const start = daemon.start();
@@ -239,5 +267,166 @@ describe('NativeDaemon', () => {
     const callPromise = daemon.call('mymod', 'method');
     mockChild.emit('exit', 1, null);
     await expect(callPromise).rejects.toThrow(/Daemon exited/);
+  });
+
+  it('cancels a scheduled restart when the daemon is stopped', async () => {
+    vi.useFakeTimers();
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    mockChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+
+    mockChild.emit('exit', 1, null);
+    await daemon.stop();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries when an automatic restart fails before ready', async () => {
+    vi.useFakeTimers();
+    const firstChild = makeMockChild();
+    const failedRestart = makeMockChild();
+    const successfulRestart = makeMockChild();
+    mockSpawn
+      .mockReturnValueOnce(firstChild)
+      .mockReturnValueOnce(failedRestart)
+      .mockReturnValueOnce(successfulRestart);
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    firstChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+
+    firstChild.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(1000);
+    failedRestart.emit('error', new Error('restart failed'));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(2000);
+    successfulRestart.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await Promise.resolve();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(3);
+    const stopPromise = daemon.stop();
+    successfulRestart.emit('exit', 0, null);
+    await stopPromise;
+    consoleError.mockRestore();
+  });
+
+  it('can start again after a spawn error', async () => {
+    const firstChild = makeMockChild();
+    const secondChild = makeMockChild();
+    mockSpawn.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
+
+    const { daemon } = await import('@/main/daemon');
+    const firstStart = daemon.start();
+    const firstResult = expect(firstStart).rejects.toThrow('spawn failed');
+    firstChild.emit('error', new Error('spawn failed'));
+    await firstResult;
+
+    const secondStart = daemon.start();
+    secondChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await secondStart;
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    const stopPromise = daemon.stop();
+    secondChild.emit('exit', 0, null);
+    await stopPromise;
+  });
+
+  it('can start again after the daemon closes before ready', async () => {
+    const firstChild = makeMockChild();
+    const secondChild = makeMockChild();
+    mockSpawn.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
+
+    const { daemon } = await import('@/main/daemon');
+    const firstStart = daemon.start();
+    const firstResult = expect(firstStart).rejects.toThrow(
+      'Daemon closed before ready: code=1 signal=null'
+    );
+    firstChild.emit('close', 1, null);
+    await firstResult;
+
+    const secondStart = daemon.start();
+    secondChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await secondStart;
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    const stopPromise = daemon.stop();
+    secondChild.emit('exit', 0, null);
+    await stopPromise;
+  });
+
+  it('can start again after the daemon exits before ready', async () => {
+    const firstChild = makeMockChild();
+    const secondChild = makeMockChild();
+    mockSpawn.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
+
+    const { daemon } = await import('@/main/daemon');
+    const firstStart = daemon.start();
+    const firstResult = expect(firstStart).rejects.toThrow(
+      'Daemon exited before ready: code=1 signal=null'
+    );
+    firstChild.emit('exit', 1, null);
+    await firstResult;
+
+    const secondStart = daemon.start();
+    secondChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await secondStart;
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    const stopPromise = daemon.stop();
+    secondChild.emit('exit', 0, null);
+    await stopPromise;
+  });
+
+  it('kills a timed-out startup and can start again', async () => {
+    vi.useFakeTimers();
+    const firstChild = makeMockChild();
+    const secondChild = makeMockChild();
+    mockSpawn.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
+
+    const { daemon } = await import('@/main/daemon');
+    const firstStart = daemon.start();
+    const firstResult = expect(firstStart).rejects.toThrow(
+      'Daemon ready timeout'
+    );
+    await vi.advanceTimersByTimeAsync(10000);
+    await firstResult;
+
+    expect(firstChild.kill).toHaveBeenCalledWith('SIGKILL');
+
+    const secondStart = daemon.start();
+    secondChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await secondStart;
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    const stopPromise = daemon.stop();
+    secondChild.emit('exit', 0, null);
+    await stopPromise;
   });
 });

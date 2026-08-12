@@ -145,6 +145,7 @@ describe('Main Process', () => {
     mockSettings.needsOnboarding.mockReturnValue(false);
     mockApp.getVersion.mockReturnValue('1.0.0');
     mockSingleInstanceLock = true;
+    mockHistory.init.mockResolvedValue(undefined);
     mockSettingsConfig.general.hideMenuBarIcon = false;
   });
 
@@ -217,6 +218,29 @@ describe('Main Process', () => {
   });
 
   describe('initializeRuntimeModules', () => {
+    it('loads history before enabling capture shortcuts', async () => {
+      let finishHistory: () => void = () => {};
+      mockHistory.init.mockReturnValueOnce(
+        new Promise<void>(resolve => {
+          finishHistory = resolve;
+        })
+      );
+
+      await import('@/main/main');
+      await vi.waitFor(() => {
+        expect(mockHistory.init).toHaveBeenCalled();
+      });
+
+      expect(mockShortcuts.init).not.toHaveBeenCalled();
+      expect(mockMenu.init).not.toHaveBeenCalled();
+
+      finishHistory();
+      await vi.waitFor(() => {
+        expect(mockShortcuts.init).toHaveBeenCalled();
+        expect(mockMenu.init).toHaveBeenCalled();
+      });
+    });
+
     it('should initialize shortcuts', async () => {
       await import('@/main/main');
 
@@ -246,7 +270,9 @@ describe('Main Process', () => {
     it('should be called after modules are initialized', async () => {
       await import('@/main/main');
 
-      expect(mockUpdate.handleAppUpdate).toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(mockUpdate.handleAppUpdate).toHaveBeenCalled();
+      });
     });
   });
 
@@ -260,9 +286,9 @@ describe('Main Process', () => {
       );
     });
 
-    it('should quit app on non-darwin platforms', async () => {
+    it('should quit app on linux', async () => {
       const originalPlatform = process.platform;
-      Object.defineProperty(process, 'platform', { value: 'win32' });
+      Object.defineProperty(process, 'platform', { value: 'linux' });
 
       await import('@/main/main');
 
@@ -273,6 +299,24 @@ describe('Main Process', () => {
       }
 
       expect(mockApp.quit).toHaveBeenCalled();
+
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    });
+
+    it('should not quit app on win32', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+
+      mockApp.quit.mockClear();
+
+      await import('@/main/main');
+
+      const handler = appEventHandlers['window-all-closed'];
+      if (handler) {
+        handler();
+      }
+
+      expect(mockApp.quit).not.toHaveBeenCalled();
 
       Object.defineProperty(process, 'platform', { value: originalPlatform });
     });

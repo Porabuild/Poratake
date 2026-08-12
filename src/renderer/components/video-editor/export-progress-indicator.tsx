@@ -3,6 +3,10 @@ import { X, Check } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { CircularProgress } from '@/renderer/components/ui/circular-progress';
 import { Progress } from '@/renderer/components/ui/progress';
+import {
+  useExportProgress,
+  formatExportTime,
+} from './hooks/use-export-progress';
 import { cn } from '@/renderer/lib/utils';
 
 interface ExportProgressIndicatorProps {
@@ -11,15 +15,7 @@ interface ExportProgressIndicatorProps {
   onCancel: () => void;
 }
 
-const MIN_PROGRESS_FOR_ETA = 5;
-const ETA_SMOOTHING_FACTOR = 0.1;
 const COMPLETION_DISPLAY_MS = 3000;
-
-function formatTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds) % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
 
 export default function ExportProgressIndicator({
   isExporting,
@@ -28,49 +24,24 @@ export default function ExportProgressIndicator({
 }: ExportProgressIndicatorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [showComplete, setShowComplete] = useState(false);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
 
-  const startTimeRef = useRef<number>(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const smoothedRemainingRef = useRef<number | null>(null);
-  const lastProgressRef = useRef<number>(0);
+  const wasExportingRef = useRef(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const wasExportingRef = useRef(false);
+
+  const { elapsedSeconds, remainingSeconds } = useExportProgress({
+    isExporting,
+    progress,
+  });
 
   useEffect(() => {
     if (isExporting) {
       wasExportingRef.current = true;
-      startTimeRef.current = Date.now();
-      lastProgressRef.current = 0;
-      smoothedRemainingRef.current = null;
-      setElapsedSeconds(0);
-      setRemainingSeconds(null);
       setShowComplete(false);
-
-      intervalRef.current = setInterval(() => {
-        if (!startTimeRef.current) return;
-        const elapsed = (Date.now() - startTimeRef.current) / 1000;
-        setElapsedSeconds(elapsed);
-      }, 100);
-    } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
+      return;
     }
 
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-  }, [isExporting]);
-
-  useEffect(() => {
-    if (wasExportingRef.current && !isExporting && progress >= 100) {
+    if (wasExportingRef.current && progress >= 100) {
       setShowComplete(true);
       const timer = setTimeout(() => {
         setShowComplete(false);
@@ -80,35 +51,8 @@ export default function ExportProgressIndicator({
       return () => clearTimeout(timer);
     }
 
-    if (!isExporting) {
-      wasExportingRef.current = false;
-    }
+    wasExportingRef.current = false;
   }, [isExporting, progress]);
-
-  useEffect(() => {
-    if (!isExporting || !startTimeRef.current) return;
-    if (progress <= MIN_PROGRESS_FOR_ETA) return;
-    if (progress === lastProgressRef.current) return;
-
-    const now = Date.now();
-    const elapsed = (now - startTimeRef.current) / 1000;
-
-    lastProgressRef.current = progress;
-
-    const progressFraction = progress / 100;
-    const estimatedTotal = elapsed / progressFraction;
-    const rawRemaining = Math.max(0, estimatedTotal - elapsed);
-
-    if (smoothedRemainingRef.current === null) {
-      smoothedRemainingRef.current = rawRemaining;
-    } else {
-      smoothedRemainingRef.current =
-        smoothedRemainingRef.current +
-        ETA_SMOOTHING_FACTOR * (rawRemaining - smoothedRemainingRef.current);
-    }
-
-    setRemainingSeconds(Math.round(smoothedRemainingRef.current));
-  }, [progress, isExporting]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -142,14 +86,12 @@ export default function ExportProgressIndicator({
 
   return (
     <div className="no-drag relative flex items-center">
-      <button
+      <Button
         ref={triggerRef}
+        variant={isOpen ? 'tertiary' : 'ghost'}
+        size="icon-xs"
+        className="size-7!"
         onClick={handleToggle}
-        className={cn(
-          'relative flex size-7 items-center justify-center rounded-md transition-colors',
-          'hover:bg-accent hover:text-accent-foreground',
-          isOpen && 'bg-accent text-accent-foreground'
-        )}
       >
         {showComplete ? (
           <div className="bg-primary flex size-4 items-center justify-center rounded-full">
@@ -161,7 +103,7 @@ export default function ExportProgressIndicator({
         ) : (
           <CircularProgress value={progress} size={16} strokeWidth={2} />
         )}
-      </button>
+      </Button>
 
       {isOpen && (
         <div
@@ -195,18 +137,18 @@ export default function ExportProgressIndicator({
 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground text-xs tabular-nums">
-                    {formatTime(elapsedSeconds)} elapsed
+                    {formatExportTime(elapsedSeconds)} elapsed
                   </span>
                   <span className="text-muted-foreground text-xs tabular-nums">
                     {remainingSeconds !== null
-                      ? `${formatTime(remainingSeconds)} remaining`
+                      ? `${formatExportTime(remainingSeconds)} remaining`
                       : 'Calculating...'}
                   </span>
                 </div>
 
                 <Button
-                  variant="outline"
-                  size="sm"
+                  variant="tertiary"
+                  size="xs"
                   onClick={handleCancel}
                   className="w-full"
                 >

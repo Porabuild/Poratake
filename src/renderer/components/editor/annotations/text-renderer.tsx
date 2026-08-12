@@ -163,7 +163,7 @@ export function renderTextHandles({
     fill: 'white',
     stroke: '#007AFF',
     strokeWidth: 2,
-    cursor: 'pointer',
+    cursor: 'default',
     pointerEvents: 'auto' as const,
   };
 

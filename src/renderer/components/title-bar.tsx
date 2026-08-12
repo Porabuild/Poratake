@@ -1,6 +1,9 @@
 import Toolbar from '@/renderer/components/editor/toolbar';
 import ToolOptions from '@/renderer/components/editor/tool-options';
 import ColorPicker from '@/renderer/components/editor/color-picker';
+import WindowControlsSpacer from '@/renderer/components/window-controls-spacer';
+import { isMacPlatform } from '@/renderer/utils/platform';
+import { cn } from '@/renderer/lib/utils';
 import type {
   ArrowStyle,
   HighlightColor,
@@ -77,6 +80,7 @@ interface TitleBarProps {
   editorShortcuts?: EditorShortcuts;
   isCaptureMode?: boolean;
   onCaptureClick?: () => void;
+  onWallpaperIntent?: () => void;
 }
 
 export default function TitleBar({
@@ -124,55 +128,66 @@ export default function TitleBar({
   editorShortcuts,
   isCaptureMode,
   onCaptureClick,
+  onWallpaperIntent,
 }: TitleBarProps) {
+  const isMac = isMacPlatform();
   const cloudUploadHint = cloudUploadShortcut
     ? ` (${formatAccelerator(cloudUploadShortcut)})`
     : '';
+  const contextualControls = (
+    <>
+      <ToolOptions
+        activeTool={activeTool}
+        strokeWidth={strokeWidth}
+        onStrokeWidthChange={onStrokeWidthChange}
+        arrowStyle={arrowStyle}
+        onArrowStyleChange={onArrowStyleChange}
+        highlightOpacity={highlightOpacity}
+        onHighlightOpacityChange={onHighlightOpacityChange}
+        numberStyle={numberStyle}
+        onNumberStyleChange={onNumberStyleChange}
+        numberSize={numberSize}
+        onNumberSizeChange={onNumberSizeChange}
+        numberStartValue={numberStartValue}
+        onNumberStartValueChange={onNumberStartValueChange}
+        textBackground={textBackground}
+        onTextBackgroundChange={onTextBackgroundChange}
+        textFontSize={textFontSize}
+        onTextFontSizeChange={onTextFontSizeChange}
+        textFontFamily={textFontFamily}
+        onTextFontFamilyChange={onTextFontFamilyChange}
+        redactStyle={redactStyle}
+        onRedactStyleChange={onRedactStyleChange}
+        redactIntensity={redactIntensity}
+        onRedactIntensityChange={onRedactIntensityChange}
+        shapeFillMode={shapeFillMode}
+        onShapeFillModeChange={onShapeFillModeChange}
+        selectedColor={color}
+      />
+      <ColorPicker
+        selectedColor={activeTool === 'highlight' ? highlightColor : color}
+        onColorChange={
+          activeTool === 'highlight'
+            ? c => onHighlightColorChange(c as HighlightColor)
+            : onColorChange
+        }
+        activeTool={activeTool}
+        highlightOpacity={highlightOpacity}
+      />
+    </>
+  );
 
   return (
-    <div className="drag-region bg-card border-border fixed top-0 right-0 left-0 z-9999 flex h-10 w-full flex-none items-center justify-between border-b px-2">
-      <div className="flex w-[120px] items-center"></div>
-      <div className="flex items-center gap-1"></div>
-      <div className="flex items-center justify-end gap-1">
-        <ToolOptions
-          activeTool={activeTool}
-          strokeWidth={strokeWidth}
-          onStrokeWidthChange={onStrokeWidthChange}
-          arrowStyle={arrowStyle}
-          onArrowStyleChange={onArrowStyleChange}
-          highlightOpacity={highlightOpacity}
-          onHighlightOpacityChange={onHighlightOpacityChange}
-          numberStyle={numberStyle}
-          onNumberStyleChange={onNumberStyleChange}
-          numberSize={numberSize}
-          onNumberSizeChange={onNumberSizeChange}
-          numberStartValue={numberStartValue}
-          onNumberStartValueChange={onNumberStartValueChange}
-          textBackground={textBackground}
-          onTextBackgroundChange={onTextBackgroundChange}
-          textFontSize={textFontSize}
-          onTextFontSizeChange={onTextFontSizeChange}
-          textFontFamily={textFontFamily}
-          onTextFontFamilyChange={onTextFontFamilyChange}
-          redactStyle={redactStyle}
-          onRedactStyleChange={onRedactStyleChange}
-          redactIntensity={redactIntensity}
-          onRedactIntensityChange={onRedactIntensityChange}
-          shapeFillMode={shapeFillMode}
-          onShapeFillModeChange={onShapeFillModeChange}
-          selectedColor={color}
-        />
-        <ColorPicker
-          selectedColor={activeTool === 'highlight' ? highlightColor : color}
-          onColorChange={
-            activeTool === 'highlight'
-              ? c => onHighlightColorChange(c as HighlightColor)
-              : onColorChange
-          }
-          activeTool={activeTool}
-          highlightOpacity={highlightOpacity}
-        />
-        <div className="bg-border mx-1 h-[18px] w-px" />
+    <div className="drag-region bg-card fixed top-0 right-0 left-0 z-9999 flex h-10 w-full flex-none items-center px-2">
+      {isMac && <div className="w-[120px] flex-none" />}
+      <div
+        className={cn(
+          'flex items-center gap-1',
+          isMac && 'ml-auto justify-end'
+        )}
+      >
+        {isMac && contextualControls}
+        {isMac && <div className="bg-border mx-1 h-[18px] w-px" />}
         <Toolbar
           activeTool={activeTool}
           onToolChange={onToolChange}
@@ -183,10 +198,11 @@ export default function TitleBar({
           shortcuts={editorShortcuts}
           isCaptureMode={isCaptureMode}
           onCaptureClick={onCaptureClick}
+          onWallpaperIntent={onWallpaperIntent}
         />
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button onClick={onCopy} className="size-7" variant="ghost">
+            <Button onClick={onCopy} size="icon-sm" variant="ghost">
               {isCopied ? (
                 <CheckIcon className="size-4" />
               ) : (
@@ -194,21 +210,25 @@ export default function TitleBar({
               )}
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Copy (⌘C)</TooltipContent>
+          <TooltipContent>
+            Copy ({formatAccelerator('CommandOrControl+C')})
+          </TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button onClick={onSave} className="size-7" variant="ghost">
+            <Button onClick={onSave} size="icon-sm" variant="ghost">
               <SaveIcon className="size-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Save (⌘S)</TooltipContent>
+          <TooltipContent>
+            Save ({formatAccelerator('CommandOrControl+S')})
+          </TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               onClick={onCloudUpload}
-              className="size-7"
+              size="icon-sm"
               variant="ghost"
               disabled={cloudUploadState === 'uploading'}
             >
@@ -225,13 +245,16 @@ export default function TitleBar({
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button onClick={onPin} className="size-7" variant="ghost">
+            <Button onClick={onPin} size="icon-sm" variant="ghost">
               <PinIcon className="size-4" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Pin Screenshot</TooltipContent>
         </Tooltip>
+        {!isMac && <div className="bg-border mx-1 h-[18px] w-px" />}
+        {!isMac && contextualControls}
       </div>
+      <WindowControlsSpacer />
     </div>
   );
 }

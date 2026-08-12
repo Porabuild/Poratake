@@ -5,20 +5,25 @@ import HistoryItem from '@/renderer/components/history/history-item';
 import HistoryListItem from '@/renderer/components/history/history-list-item';
 import HistoryToolbar from '@/renderer/components/history/history-toolbar';
 import type {
-  HistoryItem as HistoryItemType,
+  HistoryItemSummary,
   HistoryFilterType,
   HistorySortOrder,
   HistoryLayout,
 } from '@/types/history';
-import type { SettingsConfig } from '@/types/settings';
+import type { SettingsUiConfig } from '@/types/settings';
 import { shouldIgnoreGlobalKeyboardShortcuts } from '@/renderer/utils/keyboard';
+import { useAppTheme } from '@/renderer/hooks/use-app-theme';
 
 const GRID_COLUMNS = 2;
 
 export default function HistoryWindow() {
-  const [items, setItems] = useState<HistoryItemType[]>([]);
+  useAppTheme();
+
+  const [items, setItems] = useState<HistoryItemSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [isKeyboardNavigationActive, setIsKeyboardNavigationActive] =
+    useState(false);
   const [filter, setFilter] = useState<HistoryFilterType>('all');
   const [sortOrder, setSortOrder] = useState<HistorySortOrder>('newest');
   const [layout, setLayout] = useState<HistoryLayout>('grid');
@@ -84,8 +89,8 @@ export default function HistoryWindow() {
     try {
       const [history, settings] = (await Promise.all([
         window.ipcRenderer.invoke('history:get'),
-        window.ipcRenderer.invoke('settings:get'),
-      ])) as [HistoryItemType[], SettingsConfig];
+        window.ipcRenderer.invoke('settings:get-ui'),
+      ])) as [HistoryItemSummary[], SettingsUiConfig];
 
       setItems(history);
 
@@ -103,14 +108,13 @@ export default function HistoryWindow() {
   }, []);
 
   useEffect(() => {
-    loadHistory();
-
     const handleRefresh = () => {
       scrollContainerRef.current?.scrollTo(0, 0);
       setSelectedIndex(0);
       loadHistory();
     };
     window.ipcRenderer.on('history:refresh', handleRefresh);
+    window.ipcRenderer.send('history:ready');
 
     return () => {
       window.ipcRenderer.off('history:refresh', handleRefresh);
@@ -141,26 +145,22 @@ export default function HistoryWindow() {
 
   const handleClearAll = useCallback(async () => {
     try {
-      const confirmed = (await window.ipcRenderer.invoke(
-        'history:confirmClear'
+      const cleared = (await window.ipcRenderer.invoke(
+        'history:clear'
       )) as boolean;
+      if (!cleared) return;
 
-      if (!confirmed) {
-        return;
-      }
-
-      await window.ipcRenderer.invoke('history:clear');
       setItems([]);
     } catch (error) {
       console.error('Failed to clear history:', error);
     }
   }, []);
 
-  const handleOpenItem = useCallback((item: HistoryItemType) => {
+  const handleOpenItem = useCallback((item: HistoryItemSummary) => {
     if (item.type === 'video') {
-      window.ipcRenderer.send('history:openVideo', item);
+      window.ipcRenderer.send('history:openVideo', item.id);
     } else {
-      window.ipcRenderer.send('history:openScreenshot', item);
+      window.ipcRenderer.send('history:openScreenshot', item.id);
     }
     window.ipcRenderer.send('history:closePopover');
   }, []);
@@ -208,6 +208,7 @@ export default function HistoryWindow() {
         ].includes(key)
       ) {
         e.preventDefault();
+        setIsKeyboardNavigationActive(true);
         setSelectedIndex(prev => {
           let newIndex = prev;
 
@@ -354,7 +355,9 @@ export default function HistoryWindow() {
                   }
                 }}
                 item={item}
-                isSelected={index === selectedIndex}
+                isSelected={
+                  isKeyboardNavigationActive && index === selectedIndex
+                }
                 onOpen={handleOpenItem}
                 onDelete={handleDelete}
               />

@@ -20,6 +20,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.screenshot.window',
+    feature: 'screenshot-window',
     category: 'shortcuts',
     section: 'Screenshot Shortcuts',
     type: 'shortcut',
@@ -52,6 +53,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.timerCapture',
+    feature: 'timer-capture',
     category: 'shortcuts',
     section: 'Screenshot Shortcuts',
     type: 'shortcut',
@@ -65,6 +67,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.recording.area',
+    feature: 'recording',
     category: 'shortcuts',
     section: 'Recording Shortcuts',
     type: 'shortcut',
@@ -81,6 +84,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.recording.window',
+    feature: 'recording',
     category: 'shortcuts',
     section: 'Recording Shortcuts',
     type: 'shortcut',
@@ -97,6 +101,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.recording.screen',
+    feature: 'recording',
     category: 'shortcuts',
     section: 'Recording Shortcuts',
     type: 'shortcut',
@@ -113,6 +118,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.captureText',
+    feature: 'ocr',
     category: 'shortcuts',
     section: 'Other Shortcuts',
     type: 'shortcut',
@@ -126,6 +132,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.scanQRCode',
+    feature: 'qrcode',
     category: 'shortcuts',
     section: 'Other Shortcuts',
     type: 'shortcut',
@@ -152,6 +159,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.allInOne',
+    feature: 'all-in-one',
     category: 'shortcuts',
     section: 'Other Shortcuts',
     type: 'shortcut',
@@ -413,6 +421,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.cursor',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -430,6 +439,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.zoom',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -447,6 +457,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.drawing',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -464,6 +475,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.camera',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -481,6 +493,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.audio',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -498,6 +511,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.wallpaper',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -518,6 +532,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.keyboard',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -535,6 +550,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.subtitle',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -552,6 +568,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.first-frame',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',
@@ -572,6 +589,7 @@ export const SHORTCUTS_ITEMS: SettingsItem[] = [
   },
   {
     id: 'shortcuts.videoEditorSidebar.export',
+    feature: 'video-editor',
     category: 'shortcuts',
     section: 'Video Editor Shortcuts',
     type: 'shortcut',

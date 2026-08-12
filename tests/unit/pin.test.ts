@@ -15,6 +15,7 @@ const mockNativeImageCreateFromPath = vi.fn();
 class MockBrowserWindow {
   static webContentsCounter = 0;
 
+  options: Record<string, unknown>;
   windowHandlers: Record<string, ((...a: unknown[]) => unknown)[]> = {};
   webContents = {
     id: ++MockBrowserWindow.webContentsCounter,
@@ -44,8 +45,8 @@ class MockBrowserWindow {
     this.windowHandlers[event].push(cb);
   });
 
-  constructor(_opts: unknown) {
-    void _opts;
+  constructor(opts: Record<string, unknown>) {
+    this.options = opts;
     browserWindows.push(this);
   }
 }
@@ -139,6 +140,31 @@ describe('pin', () => {
         }
       );
       expect(browserWindows.length).toBe(1);
+    });
+
+    it('screenshot:pin scales a full-screen image to half the work area', async () => {
+      mockGetWindowData.mockReturnValue(undefined);
+      mockNativeImageCreateFromBuffer.mockReturnValue({
+        getSize: () => ({ width: 3840, height: 2160 }),
+        isEmpty: () => false,
+      });
+      const { registerIpcHandlers } =
+        await import('@/main/capture/screenshot/pin');
+      registerIpcHandlers();
+      ipcOn['screenshot:pin'](
+        { sender: { id: 1 } },
+        {
+          imageBase64: 'aGVsbG8=',
+          editorState: {},
+          filePath: '/p/img.png',
+          originalWidth: 3840,
+          originalHeight: 2160,
+        }
+      );
+      expect(browserWindows[0].options).toMatchObject({
+        width: 960,
+        height: 540,
+      });
     });
 
     it('screenshot:pin closes existing screenshot window', async () => {

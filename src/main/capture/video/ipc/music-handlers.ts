@@ -8,6 +8,11 @@ import { getWindowData } from '../window-manager';
 import { getMusicFolderPath } from '../recording-project';
 import { getFFmpegPath } from '@/main/utils/ffmpeg';
 import { SUPPORTED_MUSIC_EXTENSIONS } from '@/types/music';
+import {
+  getExportAbortSignal,
+  isExportOutputPathAllowed,
+} from './export-session';
+import { buildAtempoFilter } from './audio-handlers';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,13 +20,20 @@ function sanitizeFileName(fileName: string): string {
   return path.basename(fileName);
 }
 
-async function probeAudioDuration(filePath: string): Promise<number> {
+async function probeAudioDuration(
+  filePath: string,
+  signal?: AbortSignal
+): Promise<number> {
   const ffmpegPath = getFFmpegPath();
 
   let stderr = '';
   try {
-    await execFileAsync(ffmpegPath, ['-i', filePath], { timeout: 10000 });
+    await execFileAsync(ffmpegPath, ['-i', filePath], {
+      timeout: 10000,
+      signal,
+    });
   } catch (error) {
+    if (signal?.aborted) throw error;
     stderr = (error as { stderr?: string }).stderr || '';
   }
 
@@ -182,7 +194,7 @@ export function registerMusicHandlers(): void {
   ipcMain.handle(
     'video-editor:music:prepare-for-export',
     async (
-      _,
+      event,
       {
         musicFilePath,
         trimStart,
@@ -204,8 +216,29 @@ export function registerMusicHandlers(): void {
       }
     ): Promise<{ success: boolean; error?: string }> => {
       try {
+        if (!isExportOutputPathAllowed(event.sender.id, outputPath)) {
+          return { success: false, error: 'Export path is not authorized' };
+        }
+        if (
+          !Number.isFinite(trimStart) ||
+          !Number.isFinite(trimEnd) ||
+          !Number.isFinite(speed) ||
+          !Number.isFinite(startTime) ||
+          !Number.isFinite(totalDuration) ||
+          trimStart < 0 ||
+          trimEnd < 0 ||
+          speed <= 0 ||
+          startTime < 0 ||
+          totalDuration <= 0 ||
+          (trackDuration !== undefined &&
+            (!Number.isFinite(trackDuration) || trackDuration <= 0))
+        ) {
+          return { success: false, error: 'Invalid music track timing' };
+        }
+
         const ffmpegPath = getFFmpegPath();
-        const duration = await probeAudioDuration(musicFilePath);
+        const signal = getExportAbortSignal(event.sender.id);
+        const duration = await probeAudioDuration(musicFilePath, signal);
         const trimmedEnd = duration - trimEnd;
         const trimmedDuration = (trimmedEnd - trimStart) / speed;
 
@@ -219,21 +252,7 @@ export function registerMusicHandlers(): void {
           return { success: false, error: 'Music track has no audible range' };
         }
 
-        const atempoFilters: string[] = [];
-        let remaining = speed;
-        if (speed > 1) {
-          while (remaining > 2) {
-            atempoFilters.push('atempo=2.0');
-            remaining /= 2;
-          }
-          atempoFilters.push(`atempo=${remaining}`);
-        } else if (speed < 1) {
-          while (remaining < 0.5) {
-            atempoFilters.push('atempo=0.5');
-            remaining /= 0.5;
-          }
-          atempoFilters.push(`atempo=${remaining}`);
-        }
+        const atempoFilter = buildAtempoFilter(speed);
 
         if (startTime > 0) {
           const args = [
@@ -252,9 +271,9 @@ export function registerMusicHandlers(): void {
           ];
 
           const audioFilters: string[] = [];
-          if (atempoFilters.length > 0) {
+          if (atempoFilter) {
             audioFilters.push(
-              `[1:a]${atempoFilters.join(',')}[sped]`,
+              `[1:a]${atempoFilter}[sped]`,
               `[0:a][sped]concat=n=2:v=0:a=1`
             );
           } else {
@@ -272,7 +291,10 @@ export function registerMusicHandlers(): void {
             outputPath
           );
 
-          await execFileAsync(ffmpegPath, args, { timeout: 120000 });
+          await execFileAsync(ffmpegPath, args, {
+            timeout: 120000,
+            signal,
+          });
         } else {
           const args = [
             '-ss',
@@ -284,8 +306,8 @@ export function registerMusicHandlers(): void {
             '-vn',
           ];
 
-          if (atempoFilters.length > 0) {
-            args.push('-af', atempoFilters.join(','));
+          if (atempoFilter) {
+            args.push('-af', atempoFilter);
           }
 
           args.push(
@@ -297,11 +319,15 @@ export function registerMusicHandlers(): void {
             outputPath
           );
 
-          await execFileAsync(ffmpegPath, args, { timeout: 120000 });
+          await execFileAsync(ffmpegPath, args, {
+            timeout: 120000,
+            signal,
+          });
         }
 
         return { success: true };
       } catch (error) {
+        await fs.unlink(outputPath).catch(() => {});
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error';
         return { success: false, error: errorMessage };

@@ -1,4 +1,4 @@
-import { clipboard, nativeImage } from 'electron';
+import { screen } from 'electron';
 import fs from 'fs';
 import { daemon } from '@/main/daemon';
 import { getConfig, updateConfig } from '@/main/settings';
@@ -8,16 +8,20 @@ import {
   isSupported as isDesktopIconsSupported,
   checkAccessibilityPermission,
 } from '@/main/capture/desktop-icons';
-import { addToHistory } from '@/main/history';
 import { generateScreenshotPath } from '@/main/capture/screenshot/utils';
-import { showCapturePreview } from '@/main/capture/capture-preview';
-import { openScreenshotEditor } from '@/main/capture/screenshot/open-editor';
+import { finalizeCapture } from '@/main/capture/screenshot/finalize';
 import {
   startAreaSelection,
   cancelAreaSelection,
 } from '@/main/capture/area-selector';
+import {
+  cancelOverlaySelection,
+  selectAreaWithOverlay,
+} from '@/main/capture/area-overlay';
 import type { AreaSelection } from '@/types/area';
 import type { AutoScrollSpeed } from '@/types/settings';
+import { isFeatureSupported } from '@/main/system/capabilities';
+import { isWindows } from '@/main/utils/platform';
 
 interface ScrollCaptureState {
   isCapturing: boolean;
@@ -25,16 +29,31 @@ interface ScrollCaptureState {
   estimatedHeight: number;
 }
 
-let activeEventHandler: ((event: string, data: unknown) => void) | null = null;
+let activeCapture: Promise<void> | null = null;
+let cancelActiveCapture: (() => Promise<void>) | null = null;
 
-function cleanupEventListener(): void {
-  if (activeEventHandler) {
-    daemon.offEvent(activeEventHandler);
-    activeEventHandler = null;
+export async function startScrollCapture(): Promise<void> {
+  if (!isFeatureSupported('scroll-capture')) {
+    return;
+  }
+
+  if (activeCapture) {
+    return activeCapture;
+  }
+
+  const capture = runScrollCapture();
+  activeCapture = capture;
+
+  try {
+    await capture;
+  } finally {
+    if (activeCapture === capture) {
+      activeCapture = null;
+    }
   }
 }
 
-export async function startScrollCapture(): Promise<void> {
+async function runScrollCapture(): Promise<void> {
   const config = getConfig();
   let shouldHideIcons =
     config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
@@ -53,12 +72,17 @@ export async function startScrollCapture(): Promise<void> {
   return new Promise<void>(resolve => {
     let areaSelected = false;
     let captureCompleted = false;
+    let eventHandler: ((event: string, data: unknown) => void) | null = null;
 
     const cleanup = async () => {
-      cleanupEventListener();
+      if (eventHandler) {
+        daemon.offEvent(eventHandler);
+        eventHandler = null;
+      }
       if (shouldHideIcons) {
         await showDesktopIcons('capture');
       }
+      cancelActiveCapture = null;
     };
 
     const finishCapture = async (outputPath: string) => {
@@ -78,21 +102,17 @@ export async function startScrollCapture(): Promise<void> {
       resolve();
     };
 
-    const handleAreaSelected = async (selection: AreaSelection) => {
-      if (areaSelected) return;
-      if (
-        selection.x === undefined ||
-        selection.y === undefined ||
-        selection.width === undefined ||
-        selection.height === undefined
-      ) {
-        return;
-      }
+    cancelActiveCapture = cancelCapture;
 
-      areaSelected = true;
-      await cancelAreaSelection();
-
-      await new Promise(r => setTimeout(r, 100));
+    const startDaemonScroll = async (params: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      displayId?: number;
+      scaleFactor?: number;
+    }) => {
+      if (captureCompleted) return;
 
       const outputPath = generateScreenshotPath();
 
@@ -101,7 +121,7 @@ export async function startScrollCapture(): Promise<void> {
         maxHeight: 20000,
       };
 
-      activeEventHandler = async (event: string) => {
+      eventHandler = async (event: string) => {
         if (!event.startsWith('scroll-capture:')) return;
 
         const eventType = event.replace('scroll-capture:', '');
@@ -129,15 +149,11 @@ export async function startScrollCapture(): Promise<void> {
         }
       };
 
-      daemon.onEvent(activeEventHandler);
+      daemon.onEvent(eventHandler);
 
       try {
         await daemon.call('scroll-capture', 'start', {
-          x: selection.x,
-          y: selection.y,
-          width: selection.width,
-          height: selection.height,
-          screenId: selection.screenId,
+          ...params,
           autoScrollSpeed: scrollConfig.autoScrollSpeed,
           maxHeight: scrollConfig.maxHeight,
         });
@@ -147,17 +163,75 @@ export async function startScrollCapture(): Promise<void> {
       }
     };
 
-    startAreaSelection({
-      onSelected: handleAreaSelected,
-      onCancelled: async () => {
-        if (!areaSelected) {
-          await cleanup();
+    if (isWindows) {
+      void selectAreaWithOverlay({ freeze: false })
+        .then(async selection => {
+          if (!selection) {
+            await cancelCapture();
+            return;
+          }
+
+          const bounds = screen.dipToScreenRect(null, selection.rect);
+          await startDaemonScroll({
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            scaleFactor: selection.display.scaleFactor,
+          });
+        })
+        .catch(async error => {
+          console.error('Failed to start area selection:', error);
+          await cancelCapture();
+        });
+      return;
+    }
+
+    const handleAreaSelected = async (selection: AreaSelection) => {
+      if (areaSelected) return;
+      if (
+        selection.x === undefined ||
+        selection.y === undefined ||
+        selection.width === undefined ||
+        selection.height === undefined
+      ) {
+        return;
+      }
+
+      areaSelected = true;
+      await cancelAreaSelection();
+
+      await startDaemonScroll({
+        x: selection.x,
+        y: selection.y,
+        width: selection.width,
+        height: selection.height,
+        displayId: selection.screenId,
+      });
+    };
+
+    void Promise.resolve(
+      startAreaSelection({
+        onSelected: handleAreaSelected,
+        onCancelled: async () => {
+          if (areaSelected) {
+            return;
+          }
+          await cancelCapture();
+        },
+        showPrompt: true,
+        style: 'default',
+      })
+    )
+      .then(async selection => {
+        if (!areaSelected && selection === null) {
+          await cancelCapture();
         }
-        resolve();
-      },
-      showPrompt: true,
-      style: 'default',
-    });
+      })
+      .catch(async error => {
+        console.error('Failed to start area selection:', error);
+        await cancelCapture();
+      });
   });
 }
 
@@ -167,31 +241,20 @@ async function handleCaptureComplete(outputPath: string): Promise<void> {
     return;
   }
 
-  const config = getConfig();
-  const historyItem = await addToHistory(outputPath);
-
-  if (config.screenshot.captureToClipboard) {
-    const imageBuffer = fs.readFileSync(outputPath);
-    const image = nativeImage.createFromBuffer(imageBuffer);
-    clipboard.writeImage(image);
-    return;
-  }
-
-  if (config.screenshot.showPreview) {
-    showCapturePreview(outputPath, 'screenshot', historyItem?.id);
-    return;
-  }
-
-  openScreenshotEditor(outputPath, historyItem?.id);
+  await finalizeCapture(outputPath);
 }
 
 export async function cancelScrollCapture(): Promise<void> {
+  if (isWindows) {
+    cancelOverlaySelection(true);
+  }
+
   try {
     await daemon.call('scroll-capture', 'cancel');
   } catch (error) {
     console.error('Failed to cancel scroll capture:', error);
   }
-  cleanupEventListener();
+  await cancelActiveCapture?.();
 }
 
 export async function getScrollCaptureStatus(): Promise<ScrollCaptureState> {

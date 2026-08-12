@@ -7,13 +7,11 @@ import { shouldIgnoreGlobalKeyboardShortcuts } from '@/renderer/utils/keyboard';
 interface UseSidebarShortcutsProps {
   shortcuts: VideoEditorSidebarShortcuts | undefined;
   onTabChange: (tab: SidebarTab) => void;
-  isZoomDisabled: boolean;
 }
 
 export function useSidebarShortcuts({
   shortcuts,
   onTabChange,
-  isZoomDisabled,
 }: UseSidebarShortcutsProps): void {
   const sidebarShortcuts =
     shortcuts ?? DEFAULT_SETTINGS.shortcuts.videoEditorSidebar;
@@ -43,12 +41,11 @@ export function useSidebarShortcuts({
 
       const tab = tabMap[key];
       if (tab) {
-        if (tab === 'zoom' && isZoomDisabled) return;
         e.preventDefault();
         onTabChange(tab);
       }
     },
-    [sidebarShortcuts, onTabChange, isZoomDisabled]
+    [sidebarShortcuts, onTabChange]
   );
 
   useEffect(() => {

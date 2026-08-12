@@ -5,10 +5,12 @@ import type { SidebarTab } from '../editor-sidebar';
 interface UseEditorShortcutsProps {
   selectedSegmentId: string | null;
   selectedZoomId: string | null;
+  selectedCameraId: string | null;
   selectedDrawingId: string | null;
   segmentsLength: number;
   onDeleteSegment: () => void;
   onDeleteZoom: (id: string) => void;
+  onDeleteCamera: (id: string) => void;
   onDeleteDrawing: () => void;
   onDeleteVideo: () => void;
   onTogglePlayPause: () => void;
@@ -35,10 +37,12 @@ const LONG_STEP = 5;
 export function useEditorShortcuts({
   selectedSegmentId,
   selectedZoomId,
+  selectedCameraId,
   selectedDrawingId,
   segmentsLength,
   onDeleteSegment,
   onDeleteZoom,
+  onDeleteCamera,
   onDeleteDrawing,
   onDeleteVideo,
   onTogglePlayPause,
@@ -58,6 +62,7 @@ export function useEditorShortcuts({
   onSeekTimeline,
 }: UseEditorShortcutsProps): void {
   const selectedZoomIdRef = useRef<string | null>(selectedZoomId);
+  const selectedCameraIdRef = useRef<string | null>(selectedCameraId);
   const selectedDrawingIdRef = useRef<string | null>(selectedDrawingId);
 
   useEffect(() => {
@@ -65,11 +70,17 @@ export function useEditorShortcuts({
   }, [selectedZoomId]);
 
   useEffect(() => {
+    selectedCameraIdRef.current = selectedCameraId;
+  }, [selectedCameraId]);
+
+  useEffect(() => {
     selectedDrawingIdRef.current = selectedDrawingId;
   }, [selectedDrawingId]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      const primaryModifier = e.metaKey || e.ctrlKey;
+
       if (e.key === 'Escape') {
         e.preventDefault();
         onEscape();
@@ -84,7 +95,7 @@ export function useEditorShortcuts({
         return;
       }
 
-      if (e.key === 'Backspace' && e.metaKey) {
+      if (e.key === 'Backspace' && primaryModifier) {
         e.preventDefault();
         onDeleteVideo();
         return;
@@ -102,6 +113,12 @@ export function useEditorShortcuts({
           onDeleteZoom(currentZoomId);
           return;
         }
+        const currentCameraId = selectedCameraIdRef.current;
+        if (currentCameraId) {
+          e.preventDefault();
+          onDeleteCamera(currentCameraId);
+          return;
+        }
         const currentDrawingId = selectedDrawingIdRef.current;
         if (currentDrawingId) {
           e.preventDefault();
@@ -110,7 +127,7 @@ export function useEditorShortcuts({
         }
       }
 
-      if (e.key === 's' && e.metaKey) {
+      if (e.key === 's' && primaryModifier) {
         e.preventDefault();
         activateSidebarTab('export');
         return;
@@ -141,31 +158,31 @@ export function useEditorShortcuts({
         }
       }
 
-      if (e.key === 'z' && e.metaKey && !e.shiftKey) {
+      if (e.key === 'z' && primaryModifier && !e.shiftKey) {
         e.preventDefault();
         onUndo();
         return;
       }
 
-      if (e.key === 'z' && e.metaKey && e.shiftKey) {
+      if (e.key === 'z' && primaryModifier && e.shiftKey) {
         e.preventDefault();
         onRedo();
         return;
       }
 
-      if (e.metaKey && (e.key === '=' || e.key === '+')) {
+      if (primaryModifier && (e.key === '=' || e.key === '+')) {
         e.preventDefault();
         onTimelineZoomIn?.();
         return;
       }
 
-      if (e.metaKey && e.key === '-') {
+      if (primaryModifier && e.key === '-') {
         e.preventDefault();
         onTimelineZoomOut?.();
         return;
       }
 
-      if (e.metaKey && e.key === '0') {
+      if (primaryModifier && e.key === '0') {
         e.preventDefault();
         onTimelineZoomReset?.();
         return;
@@ -230,6 +247,7 @@ export function useEditorShortcuts({
       segmentsLength,
       onDeleteSegment,
       onDeleteZoom,
+      onDeleteCamera,
       onDeleteDrawing,
       onDeleteVideo,
       onEscape,

@@ -1,4 +1,4 @@
-import { spawn, execSync, type ChildProcess } from 'child_process';
+import { spawn, execFileSync, type ChildProcess } from 'child_process';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
 import type {
@@ -9,28 +9,40 @@ import type {
 } from '@/types/daemon';
 import { isDaemonEvent, isDaemonResponse } from '@/types/daemon';
 import { getNativeBinaryPath } from '@/main/utils/paths';
+import { isMac, isWindows } from '@/main/utils/platform';
 
 const DAEMON_BINARY = 'capty-daemon';
 const REQUEST_TIMEOUT = 30000;
 const MAX_RESTART_ATTEMPTS = 5;
 const RESTART_BACKOFF_BASE = 1000;
+const WINDOWS_STALE_PROCESS_SCRIPT =
+  "$target = [IO.Path]::GetFullPath($env:CAPTY_DAEMON_PATH); Get-Process -Name 'capty-daemon' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and [string]::Equals([IO.Path]::GetFullPath($_.Path), $target, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } | Stop-Process -Force";
 
 class NativeDaemon extends EventEmitter {
   private process: ChildProcess | null = null;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private restartAttempts = 0;
+  private restartTimer: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
   private buffer = '';
 
+  get isSupported(): boolean {
+    return isMac || isWindows;
+  }
+
   async start(): Promise<void> {
+    if (!this.isSupported) return;
     if (this.process) return;
 
+    this.isShuttingDown = false;
+    this.clearRestartTimer();
     this.killStaleProcesses();
     await this.spawn();
   }
 
   async stop(): Promise<void> {
     this.isShuttingDown = true;
+    this.clearRestartTimer();
 
     if (!this.process) return;
 
@@ -55,6 +67,12 @@ class NativeDaemon extends EventEmitter {
     params?: Record<string, unknown>,
     timeout = REQUEST_TIMEOUT
   ): Promise<T> {
+    if (!this.isSupported) {
+      throw new Error(
+        `Daemon not supported on this platform: ${module}.${method}`
+      );
+    }
+
     if (!this.process) {
       throw new Error('Daemon not running');
     }
@@ -74,7 +92,13 @@ class NativeDaemon extends EventEmitter {
         timeout: timeoutId,
       });
 
-      this.send(request);
+      try {
+        this.send(request);
+      } catch (error) {
+        clearTimeout(timeoutId);
+        this.pendingRequests.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -87,9 +111,34 @@ class NativeDaemon extends EventEmitter {
   }
 
   private killStaleProcesses(): void {
+    if (isWindows) {
+      try {
+        const binaryPath = getNativeBinaryPath(DAEMON_BINARY);
+        execFileSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            WINDOWS_STALE_PROCESS_SCRIPT,
+          ],
+          {
+            stdio: 'ignore',
+            env: {
+              ...process.env,
+              CAPTY_DAEMON_PATH: binaryPath,
+            },
+          }
+        );
+      } catch {
+        return;
+      }
+      return;
+    }
+
     try {
       const binaryPath = getNativeBinaryPath(DAEMON_BINARY);
-      const result = execSync(`pgrep -f "${binaryPath}"`, {
+      const result = execFileSync('pgrep', ['-f', binaryPath], {
         encoding: 'utf-8',
       }).trim();
 
@@ -110,46 +159,98 @@ class NativeDaemon extends EventEmitter {
     const binaryPath = getNativeBinaryPath(DAEMON_BINARY);
 
     return new Promise((resolve, reject) => {
-      this.process = spawn(binaryPath, [], {
+      const child = spawn(binaryPath, [], {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      this.process = child;
+      this.buffer = '';
 
-      const onReady = (event: string) => {
-        if (event === 'system:ready') {
-          this.restartAttempts = 0;
-          this.off('daemon-event', onReadyHandler);
-          resolve();
+      let isReady = false;
+      let startupSettled = false;
+      let exitHandled = false;
+
+      const onReadyHandler: DaemonEventHandler = event => {
+        if (
+          event !== 'system:ready' ||
+          startupSettled ||
+          this.process !== child
+        ) {
+          return;
         }
-      };
 
-      const onReadyHandler: DaemonEventHandler = onReady;
+        startupSettled = true;
+        isReady = true;
+        this.restartAttempts = 0;
+        clearTimeout(readyTimeout);
+        this.off('daemon-event', onReadyHandler);
+        resolve();
+      };
       this.on('daemon-event', onReadyHandler);
 
       const readyTimeout = setTimeout(() => {
-        this.off('daemon-event', onReadyHandler);
-        reject(new Error('Daemon ready timeout'));
+        failStartup(new Error('Daemon ready timeout'), true);
       }, 10000);
 
-      this.process.stdout?.on('data', (data: Buffer) => {
+      const failStartup = (error: Error, kill = false) => {
+        if (startupSettled) return;
+        startupSettled = true;
+        clearTimeout(readyTimeout);
+        this.off('daemon-event', onReadyHandler);
+        if (this.process === child) {
+          this.process = null;
+          this.buffer = '';
+        }
+        this.rejectAllPending(error);
+        reject(error);
+        if (!kill) return;
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          return;
+        }
+      };
+
+      child.stdout?.on('data', (data: Buffer) => {
+        if (this.process !== child) return;
         this.handleData(data.toString());
       });
 
-      this.process.stderr?.on('data', (data: Buffer) => {
+      child.stderr?.on('data', (data: Buffer) => {
         console.error('[daemon stderr]', data.toString());
       });
 
-      this.process.stdin?.on('error', () => {
+      child.stdin?.on('error', () => {
         // Ignore stdin errors (EPIPE during shutdown)
       });
 
-      this.process.on('error', err => {
-        clearTimeout(readyTimeout);
-        this.off('daemon-event', onReadyHandler);
-        reject(err);
+      child.on('error', err => {
+        failStartup(err);
       });
 
-      this.process.on('exit', (code, signal) => {
-        clearTimeout(readyTimeout);
+      child.on('exit', (code, signal) => {
+        exitHandled = true;
+        if (!isReady) {
+          failStartup(
+            new Error(
+              `Daemon exited before ready: code=${code} signal=${signal}`
+            )
+          );
+          return;
+        }
+        if (this.process !== child) return;
+        this.handleExit(code, signal);
+      });
+
+      child.on('close', (code, signal) => {
+        if (!isReady) {
+          failStartup(
+            new Error(
+              `Daemon closed before ready: code=${code} signal=${signal}`
+            )
+          );
+          return;
+        }
+        if (exitHandled || this.process !== child) return;
         this.handleExit(code, signal);
       });
     });
@@ -196,11 +297,18 @@ class NativeDaemon extends EventEmitter {
 
   private handleExit(code: number | null, signal: string | null): void {
     this.process = null;
+    this.buffer = '';
     this.rejectAllPending(
       new Error(`Daemon exited: code=${code} signal=${signal}`)
     );
 
     if (this.isShuttingDown) return;
+
+    this.scheduleRestart();
+  }
+
+  private scheduleRestart(): void {
+    if (this.isShuttingDown || this.restartTimer) return;
 
     if (this.restartAttempts < MAX_RESTART_ATTEMPTS) {
       this.restartAttempts++;
@@ -209,11 +317,24 @@ class NativeDaemon extends EventEmitter {
       console.log(
         `[daemon] Restarting in ${delay}ms (attempt ${this.restartAttempts})`
       );
-      setTimeout(() => this.spawn().catch(console.error), delay);
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null;
+        if (this.isShuttingDown || this.process) return;
+        void this.spawn().catch(error => {
+          console.error(error);
+          this.scheduleRestart();
+        });
+      }, delay);
     } else {
       console.error('[daemon] Max restart attempts reached');
       this.emit('daemon-error', new Error('Daemon crashed too many times'));
     }
+  }
+
+  private clearRestartTimer(): void {
+    if (!this.restartTimer) return;
+    clearTimeout(this.restartTimer);
+    this.restartTimer = null;
   }
 
   private rejectAllPending(error: Error): void {
@@ -228,7 +349,9 @@ class NativeDaemon extends EventEmitter {
     if (!this.process?.stdin?.writable) {
       throw new Error('Daemon stdin not writable');
     }
-    this.sendRaw(request);
+    if (!this.sendRaw(request)) {
+      throw new Error('Daemon stdin write failed');
+    }
   }
 
   private sendRaw(request: DaemonRequest): boolean {

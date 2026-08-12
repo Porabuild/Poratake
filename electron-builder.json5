@@ -1,14 +1,87 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "com.capty.app",
+  "appId": "com.porabuild.poratake",
   "asar": true,
-  "productName": "Capty",
+  "productName": "Poratake",
+  "copyright": "Copyright © 2026 Serhii Vecherenko. Based on Capty, Copyright © 2026 Capty.",
   "directories": {
     "output": "release/${version}"
   },
   "extraResources": [
     "build/*",
+    {
+      "from": "LICENSE",
+      "to": "licenses/Poratake-AGPL-3.0.txt"
+    },
+    {
+      "from": "THIRD_PARTY_NOTICES.md",
+      "to": "licenses/THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "from": "licenses/FFmpeg-LGPL-2.1.txt",
+      "to": "licenses/FFmpeg-LGPL-2.1.txt"
+    },
+    {
+      "from": "licenses/Geist-OFL-1.1.txt",
+      "to": "licenses/Geist-OFL-1.1.txt"
+    },
+    {
+      "from": "node_modules",
+      "to": "licenses/node_modules",
+      "filter": [
+        "@heroui/**/LICENSE*",
+        "@internationalized/**/LICENSE*",
+        "@react-aria/**/LICENSE*",
+        "@react-stately/**/LICENSE*",
+        "@react-types/**/LICENSE*",
+        "@radix-ui/**/LICENSE*",
+        "@floating-ui/**/LICENSE*",
+        "aria-hidden/LICENSE*",
+        "builder-util-runtime/LICENSE*",
+        "class-variance-authority/LICENSE*",
+        "clsx/license*",
+        "debug/LICENSE*",
+        "detect-node-es/LICENSE*",
+        "electron-updater/LICENSE*",
+        "fs-extra/LICENSE*",
+        "get-nonce/LICENSE*",
+        "graceful-fs/LICENSE*",
+        "has-flag/license*",
+        "js-yaml/LICENSE*",
+        "jsonfile/LICENSE*",
+        "lodash.escaperegexp/LICENSE*",
+        "lodash.isequal/LICENSE*",
+        "lucide-react/LICENSE*",
+        "mediabunny/LICENSE*",
+        "ms/license*",
+        "perfect-freehand/LICENSE*",
+        "react/LICENSE*",
+        "react-aria/LICENSE*",
+        "react-aria-components/LICENSE*",
+        "react-dom/LICENSE*",
+        "react-remove-scroll/LICENSE*",
+        "react-stately/LICENSE*",
+        "react-style-singleton/LICENSE*",
+        "sax/LICENSE*",
+        "scheduler/LICENSE*",
+        "semver/LICENSE*",
+        "supports-color/license*",
+        "tailwind-merge/LICENSE*",
+        "tailwind-variants/LICENSE*",
+        "tiny-typed-emitter/LICENSE*",
+        "tslib/LICENSE*",
+        "tw-animate-css/LICENSE*",
+        "universalify/LICENSE*",
+        "use-callback-ref/LICENSE*",
+        "use-sidecar/LICENSE*",
+        "use-sync-external-store/LICENSE*"
+      ]
+    },
+    {
+      "from": "licenses/npm",
+      "to": "licenses/npm"
+    },
     {
       "from": "src/main/menu/icons",
       "to": "menu-icons"
@@ -38,20 +111,16 @@
       "to": "menu-icons/recording/iconTemplate@3x.png"
     },
     {
-      "from": "src/main/daemon/capty-daemon",
-      "to": "daemon/capty-daemon"
-    },
-    {
-      "from": "src/main/binaries/ffmpeg/ffmpeg",
-      "to": "binaries/ffmpeg/ffmpeg"
-    },
-    {
-      "from": "src/main/binaries/whisper/whisper",
-      "to": "binaries/whisper/whisper"
-    },
-    {
       "from": "public/sounds",
       "to": "sounds"
+    },
+    {
+      "from": "public/icon.png",
+      "to": "icon.png"
+    },
+    {
+      "from": "public/tray-icon.png",
+      "to": "tray-icon.png"
     }
   ],
   "files": [
@@ -61,22 +130,36 @@
   ],
   "publish": {
     "provider": "github",
-    "owner": "capty-app",
-    "repo": "capty",
+    "owner": "Porabuild",
+    "repo": "Poratake",
     "private": false
   },
   "extraFiles": [
     "build/**/*"
   ],
   "mac": {
+    "extraResources": [
+      {
+        "from": "src/main/daemon/capty-daemon",
+        "to": "daemon/capty-daemon"
+      },
+      {
+        "from": "src/main/binaries/ffmpeg/ffmpeg",
+        "to": "binaries/ffmpeg/ffmpeg"
+      },
+      {
+        "from": "src/main/binaries/whisper/whisper",
+        "to": "binaries/whisper/whisper"
+      }
+    ],
     "extendInfo": {
       "LSUIElement": true,
-      "NSMicrophoneUsageDescription": "Capty needs microphone access to record voice audio along with screen recordings.",
-      "NSCameraUsageDescription": "Capty needs camera access to record video from your camera.",
+      "NSMicrophoneUsageDescription": "Poratake needs microphone access to record voice audio along with screen recordings.",
+      "NSCameraUsageDescription": "Poratake needs camera access to record video from your camera.",
       "NSCameraUseContinuityCameraDeviceType": true,
       "CFBundleDocumentTypes": [
         {
-          "CFBundleTypeName": "Capty Recording",
+          "CFBundleTypeName": "Poratake Recording",
           "CFBundleTypeExtensions": ["capty"],
           "CFBundleTypeRole": "Editor",
           "LSHandlerRank": "Owner",
@@ -108,9 +191,9 @@
       ],
       "UTExportedTypeDeclarations": [
         {
-          "UTTypeIdentifier": "com.capty.recording",
+          "UTTypeIdentifier": "com.porabuild.poratake.recording",
           "UTTypeConformsTo": ["public.package", "public.composite-content"],
-          "UTTypeDescription": "Capty Recording Project",
+          "UTTypeDescription": "Poratake Recording Project",
           "UTTypeTagSpecification": {
             "public.filename-extension": ["capty"]
           }
@@ -129,5 +212,35 @@
     "title": "${productName} ${version}",
     "icon": "./build/icon.icns",
     "sign": false
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "build/icon.ico",
+    "artifactName": "${productName}-${version}-win-${arch}.${ext}",
+    "extraResources": [
+      {
+        "from": "src/main/daemon/capty-daemon.exe",
+        "to": "daemon/capty-daemon.exe"
+      },
+      {
+        "from": "src/main/binaries/ffmpeg/ffmpeg.exe",
+        "to": "binaries/ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "src/main/binaries/whisper/whisper.exe",
+        "to": "binaries/whisper/whisper.exe"
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "deleteAppDataOnUninstall": false
   }
 }

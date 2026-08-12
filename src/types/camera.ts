@@ -25,6 +25,25 @@ export const CAMERA_OVERLAY_ASPECT_RATIO: Record<CameraOverlayShape, number> = {
   vertical: 4 / 3,
 };
 
+export interface CameraVisibleRange {
+  start: number;
+  end: number;
+}
+
+export interface CameraSegment {
+  id: string;
+  startTime: number;
+  endTime: number;
+}
+
+export interface VideoTimeSegment {
+  originalStart: number;
+  originalEnd: number;
+  speed?: number;
+}
+
+export const MIN_CAMERA_SEGMENT_DURATION = 0.1;
+
 export interface CameraRecordingMeta {
   deviceId: string;
   deviceName: string;
@@ -33,6 +52,62 @@ export interface CameraRecordingMeta {
   duration: number;
   startTime: string;
   frameRate: number;
+  visibleRanges?: CameraVisibleRange[];
+}
+
+export function isCameraVisibleAt(
+  segments: CameraSegment[] | null | undefined,
+  timelineTime: number
+): boolean {
+  if (!segments) return true;
+  return segments.some(
+    segment =>
+      timelineTime >= segment.startTime && timelineTime < segment.endTime
+  );
+}
+
+export function mapVideoRangesToCameraSegments(
+  ranges: CameraVisibleRange[] | null | undefined,
+  segments: VideoTimeSegment[],
+  totalDuration: number
+): CameraSegment[] {
+  const videoDuration =
+    segments.length > 0
+      ? Math.max(...segments.map(segment => segment.originalEnd))
+      : totalDuration;
+
+  const effectiveRanges =
+    ranges && ranges.length > 0
+      ? [...ranges].sort((a, b) => a.start - b.start)
+      : [{ start: 0, end: videoDuration }];
+
+  const effectiveSegments =
+    segments.length > 0
+      ? segments
+      : [{ originalStart: 0, originalEnd: totalDuration }];
+
+  const result: CameraSegment[] = [];
+  let timelineStart = 0;
+
+  for (const segment of effectiveSegments) {
+    const speed = segment.speed ?? 1;
+
+    for (const range of effectiveRanges) {
+      const start = Math.max(range.start, segment.originalStart);
+      const end = Math.min(range.end, segment.originalEnd);
+      if (end - start < MIN_CAMERA_SEGMENT_DURATION) continue;
+
+      result.push({
+        id: crypto.randomUUID(),
+        startTime: timelineStart + (start - segment.originalStart) / speed,
+        endTime: timelineStart + (end - segment.originalStart) / speed,
+      });
+    }
+
+    timelineStart += (segment.originalEnd - segment.originalStart) / speed;
+  }
+
+  return result;
 }
 
 export interface CameraData {

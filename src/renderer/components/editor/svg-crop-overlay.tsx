@@ -271,7 +271,7 @@ const SvgCropOverlay = ({
     fill: 'white',
     stroke: '#007AFF',
     strokeWidth: 2,
-    cursor: 'pointer',
+    cursor: 'default',
   };
 
   const handles: { pos: ResizeHandle; x: number; y: number; cursor: string }[] =
@@ -320,10 +320,8 @@ const SvgCropOverlay = ({
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
     >
-      {}
       <defs>
         <mask id="crop-mask">
-          {}
           <rect
             x={0}
             y={0}
@@ -341,7 +339,6 @@ const SvgCropOverlay = ({
         </mask>
       </defs>
 
-      {}
       <rect
         x={0}
         y={0}
@@ -352,20 +349,6 @@ const SvgCropOverlay = ({
         style={{ pointerEvents: 'none' }}
       />
 
-      {}
-      <rect
-        x={normalizedRect.x + offsetX}
-        y={normalizedRect.y + offsetY}
-        width={normalizedRect.width}
-        height={normalizedRect.height}
-        fill="none"
-        stroke="rgba(0, 122, 255, 0.8)"
-        strokeWidth={6}
-        rx={1}
-        style={{ pointerEvents: 'none' }}
-      />
-
-      {}
       <rect
         x={normalizedRect.x + offsetX}
         y={normalizedRect.y + offsetY}
@@ -379,7 +362,6 @@ const SvgCropOverlay = ({
         onMouseDown={handleMoveStart}
       />
 
-      {}
       {handles.map(({ pos, x, y, cursor }) => (
         <rect
           key={pos}
@@ -394,7 +376,6 @@ const SvgCropOverlay = ({
         />
       ))}
 
-      {}
       <text
         x={textX}
         y={textY}

@@ -5,7 +5,7 @@ import type { CloudUploadState } from '@/types/cloud';
 import type { Segment } from '../types';
 import type { ZoomSegment, ZoomSettings } from '@/types/zoom';
 import type { CursorData, CursorStyle } from '@/types/cursor';
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import type { KeyboardData, KeyboardStyle } from '@/types/keyboard';
 import type { SubtitleData, SubtitleStyle } from '@/types/subtitle';
 import type { AudioStyle } from '@/types/audio';
@@ -14,7 +14,7 @@ import type { VideoWallpaperSettings as VideoWallpaper } from '@/types/video-wal
 import type { FirstFrameSettings } from '@/types/first-frame';
 import type { DrawingSegment } from '@/types/drawing';
 import { clampExportOptionsToFree } from '@/types/entitlements';
-import { WebCodecsExporter } from '../export';
+import type { WebCodecsExporter } from '../export';
 import { videoToTimeline, getTotalTimelineDuration } from '../utils';
 
 const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
@@ -37,6 +37,7 @@ interface ExportConfig {
   cursorData: CursorData | null;
   cursorStyle: CursorStyle;
   cameraStyle: CameraStyle;
+  cameraVisibleRanges: CameraSegment[] | null;
   cameraVideoPath: string | null;
   systemAudioPath: string | null;
   micAudioPath: string | null;
@@ -54,6 +55,7 @@ interface ExportConfig {
 interface UseVideoExportReturn {
   isExporting: boolean;
   exportProgress: number;
+  exportError: string | null;
   exportSettings: ExportSettings;
   setExportSettings: React.Dispatch<React.SetStateAction<ExportSettings>>;
   cloudUploadState: CloudUploadState;
@@ -71,6 +73,7 @@ interface UseVideoExportReturn {
 export function useVideoExport(): UseVideoExportReturn {
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [exportSettings, setExportSettings] = useState<ExportSettings>(
     DEFAULT_EXPORT_SETTINGS
   );
@@ -78,6 +81,13 @@ export function useVideoExport(): UseVideoExportReturn {
     useState<CloudUploadState>('idle');
   const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
   const exporterRef = useRef<WebCodecsExporter | null>(null);
+  const exportPendingRef = useRef(false);
+
+  const showExportError = useCallback((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    setExportError(message || 'Export failed');
+    setExportProgress(0);
+  }, []);
 
   const copyUploadedUrl = useCallback(() => {
     if (!uploadedUrl) return;
@@ -142,23 +152,44 @@ export function useVideoExport(): UseVideoExportReturn {
 
   const handleExport = useCallback(
     async (rawOptions: VideoExportOptions, config: ExportConfig) => {
-      if (isExporting || !config.filePath || !config.videoMetadata) return;
+      if (
+        exportPendingRef.current ||
+        !config.filePath ||
+        !config.videoMetadata
+      ) {
+        return;
+      }
+      exportPendingRef.current = true;
+      setExportError(null);
 
-      const isPro = (await window.ipcRenderer.invoke(
-        'license:isPro'
-      )) as boolean;
-      const options = isPro ? rawOptions : clampExportOptionsToFree(rawOptions);
+      let options: VideoExportOptions;
+      let dialogResult: { canceled: boolean; filePath?: string };
+      try {
+        const isPro = (await window.ipcRenderer.invoke(
+          'license:isPro'
+        )) as boolean;
+        options = isPro ? rawOptions : clampExportOptionsToFree(rawOptions);
+
+        const isGif = options.format === 'gif';
+        const extension = isGif ? 'gif' : 'mp4';
+        const defaultName = `${config.fileName}-exported.${extension}`;
+
+        dialogResult = (await window.ipcRenderer.invoke(
+          'video-editor:show-save-dialog',
+          { defaultName, format: options.format }
+        )) as { canceled: boolean; filePath?: string };
+      } catch (error) {
+        exportPendingRef.current = false;
+        showExportError(error);
+        return;
+      }
+
+      if (dialogResult.canceled || !dialogResult.filePath) {
+        exportPendingRef.current = false;
+        return;
+      }
 
       const isGif = options.format === 'gif';
-      const extension = isGif ? 'gif' : 'mp4';
-      const defaultName = `${config.fileName}-exported.${extension}`;
-
-      const dialogResult = (await window.ipcRenderer.invoke(
-        'video-editor:show-save-dialog',
-        { defaultName, format: options.format }
-      )) as { canceled: boolean; filePath?: string };
-
-      if (dialogResult.canceled || !dialogResult.filePath) return;
 
       const rawOutputPath = dialogResult.filePath;
       const finalOutputPath = isGif
@@ -173,13 +204,26 @@ export function useVideoExport(): UseVideoExportReturn {
       setCloudUploadState('idle');
       setUploadedUrl(null);
 
-      const exporter = new WebCodecsExporter();
+      let WebCodecsExporterClass: typeof WebCodecsExporter;
+      try {
+        ({ WebCodecsExporter: WebCodecsExporterClass } =
+          await import('../export'));
+      } catch (error) {
+        exportPendingRef.current = false;
+        setIsExporting(false);
+        showExportError(error);
+        return;
+      }
+
+      const exporter = new WebCodecsExporterClass();
       exporterRef.current = exporter;
 
       const exportStartTime = Date.now();
       let keyboardSoundTempPath: string | null = null;
 
       try {
+        await exporter.begin();
+
         const mp4OutputPath = isGif
           ? finalOutputPath.match(/\.gif$/i)
             ? finalOutputPath.replace(/\.gif$/i, '-temp.mp4')
@@ -220,9 +264,13 @@ export function useVideoExport(): UseVideoExportReturn {
               }
             )) as { success: boolean; error?: string };
 
-            if (genResult.success) {
-              keyboardSoundTempPath = tempPath;
+            if (!genResult.success) {
+              throw new Error(
+                genResult.error ?? 'Failed to generate keyboard audio'
+              );
             }
+
+            keyboardSoundTempPath = tempPath;
           }
         }
 
@@ -251,6 +299,7 @@ export function useVideoExport(): UseVideoExportReturn {
             cursorData: config.cursorData,
             cursorStyle: config.cursorStyle,
             cameraStyle: config.cameraStyle,
+            cameraVisibleRanges: config.cameraVisibleRanges,
             keyboardData: config.keyboardData,
             keyboardStyle: config.keyboardStyle,
             subtitleData: config.subtitleData,
@@ -270,8 +319,11 @@ export function useVideoExport(): UseVideoExportReturn {
           },
         });
 
+        if (exporter.isCancelled()) return;
+
         if (!result.success) {
           console.error('Export failed:', result.error);
+          showExportError(result.error ?? 'Export failed');
           return;
         }
 
@@ -296,11 +348,20 @@ export function useVideoExport(): UseVideoExportReturn {
             console.warn('Failed to delete temp MP4 file');
           }
 
-          if (!gifResult.success) {
-            console.error('GIF conversion failed:', gifResult.error);
+          const wasCancelled = exporter.isCancelled();
+          if (!gifResult.success || wasCancelled) {
+            await window.ipcRenderer.invoke('video-editor:delete-temp-file', {
+              filePath: finalOutputPath,
+            });
+            if (!gifResult.success && !wasCancelled) {
+              console.error('GIF conversion failed:', gifResult.error);
+              showExportError(gifResult.error ?? 'GIF conversion failed');
+            }
             return;
           }
         }
+
+        if (exporter.isCancelled()) return;
 
         setExportProgress(100);
         const durationSeconds = (Date.now() - exportStartTime) / 1000;
@@ -332,29 +393,35 @@ export function useVideoExport(): UseVideoExportReturn {
           }
         }
       } catch (error) {
-        console.error('Export error:', error);
+        if (!exporter.isCancelled()) {
+          console.error('Export error:', error);
+          showExportError(error);
+        }
       } finally {
         if (keyboardSoundTempPath) {
-          window.ipcRenderer
+          await window.ipcRenderer
             .invoke('video-editor:delete-temp-file', {
               filePath: keyboardSoundTempPath,
             })
             .catch(() => {});
         }
-        setIsExporting(false);
-        exporterRef.current = null;
+        await exporter.finish().catch(() => {});
+        if (exporterRef.current === exporter) {
+          setIsExporting(false);
+          exporterRef.current = null;
+        }
+        exportPendingRef.current = false;
       }
     },
-    [isExporting, exportSettings.openInFinder]
+    [exportSettings.openInFinder, showExportError]
   );
 
   const handleCancelExport = useCallback(() => {
     if (exporterRef.current) {
       exporterRef.current.cancel();
-      exporterRef.current = null;
     }
-    setIsExporting(false);
     setExportProgress(0);
+    setExportError(null);
   }, []);
 
   const restoreExportSettings = useCallback((settings: ExportSettings) => {
@@ -364,6 +431,7 @@ export function useVideoExport(): UseVideoExportReturn {
   return {
     isExporting,
     exportProgress,
+    exportError,
     exportSettings,
     setExportSettings,
     cloudUploadState,

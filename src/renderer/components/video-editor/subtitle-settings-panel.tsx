@@ -276,6 +276,8 @@ export default function SubtitleSettingsPanel({
             </div>
 
             <Button
+              variant="tertiary"
+              size="xs"
               onClick={handleGenerate}
               disabled={isGenerateDisabled}
               className="w-full"
@@ -317,8 +319,8 @@ export default function SubtitleSettingsPanel({
 
           <div className="flex flex-col gap-2">
             <Button
-              variant="outline"
-              size="sm"
+              variant="tertiary"
+              size="xs"
               onClick={handleImport}
               disabled={isImporting}
               className="w-full gap-2"
@@ -328,8 +330,8 @@ export default function SubtitleSettingsPanel({
             </Button>
 
             <Button
-              variant="outline"
-              size="sm"
+              variant="tertiary"
+              size="xs"
               onClick={() => setIsEditorOpen(true)}
               className="w-full gap-2"
             >
@@ -419,8 +421,8 @@ export default function SubtitleSettingsPanel({
           {hasMicAudio && (
             <div className="flex gap-2">
               <Button
-                variant="outline"
-                size="sm"
+                variant="tertiary"
+                size="xs"
                 onClick={handleGenerate}
                 disabled={isProcessing}
                 className="flex-1"
@@ -428,8 +430,8 @@ export default function SubtitleSettingsPanel({
                 Regenerate
               </Button>
               <Button
-                variant="outline"
-                size="sm"
+                variant="tertiary"
+                size="xs"
                 onClick={handleDelete}
                 disabled={isProcessing}
                 className="text-destructive hover:text-destructive flex-1"
@@ -441,8 +443,8 @@ export default function SubtitleSettingsPanel({
 
           {!hasMicAudio && (
             <Button
-              variant="outline"
-              size="sm"
+              variant="tertiary"
+              size="xs"
               onClick={handleDelete}
               disabled={isProcessing}
               className="text-destructive hover:text-destructive w-full"

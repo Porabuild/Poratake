@@ -26,7 +26,7 @@ export function registerMetadataHandlers(): void {
         return null;
       }
 
-      const result = await probeVideo(data.filePath);
+      const result = await (data.videoProbe ?? probeVideo(data.filePath));
       return result?.metadata ?? null;
     }
   );

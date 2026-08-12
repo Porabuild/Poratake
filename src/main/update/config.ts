@@ -1,3 +1,2 @@
-import { API_URL } from '@/main/license/config.ts';
-
-export { API_URL };
+export const UPDATE_OWNER = 'Porabuild';
+export const UPDATE_REPOSITORY = 'Poratake';

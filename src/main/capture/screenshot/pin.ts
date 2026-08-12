@@ -49,18 +49,26 @@ function createPinWindow(
   const pinId = `pin-${Date.now()}`;
 
   const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenWidth } = primaryDisplay.workAreaSize;
+  const { width: screenWidth, height: screenHeight } =
+    primaryDisplay.workAreaSize;
+  const scale = Math.min(
+    1,
+    (screenWidth * 0.5) / width,
+    (screenHeight * 0.5) / height
+  );
+  const windowWidth = Math.floor(width * scale);
+  const windowHeight = Math.floor(height * scale);
 
   const existingPinCount = pinWindows.size;
   const offsetX = existingPinCount * 30;
   const offsetY = existingPinCount * 30;
 
   const pinWindow = new BrowserWindow({
-    width: width,
-    height: height,
+    width: windowWidth,
+    height: windowHeight,
     minWidth: 100,
     minHeight: 100,
-    x: Math.min(screenWidth - width - 20 - offsetX, screenWidth - 120),
+    x: Math.min(screenWidth - windowWidth - 20 - offsetX, screenWidth - 120),
     y: 20 + offsetY,
     alwaysOnTop: true,
     frame: false,

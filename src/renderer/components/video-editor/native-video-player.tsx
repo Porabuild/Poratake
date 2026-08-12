@@ -10,7 +10,7 @@ import {
 import { Loader2 } from 'lucide-react';
 import type { CursorData, CursorStyle } from '@/types/cursor';
 import type { ZoomSegment, ZoomSettings } from '@/types/zoom';
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import type { KeyboardData, KeyboardStyle } from '@/types/keyboard';
 import type { SubtitleData, SubtitleStyle } from '@/types/subtitle';
 import type { VideoWallpaperSettings } from '@/types/video-wallpaper';
@@ -52,6 +52,7 @@ interface NativeVideoPlayerProps {
   zoomSettings?: ZoomSettings | null;
   cameraSrc?: string | null;
   cameraStyle?: CameraStyle | null;
+  cameraVisibleRanges?: CameraSegment[] | null;
   cameraDurationInFrames?: number;
   keyboardData?: KeyboardData | null;
   keyboardStyle?: KeyboardStyle | null;
@@ -112,6 +113,7 @@ const NativeVideoPlayer = forwardRef<
       zoomSettings = null,
       cameraSrc = null,
       cameraStyle = null,
+      cameraVisibleRanges = null,
       keyboardData = null,
       keyboardStyle = null,
       subtitleData = null,
@@ -265,6 +267,7 @@ const NativeVideoPlayer = forwardRef<
         cursorData,
         cursorStyle,
         cameraStyle,
+        cameraVisibleRanges,
         keyboardData,
         keyboardStyle,
         subtitleData,
@@ -294,6 +297,7 @@ const NativeVideoPlayer = forwardRef<
       cursorData,
       cursorStyle,
       cameraStyle,
+      cameraVisibleRanges,
       keyboardData,
       keyboardStyle,
       subtitleData,
@@ -382,6 +386,7 @@ const NativeVideoPlayer = forwardRef<
 
     useEffect(() => {
       lastVideoFrameRef.current = null;
+      setIsVideoLoaded(false);
     }, [videoSrc]);
 
     const getVideoSource = useCallback((video: HTMLVideoElement | null) => {
@@ -893,9 +898,13 @@ const NativeVideoPlayer = forwardRef<
     }));
 
     const handleLoadedMetadata = useCallback(() => {
-      setIsVideoLoaded(true);
       onLoadedMetadata?.();
     }, [onLoadedMetadata]);
+
+    const handleLoadedData = useCallback(() => {
+      setIsVideoLoaded(true);
+      renderCanvas();
+    }, [renderCanvas]);
 
     const handleEnded = useCallback(() => {
       const video = videoRef.current;
@@ -1353,7 +1362,9 @@ const NativeVideoPlayer = forwardRef<
           <video
             ref={videoRef}
             src={videoSrc}
+            preload="auto"
             onLoadedMetadata={handleLoadedMetadata}
+            onLoadedData={handleLoadedData}
             onEnded={handleEnded}
             playsInline
             muted={!!(systemAudioSrc || micAudioSrc) || !hasEmbeddedAudio}

@@ -82,6 +82,16 @@ vi.mock('@/main/settings', () => ({
   })),
 }));
 
+vi.mock('@/main/history/popover', () => ({
+  preloadHistoryPopover: vi.fn(),
+  showHistoryPopover: vi.fn(),
+  closeHistoryPopover: vi.fn(),
+  toggleHistoryPopover: vi.fn(),
+  getHistoryPopover: () => null,
+  isHistoryPopoverWebContents: () => true,
+  isHistoryPopoverVisible: () => false,
+}));
+
 // Mock thumbnails utils
 vi.mock('@/main/utils/thumbnails', () => ({
   getThumbnail: vi
@@ -276,6 +286,7 @@ describe('History Management', () => {
       const item = await addToHistory('/test/screenshot.png');
 
       expect(item).toBeNull();
+      expect(mockFsPromises.readFile).not.toHaveBeenCalled();
     });
 
     it('should create config directory if it does not exist', async () => {
@@ -356,6 +367,35 @@ describe('History Management', () => {
       expect(item1?.id).toBeDefined();
       expect(item2?.id).toBeDefined();
       expect(item1?.id).not.toBe(item2?.id);
+    });
+
+    it('waits for the initial history load before adding a capture', async () => {
+      let finishRead: (value: string) => void = () => {};
+      mockFs.existsSync.mockReturnValue(true);
+      mockFsPromises.readFile.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishRead = resolve;
+        })
+      );
+      const storedItem: HistoryItem = {
+        id: 'stored',
+        timestamp: 1,
+        originalPath: '/stored.png',
+        type: 'screenshot',
+        editorState: null,
+      };
+      const { addToHistory, getHistory } = await import('@/main/history');
+
+      const adding = addToHistory('/new.png');
+
+      expect(mockFsPromises.writeFile).not.toHaveBeenCalled();
+      finishRead(JSON.stringify([storedItem]));
+      await adding;
+
+      expect(getHistory()).toEqual([
+        expect.objectContaining({ originalPath: '/new.png' }),
+        storedItem,
+      ]);
     });
   });
 
@@ -731,22 +771,14 @@ describe('History Management', () => {
       mockFs.existsSync.mockReturnValue(false);
 
       const { init } = await import('@/main/history');
-      init();
+      await init();
 
       expect(mockIpcMain.handle).toHaveBeenCalledWith(
         'history:get',
         expect.any(Function)
       );
       expect(mockIpcMain.handle).toHaveBeenCalledWith(
-        'history:getItem',
-        expect.any(Function)
-      );
-      expect(mockIpcMain.handle).toHaveBeenCalledWith(
         'history:delete',
-        expect.any(Function)
-      );
-      expect(mockIpcMain.handle).toHaveBeenCalledWith(
-        'history:confirmClear',
         expect.any(Function)
       );
       expect(mockIpcMain.handle).toHaveBeenCalledWith(
@@ -773,38 +805,19 @@ describe('History Management', () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFsPromises.readFile.mockResolvedValue(JSON.stringify(mockHistory));
 
-      const { init, loadHistory } = await import('@/main/history');
-      await loadHistory();
-      init();
+      const { init } = await import('@/main/history');
+      await init();
 
       const handler = ipcHandlers['history:get'];
-      const result = handler();
+      const result = handler({ sender: {} });
 
-      expect(result).toEqual(mockHistory);
-    });
-
-    it('should handle history:getItem IPC call', async () => {
-      const mockHistory: HistoryItem[] = [
+      expect(result).toEqual([
         {
           id: 'test-1',
-          timestamp: Date.now(),
-          originalPath: '/test/screenshot.png',
+          timestamp: mockHistory[0].timestamp,
           type: 'screenshot',
-          editorState: null,
         },
-      ];
-
-      mockFs.existsSync.mockReturnValue(true);
-      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(mockHistory));
-
-      const { init, loadHistory } = await import('@/main/history');
-      await loadHistory();
-      init();
-
-      const handler = ipcHandlers['history:getItem'];
-      const result = handler({}, 'test-1');
-
-      expect(result).toEqual(mockHistory[0]);
+      ]);
     });
 
     it('should handle history:delete IPC call', async () => {
@@ -821,9 +834,8 @@ describe('History Management', () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFsPromises.readFile.mockResolvedValue(JSON.stringify(mockHistory));
 
-      const { init, loadHistory } = await import('@/main/history');
-      await loadHistory();
-      init();
+      const { init } = await import('@/main/history');
+      await init();
 
       const handler = ipcHandlers['history:delete'];
       const result = await handler({}, 'test-1');
@@ -831,14 +843,14 @@ describe('History Management', () => {
       expect(result).toBe(true);
     });
 
-    it('should handle history:confirmClear IPC call - user confirms', async () => {
+    it('should handle history:clear IPC call - user confirms', async () => {
       mockDialog.showMessageBox.mockResolvedValue({ response: 0 }); // 0 = Clear History
 
       const { init } = await import('@/main/history');
-      init();
+      await init();
 
       const mockEvent = { sender: {} };
-      const handler = ipcHandlers['history:confirmClear'];
+      const handler = ipcHandlers['history:clear'];
       const result = await handler(mockEvent);
 
       expect(result).toBe(true);
@@ -854,29 +866,17 @@ describe('History Management', () => {
       });
     });
 
-    it('should handle history:confirmClear IPC call - user cancels', async () => {
+    it('should handle history:clear IPC call - user cancels', async () => {
       mockDialog.showMessageBox.mockResolvedValue({ response: 1 }); // 1 = Cancel
 
       const { init } = await import('@/main/history');
-      init();
+      await init();
 
       const mockEvent = { sender: {} };
-      const handler = ipcHandlers['history:confirmClear'];
+      const handler = ipcHandlers['history:clear'];
       const result = await handler(mockEvent);
 
       expect(result).toBe(false);
-    });
-
-    it('should handle history:clear IPC call', async () => {
-      mockFs.existsSync.mockReturnValue(false);
-
-      const { init } = await import('@/main/history');
-      init();
-
-      const handler = ipcHandlers['history:clear'];
-      const result = await handler();
-
-      expect(result).toBe(true);
     });
 
     it('should handle history:getThumbnail IPC call', async () => {
@@ -886,11 +886,23 @@ describe('History Management', () => {
         cached: true,
       });
 
+      const mockHistory: HistoryItem[] = [
+        {
+          id: 'test-1',
+          timestamp: Date.now(),
+          originalPath: '/test/screenshot.png',
+          type: 'screenshot',
+          editorState: null,
+        },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(mockHistory));
+
       const { init } = await import('@/main/history');
-      init();
+      await init();
 
       const handler = ipcHandlers['history:getThumbnail'];
-      const result = await handler({}, '/test/screenshot.png', 'screenshot');
+      const result = await handler({ sender: {} }, 'test-1');
 
       expect(getThumbnail).toHaveBeenCalledWith(
         '/test/screenshot.png',
@@ -907,10 +919,10 @@ describe('History Management', () => {
       });
 
       const { init } = await import('@/main/history');
-      init();
+      await init();
 
       const handler = ipcHandlers['history:getThumbnail'];
-      const result = await handler({}, '/test/nonexistent.png', 'screenshot');
+      const result = await handler({ sender: {} }, 'missing');
 
       expect(result).toBeNull();
     });

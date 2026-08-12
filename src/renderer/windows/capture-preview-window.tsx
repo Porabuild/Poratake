@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   X,
+  Copy,
   Film,
   Image,
   Trash2,
@@ -15,6 +16,7 @@ import type {
 } from '@/types/capture-preview';
 import { useVideoClipboardExport } from '@/renderer/hooks/use-video-clipboard-export';
 import { useCloudFileUpload } from '@/renderer/hooks/use-cloud-file-upload';
+import { usePolishCopy } from '@/renderer/hooks/use-polish-copy';
 
 const UPLOAD_DONE_DISPLAY_MS = 800;
 
@@ -25,15 +27,68 @@ interface CapturePreviewWindowProps {
 export default function CapturePreviewWindow({
   params,
 }: CapturePreviewWindowProps) {
-  const { contentType, thumbnailBase64, filePath } = params;
+  const { contentType, imageUrl, thumbnailUrl, filePath } = params;
   const [isHovered, setIsHovered] = useState(false);
   const [displays, setDisplays] = useState<PreviewDisplayInfo[]>([]);
   const [isDisplayMenuOpen, setIsDisplayMenuOpen] = useState(false);
+  const [imageSources, setImageSources] = useState<string[]>(() =>
+    [imageUrl, thumbnailUrl].filter((source): source is string =>
+      Boolean(source)
+    )
+  );
+  const [visibleImageSource, setVisibleImageSource] = useState<string | null>(
+    null
+  );
+  const visibleImageSourceRef = useRef<string | null>(null);
+  const contentReadySentRef = useRef(false);
   const isDeleting = useRef(false);
   const displayMenuRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    const nextSources = [imageUrl, thumbnailUrl].filter(
+      (source): source is string => Boolean(source)
+    );
+    if (nextSources.length === 0) return;
+
+    setImageSources(sources =>
+      nextSources.reduce(
+        (result, source) =>
+          result.includes(source) ? result : [...result, source],
+        sources
+      )
+    );
+  }, [imageUrl, thumbnailUrl]);
+
+  useEffect(() => {
+    const isPlaceholderReady = imageSources.length === 0;
+    if (!visibleImageSource && !isPlaceholderReady) return;
+    if (contentReadySentRef.current) return;
+
+    contentReadySentRef.current = true;
+    window.ipcRenderer.send('capture-preview:content-ready');
+  }, [contentType, imageSources.length, visibleImageSource]);
+
+  const handleImageLoad = useCallback(
+    (source: string) => {
+      if (
+        visibleImageSourceRef.current &&
+        source !== (thumbnailUrl ?? imageUrl ?? imageSources[0])
+      ) {
+        return;
+      }
+
+      visibleImageSourceRef.current = source;
+      setVisibleImageSource(source);
+    },
+    [imageSources, imageUrl, thumbnailUrl]
+  );
+
+  const handleImageError = useCallback((source: string) => {
+    setImageSources(sources => sources.filter(item => item !== source));
+  }, []);
+
   const { isCopying, isDone, copyProgress, startExport, cancelExport } =
-    useVideoClipboardExport(filePath);
+    useVideoClipboardExport();
 
   const {
     uploadState,
@@ -41,9 +96,16 @@ export default function CapturePreviewWindow({
     upload: uploadToCloud,
   } = useCloudFileUpload(filePath);
 
-  const canUploadToCloud = contentType === 'screenshot';
+  const isScreenshot = contentType === 'screenshot';
+
+  const {
+    preset: polishPreset,
+    isPolishing,
+    polish,
+  } = usePolishCopy(isScreenshot);
+
   const isUploaded = uploadState === 'success';
-  const isBusy = isCopying || isUploading;
+  const isBusy = isCopying || isUploading || isPolishing;
   const isFinished = isDone || isUploaded;
 
   useEffect(() => {
@@ -55,6 +117,16 @@ export default function CapturePreviewWindow({
 
     return () => clearTimeout(timer);
   }, [isUploaded]);
+
+  const isAutoDismissPaused =
+    isHovered || isDisplayMenuOpen || isBusy || isFinished;
+
+  useEffect(() => {
+    window.ipcRenderer.send(
+      'capture-preview:set-auto-dismiss-paused',
+      isAutoDismissPaused
+    );
+  }, [isAutoDismissPaused]);
 
   useEffect(() => {
     window.ipcRenderer
@@ -136,6 +208,15 @@ export default function CapturePreviewWindow({
     [contentType, isBusy, startExport]
   );
 
+  const handlePolish = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (isBusy) return;
+      void polish();
+    },
+    [isBusy, polish]
+  );
+
   const handleEdit = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -186,14 +267,17 @@ export default function CapturePreviewWindow({
     (e: React.DragEvent) => {
       if (contentType !== 'screenshot') return;
       e.preventDefault();
-      window.ipcRenderer.send('capture-preview:start-drag', filePath);
+      window.ipcRenderer.send('capture-preview:start-drag');
     },
-    [contentType, filePath]
+    [contentType]
   );
 
   const showControls =
     (isHovered || isBusy || isDisplayMenuOpen) && !isFinished;
   const hasMultipleDisplays = displays.length > 1;
+  const thumbnailClassName = `transition-transform duration-200 ${
+    showControls ? 'scale-105' : ''
+  }`;
 
   return (
     <div
@@ -202,20 +286,22 @@ export default function CapturePreviewWindow({
       draggable={contentType === 'screenshot'}
       onDragStart={handleDragStart}
     >
-      {thumbnailBase64 ? (
+      {imageSources.map(source => (
         <img
-          src={`data:image/jpeg;base64,${thumbnailBase64}`}
+          key={source}
+          src={source}
           alt="Preview"
-          className={`h-full w-full object-cover transition-all duration-200 ${
-            isHovered && !isBusy ? 'scale-110 blur-sm brightness-75' : ''
+          className={`absolute inset-0 h-full w-full object-cover ${thumbnailClassName} ${
+            source === visibleImageSource ? '' : 'opacity-0'
           }`}
           draggable={false}
+          onLoad={() => handleImageLoad(source)}
+          onError={() => handleImageError(source)}
         />
-      ) : (
+      ))}
+      {!visibleImageSource && (
         <div
-          className={`bg-muted flex h-full w-full items-center justify-center transition-all duration-200 ${
-            isHovered && !isBusy ? 'scale-110 blur-sm brightness-75' : ''
-          }`}
+          className={`bg-muted flex h-full w-full items-center justify-center ${thumbnailClassName}`}
         >
           {contentType === 'video' ? (
             <Film className="text-muted-foreground h-12 w-12" />
@@ -245,7 +331,7 @@ export default function CapturePreviewWindow({
       )}
 
       <div
-        className="absolute inset-0 cursor-pointer"
+        className="absolute inset-0 cursor-default"
         onDoubleClick={handleDoubleClick}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
@@ -253,6 +339,7 @@ export default function CapturePreviewWindow({
       >
         {showControls && (
           <>
+            <div className="animate-in fade-in pointer-events-none absolute inset-0 bg-black/25 backdrop-blur-md duration-200" />
             <button
               onClick={handleClose}
               className="bg-background/80 hover:bg-destructive absolute top-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors"
@@ -294,13 +381,26 @@ export default function CapturePreviewWindow({
               </button>
             </div>
             <div className="absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col gap-1">
-              <button
-                onClick={handleCopy}
-                disabled={isCopying}
-                className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isCopying ? 'Exporting...' : 'Copy'}
-              </button>
+              {isScreenshot ? (
+                polishPreset && (
+                  <button
+                    onClick={handlePolish}
+                    disabled={isBusy}
+                    title={`Copy with "${polishPreset.name}"`}
+                    className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {isPolishing ? 'Polishing...' : 'Polish'}
+                  </button>
+                )
+              ) : (
+                <button
+                  onClick={handleCopy}
+                  disabled={isCopying}
+                  className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isCopying ? 'Exporting...' : 'Copy'}
+                </button>
+              )}
               {isCopying ? (
                 <button
                   onClick={cancelExport}
@@ -317,7 +417,17 @@ export default function CapturePreviewWindow({
                 </button>
               )}
             </div>
-            {canUploadToCloud && (
+            {isScreenshot && (
+              <button
+                onClick={handleCopy}
+                disabled={isBusy}
+                title="Copy"
+                className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 absolute bottom-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {isScreenshot && (
               <button
                 onClick={handleUpload}
                 disabled={isBusy}

@@ -3,9 +3,10 @@ import type {
   VideoEditorState,
   ExportSettings,
 } from '@/types/video-editor-state';
+import { EDITOR_STATE_VERSION } from '@/types/video-editor-state';
 import type { RecordingType } from '@/types/video';
 import type { CursorStyle } from '@/types/cursor';
-import type { CameraStyle } from '@/types/camera';
+import type { CameraStyle, CameraSegment } from '@/types/camera';
 import type { KeyboardStyle } from '@/types/keyboard';
 import type { SubtitleStyle } from '@/types/subtitle';
 import type { AudioStyle } from '@/types/audio';
@@ -28,6 +29,7 @@ interface EditorStateValues {
   audioStyle: AudioStyle;
   zoomSegments: ZoomSegment[];
   zoomSettings: ZoomSettings;
+  cameraSegments: CameraSegment[];
   drawingSegments: DrawingSegment[];
   wallpaper: VideoWallpaperSettings;
   firstFrame: FirstFrameSettings;
@@ -105,7 +107,7 @@ export function useEditorStatePersistence({
     isSavingRef.current = true;
 
     const state: VideoEditorState = {
-      version: 1,
+      version: EDITOR_STATE_VERSION,
       savedAt: new Date().toISOString(),
       recordingType: recordingTypeRef.current,
       segments: values.segments,
@@ -116,6 +118,7 @@ export function useEditorStatePersistence({
       audioStyle: values.audioStyle,
       zoomSegments: values.zoomSegments,
       zoomSettings: values.zoomSettings,
+      cameraSegments: values.cameraSegments,
       drawingSegments: values.drawingSegments,
       wallpaper: values.wallpaper,
       firstFrame: values.firstFrame,

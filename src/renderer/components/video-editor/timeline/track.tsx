@@ -44,7 +44,7 @@ interface TrackProps {
   onMove?: (id: string, startTime: number, endTime: number) => void;
   onAdd?: (startTime: number, endTime: number) => void;
   onGestureEnd?: (type: 'move' | 'resize-start' | 'resize-end') => void;
-  onTrackClick?: (time: number) => void;
+  onTrackClick?: (time: number, shiftKey: boolean) => void;
   onTrackHover?: (time: number) => void;
   onSegmentMouseDown?: (e: React.MouseEvent, segmentId: string) => void;
 }
@@ -146,7 +146,7 @@ const Track = forwardRef<HTMLDivElement, TrackProps>(
 
         if (isToolActive && onTrackClick) {
           if (allowTrackClickOnSegments || !clickedSegment) {
-            onTrackClick(time);
+            onTrackClick(time, e.shiftKey);
             return;
           }
         }
@@ -214,7 +214,7 @@ const Track = forwardRef<HTMLDivElement, TrackProps>(
           setPreviewEnd(time);
           onSelect(null);
         } else if (onTrackClick && isToolActive) {
-          onTrackClick(time);
+          onTrackClick(time, e.shiftKey);
         }
       },
       [

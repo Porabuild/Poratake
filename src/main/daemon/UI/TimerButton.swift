@@ -135,7 +135,7 @@ class TimerButton: NSView {
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         isHovered = true
-        NSCursor.pointingHand.push()
+        NSCursor.arrow.push()
         updateDisplay()
     }
     

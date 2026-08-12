@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { randomUUID } from 'crypto';
 import { app, clipboard, Notification } from 'electron';
 import fs from 'fs';
 import path from 'path';
@@ -9,8 +9,28 @@ import {
   isSupported as isDesktopIconsSupported,
 } from '@/main/capture/desktop-icons';
 import { daemon } from '@/main/daemon';
+import { isFeatureSupported } from '@/main/system/capabilities';
+import { captureAreaToFile } from '@/main/capture/area-overlay';
+import { isMac } from '@/main/utils/platform';
+import { startInteractiveScreencapture } from '@/main/capture/screenshot/screencapture';
+
+let isScanningQRCode = false;
 
 export default async function scanQRCode(): Promise<void> {
+  if (!isFeatureSupported('qrcode') || isScanningQRCode) {
+    return;
+  }
+
+  isScanningQRCode = true;
+
+  try {
+    await captureAndDecodeQRCode();
+  } finally {
+    isScanningQRCode = false;
+  }
+}
+
+async function captureAndDecodeQRCode(): Promise<void> {
   const config = getConfig();
   const shouldHideIcons =
     config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
@@ -19,58 +39,92 @@ export default async function scanQRCode(): Promise<void> {
     await hideDesktopIcons('capture');
   }
 
-  const timestamp = Date.now();
   const tempDir = app.getPath('temp');
   const tempScreenshotPath = path.join(
     tempDir,
-    `capty-qrcode-${timestamp}.png`
+    `capty-qrcode-${randomUUID()}.png`
   );
 
-  const command = `screencapture -i -x -t png "${tempScreenshotPath}"`;
-
-  exec(command, async (error, _stdout, stderr) => {
-    if (shouldHideIcons) {
-      await showDesktopIcons('capture');
-    }
-
-    if (error) {
-      console.log(`Screencapture error: ${error.message}`);
-      return;
-    }
-    if (stderr) {
-      console.log(`Screencapture stderr: ${stderr}`);
-      return;
-    }
-
-    if (!fs.existsSync(tempScreenshotPath)) {
-      return;
-    }
-
+  try {
+    let captured = false;
     try {
-      const qrCodeValue = await extractQRCode(tempScreenshotPath);
-
-      fs.unlinkSync(tempScreenshotPath);
-
-      if (qrCodeValue && qrCodeValue.trim()) {
-        clipboard.writeText(qrCodeValue.trim());
-        showNotification(
-          'QR Code Copied',
-          'QR code value has been copied to clipboard'
-        );
+      if (!isMac) {
+        try {
+          captured = await captureAreaToFile(tempScreenshotPath);
+        } catch (error) {
+          console.error('QR code capture error:', error);
+          showNotification(
+            'Scan Failed',
+            'Failed to capture the selected area'
+          );
+        }
       } else {
-        showNotification(
-          'No QR Code Found',
-          'No QR code was detected in the selected area'
-        );
+        try {
+          const capture = startInteractiveScreencapture([
+            '-i',
+            '-x',
+            '-t',
+            'png',
+            tempScreenshotPath,
+          ]);
+          if (!capture) return;
+
+          const stderr = await capture;
+          if (stderr) {
+            console.log(`Screencapture stderr: ${stderr}`);
+          }
+          captured = fs.existsSync(tempScreenshotPath);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          console.log(`Screencapture error: ${message}`);
+        }
       }
-    } catch (err) {
-      console.error('QR code scan error:', err);
-      if (fs.existsSync(tempScreenshotPath)) {
-        fs.unlinkSync(tempScreenshotPath);
+    } finally {
+      if (shouldHideIcons) {
+        await showDesktopIcons('capture');
       }
-      showNotification('Scan Failed', 'Failed to scan QR code from the image');
     }
-  });
+
+    if (!captured) return;
+
+    await decodeAndCopy(tempScreenshotPath);
+  } finally {
+    deleteTemporaryScreenshot(tempScreenshotPath);
+  }
+}
+
+async function decodeAndCopy(imagePath: string): Promise<void> {
+  try {
+    const qrCodeValue = await extractQRCode(imagePath);
+
+    if (qrCodeValue && qrCodeValue.trim()) {
+      clipboard.writeText(qrCodeValue.trim());
+      showNotification(
+        'QR Code Copied',
+        'QR code value has been copied to clipboard'
+      );
+      return;
+    }
+
+    showNotification(
+      'No QR Code Found',
+      'No QR code was detected in the selected area'
+    );
+  } catch (err) {
+    console.error('QR code scan error:', err);
+    showNotification('Scan Failed', 'Failed to scan QR code from the image');
+  }
+}
+
+function deleteTemporaryScreenshot(imagePath: string): void {
+  try {
+    if (fs.existsSync(imagePath)) {
+      fs.unlinkSync(imagePath);
+    }
+  } catch (error) {
+    console.error('Failed to delete QR code screenshot:', error);
+  }
 }
 
 async function extractQRCode(imagePath: string): Promise<string> {

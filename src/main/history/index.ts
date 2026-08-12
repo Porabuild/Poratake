@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, unlinkSync, rmSync } from 'fs';
 import crypto from 'crypto';
 import type {
   HistoryItem,
+  HistoryItemSummary,
   HistoryItemType,
   EditorState,
   VideoRecordingFeatures,
@@ -23,8 +24,10 @@ export {
   closeHistoryPopover,
   toggleHistoryPopover,
   getHistoryPopover,
+  isHistoryPopoverWebContents,
   isHistoryPopoverVisible,
 } from './popover';
+import { isHistoryPopoverWebContents } from './popover';
 import { getConfig } from '../settings';
 import {
   getThumbnail,
@@ -36,6 +39,7 @@ const CONFIG_DIR = getConfigDir();
 const HISTORY_FILE = getHistoryFilePath();
 
 let historyItems: HistoryItem[] = [];
+let historyLoadPromise: Promise<HistoryItem[]> | null = null;
 
 let writeQueue: Promise<void> = Promise.resolve();
 
@@ -45,29 +49,32 @@ function ensureDirectories() {
   }
 }
 
-export async function loadHistory(): Promise<HistoryItem[]> {
+async function readHistory(): Promise<HistoryItem[]> {
   try {
     ensureDirectories();
-    if (existsSync(HISTORY_FILE)) {
-      const fileContent = await fs.readFile(HISTORY_FILE, 'utf-8');
-      historyItems = JSON.parse(fileContent);
-      const validItems = await Promise.all(
-        historyItems.map(async item => {
-          const exists = existsSync(item.originalPath);
-          return exists
-            ? { ...item, type: item.type || ('screenshot' as const) }
-            : null;
-        })
-      );
-      historyItems = validItems.filter(
-        (item): item is HistoryItem => item !== null
-      );
+    if (!existsSync(HISTORY_FILE)) {
+      historyItems = [];
+      return historyItems;
     }
+
+    const fileContent = await fs.readFile(HISTORY_FILE, 'utf-8');
+    const storedItems = JSON.parse(fileContent) as HistoryItem[];
+    historyItems = storedItems
+      .filter(item => existsSync(item.originalPath))
+      .map(item => ({
+        ...item,
+        type: item.type || ('screenshot' as const),
+      }));
   } catch (error) {
     console.error('Failed to load history:', error);
     historyItems = [];
   }
   return historyItems;
+}
+
+export function loadHistory(): Promise<HistoryItem[]> {
+  historyLoadPromise ??= readHistory();
+  return historyLoadPromise;
 }
 
 async function saveHistoryToFile(): Promise<void> {
@@ -95,6 +102,7 @@ export async function addToHistory(
   if (!config.history.enabled) {
     return null;
   }
+  await loadHistory();
 
   try {
     const item: HistoryItem = {
@@ -127,6 +135,7 @@ export async function updateHistoryItem(
   id: string,
   editorState: EditorState
 ): Promise<HistoryItem | null> {
+  await loadHistory();
   const index = historyItems.findIndex(item => item.id === id);
   if (index === -1) {
     return null;
@@ -145,6 +154,7 @@ export async function updateHistoryItemByPath(
   originalPath: string,
   editorState: EditorState
 ): Promise<HistoryItem | null> {
+  await loadHistory();
   const index = historyItems.findIndex(
     item => item.originalPath === originalPath
   );
@@ -165,6 +175,7 @@ export async function updateHistoryItemPath(
   oldPath: string,
   newPath: string
 ): Promise<boolean> {
+  await loadHistory();
   const index = historyItems.findIndex(item => item.originalPath === oldPath);
   if (index === -1) {
     return false;
@@ -226,6 +237,7 @@ function cleanupHistoryItem(item: HistoryItem): void {
 }
 
 export async function deleteHistoryItem(id: string): Promise<boolean> {
+  await loadHistory();
   const index = historyItems.findIndex(item => item.id === id);
   if (index === -1) {
     return false;
@@ -238,6 +250,7 @@ export async function deleteHistoryItem(id: string): Promise<boolean> {
 }
 
 export async function clearHistory(): Promise<void> {
+  await loadHistory();
   for (const item of historyItems) {
     cleanupHistoryItem(item);
   }
@@ -248,6 +261,15 @@ export async function clearHistory(): Promise<void> {
 
 export function getHistory(): HistoryItem[] {
   return historyItems;
+}
+
+export function getHistorySummaries(): HistoryItemSummary[] {
+  return historyItems.map(({ id, timestamp, type, duration }) => ({
+    id,
+    timestamp,
+    type,
+    ...(duration !== undefined && { duration }),
+  }));
 }
 
 export function getHistoryItem(id: string): HistoryItem | null {
@@ -279,22 +301,24 @@ export function getVideoRecordingFeatures(
   };
 }
 
-export function init(): void {
-  loadHistory();
+export async function init(): Promise<void> {
+  await loadHistory();
 
-  ipcMain.handle('history:get', () => {
-    return getHistory();
+  ipcMain.handle('history:get', event => {
+    if (!isHistoryPopoverWebContents(event.sender)) return [];
+
+    return getHistorySummaries();
   });
 
-  ipcMain.handle('history:getItem', (_event, id: string) => {
-    return getHistoryItem(id);
-  });
+  ipcMain.handle('history:delete', async (event, id: string) => {
+    if (!isHistoryPopoverWebContents(event.sender)) return false;
 
-  ipcMain.handle('history:delete', async (_event, id: string) => {
     return await deleteHistoryItem(id);
   });
 
-  ipcMain.handle('history:confirmClear', async event => {
+  ipcMain.handle('history:clear', async event => {
+    if (!isHistoryPopoverWebContents(event.sender)) return false;
+
     const parentWindow = BrowserWindow.fromWebContents(event.sender);
     const options = {
       type: 'warning' as const,
@@ -311,30 +335,48 @@ export function init(): void {
       ? await dialog.showMessageBox(parentWindow, options)
       : await dialog.showMessageBox(options);
 
-    return result.response === 0;
-  });
+    if (result.response !== 0) return false;
 
-  ipcMain.handle('history:clear', async () => {
     await clearHistory();
     return true;
   });
 
   ipcMain.handle(
     'history:getThumbnail',
-    async (
-      _event,
-      originalPath: string,
-      type: 'screenshot' | 'video'
-    ): Promise<string | null> => {
-      const result = await getThumbnail(originalPath, type);
+    async (event, id: string): Promise<string | null> => {
+      if (!isHistoryPopoverWebContents(event.sender)) return null;
+
+      const item = getHistoryItem(id);
+      if (!item) return null;
+
+      const result = await getThumbnail(item.originalPath, item.type);
       return result.base64;
     }
   );
 
   ipcMain.handle(
     'history:getVideoFeatures',
-    (_event, originalPath: string): VideoRecordingFeatures => {
-      return getVideoRecordingFeatures(originalPath);
+    (event, id: string): VideoRecordingFeatures => {
+      if (!isHistoryPopoverWebContents(event.sender)) {
+        return {
+          hasMic: false,
+          hasSystemAudio: false,
+          hasCamera: false,
+          hasCursor: false,
+        };
+      }
+
+      const item = getHistoryItem(id);
+      if (!item || item.type !== 'video') {
+        return {
+          hasMic: false,
+          hasSystemAudio: false,
+          hasCamera: false,
+          hasCursor: false,
+        };
+      }
+
+      return getVideoRecordingFeatures(item.originalPath);
     }
   );
 }

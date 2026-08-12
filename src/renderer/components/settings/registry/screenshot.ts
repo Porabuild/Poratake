@@ -3,14 +3,28 @@ import type { SettingsItem } from '../settings-registry';
 
 export const SCREENSHOT_ITEMS: SettingsItem[] = [
   {
+    id: 'screenshot.autoCopyToClipboard',
+    category: 'screenshot',
+    section: 'Capture Mode',
+    type: 'switch',
+    label: 'Copy to clipboard automatically',
+    description:
+      'Copy every screenshot to the clipboard as soon as it is captured',
+    keywords: ['clipboard', 'copy', 'automatic', 'always', 'paste'],
+    getValue: s => s.screenshot.autoCopyToClipboard,
+    setValue: (s, v) => ({
+      screenshot: { ...s.screenshot, autoCopyToClipboard: v },
+    }),
+  },
+  {
     id: 'screenshot.captureToClipboard',
     category: 'screenshot',
     section: 'Capture Mode',
     type: 'switch',
-    label: 'Capture to clipboard',
+    label: 'Clipboard only',
     description:
-      'Copy screenshots directly to clipboard without opening the editor',
-    keywords: ['clipboard', 'copy', 'capture', 'direct'],
+      'Keep screenshots in the clipboard without opening the editor or preview',
+    keywords: ['clipboard', 'copy', 'capture', 'direct', 'only'],
     getValue: s => s.screenshot.captureToClipboard,
     setValue: (s, v) => ({
       screenshot: {
@@ -40,6 +54,7 @@ export const SCREENSHOT_ITEMS: SettingsItem[] = [
   },
   {
     id: 'screenshot.hideDesktopIcons',
+    feature: 'desktop-icons',
     category: 'screenshot',
     section: 'Capture Mode',
     type: 'switch',
@@ -59,12 +74,14 @@ export const SCREENSHOT_ITEMS: SettingsItem[] = [
   },
   {
     id: 'screenshot.freezeScreen',
+    feature: 'freeze-screen',
     category: 'screenshot',
     section: 'Capture Mode',
     type: 'switch',
     label: 'Freeze screen',
-    description: 'Show a static snapshot while selecting an area to capture',
-    keywords: ['freeze', 'static', 'snapshot', 'still'],
+    description:
+      'Capture areas and windows exactly as they appear in a static desktop snapshot',
+    keywords: ['freeze', 'static', 'snapshot', 'still', 'window', 'overlap'],
     getValue: s => s.screenshot.freezeScreen,
     setValue: (s, v) => ({
       screenshot: { ...s.screenshot, freezeScreen: v },

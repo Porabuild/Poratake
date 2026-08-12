@@ -13,9 +13,14 @@ import type {
 import type { BalanceCrop } from '@/renderer/utils/color-detection';
 import { renderNoise } from '@/renderer/utils/noise';
 import type { LayerRect } from '@/renderer/utils/layer-layout';
+import {
+  getWindowFrameCornerRadius,
+  isWindowsFrame,
+  WINDOW_FRAME_THEMES,
+  WINDOW_FRAME_TITLE_BAR_HEIGHT,
+  type FramedWindowStyle,
+} from '@/renderer/utils/window-frame';
 
-const WINDOW_FRAME_TITLE_BAR_HEIGHT = 28;
-const WINDOW_FRAME_CORNER_RADIUS = 10;
 const TRAFFIC_LIGHT_SIZE = 12;
 const TRAFFIC_LIGHT_SPACING = 8;
 const TRAFFIC_LIGHT_OFFSET_X = 13;
@@ -25,21 +30,6 @@ const TRAFFIC_LIGHT_COLORS = {
   close: '#FF5F57',
   minimize: '#FFBD2E',
   maximize: '#28C840',
-};
-
-const WINDOW_FRAME_THEMES = {
-  'macos-light': {
-    titleBar: '#E8E8E8',
-    titleBarBorder: '#D1D1D1',
-    content: '#FFFFFF',
-    frameBorder: '#C0C0C0',
-  },
-  'macos-dark': {
-    titleBar: '#3A3A3C',
-    titleBarBorder: '#2A2A2C',
-    content: '#1C1C1E',
-    frameBorder: '#4A4A4C',
-  },
 };
 
 export interface CanvasRendererProps {
@@ -89,6 +79,37 @@ function drawTrafficLights(
   });
 }
 
+function drawWindowsControls(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  color: string
+) {
+  const controlWidth = 34;
+  const centerY = y + WINDOW_FRAME_TITLE_BAR_HEIGHT / 2;
+  const minimizeX = x + width - controlWidth * 2.5;
+  const maximizeX = x + width - controlWidth * 1.5;
+  const closeX = x + width - controlWidth * 0.5;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+
+  ctx.beginPath();
+  ctx.moveTo(minimizeX - 4, centerY + 3);
+  ctx.lineTo(minimizeX + 4, centerY + 3);
+  ctx.stroke();
+
+  ctx.strokeRect(maximizeX - 4, centerY - 4, 8, 8);
+
+  ctx.beginPath();
+  ctx.moveTo(closeX - 4, centerY - 4);
+  ctx.lineTo(closeX + 4, centerY + 4);
+  ctx.moveTo(closeX + 4, centerY - 4);
+  ctx.lineTo(closeX - 4, centerY + 4);
+  ctx.stroke();
+}
+
 interface DrawLayerArgs {
   ctx: CanvasRenderingContext2D;
   image: HTMLImageElement;
@@ -100,6 +121,7 @@ interface DrawLayerArgs {
   cornerRadius: number;
   shadow: number;
   hasWindowFrame: boolean;
+  frameStyle: WindowFrameStyle;
   frameTheme:
     (typeof WINDOW_FRAME_THEMES)[keyof typeof WINDOW_FRAME_THEMES] | null;
   titleBarHeight: number;
@@ -118,6 +140,7 @@ function drawLayer({
   cornerRadius,
   shadow,
   hasWindowFrame,
+  frameStyle,
   frameTheme,
   titleBarHeight,
   balanceCrop,
@@ -137,7 +160,8 @@ function drawLayer({
   }
 
   if (hasWindowFrame && frameTheme) {
-    const frameCornerRadius = WINDOW_FRAME_CORNER_RADIUS;
+    const framedStyle = frameStyle as FramedWindowStyle;
+    const frameCornerRadius = getWindowFrameCornerRadius(framedStyle);
 
     ctx.beginPath();
     ctx.roundRect(frameX, frameY, frameWidth, frameHeight, frameCornerRadius);
@@ -163,11 +187,15 @@ function drawLayer({
     ctx.lineTo(frameX + frameWidth, frameY + titleBarHeight);
     ctx.stroke();
 
-    drawTrafficLights(
-      ctx,
-      frameX + TRAFFIC_LIGHT_OFFSET_X,
-      frameY + TRAFFIC_LIGHT_OFFSET_Y
-    );
+    if (isWindowsFrame(framedStyle)) {
+      drawWindowsControls(ctx, frameX, frameY, frameWidth, frameTheme.control);
+    } else {
+      drawTrafficLights(
+        ctx,
+        frameX + TRAFFIC_LIGHT_OFFSET_X,
+        frameY + TRAFFIC_LIGHT_OFFSET_Y
+      );
+    }
 
     if (inset > 0 && insetColor) {
       ctx.fillStyle = insetColor;
@@ -302,7 +330,7 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
 
     const hasWindowFrame = windowFrame !== 'none';
     const frameTheme = hasWindowFrame
-      ? WINDOW_FRAME_THEMES[windowFrame as 'macos-light' | 'macos-dark']
+      ? WINDOW_FRAME_THEMES[windowFrame as FramedWindowStyle]
       : null;
     const titleBarHeight = hasWindowFrame ? WINDOW_FRAME_TITLE_BAR_HEIGHT : 0;
 
@@ -438,6 +466,7 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
           cornerRadius,
           shadow,
           hasWindowFrame,
+          frameStyle: windowFrame,
           frameTheme,
           titleBarHeight,
           balanceCrop: nativeBalanceCrop,
@@ -462,6 +491,7 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
           cornerRadius,
           shadow,
           hasWindowFrame,
+          frameStyle: windowFrame,
           frameTheme,
           titleBarHeight,
           balanceCrop: { left: 0, top: 0, right: 0, bottom: 0 },
@@ -485,6 +515,7 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       canvasWidth,
       canvasHeight,
       hasWindowFrame,
+      windowFrame,
       frameTheme,
       titleBarHeight,
       nativeBalanceCrop,

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 const mockExistsSync = vi.fn();
 const mockShowOpenDialog = vi.fn();
@@ -7,6 +8,7 @@ const mockGetPrimaryDisplay = vi.fn(() => ({
 }));
 const mockRegisterDockWindow = vi.fn().mockResolvedValue(undefined);
 const mockAppFocus = vi.fn();
+const mockProbeVideo = vi.fn().mockResolvedValue(null);
 
 const browserWindows: MockBrowserWindow[] = [];
 
@@ -25,6 +27,7 @@ class MockBrowserWindow {
   };
 
   destroyed = false;
+  options: Electron.BrowserWindowConstructorOptions;
   loadURL = vi.fn();
   loadFile = vi.fn();
   show = vi.fn();
@@ -40,8 +43,8 @@ class MockBrowserWindow {
     this.windowHandlers[event].push(cb);
   });
 
-  constructor(_opts: unknown) {
-    void _opts;
+  constructor(options: Electron.BrowserWindowConstructorOptions) {
+    this.options = options;
     browserWindows.push(this);
     MockBrowserWindow.instances.push(this);
   }
@@ -72,6 +75,10 @@ vi.mock('@/main/utils/dock', () => ({
   registerDockWindow: (...a: unknown[]) => mockRegisterDockWindow(...a),
 }));
 
+vi.mock('@/main/utils/ffmpeg', () => ({
+  probeVideo: (...args: unknown[]) => mockProbeVideo(...args),
+}));
+
 describe('window-manager', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -97,6 +104,13 @@ describe('window-manager', () => {
       expect(win).toBeDefined();
       expect(browserWindows.length).toBe(1);
       expect(m.getVideoEditorWindowsCount()).toBe(1);
+      expect(browserWindows[0].options).toMatchObject({
+        webPreferences: { webSecurity: false },
+      });
+      expect(browserWindows[0].loadURL).toHaveBeenCalledWith(
+        'http://localhost:5173/?window=video-editor'
+      );
+      expect(mockProbeVideo).toHaveBeenCalledWith('/path/video.mov');
     });
 
     it('uses project recording path when path is a project folder', async () => {
@@ -105,7 +119,9 @@ describe('window-manager', () => {
       const win = m.createVideoEditorWindow('/path/Rec.capty');
       expect(win).toBeDefined();
       const data = m.getWindowData(browserWindows[0].webContents.id);
-      expect(data?.filePath).toBe('/path/Rec.capty/recording.mov');
+      expect(data?.filePath).toBe(
+        path.join('/path/Rec.capty', 'recording.mov')
+      );
     });
   });
 

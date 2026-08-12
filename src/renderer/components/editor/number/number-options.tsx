@@ -1,11 +1,5 @@
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectSeparator,
-  SelectTrigger,
-  SelectValue,
-} from '@/renderer/components/ui/select';
+import { ListBox, Popover, Select } from '@heroui/react';
+import { ChevronDown } from 'lucide-react';
 import type { NumberSize, NumberStyle } from '@/types/editor';
 import { getDisplayValue } from './number-utils';
 
@@ -84,66 +78,122 @@ export default function NumberOptions({
 }: NumberOptionsProps) {
   return (
     <>
-      <Select
-        value={numberStyle}
-        onValueChange={value => onNumberStyleChange(value as NumberStyle)}
-      >
-        <SelectTrigger size="sm" className="h-7! w-auto gap-1 px-2">
-          <SelectValue>
-            <NumberBadgePreview style={numberStyle} size={20} />
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent align="center">
-          {NUMBER_STYLES.map(({ value, label }) => (
-            <SelectItem key={value} value={value}>
-              <div className="flex items-center gap-2">
-                <NumberBadgePreview style={value} size={20} />
-                <span>{label}</span>
-              </div>
-            </SelectItem>
-          ))}
-          <SelectSeparator />
-          <div className="flex items-center justify-between px-2 py-1.5">
-            <span className="text-muted-foreground text-xs">Starting:</span>
-            <Select
-              value={String(numberStartValue)}
-              onValueChange={value => onNumberStartValueChange(Number(value))}
+      <Popover>
+        <Popover.Trigger
+          aria-label="Number options"
+          className="group bg-default hover:bg-default-hover flex h-7 items-center gap-2 rounded-3xl px-2 outline-none"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <NumberBadgePreview style={numberStyle} size={20} />
+          <ChevronDown className="text-muted-foreground size-3.5 transition-transform group-aria-expanded:rotate-180" />
+        </Popover.Trigger>
+        <Popover.Content placement="bottom" className="min-w-48">
+          <Popover.Dialog className="p-0">
+            <ListBox
+              aria-label="Number style"
+              selectionMode="single"
+              disallowEmptySelection
+              selectedKeys={[numberStyle]}
+              onSelectionChange={keys => {
+                if (keys === 'all') {
+                  return;
+                }
+
+                const value = keys.values().next().value;
+                if (value === undefined) {
+                  return;
+                }
+
+                onNumberStyleChange(value as NumberStyle);
+              }}
             >
-              <SelectTrigger size="sm" className="h-6! w-14 px-2 text-xs">
-                <SelectValue>
-                  {getDisplayValue(numberStartValue, numberStyle)}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent align="end">
-                {START_VALUES.map(value => (
-                  <SelectItem key={value} value={String(value)}>
-                    {getDisplayValue(value, numberStyle)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <SelectSeparator />
-          <div className="flex items-center justify-between px-2 py-1.5">
-            <span className="text-muted-foreground text-xs">Size:</span>
-            <Select
-              value={numberSize}
-              onValueChange={value => onNumberSizeChange(value as NumberSize)}
-            >
-              <SelectTrigger size="sm" className="h-6! w-20 px-2 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="end">
-                {NUMBER_SIZES.map(({ value, label }) => (
-                  <SelectItem key={value} value={value}>
-                    {label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </SelectContent>
-      </Select>
+              {NUMBER_STYLES.map(({ value, label }) => (
+                <ListBox.Item key={value} id={value} textValue={label}>
+                  <NumberBadgePreview style={value} size={20} />
+                  <span className="flex-1">{label}</span>
+                  <ListBox.ItemIndicator />
+                </ListBox.Item>
+              ))}
+            </ListBox>
+            <div className="bg-separator h-px" />
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <span className="text-muted-foreground text-xs">Starting:</span>
+              <Select
+                aria-label="Starting number"
+                variant="secondary"
+                value={String(numberStartValue)}
+                onChange={value => {
+                  if (value === null) {
+                    return;
+                  }
+
+                  onNumberStartValueChange(Number(value));
+                }}
+              >
+                <Select.Trigger className="h-6 min-h-6 w-14 items-center rounded-3xl py-0 ps-2 text-xs">
+                  <span className="flex-1">
+                    {getDisplayValue(numberStartValue, numberStyle)}
+                  </span>
+                  <Select.Indicator />
+                </Select.Trigger>
+                <Select.Popover>
+                  <ListBox className="[&>*+*]:mt-0">
+                    {START_VALUES.map(value => (
+                      <ListBox.Item
+                        key={value}
+                        id={String(value)}
+                        textValue={getDisplayValue(value, numberStyle)}
+                        className="min-h-6 gap-2 rounded-lg py-1 text-xs"
+                      >
+                        <span className="flex-1">
+                          {getDisplayValue(value, numberStyle)}
+                        </span>
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Select.Popover>
+              </Select>
+            </div>
+            <div className="bg-separator h-px" />
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <span className="text-muted-foreground text-xs">Size:</span>
+              <Select
+                aria-label="Number size"
+                variant="secondary"
+                value={numberSize}
+                onChange={value => {
+                  if (value === null) {
+                    return;
+                  }
+
+                  onNumberSizeChange(value as NumberSize);
+                }}
+              >
+                <Select.Trigger className="h-6 min-h-6 w-24 items-center rounded-3xl py-0 ps-2 text-xs">
+                  <span className="flex-1 capitalize">{numberSize}</span>
+                  <Select.Indicator />
+                </Select.Trigger>
+                <Select.Popover>
+                  <ListBox className="[&>*+*]:mt-0">
+                    {NUMBER_SIZES.map(({ value, label }) => (
+                      <ListBox.Item
+                        key={value}
+                        id={value}
+                        textValue={label}
+                        className="min-h-6 gap-2 rounded-lg py-1 text-xs"
+                      >
+                        <span className="flex-1">{label}</span>
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Select.Popover>
+              </Select>
+            </div>
+          </Popover.Dialog>
+        </Popover.Content>
+      </Popover>
       <div className="bg-border mx-1 h-[18px] w-px" />
     </>
   );

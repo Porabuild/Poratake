@@ -37,6 +37,7 @@ export default function KeyboardSettingsPanel({
       <div className="flex items-center justify-between">
         <span className="text-sm">Show Keys</span>
         <Switch
+          size="sm"
           checked={keyboardStyle.visible}
           onCheckedChange={checked => updateStyle({ visible: checked })}
         />

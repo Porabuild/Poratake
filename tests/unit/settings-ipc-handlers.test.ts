@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { pathToFileURL } from 'url';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
@@ -15,6 +16,8 @@ const mockMkdirSync = vi.fn();
 const mockStatSync = vi.fn();
 const mockUnlinkSync = vi.fn();
 const mockDaemonCall = vi.fn();
+const mockFromWebContents = vi.fn();
+const mockIsSettingsWindowWebContents = vi.fn();
 
 vi.mock('electron', () => ({
   app: {
@@ -32,7 +35,7 @@ vi.mock('electron', () => ({
   },
   BrowserWindow: {
     getAllWindows: () => [],
-    fromWebContents: vi.fn(),
+    fromWebContents: (...args: unknown[]) => mockFromWebContents(...args),
   },
   dialog: {
     showOpenDialog: (...a: unknown[]) => mockShowOpenDialog(...a),
@@ -40,6 +43,9 @@ vi.mock('electron', () => ({
   ipcMain: {
     on: vi.fn(),
     handle: (e: string, h: Handler) => mockIpcHandle(e, h),
+  },
+  nativeTheme: {
+    themeSource: 'system',
   },
 }));
 
@@ -64,6 +70,11 @@ vi.mock('@/main/daemon', () => ({
   daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
 }));
 
+vi.mock('@/main/settings/window', () => ({
+  isSettingsWindowWebContents: (...args: unknown[]) =>
+    mockIsSettingsWindowWebContents(...args),
+}));
+
 vi.mock('@/main/system/permissions', () => ({
   init: vi.fn(),
 }));
@@ -71,6 +82,8 @@ vi.mock('@/main/system/permissions', () => ({
 describe('settings IPC handlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFromWebContents.mockReset();
+    mockIsSettingsWindowWebContents.mockReturnValue(true);
     vi.resetModules();
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
     mockReadFileSync.mockReturnValue(Buffer.from('image-bytes'));
@@ -85,27 +98,140 @@ describe('settings IPC handlers', () => {
   }
 
   describe('settings:get / update / reset', () => {
-    it('returns current config', async () => {
+    it('omits wallpaper data from renderer settings', async () => {
       await loadAndInit();
-      const result = ipcHandle['settings:get']();
-      expect(result).toBeDefined();
+      const result = ipcHandle['settings:get-ui']({
+        sender: {},
+      }) as Record<string, unknown>;
+
+      expect(result).toHaveProperty('screenshot');
+      expect(result).not.toHaveProperty('wallpaper');
+    });
+
+    it('returns only appearance for renderer theme initialization', async () => {
+      await loadAndInit();
+      const result = ipcHandle['settings:get-appearance']() as Record<
+        string,
+        unknown
+      >;
+
+      expect(result).toHaveProperty('mode');
+      expect(result).not.toHaveProperty('wallpaper');
     });
 
     it('updates config', async () => {
       await loadAndInit();
       const result = ipcHandle['settings:update'](
-        {},
+        { sender: {} },
         { screenshot: { format: 'jpeg' } }
-      );
-      expect(
-        (result as { screenshot: { format: string } }).screenshot.format
-      ).toBe('jpeg');
+      ) as Record<string, unknown> & { screenshot: { format: string } };
+      expect(result.screenshot.format).toBe('jpeg');
+      expect(result).not.toHaveProperty('wallpaper');
     });
 
     it('resets to defaults', async () => {
       await loadAndInit();
-      const result = ipcHandle['settings:reset']();
+      const result = ipcHandle['settings:reset']({ sender: {} });
       expect(result).toBeDefined();
+    });
+
+    it('hides cloud credentials from other renderer windows', async () => {
+      const settings = await loadAndInit();
+      const { DEFAULT_SETTINGS } = await import('@/types/settings');
+      settings.updateConfig({
+        cloud: {
+          ...DEFAULT_SETTINGS.cloud,
+          s3: {
+            ...DEFAULT_SETTINGS.cloud.s3,
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+          },
+          rest: {
+            ...DEFAULT_SETTINGS.cloud.rest,
+            headers: [{ key: 'Authorization', value: 'Bearer secret' }],
+          },
+        },
+      });
+      mockIsSettingsWindowWebContents.mockReturnValue(false);
+
+      const result = ipcHandle['settings:get-ui']({ sender: {} }) as {
+        cloud: {
+          s3: { accessKeyId: string; secretAccessKey: string };
+          rest: { headers: Array<{ key: string; value: string }> };
+        };
+      };
+
+      expect(result.cloud.s3.accessKeyId).toBe('');
+      expect(result.cloud.s3.secretAccessKey).toBe('');
+      expect(result.cloud.rest.headers).toEqual([
+        { key: 'Authorization', value: '' },
+      ]);
+    });
+
+    it('does not let other renderer windows replace cloud credentials', async () => {
+      const settings = await loadAndInit();
+      const { DEFAULT_SETTINGS } = await import('@/types/settings');
+      settings.updateConfig({
+        cloud: {
+          ...DEFAULT_SETTINGS.cloud,
+          s3: {
+            ...DEFAULT_SETTINGS.cloud.s3,
+            secretAccessKey: 'secret-key',
+          },
+        },
+      });
+      mockIsSettingsWindowWebContents.mockReturnValue(false);
+
+      ipcHandle['settings:update'](
+        { sender: {} },
+        {
+          cloud: {
+            ...DEFAULT_SETTINGS.cloud,
+            s3: {
+              ...DEFAULT_SETTINGS.cloud.s3,
+              secretAccessKey: 'replaced',
+            },
+          },
+        }
+      );
+
+      expect(settings.getConfig().cloud.s3.secretAccessKey).toBe('secret-key');
+    });
+
+    it('normalizes invalid appearance updates', async () => {
+      await loadAndInit();
+
+      const result = ipcHandle['settings:update'](
+        { sender: {} },
+        { appearance: { mode: 'invalid', theme: 'missing' } }
+      ) as { appearance: { mode: string; theme: string } };
+
+      expect(result.appearance).toEqual({ mode: 'dark', theme: 'default' });
+    });
+
+    it('confirms and reapplies Windows acrylic for the settings window', async () => {
+      const window = {
+        isDestroyed: vi.fn(() => false),
+        setBackgroundMaterial: vi.fn(),
+        setBackgroundColor: vi.fn(),
+      };
+      mockFromWebContents.mockReturnValue(window);
+      await loadAndInit();
+
+      const result = ipcHandle['settings:apply-window-material']({
+        sender: {},
+      }) as { nativeCapable: boolean };
+
+      if (!result.nativeCapable) return;
+
+      const { supportsWindowsAcrylic } = await import('@/main/utils/title-bar');
+      if (!supportsWindowsAcrylic()) {
+        expect(window.setBackgroundMaterial).not.toHaveBeenCalled();
+        return;
+      }
+
+      expect(window.setBackgroundMaterial).toHaveBeenCalledWith('acrylic');
+      expect(window.setBackgroundColor).toHaveBeenCalledWith('#00000000');
     });
   });
 
@@ -232,6 +358,41 @@ describe('settings IPC handlers', () => {
       expect(result.find(p => p.id === 'p3')).toBeUndefined();
     });
 
+    it('setDefaultPreset stores an existing preset id', async () => {
+      await loadAndInit();
+      ipcHandle['wallpaper:addPreset']({}, { id: 'p4', name: 'A' });
+      expect(ipcHandle['wallpaper:setDefaultPreset']({}, 'p4')).toBe('p4');
+      expect(ipcHandle['wallpaper:getSettings']()).toMatchObject({
+        defaultPresetId: 'p4',
+      });
+    });
+
+    it('setDefaultPreset rejects unknown ids and clears on null', async () => {
+      await loadAndInit();
+      ipcHandle['wallpaper:addPreset']({}, { id: 'p5', name: 'A' });
+      ipcHandle['wallpaper:setDefaultPreset']({}, 'p5');
+
+      expect(ipcHandle['wallpaper:setDefaultPreset']({}, 'missing')).toBeNull();
+      expect(ipcHandle['wallpaper:setDefaultPreset']({}, null)).toBeNull();
+    });
+
+    it('deletePreset clears the default when it is deleted', async () => {
+      await loadAndInit();
+      ipcHandle['wallpaper:addPreset']({}, { id: 'p6', name: 'A' });
+      ipcHandle['wallpaper:addPreset']({}, { id: 'p7', name: 'B' });
+      ipcHandle['wallpaper:setDefaultPreset']({}, 'p6');
+
+      ipcHandle['wallpaper:deletePreset']({}, 'p7');
+      expect(ipcHandle['wallpaper:getSettings']()).toMatchObject({
+        defaultPresetId: 'p6',
+      });
+
+      ipcHandle['wallpaper:deletePreset']({}, 'p6');
+      expect(ipcHandle['wallpaper:getSettings']()).toMatchObject({
+        defaultPresetId: null,
+      });
+    });
+
     it('selectImage returns null on cancel', async () => {
       mockShowOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
       await loadAndInit();
@@ -285,17 +446,17 @@ describe('settings IPC handlers', () => {
       expect(result).toBe('data:image/png;base64,abc');
     });
 
-    it('getDesktopWallpaper reads file path and returns data URL', async () => {
+    it('getDesktopWallpaper returns a file URL for a wallpaper path', async () => {
+      const wallpaperPath = '/p/wallpaper.jpg';
       mockDaemonCall.mockResolvedValue({
         type: 'path',
-        value: '/p/wallpaper.heic',
+        value: wallpaperPath,
       });
       mockExistsSync.mockReturnValue(true);
       await loadAndInit();
-      const result = (await ipcHandle[
-        'wallpaper:getDesktopWallpaper'
-      ]()) as string;
-      expect(result).toMatch(/^data:image\/heic;base64,/);
+      const result = await ipcHandle['wallpaper:getDesktopWallpaper']();
+      expect(result).toBe(pathToFileURL(wallpaperPath).href);
+      expect(mockReadFileSync).not.toHaveBeenCalledWith(wallpaperPath);
     });
 
     it('getDesktopWallpaper returns null when path file missing', async () => {
@@ -382,8 +543,21 @@ describe('settings IPC handlers', () => {
         screenshots: string;
         recordings: string;
       };
-      expect(result.screenshots).toContain('Capty');
-      expect(result.recordings).toContain('Capty');
+      expect(result.screenshots).toContain('Poratake');
+      expect(result.recordings).toContain('Poratake');
+    });
+
+    it('getDefaultPaths repairs empty paths with Poratake defaults', async () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({ storage: { screenshotsPath: '', recordingsPath: '' } })
+      );
+      await loadAndInit();
+      const result = ipcHandle['storage:getDefaultPaths']() as {
+        screenshots: string;
+        recordings: string;
+      };
+      expect(result.screenshots).toContain('Poratake');
+      expect(result.recordings).toContain('Poratake');
     });
   });
 

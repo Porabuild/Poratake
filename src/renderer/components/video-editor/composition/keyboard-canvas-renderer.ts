@@ -2,6 +2,7 @@ import type {
   KeyboardData,
   KeyboardStyle,
   KeyboardKeyEvent,
+  KeyboardPlatform,
   ModifierKey,
 } from '@/types/keyboard';
 import type { VideoSegment } from '@/types/video';
@@ -28,9 +29,24 @@ const MODIFIER_SYMBOLS: Record<ModifierKey, string> = {
   option: '\u2325',
   shift: '\u21E7',
   fn: 'fn',
+  meta: '\u229E',
+  alt: 'Alt',
 };
 
-const COMMAND_MODIFIERS: ModifierKey[] = ['command', 'control', 'option'];
+const WINDOWS_MODIFIER_LABELS: Partial<Record<ModifierKey, string>> = {
+  control: 'Ctrl',
+  alt: 'Alt',
+  shift: 'Shift',
+  meta: 'Win',
+};
+
+const COMMAND_MODIFIERS: ModifierKey[] = [
+  'command',
+  'control',
+  'option',
+  'meta',
+  'alt',
+];
 
 function isShortcutCombo(event: KeyboardKeyEvent): boolean {
   return event.modifiers.some(mod => COMMAND_MODIFIERS.includes(mod));
@@ -49,25 +65,30 @@ const KEY_SYMBOLS: Record<string, string> = {
   DownArrow: '\u2193',
 };
 
-function formatKeyDisplay(event: KeyboardKeyEvent): string {
+function formatKeyDisplay(
+  event: KeyboardKeyEvent,
+  platform?: KeyboardPlatform
+): string {
   const parts: string[] = [];
 
-  const modifierOrder: ModifierKey[] = [
-    'control',
-    'option',
-    'shift',
-    'command',
-  ];
+  const modifierOrder: ModifierKey[] =
+    platform === 'windows'
+      ? ['control', 'alt', 'shift', 'meta']
+      : ['control', 'option', 'shift', 'command'];
   for (const mod of modifierOrder) {
     if (event.modifiers.includes(mod)) {
-      parts.push(MODIFIER_SYMBOLS[mod]);
+      const label =
+        platform === 'windows'
+          ? WINDOWS_MODIFIER_LABELS[mod]
+          : MODIFIER_SYMBOLS[mod];
+      parts.push(label ?? MODIFIER_SYMBOLS[mod]);
     }
   }
 
   const keyDisplay = KEY_SYMBOLS[event.key] || event.key.toUpperCase();
   parts.push(keyDisplay);
 
-  return parts.join('');
+  return parts.join(platform === 'windows' ? '+' : '');
 }
 
 function getActiveKeys(
@@ -90,7 +111,7 @@ function getActiveKeys(
     const timeSincePress = videoTime - event.timestamp;
     if (timeSincePress < 0 || timeSincePress > displayDuration) continue;
 
-    const displayText = formatKeyDisplay(event);
+    const displayText = formatKeyDisplay(event, keyboardData.meta.platform);
 
     activeKeys.push({
       displayText,

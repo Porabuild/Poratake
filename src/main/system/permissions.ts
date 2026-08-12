@@ -17,16 +17,26 @@ import {
   showAreaSelector,
 } from '@/main/capture/area-selector';
 import { cleanupRecordingUIForMicPermission } from '@/main/capture/video/cleanup';
+import { isMac, isWindows } from '@/main/utils/platform';
 
 export function getScreenRecordingStatus(): ScreenRecordingStatus {
+  if (!isMac) {
+    return 'granted';
+  }
   return systemPreferences.getMediaAccessStatus('screen');
 }
 
 export function getMicrophoneStatus(): MicrophoneStatus {
+  if (!isMac && !isWindows) {
+    return 'granted';
+  }
   return systemPreferences.getMediaAccessStatus('microphone');
 }
 
 export function getCameraStatus(): CameraStatus {
+  if (!isMac && !isWindows) {
+    return 'granted';
+  }
   return systemPreferences.getMediaAccessStatus('camera');
 }
 
@@ -38,6 +48,14 @@ export async function requestMicrophonePermission(): Promise<boolean> {
   }
 
   if (status === 'denied' || status === 'restricted') {
+    return false;
+  }
+
+  if (isWindows) {
+    return true;
+  }
+
+  if (!isMac) {
     return false;
   }
 
@@ -62,6 +80,14 @@ export async function requestCameraPermission(): Promise<boolean> {
     return false;
   }
 
+  if (isWindows) {
+    return true;
+  }
+
+  if (!isMac) {
+    return false;
+  }
+
   hideAreaSelector();
 
   try {
@@ -73,6 +99,9 @@ export async function requestCameraPermission(): Promise<boolean> {
 }
 
 export function checkAccessibility(prompt = false): boolean {
+  if (!isMac) {
+    return true;
+  }
   return systemPreferences.isTrustedAccessibilityClient(prompt);
 }
 
@@ -106,6 +135,10 @@ export async function requestScreenRecordingPermission(): Promise<void> {
 }
 
 export async function openScreenRecordingPreferences(): Promise<void> {
+  if (!isMac) {
+    return;
+  }
+
   await requestScreenRecordingPermission();
 
   shell.openExternal(
@@ -114,18 +147,35 @@ export async function openScreenRecordingPreferences(): Promise<void> {
 }
 
 export function openAccessibilityPreferences(): void {
+  if (!isMac) {
+    return;
+  }
   shell.openExternal(
     'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
   );
 }
 
 export function openMicrophonePreferences(): void {
+  if (isWindows) {
+    shell.openExternal('ms-settings:privacy-microphone');
+    return;
+  }
+  if (!isMac) {
+    return;
+  }
   shell.openExternal(
     'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
   );
 }
 
 export function openCameraPreferences(): void {
+  if (isWindows) {
+    shell.openExternal('ms-settings:privacy-webcam');
+    return;
+  }
+  if (!isMac) {
+    return;
+  }
   shell.openExternal(
     'x-apple.systempreferences:com.apple.preference.security?Privacy_Camera'
   );
@@ -138,10 +188,13 @@ export async function showMicrophonePermissionDialog(): Promise<boolean> {
     type: 'error' as const,
     title: 'Microphone Permission Required',
     message: 'Microphone access is not granted.',
-    detail:
-      'To use the microphone, please grant microphone permission in System Settings.\n\n' +
-      'Go to: System Settings > Privacy & Security > Microphone\n' +
-      'Enable access for Capty',
+    detail: isWindows
+      ? 'To use the microphone, please allow microphone access in Windows Settings.\n\n' +
+        'Go to: Settings > Privacy & security > Microphone\n' +
+        'Enable access for desktop apps'
+      : 'To use the microphone, please grant microphone permission in System Settings.\n\n' +
+        'Go to: System Settings > Privacy & Security > Microphone\n' +
+        'Enable access for Poratake',
     buttons: ['Open Settings', 'Cancel'],
     defaultId: 0,
   };
@@ -165,10 +218,13 @@ export async function showCameraPermissionDialog(): Promise<boolean> {
     type: 'error' as const,
     title: 'Camera Permission Required',
     message: 'Camera access is not granted.',
-    detail:
-      'To use the camera, please grant camera permission in System Settings.\n\n' +
-      'Go to: System Settings > Privacy & Security > Camera\n' +
-      'Enable access for Capty',
+    detail: isWindows
+      ? 'To use the camera, please allow camera access in Windows Settings.\n\n' +
+        'Go to: Settings > Privacy & security > Camera\n' +
+        'Enable access for desktop apps'
+      : 'To use the camera, please grant camera permission in System Settings.\n\n' +
+        'Go to: System Settings > Privacy & Security > Camera\n' +
+        'Enable access for Poratake',
     buttons: ['Open Settings', 'Cancel'],
     defaultId: 0,
   };

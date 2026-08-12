@@ -1,4 +1,10 @@
-import { app, BrowserWindow, screen, ipcMain } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  screen,
+  ipcMain,
+  type WebContents,
+} from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
 
@@ -7,6 +13,7 @@ let isReady = false;
 
 const POPOVER_WIDTH = 400;
 const POPOVER_HEIGHT = 500;
+const POPOVER_GAP = 8;
 
 function calculatePosition(trayBounds?: Electron.Rectangle): {
   x: number;
@@ -20,8 +27,8 @@ function calculatePosition(trayBounds?: Electron.Rectangle): {
     const x = Math.round(
       trayBounds.x + trayBounds.width / 2 - POPOVER_WIDTH / 2
     );
-    const y = trayBounds.y + trayBounds.height + 4;
-    const maxY = screenHeight - POPOVER_HEIGHT;
+    const y = trayBounds.y + trayBounds.height + POPOVER_GAP;
+    const maxY = screenHeight - POPOVER_HEIGHT - POPOVER_GAP;
     return { x, y: Math.min(y, maxY) };
   }
 
@@ -122,6 +129,10 @@ export function getHistoryPopover(): BrowserWindow | null {
   return historyPopover;
 }
 
+export function isHistoryPopoverWebContents(sender: WebContents): boolean {
+  return historyPopover?.webContents === sender;
+}
+
 export function isHistoryPopoverVisible(): boolean {
   return (
     historyPopover !== null &&
@@ -130,6 +141,15 @@ export function isHistoryPopoverVisible(): boolean {
   );
 }
 
-ipcMain.on('history:closePopover', () => {
+ipcMain.on('history:closePopover', event => {
+  if (!isHistoryPopoverWebContents(event.sender)) return;
+
   closeHistoryPopover();
+});
+
+ipcMain.on('history:ready', event => {
+  if (!isHistoryPopoverWebContents(event.sender)) return;
+  if (!isHistoryPopoverVisible()) return;
+
+  event.sender.send('history:refresh');
 });

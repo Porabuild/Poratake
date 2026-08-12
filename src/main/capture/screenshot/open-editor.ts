@@ -10,9 +10,19 @@ import {
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { isDev, devServerUrl } from '@/main/utils/env.ts';
 import { updateHistoryItemByPath, getHistoryItemByPath } from '@/main/history';
+import { getConfig } from '@/main/settings';
 import { registerDockWindow } from '@/main/utils/dock';
+import {
+  titleBarWindowOptions,
+  trackTitleBarTheme,
+} from '@/main/utils/title-bar';
+import {
+  getStoredWindowSize,
+  trackWindowSize,
+} from '@/main/utils/window-state';
 import type { ImageLayer } from '@/types/editor.ts';
 import type { EditorState } from '@/types/history.ts';
 import type { MultiImageAttachEdge } from '@/types/settings.ts';
@@ -56,6 +66,8 @@ export function getImageDimensions(imagePath: string): {
   };
 }
 
+const WINDOW_STATE_ID = 'screenshot-editor';
+
 function calculateWindowSize(imgWidth: number, imgHeight: number) {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width: screenWidth, height: screenHeight } =
@@ -78,6 +90,12 @@ function calculateWindowSize(imgWidth: number, imgHeight: number) {
 
     windowWidth = Math.floor(imgWidth * scale);
     windowHeight = Math.floor(imgHeight * scale) + titleBarHeight;
+  }
+
+  const storedSize = getStoredWindowSize(WINDOW_STATE_ID);
+  if (storedSize) {
+    windowWidth = Math.min(storedSize.width, maxWidth);
+    windowHeight = Math.min(storedSize.height, maxHeight);
   }
 
   windowWidth = Math.max(windowWidth, minWidth);
@@ -127,15 +145,18 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       devTools: isDev,
+      webSecurity: !isDev,
     },
     alwaysOnTop: false,
-    titleBarStyle: 'hiddenInset',
-    frame: true,
+    ...titleBarWindowOptions(),
     x: Math.floor((screenWidth - windowWidth) / 2) + positionOffset,
     y: Math.floor((screenHeight - windowHeight) / 2) + positionOffset,
     show: false,
     backgroundColor: '#1e1e1e',
   });
+
+  trackTitleBarTheme(newWindow);
+  trackWindowSize(WINDOW_STATE_ID, newWindow);
 
   const webContentsId = newWindow.webContents.id;
 
@@ -147,13 +168,18 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
   });
 
   if (devServerUrl) {
-    newWindow.loadURL(devServerUrl);
+    const url = new URL(devServerUrl);
+    url.searchParams.set('window', 'screenshot');
+    newWindow.loadURL(url.toString());
   } else {
-    newWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    newWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
+      query: { window: 'screenshot' },
+    });
   }
 
   newWindow.webContents.on('did-finish-load', () => {
     const windowData = screenshotWindows.get(webContentsId);
+    const config = getConfig();
     const currentEditorState =
       windowData?.editorState ||
       getHistoryItemByPath(filePath)?.editorState ||
@@ -163,10 +189,15 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
       type: 'screenshot',
       params: {
         filePath,
+        imageUrl: pathToFileURL(filePath).href,
         width,
         height,
         editorState: currentEditorState,
         historyId,
+        initialPreferences: config.editor,
+        screenshotSettings: config.screenshot,
+        editorShortcuts: config.shortcuts.editor,
+        editorActionShortcuts: config.shortcuts.editorActions,
       },
     });
   });
