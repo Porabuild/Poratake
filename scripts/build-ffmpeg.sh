@@ -86,7 +86,7 @@ download_ffmpeg() {
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
     
-    curl -L -o ffmpeg.tar.xz "$FFMPEG_URL"
+    curl --fail --location --retry 5 --retry-delay 2 --retry-all-errors --retry-max-time 120 --output ffmpeg.tar.xz "$FFMPEG_URL"
     echo "$FFMPEG_SHA256  ffmpeg.tar.xz" | shasum -a 256 -c -
     tar xf ffmpeg.tar.xz
     cd "ffmpeg-${FFMPEG_VERSION}"

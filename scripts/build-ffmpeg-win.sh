@@ -23,7 +23,7 @@ for command in curl sha256sum tar make gcc nasm pkg-config; do
     fi
 done
 
-curl --fail --location --output "$BUILD_DIR/ffmpeg.tar.xz" "$FFMPEG_URL"
+curl --fail --location --retry 5 --retry-delay 2 --retry-all-errors --retry-max-time 120 --output "$BUILD_DIR/ffmpeg.tar.xz" "$FFMPEG_URL"
 echo "$FFMPEG_SHA256  $BUILD_DIR/ffmpeg.tar.xz" | sha256sum --check --status
 tar -xf "$BUILD_DIR/ffmpeg.tar.xz" -C "$BUILD_DIR"
 cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
