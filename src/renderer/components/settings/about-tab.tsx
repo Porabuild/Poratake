@@ -25,7 +25,7 @@ import BrandLogo from '@/renderer/components/brand-logo';
 
 const SOURCE_URL = 'https://github.com/Porabuild/Poratake';
 const UPSTREAM_URL = 'https://github.com/capty-app/capty';
-const PORABUILD_URL = 'https://porabuild.com';
+const PORABUILD_URL = 'https://porabuild.com/poratake';
 
 export default function AboutTab() {
   const [version, setVersion] = useState('0.0.0');

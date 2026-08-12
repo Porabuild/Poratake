@@ -8,7 +8,7 @@ Windows source builds support full-screen, area, and window screenshots; the edi
 
 <img width="3434" height="1928" alt="image" src="https://github.com/user-attachments/assets/2b00d1c6-fff4-49db-b44d-64d07466e8ae" />
 
-[Poratake](https://github.com/Porabuild/Poratake) is developed by Serhii Vecherenko as part of [Porabuild](https://porabuild.com).
+[Poratake](https://github.com/Porabuild/Poratake) is developed by Serhii Vecherenko as part of [Porabuild](https://porabuild.com/poratake).
 
 ## Development
 

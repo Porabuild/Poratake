@@ -161,14 +161,14 @@ describe('Poratake rebrand compliance', () => {
     expect(readme).toContain('https://github.com/Porabuild/Poratake');
     expect(about).toContain('https://github.com/Porabuild/Poratake');
     expect(menu).toContain('https://github.com/Porabuild/Poratake/issues');
-    expect(packageJson).toContain('https://porabuild.com');
+    expect(packageJson).toContain('https://porabuild.com/poratake');
     expect(packageJson).toContain(
       'git+https://github.com/Porabuild/Poratake.git'
     );
     expect(packageJson).toContain(
       'https://github.com/Porabuild/Poratake/issues'
     );
-    expect(about).toContain("PORABUILD_URL = 'https://porabuild.com'");
+    expect(about).toContain("PORABUILD_URL = 'https://porabuild.com/poratake'");
     expect(workflow).toContain('name: Poratake v${{ inputs.version }}');
     expect(workflow).toContain('release/${{ inputs.version }}/latest-mac.yml');
     expect(workflow).not.toContain('https://capty.app/api/versions');
