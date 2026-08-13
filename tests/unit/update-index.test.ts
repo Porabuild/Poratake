@@ -40,10 +40,13 @@ vi.mock('electron-updater', () => ({
   autoUpdater: mockAutoUpdater,
 }));
 
-const mockPlatform = { isMac: true };
+const mockPlatform = { isMac: true, isWindows: false };
 vi.mock('@/main/utils/platform', () => ({
   get isMac() {
     return mockPlatform.isMac;
+  },
+  get isWindows() {
+    return mockPlatform.isWindows;
   },
 }));
 
@@ -93,6 +96,7 @@ describe('Update System', () => {
     autoUpdaterEventHandlers.clear();
     mockIpcMainHandlers.clear();
     mockPlatform.isMac = true;
+    mockPlatform.isWindows = false;
     mockAutoUpdater.checkForUpdates.mockResolvedValue(undefined);
     mockAutoUpdater.downloadUpdate.mockResolvedValue([]);
   });
@@ -209,8 +213,22 @@ describe('Update System', () => {
       expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(3);
     });
 
-    it('should report unsupported without configuring update checks on Windows', async () => {
+    it('should configure update checks on Windows', async () => {
       mockPlatform.isMac = false;
+      mockPlatform.isWindows = true;
+      const { init, getUpdateState } = await import('@/main/update/index');
+
+      init();
+      vi.advanceTimersByTime(30 * 60 * 1000);
+
+      expect(getUpdateState().status).not.toBe('unsupported');
+      expect(mockAutoUpdater.setFeedURL).toHaveBeenCalled();
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalled();
+    });
+
+    it('should remain unsupported on other platforms', async () => {
+      mockPlatform.isMac = false;
+      mockPlatform.isWindows = false;
       const { init, getUpdateState } = await import('@/main/update/index');
 
       init();
@@ -457,16 +475,17 @@ describe('Update System', () => {
       expect(getUpdateState().error).toBe('Failed to check for updates');
     });
 
-    it('should not check for updates on Windows', async () => {
+    it('should check for updates on Windows', async () => {
       mockPlatform.isMac = false;
+      mockPlatform.isWindows = true;
       const { init, checkForUpdate, getUpdateState } =
         await import('@/main/update/index');
       init();
 
       await checkForUpdate();
 
-      expect(getUpdateState().status).toBe('unsupported');
-      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
+      expect(getUpdateState().status).not.toBe('unsupported');
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalled();
     });
 
     it('should use the dev update version and notes without the updater', async () => {
@@ -516,16 +535,17 @@ describe('Update System', () => {
       expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
     });
 
-    it('should not install updates on Windows', async () => {
+    it('should install updates on Windows', async () => {
       mockPlatform.isMac = false;
+      mockPlatform.isWindows = true;
       const { init, installDownloadedUpdate, getUpdateState } =
         await import('@/main/update/index');
       init();
 
       installDownloadedUpdate();
 
-      expect(getUpdateState().status).toBe('unsupported');
-      expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(getUpdateState().status).not.toBe('unsupported');
+      expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
     });
   });
 

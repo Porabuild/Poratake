@@ -7,11 +7,13 @@ import path from 'path';
 import type { UpdateState, UpdateStatus } from '@/types/update.ts';
 import { getAppVersion, isDev } from '@/main/utils/env.ts';
 import { getConfigDir } from '@/main/utils/paths.ts';
-import { isMac } from '@/main/utils/platform.ts';
+import { isMac, isWindows } from '@/main/utils/platform.ts';
 import { rebuildTrayMenu } from '@/main/menu';
 import * as capture from '@/main/capture';
 import { broadcastUpdateEvent } from './broadcast.ts';
 import { UPDATE_OWNER, UPDATE_REPOSITORY } from './config.ts';
+
+const isSupportedPlatform = isMac || isWindows;
 
 const INITIAL_CHECK_DELAY = 3000;
 const UPDATE_CHECK_INTERVAL = 30 * 60 * 1000;
@@ -131,7 +133,7 @@ export async function checkForUpdate(): Promise<UpdateState> {
     return getUpdateState();
   }
 
-  if (!isMac) {
+  if (!isSupportedPlatform) {
     updateState.error = null;
     setStatus('unsupported');
     return getUpdateState();
@@ -162,7 +164,7 @@ export function installDownloadedUpdate(): void {
     setStatus('ready');
     return;
   }
-  if (!isMac) {
+  if (!isSupportedPlatform) {
     updateState.error = null;
     setStatus('unsupported');
     return;
@@ -210,14 +212,12 @@ export function init(): void {
   const hasDevUpdate = Boolean(
     isDev && process.env.PORATAKE_DEV_UPDATE_VERSION
   );
-  if (!isMac && !hasDevUpdate) {
+  if (!isSupportedPlatform && !hasDevUpdate) {
     setStatus('unsupported');
     return;
   }
 
-  if (isMac) {
-    configureAutoUpdater();
-  }
+  configureAutoUpdater();
 
   setTimeout(() => {
     checkForUpdate();
