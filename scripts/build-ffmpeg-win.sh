@@ -10,6 +10,11 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="$PROJECT_ROOT/src/main/binaries/ffmpeg"
 BUILD_DIR="$(mktemp -d)"
 
+if [ -f "$OUTPUT_DIR/ffmpeg.exe" ]; then
+    echo "ffmpeg.exe already built, skipping."
+    exit 0
+fi
+
 cleanup() {
     rm -rf "$BUILD_DIR"
 }

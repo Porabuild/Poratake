@@ -36,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
-const CLASS_NAME: &str = "CaptyRecordingControl";
+const CLASS_NAME: &str = "PoratakeRecordingControl";
 const ITEM_WIDTH: i32 = 64;
 const TIMER_WIDTH: i32 = 68;
 const DRAG_WIDTH: i32 = 26;

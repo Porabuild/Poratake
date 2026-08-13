@@ -13,7 +13,6 @@ import type { MusicTrack } from '@/types/music';
 import type { VideoWallpaperSettings as VideoWallpaper } from '@/types/video-wallpaper';
 import type { FirstFrameSettings } from '@/types/first-frame';
 import type { DrawingSegment } from '@/types/drawing';
-import { clampExportOptionsToFree } from '@/types/entitlements';
 import type { WebCodecsExporter } from '../export';
 import { videoToTimeline, getTotalTimelineDuration } from '../utils';
 
@@ -165,10 +164,7 @@ export function useVideoExport(): UseVideoExportReturn {
       let options: VideoExportOptions;
       let dialogResult: { canceled: boolean; filePath?: string };
       try {
-        const isPro = (await window.ipcRenderer.invoke(
-          'license:isPro'
-        )) as boolean;
-        options = isPro ? rawOptions : clampExportOptionsToFree(rawOptions);
+        options = rawOptions;
 
         const isGif = options.format === 'gif';
         const extension = isGif ? 'gif' : 'mp4';

@@ -74,7 +74,7 @@ export type ShortcutAction =
   | 'recordScreen'
   | 'recordWindow';
 
-export type CloudProvider = 'capty' | 'rest' | 's3';
+export type CloudProvider = 'rest' | 's3';
 
 export interface S3ProviderConfig {
   endpoint: string;
@@ -307,8 +307,8 @@ export const DEFAULT_REST_PROVIDER_CONFIG: RestProviderConfig = {
 };
 
 export const DEFAULT_CLOUD_CONFIG: CloudConfig = {
-  enabled: true,
-  activeProvider: 'capty',
+  enabled: false,
+  activeProvider: 's3',
   s3: DEFAULT_S3_PROVIDER_CONFIG,
   rest: DEFAULT_REST_PROVIDER_CONFIG,
 };

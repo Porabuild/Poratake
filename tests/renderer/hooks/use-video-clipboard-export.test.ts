@@ -154,15 +154,12 @@ describe('useVideoExport', () => {
   });
 
   it('blocks overlapping export requests before the save dialog resolves', async () => {
-    let resolveLicense: (value: boolean) => void = () => {};
+    let resolveDialog: (value: { canceled: boolean }) => void = () => {};
     invoke.mockImplementation((channel: string) => {
-      if (channel === 'license:isPro') {
-        return new Promise(resolve => {
-          resolveLicense = resolve;
-        });
-      }
       if (channel === 'video-editor:show-save-dialog') {
-        return Promise.resolve({ canceled: true });
+        return new Promise(resolve => {
+          resolveDialog = resolve;
+        });
       }
       return Promise.resolve(undefined);
     });
@@ -182,16 +179,15 @@ describe('useVideoExport', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     await overlapping;
 
-    resolveLicense(true);
+    resolveDialog({ canceled: true });
     await first;
 
-    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 
   it('deletes keyboard audio before finishing the export session', async () => {
     exporterMocks.runExport.mockResolvedValueOnce({ success: true });
     invoke.mockImplementation((channel: string) => {
-      if (channel === 'license:isPro') return Promise.resolve(true);
       if (channel === 'video-editor:show-save-dialog') {
         return Promise.resolve({
           canceled: false,
@@ -244,7 +240,6 @@ describe('useVideoExport', () => {
       error: 'Audio mux failed',
     });
     invoke.mockImplementation((channel: string) => {
-      if (channel === 'license:isPro') return Promise.resolve(true);
       if (channel === 'video-editor:show-save-dialog') {
         return Promise.resolve({
           canceled: false,

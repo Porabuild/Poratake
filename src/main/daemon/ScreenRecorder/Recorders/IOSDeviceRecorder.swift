@@ -23,7 +23,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var systemAudioInputConfigured = false
     private var firstMicTime: CMTime?
     private var micMuted = false
-    private let micQueue = DispatchQueue(label: "com.capty.ios-recorder.mic")
+    private let micQueue = DispatchQueue(label: "com.porabuild.poratake.ios-recorder.mic")
 
     private let cameraRecorder = CameraRecorder()
     private var cameraEnabled = false
@@ -35,9 +35,9 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var pauseStartTime: CMTime?
     private var totalPauseDuration: CMTime = .zero
     
-    private let videoQueue = DispatchQueue(label: "com.capty.ios-recorder.video")
-    private let audioQueue = DispatchQueue(label: "com.capty.ios-recorder.audio")
-    private let writerQueue = DispatchQueue(label: "com.capty.ios-recorder.writer")
+    private let videoQueue = DispatchQueue(label: "com.porabuild.poratake.ios-recorder.video")
+    private let audioQueue = DispatchQueue(label: "com.porabuild.poratake.ios-recorder.audio")
+    private let writerQueue = DispatchQueue(label: "com.porabuild.poratake.ios-recorder.writer")
     
     private(set) var state: RecorderState = .idle
     private var config: RecordingConfig?

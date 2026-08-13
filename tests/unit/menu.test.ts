@@ -175,14 +175,6 @@ vi.mock('@/main/utils/env', () => ({
 // Mock paths module
 vi.mock('@/main/utils/paths', () => ({
   getConfigDir: vi.fn(() => '/mock/config'),
-  getLicenseFilePath: vi.fn(() => '/mock/config/license.json'),
-  getTrialFilePath: vi.fn(() => '/mock/config/trial.json'),
-}));
-
-// Mock license validation
-const mockIsPro = vi.fn(() => true);
-vi.mock('@/main/license/validation', () => ({
-  isPro: mockIsPro,
 }));
 
 describe('Tray System', () => {
@@ -207,7 +199,6 @@ describe('Tray System', () => {
     // Reset config
     mockConfig.general.hideMenuBarIcon = false;
     mockDialog.showMessageBox.mockResolvedValue({ response: 1 }); // Default: Cancel
-    mockIsPro.mockReturnValue(true);
     vi.resetModules();
   });
 
@@ -414,52 +405,6 @@ describe('Tray System', () => {
         item => item.label === 'Capture Area'
       );
       expect(captureAreaItem?.accelerator).toBe('CommandOrControl+Shift+4');
-    });
-  });
-
-  describe('Pro upgrade item', () => {
-    it('should show "Get Capty License" when not pro', async () => {
-      mockIsPro.mockReturnValue(false);
-
-      const { init } = await import('@/main/menu');
-      await init();
-
-      const menuItems = getMenuItems();
-      const labels = menuItems
-        .filter(item => item.label)
-        .map(item => item.label);
-
-      expect(labels).toContain('Get Capty License');
-    });
-
-    it('should not show "Get Capty License" when pro', async () => {
-      mockIsPro.mockReturnValue(true);
-
-      const { init } = await import('@/main/menu');
-      await init();
-
-      const menuItems = getMenuItems();
-      const labels = menuItems
-        .filter(item => item.label)
-        .map(item => item.label);
-
-      expect(labels).not.toContain('Get Capty License');
-    });
-
-    it('should open license settings when upgrade item clicked', async () => {
-      mockIsPro.mockReturnValue(false);
-      const { createOrShowSettingsWindow } = await import('@/main/settings');
-      const { init } = await import('@/main/menu');
-      await init();
-
-      const menuItems = getMenuItems();
-      const upgradeItem = menuItems.find(
-        item => item.label === 'Get Capty License'
-      );
-
-      upgradeItem?.click?.();
-
-      expect(createOrShowSettingsWindow).toHaveBeenCalledWith('license');
     });
   });
 

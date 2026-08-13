@@ -16,7 +16,7 @@ const REQUEST_TIMEOUT = 30000;
 const MAX_RESTART_ATTEMPTS = 5;
 const RESTART_BACKOFF_BASE = 1000;
 const WINDOWS_STALE_PROCESS_SCRIPT =
-  "$target = [IO.Path]::GetFullPath($env:CAPTY_DAEMON_PATH); Get-Process -Name 'capty-daemon' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and [string]::Equals([IO.Path]::GetFullPath($_.Path), $target, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } | Stop-Process -Force";
+  "$target = [IO.Path]::GetFullPath($env:PORATAKE_DAEMON_PATH); Get-Process -Name 'capty-daemon' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and [string]::Equals([IO.Path]::GetFullPath($_.Path), $target, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } | Stop-Process -Force";
 
 class NativeDaemon extends EventEmitter {
   private process: ChildProcess | null = null;
@@ -126,7 +126,7 @@ class NativeDaemon extends EventEmitter {
             stdio: 'ignore',
             env: {
               ...process.env,
-              CAPTY_DAEMON_PATH: binaryPath,
+              PORATAKE_DAEMON_PATH: binaryPath,
             },
           }
         );

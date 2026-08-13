@@ -10,6 +10,11 @@ $sourceDir = Join-Path $buildRoot 'whisper.cpp'
 $buildDir = Join-Path $sourceDir 'build'
 $whisperCommit = '2eeeba56e9edd762b4b38467bab96c2517163158'
 
+if (Test-Path -LiteralPath $outputPath) {
+    Write-Host 'whisper.exe already built, skipping.'
+    exit 0
+}
+
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw 'git is required to build whisper.cpp'
 }

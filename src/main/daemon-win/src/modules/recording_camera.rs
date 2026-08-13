@@ -740,8 +740,8 @@ impl CameraRuntime {
 
         let video_path = config.project_dir.join(CAMERA_VIDEO_NAME);
         let metadata_path = config.project_dir.join(CAMERA_METADATA_NAME);
-        let temporary_video_path = config.project_dir.join(".camera.capty-partial.mp4");
-        let temporary_metadata_path = config.project_dir.join(".camera.capty-partial.json");
+        let temporary_video_path = config.project_dir.join(".camera.poratake-partial.mp4");
+        let temporary_metadata_path = config.project_dir.join(".camera.poratake-partial.json");
         remove_if_exists(&temporary_video_path)?;
         remove_if_exists(&temporary_metadata_path)?;
         let mut partial_video = PartialAssetGuard::new(temporary_video_path.clone());

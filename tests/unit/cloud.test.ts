@@ -46,33 +46,6 @@ vi.mock('@/main/cloud/s3-client', () => ({
   S3Client: MockS3Client,
 }));
 
-const mockCaptyUpload = vi.fn();
-const mockCaptyTestConnection = vi.fn();
-const mockCaptyClientConstructor = vi.fn();
-
-class MockCaptyCloudClient {
-  constructor(credentials: Record<string, unknown>) {
-    mockCaptyClientConstructor(credentials);
-  }
-  upload = mockCaptyUpload;
-  testConnection = mockCaptyTestConnection;
-}
-
-vi.mock('@/main/cloud/capty-client', () => ({
-  CaptyCloudClient: MockCaptyCloudClient,
-}));
-
-const mockGetCachedLicense = vi.fn();
-const mockIsPro = vi.fn();
-
-vi.mock('@/main/license/cache.ts', () => ({
-  getCachedLicense: () => mockGetCachedLicense(),
-}));
-
-vi.mock('@/main/license/validation.ts', () => ({
-  isPro: () => mockIsPro(),
-}));
-
 const mockStat = vi.fn();
 const mockCreateReadStream = vi.fn();
 
@@ -117,12 +90,6 @@ const mockRestCloudConfig: CloudConfig = {
     responseIsPlainText: false,
     responseUrlPath: 'data.url',
   },
-};
-
-const mockCaptyCloudConfig: CloudConfig = {
-  ...DEFAULT_CLOUD_CONFIG,
-  enabled: true,
-  activeProvider: 'capty',
 };
 
 const mockGetConfig = vi.fn(() => ({
@@ -187,15 +154,8 @@ describe('Cloud Upload Module', () => {
     mockGetConfig.mockReturnValue({ cloud: { ...mockS3CloudConfig } });
     mockPutObject.mockResolvedValue(undefined);
     mockHeadBucket.mockResolvedValue(undefined);
-    mockCaptyUpload.mockResolvedValue('https://capty.test/s/share-slug');
-    mockCaptyTestConnection.mockResolvedValue(undefined);
     mockGetCapturePreviewUploadPath.mockReturnValue(null);
     mockIsExportOutputPathAllowed.mockReturnValue(true);
-    mockGetCachedLicense.mockReturnValue({
-      email: 'user@example.com',
-      licenseKey: 'license-key',
-    });
-    mockIsPro.mockReturnValue(true);
     mockS3ClientConstructor.mockClear();
     mockStat.mockResolvedValue({ size: 'fake-video-data'.length });
     mockCreateReadStream.mockImplementation(() =>
@@ -243,32 +203,10 @@ describe('Cloud Upload Module', () => {
       expect(isCloudConfigured()).toBe(false);
     });
 
-    it('returns true with the default config and an active license', async () => {
+    it('returns false with the default config', async () => {
       mockGetConfig.mockReturnValue({
         cloud: { ...DEFAULT_CLOUD_CONFIG },
       });
-      const { isCloudConfigured } = await import('@/main/cloud/index');
-      expect(isCloudConfigured()).toBe(true);
-    });
-  });
-
-  describe('isCloudConfigured (Capty Cloud)', () => {
-    it('returns true when cloud is enabled and a license is active', async () => {
-      mockGetConfig.mockReturnValue({ cloud: { ...mockCaptyCloudConfig } });
-      const { isCloudConfigured } = await import('@/main/cloud/index');
-      expect(isCloudConfigured()).toBe(true);
-    });
-
-    it('returns false without a cached license', async () => {
-      mockGetConfig.mockReturnValue({ cloud: { ...mockCaptyCloudConfig } });
-      mockGetCachedLicense.mockReturnValue(null);
-      const { isCloudConfigured } = await import('@/main/cloud/index');
-      expect(isCloudConfigured()).toBe(false);
-    });
-
-    it('returns false when the cached license is not active', async () => {
-      mockGetConfig.mockReturnValue({ cloud: { ...mockCaptyCloudConfig } });
-      mockIsPro.mockReturnValue(false);
       const { isCloudConfigured } = await import('@/main/cloud/index');
       expect(isCloudConfigured()).toBe(false);
     });
@@ -439,49 +377,6 @@ describe('Cloud Upload Module', () => {
         success: false,
         error: 'Missing required configuration',
       });
-    });
-  });
-
-  describe('Capty Cloud routing', () => {
-    beforeEach(() => {
-      mockGetConfig.mockReturnValue({ cloud: { ...mockCaptyCloudConfig } });
-    });
-
-    it('tests the usage endpoint through the Capty Cloud client', async () => {
-      const { testConnection } = await import('@/main/cloud/index');
-      const result = await testConnection();
-
-      expect(result).toEqual({ success: true });
-      expect(mockCaptyTestConnection).toHaveBeenCalledOnce();
-      expect(mockCaptyClientConstructor).toHaveBeenCalledWith({
-        email: 'user@example.com',
-        licenseKey: 'license-key',
-      });
-    });
-
-    it('uploads images through the Capty Cloud client', async () => {
-      const { uploadImage } = await import('@/main/cloud/index');
-      const url = await uploadImage(
-        Buffer.from('fake-image-data').toString('base64')
-      );
-
-      expect(url).toBe('https://capty.test/s/share-slug');
-      expect(mockCaptyUpload).toHaveBeenCalledWith(
-        expect.objectContaining({
-          contentType: 'image/png',
-          filename: expect.stringMatching(/^screenshot-.+\.png$/),
-        })
-      );
-    });
-
-    it('rejects uploads when the active license is unavailable', async () => {
-      mockIsPro.mockReturnValue(false);
-      const { uploadImage } = await import('@/main/cloud/index');
-
-      await expect(
-        uploadImage(Buffer.from('fake-image-data').toString('base64'))
-      ).rejects.toThrow('Cloud provider is not configured');
-      expect(mockCaptyUpload).not.toHaveBeenCalled();
     });
   });
 
@@ -874,15 +769,6 @@ describe('Cloud Upload Module', () => {
       init();
       expect(mockIpcMainHandle).toHaveBeenCalledWith(
         'cloud:isConfigured',
-        expect.any(Function)
-      );
-    });
-
-    it('registers cloud:has-hosted-access handler', async () => {
-      const { init } = await import('@/main/cloud/index');
-      init();
-      expect(mockIpcMainHandle).toHaveBeenCalledWith(
-        'cloud:has-hosted-access',
         expect.any(Function)
       );
     });

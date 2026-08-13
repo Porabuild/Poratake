@@ -469,6 +469,25 @@ describe('Update System', () => {
       expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
     });
 
+    it('should use the dev update version and notes without the updater', async () => {
+      process.env.PORATAKE_DEV_UPDATE_VERSION = '9.9.9';
+      process.env.PORATAKE_DEV_UPDATE_NOTES = 'Dev build';
+
+      const { init, checkForUpdate, getUpdateState } =
+        await import('@/main/update/index');
+      init();
+
+      await checkForUpdate();
+
+      expect(getUpdateState().latestVersion).toBe('9.9.9');
+      expect(getUpdateState().releaseNotes).toBe('Dev build');
+      expect(getUpdateState().status).toBe('ready');
+      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
+
+      delete process.env.PORATAKE_DEV_UPDATE_VERSION;
+      delete process.env.PORATAKE_DEV_UPDATE_NOTES;
+    });
+
     it('should handle generic error', async () => {
       mockAutoUpdater.checkForUpdates.mockRejectedValueOnce(
         new Error('Network error')

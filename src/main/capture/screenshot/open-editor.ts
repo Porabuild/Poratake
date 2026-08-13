@@ -327,7 +327,7 @@ export function openClipboardInEditor(): void {
   }
 
   const tempDir = os.tmpdir();
-  const tempFile = path.join(tempDir, `capty-clipboard-${Date.now()}.png`);
+  const tempFile = path.join(tempDir, `poratake-clipboard-${Date.now()}.png`);
 
   fs.writeFileSync(tempFile, image.toPNG());
 

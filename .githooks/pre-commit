@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+TMP_DIR="$ROOT/.poratake-format-check.$$"
+FAILED=0
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+IFS='
+'
+for FILE in $(git diff --cached --name-only --diff-filter=ACMR); do
+  case "$FILE" in
+    *.ts | *.tsx | *.js | *.jsx | *.json | *.css | *.md) ;;
+    *) continue ;;
+  esac
+
+  mkdir -p "$TMP_DIR"
+  TMP_FILE="$TMP_DIR/$(basename "$FILE")"
+  git show ":$FILE" | sed 's/\r$//' > "$TMP_FILE"
+
+  if ! bunx prettier --check "$TMP_FILE" > /dev/null 2>&1; then
+    echo "prettier: $FILE is not formatted. Run: bunx prettier --write \"$FILE\""
+    FAILED=1
+  fi
+done
+
+exit $FAILED

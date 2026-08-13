@@ -44,7 +44,6 @@ const mockClearBrowserWindowParent = vi.fn();
 vi.mock('electron', () => ({
   dialog: { showMessageBox: (...a: unknown[]) => mockShowMessageBox(...a) },
   BrowserWindow: { getFocusedWindow: vi.fn(() => null) },
-  shell: { openExternal: (...a: unknown[]) => mockShellOpenExternal(...a) },
   screen: {
     dipToScreenPoint: (...a: unknown[]) => mockDipToScreenPoint(...a),
     getDisplayMatching: (...a: unknown[]) => mockGetDisplayMatching(...a),
@@ -129,7 +128,6 @@ vi.mock('@/main/capture/area-selector', () => ({
 }));
 
 const mockShowMessageBox = vi.fn();
-const mockShellOpenExternal = vi.fn();
 
 describe('recording-control', () => {
   const originalPlatform = process.platform;
@@ -824,13 +822,6 @@ describe('recording-control', () => {
     it('delete calls deleteRecordingAction', async () => {
       await setupAndFire('recording-control:delete');
       expect(mockDeleteRecordingAction).toHaveBeenCalled();
-    });
-
-    it('open-ios-help opens external URL', async () => {
-      await setupAndFire('recording-control:open-ios-help');
-      expect(mockShellOpenExternal).toHaveBeenCalledWith(
-        expect.stringContaining('capty.app')
-      );
     });
 
     it('select-ios-device hides selector when device chosen', async () => {

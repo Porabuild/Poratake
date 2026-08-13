@@ -39,10 +39,6 @@ export function getConfigFilePath(): string {
   return path.join(getConfigDir(), 'config.json');
 }
 
-export function getLicenseFilePath(): string {
-  return path.join(getConfigDir(), 'license.json');
-}
-
 export function getHistoryFilePath(): string {
   return path.join(getConfigDir(), 'history.json');
 }

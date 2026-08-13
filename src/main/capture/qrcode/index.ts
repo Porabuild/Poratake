@@ -42,7 +42,7 @@ async function captureAndDecodeQRCode(): Promise<void> {
   const tempDir = app.getPath('temp');
   const tempScreenshotPath = path.join(
     tempDir,
-    `capty-qrcode-${randomUUID()}.png`
+    `poratake-qrcode-${randomUUID()}.png`
   );
 
   try {

@@ -7,7 +7,6 @@ import {
   HardDrive,
   Keyboard,
   Cloud,
-  KeyRound,
   Info,
   Palette,
 } from 'lucide-react';
@@ -102,11 +101,6 @@ interface CloudTestConnectionItem extends BaseItem {
   visibleWhen?: (s: SettingsConfig) => boolean;
 }
 
-interface CaptyCloudAccessItem extends BaseItem {
-  type: 'capty-cloud-access';
-  visibleWhen?: (s: SettingsConfig) => boolean;
-}
-
 interface RestHeadersItem extends BaseItem {
   type: 'rest-headers';
   visibleWhen?: (s: SettingsConfig) => boolean;
@@ -128,7 +122,6 @@ export type SettingsItem =
   | InputItem
   | PathPickerItem
   | NamingPatternItem
-  | CaptyCloudAccessItem
   | CloudTestConnectionItem
   | RestHeadersItem
   | MicrophoneDeviceItem
@@ -184,12 +177,6 @@ const ALL_SETTINGS_CATEGORIES: SettingsCategory[] = [
     label: 'Cloud',
     icon: Cloud,
     searchable: true,
-  },
-  {
-    id: 'license',
-    label: 'License',
-    icon: KeyRound,
-    searchable: false,
   },
   {
     id: 'about',

@@ -24,7 +24,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
-const CLASS_NAME: &str = "CaptyFreezeOverlay";
+const CLASS_NAME: &str = "PoratakeFreezeOverlay";
 
 struct FrozenWindow {
     window: HWND,

@@ -9,7 +9,6 @@ import {
   BrowserWindow,
   shell,
 } from 'electron';
-import { isPro } from '@/main/license/validation';
 import path from 'path';
 import fs from 'fs';
 import { updateConfig } from '@/main/settings';
@@ -176,18 +175,6 @@ function buildContextMenu(): Menu {
   const updateState = getUpdateState();
 
   const menuItems: GatedMenuItem[] = [];
-
-  if (!isPro()) {
-    menuItems.push(
-      {
-        label: 'Get Capty License',
-        click: () => {
-          createOrShowSettingsWindow('license');
-        },
-      },
-      { type: 'separator' }
-    );
-  }
 
   if (updateState.status === 'ready') {
     menuItems.push(

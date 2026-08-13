@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import SettingItemRenderer from './setting-item-renderer';
-import { getSectionAction } from './section-actions';
 import {
   getItemsByCategory,
   groupBySection,
@@ -81,11 +80,6 @@ export default function SettingsCategoryPage({
       ) : (
         <div className={isShortcutsCategory ? 'space-y-4' : 'space-y-6'}>
           {Array.from(sections.entries()).map(([sectionName, sectionItems]) => {
-            const sectionAction = getSectionAction(
-              category,
-              sectionName,
-              settings
-            );
             return (
               <section
                 key={sectionName}
@@ -95,9 +89,6 @@ export default function SettingsCategoryPage({
                   <h2 className="text-muted-foreground text-xs font-medium">
                     {sectionName}
                   </h2>
-                )}
-                {sectionAction && (
-                  <div className="flex justify-end">{sectionAction}</div>
                 )}
                 {sectionItems.map(item => (
                   <SettingItemRenderer

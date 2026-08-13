@@ -21,7 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
-const CLASS_NAME: &str = "CaptyDisplaySelector";
+const CLASS_NAME: &str = "PoratakeDisplaySelector";
 const IDLE_ALPHA: u8 = 1;
 const HOVER_ALPHA: u8 = 128;
 

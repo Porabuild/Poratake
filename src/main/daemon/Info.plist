@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.capty.daemon</string>
+    <string>com.porabuild.poratake.daemon</string>
     <key>CFBundleName</key>
     <string>Poratake Daemon</string>
     <key>NSCameraUseContinuityCameraDeviceType</key>

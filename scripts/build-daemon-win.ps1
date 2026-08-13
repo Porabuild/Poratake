@@ -7,6 +7,11 @@ $outputFile = Join-Path $projectRoot 'src\main\daemon\capty-daemon.exe'
 
 Write-Host 'Building capty-daemon for Windows...' -ForegroundColor Yellow
 
+if ((Test-Path -LiteralPath $outputFile) -and $env:CI) {
+    Write-Host 'capty-daemon.exe already built (CI), skipping.'
+    exit 0
+}
+
 cargo build --release --manifest-path (Join-Path $daemonDir 'Cargo.toml')
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'Error: cargo build failed' -ForegroundColor Red

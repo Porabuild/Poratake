@@ -396,7 +396,6 @@ class RecordingControlModule: Module {
                     "name": ratio.name
                 ])
             },
-            onOpenIOSHelp: { [weak self] in self?.emitEvent("open-ios-help") },
             onSelectIOSDevice: { [weak self] deviceId, deviceName in
                 self?.emit(event: "select-ios-device", data: ["deviceId": deviceId as Any, "deviceName": deviceName as Any])
             },
@@ -508,7 +507,6 @@ struct RecordingControlCallbacks {
     var onSelectCamera: ((String?, String?) -> Void)?
     var onToggleMicMute: (() -> Void)?
     var onSelectAspectRatio: ((AspectRatio) -> Void)?
-    var onOpenIOSHelp: (() -> Void)?
     var onSelectIOSDevice: ((String?, String?) -> Void)?
     var onRefreshIOSDevices: (() -> [MediaDevice])?
 }
@@ -940,12 +938,6 @@ private class RecordingControlContentView: BlurredPanelView {
             }
         }
         
-        menu.addItem(NSMenuItem.separator())
-        
-        let helpItem = NSMenuItem(title: "How to record iPhone or iPad?", action: #selector(openIOSHelp), keyEquivalent: "")
-        helpItem.target = self
-        menu.addItem(helpItem)
-        
         let point = NSPoint(x: 0, y: button.bounds.height)
         menu.popUp(positioning: nil, at: point, in: button)
     }
@@ -966,10 +958,6 @@ private class RecordingControlContentView: BlurredPanelView {
         NotificationCenter.default.post(name: .areaSelectorShouldHide, object: nil)
         callbacks.onSelectIOSDevice?(device.id, device.label)
         setupContent()
-    }
-    
-    @objc private func openIOSHelp() {
-        callbacks.onOpenIOSHelp?()
     }
     
     private func createButton(

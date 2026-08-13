@@ -52,13 +52,6 @@ vi.mock('@/main/system/shortcuts.ts', () => mockShortcuts);
 const mockHistory = { init: vi.fn() };
 vi.mock('@/main/history', () => mockHistory);
 
-const mockLicense = {
-  init: vi.fn(() => Promise.resolve()),
-  shouldBlockApp: vi.fn(() => false),
-  generateDeviceFingerprint: vi.fn(() => 'fp'),
-};
-vi.mock('@/main/license/index.ts', () => mockLicense);
-
 const mockUpdate = {
   init: vi.fn(),
   handleAppUpdate: vi.fn(() => Promise.resolve()),
@@ -73,13 +66,6 @@ vi.mock('@/main/cloud/index.ts', () => mockCloud);
 
 const mockCapture = { init: vi.fn(), resetScreenCaptureCache: vi.fn() };
 vi.mock('@/main/capture', () => mockCapture);
-
-const mockActivation = {
-  init: vi.fn(),
-  setOnActivatedCallback: vi.fn(),
-  createActivationWindow: vi.fn(),
-};
-vi.mock('@/main/activation', () => mockActivation);
 
 const mockOnboarding = {
   init: vi.fn(),

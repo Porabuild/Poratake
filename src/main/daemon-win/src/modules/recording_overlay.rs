@@ -27,8 +27,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
-const CLASS_NAME: &str = "CaptyRecordingOverlay";
-const HIGHLIGHT_CLASS_NAME: &str = "CaptyRecordingHighlight";
+const CLASS_NAME: &str = "PoratakeRecordingOverlay";
+const HIGHLIGHT_CLASS_NAME: &str = "PoratakeRecordingHighlight";
 const DIM_ALPHA: u8 = 128;
 const HIGHLIGHT_THICKNESS: i32 = 1;
 const HIGHLIGHT_GAP: i32 = 1;

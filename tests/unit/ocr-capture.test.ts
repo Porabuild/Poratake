@@ -203,7 +203,7 @@ describe('captureText (OCR)', () => {
 
     expect(mockExecFile).toHaveBeenCalledWith(
       'screencapture',
-      ['-i', '-x', '-t', 'png', expect.stringContaining('capty-ocr-')],
+      ['-i', '-x', '-t', 'png', expect.stringContaining('poratake-ocr-')],
       expect.any(Function)
     );
     expect(mockDaemonCall).toHaveBeenCalled();
@@ -293,11 +293,11 @@ describe('captureText (OCR) on Windows', () => {
 
     expect(mockExecFile).not.toHaveBeenCalled();
     expect(mockPreprocessImageForOcr).toHaveBeenCalledWith(
-      expect.stringContaining('capty-ocr-'),
-      expect.stringContaining('capty-ocr-processed-')
+      expect.stringContaining('poratake-ocr-'),
+      expect.stringContaining('poratake-ocr-processed-')
     );
     expect(mockDaemonCall).toHaveBeenCalledWith('ocr', 'recognize', {
-      imagePath: expect.stringContaining('capty-ocr-processed-'),
+      imagePath: expect.stringContaining('poratake-ocr-processed-'),
     });
     expect(mockClipboardWriteText).toHaveBeenCalledWith('Windows text');
     expect(mockNotificationShow).toHaveBeenCalled();
@@ -315,7 +315,7 @@ describe('captureText (OCR) on Windows', () => {
     expect(mockCaptureAreaToFile).not.toHaveBeenCalled();
     expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
       area,
-      expect.stringContaining('capty-ocr-')
+      expect.stringContaining('poratake-ocr-')
     );
     expect(mockClipboardWriteText).toHaveBeenCalledWith('Selected text');
   });
@@ -332,7 +332,7 @@ describe('captureText (OCR) on Windows', () => {
 
     expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
       area,
-      expect.stringContaining('capty-ocr-'),
+      expect.stringContaining('poratake-ocr-'),
       { cached: true }
     );
     expect(onCaptured).toHaveBeenCalled();
@@ -348,7 +348,7 @@ describe('captureText (OCR) on Windows', () => {
     await captureText();
 
     expect(mockDaemonCall).toHaveBeenCalledWith('ocr', 'recognize', {
-      imagePath: expect.not.stringContaining('capty-ocr-processed-'),
+      imagePath: expect.not.stringContaining('poratake-ocr-processed-'),
     });
     expect(mockClipboardWriteText).toHaveBeenCalledWith('Fallback text');
   });

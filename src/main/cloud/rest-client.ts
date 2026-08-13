@@ -94,7 +94,7 @@ function buildMultipartStream(
   contentType: string,
   source: UploadSource
 ): MultipartStream {
-  const boundary = `----CaptyBoundary${randomBytes(16).toString('hex')}`;
+  const boundary = `----PoratakeBoundary${randomBytes(16).toString('hex')}`;
   const header = Buffer.from(
     `--${boundary}\r\n` +
       `Content-Disposition: form-data; name="${fieldName}"; filename="${filename}"\r\n` +
