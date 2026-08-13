@@ -4,8 +4,6 @@ const isS3 = (s: { cloud: { activeProvider: string } }) =>
   s.cloud.activeProvider === 's3';
 const isRest = (s: { cloud: { activeProvider: string } }) =>
   s.cloud.activeProvider === 'rest';
-const isCapty = (s: { cloud: { activeProvider: string } }) =>
-  s.cloud.activeProvider === 'capty';
 
 export const CLOUD_ITEMS: SettingsItem[] = [
   {
@@ -15,9 +13,8 @@ export const CLOUD_ITEMS: SettingsItem[] = [
     type: 'select',
     label: 'Upload provider',
     description: 'Where uploaded screenshots and videos are sent',
-    keywords: ['cloud', 'upload', 'provider', 'capty', 's3', 'rest', 'api'],
+    keywords: ['cloud', 'upload', 'provider', 's3', 'rest', 'api'],
     options: [
-      { value: 'capty', label: 'Capty Cloud (external)' },
       { value: 'rest', label: 'Self-hosted cloud' },
       { value: 's3', label: 'S3-compatible storage' },
     ],
@@ -25,7 +22,7 @@ export const CLOUD_ITEMS: SettingsItem[] = [
     setValue: (s, v) => ({
       cloud: {
         ...s.cloud,
-        activeProvider: v as 'capty' | 'rest' | 's3',
+        activeProvider: v as 'rest' | 's3',
       },
     }),
   },
@@ -36,15 +33,12 @@ export const CLOUD_ITEMS: SettingsItem[] = [
     type: 'switch',
     label: 'Enable cloud upload',
     description: 'Upload screenshots to your configured provider',
-    keywords: ['cloud', 'upload', 'capty', 's3', 'rest', 'enable'],
+    keywords: ['cloud', 'upload', 's3', 'rest', 'enable'],
     getValue: s => s.cloud.enabled,
     setValue: (s, v) => ({
       cloud: { ...s.cloud, enabled: v },
     }),
     disabled: s => {
-      if (s.cloud.activeProvider === 'capty') {
-        return false;
-      }
       if (s.cloud.activeProvider === 'rest') {
         const rest = s.cloud.rest;
         if (!rest.url) return true;
@@ -56,16 +50,6 @@ export const CLOUD_ITEMS: SettingsItem[] = [
         !s3.endpoint || !s3.bucket || !s3.accessKeyId || !s3.secretAccessKey
       );
     },
-  },
-  {
-    id: 'cloud.capty.access',
-    category: 'cloud',
-    section: 'Capty Cloud',
-    type: 'capty-cloud-access',
-    label: 'Capty Cloud access',
-    description: 'Uploads are sent to the external Capty service',
-    keywords: ['capty', 'cloud', 'license', 'hosted', 'upload'],
-    visibleWhen: isCapty,
   },
   {
     id: 'cloud.testConnection',

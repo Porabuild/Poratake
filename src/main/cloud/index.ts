@@ -1,6 +1,5 @@
 import { ipcMain, Notification, clipboard } from 'electron';
 import path from 'path';
-import { CaptyCloudClient } from './capty-client.ts';
 import { S3Client } from './s3-client.ts';
 import { RestClient } from './rest-client.ts';
 import {
@@ -9,8 +8,6 @@ import {
   type UploadSource,
 } from './upload-source.ts';
 import { getConfig } from '@/main/settings';
-import { getCachedLicense } from '@/main/license/cache.ts';
-import { isPro } from '@/main/license/validation.ts';
 import { getCapturePreviewUploadPath } from '@/main/capture/capture-preview';
 import { isExportOutputPathAllowed } from '@/main/capture/video/ipc/export-session';
 import type {
@@ -94,46 +91,13 @@ export function isRestConfigured(config: RestProviderConfig): boolean {
   return !!config.responseUrlPath;
 }
 
-export function hasCaptyCloudAccess(): boolean {
-  return isPro() && getCachedLicense() !== null;
-}
-
-function createCaptyCloudClient(): CaptyCloudClient {
-  const license = getCachedLicense();
-
-  if (!isPro() || !license) {
-    throw new Error('Capty Cloud requires an active Capty license');
-  }
-
-  return new CaptyCloudClient({
-    email: license.email,
-    licenseKey: license.licenseKey,
-  });
-}
-
 export function isProviderConfigured(cloud: CloudConfig): boolean {
   switch (cloud.activeProvider) {
-    case 'capty':
-      return hasCaptyCloudAccess();
     case 'rest':
       return isRestConfigured(cloud.rest);
     case 's3':
       return isS3Configured(cloud.s3);
   }
-}
-
-async function uploadViaCapty(
-  source: UploadSource,
-  filename: string,
-  contentType: string,
-  signal?: AbortSignal
-): Promise<string> {
-  return createCaptyCloudClient().upload({
-    source,
-    filename,
-    contentType,
-    signal,
-  });
 }
 
 async function uploadViaS3(
@@ -190,8 +154,6 @@ async function uploadSource(
   }
 
   switch (cloud.activeProvider) {
-    case 'capty':
-      return uploadViaCapty(source, filename, contentType, signal);
     case 'rest':
       return uploadViaRest(cloud.rest, source, filename, contentType, signal);
     case 's3':
@@ -261,19 +223,6 @@ async function testRestConnection(
   }
 }
 
-async function testCaptyConnection(): Promise<{
-  success: boolean;
-  error?: string;
-}> {
-  try {
-    await createCaptyCloudClient().testConnection();
-    return { success: true };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return { success: false, error: message };
-  }
-}
-
 export async function testConnection(): Promise<{
   success: boolean;
   error?: string;
@@ -281,12 +230,12 @@ export async function testConnection(): Promise<{
   const cloud = getConfig().cloud;
 
   switch (cloud.activeProvider) {
-    case 'capty':
-      return testCaptyConnection();
     case 'rest':
       return testRestConnection(cloud.rest);
     case 's3':
       return testS3Connection(cloud.s3);
+    default:
+      return { success: false, error: 'Unknown cloud provider' };
   }
 }
 
@@ -388,9 +337,5 @@ export function init(): void {
 
   ipcMain.handle('cloud:isConfigured', () => {
     return isCloudConfigured();
-  });
-
-  ipcMain.handle('cloud:has-hosted-access', () => {
-    return hasCaptyCloudAccess();
   });
 }

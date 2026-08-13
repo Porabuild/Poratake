@@ -9,8 +9,8 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     private var videoInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
 
-    private let captureQueue = DispatchQueue(label: "com.capty.camera-recorder.capture")
-    private let writerQueue = DispatchQueue(label: "com.capty.camera-recorder.writer")
+    private let captureQueue = DispatchQueue(label: "com.porabuild.poratake.camera-recorder.capture")
+    private let writerQueue = DispatchQueue(label: "com.porabuild.poratake.camera-recorder.writer")
 
     private var sessionStarted = false
     private var firstFrameTime: CMTime?
@@ -31,7 +31,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     
     private var isSynced: Bool = false
     private var syncTime: CMTime?
-    private let syncQueue = DispatchQueue(label: "com.capty.camera-recorder.sync")
+    private let syncQueue = DispatchQueue(label: "com.porabuild.poratake.camera-recorder.sync")
     private var pendingBuffers: [(buffer: CMSampleBuffer, time: CMTime)] = []
     private var syncOffsetMs: Double = 0
 

@@ -77,12 +77,6 @@ const mockHistory = {
 };
 vi.mock('@/main/history', () => mockHistory);
 
-// Mock license
-const mockLicense = {
-  init: vi.fn(() => Promise.resolve()),
-};
-vi.mock('@/main/license/index.ts', () => mockLicense);
-
 // Mock update
 const mockUpdate = {
   init: vi.fn(),
@@ -113,14 +107,6 @@ const mockAllInOne = {
   init: vi.fn(),
 };
 vi.mock('@/main/capture/all-in-one', () => mockAllInOne);
-
-// Mock activation
-const mockActivation = {
-  createActivationWindow: vi.fn(),
-  setOnActivatedCallback: vi.fn(),
-  init: vi.fn(),
-};
-vi.mock('@/main/activation', () => mockActivation);
 
 // Mock onboarding
 const mockOnboarding = {
@@ -154,22 +140,10 @@ describe('Main Process', () => {
   });
 
   describe('initializeModules', () => {
-    it('should initialize license system first', async () => {
-      await import('@/main/main');
-
-      expect(mockLicense.init).toHaveBeenCalled();
-    });
-
     it('should initialize settings', async () => {
       await import('@/main/main');
 
       expect(mockSettings.init).toHaveBeenCalled();
-    });
-
-    it('should initialize activation IPC', async () => {
-      await import('@/main/main');
-
-      expect(mockActivation.init).toHaveBeenCalled();
     });
 
     it('should initialize onboarding IPC', async () => {
@@ -208,7 +182,7 @@ describe('Main Process', () => {
       expect(mockAllInOne.init).toHaveBeenCalled();
     });
 
-    it('should always call showOnboardingOrRun regardless of license', async () => {
+    it('should always call showOnboardingOrRun', async () => {
       await import('@/main/main');
 
       expect(mockOnboarding.showOnboardingOrRun).toHaveBeenCalledWith(

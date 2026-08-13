@@ -192,10 +192,6 @@ export function migrateCloudConfig(savedCloud: unknown): CloudConfig {
 
   let activeProvider = DEFAULT_CLOUD_CONFIG.activeProvider;
 
-  if (raw.activeProvider === 'capty') {
-    activeProvider = 'capty';
-  }
-
   if (raw.activeProvider === 'rest' && hasConfiguredRest) {
     activeProvider = 'rest';
   }
@@ -204,13 +200,14 @@ export function migrateCloudConfig(savedCloud: unknown): CloudConfig {
     activeProvider = 's3';
   }
 
-  const isExistingCaptyConfig = raw.activeProvider === 'capty';
   const enabled =
-    activeProvider === 'capty' && !isExistingCaptyConfig
-      ? DEFAULT_CLOUD_CONFIG.enabled
+    raw.activeProvider === 'capty'
+      ? false
       : typeof raw.enabled === 'boolean'
         ? raw.enabled
-        : DEFAULT_CLOUD_CONFIG.enabled;
+        : hasLegacyFlatS3 && hasConfiguredS3
+          ? true
+          : DEFAULT_CLOUD_CONFIG.enabled;
 
   return {
     enabled,
@@ -820,7 +817,7 @@ function validateStoragePath(dirPath: string): {
       return { valid: false, error: 'Selected path is not a directory' };
     }
 
-    const testFile = path.join(dirPath, `.capty-test-${Date.now()}`);
+    const testFile = path.join(dirPath, `.poratake-test-${Date.now()}`);
     fs.writeFileSync(testFile, '');
     fs.unlinkSync(testFile);
 

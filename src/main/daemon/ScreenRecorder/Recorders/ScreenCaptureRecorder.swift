@@ -27,10 +27,10 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var pauseStartTime: CMTime?
     private var totalPauseDuration: CMTime = .zero
 
-    private let videoQueue = DispatchQueue(label: "com.capty.screen-recorder.video")
-    private let audioQueue = DispatchQueue(label: "com.capty.screen-recorder.audio")
-    private let writerQueue = DispatchQueue(label: "com.capty.screen-recorder.writer")
-    private let audioWriterQueue = DispatchQueue(label: "com.capty.screen-recorder.audio-writer")
+    private let videoQueue = DispatchQueue(label: "com.porabuild.poratake.screen-recorder.video")
+    private let audioQueue = DispatchQueue(label: "com.porabuild.poratake.screen-recorder.audio")
+    private let writerQueue = DispatchQueue(label: "com.porabuild.poratake.screen-recorder.writer")
+    private let audioWriterQueue = DispatchQueue(label: "com.porabuild.poratake.screen-recorder.audio-writer")
 
     private(set) var state: RecorderState = .idle
     private var config: RecordingConfig?
@@ -42,7 +42,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var micMuted: Bool = false
     private var micCaptureSession: AVCaptureSession?
     private var micAudioOutput: AVCaptureAudioDataOutput?
-    private let micQueue = DispatchQueue(label: "com.capty.screen-recorder.mic")
+    private let micQueue = DispatchQueue(label: "com.porabuild.poratake.screen-recorder.mic")
     private var micSampleCount: Int = 0
     private var firstMicTime: CMTime?
     private var micWriteCount: Int = 0

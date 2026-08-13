@@ -130,11 +130,6 @@ vi.mock('@/main/utils/paths', () => ({
   getConfigDir: () => '/mock/config',
 }));
 
-const mockIsPro = vi.fn(() => true);
-vi.mock('@/main/license/validation', () => ({
-  isPro: mockIsPro,
-}));
-
 function getMenuItems(): MenuItem[] {
   const calls = mockMenu.buildFromTemplate.mock.calls as unknown as [
     MenuItem[],
@@ -147,26 +142,7 @@ describe('menu click handlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockIsPro.mockReturnValue(true);
     mockMenu.buildFromTemplate.mockReturnValue({ items: [] } as never);
-  });
-
-  it('Get Capty License click opens license settings', async () => {
-    mockIsPro.mockReturnValue(false);
-    const { init } = await import('@/main/menu');
-    await init();
-    const item = getMenuItems().find(i => i.label === 'Get Capty License');
-    expect(item).toBeDefined();
-    await item!.click!();
-    expect(mockCreateOrShowSettingsWindow).toHaveBeenCalledWith('license');
-  });
-
-  it('Get Capty License is absent when pro', async () => {
-    mockIsPro.mockReturnValue(true);
-    const { init } = await import('@/main/menu');
-    await init();
-    const item = getMenuItems().find(i => i.label === 'Get Capty License');
-    expect(item).toBeUndefined();
   });
 
   it('Capture Screen click triggers screenshot screen mode', async () => {

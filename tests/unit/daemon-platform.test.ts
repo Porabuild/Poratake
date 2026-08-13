@@ -83,11 +83,11 @@ describe('NativeDaemon platform support', () => {
       { stdio: string; env: Record<string, string> },
     ];
     expect(executable).toBe('powershell.exe');
-    expect(args.join(' ')).toContain('$env:CAPTY_DAEMON_PATH');
+    expect(args.join(' ')).toContain('$env:PORATAKE_DAEMON_PATH');
     expect(args.join(' ')).not.toContain('taskkill');
     expect(options).toMatchObject({
       stdio: 'ignore',
-      env: { CAPTY_DAEMON_PATH: '/mock/bin/capty-daemon' },
+      env: { PORATAKE_DAEMON_PATH: '/mock/bin/capty-daemon' },
     });
     expect(mockExecSync).not.toHaveBeenCalled();
 

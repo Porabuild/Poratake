@@ -40,7 +40,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
-const CLASS_NAME: &str = "CaptyCameraPreview";
+const CLASS_NAME: &str = "PoratakeCameraPreview";
 const PREVIEW_SIZE: i32 = 230;
 const SHADOW_PADDING: i32 = 20;
 const TOTAL_SIZE: i32 = PREVIEW_SIZE + SHADOW_PADDING * 2;

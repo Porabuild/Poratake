@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useCallback, useState, useRef } from 'react';
-import {
-  Clock,
-  HardDrive,
-  Sparkles,
-  Check,
-  Copy,
-  ExternalLink,
-  X,
-} from 'lucide-react';
+import { Clock, HardDrive, Check, Copy, ExternalLink, X } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
 import { Separator } from '@/renderer/components/ui/separator';
@@ -22,16 +14,8 @@ import {
   type VideoFrameRate,
   type VideoQualityPreset,
 } from '@/types/video';
-import {
-  isFormatFree,
-  isResolutionFree,
-  isFrameRateFree,
-  isQualityPresetFree,
-} from '@/types/entitlements';
 import type { ExportSettings } from '@/types/video-editor-state';
 import type { CloudUploadState } from '@/types/cloud';
-import { usePro } from '@/renderer/hooks/use-pro';
-import UpgradeDialog from '@/renderer/components/upgrade-dialog';
 import {
   estimateExport,
   formatDuration,
@@ -65,29 +49,24 @@ interface ExportSettingsPanelProps {
 interface SelectOption<T extends string> {
   value: T;
   label: string;
-  isPro?: boolean;
 }
 
 const FORMAT_OPTIONS: SelectOption<VideoFormat>[] = [
   { value: 'mp4', label: 'MP4' },
-  { value: 'gif', label: 'GIF', isPro: !isFormatFree('gif') },
+  { value: 'gif', label: 'GIF' },
 ];
 
 const ALL_RESOLUTION_OPTIONS: SelectOption<VideoResolution>[] = [
-  {
-    value: 'original',
-    label: 'Original',
-    isPro: !isResolutionFree('original'),
-  },
-  { value: '4k', label: '4K (3840x2160)', isPro: !isResolutionFree('4k') },
+  { value: 'original', label: 'Original' },
+  { value: '4k', label: '4K (3840x2160)' },
   { value: '1080p', label: '1080p (1920x1080)' },
   { value: '720p', label: '720p (1280x720)' },
   { value: '480p', label: '480p (854x480)' },
 ];
 
 const ALL_FRAMERATE_OPTIONS: SelectOption<VideoFrameRate>[] = [
-  { value: '60', label: '60 FPS', isPro: !isFrameRateFree('60') },
-  { value: '50', label: '50 FPS', isPro: !isFrameRateFree('50') },
+  { value: '60', label: '60 FPS' },
+  { value: '50', label: '50 FPS' },
   { value: '30', label: '30 FPS' },
   { value: '25', label: '25 FPS' },
   { value: '24', label: '24 FPS' },
@@ -96,7 +75,7 @@ const ALL_FRAMERATE_OPTIONS: SelectOption<VideoFrameRate>[] = [
 ];
 
 const QUALITY_PRESET_OPTIONS: SelectOption<VideoQualityPreset>[] = [
-  { value: 'studio', label: 'Studio', isPro: !isQualityPresetFree('studio') },
+  { value: 'studio', label: 'Studio' },
   { value: 'social', label: 'Social Media' },
   { value: 'web', label: 'Web' },
   { value: 'web-low', label: 'Web (Low)' },
@@ -400,44 +379,28 @@ export default function ExportSettingsPanel({
   onCopyUrl,
   onCancelUpload,
 }: ExportSettingsPanelProps) {
-  const { isPro, requirePro, upgradeOpen, setUpgradeOpen } = usePro();
-
   const { format, resolution, qualityPreset, frameRate, openInFinder } =
     exportSettings;
 
   const normalized = useMemo(() => {
-    const requestedFormat = FORMAT_CONFIGS[format] ? format : 'mp4';
-    const resolvedFormat =
-      !isPro && !isFormatFree(requestedFormat) ? 'mp4' : requestedFormat;
+    const resolvedFormat = FORMAT_CONFIGS[format] ? format : 'mp4';
     const resolvedConfig = FORMAT_CONFIGS[resolvedFormat];
 
-    const requestedResolution = resolvedConfig.resolutions.includes(resolution)
+    const resolvedResolution = resolvedConfig.resolutions.includes(resolution)
       ? resolution
       : resolvedConfig.defaultResolution;
-    const resolvedResolution =
-      !isPro && !isResolutionFree(requestedResolution)
-        ? '1080p'
-        : requestedResolution;
 
-    const requestedFrameRate = resolvedConfig.frameRates.includes(frameRate)
+    const resolvedFrameRate = resolvedConfig.frameRates.includes(frameRate)
       ? frameRate
       : resolvedConfig.defaultFrameRate;
-    const resolvedFrameRate =
-      !isPro && !isFrameRateFree(requestedFrameRate)
-        ? '30'
-        : requestedFrameRate;
 
     const isValidQualityPreset = QUALITY_PRESET_OPTIONS.some(
       opt => opt.value === qualityPreset
     );
-    const requestedQualityPreset =
+    const resolvedQualityPreset =
       resolvedConfig.hasQuality && isValidQualityPreset
         ? qualityPreset
         : resolvedConfig.defaultQualityPreset;
-    const resolvedQualityPreset =
-      !isPro && !isQualityPresetFree(requestedQualityPreset)
-        ? 'social'
-        : requestedQualityPreset;
 
     return {
       config: resolvedConfig,
@@ -449,7 +412,7 @@ export default function ExportSettingsPanel({
         openInFinder: openInFinder ?? true,
       },
     };
-  }, [format, resolution, qualityPreset, frameRate, openInFinder, isPro]);
+  }, [format, resolution, qualityPreset, frameRate, openInFinder]);
 
   const { config: formatConfig, settings: normalizedSettings } = normalized;
   const {
@@ -533,18 +496,7 @@ export default function ExportSettingsPanel({
     [formatConfig]
   );
 
-  const usesProOption =
-    !isFormatFree(resolvedFormat) ||
-    !isResolutionFree(resolvedResolution) ||
-    !isFrameRateFree(resolvedFrameRate) ||
-    (formatConfig.hasQuality && !isQualityPresetFree(resolvedQualityPreset));
-
   const handleExport = useCallback(() => {
-    if (!isPro && usesProOption) {
-      requirePro();
-      return;
-    }
-
     onExport({
       format: resolvedFormat,
       preset: 'custom',
@@ -553,9 +505,6 @@ export default function ExportSettingsPanel({
       frameRate: resolvedFrameRate,
     });
   }, [
-    isPro,
-    usesProOption,
-    requirePro,
     resolvedFormat,
     resolvedResolution,
     resolvedQualityPreset,
@@ -570,34 +519,13 @@ export default function ExportSettingsPanel({
     onChange: (v: T) => void
   ) => {
     const handleChange = (v: string) => {
-      const selected = options.find(opt => opt.value === v);
-      if (selected?.isPro && !isPro) {
-        requirePro();
-        return;
-      }
       onChange(v as T);
     };
 
-    const selectOptions = options.map(opt => {
-      const locked = opt.isPro && !isPro;
-      return {
-        value: opt.value,
-        label: opt.label,
-        content: (
-          <span className="flex flex-1 items-center justify-between gap-2">
-            <span className={locked ? 'text-muted-foreground' : ''}>
-              {opt.label}
-            </span>
-            {locked && (
-              <span className="text-primary flex items-center gap-1 text-xs">
-                <Sparkles className="size-3" />
-                Pro
-              </span>
-            )}
-          </span>
-        ),
-      };
-    });
+    const selectOptions = options.map(opt => ({
+      value: opt.value,
+      label: opt.label,
+    }));
 
     return (
       <div className="space-y-2">
@@ -666,12 +594,6 @@ export default function ExportSettingsPanel({
         uploadedUrl={uploadedUrl}
         onCopyUrl={onCopyUrl}
         onCancelUpload={onCancelUpload}
-      />
-
-      <UpgradeDialog
-        open={upgradeOpen}
-        onOpenChange={setUpgradeOpen}
-        reason="A Capty license unlocks 4K, 60fps, Studio quality, and GIF export in Poratake."
       />
     </div>
   );

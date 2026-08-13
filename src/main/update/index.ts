@@ -110,7 +110,7 @@ function configureAutoUpdater(): void {
 
 export async function checkForUpdate(): Promise<UpdateState> {
   const devUpdateVersion = isDev
-    ? process.env.CAPTY_DEV_UPDATE_VERSION
+    ? process.env.PORATAKE_DEV_UPDATE_VERSION
     : undefined;
 
   if (devUpdateVersion) {
@@ -118,7 +118,7 @@ export async function checkForUpdate(): Promise<UpdateState> {
     updateState.error = null;
     updateState.downloadedFilePath = null;
     updateState.latestVersion = devUpdateVersion;
-    updateState.releaseNotes = process.env.CAPTY_DEV_UPDATE_NOTES || null;
+    updateState.releaseNotes = process.env.PORATAKE_DEV_UPDATE_NOTES || null;
     updateState.downloadProgress = 100;
 
     if (devUpdateVersion === currentVersion) {
@@ -148,7 +148,7 @@ export async function checkForUpdate(): Promise<UpdateState> {
 
 export function installDownloadedUpdate(): void {
   const devUpdateVersion = isDev
-    ? process.env.CAPTY_DEV_UPDATE_VERSION
+    ? process.env.PORATAKE_DEV_UPDATE_VERSION
     : undefined;
 
   if (devUpdateVersion) {
@@ -207,7 +207,9 @@ export function init(): void {
     installDownloadedUpdate();
   });
 
-  const hasDevUpdate = Boolean(isDev && process.env.CAPTY_DEV_UPDATE_VERSION);
+  const hasDevUpdate = Boolean(
+    isDev && process.env.PORATAKE_DEV_UPDATE_VERSION
+  );
   if (!isMac && !hasDevUpdate) {
     setStatus('unsupported');
     return;

@@ -256,7 +256,7 @@ private class CameraPreviewContentView: NSView {
     private let padding: CGFloat
     private let cornerRadius: CGFloat = 65
     
-    private let cameraQueue = DispatchQueue(label: "com.capty.camera-preview")
+    private let cameraQueue = DispatchQueue(label: "com.porabuild.poratake.camera-preview")
     private var isStopped: Bool = false
     
     init(frame: NSRect, deviceId: String?, deviceName: String?, resolution: String, flipped: Bool, padding: CGFloat) {

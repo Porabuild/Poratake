@@ -570,7 +570,7 @@ export function registerIpcHandlers(): void {
     const disableSound = !config.general.playSoundOnScreenshot;
     const temporaryPath = path.join(
       app.getPath('temp'),
-      `capty-editor-${randomUUID()}.png`
+      `poratake-editor-${randomUUID()}.png`
     );
 
     const wasVisible = win.isVisible();

@@ -117,18 +117,18 @@ describe('Environment Utilities', () => {
       expect(typeof version).toBe('string');
     });
 
-    it('returns CAPTY_DEV_APP_VERSION when set in dev', async () => {
+    it('returns PORATAKE_DEV_APP_VERSION when set in dev', async () => {
       const { app } = await import('electron');
       const mockApp = app as unknown as {
         isPackaged: boolean;
         getVersion: () => string;
       };
       mockApp.isPackaged = false;
-      process.env.CAPTY_DEV_APP_VERSION = '99.99.99';
+      process.env.PORATAKE_DEV_APP_VERSION = '99.99.99';
       vi.resetModules();
       const env = await import('@/main/utils/env');
       expect(env.getAppVersion()).toBe('99.99.99');
-      delete process.env.CAPTY_DEV_APP_VERSION;
+      delete process.env.PORATAKE_DEV_APP_VERSION;
     });
   });
 

@@ -65,11 +65,11 @@ async function captureAndRecognizeText(
   const tempDir = app.getPath('temp');
   const tempScreenshotPath = path.join(
     tempDir,
-    `capty-ocr-${randomUUID()}.png`
+    `poratake-ocr-${randomUUID()}.png`
   );
   const tempProcessedPath = path.join(
     tempDir,
-    `capty-ocr-processed-${randomUUID()}.png`
+    `poratake-ocr-processed-${randomUUID()}.png`
   );
 
   try {

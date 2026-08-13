@@ -168,7 +168,7 @@ describe('scanQRCode', () => {
 
     expect(mockExecFile).toHaveBeenCalledWith(
       'screencapture',
-      ['-i', '-x', '-t', 'png', expect.stringContaining('capty-qrcode-')],
+      ['-i', '-x', '-t', 'png', expect.stringContaining('poratake-qrcode-')],
       expect.any(Function)
     );
     expect(mockDaemonCall).toHaveBeenCalled();
@@ -253,10 +253,10 @@ describe('scanQRCode on Windows', () => {
 
     expect(mockExecFile).not.toHaveBeenCalled();
     expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
-      expect.stringContaining('capty-qrcode-')
+      expect.stringContaining('poratake-qrcode-')
     );
     expect(mockDaemonCall).toHaveBeenCalledWith('qrcode', 'detect', {
-      imagePath: expect.stringContaining('capty-qrcode-'),
+      imagePath: expect.stringContaining('poratake-qrcode-'),
     });
     expect(mockClipboardWriteText).toHaveBeenCalledWith(
       'https://example.com/windows'

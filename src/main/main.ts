@@ -19,13 +19,11 @@ import * as preferences from '@/main/system/preferences.ts';
 import * as settings from '@/main/settings';
 import * as shortcuts from '@/main/system/shortcuts.ts';
 import * as history from '@/main/history';
-import * as license from '@/main/license/index.ts';
 import * as update from '@/main/update/index.ts';
 import * as permissions from '@/main/system/permissions.ts';
 import * as cloud from '@/main/cloud/index.ts';
 import * as capture from '@/main/capture';
 import * as devices from '@/main/devices';
-import * as activation from '@/main/activation';
 import * as onboarding from '@/main/onboarding';
 import * as allInOne from '@/main/capture/all-in-one';
 import { initDock } from '@/main/utils/dock';
@@ -101,8 +99,6 @@ const initializeModules = async () => {
     console.error('[daemon] Failed to start:', err);
   });
 
-  await license.init();
-  activation.init();
   settings.init();
   onboarding.init();
   permissions.initPermissionsIPC();

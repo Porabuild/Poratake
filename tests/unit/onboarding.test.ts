@@ -157,8 +157,10 @@ describe('onboarding', () => {
   it('shell:open-external opens URL', async () => {
     const m = await import('@/main/onboarding');
     m.init();
-    ipcHandlers['shell:open-external']({}, 'https://capty.app');
-    expect(mockShellOpenExternal).toHaveBeenCalledWith('https://capty.app/');
+    ipcHandlers['shell:open-external']({}, 'https://porabuild.com/poratake');
+    expect(mockShellOpenExternal).toHaveBeenCalledWith(
+      'https://porabuild.com/poratake'
+    );
   });
 
   it('shell:reveal-in-finder shows item in folder', async () => {

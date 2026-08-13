@@ -1,4 +1,4 @@
-import { screen, shell } from 'electron';
+import { screen } from 'electron';
 import { daemon } from '@/main/daemon';
 import { getConfig, updateConfig } from '@/main/settings';
 import {
@@ -252,9 +252,6 @@ async function handleEvent(event: string, data?: EventData): Promise<void> {
       break;
     case 'recording-control:delete':
       await handleDelete();
-      break;
-    case 'recording-control:open-ios-help':
-      handleOpenIOSHelp();
       break;
     case 'recording-control:select-ios-device':
       await handleSelectIOSDevice(
@@ -568,13 +565,6 @@ async function handleRestart(): Promise<void> {
 
 async function handleDelete(): Promise<void> {
   await deleteRecordingAction();
-}
-
-function handleOpenIOSHelp(): void {
-  shell.openExternal(
-    'https://capty.app/blog/record-your-iphone-or-ipad-screen-on-mac'
-  );
-  cancelPendingRecording();
 }
 
 async function handleSelectIOSDevice(

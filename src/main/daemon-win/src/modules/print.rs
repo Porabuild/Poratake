@@ -104,7 +104,7 @@ impl PrintModule {
         };
         let request_id = id.to_string();
         let worker = std::thread::Builder::new()
-            .name("capty-print".to_string())
+            .name("poratake-print".to_string())
             .spawn(move || {
                 let _guard = guard;
                 print_png(&image_data, &request_id);

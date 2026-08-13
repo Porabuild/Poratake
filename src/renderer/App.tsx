@@ -16,9 +16,6 @@ const loadScreenshotWindow = () =>
   import('@/renderer/windows/screenshot-window');
 const ScreenshotWindow = lazy(loadScreenshotWindow);
 const SettingsWindow = lazy(() => import('@/renderer/windows/settings-window'));
-const ActivationWindow = lazy(
-  () => import('@/renderer/windows/activation-window')
-);
 const OnboardingWindow = lazy(
   () => import('@/renderer/windows/onboarding-window')
 );
@@ -121,7 +118,6 @@ interface LoadEvent {
   type:
     | 'screenshot'
     | 'settings'
-    | 'activation'
     | 'onboarding'
     | 'pin'
     | 'video-editor'
@@ -276,8 +272,6 @@ function App() {
       }
       case 'settings':
         return <SettingsWindow />;
-      case 'activation':
-        return <ActivationWindow />;
       case 'onboarding':
         return <OnboardingWindow />;
       case 'pin':

@@ -158,7 +158,7 @@ export function registerPreviewExportIpc(
   ipcMain.handle('capture-preview:get-export-output-path', event => {
     const outputPath = path.join(
       app.getPath('temp'),
-      `capty-clipboard-${randomUUID()}.mp4`
+      `poratake-clipboard-${randomUUID()}.mp4`
     );
     authorizeExportOutputPaths(event.sender, [outputPath]);
     return outputPath;

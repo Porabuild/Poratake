@@ -1730,7 +1730,7 @@ fn temporary_audio_path(output_path: &Path) -> Result<PathBuf, RecorderError> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| RecorderError::configuration("Audio asset path has an invalid file name"))?;
-    Ok(output_path.with_file_name(format!(".{name}.capty-partial.m4a")))
+    Ok(output_path.with_file_name(format!(".{name}.poratake-partial.m4a")))
 }
 
 fn wide_string(value: &str) -> Vec<u16> {

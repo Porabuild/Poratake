@@ -28,22 +28,22 @@ vi.mock('@/main/utils/filename-generator', () => ({
 import { migrateCloudConfig } from '@/main/settings';
 
 describe('migrateCloudConfig', () => {
-  it('returns enabled Capty Cloud defaults when input is undefined', () => {
+  it('returns disabled S3 defaults when input is undefined', () => {
     const result = migrateCloudConfig(undefined);
-    expect(result.activeProvider).toBe('capty');
-    expect(result.enabled).toBe(true);
+    expect(result.activeProvider).toBe('s3');
+    expect(result.enabled).toBe(false);
     expect(result.s3.endpoint).toBe('');
     expect(result.rest.url).toBe('');
     expect(result.rest.fileFieldName).toBe('file');
   });
 
-  it('moves fresh empty configs to Capty Cloud', () => {
+  it('keeps fresh empty configs on the S3 defaults', () => {
     const result = migrateCloudConfig({});
-    expect(result.activeProvider).toBe('capty');
-    expect(result.enabled).toBe(true);
+    expect(result.activeProvider).toBe('s3');
+    expect(result.enabled).toBe(false);
   });
 
-  it('moves unconfigured legacy REST defaults to Capty Cloud', () => {
+  it('moves unconfigured legacy REST defaults to S3 defaults', () => {
     const result = migrateCloudConfig({
       enabled: false,
       activeProvider: 'rest',
@@ -55,11 +55,11 @@ describe('migrateCloudConfig', () => {
         responseUrlPath: '',
       },
     });
-    expect(result.activeProvider).toBe('capty');
-    expect(result.enabled).toBe(true);
+    expect(result.activeProvider).toBe('s3');
+    expect(result.enabled).toBe(false);
   });
 
-  it('moves unconfigured legacy flat S3 defaults to Capty Cloud', () => {
+  it('moves unconfigured legacy flat S3 defaults to S3 defaults', () => {
     const result = migrateCloudConfig({
       enabled: false,
       endpoint: '',
@@ -70,17 +70,31 @@ describe('migrateCloudConfig', () => {
       pathPrefix: '',
       customDomain: '',
     });
-    expect(result.activeProvider).toBe('capty');
-    expect(result.enabled).toBe(true);
+    expect(result.activeProvider).toBe('s3');
+    expect(result.enabled).toBe(false);
   });
 
-  it('preserves an explicitly disabled Capty Cloud config', () => {
+  it('disables an existing Capty Cloud config and falls back to S3', () => {
     const result = migrateCloudConfig({
-      enabled: false,
+      enabled: true,
       activeProvider: 'capty',
     });
-    expect(result.activeProvider).toBe('capty');
+    expect(result.activeProvider).toBe('s3');
     expect(result.enabled).toBe(false);
+  });
+
+  it('keeps a configured legacy flat S3 config enabled when enabled was unset', () => {
+    const result = migrateCloudConfig({
+      endpoint: 'https://s3.amazonaws.com',
+      region: 'us-east-1',
+      bucket: 'b',
+      accessKeyId: 'AK',
+      secretAccessKey: 'SK',
+      pathPrefix: '',
+      customDomain: '',
+    });
+    expect(result.activeProvider).toBe('s3');
+    expect(result.enabled).toBe(true);
   });
 
   it('migrates legacy flat S3 fields into cloud.s3', () => {
@@ -138,9 +152,10 @@ describe('migrateCloudConfig', () => {
     expect(result.rest.responseIsPlainText).toBe(true);
   });
 
-  it('coerces unknown activeProvider back to Capty Cloud when no provider is configured', () => {
+  it('coerces unknown activeProvider back to S3 defaults when no provider is configured', () => {
     const result = migrateCloudConfig({ activeProvider: 'ftp' });
-    expect(result.activeProvider).toBe('capty');
+    expect(result.activeProvider).toBe('s3');
+    expect(result.enabled).toBe(false);
   });
 
   it('coerces unknown activeProvider to s3 when legacy flat fields are present', () => {
