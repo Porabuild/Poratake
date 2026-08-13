@@ -126,7 +126,7 @@ jobs:
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
             src/main/daemon/capty-daemon.exe
-          key: ${{ runner.os }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.lock') }}
+          key: ${{ runner.os }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
 
       - name: Build Windows package
         run: bun run build-win
