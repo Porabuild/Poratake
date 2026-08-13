@@ -133,11 +133,8 @@ describe('Path Utilities', () => {
 
   describe('Path consistency', () => {
     it('should ensure all config-related paths use the same config directory', async () => {
-      const {
-        getConfigDir,
-        getConfigFilePath,
-        getHistoryFilePath,
-      } = await import('@/main/utils/paths');
+      const { getConfigDir, getConfigFilePath, getHistoryFilePath } =
+        await import('@/main/utils/paths');
 
       const configDir = getConfigDir();
       const configPath = getConfigFilePath();

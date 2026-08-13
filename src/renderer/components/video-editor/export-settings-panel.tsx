@@ -1,12 +1,5 @@
 import { useEffect, useMemo, useCallback, useState, useRef } from 'react';
-import {
-  Clock,
-  HardDrive,
-  Check,
-  Copy,
-  ExternalLink,
-  X,
-} from 'lucide-react';
+import { Clock, HardDrive, Check, Copy, ExternalLink, X } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
 import { Separator } from '@/renderer/components/ui/separator';
