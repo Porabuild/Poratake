@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "capty",
+      "name": "poratake",
       "dependencies": {
         "@heroui/react": "^3.2.2",
         "@heroui/styles": "^3.2.2",
