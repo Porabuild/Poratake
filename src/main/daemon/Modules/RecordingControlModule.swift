@@ -5,7 +5,7 @@ import CoreMediaIO
 
 class RecordingControlModule: Module {
     let name = "recording-control"
-    
+
     private var panel: FloatingPanel?
     private var contentView: RecordingControlContentView?
     private var keyMonitor: Any?
@@ -40,6 +40,8 @@ class RecordingControlModule: Module {
             handleUpdateSettings(params: params, requestId: requestId)
         case "updateDevices":
             handleUpdateDevices(params: params, requestId: requestId)
+        case "listIOSDevices":
+            handleListIOSDevices(requestId: requestId)
         case "status":
             handleStatus(requestId: requestId)
         default:
@@ -195,6 +197,16 @@ class RecordingControlModule: Module {
         respond(id: requestId, result: ["updated": true])
     }
     
+    private func handleListIOSDevices(requestId: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.iosDevices = []
+            self.enumerateIOSDevices()
+            let devices = self.iosDevices.map { ["id": $0.id, "label": $0.label] }
+            self.respond(id: requestId, result: ["devices": devices])
+        }
+    }
+
     private func handleStatus(requestId: String) {
         let isVisible = panel != nil && panel?.isVisible == true
         respond(id: requestId, result: [

@@ -11,7 +11,12 @@ import {
   checkAndRequestCameraPermission,
   checkAndRequestMicrophonePermission,
 } from '@/main/capture/video/permissions';
-import type { DeviceTestTarget, MediaDeviceLists } from '@/types/devices';
+import type {
+  DeviceTestTarget,
+  MediaDeviceDescriptor,
+  MediaDeviceKind,
+  MediaDeviceLists,
+} from '@/types/devices';
 
 interface MicTestSession {
   sender: WebContents;
@@ -28,10 +33,15 @@ interface CameraTestSession {
 let micTestSession: MicTestSession | null = null;
 let cameraTestSession: CameraTestSession | null = null;
 
-export async function listMediaDevices(): Promise<MediaDeviceLists> {
+export async function listMediaDevices(
+  kinds?: MediaDeviceKind[]
+): Promise<MediaDeviceLists> {
+  const params =
+    kinds === undefined ? undefined : { kinds: kinds as unknown[] };
   const result = await daemon.call<Partial<MediaDeviceLists>>(
     'media-devices',
-    'list'
+    'list',
+    params
   );
   return {
     microphones: result?.microphones ?? [],
@@ -39,6 +49,14 @@ export async function listMediaDevices(): Promise<MediaDeviceLists> {
     defaultMicrophoneId: result?.defaultMicrophoneId ?? null,
     defaultCameraId: result?.defaultCameraId ?? null,
   };
+}
+
+export async function listIOSDevices(): Promise<MediaDeviceDescriptor[]> {
+  const result = await daemon.call<{ devices?: MediaDeviceDescriptor[] }>(
+    'recording-control',
+    'listIOSDevices'
+  );
+  return result?.devices ?? [];
 }
 
 function forwardMicLevel(event: string, data?: unknown): void {

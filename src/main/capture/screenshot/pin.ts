@@ -15,6 +15,7 @@ import {
   getWindowFromWebContentsId,
 } from './open-editor.ts';
 import { registerDockWindow } from '@/main/utils/dock';
+import { sendWindowLoad } from '@/main/utils/window-load';
 import type { EditorState } from '@/types/history.ts';
 
 interface PinWindowData {
@@ -94,7 +95,7 @@ function createPinWindow(
   }
 
   pinWindow.webContents.on('did-finish-load', () => {
-    pinWindow.webContents.send('load', {
+    sendWindowLoad(pinWindow.webContents, {
       type: 'pin',
       params: {
         imageBase64,

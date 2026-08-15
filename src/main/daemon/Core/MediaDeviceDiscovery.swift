@@ -40,4 +40,17 @@ enum MediaDeviceDiscovery {
     static func defaultCameraId() -> String? {
         AVCaptureDevice.default(for: .video)?.uniqueID
     }
+
+    static func requestAccess(
+        kinds: [AVMediaType],
+        completion: @escaping () -> Void
+    ) {
+        let group = DispatchGroup()
+        for mediaType in kinds
+        where AVCaptureDevice.authorizationStatus(for: mediaType) == .notDetermined {
+            group.enter()
+            AVCaptureDevice.requestAccess(for: mediaType) { _ in group.leave() }
+        }
+        group.notify(queue: .global(), execute: completion)
+    }
 }

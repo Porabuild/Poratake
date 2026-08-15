@@ -72,10 +72,10 @@ describe('capture index', () => {
     expect(mockPrewarmFreezeScreen).toHaveBeenCalledTimes(1);
   });
 
-  it('skips the freeze prewarm on macOS', async () => {
+  it('prewarms the freeze screen on macOS too', async () => {
     const { init } = await import('@/main/capture');
     init();
-    expect(mockPrewarmFreezeScreen).not.toHaveBeenCalled();
+    expect(mockPrewarmFreezeScreen).toHaveBeenCalledTimes(1);
   });
 
   it('synchronizes the warm preview when preview settings change', async () => {

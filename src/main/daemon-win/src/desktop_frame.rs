@@ -168,12 +168,68 @@ pub fn clear_frozen() {
 
 pub fn frozen_rect(bounds: RECT) -> Option<DesktopFrame> {
     let frozen = frozen_frames().lock().ok()?;
-    let center = center_of(bounds);
+    composite_frames(&frozen, bounds)
+}
 
-    frozen
-        .iter()
-        .find(|frame| contains(&frame.bounds, center))
-        .and_then(|frame| crop(frame, bounds))
+fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Option<DesktopFrame> {
+    let width = rect_width(&bounds);
+    let height = rect_height(&bounds);
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+
+    let pixel_count = (width as usize).checked_mul(height as usize)?;
+    let buffer_size = pixel_count.checked_mul(BYTES_PER_PIXEL)?;
+    let mut pixels = vec![0; buffer_size];
+    let mut copied = false;
+
+    for frame in frames {
+        let Some(intersection) = intersect_rects(frame.bounds, bounds) else {
+            continue;
+        };
+        let Some(piece) = crop(frame, intersection) else {
+            continue;
+        };
+
+        let destination_x = intersection.left - bounds.left;
+        let destination_y = intersection.top - bounds.top;
+        let destination_width = rect_width(&intersection);
+        let destination_height = rect_height(&intersection);
+
+        for y in 0..destination_height {
+            let source_y = y as usize * piece.height as usize / destination_height as usize;
+            for x in 0..destination_width {
+                let source_x = x as usize * piece.width as usize / destination_width as usize;
+                let source_offset =
+                    (source_y * piece.width as usize + source_x) * BYTES_PER_PIXEL;
+                let destination_offset = ((destination_y + y) as usize * width as usize
+                    + (destination_x + x) as usize)
+                    * BYTES_PER_PIXEL;
+                pixels[destination_offset..destination_offset + BYTES_PER_PIXEL]
+                    .copy_from_slice(&piece.pixels[source_offset..source_offset + BYTES_PER_PIXEL]);
+            }
+        }
+
+        copied = true;
+    }
+
+    copied.then_some(DesktopFrame {
+        bounds,
+        width: width as u32,
+        height: height as u32,
+        pixels,
+    })
+}
+
+fn intersect_rects(left: RECT, right: RECT) -> Option<RECT> {
+    let intersection = RECT {
+        left: left.left.max(right.left),
+        top: left.top.max(right.top),
+        right: left.right.min(right.right),
+        bottom: left.bottom.min(right.bottom),
+    };
+
+    (rect_width(&intersection) > 0 && rect_height(&intersection) > 0).then_some(intersection)
 }
 
 pub fn to_hbitmap(frame: &DesktopFrame) -> Option<HBITMAP> {
@@ -1041,6 +1097,44 @@ mod tests {
             }
         )
         .is_none());
+    }
+
+    #[test]
+    fn composites_frozen_pixels_across_displays() {
+        let mut left = frame(4, 2, 10);
+        left.bounds = RECT {
+            left: -4,
+            top: 0,
+            right: 0,
+            bottom: 2,
+        };
+        let mut right = frame(4, 2, 20);
+        right.bounds = RECT {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 2,
+        };
+
+        let composed = composite_frames(
+            &[left, right],
+            RECT {
+                left: -2,
+                top: 0,
+                right: 2,
+                bottom: 2,
+            },
+        )
+        .expect("composite");
+
+        assert_eq!(composed.width, 4);
+        assert_eq!(composed.height, 2);
+        for row in composed.pixels.chunks_exact(4 * BYTES_PER_PIXEL) {
+            assert!(row[..2 * BYTES_PER_PIXEL].iter().all(|value| *value == 10));
+            assert!(row[2 * BYTES_PER_PIXEL..]
+                .iter()
+                .all(|value| *value == 20));
+        }
     }
 
     #[test]

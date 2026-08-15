@@ -15,6 +15,7 @@ import { isDev, devServerUrl } from '@/main/utils/env.ts';
 import { updateHistoryItemByPath, getHistoryItemByPath } from '@/main/history';
 import { getConfig } from '@/main/settings';
 import { registerDockWindow } from '@/main/utils/dock';
+import { sendWindowLoad } from '@/main/utils/window-load';
 import {
   titleBarWindowOptions,
   trackTitleBarTheme,
@@ -185,7 +186,7 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
       getHistoryItemByPath(filePath)?.editorState ||
       editorState;
 
-    newWindow.webContents.send('load', {
+    sendWindowLoad(newWindow.webContents, {
       type: 'screenshot',
       params: {
         filePath,

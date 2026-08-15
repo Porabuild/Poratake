@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { Dropdown, Separator } from '@heroui/react';
 import {
   ChevronDown,
@@ -7,6 +13,7 @@ import {
   MicOff,
   Pause,
   Play,
+  Smartphone,
   Square,
   Trash2,
   Video,
@@ -17,12 +24,14 @@ import {
 } from 'lucide-react';
 import ToolbarButton from '@/renderer/components/area-overlay/toolbar-button';
 import ToolbarSurface from '@/renderer/components/area-overlay/toolbar-surface';
+import { cn } from '@/renderer/lib/utils';
 import type { MediaDeviceDescriptor, MediaDeviceLists } from '@/types/devices';
 import type {
   RecordingControlAction,
   RecordingControlDeviceKind,
   RecordingControlState,
 } from '@/types/recording-control';
+import { isMacPlatform } from '@/renderer/utils/platform';
 
 const TOGGLE_DEVICE_KEY = 'toggle';
 const DEFAULT_DEVICE_KEY = 'default';
@@ -75,6 +84,25 @@ interface DeviceDropdownProps {
   onSelect: (device: MediaDeviceDescriptor | null) => void;
 }
 
+function usePopoverExit(isOpen: boolean, onExitComplete: () => void) {
+  const isOpenRef = useRef(isOpen);
+  const wasMountedRef = useRef(false);
+  const onExitCompleteRef = useRef(onExitComplete);
+  isOpenRef.current = isOpen;
+  onExitCompleteRef.current = onExitComplete;
+
+  return useCallback((element: HTMLElement | null) => {
+    if (element) {
+      wasMountedRef.current = true;
+      return;
+    }
+
+    if (!wasMountedRef.current || isOpenRef.current) return;
+    wasMountedRef.current = false;
+    onExitCompleteRef.current();
+  }, []);
+}
+
 function DeviceDropdown({
   label,
   toggleLabel,
@@ -91,11 +119,7 @@ function DeviceDropdown({
   onToggle,
   onSelect,
 }: DeviceDropdownProps) {
-  const isOpenRef = useRef(isOpen);
-  const wasMountedRef = useRef(false);
-  const onExitCompleteRef = useRef(onExitComplete);
-  isOpenRef.current = isOpen;
-  onExitCompleteRef.current = onExitComplete;
+  const handlePopoverRef = usePopoverExit(isOpen, onExitComplete);
 
   const lockedDeviceId = selectedDeviceId ?? defaultDeviceId;
   const selectedKeys = [
@@ -128,17 +152,6 @@ function DeviceDropdown({
     const device = devices.find(item => item.id === key);
     if (device && !isDeviceLocked(device.id)) onSelect(device);
   };
-
-  const handlePopoverRef = useCallback((element: HTMLElement | null) => {
-    if (element) {
-      wasMountedRef.current = true;
-      return;
-    }
-
-    if (!wasMountedRef.current || isOpenRef.current) return;
-    wasMountedRef.current = false;
-    onExitCompleteRef.current();
-  }, []);
 
   return (
     <Dropdown isOpen={isOpen} onOpenChange={onOpenChange}>
@@ -193,6 +206,89 @@ function DeviceDropdown({
   );
 }
 
+const IOS_NONE_KEY = 'none';
+
+interface IOSDeviceDropdownProps {
+  devices: MediaDeviceDescriptor[];
+  selectedDeviceId: string | null;
+  disabled: boolean;
+  isOpen: boolean;
+  onOpenChange: (isOpen: boolean) => void;
+  onExitComplete: () => void;
+  onSelect: (device: MediaDeviceDescriptor | null) => void;
+}
+
+function IOSDeviceDropdown({
+  devices,
+  selectedDeviceId,
+  disabled,
+  isOpen,
+  onOpenChange,
+  onExitComplete,
+  onSelect,
+}: IOSDeviceDropdownProps) {
+  const handlePopoverRef = usePopoverExit(isOpen, onExitComplete);
+  const selectedKeys = [selectedDeviceId ?? IOS_NONE_KEY];
+
+  const handleAction = (key: React.Key) => {
+    if (key === IOS_NONE_KEY) {
+      onSelect(null);
+      return;
+    }
+
+    const device = devices.find(item => item.id === key);
+    if (device) onSelect(device);
+  };
+
+  return (
+    <Dropdown isOpen={isOpen} onOpenChange={onOpenChange}>
+      <Dropdown.Trigger
+        aria-label="Select iPhone or iPad"
+        aria-pressed={selectedDeviceId !== null}
+        isDisabled={disabled}
+        className={cn(
+          'inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl px-1.5 whitespace-nowrap outline-none hover:bg-white/15 disabled:pointer-events-none disabled:opacity-35',
+          selectedDeviceId
+            ? 'text-primary hover:text-primary'
+            : 'text-white/85 hover:text-white'
+        )}
+      >
+        <Smartphone className="size-4" />
+        <ChevronDown className="size-3" />
+      </Dropdown.Trigger>
+      <Dropdown.Popover
+        ref={handlePopoverRef}
+        placement="bottom"
+        className="max-w-64 min-w-56"
+      >
+        <Dropdown.Menu
+          aria-label="iPhone and iPad devices"
+          selectionMode="multiple"
+          selectedKeys={selectedKeys}
+          onAction={handleAction}
+          className="max-h-56 overflow-y-auto"
+        >
+          <Dropdown.Item id={IOS_NONE_KEY} textValue="None">
+            <span className="min-w-0 flex-1 truncate">None</span>
+            <Dropdown.ItemIndicator className="text-foreground" />
+          </Dropdown.Item>
+          <Separator />
+          {devices.map(device => (
+            <Dropdown.Item
+              key={device.id}
+              id={device.id}
+              textValue={device.label}
+            >
+              <span className="min-w-0 flex-1 truncate">{device.label}</span>
+              <Dropdown.ItemIndicator className="text-foreground" />
+            </Dropdown.Item>
+          ))}
+        </Dropdown.Menu>
+      </Dropdown.Popover>
+    </Dropdown>
+  );
+}
+
 export default function RecordingControlWindow({
   params,
 }: {
@@ -200,13 +296,42 @@ export default function RecordingControlWindow({
 }) {
   const [state, setState] = useState(params);
   const [devices, setDevices] = useState(EMPTY_MEDIA_DEVICES);
+  const [iosDevices, setIosDevices] = useState<MediaDeviceDescriptor[]>([]);
   const [openDeviceMenu, setOpenDeviceMenu] =
     useState<RecordingControlDeviceKind | null>(null);
   const openDeviceMenuRef = useRef<RecordingControlDeviceKind | null>(null);
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
   const isRecording = state.mode === 'recording';
+  const isMac = isMacPlatform();
+
+  useLayoutEffect(() => {
+    openDeviceMenuRef.current = null;
+    setOpenDeviceMenu(null);
+    setState(params);
+  }, [params]);
+
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+
+    const report = () => {
+      const width = Math.round(toolbar.offsetWidth);
+      if (width > 0) {
+        window.ipcRenderer.send('recording-control:content-width', width);
+      }
+    };
+
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(toolbar);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     window.ipcRenderer.send('recording-control:ready');
+    (document.activeElement as HTMLElement | null)?.blur();
   }, []);
 
   useEffect(() => {
@@ -225,15 +350,69 @@ export default function RecordingControlWindow({
     window.ipcRenderer.send('recording-control:action', action);
   }, []);
 
-  const refreshDevices = useCallback(async () => {
+  const handleDeviceSelect = useCallback(
+    (
+      kind: RecordingControlDeviceKind,
+      device: MediaDeviceDescriptor | null
+    ) => {
+      const actions: Record<
+        RecordingControlDeviceKind,
+        RecordingControlAction
+      > = {
+        microphone: 'select-mic',
+        camera: 'select-camera',
+        'ios-device': 'select-ios-device',
+      };
+      window.ipcRenderer.send('recording-control:action', actions[kind], {
+        deviceId: device?.id ?? null,
+        deviceName: device?.label ?? null,
+      });
+    },
+    []
+  );
+
+  const refreshDevices = useCallback(async (kind: 'microphone' | 'camera') => {
     try {
       const availableDevices: MediaDeviceLists =
-        await window.ipcRenderer.invoke('recording-control:devices');
-      setDevices(availableDevices);
+        await window.ipcRenderer.invoke('recording-control:devices', kind);
+      setDevices(current => {
+        if (kind === 'microphone') {
+          return {
+            ...current,
+            microphones: availableDevices.microphones,
+            defaultMicrophoneId: availableDevices.defaultMicrophoneId,
+          };
+        }
+        return {
+          ...current,
+          cameras: availableDevices.cameras,
+          defaultCameraId: availableDevices.defaultCameraId,
+        };
+      });
     } catch (error) {
       console.error('Failed to list recording devices:', error);
     }
   }, []);
+
+  const selectedIOSDeviceIdRef = useRef(state.selectedIOSDeviceId);
+  selectedIOSDeviceIdRef.current = state.selectedIOSDeviceId;
+
+  const refreshIOSDevices = useCallback(async () => {
+    try {
+      const availableDevices: MediaDeviceDescriptor[] =
+        await window.ipcRenderer.invoke('recording-control:ios-devices');
+      setIosDevices(availableDevices);
+      const selectedId = selectedIOSDeviceIdRef.current;
+      if (
+        selectedId !== null &&
+        !availableDevices.some(device => device.id === selectedId)
+      ) {
+        handleDeviceSelect('ios-device', null);
+      }
+    } catch (error) {
+      console.error('Failed to list iOS devices:', error);
+    }
+  }, [handleDeviceSelect]);
 
   const handleDeviceMenuOpenChange = useCallback(
     (kind: RecordingControlDeviceKind, isOpen: boolean) => {
@@ -243,29 +422,19 @@ export default function RecordingControlWindow({
       if (!isOpen) return;
 
       window.ipcRenderer.send('recording-control:device-menu-open', true);
-      void refreshDevices();
+      if (kind === 'ios-device') {
+        void refreshIOSDevices();
+        return;
+      }
+      void refreshDevices(kind);
     },
-    [refreshDevices]
+    [refreshDevices, refreshIOSDevices]
   );
 
   const handleDeviceMenuExit = useCallback(() => {
     if (openDeviceMenuRef.current) return;
     window.ipcRenderer.send('recording-control:device-menu-open', false);
   }, []);
-
-  const handleDeviceSelect = useCallback(
-    (
-      kind: RecordingControlDeviceKind,
-      device: MediaDeviceDescriptor | null
-    ) => {
-      const action = kind === 'microphone' ? 'select-mic' : 'select-camera';
-      window.ipcRenderer.send('recording-control:action', action, {
-        deviceId: device?.id ?? null,
-        deviceName: device?.label ?? null,
-      });
-    },
-    []
-  );
 
   const handleDeviceToggle = useCallback(
     (kind: RecordingControlDeviceKind) => {
@@ -350,9 +519,21 @@ export default function RecordingControlWindow({
     </ControlButton>
   );
 
+  const iosDeviceDropdown = (
+    <IOSDeviceDropdown
+      devices={iosDevices}
+      selectedDeviceId={state.selectedIOSDeviceId}
+      disabled={state.isStarting}
+      isOpen={openDeviceMenu === 'ios-device'}
+      onOpenChange={isOpen => handleDeviceMenuOpenChange('ios-device', isOpen)}
+      onExitComplete={handleDeviceMenuExit}
+      onSelect={device => handleDeviceSelect('ios-device', device)}
+    />
+  );
+
   return (
     <div className="flex h-screen w-screen items-start justify-center pt-1">
-      <ToolbarSurface>
+      <ToolbarSurface ref={toolbarRef}>
         {state.targetName ? (
           <>
             <span
@@ -411,6 +592,7 @@ export default function RecordingControlWindow({
             {cameraDropdown}
             {microphoneDropdown}
             {systemAudioButton}
+            {isMac ? iosDeviceDropdown : null}
             <div className="bg-border/70 mx-0.5 h-5 w-px" />
             <ControlButton
               label="Close"

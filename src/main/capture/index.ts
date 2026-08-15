@@ -27,9 +27,7 @@ export function init(): void {
     prewarmCapturePreview();
   });
   prewarmCapturePreview();
-  if (!isMac) {
-    prewarmAreaOverlay();
-    prewarmFreezeScreen();
-  }
+  prewarmAreaOverlay();
+  prewarmFreezeScreen();
   // Daemon cleanup is automatic - child process dies with parent
 }

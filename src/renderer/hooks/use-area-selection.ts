@@ -41,6 +41,7 @@ export interface AreaSelectionOptions {
   initialRect: AreaOverlayRect | null;
   initialAspectRatio: number | null;
   pickTargets: AreaOverlayPickTarget[] | null;
+  repeatablePicks: boolean;
   onSelected: (rect: AreaOverlayRect, pickId?: number) => void;
   onUpdated: (rect: AreaOverlayRect) => void;
   onDiscarded: () => void;
@@ -66,6 +67,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
   const ratioRef = useRef(options.initialAspectRatio);
   const interactionRef = useRef<Interaction | null>(null);
   const pickTargetsRef = useRef(options.pickTargets);
+  const repeatablePicksRef = useRef(options.repeatablePicks);
   const pickingRef = useRef(options.pickTargets !== null);
   const lockedRef = useRef(false);
 
@@ -78,6 +80,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
     ratioRef.current = options.initialAspectRatio;
     interactionRef.current = null;
     pickTargetsRef.current = options.pickTargets;
+    repeatablePicksRef.current = options.repeatablePicks;
     pickingRef.current = options.pickTargets !== null;
     lockedRef.current = false;
     setBounds({ width: window.innerWidth, height: window.innerHeight });
@@ -93,6 +96,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
     options.initialAspectRatio,
     options.initialRect,
     options.pickTargets,
+    options.repeatablePicks,
     options.resetKey,
   ]);
 
@@ -106,10 +110,11 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
   );
 
   const applyPickTargets = useCallback(
-    (targets: AreaOverlayPickTarget[] | null) => {
+    (targets: AreaOverlayPickTarget[] | null, repeatablePicks: boolean) => {
       const isPicking = targets !== null;
 
       pickTargetsRef.current = targets;
+      repeatablePicksRef.current = repeatablePicks;
       pickingRef.current = isPicking;
       lockedRef.current = false;
       interactionRef.current = null;
@@ -149,7 +154,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
       _event: unknown,
       message: AreaOverlayPickTargetsMessage
     ) => {
-      applyPickTargets(message.pickTargets);
+      applyPickTargets(message.pickTargets, message.repeatablePicks);
     };
 
     window.ipcRenderer.on('area-overlay:set-rect', handleRect);
@@ -284,6 +289,14 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
           width: target.width,
           height: target.height,
         };
+        if (repeatablePicksRef.current) {
+          setHovered(picked);
+          applyRect(picked);
+          setCursor('default');
+          optionsRef.current.onSelected(picked, target.id);
+          return;
+        }
+
         // What was picked is what gets captured, so the box must not turn
         // back into a free-form area the moment it is committed.
         pickingRef.current = false;
@@ -324,7 +337,12 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
     [applyRect, bounds, pickTargetAt]
   );
 
-  const clearPointer = useCallback(() => setPointer(null), []);
+  const clearPointer = useCallback(() => {
+    setPointer(null);
+    if (pickingRef.current) {
+      setHovered(null);
+    }
+  }, []);
 
   return {
     rect,

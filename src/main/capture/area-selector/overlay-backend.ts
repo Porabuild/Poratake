@@ -2,14 +2,13 @@ import { screen } from 'electron';
 import type { Rectangle } from 'electron';
 import type { AreaSelection } from '@/types/area';
 import type { AspectRatio } from '@/types/aspect-ratio';
-import { listWindows } from '@/main/capture/window-selector';
 import {
   cancelOverlaySelection,
   concealOverlayHandoff,
   confirmOverlaySelection,
-  getOverlayWindowIds,
   hasOverlayHandoff,
   isOverlayActive,
+  resolveWindowPickTargets,
   setOverlayAspectRatio,
   setOverlayPickTargets,
   setOverlayVisible,
@@ -20,7 +19,6 @@ import type {
   OverlayPickTarget,
   OverlayRegion,
 } from '@/main/capture/area-overlay';
-import { isWindows } from '@/main/utils/platform';
 import type {
   AreaSelectionMode,
   ConfirmAreaSelectionOptions,
@@ -31,6 +29,7 @@ import type {
 let pendingAreaSelection: AreaSelection | null = null;
 let callbacks: StartAreaSelectionOptions | undefined;
 let pickedWindowNames: Map<number, string> | null = null;
+let pickedWindowBounds: Map<number, Rectangle> | null = null;
 
 function toAreaSelection(
   region: OverlayRegion,
@@ -47,9 +46,12 @@ function toAreaSelection(
     y: region.rect.y,
     width: region.rect.width,
     height: region.rect.height,
+    screenId: region.display.id,
     windowId,
     windowName:
       windowId === undefined ? undefined : pickedWindowNames?.get(windowId),
+    windowBounds:
+      windowId === undefined ? undefined : pickedWindowBounds?.get(windowId),
   };
 }
 
@@ -62,32 +64,23 @@ export function updateAreaSelectionCallbacks(
 interface ResolvedStart {
   preset?: Rectangle;
   pickTargets?: OverlayPickTarget[];
+  repeatablePicks?: boolean;
   windowNames?: Map<number, string>;
+  windowBounds?: Map<number, Rectangle>;
   prompt?: string;
 }
 
 async function resolveWindowTargets(): Promise<ResolvedStart | null> {
-  const overlayWindowIds = getOverlayWindowIds();
-  const windows = (await listWindows()).filter(
-    window => !overlayWindowIds.has(window.windowId)
-  );
-
-  if (windows.length === 0) {
-    console.error('Window selection failed: no visible windows found');
+  const resolved = await resolveWindowPickTargets();
+  if (!resolved) {
     return null;
   }
 
   return {
-    pickTargets: windows.map(window => ({
-      id: window.windowId,
-      rect: isWindows
-        ? screen.screenToDipRect(null, window.bounds)
-        : window.bounds,
-    })),
-    windowNames: new Map(
-      windows.map(window => [window.windowId, window.title || window.ownerName])
-    ),
-    prompt: 'Click a window to select it · Esc to cancel',
+    pickTargets: resolved.targets,
+    windowNames: resolved.names,
+    windowBounds: resolved.captureRects,
+    prompt: resolved.prompt,
   };
 }
 
@@ -97,6 +90,7 @@ function resolveDisplayTargets(): ResolvedStart {
       id: display.id,
       rect: display.bounds,
     })),
+    repeatablePicks: true,
     prompt: 'Click a display to select it · Esc to cancel',
   };
 }
@@ -146,9 +140,13 @@ export async function startAreaSelection(
   callbacks = options;
   pendingAreaSelection = null;
   pickedWindowNames = resolved.windowNames ?? null;
+  pickedWindowBounds = resolved.windowBounds ?? null;
 
   const selection = await startInteractiveOverlay({
     freeze: options?.freeze,
+    renderer: options?.renderer,
+    autoConfirm: false,
+    repeatablePicks: resolved.repeatablePicks ?? false,
     visible: resolved.pickTargets ? true : options?.visible,
     preset: resolved.preset,
     pickTargets: resolved.pickTargets,
@@ -257,7 +255,12 @@ export async function setAreaSelectionMode(
 
   pendingAreaSelection = null;
   pickedWindowNames = resolved.windowNames ?? null;
-  setOverlayPickTargets(resolved.pickTargets ?? null, resolved.prompt ?? null);
+  pickedWindowBounds = resolved.windowBounds ?? null;
+  setOverlayPickTargets(
+    resolved.pickTargets ?? null,
+    resolved.prompt ?? null,
+    resolved.repeatablePicks ?? false
+  );
 }
 
 export async function setAreaSelectorAspectRatio(

@@ -2,9 +2,11 @@ import { BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
 import { getActiveOverlayWindowAtPoint } from '@/main/capture/area-overlay';
 import { daemon } from '@/main/daemon';
-import { listMediaDevices } from '@/main/devices';
+import { listIOSDevices, listMediaDevices } from '@/main/devices';
 import { isDev, devServerUrl } from '@/main/utils/env';
-import type { MediaDeviceLists } from '@/types/devices';
+import { isWindows } from '@/main/utils/platform';
+import { sendWindowLoad } from '@/main/utils/window-load';
+import type { MediaDeviceDescriptor, MediaDeviceLists } from '@/types/devices';
 import type {
   RecordingControlAction,
   RecordingControlActionData,
@@ -13,10 +15,12 @@ import type {
 } from '@/types/recording-control';
 
 const CONTROL_HEIGHT = 52;
+const CONTROL_WINDOW_HORIZONTAL_GUTTER = 16;
 const DEVICE_MENU_WIDTH = 300;
 const DEVICE_MENU_HEIGHT = 300;
+const IOS_DEVICE_BUTTON_WIDTH = 57;
 const CONTROL_WIDTHS: Record<RecordingControlMode, number> = {
-  'pre-recording': 236,
+  'pre-recording': isWindows ? 236 : 236 + IOS_DEVICE_BUTTON_WIDTH,
   recording: 400,
 };
 const TARGET_LABEL_WIDTH = 140;
@@ -30,11 +34,11 @@ const ACTIONS = new Set<RecordingControlAction>([
   'toggle-system-audio',
   'toggle-mic',
   'toggle-camera',
-  'toggle-mic-mute',
 ]);
 const DEVICE_ACTIONS = new Set<RecordingControlAction>([
   'select-mic',
   'select-camera',
+  'select-ios-device',
 ]);
 const EMPTY_MEDIA_DEVICES: MediaDeviceLists = {
   microphones: [],
@@ -46,6 +50,7 @@ const EMPTY_MEDIA_DEVICES: MediaDeviceLists = {
 let controlWindow: BrowserWindow | null = null;
 let currentState: RecordingControlState | null = null;
 let currentPosition = { x: 100, y: 100 };
+let contentWidth: number | null = null;
 let actionHandler:
   | ((
       action: RecordingControlAction,
@@ -72,16 +77,18 @@ function isDeviceActionData(
 }
 
 function getControlBounds(mode: RecordingControlMode): Electron.Rectangle {
-  const controlWidth = getRecordingControlWindowWidth(
-    mode,
-    currentState?.targetName != null
-  );
-  const width = Math.max(controlWidth, DEVICE_MENU_WIDTH);
+  const controlWidth =
+    contentWidth ??
+    getRecordingControlWindowWidth(mode, currentState?.targetName != null);
+  const boundsWidth = Math.max(controlWidth, DEVICE_MENU_WIDTH);
 
   return {
-    x: currentPosition.x - Math.round((width - controlWidth) / 2),
+    x:
+      currentPosition.x -
+      Math.round((boundsWidth - controlWidth) / 2) -
+      CONTROL_WINDOW_HORIZONTAL_GUTTER,
     y: currentPosition.y,
-    width,
+    width: boundsWidth + CONTROL_WINDOW_HORIZONTAL_GUTTER * 2,
     height: deviceMenuOpen ? DEVICE_MENU_HEIGHT : CONTROL_HEIGHT,
   };
 }
@@ -130,12 +137,26 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'recording-control:devices',
-    async (event): Promise<MediaDeviceLists> => {
+    async (event, kind: unknown): Promise<MediaDeviceLists> => {
       if (!controlWindow || event.sender !== controlWindow.webContents) {
         return EMPTY_MEDIA_DEVICES;
       }
+      if (kind !== 'microphone' && kind !== 'camera') {
+        return EMPTY_MEDIA_DEVICES;
+      }
 
-      return listMediaDevices();
+      return listMediaDevices([kind]);
+    }
+  );
+
+  ipcMain.handle(
+    'recording-control:ios-devices',
+    async (event): Promise<MediaDeviceDescriptor[]> => {
+      if (!controlWindow || event.sender !== controlWindow.webContents) {
+        return [];
+      }
+
+      return listIOSDevices();
     }
   );
 
@@ -144,6 +165,18 @@ function registerIpc(): void {
     if (typeof open !== 'boolean' || !currentState) return;
 
     setDeviceMenuOpen(open);
+  });
+
+  ipcMain.on('recording-control:content-width', (event, width: unknown) => {
+    if (!controlWindow || event.sender !== controlWindow.webContents) return;
+    if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) {
+      return;
+    }
+
+    contentWidth = Math.round(width);
+    if (!currentState || controlWindow.isDestroyed()) return;
+
+    controlWindow.setBounds(getControlBounds(currentState.mode));
   });
 
   ipcMain.on('recording-control:ready', event => {
@@ -163,7 +196,7 @@ function sendLoad(): void {
     return;
   }
 
-  controlWindow.webContents.send('load', {
+  sendWindowLoad(controlWindow.webContents, {
     type: 'recording-control',
     params: currentState,
   });
@@ -232,7 +265,9 @@ function createControlWindow(): BrowserWindow {
   registerIpc();
 
   const window = new BrowserWindow({
-    width: CONTROL_WIDTHS['pre-recording'],
+    width:
+      Math.max(CONTROL_WIDTHS['pre-recording'], DEVICE_MENU_WIDTH) +
+      CONTROL_WINDOW_HORIZONTAL_GUTTER * 2,
     height: CONTROL_HEIGHT,
     frame: false,
     transparent: true,
@@ -289,6 +324,7 @@ function createControlWindow(): BrowserWindow {
     rendererReady = false;
     visible = false;
     deviceMenuOpen = false;
+    contentWidth = null;
   });
 
   return window;
@@ -342,20 +378,29 @@ export function updateRecordingControlBrowserWindow(
   if (!currentState) return;
 
   const previousMode = currentState.mode;
+  const previousWidth = getRecordingControlWindowWidth(
+    previousMode,
+    currentState.targetName != null
+  );
   currentState = { ...currentState, ...update };
+  const width = getRecordingControlWindowWidth(
+    currentState.mode,
+    currentState.targetName != null
+  );
   const window = controlWindow;
   if (!window || window.isDestroyed()) return;
 
-  if (currentState.mode !== previousMode) {
-    const previousWidth = CONTROL_WIDTHS[previousMode];
-    const width = CONTROL_WIDTHS[currentState.mode];
+  if (width !== previousWidth) {
     currentPosition = {
       x: currentPosition.x + Math.round((previousWidth - width) / 2),
       y: currentPosition.y,
     };
     deviceMenuOpen = false;
-    updateParentWindow(window, currentState.mode);
     window.setBounds(getControlBounds(currentState.mode));
+  }
+
+  if (currentState.mode !== previousMode) {
+    updateParentWindow(window, currentState.mode);
   }
 
   window.webContents.send('recording-control:update', update);
@@ -384,7 +429,7 @@ export function hideRecordingControlBrowserWindow(): void {
     ? {
         ...currentState,
         mode: 'pre-recording' as const,
-        micMuted: false,
+        targetName: null,
         cameraLocked: false,
         isPaused: false,
         isStarting: false,

@@ -1,8 +1,9 @@
 import { BrowserWindow, ipcMain, screen, shell } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
-import { openExternalUrl } from '@/main/utils/external-url';
 import { getWindowData } from '@/main/capture/video/window-manager';
+import { openKeyboardShortcutPreferences } from '@/main/system/permissions';
+import { sendWindowLoad } from '@/main/utils/window-load';
 import {
   titleBarColors,
   titleBarWindowOptions,
@@ -32,7 +33,7 @@ export function createOnboardingWindow(): BrowserWindow {
   const windowWidth = 500;
   const windowHeight = 650;
 
-  onboardingWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: windowWidth,
     height: windowHeight,
     minWidth: windowWidth,
@@ -58,35 +59,36 @@ export function createOnboardingWindow(): BrowserWindow {
       devTools: isDev,
     },
   });
+  onboardingWindow = window;
 
   if (devServerUrl) {
-    onboardingWindow.loadURL(devServerUrl);
+    window.loadURL(devServerUrl);
   } else {
-    onboardingWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    window.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  onboardingWindow.webContents.on('did-finish-load', () => {
-    onboardingWindow?.webContents.send('load', {
+  window.webContents.on('did-finish-load', () => {
+    sendWindowLoad(window.webContents, {
       type: 'onboarding',
       params: {},
     });
   });
 
-  onboardingWindow.once('ready-to-show', () => {
-    onboardingWindow?.show();
+  window.once('ready-to-show', () => {
+    window.show();
   });
 
-  trackTitleBarTheme(onboardingWindow, {
+  trackTitleBarTheme(window, {
     height: TITLE_BAR_HEIGHT,
     surface: 'background',
     syncBackground: true,
   });
 
-  onboardingWindow.on('closed', () => {
+  window.on('closed', () => {
     onboardingWindow = null;
   });
 
-  return onboardingWindow;
+  return window;
 }
 
 export function closeOnboardingWindow(): void {
@@ -121,8 +123,8 @@ export function init(): void {
     }
   });
 
-  ipcMain.on('shell:open-external', (_, url: unknown) => {
-    openExternalUrl(url);
+  ipcMain.on('onboarding:openKeyboardSettings', () => {
+    openKeyboardShortcutPreferences();
   });
 
   ipcMain.on('shell:reveal-in-finder', event => {

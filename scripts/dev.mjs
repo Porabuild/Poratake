@@ -30,6 +30,12 @@ if (process.platform === 'win32') {
     'powershell -ExecutionPolicy Bypass -File scripts/build-daemon-win.ps1',
     { stdio: 'inherit', cwd: root, env }
   );
+} else if (process.platform === 'darwin') {
+  execSync('node scripts/build-daemon-dev.mjs', {
+    stdio: 'inherit',
+    cwd: root,
+    env,
+  });
 }
 
 const require = createRequire(import.meta.url);

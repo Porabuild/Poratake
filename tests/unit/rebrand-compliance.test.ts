@@ -168,7 +168,8 @@ describe('Poratake rebrand compliance', () => {
     expect(packageJson).toContain(
       'https://github.com/Porabuild/Poratake/issues'
     );
-    expect(about).toContain("PORABUILD_URL = 'https://porabuild.com/poratake'");
+    expect(about).toContain("PORABUILD_URL = 'https://porabuild.com'");
+    expect(about).toContain("PORATAKE_URL = 'https://porabuild.com/poratake'");
     expect(workflow).toContain('name: Poratake v${{ inputs.version }}');
     expect(workflow).toContain('release/${{ inputs.version }}/latest-mac.yml');
     expect(workflow).not.toContain('https://capty.app/api/versions');

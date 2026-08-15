@@ -10,13 +10,6 @@ import {
   AlertCircle,
   Loader2,
 } from 'lucide-react';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/renderer/components/ui/card';
 import { Separator } from '@/renderer/components/ui/separator';
 import { Button } from '@/renderer/components/ui/button';
 import type { UpdateState, UpdateStatus } from '@/types/update';
@@ -25,7 +18,8 @@ import BrandLogo from '@/renderer/components/brand-logo';
 
 const SOURCE_URL = 'https://github.com/Porabuild/Poratake';
 const UPSTREAM_URL = 'https://github.com/capty-app/capty';
-const PORABUILD_URL = 'https://porabuild.com/poratake';
+const PORABUILD_URL = 'https://porabuild.com';
+const PORATAKE_URL = 'https://porabuild.com/poratake';
 
 export default function AboutTab() {
   const [version, setVersion] = useState('0.0.0');
@@ -138,7 +132,7 @@ export default function AboutTab() {
           {(status === 'idle' ||
             status === 'up_to_date' ||
             status === 'error') && (
-            <Button variant="outline" size="sm" onClick={handleCheckForUpdates}>
+            <Button variant="ghost" size="sm" onClick={handleCheckForUpdates}>
               <RefreshCw className="mr-1 h-3 w-3" />
               Check
             </Button>
@@ -194,146 +188,138 @@ export default function AboutTab() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-medium">About Poratake</h2>
-        <p className="text-muted-foreground text-sm">
-          Application information and updates
-        </p>
+      <div className="flex items-center gap-4">
+        <img src={appIcon} alt="Poratake" className="h-16 w-16 rounded-xl" />
+        <div>
+          <BrandLogo />
+          <p className="text-muted-foreground mt-1 text-sm">
+            Version {version}
+          </p>
+        </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-4">
-            <img
-              src={appIcon}
-              alt="Poratake"
-              className="h-16 w-16 rounded-xl"
-            />
-            <div>
-              <CardTitle>
-                <BrandLogo />
-              </CardTitle>
-              <CardDescription>Version {version}</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-muted-foreground text-sm">
-            Capture, annotate, record, edit, and share from one focused
-            workspace on macOS and Windows.
+      <p className="text-muted-foreground text-sm">
+        Capture, annotate, record, edit, and share from one focused workspace on
+        macOS and Windows.
+      </p>
+
+      <Separator />
+
+      {renderUpdateSection()}
+
+      <Separator />
+
+      <div className="space-y-3">
+        <div className="flex items-center gap-3 text-sm">
+          <Globe className="text-muted-foreground h-4 w-4" />
+          <a
+            href="#"
+            onClick={e => {
+              e.preventDefault();
+              window.ipcRenderer.send('open-external', PORABUILD_URL);
+            }}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Porabuild website
+          </a>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Globe className="text-muted-foreground h-4 w-4" />
+          <a
+            href="#"
+            onClick={e => {
+              e.preventDefault();
+              window.ipcRenderer.send('open-external', PORATAKE_URL);
+            }}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Poratake website
+          </a>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Code2 className="text-muted-foreground h-4 w-4" />
+          <a
+            href="#"
+            onClick={e => {
+              e.preventDefault();
+              window.ipcRenderer.send('open-external', versionSourceUrl);
+            }}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            This version&apos;s source
+          </a>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Code2 className="text-muted-foreground h-4 w-4" />
+          <a
+            href="#"
+            onClick={e => {
+              e.preventDefault();
+              window.ipcRenderer.send('open-external', UPSTREAM_URL);
+            }}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Original Capty project
+          </a>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Heart className="text-muted-foreground h-4 w-4" />
+          <span className="text-muted-foreground">
+            Made for people who capture, explain, and share
+          </span>
+        </div>
+      </div>
+
+      <Separator />
+
+      <div className="space-y-3">
+        <div className="text-muted-foreground space-y-1 text-xs">
+          <p>
+            Poratake is a modified version of Capty. Modifications made in 2026.
           </p>
-
-          <Separator />
-
-          {renderUpdateSection()}
-
-          <Separator />
-
-          <div className="space-y-3">
-            <div className="flex items-center gap-3 text-sm">
-              <Globe className="text-muted-foreground h-4 w-4" />
-              <a
-                href="#"
-                onClick={e => {
-                  e.preventDefault();
-                  window.ipcRenderer.send('open-external', PORABUILD_URL);
-                }}
-                className="text-muted-foreground hover:text-foreground transition-colors"
-              >
-                Porabuild website
-              </a>
-            </div>
-            <div className="flex items-center gap-3 text-sm">
-              <Code2 className="text-muted-foreground h-4 w-4" />
-              <a
-                href="#"
-                onClick={e => {
-                  e.preventDefault();
-                  window.ipcRenderer.send('open-external', versionSourceUrl);
-                }}
-                className="text-muted-foreground hover:text-foreground transition-colors"
-              >
-                This version&apos;s source
-              </a>
-            </div>
-            <div className="flex items-center gap-3 text-sm">
-              <Code2 className="text-muted-foreground h-4 w-4" />
-              <a
-                href="#"
-                onClick={e => {
-                  e.preventDefault();
-                  window.ipcRenderer.send('open-external', UPSTREAM_URL);
-                }}
-                className="text-muted-foreground hover:text-foreground transition-colors"
-              >
-                Original Capty project
-              </a>
-            </div>
-            <div className="flex items-center gap-3 text-sm">
-              <Heart className="text-muted-foreground h-4 w-4" />
-              <span className="text-muted-foreground">
-                Made for people who capture, explain, and share
-              </span>
-            </div>
-          </div>
-
-          <Separator />
-
-          <div className="space-y-3">
-            <div className="text-muted-foreground space-y-1 text-xs">
-              <p>
-                Poratake is a modified version of Capty. Modifications made in
-                2026.
-              </p>
-              <p>Copyright &copy; 2026 Capty.</p>
-              <p>
-                Copyright &copy; 2026 Serhii Vecherenko for Poratake
-                modifications. Poratake is developed as part of Porabuild.
-                Copyright in other contributions remains with their respective
-                contributors.
-              </p>
-              <p>
-                Licensed under GNU AGPL v3.0, without warranty. You may
-                redistribute Poratake under the same license.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  window.ipcRenderer.send('open-external', versionSourceUrl);
-                }}
-              >
-                <Code2 className="mr-2 h-4 w-4" />
-                This Version&apos;s Source
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  window.ipcRenderer.send('open-external', licenseUrl);
-                }}
-              >
-                <Scale className="mr-2 h-4 w-4" />
-                GNU AGPL v3.0
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  window.ipcRenderer.send(
-                    'open-external',
-                    thirdPartyNoticesUrl
-                  );
-                }}
-              >
-                Third-party Notices
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          <p>Copyright &copy; 2026 Capty.</p>
+          <p>
+            Copyright &copy; 2026 Serhii Vecherenko for Poratake. Poratake is
+            developed by Porabuild. Copyright in other contributions remains
+            with their respective contributors.
+          </p>
+          <p>
+            Licensed under GNU AGPL v3.0, without warranty. You may redistribute
+            Poratake under the same license.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              window.ipcRenderer.send('open-external', versionSourceUrl);
+            }}
+          >
+            <Code2 className="mr-2 h-4 w-4" />
+            This Version&apos;s Source
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              window.ipcRenderer.send('open-external', licenseUrl);
+            }}
+          >
+            <Scale className="mr-2 h-4 w-4" />
+            GNU AGPL v3.0
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              window.ipcRenderer.send('open-external', thirdPartyNoticesUrl);
+            }}
+          >
+            Third-party Notices
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

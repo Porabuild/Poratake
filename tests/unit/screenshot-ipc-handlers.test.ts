@@ -32,8 +32,14 @@ const mockOpenScreenshotFromHistory = vi.fn();
 const mockCreateOrShowSettingsWindow = vi.fn();
 const mockDaemonCall = vi.fn();
 const mockNotificationShow = vi.fn();
-const mockExec = vi.fn();
 const mockRmSync = vi.fn();
+const mockCaptureAreaToFile = vi.fn();
+const mockSelectDisplay = vi.fn();
+const mockDisplayFromSelection = vi.fn();
+const mockCaptureDisplayToFile = vi.fn();
+const mockCaptureWindowToFile = vi.fn();
+const mockFinalizeCapture = vi.fn();
+const mockPrepareScreenshotPreview = vi.fn();
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -68,6 +74,11 @@ vi.mock('electron', () => ({
       scaleFactor: 2,
       workAreaSize: { width: 1920, height: 1080 },
     }),
+    getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+    getDisplayNearestPoint: () => ({
+      id: 1,
+      bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+    }),
   },
 }));
 
@@ -91,12 +102,23 @@ vi.mock('fs', () => ({
   statSync: (...a: unknown[]) => mockStatSync(...a),
 }));
 
-vi.mock('child_process', () => ({
-  execFile: (
-    file: string,
-    args: string[],
-    callback: (error: Error | null, stdout: string, stderr: string) => void
-  ) => mockExec([file, ...args].join(' '), callback),
+vi.mock('@/main/capture/area-overlay', () => ({
+  captureAreaToFile: (...a: unknown[]) => mockCaptureAreaToFile(...a),
+  captureWindowToFile: (...a: unknown[]) => mockCaptureWindowToFile(...a),
+}));
+
+vi.mock('@/main/system/capabilities', () => ({
+  isFeatureSupported: () => true,
+}));
+
+vi.mock('@/main/capture/screenshot/native-capture', () => ({
+  captureDisplayToFile: (...a: unknown[]) => mockCaptureDisplayToFile(...a),
+}));
+
+vi.mock('@/main/capture/screenshot/finalize', () => ({
+  finalizeCapture: (...a: unknown[]) => mockFinalizeCapture(...a),
+  prepareScreenshotPreview: (...a: unknown[]) =>
+    mockPrepareScreenshotPreview(...a),
 }));
 
 vi.mock('@/main/settings', () => ({
@@ -173,7 +195,8 @@ vi.mock('@/main/capture/screenshot/open-editor', () => ({
 }));
 
 vi.mock('@/main/capture/display-selector', () => ({
-  selectDisplay: vi.fn().mockResolvedValue({ status: 'cancelled' }),
+  selectDisplay: (...a: unknown[]) => mockSelectDisplay(...a),
+  displayFromSelection: (...a: unknown[]) => mockDisplayFromSelection(...a),
 }));
 
 describe('screenshot IPC handlers', () => {
@@ -623,14 +646,15 @@ describe('screenshot IPC handlers', () => {
       vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(win as never);
       mockExistsSync.mockReturnValue(true);
       mockReadFileSync.mockReturnValue(Buffer.from('img'));
-      mockExec.mockImplementation(
-        (_cmd: string, cb: (err: Error | null) => void) => cb(null)
-      );
+      mockCaptureAreaToFile.mockResolvedValue(true);
       await registerHandlers();
       const result = await ipcHandle['screenshot:capture-for-editor']({
         sender: {},
       });
       expect(typeof result).toBe('string');
+      expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
+        expect.stringContaining('poratake-editor-')
+      );
       expect(mockRmSync).toHaveBeenCalledWith(
         expect.stringContaining('poratake-editor-'),
         { force: true }
@@ -655,9 +679,7 @@ describe('screenshot IPC handlers', () => {
       vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(win as never);
       mockExistsSync.mockReturnValue(true);
       mockReadFileSync.mockReturnValue(Buffer.from('img'));
-      mockExec.mockImplementation(
-        (_cmd: string, cb: (err: Error | null) => void) => cb(null)
-      );
+      mockCaptureAreaToFile.mockResolvedValue(true);
       await registerHandlers();
 
       const capture = ipcHandle['screenshot:capture-for-editor']({
@@ -665,12 +687,13 @@ describe('screenshot IPC handlers', () => {
       });
       await Promise.resolve();
 
-      expect(mockReadFileSync).not.toHaveBeenCalled();
+      expect(mockCaptureAreaToFile).not.toHaveBeenCalled();
+      expect(win.hide).toHaveBeenCalled();
 
       hidden?.();
       await capture;
 
-      expect(mockReadFileSync).toHaveBeenCalled();
+      expect(mockCaptureAreaToFile).toHaveBeenCalled();
     });
 
     it('returns null when capture file missing', async () => {
@@ -685,9 +708,7 @@ describe('screenshot IPC handlers', () => {
       };
       vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(win as never);
       mockExistsSync.mockReturnValue(false);
-      mockExec.mockImplementation(
-        (_cmd: string, cb: (err: Error | null) => void) => cb(null)
-      );
+      mockCaptureAreaToFile.mockResolvedValue(true);
       await registerHandlers();
       const result = await ipcHandle['screenshot:capture-for-editor']({
         sender: {},
@@ -706,9 +727,7 @@ describe('screenshot IPC handlers', () => {
         focus: vi.fn(),
       };
       vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(win as never);
-      mockExec.mockImplementation(
-        (_cmd: string, cb: (err: Error | null) => void) => cb(new Error('boom'))
-      );
+      mockCaptureAreaToFile.mockRejectedValue(new Error('boom'));
       await registerHandlers();
       const result = await ipcHandle['screenshot:capture-for-editor']({
         sender: {},

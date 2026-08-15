@@ -6,7 +6,6 @@ import {
   Monitor,
   Accessibility,
   Shield,
-  Command,
   Keyboard,
   ExternalLink,
   ChevronRight,
@@ -16,6 +15,7 @@ import type { PermissionsState } from '@/types/permissions';
 import type { SettingsUiConfig } from '@/types/settings';
 import ShortcutInput from '@/renderer/components/settings/shortcut-input';
 import { isMacPlatform } from '@/renderer/utils/platform';
+import appIcon from '@build/icon.png';
 
 interface PermissionItemProps {
   title: string;
@@ -33,27 +33,27 @@ function PermissionItem({
   onRequest,
 }: PermissionItemProps) {
   return (
-    <div className="bg-card rounded-lg border p-4">
+    <div className="bg-muted rounded-md p-3">
       <div className="flex items-start gap-3">
-        <div className="bg-primary/10 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full">
+        <div className="bg-primary/10 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full">
           {icon}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="font-medium">{title}</h3>
+            <h3 className="text-sm font-medium">{title}</h3>
             <div
-              className={`flex h-6 w-6 items-center justify-center rounded-full ${
+              className={`flex h-5 w-5 items-center justify-center rounded-full ${
                 isGranted ? 'bg-green-500/20' : 'bg-destructive/20'
               }`}
             >
               {isGranted ? (
-                <Check className="h-4 w-4 text-green-500" />
+                <Check className="h-3 w-3 text-green-500" />
               ) : (
-                <X className="text-destructive h-4 w-4" />
+                <X className="text-destructive h-3 w-3" />
               )}
             </div>
           </div>
-          <p className="text-muted-foreground mt-1 text-sm">{description}</p>
+          <p className="text-muted-foreground mt-0.5 text-xs">{description}</p>
           {!isGranted && (
             <Button
               variant="outline"
@@ -97,19 +97,6 @@ function StepIndicator({ currentStep, totalSteps }: StepIndicatorProps) {
 type OnboardingStep =
   'welcome' | 'disable-macos-shortcuts' | 'shortcuts' | 'permissions';
 
-function WindowsKeyIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 10 11" className={className} aria-hidden="true">
-      <g transform="matrix(.947 0 0 .949 -.19 .354)" fill="currentColor">
-        <path d="m10.7 5.95v4.85l-5.57-0.87v-3.99z" />
-        <path d="m5.13 1.13 5.57-0.804v4.774h-5.57z" />
-        <path d="m4.39 5.91v3.95l-4.126-0.57v-3.4z" />
-        <path d="m0.261 1.77 4.129-0.57v3.95h-4.127z" />
-      </g>
-    </svg>
-  );
-}
-
 const ONBOARDING_STEPS: OnboardingStep[] = isMacPlatform()
   ? ['welcome', 'disable-macos-shortcuts', 'shortcuts', 'permissions']
   : ['welcome', 'shortcuts'];
@@ -117,32 +104,28 @@ const ONBOARDING_STEPS: OnboardingStep[] = isMacPlatform()
 function WelcomeStep() {
   return (
     <div className="flex flex-col items-center text-center">
-      <div className="bg-primary/10 mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full">
-        {isMacPlatform() ? (
-          <Command className="text-primary h-8 w-8" />
-        ) : (
-          <WindowsKeyIcon className="text-primary h-8 w-8" />
-        )}
-      </div>
+      <img
+        src={appIcon}
+        alt="Poratake"
+        className="mx-auto mb-4 h-16 w-16 rounded-2xl"
+      />
       <h1 className="text-xl font-semibold">Welcome to Poratake</h1>
       <p className="text-muted-foreground mt-2 text-sm">
-        {isMacPlatform()
-          ? 'Your new screenshot tool for macOS'
-          : 'Your new screenshot tool'}
+        Your new screenshot tool
       </p>
 
-      <div className="mt-6 space-y-4 text-left">
-        <div className="bg-card flex items-start gap-3 rounded-lg border p-4">
-          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-500/10">
-            <Monitor className="h-5 w-5 text-blue-500" />
+      <div className="mt-6 space-y-3 text-left">
+        <div className="bg-muted flex items-start gap-3 rounded-md p-3">
+          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-500/10">
+            <Monitor className="h-4 w-4 text-blue-500" />
           </div>
           <div>
-            <h3 className="font-medium">
+            <h3 className="text-sm font-medium">
               {isMacPlatform()
                 ? 'Lives in Your Menu Bar'
                 : 'Lives in Your System Tray'}
             </h3>
-            <p className="text-muted-foreground mt-1 text-sm">
+            <p className="text-muted-foreground mt-0.5 text-xs">
               Poratake runs quietly in your{' '}
               {isMacPlatform() ? 'menu bar' : 'system tray'}. Click the icon to
               access all features or use keyboard shortcuts for quick captures.
@@ -150,13 +133,13 @@ function WelcomeStep() {
           </div>
         </div>
 
-        <div className="bg-card flex items-start gap-3 rounded-lg border p-4">
-          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-purple-500/10">
-            <Keyboard className="h-5 w-5 text-purple-500" />
+        <div className="bg-muted flex items-start gap-3 rounded-md p-3">
+          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-purple-500/10">
+            <Keyboard className="h-4 w-4 text-purple-500" />
           </div>
           <div>
-            <h3 className="font-medium">Powerful Shortcuts</h3>
-            <p className="text-muted-foreground mt-1 text-sm">
+            <h3 className="text-sm font-medium">Powerful Shortcuts</h3>
+            <p className="text-muted-foreground mt-0.5 text-xs">
               Capture screenshots instantly with customizable keyboard shortcuts
               for area, window, and full screen captures.
             </p>
@@ -169,10 +152,7 @@ function WelcomeStep() {
 
 function DisableMacOSShortcutsStep() {
   const handleOpenKeyboardSettings = () => {
-    window.ipcRenderer.send(
-      'shell:open-external',
-      'x-apple.systempreferences:com.apple.preference.keyboard?Shortcuts'
-    );
+    window.ipcRenderer.send('onboarding:openKeyboardSettings');
   };
 
   return (
@@ -191,17 +171,17 @@ function DisableMacOSShortcutsStep() {
       </div>
 
       <div className="space-y-3">
-        <div className="bg-card rounded-lg border p-4">
-          <h3 className="mb-2 font-medium">Follow these steps:</h3>
-          <ol className="text-muted-foreground space-y-2 text-sm">
+        <div className="bg-muted rounded-md p-3">
+          <h3 className="mb-2 text-sm font-medium">Follow these steps:</h3>
+          <ol className="text-muted-foreground space-y-2 text-xs">
             <li className="flex gap-2">
-              <span className="bg-primary text-primary-foreground flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              <span className="bg-primary text-primary-foreground flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
                 1
               </span>
               <span>Click the button below to open Keyboard Settings</span>
             </li>
             <li className="flex gap-2">
-              <span className="bg-primary text-primary-foreground flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              <span className="bg-primary text-primary-foreground flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
                 2
               </span>
               <span>
@@ -209,7 +189,7 @@ function DisableMacOSShortcutsStep() {
               </span>
             </li>
             <li className="flex gap-2">
-              <span className="bg-primary text-primary-foreground flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              <span className="bg-primary text-primary-foreground flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
                 3
               </span>
               <span>
@@ -262,7 +242,7 @@ function ShortcutsStep({ settings, onShortcutChange }: ShortcutsStepProps) {
         </p>
       </div>
 
-      <div className="bg-card space-y-1 rounded-lg border p-4">
+      <div className="bg-muted space-y-1 rounded-md p-3">
         <ShortcutInput
           label="Capture Area"
           value={settings.shortcuts.screenshot.area}
@@ -319,7 +299,7 @@ function PermissionsStep({
         <PermissionItem
           title="Screen Recording"
           description="Required to capture screenshots of your screen"
-          icon={<Monitor className="text-primary h-5 w-5" />}
+          icon={<Monitor className="text-primary h-4 w-4" />}
           isGranted={isScreenRecordingGranted}
           onRequest={onOpenScreenRecording}
         />
@@ -327,7 +307,7 @@ function PermissionsStep({
         <PermissionItem
           title="Accessibility"
           description="Required to hide desktop icons when capturing"
-          icon={<Accessibility className="text-primary h-5 w-5" />}
+          icon={<Accessibility className="text-primary h-4 w-4" />}
           isGranted={isAccessibilityGranted}
           onRequest={onOpenAccessibility}
         />
@@ -474,7 +454,7 @@ export default function OnboardingWindow() {
 
           <div className="flex gap-2">
             {step > 0 && (
-              <Button variant="outline" onClick={handleBack} className="flex-1">
+              <Button variant="ghost" onClick={handleBack} className="flex-1">
                 <ChevronLeft className="mr-1 h-4 w-4" />
                 Back
               </Button>
@@ -489,7 +469,11 @@ export default function OnboardingWindow() {
                 Get Started
               </Button>
             ) : (
-              <Button onClick={handleNext} className="flex-1">
+              <Button
+                variant="tertiary"
+                onClick={handleNext}
+                className="flex-1"
+              >
                 Next
                 <ChevronRight className="ml-1 h-4 w-4" />
               </Button>

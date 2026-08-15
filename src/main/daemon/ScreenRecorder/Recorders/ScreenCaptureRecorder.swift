@@ -15,11 +15,16 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var systemAudioInput: AVAssetWriterInput?
     private var systemAudioSessionStarted = false
     private var systemAudioOutputPath: String?
+    private var systemAudioActive = false
+    private var systemAudioEverActive = false
 
     private var micAudioAssetWriter: AVAssetWriter?
     private var micAudioInput: AVAssetWriterInput?
     private var micAudioSessionStarted = false
     private var micAudioOutputPath: String?
+    private var micPendingStartTime: CMTime?
+    private var micPauseAnchor: CMTime = .zero
+    private var lastMicWriteTime: CMTime?
 
     private var sessionStarted = false
     private var firstFrameTime: CMTime?
@@ -56,6 +61,8 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
     private var cameraEnabled: Bool = false
     private let cameraRecorder = CameraRecorder()
+    private var cameraVisibleRanges: [(start: Double, end: Double)] = []
+    private var cameraRangeOpenStart: Double?
     
     var onFirstFrame: (() -> Void)?
     var onError: ((Error) -> Void)?
@@ -187,7 +194,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         streamConfig.colorSpaceName = CGColorSpace.sRGB
 
         if #available(macOS 13.0, *) {
-            streamConfig.capturesAudio = config.includeAudio
+            streamConfig.capturesAudio = true
             streamConfig.sampleRate = 48000
             streamConfig.channelCount = 2
             // The video size is fixed at the size the window started with, so a
@@ -244,7 +251,17 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         let hasMicAudio = config.micEnabled
         let videoDir = (config.outputPath as NSString).deletingLastPathComponent
 
-        if #available(macOS 13.0, *), hasSystemAudio {
+        systemAudioActive = hasSystemAudio
+        systemAudioEverActive = hasSystemAudio
+
+        let canCaptureSystemAudio: Bool
+        if #available(macOS 13.0, *) {
+            canCaptureSystemAudio = true
+        } else {
+            canCaptureSystemAudio = hasSystemAudio
+        }
+
+        if canCaptureSystemAudio {
             systemAudioOutputPath = (videoDir as NSString).appendingPathComponent("system.m4a")
             let systemAudioURL = URL(fileURLWithPath: systemAudioOutputPath!)
 
@@ -293,6 +310,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             }
 
             try setupMicrophoneCapture(config: config)
+            micPendingStartTime = .zero
         }
 
         guard assetWriter?.startWriting() == true else {
@@ -312,6 +330,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
                 outputPath: cameraOutputPath
             )
             try cameraRecorder.start()
+            cameraRangeOpenStart = 0
         }
 
         if let window = capturedWindow {
@@ -351,7 +370,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         try stream?.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
 
-        if #available(macOS 13.0, *), config.includeAudio {
+        if #available(macOS 13.0, *) {
             try stream?.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
         }
 
@@ -396,10 +415,16 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     }
 
     private func setupMicrophoneCapture(config: RecordingConfig) throws {
-        micCaptureSession = AVCaptureSession()
+        try setupMicrophoneCapture(
+            deviceId: config.micDeviceId,
+            deviceName: config.micDeviceName
+        )
+    }
 
-        var micDevice: AVCaptureDevice?
-
+    private func resolveMicrophoneDevice(
+        deviceId: String?,
+        deviceName: String?
+    ) throws -> AVCaptureDevice {
         let discoverySession: AVCaptureDevice.DiscoverySession
         if #available(macOS 14.0, *) {
             discoverySession = AVCaptureDevice.DiscoverySession(
@@ -415,28 +440,33 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             )
         }
 
-        if let deviceName = config.micDeviceName {
-            micDevice = discoverySession.devices.first { $0.localizedName == deviceName }
-
-            if micDevice == nil {
-                micDevice = discoverySession.devices.first { device in
-                    deviceName.contains(device.localizedName)
-                        || device.localizedName.contains(deviceName)
-                }
+        if let deviceName = deviceName {
+            if let exact = discoverySession.devices.first(where: { $0.localizedName == deviceName }) {
+                return exact
+            }
+            if let fuzzy = discoverySession.devices.first(where: { device in
+                deviceName.contains(device.localizedName)
+                    || device.localizedName.contains(deviceName)
+            }) {
+                return fuzzy
             }
         }
 
-        if micDevice == nil, let deviceId = config.micDeviceId {
-            micDevice = discoverySession.devices.first { $0.uniqueID == deviceId }
+        if let deviceId = deviceId,
+           let byId = discoverySession.devices.first(where: { $0.uniqueID == deviceId }) {
+            return byId
         }
 
-        if micDevice == nil {
-            micDevice = AVCaptureDevice.default(for: .audio)
-        }
-
-        guard let mic = micDevice else {
+        guard let fallback = AVCaptureDevice.default(for: .audio) else {
             throw RecorderError.configuration("No microphone found")
         }
+        return fallback
+    }
+
+    private func setupMicrophoneCapture(deviceId: String?, deviceName: String?) throws {
+        micCaptureSession = AVCaptureSession()
+
+        let mic = try resolveMicrophoneDevice(deviceId: deviceId, deviceName: deviceName)
 
         let micDeviceInput = try AVCaptureDeviceInput(device: mic)
         if micCaptureSession?.canAddInput(micDeviceInput) == true {
@@ -455,6 +485,166 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         micCaptureSession?.startRunning()
+    }
+
+    private func swapMicrophoneDevice(deviceId: String?, deviceName: String?) throws {
+        guard let session = micCaptureSession else { return }
+
+        let device = try resolveMicrophoneDevice(deviceId: deviceId, deviceName: deviceName)
+
+        let previousInput = session.inputs.first as? AVCaptureDeviceInput
+        if previousInput?.device.uniqueID == device.uniqueID {
+            return
+        }
+
+        let newInput = try AVCaptureDeviceInput(device: device)
+        guard session.canAddInput(newInput) else {
+            throw RecorderError.configuration("Cannot add microphone input to capture session")
+        }
+
+        session.beginConfiguration()
+        for input in session.inputs {
+            session.removeInput(input)
+        }
+        session.addInput(newInput)
+        session.commitConfiguration()
+    }
+
+    private func startMicrophoneDuringRecording(
+        deviceId: String?,
+        deviceName: String?
+    ) throws {
+        guard let config = config else {
+            throw RecorderError.configuration("Recording config not set")
+        }
+
+        if micAudioAssetWriter == nil {
+            let videoDir = (config.outputPath as NSString).deletingLastPathComponent
+            micAudioOutputPath = (videoDir as NSString).appendingPathComponent("mic.m4a")
+            let micAudioURL = URL(fileURLWithPath: micAudioOutputPath!)
+
+            if FileManager.default.fileExists(atPath: micAudioOutputPath!) {
+                try FileManager.default.removeItem(atPath: micAudioOutputPath!)
+            }
+
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48000,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 320000,
+            ]
+
+            micAudioAssetWriter = try AVAssetWriter(outputURL: micAudioURL, fileType: .m4a)
+            micAudioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            micAudioInput?.expectsMediaDataInRealTime = true
+
+            if let micAudioInput = micAudioInput,
+               micAudioAssetWriter?.canAdd(micAudioInput) == true {
+                micAudioAssetWriter?.add(micAudioInput)
+            }
+
+            guard micAudioAssetWriter?.startWriting() == true else {
+                throw RecorderError.capture(
+                    "Failed to start mic audio writer: \(micAudioAssetWriter?.error?.localizedDescription ?? "unknown error")"
+                )
+            }
+        }
+
+        try setupMicrophoneCapture(deviceId: deviceId, deviceName: deviceName)
+        micPendingStartTime = videoFrameCount > 0 ? lastVideoTime : .zero
+        micEnabled = true
+    }
+
+    func setMicrophone(enabled: Bool, deviceId: String?, deviceName: String?) throws {
+        guard state == .recording || state == .paused else {
+            throw RecorderError.invalidState(
+                "Cannot change the microphone: recorder is \(state.rawValue)"
+            )
+        }
+
+        if !enabled {
+            micEnabled = false
+            stopMicrophoneCapture()
+            return
+        }
+
+        if micCaptureSession != nil {
+            try swapMicrophoneDevice(deviceId: deviceId, deviceName: deviceName)
+            micEnabled = true
+            return
+        }
+
+        try startMicrophoneDuringRecording(deviceId: deviceId, deviceName: deviceName)
+    }
+
+    func setSystemAudio(enabled: Bool) throws {
+        guard state == .recording || state == .paused else {
+            throw RecorderError.invalidState(
+                "Cannot change system audio: recorder is \(state.rawValue)"
+            )
+        }
+
+        guard systemAudioAssetWriter != nil else {
+            throw RecorderError.invalidState(
+                "System audio cannot be changed for this recording"
+            )
+        }
+
+        systemAudioActive = enabled
+        if enabled {
+            systemAudioEverActive = true
+        }
+    }
+
+    func setCamera(enabled: Bool) throws {
+        guard state == .recording || state == .paused else {
+            throw RecorderError.invalidState(
+                "Cannot change the camera: recorder is \(state.rawValue)"
+            )
+        }
+
+        if enabled {
+            if cameraRecorder.isRecording {
+                cameraRecorder.unsuspend()
+            } else {
+                try startCameraDuringRecording()
+            }
+            openCameraRange()
+            return
+        }
+
+        guard cameraRecorder.isRecording else { return }
+        cameraRecorder.suspend()
+        closeCameraRange()
+    }
+
+    private func startCameraDuringRecording() throws {
+        guard let config = config else {
+            throw RecorderError.configuration("Recording config not set")
+        }
+
+        let videoDir = (config.outputPath as NSString).deletingLastPathComponent
+        let cameraOutputPath = (videoDir as NSString).appendingPathComponent("camera.mov")
+        cameraRecorder.configure(
+            deviceId: config.cameraDeviceId,
+            deviceName: config.cameraDeviceName,
+            frameRate: 30,
+            outputPath: cameraOutputPath
+        )
+        try cameraRecorder.start()
+        cameraRecorder.syncWithVideoStart()
+        cameraEnabled = true
+    }
+
+    private func openCameraRange() {
+        guard cameraRangeOpenStart == nil else { return }
+        cameraRangeOpenStart = recordingDuration
+    }
+
+    private func closeCameraRange() {
+        guard let start = cameraRangeOpenStart else { return }
+        cameraRangeOpenStart = nil
+        cameraVisibleRanges.append((start, max(recordingDuration, start)))
     }
 
     func captureOutput(
@@ -487,15 +677,29 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         let micTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
-        if firstMicTime == nil {
+        if let pendingStart = micPendingStartTime {
+            micPendingStartTime = nil
+            firstMicTime = CMTimeSubtract(micTime, pendingStart)
+            micPauseAnchor = totalPauseDuration
+            let silenceStart = micWriteCount > 0 ? (lastMicWriteTime ?? .zero) : .zero
+            appendMicSilence(
+                from: silenceStart,
+                until: pendingStart,
+                like: sampleBuffer
+            )
+        } else if firstMicTime == nil {
             firstMicTime = micTime
+            micPauseAnchor = totalPauseDuration
         }
 
         guard let firstMic = firstMicTime else { return }
 
         let micRelativeTime = CMTimeSubtract(micTime, firstMic)
         var adjustedTime = micRelativeTime
-        adjustedTime = CMTimeSubtract(adjustedTime, totalPauseDuration)
+        adjustedTime = CMTimeSubtract(
+            adjustedTime,
+            CMTimeSubtract(totalPauseDuration, micPauseAnchor)
+        )
 
         if CMTimeCompare(adjustedTime, .zero) < 0 {
             adjustedTime = .zero
@@ -507,13 +711,49 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         if let adjustedBuffer = createAdjustedSampleBuffer(sampleBuffer, newTime: adjustedTime) {
-            audioWriterQueue.sync {
-                guard micAudioAssetWriter?.status == .writing else { return }
-                if micAudioInput.append(adjustedBuffer) {
-                    micWriteCount += 1
-                }
+            if appendMicBufferToWriter(adjustedBuffer) {
+                lastMicWriteTime = adjustedTime
             }
         }
+    }
+
+    private func appendMicSilence(
+        from startTime: CMTime,
+        until endTime: CMTime,
+        like sampleBuffer: CMSampleBuffer
+    ) {
+        guard CMTimeCompare(startTime, endTime) < 0 else { return }
+
+        let step = CMSampleBufferGetDuration(sampleBuffer)
+        guard CMTimeCompare(step, .zero) > 0 else { return }
+
+        var time = startTime
+        while CMTimeCompare(time, endTime) < 0 {
+            guard let muted = createMutedSampleBuffer(from: sampleBuffer),
+                  let adjusted = createAdjustedSampleBuffer(muted, newTime: time)
+            else { return }
+
+            if appendMicBufferToWriter(adjusted) {
+                lastMicWriteTime = time
+            }
+            time = CMTimeAdd(time, step)
+        }
+    }
+
+    private func appendMicBufferToWriter(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        guard let micAudioInput = micAudioInput,
+              micAudioInput.isReadyForMoreMediaData
+        else { return false }
+
+        var appended = false
+        audioWriterQueue.sync {
+            guard micAudioAssetWriter?.status == .writing else { return }
+            if micAudioInput.append(sampleBuffer) {
+                micWriteCount += 1
+                appended = true
+            }
+        }
+        return appended
     }
 
     private func stopMicrophoneCapture() {
@@ -675,6 +915,8 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         var cameraFilePath: String? = nil
         if cameraEnabled {
+            closeCameraRange()
+            cameraRecorder.setVisibleRanges(cameraVisibleRanges)
             if let result = cameraRecorder.stop() {
                 cameraFilePath = result.videoPath
             }
@@ -697,7 +939,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         let finalPath = config?.outputPath ?? ""
         let finalDuration = recordingDuration
-        let finalSystemAudioPath = systemAudioOutputPath
+        var finalSystemAudioPath = systemAudioOutputPath
         let finalMicAudioPath = micAudioOutputPath
 
         if assetWriter?.status == .writing {
@@ -722,6 +964,11 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         if micAudioAssetWriter?.status == .failed, let error = micAudioAssetWriter?.error {
             throw RecorderError.capture("Mic audio writer error: \(error.localizedDescription)")
+        }
+
+        if let path = finalSystemAudioPath, !systemAudioEverActive {
+            try? FileManager.default.removeItem(atPath: path)
+            finalSystemAudioPath = nil
         }
 
         return RecordingResult(
@@ -763,10 +1010,18 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         systemAudioInput = nil
         systemAudioOutputPath = nil
         systemAudioSessionStarted = false
+        systemAudioActive = false
+        systemAudioEverActive = false
         micAudioAssetWriter = nil
         micAudioInput = nil
         micAudioOutputPath = nil
         micAudioSessionStarted = false
+        micPendingStartTime = nil
+        micPauseAnchor = .zero
+        lastMicWriteTime = nil
+        firstMicTime = nil
+        cameraVisibleRanges = []
+        cameraRangeOpenStart = nil
         sessionStarted = false
         firstFrameTime = nil
         pauseStartTime = nil
@@ -860,18 +1115,26 @@ extension ScreenCaptureRecorder: SCStreamOutput {
                 }
             }
         } else if #available(macOS 13.0, *), type == .audio {
-            guard let systemAudioInput = systemAudioInput,
-                systemAudioInput.isReadyForMoreMediaData
-            else { return }
-
-            if let adjustedBuffer = createAdjustedSampleBuffer(
-                sampleBuffer, newTime: presentationTime)
-            {
-                audioWriterQueue.sync {
-                    guard systemAudioAssetWriter?.status == .writing else { return }
-                    systemAudioInput.append(adjustedBuffer)
-                }
+            if systemAudioActive {
+                appendSystemAudioBuffer(sampleBuffer, at: presentationTime)
+            } else if let muted = createMutedSampleBuffer(from: sampleBuffer) {
+                appendSystemAudioBuffer(muted, at: presentationTime)
             }
+        }
+    }
+
+    private func appendSystemAudioBuffer(_ sampleBuffer: CMSampleBuffer, at time: CMTime) {
+        guard let systemAudioInput = systemAudioInput,
+            systemAudioInput.isReadyForMoreMediaData
+        else { return }
+
+        guard let adjustedBuffer = createAdjustedSampleBuffer(sampleBuffer, newTime: time) else {
+            return
+        }
+
+        audioWriterQueue.sync {
+            guard systemAudioAssetWriter?.status == .writing else { return }
+            systemAudioInput.append(adjustedBuffer)
         }
     }
 

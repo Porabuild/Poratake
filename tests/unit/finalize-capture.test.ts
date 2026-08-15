@@ -9,6 +9,7 @@ const mockShowCapturePreview = vi.fn();
 const mockOpenScreenshotEditor = vi.fn();
 const mockFsExistsSync = vi.fn();
 const mockFsReadFileSync = vi.fn(() => Buffer.from('image-bytes'));
+const mockPlayCaptureSound = vi.fn();
 
 vi.mock('electron', () => ({
   clipboard: {
@@ -45,6 +46,10 @@ vi.mock('@/main/capture/screenshot/open-editor', () => ({
   openScreenshotEditor: (...a: unknown[]) => mockOpenScreenshotEditor(...a),
 }));
 
+vi.mock('@/main/capture/screenshot/capture-sound', () => ({
+  playCaptureSound: () => mockPlayCaptureSound(),
+}));
+
 function setScreenshotConfig(overrides: Record<string, unknown>): void {
   mockGetConfig.mockReturnValue({
     screenshot: {
@@ -76,9 +81,26 @@ describe('finalizeCapture', () => {
 
     await finalizeCapture('/path/missing.png');
 
+    expect(mockPlayCaptureSound).not.toHaveBeenCalled();
     expect(mockAddToHistory).not.toHaveBeenCalled();
     expect(mockClipboardWriteImage).not.toHaveBeenCalled();
     expect(mockOpenScreenshotEditor).not.toHaveBeenCalled();
+  });
+
+  it('plays the capture sound when a capture finalizes', async () => {
+    const { finalizeCapture } = await importFinalize();
+
+    await finalizeCapture('/path/shot.png');
+
+    expect(mockPlayCaptureSound).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the capture sound when silent', async () => {
+    const { finalizeCapture } = await importFinalize();
+
+    await finalizeCapture('/path/shot.png', null, { silent: true });
+
+    expect(mockPlayCaptureSound).not.toHaveBeenCalled();
   });
 
   it('copies to clipboard and still opens the editor by default', async () => {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type {
   EditorActionShortcuts,
   EditorPreferences,
@@ -11,6 +11,7 @@ import type { AreaOverlayParams } from '@/types/area-overlay';
 import type { RecordingControlState } from '@/types/recording-control';
 import { useAccentColor } from '@/renderer/hooks/useAccentColor';
 import { useAppTheme } from '@/renderer/hooks/use-app-theme';
+import { usesTransparentWindowFallback } from '@/renderer/utils/window-fallback';
 
 const loadScreenshotWindow = () =>
   import('@/renderer/windows/screenshot-window');
@@ -32,10 +33,16 @@ const AreaOverlayWindow = lazy(loadAreaOverlayWindow);
 const RecordingControlWindow = lazy(
   () => import('@/renderer/windows/recording-control-window')
 );
+const loadScrollCaptureWindow = () =>
+  import('@/renderer/windows/scroll-capture-overlay-window');
+const ScrollCaptureOverlayWindow = lazy(loadScrollCaptureWindow);
+const loadScrollCaptureControlWindow = () =>
+  import('@/renderer/windows/scroll-capture-control-window');
+const ScrollCaptureControlWindow = lazy(loadScrollCaptureControlWindow);
 const windowType = new URLSearchParams(window.location.search).get('window');
 const isCapturePreviewWindow = windowType === 'capture-preview';
 const isAreaOverlayWindow = windowType === 'area-overlay';
-const isRecordingControlWindow = windowType === 'recording-control';
+const isTransparentUtilityWindow = usesTransparentWindowFallback(windowType);
 
 if (windowType === 'screenshot') {
   void loadScreenshotWindow();
@@ -45,7 +52,7 @@ if (windowType === 'video-editor') {
   void loadVideoEditorWindow();
 }
 
-if (isRecordingControlWindow) {
+if (isTransparentUtilityWindow) {
   document.body.classList.add('window-transparent');
 }
 
@@ -123,7 +130,9 @@ interface LoadEvent {
     | 'video-editor'
     | 'capture-preview'
     | 'area-overlay'
-    | 'recording-control';
+    | 'recording-control'
+    | 'scroll-capture-overlay'
+    | 'scroll-capture-control';
   params:
     | ScreenshotParams
     | PinParams
@@ -136,7 +145,7 @@ interface LoadEvent {
 }
 
 function WindowFallback({ data }: { data: LoadEvent }) {
-  if (data.type === 'recording-control') {
+  if (usesTransparentWindowFallback(data.type)) {
     return null;
   }
 
@@ -158,6 +167,7 @@ function App() {
   useAppTheme();
 
   const [windowData, setWindowData] = useState<LoadEvent | null>(null);
+  const windowDataRef = useRef<LoadEvent | null>(null);
 
   useEffect(() => {
     const handlePrepareCapturePreview = () => {
@@ -171,7 +181,7 @@ function App() {
     };
 
     const handlePrepareAreaOverlay = () => {
-      void loadAreaOverlayWindow()
+      void Promise.all([loadAreaOverlayWindow(), loadScrollCaptureWindow()])
         .then(() => {
           window.ipcRenderer.send('area-overlay:renderer-prepared');
         })
@@ -180,7 +190,7 @@ function App() {
         });
     };
 
-    const handleLoad = (_event: unknown, data: LoadEvent) => {
+    const applyLoadEvent = (data: LoadEvent) => {
       if (data.type === 'video-editor') {
         void loadVideoEditorWindow();
       }
@@ -209,7 +219,12 @@ function App() {
             });
         }
       }
+      windowDataRef.current = data;
       setWindowData(data);
+    };
+
+    const handleLoad = (_event: unknown, data: LoadEvent) => {
+      applyLoadEvent(data);
     };
 
     window.ipcRenderer.on('load', handleLoad);
@@ -226,6 +241,15 @@ function App() {
       window.ipcRenderer.send('area-overlay:renderer-mounted');
     }
 
+    void window.ipcRenderer
+      .invoke('window:get-load-data')
+      .then(data => {
+        if (data && windowDataRef.current === null) {
+          applyLoadEvent(data as LoadEvent);
+        }
+      })
+      .catch(() => {});
+
     return () => {
       window.ipcRenderer.off('load', handleLoad);
       window.ipcRenderer.off(
@@ -240,7 +264,7 @@ function App() {
   }, []);
 
   if (!windowData) {
-    if (isRecordingControlWindow) {
+    if (isTransparentUtilityWindow) {
       return null;
     }
 
@@ -300,6 +324,15 @@ function App() {
           />
         );
       }
+      case 'scroll-capture-overlay':
+        return (
+          <ScrollCaptureOverlayWindow
+            key={(windowData.params as AreaOverlayParams).sessionId}
+            params={windowData.params as AreaOverlayParams}
+          />
+        );
+      case 'scroll-capture-control':
+        return <ScrollCaptureControlWindow />;
       default:
         return null;
     }

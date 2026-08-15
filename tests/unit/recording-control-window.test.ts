@@ -4,9 +4,13 @@ const windows: MockBrowserWindow[] = [];
 const ipcOn: Record<string, (...args: unknown[]) => void> = {};
 const ipcHandle: Record<string, (...args: unknown[]) => unknown> = {};
 const mockListMediaDevices = vi.fn();
+const mockListIOSDevices = vi.fn();
 const mockDaemonCall = vi.fn();
 const overlayParent = {};
 const mockGetActiveOverlayWindowAtPoint = vi.fn(() => overlayParent);
+const { mockIsWindows } = vi.hoisted(() => ({
+  mockIsWindows: { value: true },
+}));
 
 class MockBrowserWindow {
   handlers: Record<string, Array<(...args: unknown[]) => void>> = {};
@@ -14,10 +18,12 @@ class MockBrowserWindow {
   visible = false;
   options: Electron.BrowserWindowConstructorOptions;
   webContents = {
+    id: 1,
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       this.handlers[`webContents:${event}`] ??= [];
       this.handlers[`webContents:${event}`].push(handler);
     }),
+    once: vi.fn(),
     send: vi.fn(),
   };
   setAlwaysOnTop = vi.fn();
@@ -62,7 +68,12 @@ vi.mock('electron', () => ({
 }));
 
 vi.mock('@/main/devices', () => ({
-  listMediaDevices: () => mockListMediaDevices(),
+  listMediaDevices: (...a: unknown[]) => mockListMediaDevices(...a),
+  listIOSDevices: () => mockListIOSDevices(),
+}));
+
+vi.mock('@/main/utils/platform', () => ({
+  isWindows: mockIsWindows.value,
 }));
 
 vi.mock('@/main/capture/area-overlay', () => ({
@@ -81,12 +92,15 @@ vi.mock('@/main/utils/env', () => ({
 
 const state = {
   mode: 'pre-recording' as const,
+  targetName: null,
   systemAudio: true,
   micEnabled: false,
   micMuted: false,
   selectedMicId: null,
   cameraEnabled: false,
   selectedCameraId: null,
+  selectedIOSDeviceId: null,
+  selectedIOSDeviceName: null,
   cameraLocked: false,
   isPaused: false,
   isStarting: false,
@@ -100,6 +114,7 @@ describe('recording-control-window', () => {
     windows.splice(0);
     Object.keys(ipcOn).forEach(key => delete ipcOn[key]);
     Object.keys(ipcHandle).forEach(key => delete ipcHandle[key]);
+    mockIsWindows.value = true;
     mockDaemonCall.mockResolvedValue({ disabled: true });
     mockListMediaDevices.mockResolvedValue({
       microphones: [{ id: 'mic-1', label: 'Microphone 1' }],
@@ -107,6 +122,7 @@ describe('recording-control-window', () => {
       defaultMicrophoneId: 'mic-1',
       defaultCameraId: 'camera-1',
     });
+    mockListIOSDevices.mockResolvedValue([{ id: 'ios-1', label: 'iPhone' }]);
   });
 
   function settle(): Promise<void> {
@@ -207,9 +223,9 @@ describe('recording-control-window', () => {
     await settle();
 
     expect(window.setBounds).toHaveBeenCalledWith({
-      x: 368,
+      x: 352,
       y: 24,
-      width: 300,
+      width: 332,
       height: 52,
     });
     expect(mockGetActiveOverlayWindowAtPoint).toHaveBeenCalledWith({
@@ -224,6 +240,55 @@ describe('recording-control-window', () => {
     expect(window.setOpacity).toHaveBeenCalledWith(1);
     expect(window.showInactive).toHaveBeenCalled();
     expect(window.moveTop).toHaveBeenCalled();
+  });
+
+  it('resizes the toolbar window to the width reported by its renderer', async () => {
+    const control =
+      await import('@/main/capture/video/recording-control-window');
+    const onAction = vi.fn();
+
+    control.showRecordingControlBrowserWindow(
+      { ...state, mode: 'recording' },
+      { x: 400, y: 24 },
+      onAction
+    );
+    const window = windows[0];
+    window.handlers['webContents:did-finish-load'][0]();
+    ipcOn['recording-control:ready']({ sender: window.webContents });
+    await settle();
+
+    ipcOn['recording-control:content-width'](
+      { sender: window.webContents },
+      196
+    );
+
+    expect(window.setBounds).toHaveBeenLastCalledWith({
+      x: 400 - Math.round((300 - 196) / 2) - 16,
+      y: 24,
+      width: 300 + 16 * 2,
+      height: 52,
+    });
+  });
+
+  it('ignores content-width reports from other renderers', async () => {
+    const control =
+      await import('@/main/capture/video/recording-control-window');
+    const onAction = vi.fn();
+
+    control.showRecordingControlBrowserWindow(
+      state,
+      { x: 400, y: 24 },
+      onAction
+    );
+    const window = windows[0];
+    window.handlers['webContents:did-finish-load'][0]();
+    ipcOn['recording-control:ready']({ sender: window.webContents });
+    await settle();
+    window.setBounds.mockClear();
+
+    ipcOn['recording-control:content-width']({ sender: { id: 999 } }, 196);
+
+    expect(window.setBounds).not.toHaveBeenCalled();
   });
 
   it('accepts actions only from its own renderer', async () => {
@@ -260,7 +325,7 @@ describe('recording-control-window', () => {
     const window = windows[0];
 
     await expect(
-      ipcHandle['recording-control:devices']({ sender: {} })
+      ipcHandle['recording-control:devices']({ sender: {} }, 'microphone')
     ).resolves.toEqual({
       microphones: [],
       cameras: [],
@@ -270,22 +335,52 @@ describe('recording-control-window', () => {
     expect(mockListMediaDevices).not.toHaveBeenCalled();
 
     await expect(
-      ipcHandle['recording-control:devices']({ sender: window.webContents })
+      ipcHandle['recording-control:devices'](
+        { sender: window.webContents },
+        'microphone'
+      )
     ).resolves.toEqual({
       microphones: [{ id: 'mic-1', label: 'Microphone 1' }],
       cameras: [{ id: 'camera-1', label: 'Camera 1' }],
       defaultMicrophoneId: 'mic-1',
       defaultCameraId: 'camera-1',
     });
+    expect(mockListMediaDevices).toHaveBeenCalledWith(['microphone']);
+
+    await expect(
+      ipcHandle['recording-control:devices'](
+        { sender: window.webContents },
+        'camera'
+      )
+    ).resolves.toEqual({
+      microphones: [{ id: 'mic-1', label: 'Microphone 1' }],
+      cameras: [{ id: 'camera-1', label: 'Camera 1' }],
+      defaultMicrophoneId: 'mic-1',
+      defaultCameraId: 'camera-1',
+    });
+    expect(mockListMediaDevices).toHaveBeenLastCalledWith(['camera']);
+
+    await expect(
+      ipcHandle['recording-control:devices'](
+        { sender: window.webContents },
+        'unknown'
+      )
+    ).resolves.toEqual({
+      microphones: [],
+      cameras: [],
+      defaultMicrophoneId: null,
+      defaultCameraId: null,
+    });
+    expect(mockListMediaDevices).toHaveBeenCalledTimes(2);
 
     ipcOn['recording-control:device-menu-open'](
       { sender: window.webContents },
       true
     );
     expect(window.setBounds).toHaveBeenLastCalledWith({
-      x: 368,
+      x: 352,
       y: 24,
-      width: 300,
+      width: 332,
       height: 300,
     });
 
@@ -307,14 +402,15 @@ describe('recording-control-window', () => {
       false
     );
     expect(window.setBounds).toHaveBeenLastCalledWith({
-      x: 368,
+      x: 352,
       y: 24,
-      width: 300,
+      width: 332,
       height: 52,
     });
   });
 
   it('renders microphone and camera menu triggers', async () => {
+    vi.stubGlobal('window', { appPlatform: 'win32' });
     const React = await import('react');
     vi.stubGlobal('React', React);
     const { renderToStaticMarkup } = await import('react-dom/server');
@@ -327,6 +423,7 @@ describe('recording-control-window', () => {
 
     expect(markup).toContain('aria-label="Select microphone"');
     expect(markup).toContain('aria-label="Select camera"');
+    expect(markup).not.toContain('aria-label="Select iPhone or iPad"');
     expect(
       markup.match(
         /inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl/g
@@ -334,6 +431,68 @@ describe('recording-control-window', () => {
     ).toHaveLength(2);
     expect(markup).toContain('data-slot="dropdown-trigger"');
   }, 30000);
+
+  it('renders the iOS device trigger only on macOS', async () => {
+    vi.stubGlobal('window', { appPlatform: 'darwin' });
+    const React = await import('react');
+    vi.stubGlobal('React', React);
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { default: RecordingControlWindow } =
+      await import('@/renderer/windows/recording-control-window');
+
+    const markup = renderToStaticMarkup(
+      React.createElement(RecordingControlWindow, { params: state })
+    );
+
+    expect(markup).toContain('aria-label="Select iPhone or iPad"');
+    expect(
+      markup.match(
+        /inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl/g
+      )
+    ).toHaveLength(3);
+  }, 30000);
+
+  it('renders the live device triggers during recording on macOS', async () => {
+    vi.stubGlobal('window', { appPlatform: 'darwin' });
+    const React = await import('react');
+    vi.stubGlobal('React', React);
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { default: RecordingControlWindow } =
+      await import('@/renderer/windows/recording-control-window');
+
+    const markup = renderToStaticMarkup(
+      React.createElement(RecordingControlWindow, {
+        params: { ...state, mode: 'recording', cameraLocked: true },
+      })
+    );
+
+    expect(markup).toContain('aria-label="Select microphone"');
+    expect(markup).toContain('aria-label="Select camera"');
+    expect(markup).toContain('Turn system sounds');
+    expect(markup).toContain('aria-label="Stop recording"');
+  }, 30000);
+
+  it('serves iOS devices only to its own renderer', async () => {
+    const control =
+      await import('@/main/capture/video/recording-control-window');
+    control.showRecordingControlBrowserWindow(
+      state,
+      { x: 400, y: 24 },
+      vi.fn()
+    );
+    const window = windows[0];
+
+    await expect(
+      ipcHandle['recording-control:ios-devices']({ sender: {} })
+    ).resolves.toEqual([]);
+    expect(mockListIOSDevices).not.toHaveBeenCalled();
+
+    await expect(
+      ipcHandle['recording-control:ios-devices']({
+        sender: window.webContents,
+      })
+    ).resolves.toEqual([{ id: 'ios-1', label: 'iPhone' }]);
+  });
 
   it('keeps the toolbar centered when recording mode changes', async () => {
     const control =
@@ -348,9 +507,9 @@ describe('recording-control-window', () => {
     control.updateRecordingControlBrowserWindow({ mode: 'recording' });
 
     expect(window.setBounds).toHaveBeenLastCalledWith({
-      x: 318,
+      x: 302,
       y: 24,
-      width: 400,
+      width: 432,
       height: 52,
     });
     expect(window.setParentWindow).toHaveBeenLastCalledWith(null);
@@ -444,14 +603,13 @@ describe('recording-control-window', () => {
       await import('@/main/capture/video/recording-control-window');
     const onAction = vi.fn();
     control.showRecordingControlBrowserWindow(
-      state,
+      { ...state, targetName: 'Preview' },
       { x: 400, y: 24 },
       onAction
     );
     const window = windows[0];
     control.updateRecordingControlBrowserWindow({
       mode: 'recording',
-      micMuted: true,
       isPaused: true,
       isStarting: true,
       elapsedSeconds: 42,
@@ -467,7 +625,7 @@ describe('recording-control-window', () => {
       {
         ...state,
         mode: 'pre-recording',
-        micMuted: false,
+        targetName: null,
         cameraLocked: false,
         isPaused: false,
         isStarting: false,

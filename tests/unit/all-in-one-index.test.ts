@@ -2,13 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockStartAreaSelection = vi.fn();
 const mockCancelAreaSelection = vi.fn();
-const mockUpdateAreaSelection = vi.fn();
 const mockUpdateAreaSelectionCallbacks = vi.fn();
 const mockShowAllInOneControl = vi.fn();
 const mockUpdateAllInOnePosition = vi.fn();
 const mockHideAllInOneControl = vi.fn();
 const mockGetCurrentAreaSelection = vi.fn();
-const mockSetAllInOneCallbacks = vi.fn();
 const mockCaptureArea = vi.fn();
 const mockShowPreRecordingControl = vi.fn();
 const mockUpdateRecordingControlPosition = vi.fn();
@@ -16,13 +14,9 @@ const mockHidePreRecordingControl = vi.fn();
 const mockPrewarmRecordingControl = vi.fn();
 const mockPrewarmRecorder = vi.fn();
 const mockPrewarmOverlay = vi.fn();
-const mockGlobalShortcutRegister = vi.fn();
-const mockGlobalShortcutUnregister = vi.fn();
 const mockGetConfig = vi.fn();
 const mockUpdateConfig = vi.fn();
-const mockGetAllDisplays = vi.fn();
 const mockIsFeatureSupported = vi.fn();
-const mockSetAreaSelectorAspectRatio = vi.fn();
 const mockCaptureText = vi.fn();
 const mockClipboardWriteText = vi.fn();
 const mockNotificationShow = vi.fn();
@@ -40,14 +34,6 @@ class MockNotification {
 
 vi.mock('electron', () => ({
   clipboard: { writeText: (...a: unknown[]) => mockClipboardWriteText(...a) },
-  globalShortcut: {
-    register: (key: string, cb: () => void) =>
-      mockGlobalShortcutRegister(key, cb),
-    unregister: (key: string) => mockGlobalShortcutUnregister(key),
-  },
-  screen: {
-    getAllDisplays: () => mockGetAllDisplays(),
-  },
   Notification: MockNotification,
 }));
 
@@ -55,12 +41,9 @@ vi.mock('@/main/capture/area-selector', () => ({
   startAreaSelection: (...a: unknown[]) => mockStartAreaSelection(...a),
   cancelAreaSelection: (...a: unknown[]) => mockCancelAreaSelection(...a),
   hideAreaSelector: (...a: unknown[]) => mockHideAreaSelector(...a),
-  updateAreaSelection: (...a: unknown[]) => mockUpdateAreaSelection(...a),
   updateAreaSelectionCallbacks: (...a: unknown[]) =>
     mockUpdateAreaSelectionCallbacks(...a),
   setAreaSelectionMode: (...a: unknown[]) => mockSetAreaSelectionMode(...a),
-  setAreaSelectorAspectRatio: (...a: unknown[]) =>
-    mockSetAreaSelectorAspectRatio(...a),
 }));
 
 vi.mock('@/main/capture/area-overlay', () => ({
@@ -80,7 +63,6 @@ vi.mock('@/main/capture/all-in-one/open-all-in-one.ts', () => ({
   updateAllInOnePosition: (...a: unknown[]) => mockUpdateAllInOnePosition(...a),
   hideAllInOneControl: (...a: unknown[]) => mockHideAllInOneControl(...a),
   getCurrentAreaSelection: () => mockGetCurrentAreaSelection(),
-  setAllInOneCallbacks: (...a: unknown[]) => mockSetAllInOneCallbacks(...a),
 }));
 
 vi.mock('@/main/capture/screenshot/capture-area.ts', () => ({
@@ -127,19 +109,9 @@ describe('all-in-one orchestrator', () => {
     mockCaptureArea.mockReset();
     mockCaptureText.mockReset();
     mockGetConfig.mockReturnValue({ allInOne: {} });
-    mockUpdateAreaSelection.mockResolvedValue(true);
     mockIsFeatureSupported.mockReturnValue(true);
     mockIsScreenFrozen.mockReturnValue(false);
     mockIsFreezeScreenEnabled.mockReturnValue(true);
-    mockGetAllDisplays.mockReturnValue([
-      { bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
-    ]);
-  });
-
-  it('init registers all-in-one callbacks', async () => {
-    const { init } = await import('@/main/capture/all-in-one');
-    init();
-    expect(mockSetAllInOneCallbacks).toHaveBeenCalled();
   });
 
   it('startAllInOne calls startAreaSelection', async () => {
@@ -192,40 +164,26 @@ describe('all-in-one orchestrator', () => {
       allInOne: { lastArea: { x: 10, y: 20, width: 100, height: 100 } },
     });
     expect(mockShowAllInOneControl).toHaveBeenCalled();
-    expect(mockGlobalShortcutRegister).toHaveBeenCalledTimes(3);
   });
 
   it('omits recording actions when recording is unsupported', async () => {
     mockIsFeatureSupported.mockImplementation(
       (feature: unknown) => feature === 'all-in-one'
     );
-    mockStartAreaSelection.mockImplementation(
-      async ({ onSelected }: { onSelected: (s: unknown) => void }) => {
-        onSelected({
-          status: 'selected',
-          x: 10,
-          y: 20,
-          width: 100,
-          height: 100,
-        });
-        return { status: 'selected' };
-      }
-    );
+    mockGetCurrentAreaSelection.mockReturnValue({
+      x: 10,
+      y: 20,
+      width: 100,
+      height: 100,
+    });
+    mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
 
-    const { default: startAllInOne, init } =
-      await import('@/main/capture/all-in-one');
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
     await startAllInOne();
-    init();
-    const callbacks = mockSetAllInOneCallbacks.mock.calls.at(-1)?.[0] as {
-      onRecord: () => void;
-    };
-    callbacks.onRecord();
+    const handle = mockStartAreaSelection.mock.calls[0][0].onToolbarAction;
+    handle({ action: 'record' });
 
-    expect(mockGlobalShortcutRegister).toHaveBeenCalledTimes(2);
-    expect(mockGlobalShortcutRegister).not.toHaveBeenCalledWith(
-      'R',
-      expect.any(Function)
-    );
+    expect(mockShowPreRecordingControl).not.toHaveBeenCalled();
     expect(mockPrewarmRecorder).not.toHaveBeenCalled();
   });
 
@@ -265,14 +223,11 @@ describe('all-in-one orchestrator', () => {
       activeMode: 'screenshot',
       activeTarget: 'area',
     });
-    expect(opts.freeze).toBe(process.platform === 'win32');
+    expect(opts.freeze).toBe(true);
     expect(opts.onToolbarAction).toBeInstanceOf(Function);
   });
 
-  it('runs the selected mode after a Windows area is drawn', async () => {
-    const originalPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    vi.resetModules();
+  it('runs the selected mode after an area is drawn', async () => {
     mockGetCurrentAreaSelection.mockReturnValue({
       x: 10,
       y: 20,
@@ -293,28 +248,21 @@ describe('all-in-one orchestrator', () => {
       }
     );
 
-    try {
-      const startAllInOne = (await import('@/main/capture/all-in-one')).default;
-      await startAllInOne();
-      await Promise.resolve();
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+    await startAllInOne();
+    await Promise.resolve();
 
-      expect(mockSetOverlayToolbar).toHaveBeenCalledWith(
-        expect.objectContaining({ activeMode: 'record' })
-      );
-      expect(mockShowPreRecordingControl).toHaveBeenCalledWith(
-        { x: 10, y: 20, width: 100, height: 100 },
-        undefined
-      );
-      expect(mockCaptureArea).not.toHaveBeenCalled();
-    } finally {
-      Object.defineProperty(process, 'platform', { value: originalPlatform });
-    }
+    expect(mockSetOverlayToolbar).toHaveBeenCalledWith(
+      expect.objectContaining({ activeMode: 'record' })
+    );
+    expect(mockShowPreRecordingControl).toHaveBeenCalledWith(
+      { x: 10, y: 20, width: 100, height: 100 },
+      undefined
+    );
+    expect(mockCaptureArea).not.toHaveBeenCalled();
   });
 
   it('hands a picked window to the recording control', async () => {
-    const originalPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    vi.resetModules();
     mockGetCurrentAreaSelection.mockReturnValue({
       x: 200,
       y: 100,
@@ -338,27 +286,20 @@ describe('all-in-one orchestrator', () => {
       }
     );
 
-    try {
-      const startAllInOne = (await import('@/main/capture/all-in-one')).default;
-      await startAllInOne();
-      await Promise.resolve();
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+    await startAllInOne();
+    await Promise.resolve();
 
-      expect(mockSetAreaSelectionMode).toHaveBeenCalledWith('window');
-      expect(mockShowPreRecordingControl).toHaveBeenCalledWith(
-        { x: 200, y: 100, width: 800, height: 600 },
-        'Window'
-      );
-      expect(mockHideAreaSelector).toHaveBeenCalled();
-      expect(mockShowRecordedWindowOutline).toHaveBeenCalledWith(4242);
-    } finally {
-      Object.defineProperty(process, 'platform', { value: originalPlatform });
-    }
+    expect(mockSetAreaSelectionMode).toHaveBeenCalledWith('window');
+    expect(mockShowPreRecordingControl).toHaveBeenCalledWith(
+      { x: 200, y: 100, width: 800, height: 600 },
+      'Window'
+    );
+    expect(mockHideAreaSelector).toHaveBeenCalled();
+    expect(mockShowRecordedWindowOutline).toHaveBeenCalledWith(4242);
   });
 
   it('captures a picked window as a window screenshot', async () => {
-    const originalPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    vi.resetModules();
     mockGetCurrentAreaSelection.mockReturnValue({
       x: 200,
       y: 100,
@@ -381,36 +322,51 @@ describe('all-in-one orchestrator', () => {
       }
     );
 
-    try {
-      const startAllInOne = (await import('@/main/capture/all-in-one')).default;
-      await startAllInOne();
-      await new Promise(resolve => setTimeout(resolve, 0));
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+    await startAllInOne();
+    await new Promise(resolve => setTimeout(resolve, 0));
 
-      expect(mockCaptureArea).toHaveBeenCalledWith(expect.anything(), {
-        windowId: 4242,
-      });
-    } finally {
-      Object.defineProperty(process, 'platform', { value: originalPlatform });
-    }
+    expect(mockCaptureArea).toHaveBeenCalledWith(expect.anything(), {
+      windowId: 4242,
+    });
   });
 
   describe('toolbar actions', () => {
-    async function getToolbarHandler(): Promise<(action: unknown) => void> {
-      mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
+    async function getToolbarHandler(): Promise<{
+      onToolbarAction: (action: unknown) => void;
+      onSelected: (selection: unknown) => void;
+    }> {
+      const handlers: {
+        onToolbarAction?: (action: unknown) => void;
+        onSelected?: (selection: unknown) => void;
+      } = {};
+      mockStartAreaSelection.mockImplementation(
+        async (options: {
+          onToolbarAction: (action: unknown) => void;
+          onSelected: (selection: unknown) => void;
+        }) => {
+          handlers.onToolbarAction = options.onToolbarAction;
+          handlers.onSelected = options.onSelected;
+          return { status: 'confirmed' };
+        }
+      );
       const startAllInOne = (await import('@/main/capture/all-in-one')).default;
       await startAllInOne();
-      return mockStartAreaSelection.mock.calls[0][0].onToolbarAction;
+      return handlers as {
+        onToolbarAction: (action: unknown) => void;
+        onSelected: (selection: unknown) => void;
+      };
     }
 
-    it('screenshot action captures the current area', async () => {
+    it('screenshot mode captures the current area after selection', async () => {
       mockGetCurrentAreaSelection.mockReturnValue({
         x: 1,
         y: 2,
         width: 30,
         height: 40,
       });
-      const handle = await getToolbarHandler();
-      handle({ action: 'screenshot' });
+      const { onSelected } = await getToolbarHandler();
+      onSelected({ status: 'selected', x: 1, y: 2, width: 30, height: 40 });
       await new Promise(resolve => setImmediate(resolve));
       expect(mockCaptureArea).toHaveBeenCalled();
       expect(mockUpdateConfig).toHaveBeenCalledWith({
@@ -430,9 +386,9 @@ describe('all-in-one orchestrator', () => {
         expect(mockCancelAreaSelection).not.toHaveBeenCalled();
         await options.onCaptured();
       });
-      const handle = await getToolbarHandler();
+      const { onSelected } = await getToolbarHandler();
 
-      handle({ action: 'screenshot' });
+      onSelected({ status: 'selected', x: 1, y: 2, width: 30, height: 40 });
       await new Promise(resolve => setImmediate(resolve));
 
       expect(mockCaptureArea).toHaveBeenCalledWith(expect.any(Object), {
@@ -442,30 +398,16 @@ describe('all-in-one orchestrator', () => {
       expect(mockCancelAreaSelection).toHaveBeenCalled();
     });
 
-    it('record action starts the pre-recording flow', async () => {
+    it('OCR mode captures text from the current area', async () => {
       mockGetCurrentAreaSelection.mockReturnValue({
         x: 1,
         y: 2,
         width: 30,
         height: 40,
       });
-      const handle = await getToolbarHandler();
-      handle({ action: 'record' });
-      expect(mockShowPreRecordingControl).toHaveBeenCalled();
-      expect(mockUpdateConfig).toHaveBeenCalledWith({
-        allInOne: { lastArea: { x: 1, y: 2, width: 30, height: 40 } },
-      });
-    });
-
-    it('OCR action captures text from the current area', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 1,
-        y: 2,
-        width: 30,
-        height: 40,
-      });
-      const handle = await getToolbarHandler();
-      handle({ action: 'ocr' });
+      const { onSelected, onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'ocr' });
+      onSelected({ status: 'selected', x: 1, y: 2, width: 30, height: 40 });
       await new Promise(resolve => setImmediate(resolve));
       expect(mockCaptureText).toHaveBeenCalledWith({
         x: 1,
@@ -478,8 +420,8 @@ describe('all-in-one orchestrator', () => {
     });
 
     it('copies a picked color and closes the overlay', async () => {
-      const handle = await getToolbarHandler();
-      handle({ action: 'copy-color', color: '#12abEF' });
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'copy-color', color: '#12abEF' });
       expect(mockClipboardWriteText).toHaveBeenCalledWith('#12abEF');
       expect(mockNotificationShow).toHaveBeenCalled();
       expect(mockCancelAreaSelection).toHaveBeenCalled();
@@ -487,8 +429,8 @@ describe('all-in-one orchestrator', () => {
     });
 
     it('switches capture mode across overlay windows', async () => {
-      const handle = await getToolbarHandler();
-      handle({ action: 'select-capture-mode', mode: 'ocr' });
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'ocr' });
       expect(mockSetOverlayToolbar).toHaveBeenCalledWith({
         kind: 'all-in-one',
         recordingEnabled: true,
@@ -499,8 +441,8 @@ describe('all-in-one orchestrator', () => {
     });
 
     it('switches the overlay to window picking for the active mode', async () => {
-      const handle = await getToolbarHandler();
-      handle({ action: 'select-capture-target', target: 'window' });
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-target', target: 'window' });
 
       expect(mockSetAreaSelectionMode).toHaveBeenCalledWith('window');
       expect(mockSetOverlayToolbar).toHaveBeenCalledWith(
@@ -512,16 +454,16 @@ describe('all-in-one orchestrator', () => {
     });
 
     it('keeps a target per capture mode', async () => {
-      const handle = await getToolbarHandler();
-      handle({ action: 'select-capture-target', target: 'screen' });
-      handle({ action: 'select-capture-mode', mode: 'record' });
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-target', target: 'screen' });
+      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
 
       expect(mockSetAreaSelectionMode).toHaveBeenLastCalledWith('manual');
       expect(mockSetOverlayToolbar).toHaveBeenLastCalledWith(
         expect.objectContaining({ activeMode: 'record', activeTarget: 'area' })
       );
 
-      handle({ action: 'select-capture-mode', mode: 'screenshot' });
+      onToolbarAction({ action: 'select-capture-mode', mode: 'screenshot' });
 
       expect(mockSetAreaSelectionMode).toHaveBeenLastCalledWith('display');
       expect(mockSetOverlayToolbar).toHaveBeenLastCalledWith(
@@ -533,116 +475,22 @@ describe('all-in-one orchestrator', () => {
     });
 
     it('ignores a target change while capturing text', async () => {
-      const handle = await getToolbarHandler();
-      handle({ action: 'select-capture-mode', mode: 'ocr' });
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'ocr' });
       mockSetAreaSelectionMode.mockClear();
-      handle({ action: 'select-capture-target', target: 'window' });
+      onToolbarAction({ action: 'select-capture-target', target: 'window' });
 
       expect(mockSetAreaSelectionMode).not.toHaveBeenCalled();
     });
 
     it('close action cancels the selection', async () => {
-      const handle = await getToolbarHandler();
-      handle({ action: 'close' });
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'close' });
       expect(mockCancelAreaSelection).toHaveBeenCalled();
       expect(mockHideAllInOneControl).toHaveBeenCalled();
     });
 
-    it('aspect ratio action forwards to the area selector', async () => {
-      const handle = await getToolbarHandler();
-      handle({
-        action: 'select-aspect-ratio',
-        name: '16:9',
-        width: 16,
-        height: 9,
-      });
-      expect(mockSetAreaSelectorAspectRatio).toHaveBeenCalledWith({
-        name: '16:9',
-        width: 16,
-        height: 9,
-      });
-    });
-
-    it('update-size action resizes the selection', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 100,
-        y: 100,
-        width: 400,
-        height: 200,
-      });
-      const handle = await getToolbarHandler();
-      handle({ action: 'update-size', width: 200, height: 100 });
-      await Promise.resolve();
-      expect(mockUpdateAreaSelection).toHaveBeenCalledWith({
-        x: 200,
-        y: 150,
-        width: 200,
-        height: 100,
-      });
-    });
-
-    it('size editor actions suspend and restore shortcuts', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 0,
-        y: 0,
-        width: 100,
-        height: 100,
-      });
-      const handle = await getToolbarHandler();
-      const registrationsBefore = mockGlobalShortcutRegister.mock.calls.length;
-      handle({ action: 'size-editor-opened' });
-      expect(mockGlobalShortcutUnregister).toHaveBeenCalled();
-      handle({ action: 'size-editor-closed' });
-      expect(mockGlobalShortcutRegister.mock.calls.length).toBeGreaterThan(
-        registrationsBefore
-      );
-    });
-  });
-
-  it('onCancelled unregisters shortcuts', async () => {
-    mockStartAreaSelection.mockImplementation(
-      async ({ onCancelled }: { onCancelled: () => void }) => {
-        onCancelled();
-        return null;
-      }
-    );
-    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
-    await startAllInOne();
-    expect(mockGlobalShortcutUnregister).toHaveBeenCalled();
-  });
-
-  describe('callbacks installed', () => {
-    it('init installs handleScreenshotAction that captures', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 10,
-        y: 20,
-        width: 100,
-        height: 100,
-      });
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onScreenshot: () => Promise<void>;
-      };
-      await cbs.onScreenshot();
-      expect(mockCaptureArea).toHaveBeenCalled();
-      expect(mockUpdateConfig).toHaveBeenCalledWith({
-        allInOne: { lastArea: { x: 10, y: 20, width: 100, height: 100 } },
-      });
-    });
-
-    it('handleScreenshotAction no-op when no area', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue(null);
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onScreenshot: () => Promise<void>;
-      };
-      await cbs.onScreenshot();
-      expect(mockCaptureArea).not.toHaveBeenCalled();
-    });
-
-    it('handleScreenshotAction swallows captureArea errors', async () => {
+    it('screenshot mode swallows capture errors', async () => {
       mockGetCurrentAreaSelection.mockReturnValue({
         x: 0,
         y: 0,
@@ -650,154 +498,23 @@ describe('all-in-one orchestrator', () => {
         height: 10,
       });
       mockCaptureArea.mockRejectedValue(new Error('boom'));
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onScreenshot: () => Promise<void>;
-      };
-      await expect(cbs.onScreenshot()).resolves.toBeUndefined();
+      const { onSelected } = await getToolbarHandler();
+      onSelected({ status: 'selected', x: 0, y: 0, width: 10, height: 10 });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(mockCaptureArea).toHaveBeenCalled();
     });
 
-    it('handleRecordAction starts pre-recording flow', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 10,
-        y: 20,
-        width: 100,
-        height: 100,
-      });
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onRecord: () => void;
-      };
-      cbs.onRecord();
-      expect(mockPrewarmRecordingControl).toHaveBeenCalled();
-      expect(mockPrewarmRecorder).toHaveBeenCalled();
-      expect(mockPrewarmOverlay).toHaveBeenCalled();
-      expect(mockShowPreRecordingControl).toHaveBeenCalled();
-      expect(mockUpdateAreaSelectionCallbacks).toHaveBeenCalled();
-      expect(mockUpdateConfig).toHaveBeenCalledWith({
-        allInOne: { lastArea: { x: 10, y: 20, width: 100, height: 100 } },
-      });
-    });
-
-    it('handleRecordAction no-op when no area', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue(null);
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onRecord: () => void;
-      };
-      cbs.onRecord();
-      expect(mockPrewarmRecorder).not.toHaveBeenCalled();
-    });
-
-    it('handleUpdateSizeAction resizes the selector around current center', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 100,
-        y: 100,
-        width: 400,
-        height: 200,
-      });
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onUpdateSize: (s: { width: number; height: number }) => Promise<void>;
-      };
-      await cbs.onUpdateSize({ width: 200, height: 100 });
-      const expectedBounds = { x: 200, y: 150, width: 200, height: 100 };
-      expect(mockUpdateAreaSelection).toHaveBeenCalledWith(expectedBounds);
-      expect(mockUpdateConfig).toHaveBeenCalledWith({
-        allInOne: { lastArea: expectedBounds },
-      });
-      expect(mockUpdateAllInOnePosition).toHaveBeenCalledWith(expectedBounds);
-    });
-
-    it('handleUpdateSizeAction clamps size inside the active display', async () => {
-      mockGetAllDisplays.mockReturnValue([
-        { bounds: { x: 0, y: 0, width: 1000, height: 800 } },
-      ]);
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 900,
-        y: 700,
-        width: 80,
-        height: 80,
-      });
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onUpdateSize: (s: { width: number; height: number }) => Promise<void>;
-      };
-      await cbs.onUpdateSize({ width: 300, height: 300 });
-      expect(mockUpdateAreaSelection).toHaveBeenCalledWith({
-        x: 700,
-        y: 500,
-        width: 300,
-        height: 300,
-      });
-    });
-
-    it('handleUpdateSizeAction no-ops without current area', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue(null);
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onUpdateSize: (s: { width: number; height: number }) => Promise<void>;
-      };
-      await cbs.onUpdateSize({ width: 200, height: 100 });
-      expect(mockUpdateAreaSelection).not.toHaveBeenCalled();
-    });
-
-    it('handleUpdateSizeAction stops when selector update fails', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 100,
-        y: 100,
-        width: 400,
-        height: 200,
-      });
-      mockUpdateAreaSelection.mockResolvedValue(false);
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onUpdateSize: (s: { width: number; height: number }) => Promise<void>;
-      };
-      await cbs.onUpdateSize({ width: 200, height: 100 });
-      expect(mockUpdateConfig).not.toHaveBeenCalled();
-      expect(mockUpdateAllInOnePosition).not.toHaveBeenCalled();
-    });
-
-    it('size editor callbacks suspend and restore shortcuts', async () => {
+    it('record mode wires selection callbacks to the control', async () => {
       mockGetCurrentAreaSelection.mockReturnValue({
         x: 0,
         y: 0,
         width: 100,
         height: 100,
       });
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onSizeEditorOpened: () => void;
-        onSizeEditorClosed: () => void;
-      };
-      cbs.onSizeEditorOpened();
-      cbs.onSizeEditorClosed();
-      expect(mockGlobalShortcutUnregister).toHaveBeenCalled();
-      expect(mockGlobalShortcutRegister).toHaveBeenCalledTimes(3);
-    });
-
-    it('record callback onUpdate updates control position', async () => {
-      mockGetCurrentAreaSelection.mockReturnValue({
-        x: 0,
-        y: 0,
-        width: 100,
-        height: 100,
-      });
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onRecord: () => void;
-      };
-      cbs.onRecord();
+      const { onSelected, onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
+      onSelected({ status: 'selected', x: 0, y: 0, width: 100, height: 100 });
+      await Promise.resolve();
       const updateCallbacks = mockUpdateAreaSelectionCallbacks.mock
         .calls[0][0] as {
         onUpdate: (s: unknown) => void;
@@ -818,17 +535,6 @@ describe('all-in-one orchestrator', () => {
       });
       updateCallbacks.onCancelled();
       expect(mockHidePreRecordingControl).toHaveBeenCalled();
-    });
-
-    it('handleCloseAction unregisters shortcuts and cancels selection', async () => {
-      const { init } = await import('@/main/capture/all-in-one');
-      init();
-      const cbs = mockSetAllInOneCallbacks.mock.calls[0][0] as {
-        onClose: () => void;
-      };
-      cbs.onClose();
-      expect(mockCancelAreaSelection).toHaveBeenCalled();
-      expect(mockHideAllInOneControl).toHaveBeenCalled();
     });
   });
 

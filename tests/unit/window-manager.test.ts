@@ -23,6 +23,7 @@ class MockBrowserWindow {
       this.windowHandlers[`wc:${event}`] ??= [];
       this.windowHandlers[`wc:${event}`].push(cb);
     }),
+    once: vi.fn(),
     send: vi.fn(),
   };
 

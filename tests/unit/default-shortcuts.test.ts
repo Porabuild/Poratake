@@ -54,7 +54,9 @@ describe('default global shortcuts', () => {
       window: 'CommandOrControl+Shift+5',
       screen: 'CommandOrControl+Shift+3',
     });
-    expect(DEFAULT_SETTINGS.shortcuts.allInOne).toBe('Alt+Shift+S');
+    expect(DEFAULT_SETTINGS.shortcuts.allInOne).toBe(
+      'CommandOrControl+Shift+S'
+    );
   });
 
   it('falls back to the renderer platform when process is unavailable', async () => {

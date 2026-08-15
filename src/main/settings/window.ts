@@ -3,6 +3,7 @@ import type { WebContents } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
 import { registerDockWindow } from '@/main/utils/dock';
+import { sendWindowLoad } from '@/main/utils/window-load';
 import {
   nativeWindowMaterialOptions,
   supportsNativeWindowMaterial,
@@ -73,7 +74,10 @@ export function createOrShowSettingsWindow(tab?: string) {
   }
 
   settingsWindow.webContents.on('did-finish-load', () => {
-    settingsWindow?.webContents.send('load', {
+    const win = settingsWindow;
+    if (!win) return;
+
+    sendWindowLoad(win.webContents, {
       type: 'settings',
       params: { nativeMaterial },
     });

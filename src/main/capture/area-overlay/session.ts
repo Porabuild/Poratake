@@ -2,10 +2,12 @@ import { app, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron';
 import type { Display, Point, Rectangle } from 'electron';
 import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
 import { daemon } from '@/main/daemon';
+import { isWindows } from '@/main/utils/platform';
 import { createOverlayWindow } from './window';
 import type {
   AreaOverlayPickTarget,
   AreaOverlayRect,
+  AreaOverlayRenderer,
   AreaOverlayResult,
   AreaOverlayToolbar,
   AreaOverlayToolbarAction,
@@ -37,6 +39,9 @@ export interface OverlayCallbacks {
 export interface OverlayOptions {
   freeze?: boolean;
   interactive?: boolean;
+  autoConfirm?: boolean;
+  repeatablePicks?: boolean;
+  renderer?: AreaOverlayRenderer;
   visible?: boolean;
   preset?: Rectangle;
   pickTargets?: OverlayPickTarget[];
@@ -51,11 +56,11 @@ interface OverlayWindowEntry {
   window: BrowserWindow;
   display: Display;
   loaded: boolean;
-  suppressed: boolean;
 }
 
 interface PooledOverlayWindow {
   window: BrowserWindow;
+  webContentsId: number;
   displayId: number;
   prepared: boolean;
   initialized: Promise<void>;
@@ -68,6 +73,9 @@ interface OverlaySession {
   displayIdsByWebContents: Map<number, number>;
   freeze: boolean;
   interactive: boolean;
+  autoConfirm: boolean;
+  repeatablePicks: boolean;
+  renderer: AreaOverlayRenderer;
   showPrompt: boolean;
   aspectRatio: number | null;
   toolbar: AreaOverlayToolbar | null;
@@ -121,7 +129,7 @@ function removePooledWindow(entry: PooledOverlayWindow): void {
   if (pooledWindowsByDisplay.get(entry.displayId) === entry) {
     pooledWindowsByDisplay.delete(entry.displayId);
   }
-  pooledWindowsByWebContents.delete(entry.window.webContents.id);
+  pooledWindowsByWebContents.delete(entry.webContentsId);
 }
 
 function sessionEntryFor(
@@ -140,6 +148,8 @@ function mountWarmOverlay(pooled: PooledOverlayWindow): void {
       displayId: pooled.displayId,
       imageUrl: null,
       interactive: true,
+      autoConfirm: true,
+      repeatablePicks: false,
       showPrompt: true,
       aspectRatio: null,
       toolbar: null,
@@ -156,6 +166,19 @@ function prepareOverlayWindow(
 ): Promise<void> {
   if (window.isDestroyed()) return Promise.resolve();
 
+  if (!isWindows) {
+    if (method === 'hideWindowWithoutTransitions') {
+      window.setOpacity(0);
+      return Promise.resolve();
+    }
+
+    if (!window.isVisible()) {
+      showInactiveWithoutTransitions(window);
+    }
+    window.setOpacity(1);
+    return Promise.resolve();
+  }
+
   return daemon
     .call('area-selector', method, { windowHandle: nativeWindowHandle(window) })
     .then(() => undefined)
@@ -168,13 +191,12 @@ function setOverlayWindowRegion(
   session: OverlaySession,
   entry: OverlayWindowEntry
 ): Promise<void> {
-  if (entry.window.isDestroyed()) return Promise.resolve();
+  if (entry.window.isDestroyed() || !isWindows) return Promise.resolve();
 
   const windowHandle = nativeWindowHandle(entry.window);
   const selection =
     !session.freeze &&
     !session.hidden &&
-    !entry.suppressed &&
     session.selection?.displayId === entry.display.id
       ? session.selection
       : null;
@@ -205,8 +227,7 @@ function syncOverlayWindowRegions(session: OverlaySession): void {
   }
 }
 
-function createPooledWindow(display: Display): PooledOverlayWindow {
-  const window = createOverlayWindow(display);
+function showInactiveWithoutTransitions(window: BrowserWindow): void {
   const animationsDisabled = app.commandLine.hasSwitch(
     'wm-window-animations-disabled'
   );
@@ -220,6 +241,11 @@ function createPooledWindow(display: Display): PooledOverlayWindow {
       app.commandLine.removeSwitch('wm-window-animations-disabled');
     }
   }
+}
+
+function createPooledWindow(display: Display): PooledOverlayWindow {
+  const window = createOverlayWindow(display);
+  showInactiveWithoutTransitions(window);
   const initialized = prepareOverlayWindow(
     window,
     'hideWindowWithoutTransitions'
@@ -229,12 +255,13 @@ function createPooledWindow(display: Display): PooledOverlayWindow {
   });
   const pooled: PooledOverlayWindow = {
     window,
+    webContentsId: window.webContents.id,
     displayId: display.id,
     prepared: false,
     initialized,
   };
   pooledWindowsByDisplay.set(display.id, pooled);
-  pooledWindowsByWebContents.set(window.webContents.id, pooled);
+  pooledWindowsByWebContents.set(pooled.webContentsId, pooled);
 
   window.webContents.on('render-process-gone', () => {
     removePooledWindow(pooled);
@@ -262,24 +289,26 @@ async function concealOverlayWindow(window: BrowserWindow): Promise<void> {
   await prepareOverlayWindow(window, 'hideWindowWithoutTransitions');
 }
 
-function showOverlayWindow(window: BrowserWindow): void {
+function showOverlayWindow(window: BrowserWindow): Promise<void> {
   const version = nextOverlayVisibilityVersion(window);
 
-  if (window.isVisible()) {
+  if (isWindows && window.isVisible()) {
     window.setIgnoreMouseEvents(false);
-    return;
+    return Promise.resolve();
   }
 
   window.setIgnoreMouseEvents(true);
-  void prepareOverlayWindow(window, 'showWindowWithoutTransitions').then(() => {
-    if (
-      window.isDestroyed() ||
-      overlayVisibilityVersions.get(window) !== version
-    ) {
-      return;
+  return prepareOverlayWindow(window, 'showWindowWithoutTransitions').then(
+    () => {
+      if (
+        window.isDestroyed() ||
+        overlayVisibilityVersions.get(window) !== version
+      ) {
+        return;
+      }
+      window.setIgnoreMouseEvents(false);
     }
-    window.setIgnoreMouseEvents(false);
-  });
+  );
 }
 
 function setEscapeShortcutEnabled(
@@ -395,7 +424,7 @@ function registerOverlayIpc(): void {
 
     adoptSelection(session, result, display);
     hideInactiveOverlays(session, display.id);
-    session.callbacks.onSelected?.(toRegion(display, result));
+    session.callbacks.onSelected?.(toRegion(session, display, result));
   });
 
   ipcMain.on('area-overlay:updated', (event, result: unknown) => {
@@ -404,7 +433,7 @@ function registerOverlayIpc(): void {
     if (!session || !display || !isValidResult(result, display)) return;
 
     adoptSelection(session, result, display);
-    session.callbacks.onUpdated?.(toRegion(display, result));
+    session.callbacks.onUpdated?.(toRegion(session, display, result));
   });
 
   ipcMain.on('area-overlay:confirm', (event, result: unknown) => {
@@ -438,25 +467,9 @@ function registerOverlayIpc(): void {
   });
 }
 
-const SIMPLE_TOOLBAR_ACTIONS = new Set([
-  'close',
-  'screenshot',
-  'record',
-  'ocr',
-  'size-editor-opened',
-  'size-editor-closed',
-]);
+const SIMPLE_TOOLBAR_ACTIONS = new Set(['close']);
 
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
-
-function hasNumericSize(value: { width?: unknown; height?: unknown }): boolean {
-  return (
-    typeof value.width === 'number' &&
-    Number.isFinite(value.width) &&
-    typeof value.height === 'number' &&
-    Number.isFinite(value.height)
-  );
-}
 
 function isValidToolbarAction(
   action: unknown
@@ -464,9 +477,6 @@ function isValidToolbarAction(
   if (!action || typeof action !== 'object') return false;
 
   const value = action as Partial<AreaOverlayToolbarAction> & {
-    width?: unknown;
-    height?: unknown;
-    name?: unknown;
     mode?: unknown;
     target?: unknown;
   };
@@ -481,10 +491,6 @@ function isValidToolbarAction(
         typeof (value as { color?: unknown }).color === 'string' &&
         HEX_COLOR_PATTERN.test((value as { color: string }).color)
       );
-    case 'update-size':
-      return hasNumericSize(value);
-    case 'select-aspect-ratio':
-      return typeof value.name === 'string' && hasNumericSize(value);
     default:
       return SIMPLE_TOOLBAR_ACTIONS.has(value.action as string);
   }
@@ -494,12 +500,11 @@ function revealOverlay(session: OverlaySession, displayId: number): void {
   if (session.hidden) return;
 
   const entry = session.entries.find(item => item.display.id === displayId);
-  if (!entry || entry.suppressed) return;
-  if (entry.window.isDestroyed()) return;
+  if (!entry || entry.window.isDestroyed()) return;
 
   void setOverlayWindowRegion(session, entry).then(() => {
     if (activeSession !== session || entry.window.isDestroyed()) return;
-    showOverlayWindow(entry.window);
+    void showOverlayWindow(entry.window);
     entry.window.moveTop();
   });
 }
@@ -509,13 +514,22 @@ function announcePreset(session: OverlaySession, display: Display): void {
   if (!preset || preset.displayId !== display.id) return;
 
   session.pendingPreset = null;
-  session.callbacks.onSelected?.(toRegion(display, preset));
+  session.callbacks.onSelected?.(toRegion(session, display, preset));
 }
 
-function toRegion(display: Display, result: AreaOverlayResult): OverlayRegion {
+function toRegion(
+  session: OverlaySession,
+  display: Display,
+  result: AreaOverlayResult
+): OverlayRegion {
+  const pickedRect =
+    result.pickId === undefined
+      ? undefined
+      : session.pickTargets?.find(target => target.id === result.pickId)?.rect;
+
   return {
     display,
-    rect: {
+    rect: pickedRect ?? {
       x: display.bounds.x + result.x,
       y: display.bounds.y + result.y,
       width: result.width,
@@ -558,9 +572,9 @@ function hideInactiveOverlays(
 
   for (const entry of session.entries) {
     if (entry.display.id === activeDisplayId) continue;
+    if (entry.window.isDestroyed()) continue;
 
-    entry.suppressed = true;
-    void concealOverlayWindow(entry.window);
+    entry.window.webContents.send('area-overlay:set-rect', { rect: null });
   }
 }
 
@@ -615,12 +629,14 @@ function deliverOverlayParams(
       : null;
 
   entry.window.webContents.send('load', {
-    type: 'area-overlay',
+    type: session.renderer,
     params: {
       sessionId: session.id,
       displayId: entry.display.id,
       imageUrl: null,
       interactive: session.interactive,
+      autoConfirm: session.autoConfirm,
+      repeatablePicks: session.repeatablePicks,
       showPrompt: session.showPrompt,
       aspectRatio: session.aspectRatio,
       toolbar: session.toolbar,
@@ -674,6 +690,20 @@ function handoffEntry(entry: OverlayWindowEntry): void {
 
 export function hasOverlayHandoff(): boolean {
   return pendingHandoff !== null;
+}
+
+export function retainOverlayHandoffWindow(
+  displayId: number
+): BrowserWindow | null {
+  const entries = pendingHandoff;
+  const retained = entries?.find(entry => entry.display.id === displayId);
+  if (!entries || !retained || retained.window.isDestroyed()) return null;
+
+  entries.forEach(entry => {
+    if (entry !== retained) parkEntry(entry);
+  });
+  pendingHandoff = [retained];
+  return retained.window;
 }
 
 export function concealOverlayHandoff(): void {
@@ -740,7 +770,7 @@ function finishSession(
   }
 
   session.resolve({
-    ...toRegion(display, result),
+    ...toRegion(session, display, result),
     frozen: session.freeze,
     release,
   });
@@ -768,7 +798,7 @@ export function getActiveOverlayWindowAtPoint(
 
   const display = screen.getDisplayNearestPoint(point);
   const entry = session.entries.find(item => item.display.id === display.id);
-  if (!entry || entry.suppressed || entry.window.isDestroyed()) return null;
+  if (!entry || entry.window.isDestroyed()) return null;
 
   return entry.window;
 }
@@ -824,13 +854,15 @@ export function setOverlayAspectRatio(ratio: number | null): void {
 
 export function setOverlayPickTargets(
   pickTargets: OverlayPickTarget[] | null,
-  prompt: string | null
+  prompt: string | null,
+  repeatablePicks: boolean = false
 ): void {
   const session = activeSession;
   if (!session) return;
 
   session.pickTargets = pickTargets;
   session.prompt = prompt;
+  session.repeatablePicks = repeatablePicks;
   session.selection = null;
 
   for (const entry of session.entries) {
@@ -839,12 +871,8 @@ export function setOverlayPickTargets(
     entry.window.webContents.send('area-overlay:set-pick-targets', {
       pickTargets: localPickTargets(session, entry.display),
       prompt,
+      repeatablePicks,
     });
-
-    if (!entry.suppressed) continue;
-
-    entry.suppressed = false;
-    revealOverlay(session, entry.display.id);
   }
 
   syncOverlayWindowRegions(session);
@@ -869,7 +897,7 @@ export function setOverlayVisible(visible: boolean): void {
   session.hidden = !visible;
 
   for (const entry of session.entries) {
-    if (entry.window.isDestroyed() || entry.suppressed) continue;
+    if (entry.window.isDestroyed()) continue;
 
     if (visible) {
       void setOverlayWindowRegion(session, entry).then(() => {
@@ -958,6 +986,9 @@ export async function startOverlaySession(
       displayIdsByWebContents: new Map(),
       freeze,
       interactive: options?.interactive ?? false,
+      autoConfirm: options?.autoConfirm ?? true,
+      repeatablePicks: options?.repeatablePicks ?? false,
+      renderer: options?.renderer ?? 'area-overlay',
       showPrompt: options?.showPrompt ?? true,
       aspectRatio: options?.aspectRatio ?? null,
       toolbar: options?.toolbar ?? null,
@@ -982,7 +1013,6 @@ export async function startOverlaySession(
           window,
           display,
           loaded: pooled.prepared,
-          suppressed: false,
         };
         session.entries.push(entry);
         session.displayIdsByWebContents.set(window.webContents.id, display.id);

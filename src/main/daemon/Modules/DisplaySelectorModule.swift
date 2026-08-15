@@ -28,8 +28,8 @@ class DisplaySelectorModule: Module {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.selector = DisplaySelectorUI(
-                onSelect: { [weak self] displayNumber, screenId in
-                    self?.handleSelection(displayNumber: displayNumber, screenId: screenId)
+                onSelect: { [weak self] displayNumber, screenId, bounds in
+                    self?.handleSelection(displayNumber: displayNumber, screenId: screenId, bounds: bounds)
                 },
                 onCancel: { [weak self] in
                     self?.handleCancellation()
@@ -47,12 +47,18 @@ class DisplaySelectorModule: Module {
         respond(id: requestId, result: ["cancelled": true])
     }
     
-    private func handleSelection(displayNumber: Int, screenId: Int) {
+    private func handleSelection(displayNumber: Int, screenId: Int, bounds: CGRect) {
         guard let requestId = currentRequestId else { return }
         respond(id: requestId, result: [
             "status": "selected",
             "displayNumber": displayNumber,
-            "screenId": screenId
+            "screenId": screenId,
+            "bounds": [
+                "x": Int(bounds.origin.x),
+                "y": Int(bounds.origin.y),
+                "width": Int(bounds.width),
+                "height": Int(bounds.height)
+            ]
         ])
         cleanup()
     }
@@ -84,7 +90,7 @@ class DisplayOverlayView: NSView {
     
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        if isHovered {
+        if !isHovered {
             NSColor.black.withAlphaComponent(0.5).setFill()
             bounds.fill()
         }
@@ -133,10 +139,10 @@ class DisplaySelectorWindow: NSWindow {
 class DisplaySelectorUI {
     private var windows: [DisplaySelectorWindow] = []
     private var screenDisplayNumbers: [NSScreen: Int] = [:]
-    private var onSelect: ((Int, Int) -> Void)?
+    private var onSelect: ((Int, Int, CGRect) -> Void)?
     private var onCancel: (() -> Void)?
-    
-    init(onSelect: @escaping (Int, Int) -> Void, onCancel: @escaping () -> Void) {
+
+    init(onSelect: @escaping (Int, Int, CGRect) -> Void, onCancel: @escaping () -> Void) {
         self.onSelect = onSelect
         self.onCancel = onCancel
     }
@@ -207,9 +213,17 @@ class DisplaySelectorUI {
             let screenId = screen.deviceDescription[
                 NSDeviceDescriptionKey("NSScreenNumber")
             ] as? Int ?? 0
-            
+
+            let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
+            let bounds = CGRect(
+                x: screen.frame.origin.x,
+                y: mainScreenHeight - screen.frame.origin.y - screen.frame.height,
+                width: screen.frame.width,
+                height: screen.frame.height
+            )
+
             overlayView.onSelect = { [weak self] in
-                self?.onSelect?(displayNumber, screenId)
+                self?.onSelect?(displayNumber, screenId, bounds)
             }
             
             overlayView.onCancel = { [weak self] in

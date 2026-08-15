@@ -25,8 +25,8 @@ import * as cloud from '@/main/cloud/index.ts';
 import * as capture from '@/main/capture';
 import * as devices from '@/main/devices';
 import * as onboarding from '@/main/onboarding';
-import * as allInOne from '@/main/capture/all-in-one';
 import { initDock } from '@/main/utils/dock';
+import { initWindowLoad } from '@/main/utils/window-load';
 import { createVideoEditorWindow } from '@/main/capture/video/video-editor';
 import {
   bufferImageFile,
@@ -99,6 +99,7 @@ const initializeModules = async () => {
     console.error('[daemon] Failed to start:', err);
   });
 
+  initWindowLoad();
   settings.init();
   onboarding.init();
   permissions.initPermissionsIPC();
@@ -106,7 +107,6 @@ const initializeModules = async () => {
   devices.init();
   preferences.init();
   cloud.init();
-  allInOne.init();
 
   await onboarding.showOnboardingOrRun(initializeRuntimeModules);
 };

@@ -11,8 +11,6 @@ import {
 import { daemon } from '@/main/daemon';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import { captureAreaToFile } from '@/main/capture/area-overlay';
-import { isMac } from '@/main/utils/platform';
-import { startInteractiveScreencapture } from '@/main/capture/screenshot/screencapture';
 
 let isScanningQRCode = false;
 
@@ -48,38 +46,10 @@ async function captureAndDecodeQRCode(): Promise<void> {
   try {
     let captured = false;
     try {
-      if (!isMac) {
-        try {
-          captured = await captureAreaToFile(tempScreenshotPath);
-        } catch (error) {
-          console.error('QR code capture error:', error);
-          showNotification(
-            'Scan Failed',
-            'Failed to capture the selected area'
-          );
-        }
-      } else {
-        try {
-          const capture = startInteractiveScreencapture([
-            '-i',
-            '-x',
-            '-t',
-            'png',
-            tempScreenshotPath,
-          ]);
-          if (!capture) return;
-
-          const stderr = await capture;
-          if (stderr) {
-            console.log(`Screencapture stderr: ${stderr}`);
-          }
-          captured = fs.existsSync(tempScreenshotPath);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          console.log(`Screencapture error: ${message}`);
-        }
-      }
+      captured = await captureAreaToFile(tempScreenshotPath);
+    } catch (error) {
+      console.error('QR code capture error:', error);
+      showNotification('Scan Failed', 'Failed to capture the selected area');
     } finally {
       if (shouldHideIcons) {
         await showDesktopIcons('capture');
