@@ -21,29 +21,21 @@ export type AllInOneCaptureMode = 'screenshot' | 'record' | 'ocr';
 
 export type AllInOneCaptureTarget = 'area' | 'window' | 'screen';
 
+export type AreaOverlayRenderer = 'area-overlay' | 'scroll-capture-overlay';
+
 export type AreaOverlayToolbarAction =
   | { action: 'close' }
-  | { action: 'screenshot' }
-  | { action: 'record' }
-  | { action: 'ocr' }
   | { action: 'copy-color'; color: string }
   | { action: 'select-capture-mode'; mode: AllInOneCaptureMode }
-  | { action: 'select-capture-target'; target: AllInOneCaptureTarget }
-  | {
-      action: 'select-aspect-ratio';
-      name: string;
-      width: number;
-      height: number;
-    }
-  | { action: 'update-size'; width: number; height: number }
-  | { action: 'size-editor-opened' }
-  | { action: 'size-editor-closed' };
+  | { action: 'select-capture-target'; target: AllInOneCaptureTarget };
 
 export interface AreaOverlayParams {
   sessionId: number;
   displayId: number;
   imageUrl: string | null;
   interactive: boolean;
+  autoConfirm: boolean;
+  repeatablePicks: boolean;
   showPrompt: boolean;
   rect: AreaOverlayRect | null;
   aspectRatio: number | null;
@@ -72,4 +64,5 @@ export interface AreaOverlayToolbarMessage {
 export interface AreaOverlayPickTargetsMessage {
   pickTargets: AreaOverlayPickTarget[] | null;
   prompt: string | null;
+  repeatablePicks: boolean;
 }

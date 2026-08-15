@@ -1,6 +1,7 @@
 import { screen } from 'electron';
 import type { Display, Rectangle } from 'electron';
 import { daemon } from '@/main/daemon';
+import { isWindows } from '@/main/utils/platform';
 
 export interface RegionCaptureOptions {
   cached?: boolean;
@@ -36,14 +37,18 @@ export function captureRegionToFile(
   filePath: string,
   options?: RegionCaptureOptions
 ): Promise<boolean> {
-  return capturePhysicalRegionToFile(
-    screen.dipToScreenRect(null, area),
-    filePath,
-    options
-  );
+  const captureArea = isWindows ? screen.dipToScreenRect(null, area) : area;
+  return capturePhysicalRegionToFile(captureArea, filePath, options);
 }
 
-export function captureFrozenScreenRegionToFile(
+export function captureDisplayToFile(
+  display: Display,
+  filePath: string
+): Promise<boolean> {
+  return captureRegionToFile(display.bounds, filePath);
+}
+
+export function captureFrozenWindowToFile(
   bounds: Rectangle,
   filePath: string,
   windowId: number
@@ -54,14 +59,7 @@ export function captureFrozenScreenRegionToFile(
   });
 }
 
-export function captureDisplayToFile(
-  display: Display,
-  filePath: string
-): Promise<boolean> {
-  return captureRegionToFile(display.bounds, filePath);
-}
-
-export async function captureWindowToFile(
+export async function captureWindowByIdToFile(
   windowId: number,
   filePath: string
 ): Promise<boolean> {

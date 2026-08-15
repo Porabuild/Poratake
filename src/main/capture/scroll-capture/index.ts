@@ -12,12 +12,22 @@ import { generateScreenshotPath } from '@/main/capture/screenshot/utils';
 import { finalizeCapture } from '@/main/capture/screenshot/finalize';
 import {
   startAreaSelection,
-  cancelAreaSelection,
+  confirmAreaSelection,
 } from '@/main/capture/area-selector';
 import {
   cancelOverlaySelection,
   selectAreaWithOverlay,
 } from '@/main/capture/area-overlay';
+import {
+  prewarmScrollCaptureControl,
+  showScrollCaptureOverlay,
+  updateScrollCaptureState,
+  hideScrollCaptureOverlay,
+} from './scroll-capture-window';
+import type {
+  ScrollCaptureAction,
+  ScrollCaptureOverlayState,
+} from '@/types/scroll-capture';
 import type { AreaSelection } from '@/types/area';
 import type { AutoScrollSpeed } from '@/types/settings';
 import { isFeatureSupported } from '@/main/system/capabilities';
@@ -39,6 +49,10 @@ export async function startScrollCapture(): Promise<void> {
 
   if (activeCapture) {
     return activeCapture;
+  }
+
+  if (!isWindows) {
+    prewarmScrollCaptureControl();
   }
 
   const capture = runScrollCapture();
@@ -70,14 +84,26 @@ async function runScrollCapture(): Promise<void> {
   }
 
   return new Promise<void>(resolve => {
+    let resolved = false;
+    let overlayActive = false;
     let areaSelected = false;
-    let captureCompleted = false;
+    let autoScrolling = false;
+    let frameCount = 0;
+    let estimatedHeight = 0;
+    let cursorOutside = false;
+    let preview: string | null = null;
+    let previewWidth: number | null = null;
+    let previewHeight: number | null = null;
     let eventHandler: ((event: string, data: unknown) => void) | null = null;
 
     const cleanup = async () => {
       if (eventHandler) {
         daemon.offEvent(eventHandler);
         eventHandler = null;
+      }
+      if (overlayActive) {
+        hideScrollCaptureOverlay();
+        overlayActive = false;
       }
       if (shouldHideIcons) {
         await showDesktopIcons('capture');
@@ -86,8 +112,8 @@ async function runScrollCapture(): Promise<void> {
     };
 
     const finishCapture = async (outputPath: string) => {
-      if (captureCompleted) return;
-      captureCompleted = true;
+      if (resolved) return;
+      resolved = true;
 
       await cleanup();
       await handleCaptureComplete(outputPath);
@@ -95,14 +121,56 @@ async function runScrollCapture(): Promise<void> {
     };
 
     const cancelCapture = async () => {
-      if (captureCompleted) return;
-      captureCompleted = true;
+      if (resolved) return;
+      resolved = true;
 
       await cleanup();
       resolve();
     };
 
-    cancelActiveCapture = cancelCapture;
+    const pushState = () => {
+      if (!overlayActive) return;
+
+      const state: ScrollCaptureOverlayState = {
+        isAutoScrolling: autoScrolling,
+        cursorOutside,
+        frameCount,
+        estimatedHeight,
+        preview,
+        previewWidth,
+        previewHeight,
+      };
+      updateScrollCaptureState(state);
+    };
+
+    const handleAction = async (action: ScrollCaptureAction) => {
+      try {
+        if (action === 'toggle-auto-scroll') {
+          await daemon.call(
+            'scroll-capture',
+            autoScrolling ? 'stopAutoScroll' : 'startAutoScroll'
+          );
+        } else if (action === 'done') {
+          const outputPath = generateScreenshotPath();
+          const result = await daemon.call<{
+            success: boolean;
+            outputPath: string;
+          }>('scroll-capture', 'finish', { outputPath });
+
+          if (result?.success) {
+            await finishCapture(result.outputPath);
+          } else {
+            await cancelCapture();
+          }
+        } else if (action === 'cancel') {
+          await daemon.call('scroll-capture', 'cancel');
+          await cancelCapture();
+        }
+      } catch (error) {
+        console.error('Scroll capture action failed:', error);
+        await cancelCapture();
+      }
+    };
 
     const startDaemonScroll = async (params: {
       x: number;
@@ -112,44 +180,12 @@ async function runScrollCapture(): Promise<void> {
       displayId?: number;
       scaleFactor?: number;
     }) => {
-      if (captureCompleted) return;
-
-      const outputPath = generateScreenshotPath();
+      if (resolved) return;
 
       const scrollConfig = config.scrollCapture ?? {
         autoScrollSpeed: 'medium' as AutoScrollSpeed,
         maxHeight: 20000,
       };
-
-      eventHandler = async (event: string) => {
-        if (!event.startsWith('scroll-capture:')) return;
-
-        const eventType = event.replace('scroll-capture:', '');
-
-        if (eventType === 'done') {
-          try {
-            const result = await daemon.call<{
-              success: boolean;
-              outputPath: string;
-              width: number;
-              height: number;
-            }>('scroll-capture', 'finish', { outputPath });
-
-            if (result.success) {
-              await finishCapture(result.outputPath);
-            } else {
-              await cancelCapture();
-            }
-          } catch (error) {
-            console.error('Scroll capture finish failed:', error);
-            await cancelCapture();
-          }
-        } else if (eventType === 'cancelled') {
-          await cancelCapture();
-        }
-      };
-
-      daemon.onEvent(eventHandler);
 
       try {
         await daemon.call('scroll-capture', 'start', {
@@ -162,6 +198,59 @@ async function runScrollCapture(): Promise<void> {
         await cancelCapture();
       }
     };
+
+    cancelActiveCapture = cancelCapture;
+
+    eventHandler = async (event: string, data: unknown) => {
+      if (!event.startsWith('scroll-capture:')) return;
+
+      const eventType = event.replace('scroll-capture:', '');
+
+      if (eventType === 'done') {
+        const outputPath = generateScreenshotPath();
+        try {
+          const result = await daemon.call<{
+            success: boolean;
+            outputPath: string;
+          }>('scroll-capture', 'finish', { outputPath });
+          if (result.success) {
+            await finishCapture(result.outputPath);
+          } else {
+            await cancelCapture();
+          }
+        } catch (error) {
+          console.error('Scroll capture finish failed:', error);
+          await cancelCapture();
+        }
+        return;
+      }
+
+      if (eventType === 'cancelled') {
+        await cancelCapture();
+        return;
+      }
+
+      if (!overlayActive) return;
+
+      const payload = (data ?? {}) as Record<string, unknown>;
+
+      if (eventType === 'frame') {
+        frameCount = Number(payload.frameCount ?? frameCount);
+        estimatedHeight = Number(payload.estimatedHeight ?? estimatedHeight);
+        preview = (payload.preview as string) ?? preview;
+        previewWidth = (payload.previewWidth as number) ?? previewWidth;
+        previewHeight = (payload.previewHeight as number) ?? previewHeight;
+        pushState();
+      } else if (eventType === 'auto-scroll') {
+        autoScrolling = Boolean((payload as { scrolling?: boolean }).scrolling);
+        pushState();
+      } else if (eventType === 'cursor') {
+        cursorOutside = Boolean((payload as { outside?: boolean }).outside);
+        pushState();
+      }
+    };
+
+    daemon.onEvent(eventHandler);
 
     if (isWindows) {
       void selectAreaWithOverlay({ freeze: false })
@@ -188,7 +277,6 @@ async function runScrollCapture(): Promise<void> {
     }
 
     const handleAreaSelected = async (selection: AreaSelection) => {
-      if (areaSelected) return;
       if (
         selection.x === undefined ||
         selection.y === undefined ||
@@ -199,7 +287,33 @@ async function runScrollCapture(): Promise<void> {
       }
 
       areaSelected = true;
-      await cancelAreaSelection();
+      const confirmed = await confirmAreaSelection({
+        keepOverlayVisible: true,
+      });
+      if (!confirmed || resolved) {
+        await cancelCapture();
+        return;
+      }
+
+      overlayActive = true;
+      const overlayShown = showScrollCaptureOverlay(
+        {
+          displayId: selection.screenId ?? screen.getPrimaryDisplay().id,
+          area: {
+            x: selection.x,
+            y: selection.y,
+            width: selection.width,
+            height: selection.height,
+            displayId: selection.screenId ?? screen.getPrimaryDisplay().id,
+          },
+        },
+        handleAction
+      );
+      if (!overlayShown) {
+        await cancelCapture();
+        return;
+      }
+      pushState();
 
       await startDaemonScroll({
         x: selection.x,
@@ -212,19 +326,19 @@ async function runScrollCapture(): Promise<void> {
 
     void Promise.resolve(
       startAreaSelection({
+        renderer: 'scroll-capture-overlay',
         onSelected: handleAreaSelected,
         onCancelled: async () => {
-          if (areaSelected) {
+          if (areaSelected || resolved) {
             return;
           }
           await cancelCapture();
         },
         showPrompt: true,
-        style: 'default',
       })
     )
       .then(async selection => {
-        if (!areaSelected && selection === null) {
+        if (!areaSelected && !resolved && selection === null) {
           await cancelCapture();
         }
       })
@@ -241,7 +355,7 @@ async function handleCaptureComplete(outputPath: string): Promise<void> {
     return;
   }
 
-  await finalizeCapture(outputPath);
+  await finalizeCapture(outputPath, null, { silent: true });
 }
 
 export async function cancelScrollCapture(): Promise<void> {

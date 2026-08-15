@@ -15,10 +15,12 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     private var sessionStarted = false
     private var firstFrameTime: CMTime?
     private var lastFrameTime: CMTime = .zero
-    private var pauseStartTime: CMTime?
+    private var lastOriginalTime: CMTime?
+    private var accumulateGapOnNextFrame = false
     private var totalPauseDuration: CMTime = .zero
 
     private(set) var isPaused = false
+    private(set) var isSuspended = false
     private(set) var isRecording = false
     private var outputPath: String?
     private var metadataPath: String?
@@ -28,6 +30,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     private var frameRate: Int = 30
     private var recordingWidth: Int = 1280
     private var recordingHeight: Int = 720
+    private var visibleRanges: [(start: Double, end: Double)] = []
     
     private var isSynced: Bool = false
     private var syncTime: CMTime?
@@ -194,11 +197,15 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
 
         isRecording = true
         isPaused = false
+        isSuspended = false
         sessionStarted = false
         firstFrameTime = nil
-        pauseStartTime = nil
+        lastFrameTime = .zero
+        lastOriginalTime = nil
+        accumulateGapOnNextFrame = false
         totalPauseDuration = .zero
-        
+        visibleRanges = []
+
         isSynced = false
         syncTime = nil
         pendingBuffers = []
@@ -208,7 +215,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     func pause() {
         guard isRecording, !isPaused else { return }
         isPaused = true
-        pauseStartTime = lastFrameTime
+        accumulateGapOnNextFrame = true
     }
 
     func resume() {
@@ -216,11 +223,27 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
         isPaused = false
     }
 
+    func suspend() {
+        guard isRecording, !isSuspended else { return }
+        isSuspended = true
+        accumulateGapOnNextFrame = true
+    }
+
+    func unsuspend() {
+        guard isRecording, isSuspended else { return }
+        isSuspended = false
+    }
+
+    func setVisibleRanges(_ ranges: [(start: Double, end: Double)]) {
+        visibleRanges = ranges
+    }
+
     func stop() -> (videoPath: String?, metadataPath: String?)? {
         guard isRecording else { return nil }
 
         isRecording = false
         isPaused = false
+        isSuspended = false
 
         if let session = captureSession {
             session.stopRunning()
@@ -261,6 +284,20 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
 
             let videoFilename = (videoPath as NSString).lastPathComponent
 
+            var rangesJson = ""
+            if !visibleRanges.isEmpty {
+                let spans = visibleRanges
+                    .map { range in
+                        String(
+                            format: "{\"start\": %.3f, \"end\": %.3f}",
+                            range.start,
+                            range.end
+                        )
+                    }
+                    .joined(separator: ", ")
+                rangesJson = ",\n  \"visibleRanges\": [\(spans)]"
+            }
+
             let metadata = """
             {
               "videoFile": "\(videoFilename)",
@@ -273,7 +310,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
                 "startTime": "\(startTimeStr)",
                 "frameRate": \(frameRate),
                 "syncOffsetMs": \(String(format: "%.1f", syncOffsetMs)),
-                "synced": \(isSynced)
+                "synced": \(isSynced)\(rangesJson)
               }
             }
             """
@@ -291,6 +328,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     func abort() {
         isRecording = false
         isPaused = false
+        isSuspended = false
 
         if let session = captureSession {
             session.stopRunning()
@@ -335,7 +373,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        guard isRecording, !isPaused else { return }
+        guard isRecording, !isPaused, !isSuspended else { return }
 
         let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
@@ -365,11 +403,14 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
 
         guard let firstTime = firstFrameTime else { return }
 
-        if let pauseStart = pauseStartTime {
-            let pauseDuration = CMTimeSubtract(originalTime, pauseStart)
-            totalPauseDuration = CMTimeAdd(totalPauseDuration, pauseDuration)
-            pauseStartTime = nil
+        if accumulateGapOnNextFrame, let lastOriginal = lastOriginalTime {
+            let pauseDuration = CMTimeSubtract(originalTime, lastOriginal)
+            if CMTimeCompare(pauseDuration, .zero) > 0 {
+                totalPauseDuration = CMTimeAdd(totalPauseDuration, pauseDuration)
+            }
+            accumulateGapOnNextFrame = false
         }
+        lastOriginalTime = originalTime
 
         var presentationTime = CMTimeSubtract(originalTime, firstTime)
         presentationTime = CMTimeSubtract(presentationTime, totalPauseDuration)

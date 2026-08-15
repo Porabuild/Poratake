@@ -4,6 +4,7 @@ import fs from 'fs';
 import { isDev, devServerUrl } from '@/main/utils/env';
 import { isRecordingProject, getRecordingVideoPath } from './recording-project';
 import { registerDockWindow } from '@/main/utils/dock';
+import { sendWindowLoad } from '@/main/utils/window-load';
 import {
   titleBarWindowOptions,
   trackTitleBarTheme,
@@ -127,7 +128,7 @@ export function createVideoEditorWindow(
   newWindow.webContents.on('did-finish-load', () => {
     const currentData = videoEditorWindows.get(webContentsId);
     if (!currentData) return;
-    newWindow.webContents.send('load', {
+    sendWindowLoad(newWindow.webContents, {
       type: 'video-editor',
       params: {
         filePath: currentData.filePath,

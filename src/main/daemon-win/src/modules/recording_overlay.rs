@@ -44,6 +44,7 @@ struct WindowHighlight {
     target: HWND,
     frame: HWND,
     hook: HWINEVENTHOOK,
+    insert_after: HWND,
 }
 
 thread_local! {
@@ -174,7 +175,7 @@ fn is_trackable(window: HWND) -> bool {
     }
 }
 
-fn place_frame(target: HWND, frame: HWND) {
+fn place_frame(target: HWND, frame: HWND, insert_after: HWND) {
     let bounds = window_bounds(target).filter(|_| is_trackable(target));
     let Some(bounds) = bounds else {
         unsafe {
@@ -187,11 +188,18 @@ fn place_frame(target: HWND, frame: HWND) {
     let rect = highlight_frame(bounds, metrics.inset);
     let width = rect_width(&rect).max(0);
     let height = rect_height(&rect).max(0);
+    let insert_after = unsafe {
+        if IsWindow(Some(insert_after)).as_bool() {
+            insert_after
+        } else {
+            HWND_TOPMOST
+        }
+    };
 
     unsafe {
         let _ = SetWindowPos(
             frame,
-            Some(HWND_TOPMOST),
+            Some(insert_after),
             rect.left,
             rect.top,
             width,
@@ -224,7 +232,7 @@ unsafe extern "system" fn highlight_event(
         if highlight.target != window {
             return;
         }
-        place_frame(highlight.target, highlight.frame);
+        place_frame(highlight.target, highlight.frame, highlight.insert_after);
     });
 }
 
@@ -246,7 +254,11 @@ fn create_frame_window() -> Result<HWND, OverlayWindowError> {
     Ok(window)
 }
 
-fn show_window_highlight(target: HWND, color: COLORREF) -> Result<bool, OverlayWindowError> {
+fn show_window_highlight(
+    target: HWND,
+    color: COLORREF,
+    insert_after: Option<HWND>,
+) -> Result<bool, OverlayWindowError> {
     teardown();
     HIGHLIGHT_COLOR.with(|current| *current.borrow_mut() = color);
     if !is_trackable(target) {
@@ -255,6 +267,7 @@ fn show_window_highlight(target: HWND, color: COLORREF) -> Result<bool, OverlayW
     ensure_window_class(HIGHLIGHT_CLASS_NAME, Some(highlight_wndproc), None);
 
     let frame = create_frame_window()?;
+    let insert_after = insert_after.unwrap_or(HWND_TOPMOST);
 
     let mut process = 0u32;
     let thread = unsafe { GetWindowThreadProcessId(target, Some(&mut process)) };
@@ -272,12 +285,13 @@ fn show_window_highlight(target: HWND, color: COLORREF) -> Result<bool, OverlayW
         )
     };
 
-    place_frame(target, frame);
+    place_frame(target, frame, insert_after);
     HIGHLIGHT.with(|state| {
         *state.borrow_mut() = Some(WindowHighlight {
             target,
             frame,
             hook,
+            insert_after,
         });
     });
     Ok(true)
@@ -507,11 +521,13 @@ impl Module for RecordingOverlayModule {
                 };
 
                 let color = parse_color(param_str(&request.params, "color"));
+                let insert_after = param_i64(&request.params, "belowWindowId")
+                    .map(|handle| HWND(handle as isize as *mut c_void));
                 let request_id = request.id.clone();
                 let visible = self.visible.clone();
                 run_on_ui(move || {
                     let target = HWND(handle as isize as *mut c_void);
-                    match show_window_highlight(target, color) {
+                    match show_window_highlight(target, color, insert_after) {
                         Ok(shown) => {
                             visible.store(shown, Ordering::Release);
                             respond_success(&request_id, json!({ "visible": shown }));

@@ -17,6 +17,7 @@ import type {
   AreaOverlayToolbarAction,
   AreaOverlayToolbarMessage,
 } from '@/types/area-overlay';
+import { isMacPlatform } from '@/renderer/utils/platform';
 
 export default function AreaOverlayWindow({
   params,
@@ -112,9 +113,10 @@ export default function AreaOverlayWindow({
     initialRect: params.rect,
     initialAspectRatio: params.aspectRatio,
     pickTargets: params.pickTargets,
+    repeatablePicks: params.repeatablePicks,
     onSelected: (selection, pickId) =>
       send(
-        params.interactive ? 'area-overlay:selected' : 'area-overlay:confirm',
+        params.autoConfirm ? 'area-overlay:confirm' : 'area-overlay:selected',
         selection,
         pickId
       ),
@@ -127,8 +129,7 @@ export default function AreaOverlayWindow({
   });
 
   useEffect(() => {
-    document.body.classList.add('window-transparent');
-    return () => document.body.classList.remove('window-transparent');
+    (document.activeElement as HTMLElement | null)?.blur();
   }, []);
 
   useEffect(() => {
@@ -164,7 +165,9 @@ export default function AreaOverlayWindow({
           height: visibleRect.height + 2,
         }
       : visibleRect;
-  const scrimRect = picking ? hovered : selectionScrimRect;
+  const scrimRect = picking
+    ? (hovered ?? selectionScrimRect)
+    : selectionScrimRect;
 
   return (
     <div
@@ -207,7 +210,13 @@ export default function AreaOverlayWindow({
       !handedOff ? (
         <div
           className={`pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm text-white shadow-lg ${
-            toolbar ? 'top-24' : 'top-8'
+            toolbar
+              ? isMacPlatform()
+                ? 'top-28'
+                : 'top-24'
+              : isMacPlatform()
+                ? 'top-12'
+                : 'top-8'
           }`}
         >
           {picking

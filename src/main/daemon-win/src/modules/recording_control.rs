@@ -1190,6 +1190,7 @@ impl Module for RecordingControlModule {
                 }
                 Reply::Now(Ok(Some(json!({ "updated": true }))))
             }
+            "listIOSDevices" => Reply::Now(Ok(Some(json!({ "devices": [] })))),
             "status" => {
                 let model = self
                     .model

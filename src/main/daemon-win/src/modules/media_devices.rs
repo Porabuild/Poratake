@@ -5,7 +5,7 @@ use super::recording_audio::{
 use crate::com::retain_process_mta;
 use crate::protocol::{param_str, send_event, Request};
 use crate::router::{method_not_found, Module, Reply};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -261,14 +261,34 @@ impl Module for MediaDevicesModule {
     fn handle(&mut self, request: &Request) -> Reply {
         match request.method.as_str() {
             "list" => {
-                let microphones = enumerate_microphones().unwrap_or_default();
-                let cameras = enumerate_cameras().unwrap_or_default();
-                Reply::Now(Ok(Some(json!({
-                    "microphones": devices_json(&microphones),
-                    "cameras": devices_json(&cameras),
-                    "defaultMicrophoneId": default_microphone_id(),
-                    "defaultCameraId": cameras.first().map(|device| device.id.clone()),
-                }))))
+                let (wants_microphones, wants_cameras) = list_kinds(request);
+                let mut result = serde_json::Map::new();
+                if wants_microphones {
+                    let microphones = enumerate_microphones().unwrap_or_default();
+                    result.insert(
+                        "microphones".to_string(),
+                        json!(devices_json(&microphones)),
+                    );
+                    if let Some(default_microphone_id) = default_microphone_id() {
+                        result.insert(
+                            "defaultMicrophoneId".to_string(),
+                            json!(default_microphone_id),
+                        );
+                    }
+                }
+                if wants_cameras {
+                    let cameras = enumerate_cameras().unwrap_or_default();
+                    result.insert("cameras".to_string(), json!(devices_json(&cameras)));
+                    if let Some(default_camera_id) =
+                        cameras.first().map(|device| device.id.clone())
+                    {
+                        result.insert(
+                            "defaultCameraId".to_string(),
+                            json!(default_camera_id),
+                        );
+                    }
+                }
+                Reply::Now(Ok(Some(Value::Object(result))))
             }
             "startMicTest" => {
                 let device_id = param_str(&request.params, "deviceId").map(str::to_owned);
@@ -292,6 +312,30 @@ fn devices_json(devices: &[MediaDevice]) -> Vec<serde_json::Value> {
         .iter()
         .map(|device| json!({ "id": device.id, "label": device.label }))
         .collect()
+}
+
+fn list_kinds(request: &Request) -> (bool, bool) {
+    let Some(values) = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("kinds"))
+        .and_then(|value| value.as_array())
+    else {
+        return (true, true);
+    };
+
+    let names: Vec<&str> = values
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    if names.is_empty() {
+        return (true, true);
+    }
+
+    (
+        names.iter().any(|name| *name == "microphone"),
+        names.iter().any(|name| *name == "camera"),
+    )
 }
 
 fn default_microphone_id() -> Option<String> {

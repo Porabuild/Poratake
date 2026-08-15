@@ -204,6 +204,9 @@ function getRuntimePlatform(): NodeJS.Platform | undefined {
 export const DEFAULT_GLOBAL_SHORTCUT_MODIFIERS =
   getRuntimePlatform() === 'win32' ? 'Alt+Shift' : 'CommandOrControl+Shift';
 
+export const DEFAULT_ALL_IN_ONE_SHORTCUT =
+  getRuntimePlatform() === 'win32' ? 'Alt+Shift+S' : 'CommandOrControl+Shift+S';
+
 export interface EditorActionShortcuts {
   uploadToCloud: string;
 }
@@ -414,8 +417,8 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
     theme: 'default',
   },
   general: {
-    startOnLogin: false,
-    playSoundOnScreenshot: true,
+    startOnLogin: true,
+    playSoundOnScreenshot: false,
     hideMenuBarIcon: false,
     showDeletionNotifications: true,
   },
@@ -446,7 +449,7 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
       window: '',
     },
     history: '',
-    allInOne: 'Alt+Shift+S',
+    allInOne: DEFAULT_ALL_IN_ONE_SHORTCUT,
     openInEditor: '',
     clipboardInEditor: '',
     editor: {

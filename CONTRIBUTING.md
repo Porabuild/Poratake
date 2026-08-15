@@ -47,6 +47,16 @@ bun run dev
 
 Rebuild the daemon whenever you change anything under `src/main/daemon/` on macOS or `src/main/daemon-win/` on Windows. Use `bun run build-daemon-win` for the Windows daemon.
 
+### Testing auto-update in dev
+
+electron-updater does not run in dev mode, so the in-app updater shows no updates by default. To simulate one, start dev with a fake newer version (and optional release notes):
+
+```bash
+PORATAKE_DEV_UPDATE_VERSION=99.9.9 PORATAKE_DEV_UPDATE_NOTES="Test notes" bun run dev
+```
+
+The update UI then reports that version as ready to install. Real update checks only run in packaged macOS builds against the GitHub release feed.
+
 ## Before You Open a Pull Request
 
 ```bash

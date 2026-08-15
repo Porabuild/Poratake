@@ -27,9 +27,11 @@ export async function freezeScreen(
   }
 
   try {
-    await daemon.call('freeze-screen', 'freeze', { watchSpaceKey });
-    isFrozen = true;
-    return true;
+    const result = (await daemon.call('freeze-screen', 'freeze', {
+      watchSpaceKey,
+    })) as { frozen?: boolean } | undefined;
+    isFrozen = result?.frozen ?? true;
+    return isFrozen;
   } catch (error) {
     console.error('Failed to freeze screen:', error);
     return false;

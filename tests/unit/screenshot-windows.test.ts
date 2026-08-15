@@ -10,10 +10,7 @@ const mockGetAllDisplays = vi.fn();
 const mockAddToHistory = vi.fn();
 const mockSelectDisplay = vi.fn();
 const mockDisplayFromSelection = vi.fn();
-const mockSelectWindow = vi.fn();
 const mockCaptureDisplayToFile = vi.fn();
-const mockCaptureFrozenScreenRegionToFile = vi.fn();
-const mockCaptureWindowToFile = vi.fn();
 const mockGetCursorScreenPoint = vi.fn();
 const mockGetDisplayNearestPoint = vi.fn();
 const mockCaptureAreaToFile = vi.fn();
@@ -123,20 +120,15 @@ vi.mock('@/main/capture/display-selector', () => ({
   killDisplaySelector: vi.fn(),
 }));
 
-vi.mock('@/main/capture/window-selector', () => ({
-  selectWindow: (...a: unknown[]) => mockSelectWindow(...a),
-  killWindowSelector: vi.fn(),
-}));
-
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureDisplayToFile: (...a: unknown[]) => mockCaptureDisplayToFile(...a),
-  captureFrozenScreenRegionToFile: (...a: unknown[]) =>
-    mockCaptureFrozenScreenRegionToFile(...a),
-  captureWindowToFile: (...a: unknown[]) => mockCaptureWindowToFile(...a),
 }));
+
+const mockCaptureWindowToFile = vi.fn();
 
 vi.mock('@/main/capture/area-overlay', () => ({
   captureAreaToFile: (...a: unknown[]) => mockCaptureAreaToFile(...a),
+  captureWindowToFile: (...a: unknown[]) => mockCaptureWindowToFile(...a),
   selectAreaWithOverlay: vi.fn(),
 }));
 
@@ -160,7 +152,6 @@ describe('screenshot on Windows', () => {
     mockShowDesktopIcons.mockReset();
     mockDesktopIconsSupported.mockReset();
     mockCaptureDisplayToFile.mockReset();
-    mockCaptureFrozenScreenRegionToFile.mockReset();
     mockCaptureWindowToFile.mockReset();
     mockCaptureAreaToFile.mockReset();
     mockPrepareCapturePreview.mockReset();
@@ -184,7 +175,6 @@ describe('screenshot on Windows', () => {
     });
     mockDesktopIconsSupported.mockReturnValue(false);
     mockCaptureDisplayToFile.mockResolvedValue(true);
-    mockCaptureFrozenScreenRegionToFile.mockResolvedValue(true);
     mockCaptureWindowToFile.mockResolvedValue(true);
     mockCaptureAreaToFile.mockResolvedValue(true);
     mockPrepareCapturePreview.mockReturnValue({
@@ -420,114 +410,23 @@ describe('screenshot on Windows', () => {
   });
 
   describe('window mode', () => {
-    it('captures the selected window natively', async () => {
-      mockSelectWindow.mockResolvedValue({
-        status: 'selected',
-        windowId: 264610,
-        windowTitle: 'Notepad',
-        ownerName: 'notepad',
-        ownerPid: 42,
-        bounds: { x: 10, y: 20, width: 800, height: 600 },
-      });
-
+    it('captures the picked window through the overlay', async () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('window');
 
-      expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
-        264610,
-        expect.any(String)
-      );
+      expect(mockCaptureWindowToFile).toHaveBeenCalledWith(expect.any(String));
       expect(mockClipboardWriteImage).toHaveBeenCalled();
     });
 
-    it('does nothing when window selection is cancelled', async () => {
-      mockSelectWindow.mockResolvedValue({ status: 'cancelled' });
+    it('does nothing when the window capture is cancelled', async () => {
+      mockCaptureWindowToFile.mockResolvedValue(false);
+      vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('window');
 
-      expect(mockCaptureWindowToFile).not.toHaveBeenCalled();
-    });
-
-    it('uses the freeze screen setting for window selection', async () => {
-      mockGetConfig.mockReturnValue({
-        general: { playSoundOnScreenshot: false },
-        screenshot: {
-          captureToClipboard: true,
-          hideDesktopIcons: false,
-          freezeScreen: true,
-        },
-      });
-      mockSelectWindow.mockResolvedValue({ status: 'cancelled' });
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('window');
-
-      expect(mockFreezeScreen).toHaveBeenCalledWith(true);
-      expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
-    });
-
-    it('crops a frozen window from the retained desktop snapshot', async () => {
-      mockGetConfig.mockReturnValue({
-        general: { playSoundOnScreenshot: false },
-        screenshot: {
-          captureToClipboard: true,
-          hideDesktopIcons: false,
-          freezeScreen: true,
-        },
-      });
-      mockSelectWindow.mockResolvedValue({
-        status: 'selected',
-        windowId: 264610,
-        bounds: { x: 200, y: 100, width: 800, height: 600 },
-      });
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('window');
-
-      expect(mockCaptureFrozenScreenRegionToFile).toHaveBeenCalledWith(
-        { x: 200, y: 100, width: 800, height: 600 },
-        expect.any(String),
-        264610
-      );
-      expect(mockCaptureWindowToFile).not.toHaveBeenCalled();
-      expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
-    });
-
-    it('falls back to live window capture when freezing fails', async () => {
-      mockGetConfig.mockReturnValue({
-        general: { playSoundOnScreenshot: false },
-        screenshot: {
-          captureToClipboard: true,
-          hideDesktopIcons: false,
-          freezeScreen: true,
-        },
-      });
-      mockFreezeScreen.mockResolvedValue(false);
-      mockSelectWindow.mockResolvedValue({
-        status: 'selected',
-        windowId: 264610,
-        bounds: { x: 200, y: 100, width: 800, height: 600 },
-      });
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('window');
-
-      expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
-        264610,
-        expect.any(String)
-      );
-      expect(mockCaptureFrozenScreenRegionToFile).not.toHaveBeenCalled();
-      expect(mockReleaseScreen).not.toHaveBeenCalled();
-    });
-
-    it('handles selector errors gracefully', async () => {
-      mockSelectWindow.mockRejectedValue(new Error('NO_WINDOWS'));
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await expect(screenshot('window')).resolves.toBeUndefined();
-
-      expect(mockCaptureWindowToFile).not.toHaveBeenCalled();
+      expect(mockClipboardWriteImage).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
     });
   });
 });

@@ -18,6 +18,11 @@ const mockGetDisplayMatching = vi.fn();
 const mockSelectAreaWithOverlay = vi.fn();
 const mockCancelOverlaySelection = vi.fn();
 const mockReleaseSelection = vi.fn();
+const mockConfirmAreaSelection = vi.fn();
+const mockPrewarmScrollCaptureControl = vi.fn();
+const mockShowScrollCaptureOverlay = vi.fn();
+const mockUpdateScrollCaptureState = vi.fn();
+const mockHideScrollCaptureOverlay = vi.fn();
 
 vi.mock('electron', () => ({
   clipboard: { writeImage: (...a: unknown[]) => mockClipboardWriteImage(...a) },
@@ -25,6 +30,8 @@ vi.mock('electron', () => ({
   screen: {
     dipToScreenRect: (...a: unknown[]) => mockDipToScreenRect(...a),
     getDisplayMatching: (...a: unknown[]) => mockGetDisplayMatching(...a),
+    getPrimaryDisplay: () => ({ id: 1 }),
+    getAllDisplays: () => [{ id: 1 }],
   },
 }));
 
@@ -76,12 +83,23 @@ vi.mock('@/main/capture/screenshot/open-editor', () => ({
 
 vi.mock('@/main/capture/area-selector', () => ({
   startAreaSelection: vi.fn(),
-  cancelAreaSelection: vi.fn(),
+  confirmAreaSelection: (...args: unknown[]) =>
+    mockConfirmAreaSelection(...args),
 }));
 
 vi.mock('@/main/capture/area-overlay', () => ({
   cancelOverlaySelection: (...a: unknown[]) => mockCancelOverlaySelection(...a),
   selectAreaWithOverlay: (...a: unknown[]) => mockSelectAreaWithOverlay(...a),
+}));
+
+vi.mock('@/main/capture/scroll-capture/scroll-capture-window', () => ({
+  prewarmScrollCaptureControl: () => mockPrewarmScrollCaptureControl(),
+  showScrollCaptureOverlay: (...a: unknown[]) =>
+    mockShowScrollCaptureOverlay(...a),
+  updateScrollCaptureState: (...a: unknown[]) =>
+    mockUpdateScrollCaptureState(...a),
+  hideScrollCaptureOverlay: (...a: unknown[]) =>
+    mockHideScrollCaptureOverlay(...a),
 }));
 
 describe('scroll-capture', () => {
@@ -98,6 +116,8 @@ describe('scroll-capture', () => {
     mockDipToScreenRect.mockImplementation((_window, bounds) => bounds);
     mockGetDisplayMatching.mockReturnValue({ scaleFactor: 1 });
     mockReleaseSelection.mockResolvedValue(undefined);
+    mockConfirmAreaSelection.mockResolvedValue({ status: 'confirmed' });
+    mockShowScrollCaptureOverlay.mockReturnValue(true);
   });
 
   describe('cancelScrollCapture', () => {
@@ -212,13 +232,12 @@ describe('scroll-capture', () => {
       await expect(startScrollCapture()).resolves.toBeUndefined();
     });
 
-    it('keeps the session active after internal selector cancellation', async () => {
+    it('keeps the session active after handing off the selector overlay', async () => {
       const daemonModule = await import('@/main/daemon');
       const areaSelector = await import('@/main/capture/area-selector');
       let options:
         | {
             onSelected: (selection: unknown) => Promise<void>;
-            onCancelled: () => Promise<void>;
           }
         | undefined;
       let resolveSelector: ((selection: null) => void) | undefined;
@@ -231,12 +250,10 @@ describe('scroll-capture', () => {
           resolveSelector = resolve;
         });
       }) as never);
-      vi.mocked(areaSelector.cancelAreaSelection).mockImplementation(
-        (async () => {
-          await options?.onCancelled();
-          resolveSelector?.(null);
-        }) as never
-      );
+      mockConfirmAreaSelection.mockImplementationOnce(async () => {
+        resolveSelector?.(null);
+        return { status: 'confirmed' };
+      });
       vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
         daemonHandler = handler as typeof daemonHandler;
       }) as never);
@@ -282,6 +299,7 @@ describe('scroll-capture', () => {
         await import('@/main/capture/scroll-capture');
       await startScrollCapture();
 
+      expect(mockPrewarmScrollCaptureControl).toHaveBeenCalledTimes(1);
       expect(mockHideDesktopIcons).toHaveBeenCalledWith('capture');
       expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
       expect(mockDaemonCall).not.toHaveBeenCalledWith(
@@ -297,7 +315,6 @@ describe('scroll-capture', () => {
       let options:
         | {
             onSelected: (selection: unknown) => Promise<void>;
-            onCancelled: () => Promise<void>;
           }
         | undefined;
       let resolveSelector: ((selection: null) => void) | undefined;
@@ -310,12 +327,10 @@ describe('scroll-capture', () => {
           resolveSelector = resolve;
         });
       }) as never);
-      vi.mocked(areaSelector.cancelAreaSelection).mockImplementation(
-        (async () => {
-          await options?.onCancelled();
-          resolveSelector?.(null);
-        }) as never
-      );
+      mockConfirmAreaSelection.mockImplementationOnce(async () => {
+        resolveSelector?.(null);
+        return { status: 'confirmed' };
+      });
       vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
         daemonHandler = handler as typeof daemonHandler;
       }) as never);
@@ -393,6 +408,12 @@ describe('scroll-capture', () => {
           height: 100,
           displayId: 7,
         })
+      );
+      expect(areaSelector.startAreaSelection).toHaveBeenCalledWith(
+        expect.objectContaining({ renderer: 'scroll-capture-overlay' })
+      );
+      expect(mockConfirmAreaSelection.mock.invocationCallOrder[0]).toBeLessThan(
+        mockShowScrollCaptureOverlay.mock.invocationCallOrder[0]
       );
     });
 

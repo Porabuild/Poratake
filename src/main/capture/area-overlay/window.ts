@@ -19,6 +19,7 @@ export function createOverlayWindow(display: Display): BrowserWindow {
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
+    hiddenInMissionControl: true,
     alwaysOnTop: true,
     show: false,
     opacity: 0,
@@ -37,6 +38,10 @@ export function createOverlayWindow(display: Display): BrowserWindow {
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.setBounds(display.bounds);
   overlayWindow.setIgnoreMouseEvents(true);
+  overlayWindow.setContentProtection(true);
+  if (process.platform === 'darwin') {
+    overlayWindow.excludedFromShownWindowsMenu = true;
+  }
 
   if (devServerUrl) {
     const url = new URL(devServerUrl);

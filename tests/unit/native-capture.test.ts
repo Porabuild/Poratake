@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockDaemonCall = vi.fn();
 const mockDipToScreenRect = vi.fn();
+const mockPlatform = vi.hoisted(() => ({ isWindows: false }));
+
+vi.mock('@/main/utils/platform', () => mockPlatform);
 
 vi.mock('@/main/daemon', () => ({
   daemon: {
@@ -19,6 +22,7 @@ describe('native-capture', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    mockPlatform.isWindows = false;
     mockDaemonCall.mockResolvedValue({ path: '/tmp/shot.png' });
     mockDipToScreenRect.mockImplementation(
       (_window: unknown, rect: Record<string, number>) => ({
@@ -30,7 +34,8 @@ describe('native-capture', () => {
     );
   });
 
-  it('converts the requested area to physical pixels', async () => {
+  it('converts the requested area to physical pixels on Windows', async () => {
+    mockPlatform.isWindows = true;
     const { captureRegionToFile } =
       await import('@/main/capture/screenshot/native-capture');
 
@@ -68,13 +73,13 @@ describe('native-capture', () => {
   });
 
   it('crops physical window bounds from the retained frozen frame', async () => {
-    const { captureFrozenScreenRegionToFile } =
+    const { captureRegionToFile } =
       await import('@/main/capture/screenshot/native-capture');
 
-    await captureFrozenScreenRegionToFile(
+    await captureRegionToFile(
       { x: 200, y: 100, width: 800, height: 600 },
       '/tmp/window.png',
-      264610
+      { cached: true, windowId: 264610 }
     );
 
     expect(mockDipToScreenRect).not.toHaveBeenCalled();
@@ -90,6 +95,7 @@ describe('native-capture', () => {
   });
 
   it('captures a display through its bounds', async () => {
+    mockPlatform.isWindows = true;
     const { captureDisplayToFile } =
       await import('@/main/capture/screenshot/native-capture');
 
@@ -106,10 +112,10 @@ describe('native-capture', () => {
   });
 
   it('captures a window without converting coordinates', async () => {
-    const { captureWindowToFile } =
+    const { captureWindowByIdToFile } =
       await import('@/main/capture/screenshot/native-capture');
 
-    const captured = await captureWindowToFile(264610, '/tmp/window.png');
+    const captured = await captureWindowByIdToFile(264610, '/tmp/window.png');
 
     expect(captured).toBe(true);
     expect(mockDipToScreenRect).not.toHaveBeenCalled();
@@ -123,14 +129,37 @@ describe('native-capture', () => {
     );
   });
 
+  it('crops native window bounds from all retained displays', async () => {
+    const { captureFrozenWindowToFile } =
+      await import('@/main/capture/screenshot/native-capture');
+
+    const captured = await captureFrozenWindowToFile(
+      { x: -200, y: 100, width: 800, height: 600 },
+      '/tmp/window.png',
+      264610
+    );
+
+    expect(captured).toBe(true);
+    expect(mockDipToScreenRect).not.toHaveBeenCalled();
+    expect(mockDaemonCall).toHaveBeenCalledWith('screenshot', 'capture-area', {
+      x: -200,
+      y: 100,
+      width: 800,
+      height: 600,
+      path: '/tmp/window.png',
+      cached: true,
+      windowId: 264610,
+    });
+  });
+
   it('reports failure when the daemon rejects', async () => {
     mockDaemonCall.mockRejectedValue(new Error('CAPTURE_FAILED'));
-    const { captureRegionToFile, captureWindowToFile } =
+    const { captureRegionToFile, captureWindowByIdToFile } =
       await import('@/main/capture/screenshot/native-capture');
 
     await expect(
       captureRegionToFile({ x: 0, y: 0, width: 10, height: 10 }, '/tmp/a.png')
     ).resolves.toBe(false);
-    await expect(captureWindowToFile(1, '/tmp/b.png')).resolves.toBe(false);
+    await expect(captureWindowByIdToFile(1, '/tmp/b.png')).resolves.toBe(false);
   });
 });

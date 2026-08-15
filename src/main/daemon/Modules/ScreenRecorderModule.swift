@@ -38,12 +38,12 @@ class ScreenRecorderModule: Module {
             handleStatus(requestId: requestId)
         case "setMicMuted":
             handleSetMicMuted(params: params, requestId: requestId)
-        case "setMicrophone", "setSystemAudio", "setCamera":
-            respondError(
-                id: requestId,
-                code: "UNSUPPORTED",
-                message: "\(method) is not supported on macOS yet"
-            )
+        case "setMicrophone":
+            handleSetMicrophone(params: params, requestId: requestId)
+        case "setSystemAudio":
+            handleSetSystemAudio(params: params, requestId: requestId)
+        case "setCamera":
+            handleSetCamera(params: params, requestId: requestId)
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -238,5 +238,80 @@ class ScreenRecorderModule: Module {
             "success": true,
             "muted": muted
         ])
+    }
+
+    private func guardLiveDeviceChange(requestId: String) -> Bool {
+        if isIOSRecording {
+            respondError(
+                id: requestId,
+                code: "UNSUPPORTED",
+                message: "Device changes are not supported while recording an iOS device"
+            )
+            return false
+        }
+        return true
+    }
+
+    private func handleSetMicrophone(params: [String: AnyCodable]?, requestId: String) {
+        guard guardLiveDeviceChange(requestId: requestId) else { return }
+        let enabled = params?["enabled"]?.bool() ?? false
+        let deviceId = params?["deviceId"]?.string()
+        let deviceName = params?["deviceName"]?.string()
+
+        Task { @MainActor in
+            do {
+                try screenRecorder.setMicrophone(
+                    enabled: enabled,
+                    deviceId: deviceId,
+                    deviceName: deviceName
+                )
+                respond(id: requestId, result: [
+                    "success": true,
+                    "enabled": enabled
+                ])
+            } catch let error as RecorderError {
+                respondError(id: requestId, code: error.code, message: error.localizedDescription)
+            } catch {
+                respondError(id: requestId, code: "SET_MICROPHONE_FAILED", message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func handleSetSystemAudio(params: [String: AnyCodable]?, requestId: String) {
+        guard guardLiveDeviceChange(requestId: requestId) else { return }
+        let enabled = params?["enabled"]?.bool() ?? false
+
+        Task { @MainActor in
+            do {
+                try screenRecorder.setSystemAudio(enabled: enabled)
+                respond(id: requestId, result: [
+                    "success": true,
+                    "enabled": enabled
+                ])
+            } catch let error as RecorderError {
+                respondError(id: requestId, code: error.code, message: error.localizedDescription)
+            } catch {
+                respondError(id: requestId, code: "SET_SYSTEM_AUDIO_FAILED", message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func handleSetCamera(params: [String: AnyCodable]?, requestId: String) {
+        guard guardLiveDeviceChange(requestId: requestId) else { return }
+        let enabled = params?["enabled"]?.bool() ?? false
+
+        Task { @MainActor in
+            do {
+                try screenRecorder.setCamera(enabled: enabled)
+                respond(id: requestId, result: [
+                    "success": true,
+                    "enabled": enabled
+                ])
+            } catch let error as RecorderError {
+                respondError(id: requestId, code: error.code, message: error.localizedDescription)
+            } catch {
+                respondError(id: requestId, code: "SET_CAMERA_FAILED", message: error.localizedDescription)
+            }
+        }
     }
 }

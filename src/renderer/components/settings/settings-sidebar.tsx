@@ -2,6 +2,7 @@ import { useRef, useEffect } from 'react';
 import { Search, X } from 'lucide-react';
 import { Separator } from '@/renderer/components/ui/separator';
 import { cn } from '@/renderer/lib/utils';
+import { isMacPlatform } from '@/renderer/utils/platform';
 import { SEARCHABLE_CATEGORIES, SPECIAL_CATEGORIES } from './settings-registry';
 
 interface SettingsSidebarProps {
@@ -33,7 +34,10 @@ export default function SettingsSidebar({
   return (
     <aside className="poratake-settings-sidebar flex h-full w-60 shrink-0 flex-col">
       <div
-        className="flex h-10 shrink-0 items-center px-4"
+        className={cn(
+          'flex h-10 shrink-0 items-center px-4',
+          isMacPlatform() && 'pl-20'
+        )}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <p className="text-muted-foreground text-xs font-semibold tracking-[0.12em]">

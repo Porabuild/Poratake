@@ -18,7 +18,9 @@ class MockBrowserWindow {
       this.webContentsHandlers[event] ??= [];
       this.webContentsHandlers[event].push(cb);
     }),
+    once: vi.fn(),
     send: vi.fn(),
+    id: 1,
   };
 
   focus = vi.fn();
@@ -86,6 +88,11 @@ vi.mock('@/main/settings', () => ({
   needsOnboarding: () => mockNeedsOnboarding(),
 }));
 
+const mockOpenKeyboardShortcutPreferences = vi.fn();
+vi.mock('@/main/system/permissions', () => ({
+  openKeyboardShortcutPreferences: () => mockOpenKeyboardShortcutPreferences(),
+}));
+
 describe('onboarding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -128,7 +135,7 @@ describe('onboarding', () => {
     init();
     expect(ipcHandlers['onboarding:complete']).toBeDefined();
     expect(ipcHandlers['onboarding:skip']).toBeDefined();
-    expect(ipcHandlers['shell:open-external']).toBeDefined();
+    expect(ipcHandlers['onboarding:openKeyboardSettings']).toBeDefined();
     expect(ipcHandlers['shell:reveal-in-finder']).toBeDefined();
   });
 
@@ -154,13 +161,11 @@ describe('onboarding', () => {
     expect(cb).toHaveBeenCalled();
   });
 
-  it('shell:open-external opens URL', async () => {
+  it('onboarding:openKeyboardSettings opens keyboard shortcut preferences', async () => {
     const m = await import('@/main/onboarding');
     m.init();
-    ipcHandlers['shell:open-external']({}, 'https://porabuild.com/poratake');
-    expect(mockShellOpenExternal).toHaveBeenCalledWith(
-      'https://porabuild.com/poratake'
-    );
+    ipcHandlers['onboarding:openKeyboardSettings']();
+    expect(mockOpenKeyboardShortcutPreferences).toHaveBeenCalled();
   });
 
   it('shell:reveal-in-finder shows item in folder', async () => {

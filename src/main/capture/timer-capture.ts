@@ -261,7 +261,6 @@ async function timerCaptureMac(shouldHideIcons: boolean): Promise<void> {
         onSelected: handleSelected,
         onCancelled: handleCancelled,
         showPrompt: false,
-        style: 'simple',
       }).then(
         selection => {
           if (!selection && !hasSelection) {

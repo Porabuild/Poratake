@@ -1,5 +1,6 @@
 import type { AreaSelection } from '@/types/area';
 import type {
+  AreaOverlayRenderer,
   AreaOverlayToolbar,
   AreaOverlayToolbarAction,
 } from '@/types/area-overlay';
@@ -8,8 +9,6 @@ import type { AspectRatio } from '@/types/aspect-ratio';
 export type AreaSelectionCallback = (selection: AreaSelection) => void;
 
 export type AreaSelectionMode = 'manual' | 'display' | 'window';
-
-export type AreaSelectionStyle = 'default' | 'simple';
 
 export interface PresetArea {
   x: number;
@@ -28,7 +27,7 @@ export interface StartAreaSelectionOptions {
   onCancelled?: () => void;
   onToolbarAction?: (action: AreaOverlayToolbarAction) => void;
   showPrompt?: boolean;
-  style?: AreaSelectionStyle;
+  renderer?: AreaOverlayRenderer;
   toolbar?: AreaOverlayToolbar;
 }
 

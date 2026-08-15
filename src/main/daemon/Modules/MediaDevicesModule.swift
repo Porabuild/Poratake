@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 class MediaDevicesModule: Module {
@@ -9,7 +10,7 @@ class MediaDevicesModule: Module {
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
         switch method {
         case "list":
-            handleList(requestId: requestId)
+            handleList(params: params, requestId: requestId)
         case "startMicTest":
             handleStartMicTest(params: params, requestId: requestId)
         case "stopMicTest":
@@ -19,17 +20,44 @@ class MediaDevicesModule: Module {
         }
     }
 
-    private func handleList(requestId: String) {
-        let microphones = MediaDeviceDiscovery.microphones().map { ["id": $0.id, "label": $0.label] }
-        let cameras = MediaDeviceDiscovery.cameras().map { ["id": $0.id, "label": $0.label] }
+    private func parseKinds(_ params: [String: AnyCodable]?) -> (microphones: Bool, cameras: Bool) {
+        guard let values = params?["kinds"]?.array() as? [String], !values.isEmpty else {
+            return (true, true)
+        }
+        return (values.contains("microphone"), values.contains("camera"))
+    }
 
-        var result: [String: Any] = ["microphones": microphones, "cameras": cameras]
-        if let defaultMicrophoneId = MediaDeviceDiscovery.defaultMicrophoneId() {
-            result["defaultMicrophoneId"] = defaultMicrophoneId
+    private func handleList(params: [String: AnyCodable]?, requestId: String) {
+        let kinds = parseKinds(params)
+        var mediaTypes: [AVMediaType] = []
+        if kinds.microphones { mediaTypes.append(.audio) }
+        if kinds.cameras { mediaTypes.append(.video) }
+        guard !mediaTypes.isEmpty else {
+            respondList(requestId: requestId, microphones: false, cameras: false)
+            return
         }
-        if let defaultCameraId = MediaDeviceDiscovery.defaultCameraId() {
-            result["defaultCameraId"] = defaultCameraId
+
+        MediaDeviceDiscovery.requestAccess(kinds: mediaTypes) { [weak self] in
+            self?.respondList(requestId: requestId, microphones: kinds.microphones, cameras: kinds.cameras)
         }
+    }
+
+    private func respondList(requestId: String, microphones: Bool, cameras: Bool) {
+        var result: [String: Any] = [:]
+
+        if microphones {
+            result["microphones"] = MediaDeviceDiscovery.microphones().map { ["id": $0.id, "label": $0.label] }
+            if let defaultMicrophoneId = MediaDeviceDiscovery.defaultMicrophoneId() {
+                result["defaultMicrophoneId"] = defaultMicrophoneId
+            }
+        }
+        if cameras {
+            result["cameras"] = MediaDeviceDiscovery.cameras().map { ["id": $0.id, "label": $0.label] }
+            if let defaultCameraId = MediaDeviceDiscovery.defaultCameraId() {
+                result["defaultCameraId"] = defaultCameraId
+            }
+        }
+
         respond(id: requestId, result: result)
     }
 

@@ -14,8 +14,7 @@ const mockGetOverlayWindowIds = vi.fn();
 
 const mockSelectDisplay = vi.fn();
 const mockDisplayFromSelection = vi.fn();
-const mockSelectWindow = vi.fn();
-const mockListWindows = vi.fn();
+const mockResolveWindowPickTargets = vi.fn();
 const mockGetAllDisplays = vi.fn();
 const mockGetPrimaryDisplay = vi.fn();
 const mockScreenToDipRect = vi.fn();
@@ -42,6 +41,7 @@ vi.mock('@/main/capture/area-overlay', () => ({
   isOverlayActive: () => mockIsOverlayActive(),
   setOverlayPickTargets: (...a: unknown[]) => mockSetOverlayPickTargets(...a),
   getOverlayWindowIds: () => mockGetOverlayWindowIds(),
+  resolveWindowPickTargets: () => mockResolveWindowPickTargets(),
 }));
 
 vi.mock('@/main/daemon', () => ({
@@ -57,11 +57,6 @@ vi.mock('@/main/capture/display-selector', () => ({
   displayFromSelection: (...a: unknown[]) => mockDisplayFromSelection(...a),
 }));
 
-vi.mock('@/main/capture/window-selector', () => ({
-  selectWindow: () => mockSelectWindow(),
-  listWindows: () => mockListWindows(),
-}));
-
 const primary = { id: 7, bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
 const secondary = {
   id: 8,
@@ -74,6 +69,17 @@ function overlayOptions(): Record<string, unknown> {
 
 function flush(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+function windowPickTargets() {
+  return {
+    targets: [{ id: 4242, rect: { x: 200, y: 100, width: 800, height: 600 } }],
+    names: new Map([[4242, 'Window']]),
+    captureRects: new Map([
+      [4242, { x: 400, y: 200, width: 1600, height: 1200 }],
+    ]),
+    prompt: 'Click a window to select it · Esc to cancel',
+  };
 }
 
 describe('area-selector overlay backend', () => {
@@ -95,24 +101,16 @@ describe('area-selector overlay backend', () => {
     Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
-  it('is the backend the facade exposes on Windows', async () => {
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    const [facade, overlay] = await Promise.all([
-      import('@/main/capture/area-selector'),
-      import('@/main/capture/area-selector/overlay-backend'),
-    ]);
+  it('is the backend the facade exposes on every platform', async () => {
+    for (const platform of ['win32', 'darwin'] as const) {
+      Object.defineProperty(process, 'platform', { value: platform });
+      const [facade, overlay] = await Promise.all([
+        import('@/main/capture/area-selector'),
+        import('@/main/capture/area-selector/overlay-backend'),
+      ]);
 
-    expect(facade.startAreaSelection).toBe(overlay.startAreaSelection);
-  });
-
-  it('falls back to the daemon backend elsewhere', async () => {
-    Object.defineProperty(process, 'platform', { value: 'darwin' });
-    const [facade, daemonBackend] = await Promise.all([
-      import('@/main/capture/area-selector'),
-      import('@/main/capture/area-selector/daemon-backend'),
-    ]);
-
-    expect(facade.startAreaSelection).toBe(daemonBackend.startAreaSelection);
+      expect(facade.startAreaSelection).toBe(overlay.startAreaSelection);
+    }
   });
 
   it('presets the whole display for single-display screen recording', async () => {
@@ -140,6 +138,7 @@ describe('area-selector overlay backend', () => {
       y: 20,
       width: 300,
       height: 200,
+      screenId: primary.id,
     });
     expect(overlayOptions().freeze).toBe(true);
     expect(release).toHaveBeenCalled();
@@ -158,6 +157,8 @@ describe('area-selector overlay backend', () => {
       { id: primary.id, rect: primary.bounds },
       { id: secondary.id, rect: secondary.bounds },
     ]);
+    expect(overlayOptions().autoConfirm).toBe(false);
+    expect(overlayOptions().repeatablePicks).toBe(true);
     expect(overlayOptions().prompt).toBe(
       'Click a display to select it · Esc to cancel'
     );
@@ -182,7 +183,7 @@ describe('area-selector overlay backend', () => {
   });
 
   it('returns null when no windows are available for picking', async () => {
-    mockListWindows.mockResolvedValue([]);
+    mockResolveWindowPickTargets.mockResolvedValue(null);
 
     const m = await import('@/main/capture/area-selector/overlay-backend');
 
@@ -190,30 +191,18 @@ describe('area-selector overlay backend', () => {
     expect(mockStartInteractiveOverlay).not.toHaveBeenCalled();
   });
 
-  it('converts window bounds to DIP pick targets', async () => {
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    vi.resetModules();
-    mockListWindows.mockResolvedValue([
-      {
-        windowId: 1,
-        title: 'Window',
-        ownerName: 'app',
-        ownerPid: 42,
-        bounds: { x: 200, y: 100, width: 800, height: 600 },
-      },
-    ]);
-    mockScreenToDipRect.mockReturnValue({
-      x: 100,
-      y: 50,
-      width: 400,
-      height: 300,
+  it('passes the resolved window pick targets to the overlay', async () => {
+    mockResolveWindowPickTargets.mockResolvedValue({
+      targets: [{ id: 1, rect: { x: 100, y: 50, width: 400, height: 300 } }],
+      names: new Map([[1, 'Window']]),
+      captureRects: new Map([[1, { x: 100, y: 50, width: 400, height: 300 }]]),
+      prompt: 'Click a window to select it · Esc to cancel',
     });
 
     const m = await import('@/main/capture/area-selector/overlay-backend');
     void m.startAreaSelection({ mode: 'window' });
     await flush();
 
-    expect(mockScreenToDipRect).toHaveBeenCalled();
     expect(overlayOptions().preset).toBeUndefined();
     expect(overlayOptions().pickTargets).toEqual([
       { id: 1, rect: { x: 100, y: 50, width: 400, height: 300 } },
@@ -224,15 +213,7 @@ describe('area-selector overlay backend', () => {
   });
 
   it('reports the picked window and drops it once the box is dragged', async () => {
-    mockListWindows.mockResolvedValue([
-      {
-        windowId: 4242,
-        title: 'Window',
-        ownerName: 'app',
-        ownerPid: 42,
-        bounds: { x: 200, y: 100, width: 800, height: 600 },
-      },
-    ]);
+    mockResolveWindowPickTargets.mockResolvedValue(windowPickTargets());
 
     const m = await import('@/main/capture/area-selector/overlay-backend');
     const onSelected = vi.fn();
@@ -249,14 +230,23 @@ describe('area-selector overlay backend', () => {
     };
 
     callbacks.onSelected({
+      display: primary,
       rect: { x: 200, y: 100, width: 800, height: 600 },
       pickId: 4242,
     });
     expect(onSelected).toHaveBeenCalledWith(
-      expect.objectContaining({ windowId: 4242, windowName: 'Window' })
+      expect.objectContaining({
+        screenId: primary.id,
+        windowId: 4242,
+        windowName: 'Window',
+        windowBounds: { x: 400, y: 200, width: 1600, height: 1200 },
+      })
     );
 
-    callbacks.onUpdated({ rect: { x: 210, y: 100, width: 800, height: 600 } });
+    callbacks.onUpdated({
+      display: primary,
+      rect: { x: 210, y: 100, width: 800, height: 600 },
+    });
 
     expect(await m.confirmAreaSelection()).toEqual({
       status: 'confirmed',
@@ -264,19 +254,12 @@ describe('area-selector overlay backend', () => {
       y: 100,
       width: 800,
       height: 600,
+      screenId: primary.id,
     });
   });
 
   it('retargets a running selection at the windows on screen', async () => {
-    mockListWindows.mockResolvedValue([
-      {
-        windowId: 4242,
-        title: 'Window',
-        ownerName: 'app',
-        ownerPid: 42,
-        bounds: { x: 200, y: 100, width: 800, height: 600 },
-      },
-    ]);
+    mockResolveWindowPickTargets.mockResolvedValue(windowPickTargets());
     const m = await import('@/main/capture/area-selector/overlay-backend');
     const onSelected = vi.fn();
 
@@ -288,7 +271,8 @@ describe('area-selector overlay backend', () => {
 
     expect(mockSetOverlayPickTargets).toHaveBeenCalledWith(
       [{ id: 4242, rect: { x: 200, y: 100, width: 800, height: 600 } }],
-      'Click a window to select it · Esc to cancel'
+      'Click a window to select it · Esc to cancel',
+      false
     );
     expect(m.hasPendingSelection()).toBe(false);
 
@@ -296,41 +280,13 @@ describe('area-selector overlay backend', () => {
       callbacks: { onSelected: (region: unknown) => void };
     };
     callbacks.onSelected({
+      display: primary,
       rect: { x: 200, y: 100, width: 800, height: 600 },
       pickId: 4242,
     });
 
     expect(onSelected).toHaveBeenCalledWith(
       expect.objectContaining({ windowId: 4242, windowName: 'Window' })
-    );
-  });
-
-  it('never offers its own overlay windows as pick targets', async () => {
-    mockGetOverlayWindowIds.mockReturnValue(new Set([99]));
-    mockListWindows.mockResolvedValue([
-      {
-        windowId: 99,
-        title: '',
-        ownerName: 'app',
-        ownerPid: 1,
-        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
-      },
-      {
-        windowId: 4242,
-        title: 'Window',
-        ownerName: 'app',
-        ownerPid: 42,
-        bounds: { x: 200, y: 100, width: 800, height: 600 },
-      },
-    ]);
-    mockIsOverlayActive.mockReturnValue(true);
-
-    const m = await import('@/main/capture/area-selector/overlay-backend');
-    await m.setAreaSelectionMode('window');
-
-    expect(mockSetOverlayPickTargets).toHaveBeenCalledWith(
-      [{ id: 4242, rect: { x: 200, y: 100, width: 800, height: 600 } }],
-      'Click a window to select it · Esc to cancel'
     );
   });
 
@@ -342,7 +298,8 @@ describe('area-selector overlay backend', () => {
 
     expect(mockSetOverlayPickTargets).toHaveBeenCalledWith(
       [{ id: primary.id, rect: primary.bounds }],
-      'Click a display to select it · Esc to cancel'
+      'Click a display to select it · Esc to cancel',
+      true
     );
   });
 
@@ -352,14 +309,14 @@ describe('area-selector overlay backend', () => {
     const m = await import('@/main/capture/area-selector/overlay-backend');
     await m.setAreaSelectionMode('manual');
 
-    expect(mockSetOverlayPickTargets).toHaveBeenCalledWith(null, null);
+    expect(mockSetOverlayPickTargets).toHaveBeenCalledWith(null, null, false);
   });
 
   it('ignores a retarget without a running overlay', async () => {
     const m = await import('@/main/capture/area-selector/overlay-backend');
     await m.setAreaSelectionMode('window');
 
-    expect(mockListWindows).not.toHaveBeenCalled();
+    expect(mockResolveWindowPickTargets).not.toHaveBeenCalled();
     expect(mockSetOverlayPickTargets).not.toHaveBeenCalled();
   });
 
@@ -375,10 +332,18 @@ describe('area-selector overlay backend', () => {
     const { callbacks } = overlayOptions() as {
       callbacks: { onSelected: (region: unknown) => void };
     };
-    callbacks.onSelected({ rect: secondary.bounds, pickId: secondary.id });
+    callbacks.onSelected({
+      display: secondary,
+      rect: secondary.bounds,
+      pickId: secondary.id,
+    });
 
     expect(onSelected).toHaveBeenCalledWith(
-      expect.objectContaining({ windowId: undefined, windowName: undefined })
+      expect.objectContaining({
+        screenId: secondary.id,
+        windowId: undefined,
+        windowName: undefined,
+      })
     );
   });
 
@@ -399,7 +364,10 @@ describe('area-selector overlay backend', () => {
 
     expect(m.hasPendingSelection()).toBe(false);
 
-    callbacks.onSelected({ rect: { x: 10, y: 20, width: 300, height: 200 } });
+    callbacks.onSelected({
+      display: primary,
+      rect: { x: 10, y: 20, width: 300, height: 200 },
+    });
 
     expect(m.hasPendingSelection()).toBe(true);
     expect(onSelected).toHaveBeenCalledWith({
@@ -408,10 +376,14 @@ describe('area-selector overlay backend', () => {
       y: 20,
       width: 300,
       height: 200,
+      screenId: primary.id,
     });
     expect(onUpdate).toHaveBeenCalledTimes(1);
 
-    callbacks.onUpdated({ rect: { x: 10, y: 30, width: 300, height: 200 } });
+    callbacks.onUpdated({
+      display: primary,
+      rect: { x: 10, y: 30, width: 300, height: 200 },
+    });
     expect(onUpdate).toHaveBeenCalledTimes(2);
 
     expect(await m.confirmAreaSelection()).toEqual({
@@ -420,6 +392,7 @@ describe('area-selector overlay backend', () => {
       y: 30,
       width: 300,
       height: 200,
+      screenId: primary.id,
     });
     expect(mockConfirmOverlaySelection).toHaveBeenCalled();
     expect(m.hasPendingSelection()).toBe(false);
@@ -443,7 +416,10 @@ describe('area-selector overlay backend', () => {
         onSelected: (region: unknown) => void;
       };
     };
-    callbacks.onSelected({ rect: { x: 10, y: 20, width: 300, height: 200 } });
+    callbacks.onSelected({
+      display: primary,
+      rect: { x: 10, y: 20, width: 300, height: 200 },
+    });
 
     expect(await m.confirmAreaSelection({ keepOverlayVisible: true })).toEqual({
       status: 'confirmed',
@@ -451,6 +427,7 @@ describe('area-selector overlay backend', () => {
       y: 20,
       width: 300,
       height: 200,
+      screenId: primary.id,
     });
     expect(mockConfirmOverlaySelection).toHaveBeenCalledWith(true);
 
@@ -472,7 +449,10 @@ describe('area-selector overlay backend', () => {
         onSelected: (region: unknown) => void;
       };
     };
-    callbacks.onSelected({ rect: { x: 10, y: 20, width: 300, height: 200 } });
+    callbacks.onSelected({
+      display: primary,
+      rect: { x: 10, y: 20, width: 300, height: 200 },
+    });
 
     await m.confirmAreaSelection();
     expect(mockConfirmOverlaySelection).toHaveBeenCalledWith(false);

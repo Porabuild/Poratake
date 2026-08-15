@@ -4,7 +4,6 @@ import type { SettingsConfig } from '@/types/settings';
 import type { HistoryItem, EditorState } from '@/types/history';
 import type { RectAnnotation, WallpaperSettings } from '@/types/editor';
 
-// Mock daemon first - must be before any module that imports it
 const mockDaemonCall = vi.fn();
 const mockDaemonOnEvent = vi.fn();
 const mockDaemonOffEvent = vi.fn();
@@ -17,23 +16,13 @@ vi.mock('@/main/daemon', () => ({
   },
 }));
 
-// Mock child_process
-const mockExec = vi.fn();
-vi.mock('child_process', () => ({
-  execFile: (
-    file: string,
-    args: string[],
-    callback: (err: Error | null, stdout: string, stderr: string) => void
-  ) => mockExec([file, ...args].join(' '), callback),
-}));
-
-// Mock fs
 const mockExistsSync = vi.fn();
 const mockMkdirSync = vi.fn();
 const mockReadFileSync = vi.fn();
 const mockReadFile = vi.fn();
 const mockWriteFileSync = vi.fn();
 const mockCopyFileSync = vi.fn();
+const mockRmSync = vi.fn();
 
 vi.mock('fs', () => ({
   default: {
@@ -43,6 +32,7 @@ vi.mock('fs', () => ({
     writeFileSync: (path: string, data: Buffer) =>
       mockWriteFileSync(path, data),
     copyFileSync: (src: string, dest: string) => mockCopyFileSync(src, dest),
+    rmSync: (path: string, options?: object) => mockRmSync(path, options),
     promises: {
       readFile: (path: string) => mockReadFile(path),
     },
@@ -52,9 +42,9 @@ vi.mock('fs', () => ({
   readFileSync: (path: string) => mockReadFileSync(path),
   writeFileSync: (path: string, data: Buffer) => mockWriteFileSync(path, data),
   copyFileSync: (src: string, dest: string) => mockCopyFileSync(src, dest),
+  rmSync: (path: string, options?: object) => mockRmSync(path, options),
 }));
 
-// Mock Electron
 const mockIpcMainOn = vi.fn();
 const mockIpcMainHandle = vi.fn();
 const mockDialogShowSaveDialog = vi.fn();
@@ -64,8 +54,10 @@ const mockNativeImageCreateFromBuffer = vi.fn();
 const mockNativeImageCreateFromPath = vi.fn();
 const mockAppGetPath = vi.fn();
 const mockScreenGetPrimaryDisplay = vi.fn();
+const mockScreenGetAllDisplays = vi.fn();
+const mockScreenGetCursorScreenPoint = vi.fn(() => ({ x: 0, y: 0 }));
+const mockScreenGetDisplayNearestPoint = vi.fn();
 
-// Mock BrowserWindow class
 const mockWebContentsSend = vi.fn();
 const mockWebContentsOn = vi.fn();
 const mockWebContentsExecuteJavaScript = vi.fn();
@@ -94,7 +86,6 @@ class MockBrowserWindow {
   on = mockWindowOn;
   once = mockWindowOnce;
 
-  // Store constructor args for assertions
   static mock = { calls: [] as unknown[][] };
 
   constructor(options: unknown) {
@@ -104,13 +95,9 @@ class MockBrowserWindow {
   static resetMock() {
     MockBrowserWindow.mock.calls = [];
   }
+
+  static fromWebContents = vi.fn();
 }
-
-const mockScreenGetAllDisplays = vi.fn();
-
-const mockSystemPreferences = {
-  isTrustedAccessibilityClient: vi.fn(() => true),
-};
 
 vi.mock('electron', () => ({
   app: {
@@ -120,6 +107,9 @@ vi.mock('electron', () => ({
   screen: {
     getPrimaryDisplay: () => mockScreenGetPrimaryDisplay(),
     getAllDisplays: () => mockScreenGetAllDisplays(),
+    getCursorScreenPoint: () => mockScreenGetCursorScreenPoint(),
+    getDisplayNearestPoint: (point: unknown) =>
+      mockScreenGetDisplayNearestPoint(point),
   },
   ipcMain: {
     on: mockIpcMainOn,
@@ -136,17 +126,15 @@ vi.mock('electron', () => ({
     createFromBuffer: mockNativeImageCreateFromBuffer,
     createFromPath: mockNativeImageCreateFromPath,
   },
-  systemPreferences: mockSystemPreferences,
+  Notification: vi.fn().mockImplementation(() => ({ show: vi.fn() })),
 }));
 
-// Mock env
 vi.mock('@/main/utils/env', () => ({
   isDev: false,
   isProduction: false,
   devServerUrl: null,
 }));
 
-// Mock config - using complete types
 const mockGeneralConfig = {
   startOnLogin: false,
   playSoundOnScreenshot: true,
@@ -167,6 +155,7 @@ const mockConfig: Partial<SettingsConfig> = {
 
 const mockGetConfig = vi.fn(() => mockConfig);
 const mockUpdateConfig = vi.fn();
+const mockCreateOrShowSettingsWindow = vi.fn();
 
 vi.mock('@/main/settings', () => ({
   getConfig: () => mockGetConfig(),
@@ -175,42 +164,21 @@ vi.mock('@/main/settings', () => ({
     mockCreateOrShowSettingsWindow(tab),
 }));
 
-// Mock desktop-icons
 const mockHideDesktopIcons = vi.fn();
 const mockShowDesktopIcons = vi.fn();
 const mockIsDesktopIconsSupported = vi.fn(() => true);
-const mockCheckAccessibilityPermission = vi.fn(() => true);
 
 vi.mock('@/main/capture/desktop-icons', () => ({
   hideDesktopIcons: () => mockHideDesktopIcons(),
   showDesktopIcons: () => mockShowDesktopIcons(),
+  checkAccessibilityPermission: () => true,
   isSupported: () => mockIsDesktopIconsSupported(),
-  checkAccessibilityPermission: () => mockCheckAccessibilityPermission(),
 }));
 
-// Mock freeze-screen
-const mockFreezeScreen = vi.fn((_watchSpaceKey?: boolean) =>
-  Promise.resolve(true)
-);
-const mockReleaseScreen = vi.fn();
-const mockIsFreezeScreenSupported = vi.fn(() => true);
-
-vi.mock('@/main/capture/freeze-screen', () => ({
-  freezeScreen: (watchSpaceKey?: boolean) => mockFreezeScreen(watchSpaceKey),
-  releaseScreen: () => mockReleaseScreen(),
-  isSupported: () => mockIsFreezeScreenSupported(),
-}));
-
-vi.mock('@/main/capture/freeze-screen/preference', () => ({
-  isFreezeScreenEnabled: () =>
-    Boolean(mockGetConfig().screenshot?.freezeScreen) &&
-    mockIsFreezeScreenSupported(),
-}));
-
-// Mock history
 const mockAddToHistory = vi.fn();
 const mockUpdateHistoryItemByPath = vi.fn();
 const mockGetHistoryItemByPath = vi.fn();
+const mockGetHistoryItem = vi.fn();
 const mockDeleteHistoryItem = vi.fn();
 
 vi.mock('@/main/history', () => ({
@@ -218,78 +186,53 @@ vi.mock('@/main/history', () => ({
   updateHistoryItemByPath: (path: string, state: unknown) =>
     mockUpdateHistoryItemByPath(path, state),
   getHistoryItemByPath: (path: string) => mockGetHistoryItemByPath(path),
+  getHistoryItem: (id: string) => mockGetHistoryItem(id),
   deleteHistoryItem: (id: string) => mockDeleteHistoryItem(id),
   isHistoryPopoverWebContents: vi.fn(() => true),
 }));
 
-// Mock settings window
-const mockCreateOrShowSettingsWindow = vi.fn();
-
-// Mock display-selector
 const mockSelectDisplay = vi.fn();
-const mockKillDisplaySelector = vi.fn();
 
 vi.mock('@/main/capture/display-selector', () => ({
   selectDisplay: () => mockSelectDisplay(),
   displayFromSelection: vi.fn(),
-  killDisplaySelector: () => mockKillDisplaySelector(),
+  killDisplaySelector: vi.fn(),
 }));
 
-// Mock capture-preview
-const mockShowCapturePreview = vi.fn();
-const mockPrepareCapturePreview = vi.fn();
-const mockDisposeCapturePreview = vi.fn();
+const mockCaptureDisplayToFile = vi.fn();
+
+vi.mock('@/main/capture/screenshot/native-capture', () => ({
+  captureDisplayToFile: (display: unknown, filePath: string) =>
+    mockCaptureDisplayToFile(display, filePath),
+}));
+
+const mockCaptureAreaToFile = vi.fn();
+const mockCaptureWindowToFile = vi.fn();
+
+vi.mock('@/main/capture/area-overlay', () => ({
+  captureAreaToFile: (filePath: string) => mockCaptureAreaToFile(filePath),
+  captureWindowToFile: (filePath: string) => mockCaptureWindowToFile(filePath),
+}));
+
+vi.mock('@/main/system/capabilities', () => ({
+  isFeatureSupported: () => true,
+}));
+
+const mockFinalizeCapture = vi.fn(() => Promise.resolve());
+const mockPrepareScreenshotPreview = vi.fn(() => null);
+
+vi.mock('@/main/capture/screenshot/finalize', () => ({
+  finalizeCapture: (filePath: string, preparation?: unknown) =>
+    mockFinalizeCapture(filePath, preparation),
+  prepareScreenshotPreview: () => mockPrepareScreenshotPreview(),
+}));
 
 vi.mock('@/main/capture/capture-preview', () => ({
-  prepareCapturePreview: () => mockPrepareCapturePreview(),
-  showCapturePreview: (...args: unknown[]) => mockShowCapturePreview(...args),
+  prepareCapturePreview: vi.fn(),
+  showCapturePreview: vi.fn(),
   registerCapturePreviewIpc: vi.fn(),
 }));
 
-// Mock area-selector (uses daemon internally)
-const mockStartAreaSelection = vi.fn();
-const mockCancelAreaSelection = vi.fn();
-
-vi.mock('@/main/capture/area-selector', () => ({
-  startAreaSelection: (options?: {
-    onSelected?: (selection: unknown) => void;
-    onCancelled?: () => void;
-  }) => {
-    mockStartAreaSelection(options);
-    if (options?.onCancelled) {
-      setTimeout(() => {
-        options.onCancelled?.();
-      }, 0);
-    }
-    return Promise.resolve(null);
-  },
-  cancelAreaSelection: () => {
-    mockCancelAreaSelection();
-    return Promise.resolve();
-  },
-  confirmAreaSelection: vi.fn(),
-  hasPendingSelection: vi.fn(() => false),
-  hideAreaSelector: vi.fn(),
-  showAreaSelector: vi.fn(),
-  killAreaSelector: vi.fn(),
-  updateAreaSelectionCallbacks: vi.fn(),
-}));
-
-// Mock capture-area
-const mockCaptureArea = vi.fn().mockResolvedValue('/mock/path/screenshot.png');
-
-vi.mock('@/main/capture/screenshot/capture-area', () => ({
-  captureArea: (
-    area: unknown,
-    options?: { onCaptured?: () => void | Promise<void> }
-  ) => {
-    mockCaptureArea(area, options);
-    options?.onCaptured?.();
-    return Promise.resolve('/mock/path/screenshot.png');
-  },
-}));
-
-// Helper to create valid WallpaperSettings
 function createWallpaperSettings(
   overrides: Partial<WallpaperSettings> = {}
 ): WallpaperSettings {
@@ -310,7 +253,6 @@ describe('Screenshot Module', () => {
     vi.clearAllMocks();
     MockBrowserWindow.resetMock();
 
-    // Default mock implementations
     mockAppGetPath.mockImplementation((name: string) => {
       const paths: Record<string, string> = {
         pictures: '/mock/Pictures',
@@ -324,48 +266,25 @@ describe('Screenshot Module', () => {
       workAreaSize: { width: 1920, height: 1080 },
     });
 
-    // Default: single display setup (skip display selector)
     mockScreenGetAllDisplays.mockReturnValue([{ id: 1 }]);
+    mockScreenGetDisplayNearestPoint.mockReturnValue({
+      id: 1,
+      bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+    });
 
-    // Default: display selector returns selected (for multi-display tests)
     mockSelectDisplay.mockResolvedValue({
       status: 'selected',
       displayNumber: 1,
     });
 
     mockExistsSync.mockReturnValue(true);
-
-    mockExec.mockImplementation(
-      (
-        _cmd: string,
-        callback: (err: Error | null, stdout: string, stderr: string) => void
-      ) => {
-        if (callback) callback(null, '', '');
-      }
-    );
-    mockPrepareCapturePreview.mockReturnValue({
-      dispose: mockDisposeCapturePreview,
-    });
-    mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
+    mockCaptureDisplayToFile.mockResolvedValue(true);
+    mockCaptureWindowToFile.mockResolvedValue(true);
+    mockCaptureAreaToFile.mockResolvedValue(true);
 
     mockGetConfig.mockReturnValue({
       screenshot: { ...mockScreenshotConfig },
       general: { ...mockGeneralConfig },
-    });
-
-    // Default PNG buffer for any file reads
-    const defaultPngBuffer = Buffer.alloc(24);
-    defaultPngBuffer.write('\x89PNG\r\n\x1a\n', 0);
-    defaultPngBuffer.writeUInt32BE(800, 16);
-    defaultPngBuffer.writeUInt32BE(600, 20);
-    mockReadFileSync.mockReturnValue(defaultPngBuffer);
-
-    // Default nativeImage mock for dimension reading
-    mockNativeImageCreateFromPath.mockReturnValue({
-      getSize: () => ({ width: 800, height: 600 }),
-    });
-    mockNativeImageCreateFromBuffer.mockReturnValue({
-      getSize: () => ({ width: 800, height: 600 }),
     });
   });
 
@@ -508,65 +427,69 @@ describe('Screenshot Module', () => {
       expect(mockMkdirSync).not.toHaveBeenCalled();
     });
 
-    it('should use screencapture -i for area mode', async () => {
+    it('should capture the display in screen mode', async () => {
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+      await screenshot('screen');
+
+      expect(mockCaptureDisplayToFile).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1 }),
+        expect.stringContaining('Poratake')
+      );
+      expect(mockFinalizeCapture).toHaveBeenCalled();
+    });
+
+    it('should skip the display selector on single-display setups', async () => {
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+      await screenshot('screen');
+
+      expect(mockSelectDisplay).not.toHaveBeenCalled();
+    });
+
+    it('should capture the overlay selection in area mode', async () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('area');
 
-      expect(mockExec).toHaveBeenCalledWith(
-        expect.stringMatching(/screencapture.*-i -t png/),
-        expect.any(Function)
+      expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
+        expect.stringContaining('Poratake')
       );
+      expect(mockFinalizeCapture).toHaveBeenCalled();
     });
 
-    it('should execute screencapture command for screen mode', async () => {
+    it('should default to area mode when no mode specified', async () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
+      await screenshot();
 
-      expect(mockExec).toHaveBeenCalledWith(
-        expect.stringMatching(/screencapture.*-t png/),
-        expect.any(Function)
-      );
-      // Should NOT contain -i flag for screen mode
-      const call = mockExec.mock.calls[0][0] as string;
-      expect(call).not.toMatch(/-i/);
+      expect(mockCaptureAreaToFile).toHaveBeenCalled();
     });
 
-    it('should execute screencapture command for window mode', async () => {
+    it('should not finalize when area capture fails', async () => {
+      mockCaptureAreaToFile.mockResolvedValue(false);
+
+      const { default: screenshot } = await import('@/main/capture/screenshot');
+      await screenshot('area');
+
+      expect(mockFinalizeCapture).not.toHaveBeenCalled();
+    });
+
+    it('should capture the selected window in window mode', async () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('window');
 
-      expect(mockExec).toHaveBeenCalledWith(
-        expect.stringMatching(/screencapture.*-i -o -w -t png/),
-        expect.any(Function)
+      expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
+        expect.stringContaining('Poratake')
       );
+      expect(mockFinalizeCapture).toHaveBeenCalled();
     });
 
-    it('should add -x flag when sound is disabled', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig },
-        general: { ...mockGeneralConfig, playSoundOnScreenshot: false },
-      });
+    it('should not finalize when window capture fails', async () => {
+      mockCaptureWindowToFile.mockResolvedValue(false);
+      vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
+      await screenshot('window');
 
-      expect(mockExec).toHaveBeenCalledWith(
-        expect.stringMatching(/screencapture -x/),
-        expect.any(Function)
-      );
-    });
-
-    it('should not add -x flag when sound is enabled', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig },
-        general: { ...mockGeneralConfig, playSoundOnScreenshot: true },
-      });
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      const call = mockExec.mock.calls[0][0] as string;
-      expect(call).not.toMatch(/screencapture -x/);
+      expect(mockFinalizeCapture).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
     });
 
     it('should hide desktop icons when enabled and supported', async () => {
@@ -574,21 +497,15 @@ describe('Screenshot Module', () => {
         screenshot: { ...mockScreenshotConfig, hideDesktopIcons: true },
         general: { ...mockGeneralConfig },
       });
-      mockIsDesktopIconsSupported.mockReturnValue(true);
-      mockCheckAccessibilityPermission.mockReturnValue(true);
 
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('area');
 
       expect(mockHideDesktopIcons).toHaveBeenCalled();
+      expect(mockShowDesktopIcons).toHaveBeenCalled();
     });
 
     it('should not hide desktop icons when disabled', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, hideDesktopIcons: false },
-        general: { ...mockGeneralConfig },
-      });
-
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('area');
 
@@ -608,322 +525,26 @@ describe('Screenshot Module', () => {
       expect(mockHideDesktopIcons).not.toHaveBeenCalled();
     });
 
-    it('should disable hideDesktopIcons when accessibility permission is denied', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, hideDesktopIcons: true },
-        general: { ...mockGeneralConfig },
-      });
-      mockIsDesktopIconsSupported.mockReturnValue(true);
-      mockCheckAccessibilityPermission.mockReturnValue(false);
-
+    it('should generate timestamp-based filenames', async () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('area');
 
-      expect(mockUpdateConfig).toHaveBeenCalledWith({
-        screenshot: expect.objectContaining({ hideDesktopIcons: false }),
-      });
-      expect(mockHideDesktopIcons).not.toHaveBeenCalled();
+      expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /Screenshot \d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2}\.png/
+        )
+      );
     });
 
-    it('should show desktop icons after screenshot when they were hidden', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, hideDesktopIcons: true },
-        general: { ...mockGeneralConfig },
-      });
-      mockIsDesktopIconsSupported.mockReturnValue(true);
-      mockCheckAccessibilityPermission.mockReturnValue(true);
-
-      // Simulate successful exec callback
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          if (callback) callback(null, '', '');
-        }
-      );
-
+    it('should save to the Poratake folder in Pictures', async () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('area');
 
-      expect(mockShowDesktopIcons).toHaveBeenCalled();
-    });
-
-    it('should freeze screen in area mode when freeze screen is enabled', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, freezeScreen: true },
-        general: { ...mockGeneralConfig },
-      });
-      mockIsFreezeScreenSupported.mockReturnValue(true);
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('area');
-
-      expect(mockFreezeScreen).toHaveBeenCalledWith(true);
-    });
-
-    it('should release screen after area capture completes', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, freezeScreen: true },
-        general: { ...mockGeneralConfig },
-      });
-      mockIsFreezeScreenSupported.mockReturnValue(true);
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('area');
-
-      expect(mockReleaseScreen).toHaveBeenCalled();
-    });
-
-    it('should not freeze screen in area mode when setting is disabled', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, freezeScreen: false },
-        general: { ...mockGeneralConfig },
-      });
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('area');
-
-      expect(mockFreezeScreen).not.toHaveBeenCalled();
-    });
-
-    it('should not freeze screen in area mode when not supported', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, freezeScreen: true },
-        general: { ...mockGeneralConfig },
-      });
-      mockIsFreezeScreenSupported.mockReturnValue(false);
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('area');
-
-      expect(mockFreezeScreen).not.toHaveBeenCalled();
-    });
-
-    it('should freeze and release the screen in window mode when enabled', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, freezeScreen: true },
-        general: { ...mockGeneralConfig },
-      });
-      mockIsFreezeScreenSupported.mockReturnValue(true);
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('window');
-
-      expect(mockFreezeScreen).toHaveBeenCalledWith(true);
-      expect(mockReleaseScreen).toHaveBeenCalled();
-    });
-
-    it('should not freeze screen in screen mode', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, freezeScreen: true },
-        general: { ...mockGeneralConfig },
-      });
-      mockIsFreezeScreenSupported.mockReturnValue(true);
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      expect(mockFreezeScreen).not.toHaveBeenCalled();
-    });
-
-    it('should release screen even when capture fails', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, freezeScreen: true },
-        general: { ...mockGeneralConfig },
-      });
-      mockIsFreezeScreenSupported.mockReturnValue(true);
-
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          if (callback) callback(new Error('capture failed'), '', '');
-        }
+      expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
+        expect.stringContaining(
+          path.join('/mock/Pictures', 'Poratake') + path.sep
+        )
       );
-
-      vi.spyOn(console, 'log').mockImplementation(() => {});
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('area');
-
-      expect(mockReleaseScreen).toHaveBeenCalled();
-
-      vi.restoreAllMocks();
-    });
-
-    it('should default to area mode when no mode specified', async () => {
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot();
-
-      expect(mockExec).toHaveBeenCalledWith(
-        expect.stringMatching(/screencapture.*-i -t png/),
-        expect.any(Function)
-      );
-    });
-  });
-
-  describe('screenshot() exec callback behavior', () => {
-    it('should wait for screencapture to finish before resolving', async () => {
-      let finishCapture:
-        | ((err: Error | null, stdout: string, stderr: string) => void)
-        | undefined;
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          finishCapture = callback;
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      const capture = screenshot('screen');
-      await Promise.resolve();
-
-      expect(mockAddToHistory).not.toHaveBeenCalled();
-
-      finishCapture?.(null, '', '');
-      await capture;
-
-      expect(mockAddToHistory).toHaveBeenCalled();
-    });
-
-    it('should log error when exec returns error', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const testError = new Error('Test error');
-
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          if (callback) callback(testError, '', '');
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('error: Test error')
-      );
-      consoleSpy.mockRestore();
-    });
-
-    it('should log stderr when exec returns stderr', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          if (callback) callback(null, '', 'stderr message');
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('stderr: stderr message')
-      );
-      expect(mockAddToHistory).toHaveBeenCalled();
-      consoleSpy.mockRestore();
-    });
-
-    it('should copy to clipboard when captureToClipboard is enabled', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: { ...mockScreenshotConfig, captureToClipboard: true },
-        general: { ...mockGeneralConfig },
-      });
-
-      // Create a valid PNG buffer (minimal PNG header)
-      const pngHeader = Buffer.alloc(24);
-      pngHeader.write('\x89PNG\r\n\x1a\n', 0);
-      pngHeader.writeUInt32BE(100, 16); // width
-      pngHeader.writeUInt32BE(100, 20); // height
-
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(pngHeader);
-      mockNativeImageCreateFromPath.mockReturnValue({
-        getSize: () => ({ width: 100, height: 100 }),
-      });
-
-      const mockImage = {
-        toPNG: vi.fn(),
-        getSize: () => ({ width: 100, height: 100 }),
-        isEmpty: () => false,
-      };
-      mockNativeImageCreateFromBuffer.mockReturnValue(mockImage);
-
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          if (callback) callback(null, '', '');
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      expect(mockNativeImageCreateFromBuffer).toHaveBeenCalled();
-      expect(mockClipboardWriteImage).toHaveBeenCalledWith(mockImage);
-    });
-
-    it('should add screenshot to history on successful capture', async () => {
-      // Create a valid PNG buffer
-      const pngHeader = Buffer.alloc(24);
-      pngHeader.write('\x89PNG\r\n\x1a\n', 0);
-      pngHeader.writeUInt32BE(200, 16); // width
-      pngHeader.writeUInt32BE(150, 20); // height
-
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(pngHeader);
-      mockNativeImageCreateFromPath.mockReturnValue({
-        getSize: () => ({ width: 200, height: 150 }),
-      });
-      mockAddToHistory.mockResolvedValue({ id: 'test-id' });
-
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          if (callback) callback(null, '', '');
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      expect(mockAddToHistory).toHaveBeenCalledWith(
-        expect.stringContaining('Screenshot ')
-      );
-    });
-
-    it('should not process when screenshot file does not exist', async () => {
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          if (callback) callback(null, '', '');
-        }
-      );
-      mockExistsSync.mockImplementation((path: string) => {
-        if (path.includes('Screenshot ')) return false;
-        return true;
-      });
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      expect(mockAddToHistory).not.toHaveBeenCalled();
     });
   });
 
@@ -1036,14 +657,7 @@ describe('Screenshot Module', () => {
     });
 
     it('should open screenshot window when file exists', async () => {
-      // Create a valid PNG buffer
-      const pngHeader = Buffer.alloc(24);
-      pngHeader.write('\x89PNG\r\n\x1a\n', 0);
-      pngHeader.writeUInt32BE(400, 16); // width
-      pngHeader.writeUInt32BE(300, 20); // height
-
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(pngHeader);
       mockNativeImageCreateFromPath.mockReturnValue({
         getSize: () => ({ width: 400, height: 300 }),
       });
@@ -1066,19 +680,11 @@ describe('Screenshot Module', () => {
 
       openScreenshotFromHistory(historyItem);
 
-      // Verify window was created
       expect(MockBrowserWindow.mock.calls.length).toBeGreaterThan(0);
     });
 
     it('should pass editor state to new window', async () => {
-      // Create a valid PNG buffer
-      const pngHeader = Buffer.alloc(24);
-      pngHeader.write('\x89PNG\r\n\x1a\n', 0);
-      pngHeader.writeUInt32BE(400, 16);
-      pngHeader.writeUInt32BE(300, 20);
-
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(pngHeader);
       mockNativeImageCreateFromPath.mockReturnValue({
         getSize: () => ({ width: 400, height: 300 }),
       });
@@ -1116,171 +722,11 @@ describe('Screenshot Module', () => {
 
       openScreenshotFromHistory(historyItem);
 
-      // Verify window was created with proper configuration
       expect(MockBrowserWindow.mock.calls.length).toBeGreaterThan(0);
       const windowOptions = MockBrowserWindow.mock.calls[0][0] as {
         webPreferences?: { devTools?: boolean };
       };
       expect(windowOptions.webPreferences?.devTools).toBe(false);
-    });
-  });
-
-  describe('CaptureMode type', () => {
-    it('should accept valid capture modes', async () => {
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-
-      await screenshot('screen');
-      await screenshot('area');
-      await screenshot('window');
-
-      expect(mockExec).toHaveBeenCalledTimes(3);
-    });
-  });
-
-  describe('Window size calculations', () => {
-    it('should calculate window size respecting screen bounds', async () => {
-      // Create a large image that would exceed screen bounds
-      const pngHeader = Buffer.alloc(24);
-      pngHeader.write('\x89PNG\r\n\x1a\n', 0);
-      pngHeader.writeUInt32BE(8000, 16); // Very large width
-      pngHeader.writeUInt32BE(6000, 20); // Very large height
-
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(pngHeader);
-      mockNativeImageCreateFromPath.mockReturnValue({
-        getSize: () => ({ width: 8000, height: 6000 }),
-      });
-      mockAddToHistory.mockResolvedValue({ id: 'test-id' });
-
-      // Create a promise that resolves after exec callback completes
-      let resolveExec: () => void;
-      const execDone = new Promise<void>(resolve => {
-        resolveExec = resolve;
-      });
-
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          // Use setTimeout to ensure proper async flow
-          setTimeout(() => {
-            if (callback) callback(null, '', '');
-            resolveExec();
-          }, 0);
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      screenshot('screen');
-
-      // Wait for exec callback to complete
-      await execDone;
-      // Give async operations time to complete
-      await new Promise(resolve => setTimeout(resolve, 10));
-
-      // Window should be created with constrained size
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const calls = MockBrowserWindow.mock.calls as any[];
-      const windowConfig = calls[0]?.[0] as
-        { width: number; height: number } | undefined;
-      if (windowConfig) {
-        expect(windowConfig.width).toBeLessThanOrEqual(1920 - 80); // screenWidth - padding*2
-        expect(windowConfig.height).toBeLessThanOrEqual(1080 - 80);
-      }
-    });
-
-    it('should enforce minimum window size', async () => {
-      // Create a very small image
-      const pngHeader = Buffer.alloc(24);
-      pngHeader.write('\x89PNG\r\n\x1a\n', 0);
-      pngHeader.writeUInt32BE(100, 16); // Small width (50 after scale factor)
-      pngHeader.writeUInt32BE(100, 20); // Small height
-
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(pngHeader);
-      mockNativeImageCreateFromPath.mockReturnValue({
-        getSize: () => ({ width: 100, height: 100 }),
-      });
-      mockAddToHistory.mockResolvedValue({ id: 'test-id' });
-
-      // Create a promise that resolves after exec callback completes
-      let resolveExec: () => void;
-      const execDone = new Promise<void>(resolve => {
-        resolveExec = resolve;
-      });
-
-      mockExec.mockImplementation(
-        (
-          _cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          // Use setTimeout to ensure proper async flow
-          setTimeout(() => {
-            if (callback) callback(null, '', '');
-            resolveExec();
-          }, 0);
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      screenshot('screen');
-
-      // Wait for exec callback to complete
-      await execDone;
-      // Give async operations time to complete
-      await new Promise(resolve => setTimeout(resolve, 10));
-
-      // Window should respect minimum size
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const calls = MockBrowserWindow.mock.calls as any[];
-      const windowConfig = calls[0]?.[0] as
-        { minWidth: number; minHeight: number } | undefined;
-      if (windowConfig) {
-        expect(windowConfig.minWidth).toBe(950);
-        expect(windowConfig.minHeight).toBe(650);
-      }
-    });
-  });
-
-  describe('Screenshot path generation', () => {
-    it('should generate timestamp-based filename', async () => {
-      mockExec.mockImplementation(
-        (
-          cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          // Verify the command contains a timestamp-formatted path
-          expect(cmd).toMatch(
-            /Screenshot \d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2}\.png/
-          );
-          if (callback) callback(null, '', '');
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      expect(mockExec).toHaveBeenCalled();
-    });
-
-    it('should save to Poratake folder in Pictures directory', async () => {
-      mockExec.mockImplementation(
-        (
-          cmd: string,
-          callback: (err: Error | null, stdout: string, stderr: string) => void
-        ) => {
-          expect(cmd).toContain(
-            path.join('/mock/Pictures', 'Poratake') + path.sep
-          );
-          if (callback) callback(null, '', '');
-        }
-      );
-
-      const { default: screenshot } = await import('@/main/capture/screenshot');
-      await screenshot('screen');
-
-      expect(mockExec).toHaveBeenCalled();
     });
   });
 });

@@ -3,6 +3,8 @@ export interface MediaDeviceDescriptor {
   label: string;
 }
 
+export type MediaDeviceKind = 'microphone' | 'camera';
+
 export interface MediaDeviceLists {
   microphones: MediaDeviceDescriptor[];
   cameras: MediaDeviceDescriptor[];

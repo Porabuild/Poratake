@@ -1,12 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-type ExecCallback = (
-  error: Error | null,
-  stdout: string,
-  stderr: string
-) => void;
-const mockExecFile =
-  vi.fn<(file: string, args: string[], callback: ExecCallback) => void>();
 const mockClipboardWriteImage = vi.fn();
 const mockCreateFromBuffer = vi.fn(() => ({
   image: true,
@@ -22,15 +15,12 @@ const mockOpenScreenshotEditor = vi.fn();
 const mockFsExistsSync = vi.fn();
 const mockFsReadFileSync = vi.fn(() => Buffer.from('image-bytes'));
 const mockCaptureRegionToFile = vi.fn();
-const mockCaptureWindowToFile = vi.fn();
+const mockCaptureFrozenWindowToFile = vi.fn();
+const mockCaptureWindowByIdToFile = vi.fn();
 const mockHideDesktopIcons = vi.fn();
 const mockShowDesktopIcons = vi.fn();
 const mockDesktopIconsSupported = vi.fn();
-
-vi.mock('child_process', () => ({
-  execFile: (file: string, args: string[], cb: ExecCallback) =>
-    mockExecFile(file, args, cb),
-}));
+const mockCheckAccessibilityPermission = vi.fn();
 
 vi.mock('electron', () => ({
   clipboard: {
@@ -43,12 +33,17 @@ vi.mock('electron', () => ({
 
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureRegionToFile: (...a: unknown[]) => mockCaptureRegionToFile(...a),
-  captureWindowToFile: (...a: unknown[]) => mockCaptureWindowToFile(...a),
+  captureFrozenWindowToFile: (...a: unknown[]) =>
+    mockCaptureFrozenWindowToFile(...a),
+  captureWindowByIdToFile: (...a: unknown[]) =>
+    mockCaptureWindowByIdToFile(...a),
 }));
 
 vi.mock('@/main/capture/desktop-icons', () => ({
   hideDesktopIcons: (...a: unknown[]) => mockHideDesktopIcons(...a),
   showDesktopIcons: (...a: unknown[]) => mockShowDesktopIcons(...a),
+  checkAccessibilityPermission: (...a: unknown[]) =>
+    mockCheckAccessibilityPermission(...a),
   isSupported: () => mockDesktopIconsSupported(),
 }));
 
@@ -82,6 +77,10 @@ vi.mock('@/main/capture/screenshot/open-editor', () => ({
   openScreenshotEditor: (...a: unknown[]) => mockOpenScreenshotEditor(...a),
 }));
 
+vi.mock('@/main/capture/screenshot/capture-sound', () => ({
+  playCaptureSound: vi.fn(),
+}));
+
 describe('captureArea', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -95,12 +94,16 @@ describe('captureArea', () => {
       },
     });
     mockDesktopIconsSupported.mockReturnValue(false);
+    mockCheckAccessibilityPermission.mockReturnValue(true);
     mockFsExistsSync.mockReturnValue(true);
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
     mockPrepareCapturePreview.mockReturnValue({
       dispose: mockDisposePreparedPreview,
     });
     mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
+    mockCaptureRegionToFile.mockResolvedValue(true);
+    mockCaptureFrozenWindowToFile.mockResolvedValue(true);
+    mockCaptureWindowByIdToFile.mockResolvedValue(true);
   });
 
   it('rejects invalid area (missing dimensions)', async () => {
@@ -108,188 +111,7 @@ describe('captureArea', () => {
       await import('@/main/capture/screenshot/capture-area');
     const result = await captureArea({ status: 'confirmed' } as never);
     expect(result).toBeNull();
-    expect(mockExecFile).not.toHaveBeenCalled();
-  });
-
-  it('runs screencapture with -R bounds and opens editor by default', async () => {
-    mockExecFile.mockImplementation((file, args, cb) => {
-      expect(file).toBe('screencapture');
-      expect(args).toEqual([
-        '-R',
-        '10,20,800,600',
-        '-t',
-        'png',
-        '/path/Screenshot.png',
-      ]);
-      cb(null, '', '');
-    });
-    const { captureArea } =
-      await import('@/main/capture/screenshot/capture-area');
-    const result = await captureArea({
-      status: 'confirmed',
-      x: 10,
-      y: 20,
-      width: 800,
-      height: 600,
-    });
-    expect(result).toBe('/path/Screenshot.png');
-    expect(mockOpenScreenshotEditor).toHaveBeenCalledWith(
-      '/path/Screenshot.png',
-      'h1'
-    );
-  });
-
-  it('omits sound (-x) when playSoundOnScreenshot is true', async () => {
-    mockExecFile.mockImplementation((_file, args, cb) => {
-      expect(args).not.toContain('-x');
-      cb(null, '', '');
-    });
-    const { captureArea } =
-      await import('@/main/capture/screenshot/capture-area');
-    await captureArea({
-      status: 'confirmed',
-      x: 0,
-      y: 0,
-      width: 10,
-      height: 10,
-    });
-  });
-
-  it('passes -x to disable sound when playSoundOnScreenshot is false', async () => {
-    mockGetConfig.mockReturnValue({
-      general: { playSoundOnScreenshot: false },
-      screenshot: { captureToClipboard: false, showPreview: false },
-    });
-    mockExecFile.mockImplementation((_file, args, cb) => {
-      expect(args).toContain('-x');
-      cb(null, '', '');
-    });
-    const { captureArea } =
-      await import('@/main/capture/screenshot/capture-area');
-    await captureArea({
-      status: 'confirmed',
-      x: 0,
-      y: 0,
-      width: 10,
-      height: 10,
-    });
-  });
-
-  it('rejects on exec error', async () => {
-    mockExecFile.mockImplementation((_file, _args, cb) =>
-      cb(new Error('cap fail'), '', '')
-    );
-    const { captureArea } =
-      await import('@/main/capture/screenshot/capture-area');
-    await expect(
-      captureArea({
-        status: 'confirmed',
-        x: 0,
-        y: 0,
-        width: 10,
-        height: 10,
-      })
-    ).rejects.toThrow('cap fail');
-  });
-
-  it('returns null when screenshot file is missing', async () => {
-    mockFsExistsSync.mockReturnValue(false);
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
-    const { captureArea } =
-      await import('@/main/capture/screenshot/capture-area');
-    const result = await captureArea({
-      status: 'confirmed',
-      x: 0,
-      y: 0,
-      width: 10,
-      height: 10,
-    });
-    expect(result).toBeNull();
-  });
-
-  it('writes image to clipboard when captureToClipboard is enabled', async () => {
-    mockGetConfig.mockReturnValue({
-      general: { playSoundOnScreenshot: true },
-      screenshot: { captureToClipboard: true, showPreview: true },
-    });
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
-    const { captureArea } =
-      await import('@/main/capture/screenshot/capture-area');
-    await captureArea({
-      status: 'confirmed',
-      x: 0,
-      y: 0,
-      width: 10,
-      height: 10,
-    });
-    expect(mockClipboardWriteImage).toHaveBeenCalled();
-    expect(mockShowCapturePreview).not.toHaveBeenCalled();
-  });
-
-  it('shows preview when configured', async () => {
-    mockGetConfig.mockReturnValue({
-      general: { playSoundOnScreenshot: true },
-      screenshot: { captureToClipboard: false, showPreview: true },
-    });
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
-    const { captureArea } =
-      await import('@/main/capture/screenshot/capture-area');
-    await captureArea({
-      status: 'confirmed',
-      x: 0,
-      y: 0,
-      width: 10,
-      height: 10,
-    });
-    expect(mockShowCapturePreview).toHaveBeenCalledWith(
-      '/path/Screenshot.png',
-      'screenshot',
-      undefined,
-      expect.objectContaining({ dispose: mockDisposePreparedPreview }),
-      expect.any(Promise)
-    );
-  });
-
-  it('calls onCaptured hook after successful capture', async () => {
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
-    const onCaptured = vi.fn().mockResolvedValue(undefined);
-    const { captureArea } =
-      await import('@/main/capture/screenshot/capture-area');
-    await captureArea(
-      { status: 'confirmed', x: 0, y: 0, width: 10, height: 10 },
-      { onCaptured }
-    );
-    expect(onCaptured).toHaveBeenCalled();
-  });
-});
-
-describe('captureArea on Windows', () => {
-  const originalPlatform = process.platform;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.resetModules();
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    mockGetConfig.mockReturnValue({
-      general: { playSoundOnScreenshot: true },
-      screenshot: {
-        captureToClipboard: false,
-        showPreview: false,
-        hideDesktopIcons: false,
-      },
-    });
-    mockHideDesktopIcons.mockReset();
-    mockShowDesktopIcons.mockReset();
-    mockDesktopIconsSupported.mockReset();
-    mockDesktopIconsSupported.mockReturnValue(false);
-    mockFsExistsSync.mockReturnValue(true);
-    mockAddToHistory.mockResolvedValue({ id: 'h1' });
-    mockCaptureRegionToFile.mockResolvedValue(true);
-    mockCaptureWindowToFile.mockResolvedValue(true);
-  });
-
-  afterEach(() => {
-    Object.defineProperty(process, 'platform', { value: originalPlatform });
+    expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
   });
 
   it('captures the requested region through the daemon', async () => {
@@ -303,7 +125,6 @@ describe('captureArea on Windows', () => {
       height: 200,
     });
 
-    expect(mockExecFile).not.toHaveBeenCalled();
     expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
       { x: 110, y: 70, width: 300, height: 200 },
       '/path/Screenshot.png'
@@ -345,7 +166,7 @@ describe('captureArea on Windows', () => {
       { windowId: 4242 }
     );
 
-    expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
+    expect(mockCaptureWindowByIdToFile).toHaveBeenCalledWith(
       4242,
       '/path/Screenshot.png'
     );
@@ -366,7 +187,97 @@ describe('captureArea on Windows', () => {
       '/path/Screenshot.png',
       { cached: true, windowId: 4242 }
     );
-    expect(mockCaptureWindowToFile).not.toHaveBeenCalled();
+    expect(mockCaptureWindowByIdToFile).not.toHaveBeenCalled();
+  });
+
+  it('captures complete retained window bounds across displays', async () => {
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    const windowBounds = { x: 1800, y: 200, width: 400, height: 300 };
+
+    await captureArea(
+      { status: 'confirmed', x: 1800, y: 200, width: 400, height: 300 },
+      { cached: true, windowId: 4242, windowBounds }
+    );
+
+    expect(mockCaptureFrozenWindowToFile).toHaveBeenCalledWith(
+      windowBounds,
+      '/path/Screenshot.png',
+      4242
+    );
+    expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
+    expect(mockCaptureWindowByIdToFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the daemon capture fails', async () => {
+    mockCaptureRegionToFile.mockRejectedValue(new Error('cap fail'));
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    await expect(
+      captureArea({
+        status: 'confirmed',
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+      })
+    ).rejects.toThrow('cap fail');
+  });
+
+  it('returns null when screenshot file is missing', async () => {
+    mockFsExistsSync.mockReturnValue(false);
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    const result = await captureArea({
+      status: 'confirmed',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+    expect(result).toBeNull();
+    expect(mockOpenScreenshotEditor).not.toHaveBeenCalled();
+  });
+
+  it('writes image to clipboard when captureToClipboard is enabled', async () => {
+    mockGetConfig.mockReturnValue({
+      general: { playSoundOnScreenshot: true },
+      screenshot: { captureToClipboard: true, showPreview: true },
+    });
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    await captureArea({
+      status: 'confirmed',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+    expect(mockClipboardWriteImage).toHaveBeenCalled();
+    expect(mockShowCapturePreview).not.toHaveBeenCalled();
+  });
+
+  it('shows preview when configured', async () => {
+    mockGetConfig.mockReturnValue({
+      general: { playSoundOnScreenshot: true },
+      screenshot: { captureToClipboard: false, showPreview: true },
+    });
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    await captureArea({
+      status: 'confirmed',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+    expect(mockShowCapturePreview).toHaveBeenCalledWith(
+      '/path/Screenshot.png',
+      'screenshot',
+      undefined,
+      expect.objectContaining({ dispose: mockDisposePreparedPreview }),
+      expect.any(Promise)
+    );
   });
 
   it('hides desktop icons only while acquiring capture pixels', async () => {
@@ -402,6 +313,33 @@ describe('captureArea on Windows', () => {
     });
 
     expect(calls).toEqual(['hide', 'capture', 'show']);
+  });
+
+  it('skips hiding desktop icons when accessibility permission is denied', async () => {
+    mockGetConfig.mockReturnValue({
+      general: { playSoundOnScreenshot: true },
+      screenshot: {
+        captureToClipboard: false,
+        showPreview: false,
+        hideDesktopIcons: true,
+      },
+    });
+    mockDesktopIconsSupported.mockReturnValue(true);
+    mockCheckAccessibilityPermission.mockReturnValue(false);
+
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    await captureArea({
+      status: 'confirmed',
+      x: 110,
+      y: 70,
+      width: 300,
+      height: 200,
+    });
+
+    expect(mockHideDesktopIcons).not.toHaveBeenCalled();
+    expect(mockShowDesktopIcons).not.toHaveBeenCalled();
+    expect(mockCaptureRegionToFile).toHaveBeenCalled();
   });
 
   it('starts the preview while desktop icons are being restored', async () => {
@@ -465,5 +403,16 @@ describe('captureArea on Windows', () => {
     expect(result).toBeNull();
     expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
     expect(mockOpenScreenshotEditor).not.toHaveBeenCalled();
+  });
+
+  it('calls onCaptured hook after successful capture', async () => {
+    const onCaptured = vi.fn().mockResolvedValue(undefined);
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+    await captureArea(
+      { status: 'confirmed', x: 0, y: 0, width: 10, height: 10 },
+      { onCaptured }
+    );
+    expect(onCaptured).toHaveBeenCalled();
   });
 });

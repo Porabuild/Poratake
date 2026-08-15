@@ -16,6 +16,8 @@ class FreezeScreenModule: Module {
             handleFreeze(watchSpaceKey: watchSpaceKey, requestId: requestId)
         case "release":
             handleRelease(requestId: requestId)
+        case "prewarm":
+            handlePrewarm(requestId: requestId)
         case "status":
             handleStatus(requestId: requestId)
         default:
@@ -30,7 +32,7 @@ class FreezeScreenModule: Module {
             if watchSpaceKey {
                 self.startKeyMonitor()
             }
-            self.respond(id: requestId, result: ["frozen": true])
+            self.respond(id: requestId, result: ["frozen": !self.overlayWindows.isEmpty])
         }
     }
     
@@ -45,6 +47,21 @@ class FreezeScreenModule: Module {
     
     private func handleStatus(requestId: String) {
         respond(id: requestId, result: ["frozen": !overlayWindows.isEmpty])
+    }
+
+    private func handlePrewarm(requestId: String) {
+        let frame = NSScreen.screens.first?.frame ?? .zero
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            if !frame.isEmpty {
+                _ = CGWindowListCreateImage(
+                    frame,
+                    .optionOnScreenOnly,
+                    kCGNullWindowID,
+                    [.bestResolution]
+                )
+            }
+            self?.respond(id: requestId, result: ["prewarmed": true])
+        }
     }
     
     private func startKeyMonitor() {
@@ -98,7 +115,7 @@ class FreezeScreenModule: Module {
         runLoopSource = nil
     }
     
-    private func captureScreenImage(for screen: NSScreen) -> NSImage? {
+    private func captureFrame(for screen: NSScreen) -> (image: CGImage, rect: CGRect)? {
         let screenFrame = screen.frame
         let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screenFrame.height
         let captureRect = CGRect(
@@ -107,23 +124,33 @@ class FreezeScreenModule: Module {
             width: screenFrame.width,
             height: screenFrame.height
         )
-        
+
         guard let cgImage = CGWindowListCreateImage(
             captureRect,
             .optionOnScreenOnly,
             kCGNullWindowID,
-            .bestResolution
+            [.bestResolution]
         ) else {
             return nil
         }
-        
-        return NSImage(cgImage: cgImage, size: screenFrame.size)
+
+        return (cgImage, captureRect)
     }
     
     private func createOverlays() {
         removeOverlays()
         
         for screen in NSScreen.screens {
+            guard let frame = captureFrame(for: screen) else {
+                continue
+            }
+
+            FrozenFrameStore.store(FrozenFrame(
+                image: frame.image,
+                rect: frame.rect,
+                scale: CGFloat(frame.image.width) / frame.rect.width
+            ))
+
             let window = NSWindow(
                 contentRect: screen.frame,
                 styleMask: .borderless,
@@ -136,11 +163,8 @@ class FreezeScreenModule: Module {
             let contentView = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
             let imageView = NSImageView(frame: contentView.bounds)
             imageView.autoresizingMask = [.width, .height]
-            
-            if let screenImage = captureScreenImage(for: screen) {
-                imageView.image = screenImage
-                imageView.imageScaling = .scaleAxesIndependently
-            }
+            imageView.image = NSImage(cgImage: frame.image, size: screen.frame.size)
+            imageView.imageScaling = .scaleAxesIndependently
             
             contentView.addSubview(imageView)
             window.contentView = contentView
@@ -164,5 +188,6 @@ class FreezeScreenModule: Module {
             window.orderOut(nil)
         }
         overlayWindows.removeAll()
+        FrozenFrameStore.clear()
     }
 }

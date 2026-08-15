@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockCaptureRegionToFile = vi.fn();
+const mockCaptureFrozenWindowToFile = vi.fn();
+const mockCaptureWindowByIdToFile = vi.fn();
+const mockResolveWindowPickTargets = vi.fn();
 const mockFreezeScreen = vi.fn();
 const mockReleaseScreen = vi.fn();
 const mockIsFreezeScreenEnabled = vi.fn();
@@ -20,6 +23,8 @@ class MockBrowserWindow {
   static nextWebContentsId = 1;
 
   options: Record<string, unknown>;
+  handlers = new Map<string, () => void>();
+  excludedFromShownWindowsMenu = false;
   destroyed = false;
   visible = false;
   webContents = {
@@ -53,10 +58,13 @@ class MockBrowserWindow {
   setAlwaysOnTop = vi.fn();
   setBounds = vi.fn();
   setIgnoreMouseEvents = vi.fn();
+  setContentProtection = vi.fn();
   setOpacity = vi.fn();
   loadURL = vi.fn();
   loadFile = vi.fn();
-  on = vi.fn();
+  on = vi.fn((event: string, handler: () => void) => {
+    this.handlers.set(event, handler);
+  });
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
@@ -101,6 +109,14 @@ vi.mock('@/main/utils/env', () => ({
 
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureRegionToFile: (...a: unknown[]) => mockCaptureRegionToFile(...a),
+  captureFrozenWindowToFile: (...a: unknown[]) =>
+    mockCaptureFrozenWindowToFile(...a),
+  captureWindowByIdToFile: (...a: unknown[]) =>
+    mockCaptureWindowByIdToFile(...a),
+}));
+
+vi.mock('@/main/capture/area-overlay/window-pick-targets', () => ({
+  resolveWindowPickTargets: () => mockResolveWindowPickTargets(),
 }));
 
 vi.mock('@/main/capture/freeze-screen', () => ({
@@ -114,6 +130,12 @@ vi.mock('@/main/capture/freeze-screen/preference', () => ({
 
 vi.mock('@/main/daemon', () => ({
   daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
+}));
+
+vi.mock('@/main/utils/platform', () => ({
+  isWindows: true,
+  isMac: false,
+  isLinux: false,
 }));
 
 const display = {
@@ -145,6 +167,8 @@ describe('area overlay', () => {
     mockGetCursorScreenPoint.mockReturnValue({ x: 200, y: 100 });
     mockGetDisplayNearestPoint.mockReturnValue(display);
     mockCaptureRegionToFile.mockResolvedValue(true);
+    mockCaptureFrozenWindowToFile.mockResolvedValue(true);
+    mockCaptureWindowByIdToFile.mockResolvedValue(true);
     mockFreezeScreen.mockResolvedValue(true);
     mockReleaseScreen.mockResolvedValue(true);
     mockIsFreezeScreenEnabled.mockReturnValue(true);
@@ -197,6 +221,8 @@ describe('area overlay', () => {
         displayId: display.id,
         imageUrl: null,
         interactive: true,
+        autoConfirm: true,
+        repeatablePicks: false,
         showPrompt: true,
         aspectRatio: null,
         toolbar: null,
@@ -205,6 +231,20 @@ describe('area overlay', () => {
         prompt: null,
       },
     });
+  });
+
+  it('removes a pooled overlay without reading the destroyed window', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    module.prewarmAreaOverlay();
+    const window = overlayWindows[0];
+    window.destroyed = true;
+    Object.defineProperty(window, 'webContents', {
+      get: () => {
+        throw new TypeError('Object has been destroyed');
+      },
+    });
+
+    expect(() => window.handlers.get('closed')?.()).not.toThrow();
   });
 
   it('preserves an existing global window-animation switch when priming', async () => {
@@ -228,11 +268,17 @@ describe('area overlay', () => {
     expect(overlayWindows[0].options).toMatchObject({
       transparent: true,
       backgroundColor: '#00000000',
+      hiddenInMissionControl: true,
+      skipTaskbar: true,
     });
     expect(overlayWindows[0].options.opacity).toBe(0);
+    if (process.platform === 'darwin') {
+      expect(overlayWindows[0].excludedFromShownWindowsMenu).toBe(true);
+    }
     expect(overlayWindows[0].options).toMatchObject({
       webPreferences: { webSecurity: true },
     });
+    expect(overlayWindows[0].setContentProtection).toHaveBeenCalledWith(true);
     expect(overlayWindows[0].showInactive).toHaveBeenCalledTimes(1);
     expect(
       mockDaemonCall.mock.calls.filter(
@@ -576,6 +622,8 @@ describe('area overlay', () => {
         displayId: display.id,
         imageUrl: null,
         interactive: false,
+        autoConfirm: true,
+        repeatablePicks: false,
         showPrompt: true,
         aspectRatio: null,
         toolbar: null,
@@ -661,6 +709,75 @@ describe('area overlay', () => {
     );
     expect(overlayWindows[0].hide).not.toHaveBeenCalled();
     expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(1);
+    expect(mockReleaseScreen).not.toHaveBeenCalled();
+  });
+
+  it('crops the picked window from the retained frame', async () => {
+    mockResolveWindowPickTargets.mockResolvedValue({
+      targets: [{ id: 99, rect: { x: 150, y: 100, width: 400, height: 300 } }],
+      names: new Map([[99, 'Finder']]),
+      captureRects: new Map([
+        [99, { x: 150, y: 100, width: 400, height: 300 }],
+      ]),
+      prompt: 'Click a window',
+    });
+
+    const module = await import('@/main/capture/area-overlay');
+    const captured = module.captureWindowToFile('/tmp/window.png');
+    await settle();
+
+    expect(mockCaptureFrozenWindowToFile).not.toHaveBeenCalled();
+    expect(mockCaptureWindowByIdToFile).not.toHaveBeenCalled();
+
+    fire('area-overlay:confirm', overlayWindows[0].webContents.id, {
+      displayId: display.id,
+      pickId: 99,
+      x: 50,
+      y: 50,
+      width: 400,
+      height: 300,
+    });
+
+    expect(await captured).toBe(true);
+    expect(mockCaptureFrozenWindowToFile).toHaveBeenCalledWith(
+      { x: 150, y: 100, width: 400, height: 300 },
+      '/tmp/window.png',
+      99
+    );
+    expect(mockCaptureWindowByIdToFile).not.toHaveBeenCalled();
+    expect(mockReleaseScreen).toHaveBeenCalled();
+  });
+
+  it('captures the picked window live when freezing is disabled', async () => {
+    mockIsFreezeScreenEnabled.mockReturnValue(false);
+    mockResolveWindowPickTargets.mockResolvedValue({
+      targets: [{ id: 99, rect: { x: 150, y: 100, width: 400, height: 300 } }],
+      names: new Map([[99, 'Finder']]),
+      captureRects: new Map([
+        [99, { x: 150, y: 100, width: 400, height: 300 }],
+      ]),
+      prompt: 'Click a window',
+    });
+
+    const module = await import('@/main/capture/area-overlay');
+    const captured = module.captureWindowToFile('/tmp/window.png');
+    await settle();
+
+    fire('area-overlay:confirm', overlayWindows[0].webContents.id, {
+      displayId: display.id,
+      pickId: 99,
+      x: 50,
+      y: 50,
+      width: 400,
+      height: 300,
+    });
+
+    expect(await captured).toBe(true);
+    expect(mockCaptureWindowByIdToFile).toHaveBeenCalledWith(
+      99,
+      '/tmp/window.png'
+    );
+    expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
     expect(mockReleaseScreen).not.toHaveBeenCalled();
   });
 });

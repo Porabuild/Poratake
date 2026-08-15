@@ -7,6 +7,11 @@ const mockGetDisplayMatching = vi.fn();
 const mockDaemonCall = vi.fn();
 const mockGlobalShortcutRegister = vi.fn();
 const mockGlobalShortcutUnregister = vi.fn();
+const mockPlatform = vi.hoisted(() => ({
+  isWindows: true,
+  isMac: false,
+  isLinux: false,
+}));
 
 const ipcHandlers = new Map<string, (event: unknown, data?: unknown) => void>();
 const overlayWindows: MockBrowserWindow[] = [];
@@ -49,6 +54,7 @@ class MockBrowserWindow {
   setAlwaysOnTop = vi.fn();
   setBounds = vi.fn();
   setIgnoreMouseEvents = vi.fn();
+  setContentProtection = vi.fn();
   setOpacity = vi.fn();
   loadURL = vi.fn();
   loadFile = vi.fn();
@@ -102,6 +108,8 @@ vi.mock('@/main/utils/env', () => ({
 
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
   captureRegionToFile: vi.fn(),
+  captureFrozenWindowToFile: vi.fn(),
+  captureWindowByIdToFile: vi.fn(),
 }));
 
 vi.mock('@/main/capture/freeze-screen/preference', () => ({
@@ -111,6 +119,8 @@ vi.mock('@/main/capture/freeze-screen/preference', () => ({
 vi.mock('@/main/daemon', () => ({
   daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
 }));
+
+vi.mock('@/main/utils/platform', () => mockPlatform);
 
 const primary = { id: 7, bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
 const secondary = {
@@ -142,6 +152,8 @@ describe('interactive area overlay', () => {
     overlayWindows.length = 0;
     loadHandlers.clear();
     commandLineSwitches.clear();
+    mockPlatform.isWindows = true;
+    mockPlatform.isMac = false;
     mockGetAllDisplays.mockReturnValue([primary, secondary]);
     mockGetCursorScreenPoint.mockReturnValue({ x: 10, y: 10 });
     mockGetDisplayNearestPoint.mockReturnValue(primary);
@@ -201,6 +213,8 @@ describe('interactive area overlay', () => {
         displayId: secondary.id,
         imageUrl: null,
         interactive: true,
+        autoConfirm: true,
+        repeatablePicks: false,
         showPrompt: true,
         aspectRatio: null,
         toolbar: null,
@@ -212,6 +226,59 @@ describe('interactive area overlay', () => {
 
     module.cancelOverlaySelection();
     await session;
+  });
+
+  it('mounts scroll capture with area selection inside its renderer', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      renderer: 'scroll-capture-overlay',
+    });
+    await settle();
+
+    prepare(windowFor(0));
+
+    expect(windowFor(0).webContents.send).toHaveBeenCalledWith(
+      'load',
+      expect.objectContaining({
+        type: 'scroll-capture-overlay',
+        params: expect.objectContaining({
+          sessionId: expect.any(Number),
+          displayId: primary.id,
+        }),
+      })
+    );
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('reveals the macOS overlay without hiding or showing the pooled window', async () => {
+    mockPlatform.isWindows = false;
+    mockPlatform.isMac = true;
+    const module = await import('@/main/capture/area-overlay');
+
+    const session = module.startInteractiveOverlay({ freeze: false });
+    await settle();
+
+    expect(windowFor(0).showInactive).toHaveBeenCalledTimes(1);
+    expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(0);
+    expect(windowFor(0).hide).not.toHaveBeenCalled();
+
+    prepare(windowFor(0));
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    await settle();
+
+    expect(windowFor(0).showInactive).toHaveBeenCalledTimes(1);
+    expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(1);
+    expect(windowFor(0).hide).not.toHaveBeenCalled();
+    expect(mockDaemonCall).not.toHaveBeenCalled();
+
+    module.cancelOverlaySelection();
+    await session;
+
+    expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(0);
+    expect(windowFor(0).hide).not.toHaveBeenCalled();
   });
 
   it('reports a hidden preset without showing its overlay window', async () => {
@@ -280,6 +347,99 @@ describe('interactive area overlay', () => {
     await session;
   });
 
+  it('returns the complete window bounds after selecting its clipped target', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const onSelected = vi.fn();
+    const windowBounds = { x: 1800, y: 200, width: 400, height: 300 };
+
+    const session = module.startInteractiveOverlay({
+      pickTargets: [{ id: 12, rect: windowBounds }],
+      callbacks: { onSelected },
+    });
+    await settle();
+
+    fire('area-overlay:selected', windowFor(1).webContents.id, {
+      displayId: secondary.id,
+      pickId: 12,
+      x: 0,
+      y: 200,
+      width: 280,
+      height: 300,
+    });
+
+    expect(onSelected).toHaveBeenCalledWith(
+      expect.objectContaining({
+        display: secondary,
+        pickId: 12,
+        rect: windowBounds,
+      })
+    );
+
+    module.confirmOverlaySelection();
+    expect(await session).toEqual(
+      expect.objectContaining({
+        display: secondary,
+        pickId: 12,
+        rect: windowBounds,
+      })
+    );
+  });
+
+  it('keeps display picking active across monitor changes', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const onSelected = vi.fn();
+
+    const session = module.startInteractiveOverlay({
+      autoConfirm: false,
+      repeatablePicks: true,
+      pickTargets: [
+        { id: primary.id, rect: primary.bounds },
+        { id: secondary.id, rect: secondary.bounds },
+      ],
+      callbacks: { onSelected },
+    });
+    await settle();
+
+    fire('area-overlay:selected', windowFor(0).webContents.id, {
+      displayId: primary.id,
+      pickId: primary.id,
+      x: 0,
+      y: 0,
+      width: primary.bounds.width,
+      height: primary.bounds.height,
+    });
+    fire('area-overlay:selected', windowFor(1).webContents.id, {
+      displayId: secondary.id,
+      pickId: secondary.id,
+      x: 0,
+      y: 0,
+      width: secondary.bounds.width,
+      height: secondary.bounds.height,
+    });
+
+    expect(onSelected).toHaveBeenCalledTimes(2);
+    expect(onSelected).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        display: secondary,
+        pickId: secondary.id,
+        rect: secondary.bounds,
+      })
+    );
+    expect(windowFor(0).webContents.send).toHaveBeenCalledWith(
+      'area-overlay:set-rect',
+      { rect: null }
+    );
+
+    module.confirmOverlaySelection();
+    expect(await session).toEqual(
+      expect.objectContaining({
+        display: secondary,
+        pickId: secondary.id,
+        rect: secondary.bounds,
+      })
+    );
+  });
+
   it('switches a running session between picking and free-form selection', async () => {
     const module = await import('@/main/capture/area-overlay');
 
@@ -293,7 +453,10 @@ describe('interactive area overlay', () => {
       width: 100,
       height: 100,
     });
-    expect(windowFor(1).setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
+    expect(windowFor(1).webContents.send).toHaveBeenCalledWith(
+      'area-overlay:set-rect',
+      { rect: null }
+    );
 
     module.setOverlayPickTargets(
       [{ id: 11, rect: { x: 100, y: 100, width: 400, height: 300 } }],
@@ -305,6 +468,7 @@ describe('interactive area overlay', () => {
       {
         pickTargets: [{ id: 11, x: 100, y: 100, width: 400, height: 300 }],
         prompt: 'Click a window to select it · Esc to cancel',
+        repeatablePicks: false,
       }
     );
     expect(windowFor(1).webContents.send).toHaveBeenCalledWith(
@@ -312,16 +476,16 @@ describe('interactive area overlay', () => {
       {
         pickTargets: [],
         prompt: 'Click a window to select it · Esc to cancel',
+        repeatablePicks: false,
       }
     );
 
     await settle();
-    expect(windowFor(1).setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
 
     module.setOverlayPickTargets(null, null);
     expect(windowFor(0).webContents.send).toHaveBeenCalledWith(
       'area-overlay:set-pick-targets',
-      { pickTargets: null, prompt: null }
+      { pickTargets: null, prompt: null, repeatablePicks: false }
     );
 
     module.confirmOverlaySelection();
@@ -560,9 +724,13 @@ describe('interactive area overlay', () => {
     await settle();
 
     fire('area-overlay:toolbar', windowFor(0).webContents.id, {
-      action: 'screenshot',
+      action: 'select-capture-mode',
+      mode: 'record',
     });
-    expect(onToolbarAction).toHaveBeenCalledWith({ action: 'screenshot' });
+    expect(onToolbarAction).toHaveBeenCalledWith({
+      action: 'select-capture-mode',
+      mode: 'record',
+    });
 
     fire('area-overlay:toolbar', windowFor(0).webContents.id, {
       action: 'update-size',
@@ -576,16 +744,13 @@ describe('interactive area overlay', () => {
     expect(onToolbarAction).toHaveBeenCalledTimes(1);
 
     fire('area-overlay:toolbar', windowFor(1).webContents.id, {
-      action: 'select-aspect-ratio',
-      name: '16:9',
-      width: 16,
-      height: 9,
+      action: 'select-capture-mode',
+      mode: 'ocr',
     });
-
-    fire('area-overlay:toolbar', windowFor(1).webContents.id, {
-      action: 'ocr',
+    expect(onToolbarAction).toHaveBeenCalledWith({
+      action: 'select-capture-mode',
+      mode: 'ocr',
     });
-    expect(onToolbarAction).toHaveBeenCalledWith({ action: 'ocr' });
 
     fire('area-overlay:toolbar', windowFor(1).webContents.id, {
       action: 'copy-color',
@@ -626,12 +791,10 @@ describe('interactive area overlay', () => {
       action: 'select-capture-target',
       target: 'invalid',
     });
-    expect(onToolbarAction).toHaveBeenCalledTimes(6);
+    expect(onToolbarAction).toHaveBeenCalledTimes(5);
     expect(onToolbarAction).toHaveBeenCalledWith({
-      action: 'select-aspect-ratio',
-      name: '16:9',
-      width: 16,
-      height: 9,
+      action: 'select-capture-mode',
+      mode: 'ocr',
     });
 
     module.setOverlayToolbar(null);
@@ -701,6 +864,12 @@ describe('interactive area overlay', () => {
     expect(windowFor(0).webContents.send).not.toHaveBeenCalledWith(
       'area-overlay:set-rect',
       expect.anything()
+    );
+
+    expect(module.retainOverlayHandoffWindow(primary.id)).toBe(windowFor(0));
+    expect(windowFor(1).webContents.send).toHaveBeenCalledWith(
+      'area-overlay:set-rect',
+      { rect: null }
     );
 
     module.concealOverlayHandoff();

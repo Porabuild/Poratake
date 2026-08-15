@@ -79,6 +79,7 @@ describe('Config Management', () => {
       const config = loadConfig();
 
       expect(config).toEqual(DEFAULT_SETTINGS);
+      expect(config.general.playSoundOnScreenshot).toBe(false);
       expect(mockFs.writeFileSync).toHaveBeenCalled(); // Should save defaults
     });
 

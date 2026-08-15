@@ -93,6 +93,10 @@ struct AnyCodable: Codable {
             try container.encode(double)
         case let string as String:
             try container.encode(string)
+        case let cgFloat as CGFloat:
+            try container.encode(Double(cgFloat))
+        case let float as Float:
+            try container.encode(Double(float))
         case let array as [Any]:
             try container.encode(array.map { AnyCodable($0) })
         case let dict as [String: Any]:

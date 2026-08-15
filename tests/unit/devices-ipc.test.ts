@@ -115,7 +115,11 @@ describe('devices IPC handlers', () => {
         sender: createSender(),
       });
 
-      expect(mockDaemonCall).toHaveBeenCalledWith('media-devices', 'list');
+      expect(mockDaemonCall).toHaveBeenCalledWith(
+        'media-devices',
+        'list',
+        undefined
+      );
       expect(result).toEqual({
         microphones: [{ id: 'mic-1', label: 'Mic 1' }],
         cameras: [{ id: 'cam-1', label: 'Cam 1' }],

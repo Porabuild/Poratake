@@ -102,12 +102,6 @@ const mockCapture = {
 };
 vi.mock('@/main/capture', () => mockCapture);
 
-// Mock all-in-one
-const mockAllInOne = {
-  init: vi.fn(),
-};
-vi.mock('@/main/capture/all-in-one', () => mockAllInOne);
-
 // Mock onboarding
 const mockOnboarding = {
   init: vi.fn(),
@@ -174,12 +168,6 @@ describe('Main Process', () => {
       await import('@/main/main');
 
       expect(mockCloud.init).toHaveBeenCalled();
-    });
-
-    it('should initialize all-in-one', async () => {
-      await import('@/main/main');
-
-      expect(mockAllInOne.init).toHaveBeenCalled();
     });
 
     it('should always call showOnboardingOrRun', async () => {

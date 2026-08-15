@@ -56,6 +56,7 @@ vi.mock('@/main/settings', () => ({
 vi.mock('@/main/capture/desktop-icons', () => ({
   hideDesktopIcons: (...a: unknown[]) => mockHideDesktopIcons(...a),
   showDesktopIcons: (...a: unknown[]) => mockShowDesktopIcons(...a),
+  checkAccessibilityPermission: () => true,
   isSupported: () => mockIsDesktopIconsSupported(),
 }));
 
@@ -89,28 +90,26 @@ describe('captureText (OCR)', () => {
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: false } });
     mockIsDesktopIconsSupported.mockReturnValue(true);
     mockPreprocessImageForOcr.mockResolvedValue(false);
+    mockCaptureAreaToFile.mockResolvedValue(true);
   });
 
-  it('writes detected text to clipboard and shows notification', async () => {
+  it('uses the unified area overlay and copies recognized text', async () => {
     mockFsExistsSync.mockReturnValue(true);
     mockDaemonCall.mockResolvedValue({ text: '  Hello world  ' });
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const captureText = (await import('@/main/capture/ocr')).default;
     await captureText();
     await flush();
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
+      expect.stringContaining('poratake-ocr-')
+    );
     expect(mockClipboardWriteText).toHaveBeenCalledWith('Hello world');
-    expect(mockNotificationCreate).toHaveBeenCalledWith({
-      title: 'Text copied!',
-      body: 'Recognized text has been copied to the clipboard',
-    });
     expect(mockNotificationShow).toHaveBeenCalled();
     expect(mockFsUnlinkSync).toHaveBeenCalled();
   });
 
-  it('notifies when no text detected', async () => {
-    mockFsExistsSync.mockReturnValue(true);
+  it('notifies when no text is detected', async () => {
     mockDaemonCall.mockResolvedValue({ text: '' });
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const captureText = (await import('@/main/capture/ocr')).default;
     await captureText();
     await flush();
@@ -118,41 +117,16 @@ describe('captureText (OCR)', () => {
     expect(mockNotificationShow).toHaveBeenCalled();
   });
 
-  it('bails out when screencapture errors', async () => {
-    mockExecFile.mockImplementation((_file, _args, cb) =>
-      cb(new Error('cap failed'), '', '')
-    );
+  it('bails out when the area capture is cancelled', async () => {
+    mockCaptureAreaToFile.mockResolvedValue(false);
     const captureText = (await import('@/main/capture/ocr')).default;
     await captureText();
     await flush();
     expect(mockDaemonCall).not.toHaveBeenCalled();
   });
 
-  it('recognizes a captured file when screencapture also writes stderr', async () => {
-    mockFsExistsSync.mockReturnValue(true);
-    mockDaemonCall.mockResolvedValue({ text: 'Captured text' });
-    mockExecFile.mockImplementation((_file, _args, cb) =>
-      cb(null, '', 'capture warning')
-    );
-    const captureText = (await import('@/main/capture/ocr')).default;
-    await captureText();
-    expect(mockDaemonCall).toHaveBeenCalled();
-    expect(mockClipboardWriteText).toHaveBeenCalledWith('Captured text');
-  });
-
-  it('bails out when temp screenshot is missing', async () => {
-    mockFsExistsSync.mockReturnValue(false);
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
-    const captureText = (await import('@/main/capture/ocr')).default;
-    await captureText();
-    await flush();
-    expect(mockDaemonCall).not.toHaveBeenCalled();
-  });
-
-  it('shows failure notification on daemon error', async () => {
-    mockFsExistsSync.mockReturnValue(true);
+  it('shows a failure notification on daemon error', async () => {
     mockDaemonCall.mockRejectedValue(new Error('ocr crash'));
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const captureText = (await import('@/main/capture/ocr')).default;
     await captureText();
     await flush();
@@ -160,24 +134,18 @@ describe('captureText (OCR)', () => {
   });
 
   it('keeps recognized text when temporary-file cleanup fails', async () => {
-    mockFsExistsSync.mockReturnValue(true);
     mockFsUnlinkSync.mockImplementation(() => {
       throw new Error('file locked');
     });
     mockDaemonCall.mockResolvedValue({ text: 'Recognized text' });
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const captureText = (await import('@/main/capture/ocr')).default;
-
     await captureText();
-
     expect(mockClipboardWriteText).toHaveBeenCalledWith('Recognized text');
   });
 
   it('hides and restores desktop icons when enabled', async () => {
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
-    mockFsExistsSync.mockReturnValue(true);
     mockDaemonCall.mockResolvedValue({ text: 'x' });
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
     const captureText = (await import('@/main/capture/ocr')).default;
     await captureText();
     await flush();
@@ -185,85 +153,38 @@ describe('captureText (OCR)', () => {
     expect(mockShowDesktopIcons).toHaveBeenCalledWith('capture');
   });
 
-  it('awaits the native capture command', async () => {
-    let finishCapture: ExecCallback = () => {};
-    mockFsExistsSync.mockReturnValue(true);
+  it('uses a unique temporary path for every capture', async () => {
     mockDaemonCall.mockResolvedValue({ text: 'x' });
-    mockExecFile.mockImplementation((_file, _args, cb) => {
-      finishCapture = cb;
-    });
     const captureText = (await import('@/main/capture/ocr')).default;
-    const capture = captureText();
-
-    await Promise.resolve();
-    expect(mockDaemonCall).not.toHaveBeenCalled();
-
-    finishCapture(null, '', '');
-    await capture;
-
-    expect(mockExecFile).toHaveBeenCalledWith(
-      'screencapture',
-      ['-i', '-x', '-t', 'png', expect.stringContaining('poratake-ocr-')],
-      expect.any(Function)
+    await captureText();
+    await captureText();
+    expect(mockCaptureAreaToFile.mock.calls[0][0]).not.toBe(
+      mockCaptureAreaToFile.mock.calls[1][0]
     );
-    expect(mockDaemonCall).toHaveBeenCalled();
-  });
-
-  it('uses a unique temporary path for each capture', async () => {
-    mockFsExistsSync.mockReturnValue(true);
-    mockDaemonCall.mockResolvedValue({ text: 'x' });
-    mockExecFile.mockImplementation((_file, _args, cb) => cb(null, '', ''));
-    const captureText = (await import('@/main/capture/ocr')).default;
-
-    await captureText();
-    await captureText();
-
-    const firstPath = mockExecFile.mock.calls[0][1][4];
-    const secondPath = mockExecFile.mock.calls[1][1][4];
-    expect(firstPath).not.toBe(secondPath);
   });
 
   it('ignores a second capture while the first is active', async () => {
-    let finishCapture: ExecCallback = () => {};
     mockGetConfig.mockReturnValue({ screenshot: { hideDesktopIcons: true } });
-    mockFsExistsSync.mockReturnValue(true);
     mockDaemonCall.mockResolvedValue({ text: 'x' });
-    mockExecFile.mockImplementation((_file, _args, cb) => {
-      finishCapture = cb;
-    });
+    let finishCapture: (value: boolean) => void = () => {};
+    mockCaptureAreaToFile.mockReturnValue(
+      new Promise<boolean>(resolve => {
+        finishCapture = resolve;
+      })
+    );
     const captureText = (await import('@/main/capture/ocr')).default;
 
     const firstCapture = captureText();
     await Promise.resolve();
     const secondCapture = captureText();
 
-    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    expect(mockCaptureAreaToFile).toHaveBeenCalledTimes(1);
     expect(mockHideDesktopIcons).toHaveBeenCalledTimes(1);
 
-    finishCapture(null, '', '');
+    finishCapture(true);
     await Promise.all([firstCapture, secondCapture]);
 
     expect(mockShowDesktopIcons).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not overlap OCR and QR selection sessions', async () => {
-    let finishCapture: ExecCallback = () => {};
-    mockFsExistsSync.mockReturnValue(true);
-    mockDaemonCall.mockResolvedValue({ text: 'x' });
-    mockExecFile.mockImplementation((_file, _args, cb) => {
-      finishCapture = cb;
-    });
-    const captureText = (await import('@/main/capture/ocr')).default;
-    const scanQRCode = (await import('@/main/capture/qrcode')).default;
-
-    const capture = captureText();
-    await Promise.resolve();
-    await scanQRCode();
-
-    expect(mockExecFile).toHaveBeenCalledTimes(1);
-
-    finishCapture(null, '', '');
-    await capture;
   });
 });
 

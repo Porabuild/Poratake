@@ -155,6 +155,15 @@ export function openAccessibilityPreferences(): void {
   );
 }
 
+export function openKeyboardShortcutPreferences(): void {
+  if (!isMac) {
+    return;
+  }
+  shell.openExternal(
+    'x-apple.systempreferences:com.apple.Keyboard-Settings.extension?Shortcuts'
+  );
+}
+
 export function openMicrophonePreferences(): void {
   if (isWindows) {
     shell.openExternal('ms-settings:privacy-microphone');

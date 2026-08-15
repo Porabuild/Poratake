@@ -15,6 +15,7 @@ import {
   TabsListContainer,
   TabsTrigger,
 } from '@/renderer/components/ui/tabs';
+import { isMacPlatform } from '@/renderer/utils/platform';
 import type {
   AreaOverlayToolbarAction,
   AllInOneCaptureMode,
@@ -102,7 +103,9 @@ export default function AllInOneToolbar({
 
   return (
     <div
-      className={`absolute top-6 left-1/2 -translate-x-1/2 cursor-default transition-opacity ${
+      className={`absolute ${
+        isMacPlatform() ? 'top-12' : 'top-6'
+      } left-1/2 -translate-x-1/2 cursor-default transition-opacity ${
         isPickingColor ? 'pointer-events-none opacity-0' : 'opacity-100'
       }`}
       onMouseDown={event => event.stopPropagation()}

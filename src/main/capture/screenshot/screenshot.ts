@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
 import { selectDisplay, displayFromSelection } from '../display-selector';
-import { selectWindow } from '../window-selector';
 import {
   screen,
   ipcMain,
@@ -11,7 +10,7 @@ import {
 } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { getConfig, updateConfig } from '@/main/settings';
+import { getConfig } from '@/main/settings';
 import { daemon } from '@/main/daemon';
 import {
   hideDesktopIcons,
@@ -19,8 +18,6 @@ import {
   isSupported as isDesktopIconsSupported,
   checkAccessibilityPermission,
 } from '@/main/capture/desktop-icons';
-import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
-import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
 
 import {
   deleteHistoryItem,
@@ -46,19 +43,13 @@ import {
   finalizeCapture,
   prepareScreenshotPreview,
 } from '@/main/capture/screenshot/finalize';
-import { isMac } from '@/main/utils/platform';
 import { isFeatureSupported } from '@/main/system/capabilities';
+import { captureDisplayToFile } from '@/main/capture/screenshot/native-capture';
 import {
-  captureDisplayToFile,
-  captureFrozenScreenRegionToFile,
+  captureAreaToFile,
   captureWindowToFile,
-} from '@/main/capture/screenshot/native-capture';
-import { captureAreaToFile } from '@/main/capture/area-overlay';
+} from '@/main/capture/area-overlay';
 import type { CapturePreviewPreparation } from '@/main/capture/capture-preview';
-import {
-  runScreencapture,
-  startInteractiveScreencapture,
-} from '@/main/capture/screenshot/screencapture';
 
 export type CaptureMode = 'screen' | 'area' | 'window';
 
@@ -68,7 +59,9 @@ async function withHiddenDesktopIcons<T>(
 ): Promise<T> {
   const config = getConfig();
   const shouldHideIcons =
-    config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
+    config.screenshot.hideDesktopIcons &&
+    isDesktopIconsSupported() &&
+    checkAccessibilityPermission(false);
 
   if (shouldHideIcons) {
     await hideDesktopIcons('capture');
@@ -135,42 +128,15 @@ async function captureScreenWithDisplaySelector(
 async function captureWindowWithSelector(
   preparation?: CapturePreviewPreparation | null
 ): Promise<void> {
-  const shouldFreeze = isFreezeScreenEnabled();
-  const frozen = shouldFreeze ? await freezeScreen(true) : false;
+  const screenshotPath = generateScreenshotPath();
+  const captured = await captureWindowToFile(screenshotPath);
 
-  try {
-    const selection = await selectWindow();
-
-    if (
-      selection.status !== 'selected' ||
-      selection.windowId === undefined ||
-      !selection.bounds
-    ) {
-      return;
-    }
-
-    const screenshotPath = generateScreenshotPath();
-    const captured = frozen
-      ? await captureFrozenScreenRegionToFile(
-          selection.bounds,
-          screenshotPath,
-          selection.windowId
-        )
-      : await captureWindowToFile(selection.windowId, screenshotPath);
-
-    if (!captured) {
-      console.error('Window capture failed');
-      return;
-    }
-
-    await finalizeCapture(screenshotPath, preparation);
-  } catch (error) {
-    console.error('Window selection failed:', error);
-  } finally {
-    if (frozen) {
-      await releaseScreen();
-    }
+  if (!captured) {
+    console.error('Window capture failed');
+    return;
   }
+
+  await finalizeCapture(screenshotPath, preparation);
 }
 
 async function captureAreaWithSelector(
@@ -190,205 +156,21 @@ async function captureAreaWithSelector(
   }
 }
 
-async function captureScreenMode(
-  preparation?: CapturePreviewPreparation | null
-): Promise<void> {
-  if (!isMac) {
-    return captureScreenWithDisplaySelector(preparation);
-  }
-
-  const config = getConfig();
-  let shouldHideIcons =
-    config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
-
-  if (shouldHideIcons && !checkAccessibilityPermission(false)) {
-    shouldHideIcons = false;
-    updateConfig({
-      screenshot: { ...config.screenshot, hideDesktopIcons: false },
-    });
-  }
-
-  const screenshotPath = generateScreenshotPath();
-  const disableSound = !config.general.playSoundOnScreenshot;
-
-  const args: string[] = [];
-  if (disableSound) {
-    args.push('-x');
-  }
-
-  const displays = screen.getAllDisplays();
-  let displayNumber = 1;
-
-  if (displays.length > 1) {
-    try {
-      const selection = await selectDisplay();
-      if (selection.status === 'cancelled') {
-        return;
-      }
-      displayNumber = selection.displayNumber ?? 1;
-    } catch (error) {
-      console.error('Display selection failed:', error);
-    }
-  }
-
-  if (shouldHideIcons) {
-    await hideDesktopIcons('capture');
-  }
-
-  args.push('-D', String(displayNumber), '-t', 'png', screenshotPath);
-
-  try {
-    const stderr = await runScreencapture(args);
-    if (stderr) {
-      console.log(`stderr: ${stderr}`);
-    }
-    await finalizeCapture(screenshotPath, preparation);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`error: ${message}`);
-  } finally {
-    if (shouldHideIcons) {
-      await showDesktopIcons('capture');
-    }
-  }
-}
-
-async function captureWindowMode(
-  preparation?: CapturePreviewPreparation | null
-): Promise<void> {
-  if (!isMac) {
-    return captureWindowWithSelector(preparation);
-  }
-
-  const config = getConfig();
-  let shouldHideIcons =
-    config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
-
-  if (shouldHideIcons && !checkAccessibilityPermission(false)) {
-    shouldHideIcons = false;
-    updateConfig({
-      screenshot: { ...config.screenshot, hideDesktopIcons: false },
-    });
-  }
-
-  const screenshotPath = generateScreenshotPath();
-  const disableSound = !config.general.playSoundOnScreenshot;
-
-  const args: string[] = [];
-  if (disableSound) {
-    args.push('-x');
-  }
-
-  if (shouldHideIcons) {
-    await hideDesktopIcons('capture');
-  }
-
-  const shouldFreeze = isFreezeScreenEnabled();
-
-  if (shouldFreeze) {
-    await freezeScreen(true);
-  }
-
-  args.push('-i', '-o', '-w', '-t', 'png', screenshotPath);
-
-  try {
-    const capture = startInteractiveScreencapture(args);
-    if (!capture) return;
-
-    const stderr = await capture;
-    if (stderr) {
-      console.log(`stderr: ${stderr}`);
-    }
-    await finalizeCapture(screenshotPath, preparation);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`error: ${message}`);
-  } finally {
-    if (shouldFreeze) {
-      await releaseScreen();
-    }
-
-    if (shouldHideIcons) {
-      await showDesktopIcons('capture');
-    }
-  }
-}
-
-async function captureAreaMode(
-  preparation?: CapturePreviewPreparation | null
-): Promise<void> {
-  if (!isMac) {
-    return captureAreaWithSelector(preparation);
-  }
-
-  const config = getConfig();
-  let shouldHideIcons =
-    config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
-
-  if (shouldHideIcons && !checkAccessibilityPermission(false)) {
-    shouldHideIcons = false;
-    updateConfig({
-      screenshot: { ...config.screenshot, hideDesktopIcons: false },
-    });
-  }
-
-  const shouldFreeze = isFreezeScreenEnabled();
-
-  if (shouldHideIcons) {
-    await hideDesktopIcons('capture');
-  }
-
-  if (shouldFreeze) {
-    await freezeScreen(true);
-  }
-
-  const screenshotPath = generateScreenshotPath();
-  const disableSound = !config.general.playSoundOnScreenshot;
-
-  const args: string[] = [];
-  if (disableSound) {
-    args.push('-x');
-  }
-  args.push('-i', '-t', 'png', screenshotPath);
-
-  try {
-    const capture = startInteractiveScreencapture(args);
-    if (!capture) return;
-
-    const stderr = await capture;
-    if (stderr) {
-      console.log(`stderr: ${stderr}`);
-    }
-    await finalizeCapture(screenshotPath, preparation);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`error: ${message}`);
-  } finally {
-    if (shouldFreeze) {
-      await releaseScreen();
-    }
-
-    if (shouldHideIcons) {
-      await showDesktopIcons('capture');
-    }
-  }
-}
-
 export default async function screenshot(mode: CaptureMode = 'area') {
   const preparation = prepareScreenshotPreview();
 
   try {
     switch (mode) {
       case 'screen':
-        return await captureScreenMode(preparation);
+        return await captureScreenWithDisplaySelector(preparation);
       case 'window':
         if (!isFeatureSupported('screenshot-window')) {
           console.warn('Window capture is not supported on this platform');
           return;
         }
-        return await captureWindowMode(preparation);
+        return await captureWindowWithSelector(preparation);
       case 'area':
-        return await captureAreaMode(preparation);
+        return await captureAreaWithSelector(preparation);
     }
   } finally {
     preparation?.dispose();
@@ -566,8 +348,6 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return null;
 
-    const config = getConfig();
-    const disableSound = !config.general.playSoundOnScreenshot;
     const temporaryPath = path.join(
       app.getPath('temp'),
       `poratake-editor-${randomUUID()}.png`
@@ -583,24 +363,8 @@ export function registerIpcHandlers(): void {
     }
 
     try {
-      if (!isMac) {
-        const captured = await captureAreaToFile(temporaryPath);
-        if (!captured) {
-          return null;
-        }
-      } else {
-        const args = disableSound ? ['-x'] : [];
-        args.push('-i', '-t', 'png', temporaryPath);
-        const capture = startInteractiveScreencapture(args);
-        if (!capture) return null;
-
-        const stderr = await capture;
-        if (stderr) {
-          console.log(`stderr: ${stderr}`);
-        }
-      }
-
-      if (!fs.existsSync(temporaryPath)) {
+      const captured = await captureAreaToFile(temporaryPath);
+      if (!captured || !fs.existsSync(temporaryPath)) {
         return null;
       }
 

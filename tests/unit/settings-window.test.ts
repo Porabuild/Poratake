@@ -6,10 +6,12 @@ class MockBrowserWindow {
   windowHandlers: Record<string, ((...a: unknown[]) => unknown)[]> = {};
 
   webContents = {
+    id: 1,
     on: vi.fn((event: string, cb: (...a: unknown[]) => unknown) => {
       this.windowHandlers[`wc:${event}`] ??= [];
       this.windowHandlers[`wc:${event}`].push(cb);
     }),
+    once: vi.fn(),
     send: vi.fn(),
   };
 

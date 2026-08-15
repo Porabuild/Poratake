@@ -22,8 +22,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const CLASS_NAME: &str = "PoratakeDisplaySelector";
-const IDLE_ALPHA: u8 = 1;
-const HOVER_ALPHA: u8 = 128;
+const IDLE_ALPHA: u8 = 128;
+const HOVER_ALPHA: u8 = 1;
 
 type PendingRequest = Arc<Mutex<Option<String>>>;
 

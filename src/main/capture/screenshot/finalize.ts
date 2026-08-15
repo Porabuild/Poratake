@@ -11,6 +11,7 @@ import type {
   CapturePreviewPreparation,
 } from '@/main/capture/capture-preview';
 import { openScreenshotEditor } from '@/main/capture/screenshot/open-editor';
+import { playCaptureSound } from '@/main/capture/screenshot/capture-sound';
 
 export function copyImageFileToClipboard(filePath: string): void {
   try {
@@ -39,13 +40,22 @@ export function prepareScreenshotPreview(): CapturePreviewPreparation | null {
   }
 }
 
+export interface FinalizeCaptureOptions {
+  silent?: boolean;
+}
+
 export async function finalizeCapture(
   filePath: string,
-  preparation?: CapturePreviewPreparation | null
+  preparation?: CapturePreviewPreparation | null,
+  options?: FinalizeCaptureOptions
 ): Promise<void> {
   if (!fs.existsSync(filePath)) {
     preparation?.dispose();
     return;
+  }
+
+  if (!options?.silent) {
+    playCaptureSound();
   }
 
   const { screenshot } = getConfig();

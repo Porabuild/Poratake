@@ -1,18 +1,15 @@
-import { isWindows } from '@/main/utils/platform';
-import * as daemonBackend from './daemon-backend';
 import * as overlayBackend from './overlay-backend';
 import type { AreaSelectorBackend } from './types';
 
 export type {
   AreaSelectionCallback,
   AreaSelectionMode,
-  AreaSelectionStyle,
   ConfirmAreaSelectionOptions,
   PresetArea,
   StartAreaSelectionOptions,
 } from './types';
 
-const backend: AreaSelectorBackend = isWindows ? overlayBackend : daemonBackend;
+const backend: AreaSelectorBackend = overlayBackend;
 
 export const startAreaSelection = backend.startAreaSelection;
 export const updateAreaSelectionCallbacks =

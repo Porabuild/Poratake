@@ -8,5 +8,9 @@
     <string>Poratake Daemon</string>
     <key>NSCameraUseContinuityCameraDeviceType</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Poratake needs microphone access to record audio with your recordings.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Poratake needs camera access to include your camera in recordings.</string>
 </dict>
 </plist>

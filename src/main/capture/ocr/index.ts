@@ -14,10 +14,6 @@ import { preprocessImageForOcr } from '@/main/utils/ffmpeg';
 import { isMac } from '@/main/utils/platform';
 import { captureAreaToFile } from '@/main/capture/area-overlay';
 import { captureRegionToFile } from '@/main/capture/screenshot/native-capture';
-import {
-  runScreencapture,
-  startInteractiveScreencapture,
-} from '@/main/capture/screenshot/screencapture';
 
 let isCapturingText = false;
 
@@ -75,49 +71,18 @@ async function captureAndRecognizeText(
   try {
     let captured = false;
     try {
-      if (!isMac) {
-        try {
-          if (!area) {
-            captured = await captureAreaToFile(tempScreenshotPath);
-          } else if (options?.cached === undefined) {
-            captured = await captureRegionToFile(area, tempScreenshotPath);
-          } else {
-            captured = await captureRegionToFile(area, tempScreenshotPath, {
-              cached: options.cached,
-            });
-          }
-        } catch (error) {
-          console.error('OCR capture error:', error);
-          showNotification('OCR Failed', 'Failed to capture the selected area');
-        }
+      if (!area) {
+        captured = await captureAreaToFile(tempScreenshotPath);
+      } else if (options?.cached === undefined) {
+        captured = await captureRegionToFile(area, tempScreenshotPath);
       } else {
-        try {
-          const args = area
-            ? [
-                '-x',
-                '-R',
-                `${area.x},${area.y},${area.width},${area.height}`,
-                '-t',
-                'png',
-                tempScreenshotPath,
-              ]
-            : ['-i', '-x', '-t', 'png', tempScreenshotPath];
-          const capture = area
-            ? runScreencapture(args)
-            : startInteractiveScreencapture(args);
-          if (!capture) return;
-
-          const stderr = await capture;
-          if (stderr) {
-            console.log(`Screencapture stderr: ${stderr}`);
-          }
-          captured = fs.existsSync(tempScreenshotPath);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          console.log(`Screencapture error: ${message}`);
-        }
+        captured = await captureRegionToFile(area, tempScreenshotPath, {
+          cached: options.cached,
+        });
       }
+    } catch (error) {
+      console.error('OCR capture error:', error);
+      showNotification('OCR Failed', 'Failed to capture the selected area');
     } finally {
       if (shouldHideIcons) {
         await showDesktopIcons('capture');
