@@ -55,3 +55,6 @@ src/main/daemon/capty-daemon.exe
 .commandcode/
 .poracode/
 skills-lock.json
+
+.envrc
+.direnv/
