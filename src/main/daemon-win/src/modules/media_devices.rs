@@ -265,10 +265,7 @@ impl Module for MediaDevicesModule {
                 let mut result = serde_json::Map::new();
                 if wants_microphones {
                     let microphones = enumerate_microphones().unwrap_or_default();
-                    result.insert(
-                        "microphones".to_string(),
-                        json!(devices_json(&microphones)),
-                    );
+                    result.insert("microphones".to_string(), json!(devices_json(&microphones)));
                     if let Some(default_microphone_id) = default_microphone_id() {
                         result.insert(
                             "defaultMicrophoneId".to_string(),
@@ -279,13 +276,9 @@ impl Module for MediaDevicesModule {
                 if wants_cameras {
                     let cameras = enumerate_cameras().unwrap_or_default();
                     result.insert("cameras".to_string(), json!(devices_json(&cameras)));
-                    if let Some(default_camera_id) =
-                        cameras.first().map(|device| device.id.clone())
+                    if let Some(default_camera_id) = cameras.first().map(|device| device.id.clone())
                     {
-                        result.insert(
-                            "defaultCameraId".to_string(),
-                            json!(default_camera_id),
-                        );
+                        result.insert("defaultCameraId".to_string(), json!(default_camera_id));
                     }
                 }
                 Reply::Now(Ok(Some(Value::Object(result))))
@@ -324,10 +317,7 @@ fn list_kinds(request: &Request) -> (bool, bool) {
         return (true, true);
     };
 
-    let names: Vec<&str> = values
-        .iter()
-        .filter_map(|value| value.as_str())
-        .collect();
+    let names: Vec<&str> = values.iter().filter_map(|value| value.as_str()).collect();
     if names.is_empty() {
         return (true, true);
     }

@@ -35,6 +35,11 @@ import {
 } from '@/main/capture/screenshot/image-open-batcher';
 import { isSupportedImageFile } from '@/main/utils/image-files';
 import { PROJECT_EXTENSION } from '@/types/video';
+import {
+  getActiveFFmpegProcessCount,
+  registerFFmpegProcessExitCleanup,
+  terminateFFmpegProcesses,
+} from '@/main/utils/ffmpeg-process';
 
 const gotTheLock = app.requestSingleInstanceLock();
 
@@ -44,6 +49,21 @@ if (!gotTheLock) {
 
 let pendingProjectFiles: string[] = [];
 let isAppReady = false;
+let isQuittingAfterFFmpegCleanup = false;
+
+registerFFmpegProcessExitCleanup();
+
+app.on('before-quit', event => {
+  if (isQuittingAfterFFmpegCleanup || getActiveFFmpegProcessCount() === 0) {
+    return;
+  }
+
+  event.preventDefault();
+  void terminateFFmpegProcesses().finally(() => {
+    isQuittingAfterFFmpegCleanup = true;
+    app.quit();
+  });
+});
 
 const handleOpenedFile = (filePath: string) => {
   if (filePath.endsWith(PROJECT_EXTENSION)) {

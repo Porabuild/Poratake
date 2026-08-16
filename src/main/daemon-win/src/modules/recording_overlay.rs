@@ -521,12 +521,13 @@ impl Module for RecordingOverlayModule {
                 };
 
                 let color = parse_color(param_str(&request.params, "color"));
-                let insert_after = param_i64(&request.params, "belowWindowId")
-                    .map(|handle| HWND(handle as isize as *mut c_void));
+                let insert_after_handle = param_i64(&request.params, "belowWindowId");
                 let request_id = request.id.clone();
                 let visible = self.visible.clone();
                 run_on_ui(move || {
                     let target = HWND(handle as isize as *mut c_void);
+                    let insert_after =
+                        insert_after_handle.map(|handle| HWND(handle as isize as *mut c_void));
                     match show_window_highlight(target, color, insert_after) {
                         Ok(shown) => {
                             visible.store(shown, Ordering::Release);

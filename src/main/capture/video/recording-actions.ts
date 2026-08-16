@@ -35,7 +35,11 @@ import {
   prewarmOverlay,
   showRecordedWindowOutline,
 } from './overlay.ts';
-import { createVideoEditorWindow } from './video-editor.ts';
+import {
+  startRecordingCountdown,
+  MIN_RECORDING_START_DELAY,
+  MAX_RECORDING_START_DELAY,
+} from './recording-control.ts';
 import {
   prepareCapturePreview,
   prewarmCapturePreview,
@@ -148,6 +152,7 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
     const editorStatePromise = generateInitialEditorState({
       projectPath: recordingResult.outputPath,
       recordingType,
+      duration: recordingResult.duration,
     });
 
     const config = getConfig();
@@ -190,9 +195,7 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
       startHistoryPersistence();
     }
 
-    await editorStatePromise;
-    createVideoEditorWindow(recordingResult.outputPath);
-    await historyItemPromise;
+    await Promise.all([editorStatePromise, historyItemPromise]);
   }
 
   return recordingResult?.outputPath ?? null;
@@ -344,8 +347,31 @@ async function startPendingRecordingInternal(
     }
   }
 
-  if (!isIOSRecording) {
+  const startDelay = Math.round(getConfig().recording.startDelay ?? 0);
+  const clampedDelay = Math.min(
+    Math.max(startDelay, MIN_RECORDING_START_DELAY),
+    MAX_RECORDING_START_DELAY
+  );
+
+  if (!isIOSRecording && clampedDelay === 0) {
     await hidePreRecordingControl(false);
+  }
+
+  if (clampedDelay > 0) {
+    const countdownResult = await startRecordingCountdown(clampedDelay);
+    if (countdownResult === 'cancelled') {
+      concealAreaSelectorOverlay();
+      await Promise.all([
+        hidePreRecordingControl(),
+        hideRecordingOverlay(true),
+      ]);
+      console.log('Recording cancelled during countdown');
+      return;
+    }
+
+    if (!isIOSRecording) {
+      await hidePreRecordingControl(false);
+    }
   }
 
   const includeAudio = options.systemAudio ?? true;

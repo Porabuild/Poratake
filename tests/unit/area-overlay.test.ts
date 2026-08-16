@@ -35,6 +35,7 @@ class MockBrowserWindow {
       }
     },
     send: vi.fn(),
+    sendInputEvent: vi.fn(),
   };
 
   showInactive = vi.fn(() => {
@@ -272,9 +273,8 @@ describe('area overlay', () => {
       skipTaskbar: true,
     });
     expect(overlayWindows[0].options.opacity).toBe(0);
-    if (process.platform === 'darwin') {
-      expect(overlayWindows[0].excludedFromShownWindowsMenu).toBe(true);
-    }
+    expect(overlayWindows[0].excludedFromShownWindowsMenu).toBe(false);
+    expect(overlayWindows[0].options.type).toBeUndefined();
     expect(overlayWindows[0].options).toMatchObject({
       webPreferences: { webSecurity: true },
     });
@@ -305,7 +305,6 @@ describe('area overlay', () => {
     expect(overlayWindows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(
       false
     );
-    expect(overlayWindows[0].focus).not.toHaveBeenCalled();
     expect(overlayWindows[0].moveTop).toHaveBeenCalled();
     expect(module.getActiveOverlayWindowAtPoint({ x: 400, y: 100 })).toBe(
       overlayWindows[0]
@@ -372,6 +371,50 @@ describe('area overlay', () => {
     );
   });
 
+  it('releases the freeze mid-session without ending the selection', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay();
+    await settle();
+
+    await module.setOverlayFreeze(false);
+
+    expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
+    expect(module.isOverlayActive()).toBe(true);
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+
+    expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves live sessions untouched when releasing the freeze', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay({ freeze: false });
+    await settle();
+
+    await module.setOverlayFreeze(false);
+
+    expect(mockReleaseScreen).not.toHaveBeenCalled();
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('freezes a live session when requested', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay({ freeze: false });
+    await settle();
+
+    await module.setOverlayFreeze(true);
+
+    expect(mockFreezeScreen).toHaveBeenCalledTimes(1);
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+
+    expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores geometry that leaves the display', async () => {
     const module = await import('@/main/capture/area-overlay');
     const selection = module.selectAreaWithOverlay();
@@ -435,6 +478,44 @@ describe('area overlay', () => {
     expect(overlayWindows[0].webContents.send).toHaveBeenCalledWith(
       'load',
       expect.objectContaining({ type: 'area-overlay' })
+    );
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('paints the hidden overlay while the native freeze is still running', async () => {
+    let finishFreeze!: (frozen: boolean) => void;
+    mockFreezeScreen.mockImplementation(
+      () => new Promise<boolean>(resolve => (finishFreeze = resolve))
+    );
+
+    const module = await import('@/main/capture/area-overlay');
+    module.prewarmAreaOverlay();
+    await settle();
+    prepare(overlayWindows[0]);
+
+    const selection = module.selectAreaWithOverlay();
+    await settle();
+
+    expect(mockFreezeScreen).toHaveBeenCalled();
+    expect(overlayWindows[0].webContents.send).toHaveBeenCalledWith(
+      'load',
+      expect.objectContaining({ type: 'area-overlay' })
+    );
+    expect(
+      mockDaemonCall.mock.calls.filter(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toHaveLength(0);
+
+    finishFreeze(true);
+    fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    await settle();
+    expect(mockDaemonCall).toHaveBeenCalledWith(
+      'area-selector',
+      'showWindowWithoutTransitions',
+      { windowHandle: overlayWindows[0].webContents.id.toString() }
     );
 
     fire('area-overlay:cancel', overlayWindows[0].webContents.id);

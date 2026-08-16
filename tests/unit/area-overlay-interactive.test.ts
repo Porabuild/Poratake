@@ -31,6 +31,7 @@ class MockBrowserWindow {
       }
     },
     send: vi.fn(),
+    sendInputEvent: vi.fn(),
   };
 
   showInactive = vi.fn(() => {
@@ -60,7 +61,10 @@ class MockBrowserWindow {
   loadFile = vi.fn();
   on = vi.fn();
 
-  constructor() {
+  options: Record<string, unknown>;
+
+  constructor(options: Record<string, unknown> = {}) {
+    this.options = options;
     overlayWindows.push(this);
   }
 }
@@ -273,6 +277,7 @@ describe('interactive area overlay', () => {
     expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(1);
     expect(windowFor(0).hide).not.toHaveBeenCalled();
     expect(mockDaemonCall).not.toHaveBeenCalled();
+    expect(windowFor(0).options.type).toBe('panel');
 
     module.cancelOverlaySelection();
     await session;
@@ -479,8 +484,6 @@ describe('interactive area overlay', () => {
         repeatablePicks: false,
       }
     );
-
-    await settle();
 
     module.setOverlayPickTargets(null, null);
     expect(windowFor(0).webContents.send).toHaveBeenCalledWith(
@@ -694,11 +697,15 @@ describe('interactive area overlay', () => {
     module.setOverlayVisible(true);
     await settle();
     expect(windowFor(0).showInactive).toHaveBeenCalledTimes(1);
-    expect(mockDaemonCall).toHaveBeenLastCalledWith(
+    expect(
+      mockDaemonCall.mock.calls.filter(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toContainEqual([
       'area-selector',
       'showWindowWithoutTransitions',
-      { windowHandle: windowFor(1).webContents.id.toString() }
-    );
+      { windowHandle: windowFor(1).webContents.id.toString() },
+    ]);
     expect(windowFor(0).setOpacity).toHaveBeenLastCalledWith(1);
     expect(windowFor(1).setOpacity).toHaveBeenLastCalledWith(1);
     expect(windowFor(0).setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);

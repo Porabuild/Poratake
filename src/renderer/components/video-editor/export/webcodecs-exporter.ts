@@ -7,6 +7,7 @@ import {
   CanvasSource,
   VideoSampleSink,
   ALL_FORMATS,
+  canEncodeVideo,
   type VideoSample,
   type InputVideoTrack,
   type StreamTargetChunk,
@@ -117,9 +118,29 @@ export class WebCodecsExporter {
         hasCamera,
       });
 
+      const hardwareAcceleration = (await canEncodeVideo('avc', {
+        width: exportDims.width,
+        height: exportDims.height,
+        bitrate,
+        hardwareAcceleration: 'prefer-hardware',
+      }))
+        ? 'prefer-hardware'
+        : 'no-preference';
+
       const videoSource = new CanvasSource(outputCanvas, {
         codec: 'avc',
         bitrate,
+        hardwareAcceleration,
+        onEncoderConfig: encoderConfig => {
+          console.log('WebCodecs Export: Encoder config', {
+            codec: encoderConfig.codec,
+            width: encoderConfig.width,
+            height: encoderConfig.height,
+            bitrate: encoderConfig.bitrate,
+            hardwareAcceleration:
+              encoderConfig.hardwareAcceleration ?? 'no-preference',
+          });
+        },
       });
 
       const streamingVideoPath = `${outputPath}.temp.mp4`;
@@ -149,6 +170,10 @@ export class WebCodecsExporter {
         ? new VideoSampleSink(cameraVideoTrack)
         : null;
 
+      const videoStartMs = Date.now();
+      const timelineDuration =
+        engine.getFirstFrameDuration() +
+        getTotalTimelineDuration(config.segments);
       await this.processFrames({
         config,
         frameRate,
@@ -163,15 +188,23 @@ export class WebCodecsExporter {
       });
       this.throwIfAborted();
 
-      onProgress(92);
       videoSource.close();
-      onProgress(94);
+      onProgress(91);
       await output.finalize();
       this.throwIfAborted();
-      onProgress(96);
+      onProgress(92);
 
-      onProgress(97);
+      const videoEncodeSeconds = (Date.now() - videoStartMs) / 1000;
+      console.log('WebCodecs Export: Video phase complete', {
+        timelineDurationSeconds: Number(timelineDuration.toFixed(3)),
+        frameRate,
+        wallSeconds: Number(videoEncodeSeconds.toFixed(3)),
+        framesPerSecond: Number(
+          ((timelineDuration * frameRate) / videoEncodeSeconds).toFixed(1)
+        ),
+      });
 
+      const audioStartMs = Date.now();
       const audioResult = await this.handleAudioMuxing({
         tempVideoPath,
         outputPath,
@@ -188,11 +221,18 @@ export class WebCodecsExporter {
         musicTracks,
         segments: config.segments,
         firstFrameDuration: engine.getFirstFrameDuration(),
+        outputDurationSeconds: timelineDuration,
+        onAudioProgress: phasePercent =>
+          onProgress(Math.min(99, 92 + Math.round(phasePercent * 0.07))),
       });
 
       if (!audioResult.success) {
         return { success: false, error: audioResult.error };
       }
+
+      console.log('WebCodecs Export: Audio phase complete', {
+        wallSeconds: Number(((Date.now() - audioStartMs) / 1000).toFixed(3)),
+      });
 
       if (this.isAborted) {
         await window.ipcRenderer
@@ -697,6 +737,8 @@ export class WebCodecsExporter {
     musicTracks?: MusicTrack[];
     segments: ExportOptions['config']['segments'];
     firstFrameDuration?: number;
+    outputDurationSeconds: number;
+    onAudioProgress?: (phasePercent: number) => void;
   }): Promise<{ success: boolean; error?: string }> {
     const {
       tempVideoPath,
@@ -714,6 +756,8 @@ export class WebCodecsExporter {
       musicTracks,
       segments,
       firstFrameDuration = 0,
+      outputDurationSeconds,
+      onAudioProgress,
     } = params;
 
     const enabledAudioTracks: AudioTrack[] = [];
@@ -817,6 +861,8 @@ export class WebCodecsExporter {
         segments,
         embeddedAudio,
         audioDelaySeconds: firstFrameDuration,
+        outputDurationSeconds,
+        onProgress: onAudioProgress,
       });
     } finally {
       await Promise.allSettled(

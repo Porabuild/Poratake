@@ -35,42 +35,36 @@ async function extractAudioSegmentsWithSpeed(
   )) as { success: boolean; error?: string };
 }
 
-async function adjustAudioVolume(
-  inputPath: string,
-  outputPath: string,
-  volume: number
-): Promise<{ success: boolean; error?: string }> {
-  return (await window.ipcRenderer.invoke('video-editor:adjust-audio-volume', {
-    inputPath,
-    outputPath,
-    volume,
-  })) as { success: boolean; error?: string };
-}
-
 async function muxAudio(
   videoPath: string,
-  audioPath: string,
+  audioTracks: AudioTrack[],
   outputPath: string,
-  audioDelaySeconds = 0
+  audioDelaySeconds: number,
+  durationSeconds: number,
+  onProgress?: (percent: number) => void
 ): Promise<{ success: boolean; error?: string }> {
-  return (await window.ipcRenderer.invoke('video-editor:mux-audio', {
-    videoPath,
-    audioPath,
-    outputPath,
-    audioDelaySeconds,
-  })) as { success: boolean; error?: string };
-}
+  const listener = (
+    _event: Electron.IpcRendererEvent,
+    ...args: unknown[]
+  ): void => {
+    const percent = args[0];
+    if (typeof percent !== 'number') return;
+    onProgress?.(percent);
+  };
 
-async function mixAudioTracks(
-  inputPaths: string[],
-  outputPath: string,
-  volumes: number[]
-): Promise<{ success: boolean; error?: string }> {
-  return (await window.ipcRenderer.invoke('video-editor:mix-audio-tracks', {
-    inputPaths,
-    outputPath,
-    volumes,
-  })) as { success: boolean; error?: string };
+  window.ipcRenderer.on('video-editor:mux-audio:progress', listener);
+
+  try {
+    return (await window.ipcRenderer.invoke('video-editor:mux-audio', {
+      videoPath,
+      audioTracks: audioTracks.map(({ path, volume }) => ({ path, volume })),
+      outputPath,
+      audioDelaySeconds,
+      durationSeconds,
+    })) as { success: boolean; error?: string };
+  } finally {
+    window.ipcRenderer.off('video-editor:mux-audio:progress', listener);
+  }
 }
 
 async function deleteTempFile(filePath: string): Promise<void> {
@@ -94,35 +88,97 @@ async function renameFile(oldPath: string, newPath: string): Promise<void> {
   }
 }
 
-async function applyVolumeIfNeeded(
+interface PhaseReporter {
+  completeStep: () => void;
+  reportWithinStep: (fraction: number) => void;
+}
+
+function createPhaseReporter(
+  totalSteps: number,
+  onProgress?: (percent: number) => void
+): PhaseReporter {
+  let completedSteps = 0;
+
+  const report = (fraction: number): void => {
+    if (!onProgress) return;
+
+    onProgress(
+      Math.min(
+        100,
+        Math.round(((completedSteps + fraction) / totalSteps) * 100)
+      )
+    );
+  };
+
+  return {
+    completeStep: () => {
+      completedSteps = Math.min(totalSteps, completedSteps + 1);
+      report(0);
+    },
+    reportWithinStep: fraction => report(Math.max(0, Math.min(1, fraction))),
+  };
+}
+
+interface TimelineSegments {
+  originalStart: number;
+  originalEnd: number;
+  speed?: number;
+}
+
+function isUncut(segments: TimelineSegments[]): boolean {
+  if (segments.length !== 1) return false;
+
+  const segment = segments[0];
+  return segment.originalStart === 0 && (segment.speed ?? 1) === 1;
+}
+
+async function extractTrackToTimeline(
   inputPath: string,
-  outputPathBase: string,
-  volume: number
+  outputPath: string,
+  segments: TimelineSegments[],
+  reporter: PhaseReporter,
+  tempFiles: string[]
 ): Promise<string> {
-  if (volume === 1) {
-    return inputPath;
+  const hasSpeedChanges = segments.some(seg => (seg.speed ?? 1) !== 1);
+  const tempPath = `${outputPath}.temp-${crypto.randomUUID()}.temp_audio_${tempFiles.length}.aac`;
+  tempFiles.push(tempPath);
+
+  const audioSegments: AudioSegment[] = segments.map(seg => ({
+    start: seg.originalStart,
+    end: seg.originalEnd,
+  }));
+  const audioSegmentsWithSpeed: AudioSegmentWithSpeed[] = segments.map(seg => ({
+    start: seg.originalStart,
+    end: seg.originalEnd,
+    speed: seg.speed ?? 1,
+  }));
+
+  const extractResult = hasSpeedChanges
+    ? await extractAudioSegmentsWithSpeed(
+        inputPath,
+        tempPath,
+        audioSegmentsWithSpeed
+      )
+    : await extractAudioSegments(inputPath, tempPath, audioSegments);
+
+  if (!extractResult.success) {
+    throw new Error(extractResult.error ?? 'Failed to extract audio segments');
   }
 
-  const adjustedPath = `${outputPathBase}.temp_adjusted.aac`;
-  const result = await adjustAudioVolume(inputPath, adjustedPath, volume);
-  if (!result.success) {
-    throw new Error(result.error ?? 'Failed to adjust audio volume');
-  }
+  reporter.completeStep();
 
-  return adjustedPath;
+  return tempPath;
 }
 
 export interface MuxAudioOptions {
   videoPath: string;
   audioTracks: AudioTrack[];
   outputPath: string;
-  segments: Array<{
-    originalStart: number;
-    originalEnd: number;
-    speed?: number;
-  }>;
+  segments: TimelineSegments[];
   embeddedAudio?: EmbeddedAudioConfig;
   audioDelaySeconds?: number;
+  outputDurationSeconds: number;
+  onProgress?: (percent: number) => void;
 }
 
 export async function muxAudioWithVideo(
@@ -135,62 +191,70 @@ export async function muxAudioWithVideo(
     segments,
     embeddedAudio,
     audioDelaySeconds = 0,
+    outputDurationSeconds,
+    onProgress,
   } = options;
-
-  const hasSpeedChanges = segments.some(seg => (seg.speed ?? 1) !== 1);
-
-  const audioSegmentsWithSpeed: AudioSegmentWithSpeed[] = segments.map(seg => ({
-    start: seg.originalStart,
-    end: seg.originalEnd,
-    speed: seg.speed ?? 1,
-  }));
-
-  const audioSegments: AudioSegment[] = segments.map(seg => ({
-    start: seg.originalStart,
-    end: seg.originalEnd,
-  }));
 
   const tempFiles: string[] = [];
 
   try {
     if (audioTracks.length === 0 && !embeddedAudio) {
       await renameFile(videoPath, outputPath);
+      onProgress?.(100);
       return { success: true };
     }
 
-    const tracks = [...audioTracks];
-    const tempPathBase = `${outputPath}.temp-${crypto.randomUUID()}`;
+    if (!Number.isFinite(outputDurationSeconds) || outputDurationSeconds <= 0) {
+      return { success: false, error: 'Invalid output duration' };
+    }
+
+    const skipExtraction = isUncut(segments);
+    const extractionCount = skipExtraction
+      ? 0
+      : audioTracks.length -
+        audioTracks.filter(track => track.skipSegmentExtraction).length +
+        (embeddedAudio ? 1 : 0);
+    const reporter = createPhaseReporter(extractionCount + 1, onProgress);
+
+    const finalTracks: AudioTrack[] = [];
 
     if (embeddedAudio) {
-      const embeddedAudioPath = await processEmbeddedAudio(
-        embeddedAudio,
-        tempPathBase,
-        audioSegments,
-        audioSegmentsWithSpeed,
-        hasSpeedChanges,
-        tempFiles
-      );
-      tracks.unshift({
-        path: embeddedAudioPath,
-        volume: 1,
-        skipSegmentExtraction: true,
+      const embeddedPath = skipExtraction
+        ? embeddedAudio.sourcePath
+        : await extractTrackToTimeline(
+            embeddedAudio.sourcePath,
+            outputPath,
+            segments,
+            reporter,
+            tempFiles
+          );
+      finalTracks.push({
+        path: embeddedPath,
+        volume: embeddedAudio.volume,
       });
     }
 
-    const finalAudioPath = await processAudioTracks(
-      tracks,
-      tempPathBase,
-      audioSegments,
-      audioSegmentsWithSpeed,
-      hasSpeedChanges,
-      tempFiles
-    );
+    for (const track of audioTracks) {
+      const trackPath =
+        skipExtraction || track.skipSegmentExtraction
+          ? track.path
+          : await extractTrackToTimeline(
+              track.path,
+              outputPath,
+              segments,
+              reporter,
+              tempFiles
+            );
+      finalTracks.push({ path: trackPath, volume: track.volume });
+    }
 
     const muxResult = await muxAudio(
       videoPath,
-      finalAudioPath,
+      finalTracks,
       outputPath,
-      audioDelaySeconds
+      audioDelaySeconds,
+      outputDurationSeconds,
+      percent => reporter.reportWithinStep(percent / 100)
     );
 
     await deleteTempFile(videoPath);
@@ -200,6 +264,8 @@ export async function muxAudioWithVideo(
       return { success: false, error: muxResult.error };
     }
 
+    reporter.completeStep();
+
     return { success: true };
   } catch (error) {
     const errorMessage =
@@ -208,114 +274,4 @@ export async function muxAudioWithVideo(
   } finally {
     await deleteTempFiles(tempFiles);
   }
-}
-
-async function processEmbeddedAudio(
-  embeddedAudio: EmbeddedAudioConfig,
-  outputPath: string,
-  audioSegments: AudioSegment[],
-  audioSegmentsWithSpeed: AudioSegmentWithSpeed[],
-  hasSpeedChanges: boolean,
-  tempFiles: string[]
-): Promise<string> {
-  const tempAudioPath = `${outputPath}.temp_embedded.aac`;
-  tempFiles.push(tempAudioPath);
-
-  const extractResult = hasSpeedChanges
-    ? await extractAudioSegmentsWithSpeed(
-        embeddedAudio.sourcePath,
-        tempAudioPath,
-        audioSegmentsWithSpeed
-      )
-    : await extractAudioSegments(
-        embeddedAudio.sourcePath,
-        tempAudioPath,
-        audioSegments
-      );
-
-  if (!extractResult.success) {
-    throw new Error(
-      extractResult.error ?? 'Failed to extract embedded audio segments'
-    );
-  }
-
-  const finalAudioPath = await applyVolumeIfNeeded(
-    tempAudioPath,
-    outputPath,
-    embeddedAudio.volume
-  );
-  if (finalAudioPath !== tempAudioPath) {
-    tempFiles.push(finalAudioPath);
-  }
-
-  return finalAudioPath;
-}
-
-async function processAudioTracks(
-  audioTracks: AudioTrack[],
-  outputPath: string,
-  audioSegments: AudioSegment[],
-  audioSegmentsWithSpeed: AudioSegmentWithSpeed[],
-  hasSpeedChanges: boolean,
-  tempFiles: string[]
-): Promise<string> {
-  const extractedPaths: string[] = [];
-  const volumes: number[] = [];
-
-  for (let i = 0; i < audioTracks.length; i++) {
-    const track = audioTracks[i];
-
-    if (track.skipSegmentExtraction) {
-      extractedPaths.push(track.path);
-      volumes.push(track.volume);
-      continue;
-    }
-
-    const tempPath = `${outputPath}.temp_audio_${i}.aac`;
-    tempFiles.push(tempPath);
-
-    const extractResult = hasSpeedChanges
-      ? await extractAudioSegmentsWithSpeed(
-          track.path,
-          tempPath,
-          audioSegmentsWithSpeed
-        )
-      : await extractAudioSegments(track.path, tempPath, audioSegments);
-
-    if (!extractResult.success) {
-      console.warn(
-        `Failed to extract audio from ${track.path}: ${extractResult.error}`
-      );
-      throw new Error(
-        extractResult.error ?? 'Failed to extract audio segments'
-      );
-    }
-
-    extractedPaths.push(tempPath);
-    volumes.push(track.volume);
-  }
-
-  if (extractedPaths.length === 1) {
-    const finalAudioPath = await applyVolumeIfNeeded(
-      extractedPaths[0],
-      outputPath,
-      volumes[0]
-    );
-    if (finalAudioPath !== extractedPaths[0]) {
-      tempFiles.push(finalAudioPath);
-    }
-    return finalAudioPath;
-  }
-
-  const mixedPath = `${outputPath}.temp_mixed.aac`;
-  tempFiles.push(mixedPath);
-
-  const mixResult = await mixAudioTracks(extractedPaths, mixedPath, volumes);
-
-  if (!mixResult.success) {
-    console.warn(`Failed to mix audio tracks: ${mixResult.error}`);
-    throw new Error(mixResult.error ?? 'Failed to mix audio tracks');
-  }
-
-  return mixedPath;
 }

@@ -1,4 +1,4 @@
-import { screen } from 'electron';
+import { globalShortcut, screen } from 'electron';
 import { daemon } from '@/main/daemon';
 import { getConfig, updateConfig } from '@/main/settings';
 import {
@@ -39,7 +39,10 @@ import type {
   RecordingControlMode,
   RecordingControlState,
 } from '@/types/recording-control';
-import type { CameraSettings } from '@/types/settings';
+import {
+  DEFAULT_ALL_IN_ONE_CONFIG,
+  type CameraSettings,
+} from '@/types/settings';
 import type { RecordingConfig } from '@/types/video';
 
 let timerInterval: NodeJS.Timeout | null = null;
@@ -64,17 +67,22 @@ const CONTROL_TOP_MARGIN = 24;
 const CAMERA_PREVIEW_SIZE = 270;
 const CAMERA_PREVIEW_MARGIN = 32;
 
+export const MIN_RECORDING_START_DELAY = 0;
+export const MAX_RECORDING_START_DELAY = 10;
+
 function getWindowWidth(): number {
   return getRecordingControlWindowWidth(currentMode, recordingTarget !== null);
 }
 
-function calculateControlPosition(area: {
+function calculateControlPosition(area?: {
   x: number;
   y: number;
   width: number;
   height: number;
 }): { x: number; y: number } {
-  const { workArea } = screen.getDisplayMatching(area);
+  const { workArea } = area
+    ? screen.getDisplayMatching(area)
+    : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const x = Math.round(workArea.x + (workArea.width - getWindowWidth()) / 2);
   const y = workArea.y + CONTROL_TOP_MARGIN;
   return { x, y };
@@ -98,18 +106,48 @@ function calculateCameraPreviewPosition(area: {
 
 let currentControlCenter = { x: 100, y: 100 };
 
+interface RecordingTogglePreferences {
+  systemAudio: boolean;
+  micEnabled: boolean;
+  cameraEnabled: boolean;
+}
+
+let allInOneRecordingPreferences: RecordingTogglePreferences | null = null;
+
+function updateAllInOneRecordingPreferences(
+  updates: Partial<RecordingTogglePreferences>
+): void {
+  if (!allInOneRecordingPreferences) return;
+
+  allInOneRecordingPreferences = {
+    ...allInOneRecordingPreferences,
+    ...updates,
+  };
+
+  const config = getConfig();
+  if (!config.allInOne.rememberChoices) return;
+
+  updateConfig({
+    allInOne: {
+      ...config.allInOne,
+      recording: allInOneRecordingPreferences,
+    },
+  });
+}
+
 function getRecordingSettings() {
   const config = getConfig();
   const live = recordingSession;
+  const toggles = live ?? allInOneRecordingPreferences;
   return {
-    systemAudio: live?.systemAudio ?? config.recording.systemAudio,
-    micEnabled: live?.micEnabled ?? config.recording.micEnabled,
+    systemAudio: toggles?.systemAudio ?? config.recording.systemAudio,
+    micEnabled: toggles?.micEnabled ?? config.recording.micEnabled,
     selectedMicId: live ? live.selectedMicId : config.recording.selectedMicId,
     selectedMicName: live
       ? live.selectedMicName
       : config.recording.selectedMicName,
     cameraEnabled:
-      live?.cameraEnabled ?? config.recording.camera?.enabled ?? false,
+      toggles?.cameraEnabled ?? config.recording.camera?.enabled ?? false,
     selectedCameraId: live
       ? live.camera?.selectedDeviceId
       : config.recording.camera?.selectedDeviceId,
@@ -140,6 +178,7 @@ function getRecordingControlState(): RecordingControlState {
     isPaused,
     isStarting: isHandlingStart,
     elapsedSeconds: pausedElapsedTime,
+    countdownSeconds: null,
   };
 }
 
@@ -286,6 +325,14 @@ async function handleToggleSystemAudio(): Promise<void> {
     return;
   }
 
+  if (allInOneRecordingPreferences) {
+    updateAllInOneRecordingPreferences({
+      systemAudio: !allInOneRecordingPreferences.systemAudio,
+    });
+    await syncControlSettings();
+    return;
+  }
+
   const config = getConfig();
   const newSystemAudio = !config.recording.systemAudio;
 
@@ -313,20 +360,26 @@ async function handleToggleMic(): Promise<void> {
     return;
   }
 
-  const config = getConfig();
-  const newMicEnabled = !config.recording.micEnabled;
+  const newMicEnabled = allInOneRecordingPreferences
+    ? !allInOneRecordingPreferences.micEnabled
+    : !getConfig().recording.micEnabled;
 
   if (newMicEnabled) {
     const hasPermission = await checkAndRequestMicrophonePermission();
     if (!hasPermission) return;
   }
 
-  updateConfig({
-    recording: {
-      ...config.recording,
-      micEnabled: newMicEnabled,
-    },
-  });
+  if (allInOneRecordingPreferences) {
+    updateAllInOneRecordingPreferences({ micEnabled: newMicEnabled });
+  } else {
+    const config = getConfig();
+    updateConfig({
+      recording: {
+        ...config.recording,
+        micEnabled: newMicEnabled,
+      },
+    });
+  }
 
   await syncControlSettings();
 }
@@ -348,11 +401,15 @@ async function handleSelectMic(
   updateConfig({
     recording: {
       ...config.recording,
-      micEnabled: true,
+      micEnabled: allInOneRecordingPreferences
+        ? config.recording.micEnabled
+        : true,
       selectedMicId: deviceId,
       selectedMicName: deviceName,
     },
   });
+
+  updateAllInOneRecordingPreferences({ micEnabled: true });
 
   await syncControlSettings();
 }
@@ -364,30 +421,36 @@ async function handleToggleCamera(): Promise<void> {
   }
 
   const config = getConfig();
-  const newCameraEnabled = !config.recording.camera?.enabled;
+  const newCameraEnabled = allInOneRecordingPreferences
+    ? !allInOneRecordingPreferences.cameraEnabled
+    : !config.recording.camera?.enabled;
 
   if (newCameraEnabled) {
     const hasPermission = await checkAndRequestCameraPermission();
     if (!hasPermission) return;
   }
 
-  const updatedCamera = {
+  const previewCamera = {
     ...config.recording.camera,
     enabled: newCameraEnabled,
   };
 
-  if (newCameraEnabled && updatedCamera) {
-    await showCameraPreview(updatedCamera);
+  if (newCameraEnabled) {
+    await showCameraPreview(previewCamera);
   } else {
     hideCameraPreview();
   }
 
-  updateConfig({
-    recording: {
-      ...config.recording,
-      camera: updatedCamera,
-    },
-  });
+  if (allInOneRecordingPreferences) {
+    updateAllInOneRecordingPreferences({ cameraEnabled: newCameraEnabled });
+  } else {
+    updateConfig({
+      recording: {
+        ...config.recording,
+        camera: previewCamera,
+      },
+    });
+  }
 
   await syncControlSettings();
 }
@@ -406,21 +469,28 @@ async function handleSelectCamera(
 
   const config = getConfig();
 
-  const updatedCamera = {
+  const previewCamera = {
     ...config.recording.camera,
     enabled: true,
     selectedDeviceId: deviceId,
     selectedDeviceName: deviceName,
   };
 
-  await showCameraPreview(updatedCamera);
+  await showCameraPreview(previewCamera);
 
   updateConfig({
     recording: {
       ...config.recording,
-      camera: updatedCamera,
+      camera: {
+        ...previewCamera,
+        enabled: allInOneRecordingPreferences
+          ? config.recording.camera.enabled
+          : true,
+      },
     },
   });
+
+  updateAllInOneRecordingPreferences({ cameraEnabled: true });
 
   await syncControlSettings();
 }
@@ -431,22 +501,19 @@ async function handleStart(): Promise<void> {
 
   try {
     const config = getConfig();
+    const settings = getRecordingSettings();
     await updateControlState({
       isStarting: true,
       isPaused: false,
     });
     await startPendingRecording({
-      systemAudio: config.recording.systemAudio,
-      micEnabled: config.recording.micEnabled,
-      micDeviceId: config.recording.micEnabled
-        ? config.recording.selectedMicId
-        : null,
-      micDeviceName: config.recording.micEnabled
-        ? config.recording.selectedMicName
-        : null,
-      cameraEnabled: config.recording.camera?.enabled ?? false,
-      cameraDeviceId: config.recording.camera?.selectedDeviceId,
-      cameraDeviceName: config.recording.camera?.selectedDeviceName,
+      systemAudio: settings.systemAudio,
+      micEnabled: settings.micEnabled,
+      micDeviceId: settings.micEnabled ? settings.selectedMicId : null,
+      micDeviceName: settings.micEnabled ? settings.selectedMicName : null,
+      cameraEnabled: settings.cameraEnabled,
+      cameraDeviceId: settings.selectedCameraId,
+      cameraDeviceName: settings.selectedCameraName,
       keyboardEnabled: true,
       iosDeviceId: config.recording.iosDevice?.id ?? null,
       iosDeviceName: config.recording.iosDevice?.name ?? null,
@@ -526,10 +593,61 @@ async function syncControlSettings(): Promise<void> {
   });
 }
 
+let countdownInterval: ReturnType<typeof setInterval> | null = null;
+let countdownResolve: ((result: 'completed' | 'cancelled') => void) | null =
+  null;
+let countdownEscapeRegistered = false;
+
+function stopActiveCountdown(result: 'completed' | 'cancelled'): void {
+  if (countdownInterval !== null) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+  if (countdownEscapeRegistered) {
+    globalShortcut.unregister('Escape');
+    countdownEscapeRegistered = false;
+  }
+
+  updateRecordingControlBrowserWindow({ countdownSeconds: null });
+
+  const resolve = countdownResolve;
+  countdownResolve = null;
+  resolve?.(result);
+}
+
+export function startRecordingCountdown(
+  seconds: number
+): Promise<'completed' | 'cancelled'> {
+  stopActiveCountdown('cancelled');
+
+  return new Promise<'completed' | 'cancelled'>(resolve => {
+    let remaining = seconds;
+    countdownResolve = resolve;
+    countdownEscapeRegistered = globalShortcut.register('Escape', () => {
+      stopActiveCountdown('cancelled');
+    });
+    updateRecordingControlBrowserWindow({ countdownSeconds: remaining });
+
+    countdownInterval = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        updateRecordingControlBrowserWindow({ countdownSeconds: remaining });
+        return;
+      }
+      stopActiveCountdown('completed');
+    }, 1000);
+  });
+}
+
 function handleBrowserAction(
   action: RecordingControlAction,
   data?: RecordingControlActionData
 ): void {
+  if (action === 'cancel' && countdownInterval !== null) {
+    stopActiveCountdown('cancelled');
+    return;
+  }
+
   void handleEvent(`recording-control:${action}`, data).catch(
     reportControlError
   );
@@ -617,37 +735,52 @@ export function showPreRecordingControl(
     width: number;
     height: number;
   },
-  targetName?: string
+  targetName?: string,
+  options?: { preferenceScope?: 'global' | 'all-in-one' }
 ): void {
   currentAreaSelection = area || null;
   recordingTarget = targetName ?? null;
   currentMode = 'pre-recording';
 
   const config = getConfig();
-  if (config.recording.camera?.enabled) {
+  allInOneRecordingPreferences =
+    options?.preferenceScope === 'all-in-one'
+      ? {
+          ...(config.allInOne.rememberChoices
+            ? config.allInOne.recording
+            : DEFAULT_ALL_IN_ONE_CONFIG.recording),
+        }
+      : null;
+  const settings = getRecordingSettings();
+  if (settings.cameraEnabled) {
     const cameraSettings = area
       ? {
           ...config.recording.camera,
+          enabled: true,
           position: calculateCameraPreviewPosition(area),
         }
-      : config.recording.camera;
+      : { ...config.recording.camera, enabled: true };
     void showCameraPreview(cameraSettings).catch(async error => {
-      const current = getConfig();
-      updateConfig({
-        recording: {
-          ...current.recording,
-          camera: {
-            ...current.recording.camera,
-            enabled: false,
+      if (allInOneRecordingPreferences) {
+        updateAllInOneRecordingPreferences({ cameraEnabled: false });
+      } else {
+        const current = getConfig();
+        updateConfig({
+          recording: {
+            ...current.recording,
+            camera: {
+              ...current.recording.camera,
+              enabled: false,
+            },
           },
-        },
-      });
+        });
+      }
       await syncControlSettings();
       await reportControlError(error);
     });
   }
 
-  const position = area ? calculateControlPosition(area) : { x: 100, y: 100 };
+  const position = calculateControlPosition(area);
   currentControlCenter = {
     x: position.x + getWindowWidth() / 2,
     y: position.y,
@@ -668,7 +801,7 @@ export function updateRecordingControlPosition(area: {
 }): void {
   currentAreaSelection = area;
 
-  if (getConfig().recording.camera?.enabled) {
+  if (getRecordingSettings().cameraEnabled) {
     void updateCameraPreviewPosition(
       calculateCameraPreviewPosition(area)
     ).catch(reportControlError);
@@ -690,12 +823,17 @@ export function detachRecordingControlFromOverlay(): void {
 export async function hidePreRecordingControl(
   hideCamera: boolean = true
 ): Promise<void> {
+  if (countdownInterval !== null) {
+    stopActiveCountdown('cancelled');
+  }
+
   currentAreaSelection = null;
   recordingTarget = null;
   currentMode = 'pre-recording';
 
   if (!hideCamera) return;
 
+  allInOneRecordingPreferences = null;
   hideCameraPreview();
   hideRecordingControlBrowserWindow();
 }
@@ -725,6 +863,7 @@ export async function showRecordingControl(
   currentMode = 'recording';
   recordingTarget = config.windowName ?? null;
   recordingSession = createRecordingSession(config);
+  allInOneRecordingPreferences = null;
 
   const position = {
     x: Math.round(currentControlCenter.x - getWindowWidth() / 2),
@@ -741,6 +880,7 @@ export async function showRecordingControl(
 export async function hideRecordingControl(): Promise<void> {
   stopTimer();
   recordingSession = null;
+  allInOneRecordingPreferences = null;
 
   currentAreaSelection = null;
   recordingTarget = null;

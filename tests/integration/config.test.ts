@@ -186,6 +186,39 @@ describe('Config Management', () => {
       expect(config.editor).toBeDefined();
     });
 
+    it('should initialize All-in-One inputs from existing recording preferences', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          recording: {
+            systemAudio: false,
+            micEnabled: true,
+            camera: { enabled: true },
+          },
+          allInOne: {
+            lastArea: { x: 10, y: 20, width: 300, height: 200 },
+          },
+        })
+      );
+
+      const { loadConfig } = await import('@/main/settings');
+      const config = loadConfig();
+
+      expect(config.allInOne).toEqual(
+        expect.objectContaining({
+          rememberChoices: true,
+          lastMode: 'screenshot',
+          lastTargets: { screenshot: 'area', record: 'area' },
+          lastArea: { x: 10, y: 20, width: 300, height: 200 },
+          recording: {
+            systemAudio: false,
+            micEnabled: true,
+            cameraEnabled: true,
+          },
+        })
+      );
+    });
+
     it('should return defaults on parse error', async () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue('invalid json');

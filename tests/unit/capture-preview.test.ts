@@ -13,6 +13,7 @@ const mockOpenScreenshotEditor = vi.fn();
 const mockCreateVideoEditorWindow = vi.fn();
 const mockDeleteVideo = vi.fn();
 const mockClipboardWriteImage = vi.fn();
+const mockShellShowItemInFolder = vi.fn();
 const mockReadFileSync = vi.fn(() => Buffer.from('image'));
 const mockNativeImageCreateFromBuffer = vi.fn(() => ({ image: true }));
 const mockNativeImageCreateFromPath = vi.fn(() => ({
@@ -110,6 +111,9 @@ vi.mock('electron', () => ({
   },
   clipboard: {
     writeImage: (...a: unknown[]) => mockClipboardWriteImage(...a),
+  },
+  shell: {
+    showItemInFolder: (...a: unknown[]) => mockShellShowItemInFolder(...a),
   },
   nativeImage: {
     createFromBuffer: (...a: unknown[]) =>
@@ -702,6 +706,17 @@ describe('capture-preview index', () => {
       const id = browserWindows[0].webContents.id;
       ipcOn['capture-preview:close']({ sender: { id } });
       expect(browserWindows[0].close).toHaveBeenCalled();
+    });
+
+    it('show-in-folder reveals the recording file', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/Rec.capty/recording.mov', 'video');
+      const id = browserWindows[0].webContents.id;
+      ipcOn['capture-preview:show-in-folder']({ sender: { id } });
+      expect(mockShellShowItemInFolder).toHaveBeenCalledWith(
+        '/p/Rec.capty/recording.mov'
+      );
     });
 
     it('copy writes image to clipboard for screenshots', async () => {

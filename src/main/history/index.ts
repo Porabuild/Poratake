@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron';
+import { ipcMain, dialog, BrowserWindow, shell } from 'electron';
 import fs from 'fs/promises';
 import { existsSync, mkdirSync, unlinkSync, rmSync } from 'fs';
 import crypto from 'crypto';
@@ -314,6 +314,16 @@ export async function init(): Promise<void> {
     if (!isHistoryPopoverWebContents(event.sender)) return false;
 
     return await deleteHistoryItem(id);
+  });
+
+  ipcMain.handle('history:reveal', (event, id: string): boolean => {
+    if (!isHistoryPopoverWebContents(event.sender)) return false;
+
+    const item = getHistoryItem(id);
+    if (!item || !existsSync(item.originalPath)) return false;
+
+    shell.showItemInFolder(item.originalPath);
+    return true;
   });
 
   ipcMain.handle('history:clear', async event => {

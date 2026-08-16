@@ -1,10 +1,9 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { promisify } from 'util';
-import { execFile } from 'child_process';
 import { getWhisperCliPath, getWhisperModelPath } from '../utils/whisper';
 import { getFFmpegPath } from '../utils/ffmpeg';
+import { execFFmpegFile } from '../utils/ffmpeg-process';
 import type {
   SubtitleData,
   SubtitleSegment,
@@ -12,8 +11,6 @@ import type {
   SubtitleGenerationOptions,
   WhisperModel,
 } from '@/types/subtitle';
-
-const execFileAsync = promisify(execFile);
 
 interface WhisperJsonSegment {
   timestamps: {
@@ -316,7 +313,7 @@ async function convertToWav(
 ): Promise<void> {
   const ffmpegPath = getFFmpegPath();
 
-  await execFileAsync(ffmpegPath, [
+  await execFFmpegFile(ffmpegPath, [
     '-i',
     inputPath,
     '-ar',

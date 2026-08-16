@@ -15,6 +15,7 @@ import type {
 } from '@/types/recording-control';
 
 const CONTROL_HEIGHT = 52;
+const COUNTDOWN_SURFACE_HEIGHT = 96;
 const CONTROL_WINDOW_HORIZONTAL_GUTTER = 16;
 const DEVICE_MENU_WIDTH = 300;
 const DEVICE_MENU_HEIGHT = 300;
@@ -76,6 +77,13 @@ function isDeviceActionData(
   );
 }
 
+function getControlWindowHeight(): number {
+  if (deviceMenuOpen) return DEVICE_MENU_HEIGHT;
+  return currentState?.countdownSeconds != null
+    ? CONTROL_HEIGHT + COUNTDOWN_SURFACE_HEIGHT
+    : CONTROL_HEIGHT;
+}
+
 function getControlBounds(mode: RecordingControlMode): Electron.Rectangle {
   const controlWidth =
     contentWidth ??
@@ -89,7 +97,7 @@ function getControlBounds(mode: RecordingControlMode): Electron.Rectangle {
       CONTROL_WINDOW_HORIZONTAL_GUTTER,
     y: currentPosition.y,
     width: boundsWidth + CONTROL_WINDOW_HORIZONTAL_GUTTER * 2,
-    height: deviceMenuOpen ? DEVICE_MENU_HEIGHT : CONTROL_HEIGHT,
+    height: getControlWindowHeight(),
   };
 }
 
@@ -382,6 +390,7 @@ export function updateRecordingControlBrowserWindow(
     previousMode,
     currentState.targetName != null
   );
+  const previousHeight = getControlWindowHeight();
   currentState = { ...currentState, ...update };
   const width = getRecordingControlWindowWidth(
     currentState.mode,
@@ -396,6 +405,9 @@ export function updateRecordingControlBrowserWindow(
       y: currentPosition.y,
     };
     deviceMenuOpen = false;
+  }
+
+  if (width !== previousWidth || previousHeight !== getControlWindowHeight()) {
     window.setBounds(getControlBounds(currentState.mode));
   }
 
@@ -434,6 +446,7 @@ export function hideRecordingControlBrowserWindow(): void {
         isPaused: false,
         isStarting: false,
         elapsedSeconds: 0,
+        countdownSeconds: null,
       }
     : null;
   visibilityVersion += 1;

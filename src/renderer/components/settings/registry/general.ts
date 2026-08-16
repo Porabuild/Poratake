@@ -82,6 +82,30 @@ export const GENERAL_ITEMS: SettingsItem[] = [
     }),
   },
   {
+    id: 'allInOne.rememberChoices',
+    feature: 'all-in-one',
+    category: 'general',
+    section: 'All-in-One',
+    type: 'switch',
+    label: 'Remember All-in-One choices',
+    description:
+      'Restore the last capture mode, target, and recording input toggles',
+    keywords: [
+      'all in one',
+      'remember',
+      'capture',
+      'mode',
+      'area',
+      'camera',
+      'microphone',
+      'system audio',
+    ],
+    getValue: s => s.allInOne.rememberChoices,
+    setValue: (s, v) => ({
+      allInOne: { ...s.allInOne, rememberChoices: v },
+    }),
+  },
+  {
     id: 'general.previewAutoDismiss',
     category: 'general',
     section: 'Preview',

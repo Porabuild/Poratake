@@ -135,6 +135,14 @@ function isValidEditorState(state: unknown): state is VideoEditorState {
 
   if (s.version !== 1 && s.version !== 2) return false;
   if (typeof s.savedAt !== 'string') return false;
+  if (
+    s.sourceDuration !== undefined &&
+    (typeof s.sourceDuration !== 'number' ||
+      !Number.isFinite(s.sourceDuration) ||
+      s.sourceDuration <= 0)
+  ) {
+    return false;
+  }
   if (!Array.isArray(s.segments)) return false;
   if (!s.cursorStyle || typeof s.cursorStyle !== 'object') return false;
   if (!s.cameraStyle || typeof s.cameraStyle !== 'object') return false;
@@ -222,19 +230,31 @@ function migrateEditorState(state: VideoEditorState): VideoEditorState {
   return { ...state, version: EDITOR_STATE_VERSION, cursorStyle };
 }
 
-function getRecordingTypeFromStateFile(
-  statePath: string
-): VideoEditorState['recordingType'] {
-  if (!fs.existsSync(statePath)) return undefined;
+function getRecordingMetadataFromStateFile(statePath: string): {
+  recordingType?: VideoEditorState['recordingType'];
+  sourceDuration?: number;
+} {
+  if (!fs.existsSync(statePath)) return {};
 
   try {
     const content = fs.readFileSync(statePath, 'utf-8');
-    const parsed = JSON.parse(content) as { recordingType?: unknown };
-    return parsed.recordingType === 'ios-device'
-      ? parsed.recordingType
-      : undefined;
+    const parsed = JSON.parse(content) as {
+      recordingType?: unknown;
+      sourceDuration?: unknown;
+    };
+    return {
+      recordingType:
+        parsed.recordingType === 'ios-device'
+          ? parsed.recordingType
+          : undefined,
+      sourceDuration:
+        typeof parsed.sourceDuration === 'number' &&
+        Number.isFinite(parsed.sourceDuration)
+          ? parsed.sourceDuration
+          : undefined,
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -296,7 +316,8 @@ export function registerStateHandlers(): void {
     const statePath = getEditorStatePath(data.filePath);
     if (!statePath) return false;
 
-    const recordingType = getRecordingTypeFromStateFile(statePath);
+    const { recordingType, sourceDuration } =
+      getRecordingMetadataFromStateFile(statePath);
 
     try {
       if (fs.existsSync(statePath)) {
@@ -305,6 +326,7 @@ export function registerStateHandlers(): void {
       return await generateInitialEditorState({
         projectPath: data.filePath,
         recordingType,
+        duration: sourceDuration,
       });
     } catch (error) {
       console.error('Failed to reset editor state:', error);

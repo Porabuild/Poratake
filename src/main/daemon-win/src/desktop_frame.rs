@@ -200,8 +200,7 @@ fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Option<DesktopFram
             let source_y = y as usize * piece.height as usize / destination_height as usize;
             for x in 0..destination_width {
                 let source_x = x as usize * piece.width as usize / destination_width as usize;
-                let source_offset =
-                    (source_y * piece.width as usize + source_x) * BYTES_PER_PIXEL;
+                let source_offset = (source_y * piece.width as usize + source_x) * BYTES_PER_PIXEL;
                 let destination_offset = ((destination_y + y) as usize * width as usize
                     + (destination_x + x) as usize)
                     * BYTES_PER_PIXEL;
@@ -1131,9 +1130,7 @@ mod tests {
         assert_eq!(composed.height, 2);
         for row in composed.pixels.chunks_exact(4 * BYTES_PER_PIXEL) {
             assert!(row[..2 * BYTES_PER_PIXEL].iter().all(|value| *value == 10));
-            assert!(row[2 * BYTES_PER_PIXEL..]
-                .iter()
-                .all(|value| *value == 20));
+            assert!(row[2 * BYTES_PER_PIXEL..].iter().all(|value| *value == 20));
         }
     }
 

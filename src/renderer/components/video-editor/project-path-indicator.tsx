@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { FolderOpen, Copy, Check, ExternalLink } from 'lucide-react';
+import { FolderOpen, Copy, Check } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Input } from '@/renderer/components/ui/input';
 import {
@@ -193,8 +193,8 @@ export default function ProjectPathIndicator({
                 onClick={handleOpenInFinder}
                 className="h-8 flex-1"
               >
-                <ExternalLink className="size-4" />
-                <span className="ml-1.5">Open in Finder</span>
+                <FolderOpen className="size-4" />
+                <span className="ml-1.5">Show Original</span>
               </Button>
             </div>
           </div>

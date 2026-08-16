@@ -8,6 +8,7 @@ import {
   confirmOverlaySelection,
   hasOverlayHandoff,
   isOverlayActive,
+  setOverlayFreeze,
   resolveWindowPickTargets,
   setOverlayAspectRatio,
   setOverlayPickTargets,
@@ -16,8 +17,10 @@ import {
   updateOverlaySelection,
 } from '@/main/capture/area-overlay';
 import type {
+  OverlayCallbacks,
   OverlayPickTarget,
   OverlayRegion,
+  OverlaySelection,
 } from '@/main/capture/area-overlay';
 import type {
   AreaSelectionMode,
@@ -30,6 +33,7 @@ let pendingAreaSelection: AreaSelection | null = null;
 let callbacks: StartAreaSelectionOptions | undefined;
 let pickedWindowNames: Map<number, string> | null = null;
 let pickedWindowBounds: Map<number, Rectangle> | null = null;
+let modeSwitchVersion = 0;
 
 function toAreaSelection(
   region: OverlayRegion,
@@ -108,7 +112,7 @@ async function resolveStart(
     return resolveWindowTargets();
   }
 
-  if (screen.getAllDisplays().length === 1) {
+  if (!options?.requireDisplayPick && screen.getAllDisplays().length === 1) {
     return { preset: screen.getPrimaryDisplay().bounds };
   }
 
@@ -128,21 +132,38 @@ async function resolveModeSwitch(
   }
 }
 
-export async function startAreaSelection(
-  options?: StartAreaSelectionOptions
-): Promise<AreaSelection | null> {
-  const resolved = await resolveStart(options);
+function overlayCallbacks(): OverlayCallbacks {
+  return {
+    onSelected: region => {
+      pendingAreaSelection = toAreaSelection(region, 'selected');
+      callbacks?.onSelected?.(pendingAreaSelection);
+      callbacks?.onUpdate?.(pendingAreaSelection);
+    },
+    onUpdated: region => {
+      pendingAreaSelection = toAreaSelection(region, 'updated');
+      callbacks?.onUpdate?.(pendingAreaSelection);
+    },
+    onCancelled: () => {
+      pendingAreaSelection = null;
+      callbacks?.onCancelled?.();
+      callbacks = undefined;
+    },
+    onToolbarAction: action => {
+      callbacks?.onToolbarAction?.(action);
+    },
+  };
+}
 
-  if (resolved === null || isOverlayActive()) {
-    return null;
-  }
-
+function beginInteractiveOverlay(
+  options: StartAreaSelectionOptions | undefined,
+  resolved: ResolvedStart
+): Promise<OverlaySelection | null> {
   callbacks = options;
   pendingAreaSelection = null;
   pickedWindowNames = resolved.windowNames ?? null;
   pickedWindowBounds = resolved.windowBounds ?? null;
 
-  const selection = await startInteractiveOverlay({
+  return startInteractiveOverlay({
     freeze: options?.freeze,
     renderer: options?.renderer,
     autoConfirm: false,
@@ -153,27 +174,13 @@ export async function startAreaSelection(
     prompt: resolved.prompt,
     showPrompt: options?.showPrompt ?? true,
     toolbar: options?.toolbar ?? null,
-    callbacks: {
-      onSelected: region => {
-        pendingAreaSelection = toAreaSelection(region, 'selected');
-        callbacks?.onSelected?.(pendingAreaSelection);
-        callbacks?.onUpdate?.(pendingAreaSelection);
-      },
-      onUpdated: region => {
-        pendingAreaSelection = toAreaSelection(region, 'updated');
-        callbacks?.onUpdate?.(pendingAreaSelection);
-      },
-      onCancelled: () => {
-        pendingAreaSelection = null;
-        callbacks?.onCancelled?.();
-        callbacks = undefined;
-      },
-      onToolbarAction: action => {
-        callbacks?.onToolbarAction?.(action);
-      },
-    },
+    callbacks: overlayCallbacks(),
   });
+}
 
+async function finishSelection(
+  selection: OverlaySelection | null
+): Promise<AreaSelection | null> {
   callbacks = undefined;
 
   if (!selection) {
@@ -185,6 +192,59 @@ export async function startAreaSelection(
   } finally {
     await selection.release();
   }
+}
+
+export async function startAreaSelection(
+  options?: StartAreaSelectionOptions
+): Promise<AreaSelection | null> {
+  const requestVersion = ++modeSwitchVersion;
+
+  if (isOverlayActive()) {
+    return null;
+  }
+
+  const mode = options?.mode ?? 'manual';
+
+  if (mode === 'window') {
+    const prompt = 'Click a window to select it · Esc to cancel';
+    const selectionPromise = beginInteractiveOverlay(options, {
+      pickTargets: [],
+      prompt,
+    });
+
+    void resolveWindowTargets().then(resolved => {
+      if (requestVersion !== modeSwitchVersion) {
+        return;
+      }
+
+      if (!resolved) {
+        void cancelAreaSelection(true);
+        return;
+      }
+
+      pickedWindowNames = resolved.windowNames ?? null;
+      pickedWindowBounds = resolved.windowBounds ?? null;
+      setOverlayPickTargets(
+        resolved.pickTargets ?? [],
+        resolved.prompt ?? prompt,
+        resolved.repeatablePicks ?? false
+      );
+    });
+
+    return finishSelection(await selectionPromise);
+  }
+
+  const resolved = await resolveStart(options);
+
+  if (
+    resolved === null ||
+    isOverlayActive() ||
+    requestVersion !== modeSwitchVersion
+  ) {
+    return null;
+  }
+
+  return finishSelection(await beginInteractiveOverlay(options, resolved));
 }
 
 export async function confirmAreaSelection(
@@ -199,6 +259,7 @@ export async function confirmAreaSelection(
     status: 'confirmed',
   };
   pendingAreaSelection = null;
+  modeSwitchVersion += 1;
   confirmOverlaySelection(options?.keepOverlayVisible ?? false);
 
   return selection;
@@ -208,6 +269,10 @@ export function concealAreaSelectorOverlay(): void {
   concealOverlayHandoff();
 }
 
+export function setAreaSelectorFreeze(enabled: boolean): Promise<void> {
+  return setOverlayFreeze(enabled);
+}
+
 export function hasVisibleSelectorOverlay(): boolean {
   return hasOverlayHandoff();
 }
@@ -215,6 +280,7 @@ export function hasVisibleSelectorOverlay(): boolean {
 export async function cancelAreaSelection(
   silent: boolean = false
 ): Promise<void> {
+  modeSwitchVersion += 1;
   pendingAreaSelection = null;
   await cancelOverlaySelection(silent);
 }
@@ -248,8 +314,9 @@ export async function setAreaSelectionMode(
     return;
   }
 
+  const requestVersion = ++modeSwitchVersion;
   const resolved = await resolveModeSwitch(mode);
-  if (!resolved || !isOverlayActive()) {
+  if (requestVersion !== modeSwitchVersion || !resolved || !isOverlayActive()) {
     return;
   }
 

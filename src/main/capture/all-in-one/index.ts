@@ -3,6 +3,7 @@ import {
   hideAreaSelector,
   setAreaSelectionMode,
   startAreaSelection,
+  setAreaSelectorFreeze,
   updateAreaSelectionCallbacks,
 } from '@/main/capture/area-selector';
 import type { AreaSelectionMode } from '@/main/capture/area-selector';
@@ -34,11 +35,15 @@ import type {
   AreaOverlayToolbarAction,
 } from '@/types/area-overlay.ts';
 import { clipboard, Notification } from 'electron';
-import { updateConfig } from '@/main/settings';
+import { getConfig, updateConfig } from '@/main/settings';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import { setOverlayToolbar } from '@/main/capture/area-overlay';
 import { isScreenFrozen } from '@/main/capture/freeze-screen';
 import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
+import {
+  DEFAULT_ALL_IN_ONE_CONFIG,
+  type AllInOneConfig,
+} from '@/types/settings';
 
 export { showAllInOneControl, updateAllInOnePosition, hideAllInOneControl };
 
@@ -50,6 +55,16 @@ const SELECTION_MODES: Record<AllInOneCaptureTarget, AreaSelectionMode> = {
   window: 'window',
   screen: 'display',
 };
+const CAPTURE_MODES = new Set<AllInOneCaptureMode>([
+  'screenshot',
+  'record',
+  'ocr',
+]);
+const CAPTURE_TARGETS = new Set<AllInOneCaptureTarget>([
+  'area',
+  'window',
+  'screen',
+]);
 
 let activeCaptureMode: AllInOneCaptureMode = 'screenshot';
 let captureTargets: Record<TargetableMode, AllInOneCaptureTarget> = {
@@ -57,6 +72,53 @@ let captureTargets: Record<TargetableMode, AllInOneCaptureTarget> = {
   record: 'area',
 };
 let currentSelection: AreaSelection | null = null;
+
+function isCaptureMode(value: unknown): value is AllInOneCaptureMode {
+  return CAPTURE_MODES.has(value as AllInOneCaptureMode);
+}
+
+function isCaptureTarget(value: unknown): value is AllInOneCaptureTarget {
+  return CAPTURE_TARGETS.has(value as AllInOneCaptureTarget);
+}
+
+function restorePreferences(): void {
+  const preferences = getConfig().allInOne;
+  if (!preferences.rememberChoices) {
+    activeCaptureMode = DEFAULT_ALL_IN_ONE_CONFIG.lastMode;
+    captureTargets = { ...DEFAULT_ALL_IN_ONE_CONFIG.lastTargets };
+    return;
+  }
+
+  activeCaptureMode = isCaptureMode(preferences.lastMode)
+    ? preferences.lastMode
+    : DEFAULT_ALL_IN_ONE_CONFIG.lastMode;
+  if (
+    (activeCaptureMode === 'record' && !isFeatureSupported('recording')) ||
+    (activeCaptureMode === 'ocr' && !isFeatureSupported('ocr'))
+  ) {
+    activeCaptureMode = DEFAULT_ALL_IN_ONE_CONFIG.lastMode;
+  }
+  captureTargets = {
+    screenshot: isCaptureTarget(preferences.lastTargets?.screenshot)
+      ? preferences.lastTargets.screenshot
+      : DEFAULT_ALL_IN_ONE_CONFIG.lastTargets.screenshot,
+    record: isCaptureTarget(preferences.lastTargets?.record)
+      ? preferences.lastTargets.record
+      : DEFAULT_ALL_IN_ONE_CONFIG.lastTargets.record,
+  };
+}
+
+function persistPreferences(updates: Partial<AllInOneConfig>): void {
+  const config = getConfig();
+  if (!config.allInOne.rememberChoices) return;
+
+  updateConfig({
+    allInOne: {
+      ...config.allInOne,
+      ...updates,
+    },
+  });
+}
 
 function activeCaptureTarget(): AllInOneCaptureTarget {
   return activeCaptureMode === 'ocr'
@@ -75,7 +137,8 @@ function toolbarState(): AreaOverlayToolbar {
 }
 
 function persistAreaSelection(bounds: AreaBounds): void {
-  updateConfig({ allInOne: { lastArea: bounds } });
+  if (activeCaptureTarget() !== 'area') return;
+  persistPreferences({ lastArea: bounds });
 }
 
 async function closeAreaSelection(): Promise<void> {
@@ -190,7 +253,9 @@ function handleRecordAction(): void {
     },
   });
 
-  showPreRecordingControl(area, currentSelection?.windowName);
+  showPreRecordingControl(area, currentSelection?.windowName, {
+    preferenceScope: 'all-in-one',
+  });
   persistAreaSelection(area);
 
   if (windowId === undefined) {
@@ -239,7 +304,13 @@ function handleCopyColorAction(color: string): void {
 }
 
 function applyActiveCaptureTarget(): void {
-  void setAreaSelectionMode(SELECTION_MODES[activeCaptureTarget()]);
+  const target = activeCaptureTarget();
+  const shouldFreeze =
+    activeCaptureMode !== 'record' && isFreezeScreenEnabled();
+  void Promise.all([
+    setAreaSelectorFreeze(shouldFreeze),
+    setAreaSelectionMode(SELECTION_MODES[target]),
+  ]);
   setOverlayToolbar(toolbarState());
 }
 
@@ -249,6 +320,7 @@ function handleCaptureModeSelected(mode: AllInOneCaptureMode): void {
   if (mode === activeCaptureMode) return;
 
   activeCaptureMode = mode;
+  persistPreferences({ lastMode: mode });
   applyActiveCaptureTarget();
 }
 
@@ -257,6 +329,7 @@ function handleCaptureTargetSelected(target: AllInOneCaptureTarget): void {
   if (captureTargets[activeCaptureMode] === target) return;
 
   captureTargets = { ...captureTargets, [activeCaptureMode]: target };
+  persistPreferences({ lastTargets: captureTargets });
   applyActiveCaptureTarget();
 }
 
@@ -302,8 +375,7 @@ export default async function startAllInOne(): Promise<void> {
     return;
   }
 
-  activeCaptureMode = 'screenshot';
-  captureTargets = { screenshot: 'area', record: 'area' };
+  restorePreferences();
   currentSelection = null;
 
   const handleSelected = (selection: AreaSelection) => {
@@ -327,9 +399,13 @@ export default async function startAllInOne(): Promise<void> {
     currentSelection = null;
   };
 
-  const freeze = isFreezeScreenEnabled();
+  const freeze =
+    activeCaptureMode === 'record' ? false : isFreezeScreenEnabled();
+  const target = activeCaptureTarget();
 
   const selection = await startAreaSelection({
+    mode: SELECTION_MODES[target],
+    requireDisplayPick: true,
     freeze,
     toolbar: toolbarState(),
     onSelected: handleSelected,

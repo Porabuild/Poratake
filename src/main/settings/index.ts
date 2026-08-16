@@ -14,6 +14,8 @@ import type {
   CustomBackground,
   CustomGradient,
   AppearanceConfig,
+  AllInOneConfig,
+  RecordingSettings,
   SettingsConfig,
   SettingsUiConfig,
   WallpaperPreset,
@@ -69,6 +71,41 @@ function migrateAppearanceConfig(
     theme: APP_THEME_IDS.has(savedAppearance?.theme ?? '')
       ? (savedAppearance?.theme ?? DEFAULT_SETTINGS.appearance.theme)
       : DEFAULT_SETTINGS.appearance.theme,
+  };
+}
+
+type SavedAllInOneConfig = Partial<
+  Omit<AllInOneConfig, 'lastTargets' | 'recording'>
+> & {
+  lastTargets?: Partial<AllInOneConfig['lastTargets']>;
+  recording?: Partial<AllInOneConfig['recording']>;
+};
+
+function migrateAllInOneConfig(
+  savedAllInOne?: SavedAllInOneConfig,
+  savedRecording?: Partial<RecordingSettings>
+): AllInOneConfig {
+  return {
+    ...DEFAULT_ALL_IN_ONE_CONFIG,
+    ...savedAllInOne,
+    lastTargets: {
+      ...DEFAULT_ALL_IN_ONE_CONFIG.lastTargets,
+      ...savedAllInOne?.lastTargets,
+    },
+    recording: {
+      systemAudio:
+        savedAllInOne?.recording?.systemAudio ??
+        savedRecording?.systemAudio ??
+        DEFAULT_ALL_IN_ONE_CONFIG.recording.systemAudio,
+      micEnabled:
+        savedAllInOne?.recording?.micEnabled ??
+        savedRecording?.micEnabled ??
+        DEFAULT_ALL_IN_ONE_CONFIG.recording.micEnabled,
+      cameraEnabled:
+        savedAllInOne?.recording?.cameraEnabled ??
+        savedRecording?.camera?.enabled ??
+        DEFAULT_ALL_IN_ONE_CONFIG.recording.cameraEnabled,
+    },
   };
 }
 
@@ -304,7 +341,10 @@ export function loadConfig(): SettingsConfig {
           ...savedConfig.saveLocations,
         },
         preview: { ...DEFAULT_PREVIEW_CONFIG, ...savedConfig.preview },
-        allInOne: { ...DEFAULT_ALL_IN_ONE_CONFIG, ...savedConfig.allInOne },
+        allInOne: migrateAllInOneConfig(
+          savedConfig.allInOne,
+          savedConfig.recording
+        ),
         scrollCapture: {
           ...DEFAULT_SETTINGS.scrollCapture,
           ...savedConfig.scrollCapture,
