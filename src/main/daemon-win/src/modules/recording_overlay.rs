@@ -526,8 +526,8 @@ impl Module for RecordingOverlayModule {
                 let visible = self.visible.clone();
                 run_on_ui(move || {
                     let target = HWND(handle as isize as *mut c_void);
-                    let insert_after = insert_after_handle
-                        .map(|handle| HWND(handle as isize as *mut c_void));
+                    let insert_after =
+                        insert_after_handle.map(|handle| HWND(handle as isize as *mut c_void));
                     match show_window_highlight(target, color, insert_after) {
                         Ok(shown) => {
                             visible.store(shown, Ordering::Release);
