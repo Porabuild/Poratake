@@ -2,9 +2,11 @@ import { BrowserWindow } from 'electron';
 import type { Display } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
+import { isMac } from '@/main/utils/platform';
 
 export function createOverlayWindow(display: Display): BrowserWindow {
   const overlayWindow = new BrowserWindow({
+    ...(isMac ? { type: 'panel' } : {}),
     x: display.bounds.x,
     y: display.bounds.y,
     width: display.bounds.width,
@@ -39,7 +41,7 @@ export function createOverlayWindow(display: Display): BrowserWindow {
   overlayWindow.setBounds(display.bounds);
   overlayWindow.setIgnoreMouseEvents(true);
   overlayWindow.setContentProtection(true);
-  if (process.platform === 'darwin') {
+  if (isMac) {
     overlayWindow.excludedFromShownWindowsMenu = true;
   }
 

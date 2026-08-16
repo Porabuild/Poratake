@@ -36,6 +36,14 @@ if (process.platform === 'win32') {
     cwd: root,
     env,
   });
+
+  const { ensureFFmpeg } = await import('./ensure-ffmpeg.mjs');
+  if (!ensureFFmpeg(root, env)) {
+    console.error(
+      '[dev] FFmpeg setup failed — install the prerequisites above and rerun'
+    );
+    process.exit(1);
+  }
 }
 
 const require = createRequire(import.meta.url);

@@ -16,6 +16,10 @@ import type {
 import type { HistoryConfig } from './history';
 import { DEFAULT_HISTORY_CONFIG } from './history';
 import type { ThemeMode } from './theme';
+import type {
+  AllInOneCaptureMode,
+  AllInOneCaptureTarget,
+} from './area-overlay';
 
 export interface AppearanceConfig {
   mode: ThemeMode;
@@ -367,6 +371,7 @@ export interface IOSDeviceSettings {
 export interface RecordingSettings {
   autoZoom: boolean;
   showPreview: boolean;
+  startDelay: number;
   systemAudio: boolean;
   micEnabled: boolean;
   selectedMicId: string | null;
@@ -378,6 +383,7 @@ export interface RecordingSettings {
 export const DEFAULT_RECORDING_SETTINGS: RecordingSettings = {
   autoZoom: false,
   showPreview: true,
+  startDelay: 3,
   systemAudio: true,
   micEnabled: false,
   selectedMicId: null,
@@ -387,16 +393,38 @@ export const DEFAULT_RECORDING_SETTINGS: RecordingSettings = {
 };
 
 export interface AllInOneConfig {
+  rememberChoices: boolean;
+  lastMode: AllInOneCaptureMode;
+  lastTargets: {
+    screenshot: AllInOneCaptureTarget;
+    record: AllInOneCaptureTarget;
+  };
   lastArea: {
     x: number;
     y: number;
     width: number;
     height: number;
   } | null;
+  recording: {
+    systemAudio: boolean;
+    micEnabled: boolean;
+    cameraEnabled: boolean;
+  };
 }
 
 export const DEFAULT_ALL_IN_ONE_CONFIG: AllInOneConfig = {
+  rememberChoices: true,
+  lastMode: 'screenshot',
+  lastTargets: {
+    screenshot: 'area',
+    record: 'area',
+  },
   lastArea: null,
+  recording: {
+    systemAudio: true,
+    micEnabled: false,
+    cameraEnabled: false,
+  },
 };
 
 export type AutoScrollSpeed = 'slow' | 'medium' | 'fast';

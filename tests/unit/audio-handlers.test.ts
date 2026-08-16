@@ -1,14 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'events';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
 
+class FakeChildProcess extends EventEmitter {
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+  kill = vi.fn();
+}
+
 const mockExecFileAsync = vi.fn();
+const mockSpawn = vi.fn();
+const mockSend = vi.fn();
 const mockWriteFile = vi.fn();
 const mockUnlink = vi.fn();
-const mockRename = vi.fn();
 const mockGetExportAbortSignal = vi.fn();
-const exportEvent = { sender: { id: 1 } };
+const exportEvent = { sender: { id: 1, send: mockSend } };
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -34,6 +42,7 @@ vi.mock('child_process', () => ({
     args: string[],
     cb: (err: Error | null, out?: unknown) => void
   ) => mockExecFileAsync(cmd, args, cb),
+  spawn: (...args: unknown[]) => mockSpawn(...args),
 }));
 
 vi.mock('util', () => ({
@@ -55,21 +64,34 @@ vi.mock('util', () => ({
 vi.mock('fs/promises', () => ({
   writeFile: (...a: unknown[]) => mockWriteFile(...a),
   unlink: (...a: unknown[]) => mockUnlink(...a),
-  rename: (...a: unknown[]) => mockRename(...a),
 }));
 
 vi.mock('path', () => ({
   dirname: (p: string) => p.split('/').slice(0, -1).join('/'),
 }));
 
+function spawnWith(script: (child: FakeChildProcess) => void): void {
+  mockSpawn.mockImplementation(() => {
+    const child = new FakeChildProcess();
+    setTimeout(() => script(child), 0);
+    return child;
+  });
+}
+
+function lastSpawnArgs(): string[] {
+  return mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1][1] as string[];
+}
+
 describe('audio handlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
+    mockExecFileAsync.mockReset();
     mockExecFileAsync.mockReturnValue(undefined);
     mockUnlink.mockResolvedValue(undefined);
     mockGetExportAbortSignal.mockReturnValue(undefined);
+    spawnWith(child => child.emit('close', 0));
   });
 
   it('extract-audio runs ffmpeg with -vn', async () => {
@@ -119,7 +141,7 @@ describe('audio handlers', () => {
     expect(result.error).toBe('No segments provided');
   });
 
-  it('extract-audio-segments handles single segment', async () => {
+  it('extract-audio-segments handles a single segment in one ffmpeg pass', async () => {
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
@@ -133,11 +155,14 @@ describe('audio handlers', () => {
     );
     expect(result).toEqual({ success: true });
     expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    const args = mockExecFileAsync.mock.calls[0][1] as string[];
+    expect(args).toContain('-filter_complex');
+    expect(args.join(' ')).toContain('atrim=start=0:end=5');
+    expect(args.join(' ')).not.toContain('concat');
+    expect(args.at(-1)).toBe('/p/out.aac');
   });
 
-  it('extract-audio-segments concatenates multiple segments', async () => {
-    mockWriteFile.mockResolvedValue(undefined);
-    mockUnlink.mockResolvedValue(undefined);
+  it('extract-audio-segments concatenates multiple segments in one ffmpeg pass', async () => {
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
@@ -153,87 +178,172 @@ describe('audio handlers', () => {
       }
     );
     expect(result).toEqual({ success: true });
-    expect(mockWriteFile).toHaveBeenCalled();
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    const args = mockExecFileAsync.mock.calls[0][1] as string[];
+    const filter = args.join(' ');
+    expect(filter).toContain('asplit=2');
+    expect(filter).toContain('atrim=start=0:end=5');
+    expect(filter).toContain('atrim=start=10:end=15');
+    expect(filter).toContain('concat=n=2:v=0:a=1');
   });
 
-  it('uses unique scratch files for concurrent segment exports', async () => {
-    const { registerAudioHandlers } =
-      await import('@/main/capture/video/ipc/audio-handlers');
-    registerAudioHandlers();
-    const params = {
-      inputPath: '/p/in.mov',
-      outputPath: '/p/out.aac',
-      segments: [
-        { start: 0, end: 5 },
-        { start: 10, end: 15 },
-      ],
-    };
-
-    await ipcHandle['video-editor:extract-audio-segments'](exportEvent, params);
-    const firstScratchPath = (
-      mockExecFileAsync.mock.calls[0][1] as string[]
-    ).at(-1);
-    await ipcHandle['video-editor:extract-audio-segments'](exportEvent, params);
-    const secondScratchPath = (
-      mockExecFileAsync.mock.calls[3][1] as string[]
-    ).at(-1);
-
-    expect(firstScratchPath).not.toBe(secondScratchPath);
-  });
-
-  it('mux-audio combines video + audio', async () => {
+  it('mux-audio combines video and audio with stream copy', async () => {
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
     const result = await ipcHandle['video-editor:mux-audio'](exportEvent, {
       videoPath: '/p/v.mov',
-      audioPath: '/p/a.aac',
+      audioTracks: [{ path: '/p/a.aac' }],
       outputPath: '/p/out.mp4',
       audioDelaySeconds: 0,
+      durationSeconds: 10,
     });
     expect(result).toEqual({ success: true });
-    const args = mockExecFileAsync.mock.calls[0][1];
-    expect(args).toContain('-shortest');
+    const args = lastSpawnArgs();
+    expect(args.slice(0, 3)).toEqual(['-progress', 'pipe:1', '-nostats']);
     expect(args).toContain('apad');
+    expect(args).toContain('-t');
+    expect(args).toContain('10');
+    expect(args).not.toContain('-shortest');
+    expect(args).toContain('-c:v');
+    expect(args.join(' ')).toContain('-map 0:v -map 1:a');
+    expect(args.at(-1)).toBe('/p/out.mp4');
   });
 
-  it('mux-audio applies audio delay offset', async () => {
+  it('mux-audio falls back to -shortest without a duration', async () => {
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
     await ipcHandle['video-editor:mux-audio'](exportEvent, {
       videoPath: '/p/v.mov',
-      audioPath: '/p/a.aac',
+      audioTracks: [{ path: '/p/a.aac' }],
+      outputPath: '/p/out.mp4',
+    });
+    const args = lastSpawnArgs();
+    expect(args).toContain('-shortest');
+    expect(args).not.toContain('-t');
+  });
+
+  it('mux-audio applies volume and delay inside one filter graph', async () => {
+    const { registerAudioHandlers } =
+      await import('@/main/capture/video/ipc/audio-handlers');
+    registerAudioHandlers();
+    const result = await ipcHandle['video-editor:mux-audio'](exportEvent, {
+      videoPath: '/p/v.mov',
+      audioTracks: [{ path: '/p/a.aac', volume: 0.5 }],
       outputPath: '/p/out.mp4',
       audioDelaySeconds: 1.5,
+      durationSeconds: 10,
     });
-    const args = mockExecFileAsync.mock.calls[0][1];
-    expect(args).toContain('-itsoffset');
-    expect(args).toContain('1.5');
+    expect(result).toEqual({ success: true });
+    const args = lastSpawnArgs();
+    const command = args.join(' ');
+    expect(command).toContain('volume=0.5');
+    expect(command).toContain('adelay=1500:all=1');
+    expect(command).toContain('apad');
+    expect(args).toContain('-map');
+    expect(args).toContain('[aout]');
+    expect(args).toContain('-t');
   });
 
-  it('passes the renderer export signal to ffmpeg', async () => {
-    const controller = new AbortController();
-    mockGetExportAbortSignal.mockReturnValue(controller.signal);
+  it('mux-audio mixes multiple tracks with per-track volumes', async () => {
+    const { registerAudioHandlers } =
+      await import('@/main/capture/video/ipc/audio-handlers');
+    registerAudioHandlers();
+    const result = await ipcHandle['video-editor:mux-audio'](exportEvent, {
+      videoPath: '/p/v.mov',
+      audioTracks: [{ path: '/p/a.aac', volume: 0.5 }, { path: '/p/b.aac' }],
+      outputPath: '/p/out.mp4',
+      durationSeconds: 10,
+    });
+    expect(result).toEqual({ success: true });
+    const args = lastSpawnArgs();
+    const command = args.join(' ');
+    expect(command).toContain('volume=0.5');
+    expect(command).toContain('amix=inputs=2:duration=longest');
+    expect(command).toContain('apad');
+  });
+
+  it('mux-audio rejects invalid track payloads', async () => {
+    const { registerAudioHandlers } =
+      await import('@/main/capture/video/ipc/audio-handlers');
+    registerAudioHandlers();
+
+    const empty = (await ipcHandle['video-editor:mux-audio'](exportEvent, {
+      videoPath: '/p/v.mov',
+      audioTracks: [],
+      outputPath: '/p/out.mp4',
+    })) as { success: boolean; error?: string };
+    expect(empty.success).toBe(false);
+
+    const negativeVolume = (await ipcHandle['video-editor:mux-audio'](
+      exportEvent,
+      {
+        videoPath: '/p/v.mov',
+        audioTracks: [{ path: '/p/a.aac', volume: -1 }],
+        outputPath: '/p/out.mp4',
+      }
+    )) as { success: boolean; error?: string };
+    expect(negativeVolume.success).toBe(false);
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('mux-audio reports ffmpeg progress and stops at 100', async () => {
+    spawnWith(child => {
+      child.stdout.emit('data', 'frame=1\nout_time_us=5000000\nprogress=');
+      child.stdout.emit('data', 'continue\nout_time_us=5100000\n');
+      child.stdout.emit('data', 'out_time_us=10000000\nout_time_us=99000000\n');
+      child.emit('close', 0);
+    });
+    const { registerAudioHandlers } =
+      await import('@/main/capture/video/ipc/audio-handlers');
+    registerAudioHandlers();
+
+    const result = await ipcHandle['video-editor:mux-audio'](exportEvent, {
+      videoPath: '/p/v.mov',
+      audioTracks: [{ path: '/p/a.aac' }],
+      outputPath: '/p/out.mp4',
+      durationSeconds: 10,
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(mockSend.mock.calls.map(call => call[1] as number)).toEqual([
+      50, 51, 100,
+    ]);
+    expect(mockSend.mock.calls[0][0]).toBe('video-editor:mux-audio:progress');
+  });
+
+  it('mux-audio falls back to out_time_ms and skips progress without a duration', async () => {
+    spawnWith(child => {
+      child.stdout.emit('data', 'out_time_ms=2500000\n');
+      child.emit('close', 0);
+    });
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
 
     await ipcHandle['video-editor:mux-audio'](exportEvent, {
       videoPath: '/p/v.mov',
-      audioPath: '/p/a.aac',
+      audioTracks: [{ path: '/p/a.aac' }],
       outputPath: '/p/out.mp4',
+      durationSeconds: 5,
     });
+    expect(mockSend.mock.calls.map(call => call[1] as number)).toEqual([50]);
 
-    expect(mockGetExportAbortSignal).toHaveBeenCalledWith(1);
-    expect(mockExecFileAsync.mock.calls[0][2]).toEqual({
-      signal: controller.signal,
+    mockSend.mockClear();
+    await ipcHandle['video-editor:mux-audio'](exportEvent, {
+      videoPath: '/p/v.mov',
+      audioTracks: [{ path: '/p/a.aac' }],
+      outputPath: '/p/out.mp4',
+      durationSeconds: 0,
     });
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('removes a partial mux output when ffmpeg is aborted', async () => {
-    mockExecFileAsync.mockImplementationOnce(() => {
-      throw new Error('The operation was aborted');
+  it('mux-audio fails when ffmpeg exits non-zero', async () => {
+    spawnWith(child => {
+      child.stderr.emit('data', 'Invalid data found');
+      child.emit('close', 1);
     });
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
@@ -241,56 +351,43 @@ describe('audio handlers', () => {
 
     const result = (await ipcHandle['video-editor:mux-audio'](exportEvent, {
       videoPath: '/p/v.mov',
-      audioPath: '/p/a.aac',
+      audioTracks: [{ path: '/p/a.aac' }],
       outputPath: '/p/out.mp4',
-    })) as { success: boolean };
+    })) as { success: boolean; error?: string };
 
     expect(result.success).toBe(false);
+    expect(result.error).toContain('Invalid data found');
     expect(mockUnlink).toHaveBeenCalledWith('/p/out.mp4');
   });
 
-  it('mix-audio-tracks composes amix filter', async () => {
-    const { registerAudioHandlers } =
-      await import('@/main/capture/video/ipc/audio-handlers');
-    registerAudioHandlers();
-    const result = await ipcHandle['video-editor:mix-audio-tracks'](
-      exportEvent,
-      {
-        inputPaths: ['/p/a.aac', '/p/b.aac'],
-        outputPath: '/p/out.aac',
-      }
-    );
-    expect(result).toEqual({ success: true });
-    const args = mockExecFileAsync.mock.calls[0][1];
-    expect(args).toContain('-filter_complex');
-    expect(args.join(' ')).toContain('amix=inputs=2');
-  });
-
-  it('mix-audio-tracks applies per-track volumes', async () => {
-    const { registerAudioHandlers } =
-      await import('@/main/capture/video/ipc/audio-handlers');
-    registerAudioHandlers();
-    await ipcHandle['video-editor:mix-audio-tracks'](exportEvent, {
-      inputPaths: ['/p/a.aac', '/p/b.aac'],
-      outputPath: '/p/out.aac',
-      volumes: [0.5, 1],
+  it('removes a partial mux output when ffmpeg is aborted', async () => {
+    const controller = new AbortController();
+    mockGetExportAbortSignal.mockReturnValue(controller.signal);
+    const children: FakeChildProcess[] = [];
+    mockSpawn.mockImplementation(() => {
+      const child = new FakeChildProcess();
+      children.push(child);
+      child.kill.mockImplementation(() => {
+        setTimeout(() => child.emit('close', null), 0);
+        return true;
+      });
+      setTimeout(() => controller.abort(), 0);
+      return child;
     });
-    const args = mockExecFileAsync.mock.calls[0][1];
-    expect(args.join(' ')).toContain('volume=0.5');
-  });
-
-  it('adjust-audio-volume runs volume filter', async () => {
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
-    await ipcHandle['video-editor:adjust-audio-volume'](exportEvent, {
-      inputPath: '/p/in.aac',
-      outputPath: '/p/out.aac',
-      volume: 1.5,
-    });
-    const args = mockExecFileAsync.mock.calls[0][1];
-    expect(args).toContain('-af');
-    expect(args.join(' ')).toContain('volume=1.5');
+
+    const result = (await ipcHandle['video-editor:mux-audio'](exportEvent, {
+      videoPath: '/p/v.mov',
+      audioTracks: [{ path: '/p/a.aac' }],
+      outputPath: '/p/out.mp4',
+    })) as { success: boolean };
+
+    expect(mockGetExportAbortSignal).toHaveBeenCalledWith(1);
+    expect(children[0].kill).toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(mockUnlink).toHaveBeenCalledWith('/p/out.mp4');
   });
 
   it('extract-audio-segments-with-speed handles empty', async () => {
@@ -330,8 +427,7 @@ describe('audio handlers', () => {
     expect(mockExecFileAsync).not.toHaveBeenCalled();
   });
 
-  it('extract-audio-segments-with-speed runs one segment with rename', async () => {
-    mockRename.mockResolvedValue(undefined);
+  it('extract-audio-segments-with-speed applies atempo in one pass', async () => {
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
@@ -340,32 +436,17 @@ describe('audio handlers', () => {
     ](exportEvent, {
       inputPath: '/p/in.mov',
       outputPath: '/p/out.aac',
-      segments: [{ start: 0, end: 5, speed: 1 }],
+      segments: [{ start: 0, end: 5, speed: 3 }],
     });
     expect(result).toEqual({ success: true });
-    expect(mockRename).toHaveBeenCalled();
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    const args = mockExecFileAsync.mock.calls[0][1] as string[];
+    const filter = args.join(' ');
+    expect(filter).toContain('atempo=2.0,atempo=1.5');
+    expect(filter).toContain('asetpts=PTS-STARTPTS');
   });
 
-  it('extract-audio-segments-with-speed handles speed > 1 (atempo)', async () => {
-    mockRename.mockResolvedValue(undefined);
-    const { registerAudioHandlers } =
-      await import('@/main/capture/video/ipc/audio-handlers');
-    registerAudioHandlers();
-    await ipcHandle['video-editor:extract-audio-segments-with-speed'](
-      exportEvent,
-      {
-        inputPath: '/p/in.mov',
-        outputPath: '/p/out.aac',
-        segments: [{ start: 0, end: 5, speed: 3 }],
-      }
-    );
-    const args = mockExecFileAsync.mock.calls[0][1];
-    expect(args).toContain('-af');
-    expect(args.join(' ')).toContain('atempo');
-  });
-
-  it('extract-audio-segments-with-speed handles slow speed', async () => {
-    mockRename.mockResolvedValue(undefined);
+  it('extract-audio-segments-with-speed chains atempo for slow speeds', async () => {
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
@@ -377,13 +458,11 @@ describe('audio handlers', () => {
         segments: [{ start: 0, end: 5, speed: 0.25 }],
       }
     );
-    const args = mockExecFileAsync.mock.calls[0][1];
-    expect(args.join(' ')).toContain('atempo=0.5');
+    const args = mockExecFileAsync.mock.calls[0][1] as string[];
+    expect(args.join(' ')).toContain('atempo=0.5,atempo=0.5');
   });
 
-  it('extract-audio-segments-with-speed concatenates multiple segments', async () => {
-    mockWriteFile.mockResolvedValue(undefined);
-    mockUnlink.mockResolvedValue(undefined);
+  it('extract-audio-segments-with-speed mixes trimmed and re-timed segments in one pass', async () => {
     const { registerAudioHandlers } =
       await import('@/main/capture/video/ipc/audio-handlers');
     registerAudioHandlers();
@@ -398,5 +477,10 @@ describe('audio handlers', () => {
       ],
     });
     expect(result).toEqual({ success: true });
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    const filter = (mockExecFileAsync.mock.calls[0][1] as string[]).join(' ');
+    expect(filter).toContain('asplit=2');
+    expect(filter).toContain('concat=n=2:v=0:a=1');
+    expect(filter).toContain('atempo=2');
   });
 });

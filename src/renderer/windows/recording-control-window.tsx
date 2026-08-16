@@ -208,6 +208,33 @@ function DeviceDropdown({
 
 const IOS_NONE_KEY = 'none';
 
+function CountdownSurface({
+  seconds,
+  onCancel,
+}: {
+  seconds: number;
+  onCancel: () => void;
+}) {
+  return (
+    <ToolbarSurface className="gap-3 px-4 py-2.5">
+      <span className="text-foreground text-3xl leading-none font-semibold tabular-nums">
+        {seconds}
+      </span>
+      <div className="flex flex-col gap-0.5">
+        <span className="text-foreground text-xs font-medium">
+          Recording starts soon
+        </span>
+        <span className="text-muted-foreground text-xs">
+          Press Escape to cancel
+        </span>
+      </div>
+      <ControlButton label="Cancel countdown" onClick={onCancel}>
+        <X className="size-4" />
+      </ControlButton>
+    </ToolbarSurface>
+  );
+}
+
 interface IOSDeviceDropdownProps {
   devices: MediaDeviceDescriptor[];
   selectedDeviceId: string | null;
@@ -444,14 +471,21 @@ export default function RecordingControlWindow({
   );
 
   useEffect(() => {
+    const isCountdownActive = state.countdownSeconds != null;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || isRecording || state.isStarting) return;
+      if (
+        event.key !== 'Escape' ||
+        isRecording ||
+        (state.isStarting && !isCountdownActive)
+      ) {
+        return;
+      }
       sendAction('cancel');
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isRecording, sendAction, state.isStarting]);
+  }, [isRecording, sendAction, state.isStarting, state.countdownSeconds]);
 
   const cameraDropdown = (
     <DeviceDropdown
@@ -532,7 +566,7 @@ export default function RecordingControlWindow({
   );
 
   return (
-    <div className="flex h-screen w-screen items-start justify-center pt-1">
+    <div className="flex h-screen w-screen flex-col items-center gap-2 pt-1">
       <ToolbarSurface ref={toolbarRef}>
         {state.targetName ? (
           <>
@@ -604,6 +638,12 @@ export default function RecordingControlWindow({
           </>
         )}
       </ToolbarSurface>
+      {state.countdownSeconds != null ? (
+        <CountdownSurface
+          seconds={state.countdownSeconds}
+          onCancel={() => sendAction('cancel')}
+        />
+      ) : null}
     </div>
   );
 }

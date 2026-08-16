@@ -35,4 +35,5 @@ export interface RecordingControlState {
   isPaused: boolean;
   isStarting: boolean;
   elapsedSeconds: number;
+  countdownSeconds?: number | null;
 }

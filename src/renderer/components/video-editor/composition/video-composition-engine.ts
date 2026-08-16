@@ -24,6 +24,7 @@ import {
 } from './device-frame-canvas-renderer';
 import { renderDrawings } from './drawing-canvas-renderer';
 import { convertSegmentsToVideoSegments } from './types';
+import type { VideoSegment } from '@/types/video';
 import { DEFAULT_CURSOR_STYLE } from '@/types/cursor';
 import { DEFAULT_CAMERA_STYLE } from '@/types/camera';
 import { DEFAULT_KEYBOARD_STYLE } from '@/types/keyboard';
@@ -200,7 +201,8 @@ export class VideoCompositionEngine {
       ctx,
       adjustedTime,
       cursorLayout,
-      cursorZoomTransform
+      cursorZoomTransform,
+      videoSegments
     );
 
     this.renderCameraOverlay(
@@ -208,14 +210,20 @@ export class VideoCompositionEngine {
       adjustedTime,
       source,
       wallpaperResult,
-      zoomTransform
+      zoomTransform,
+      videoSegments
     );
 
     const subtitleBounds = this.getActiveSubtitleBounds();
 
-    this.renderSubtitleOverlay(ctx, adjustedTime);
+    this.renderSubtitleOverlay(ctx, adjustedTime, videoSegments);
 
-    this.renderKeyboardOverlay(ctx, adjustedTime, subtitleBounds);
+    this.renderKeyboardOverlay(
+      ctx,
+      adjustedTime,
+      subtitleBounds,
+      videoSegments
+    );
 
     this.renderDrawingOverlay(ctx, timelineTime);
   }
@@ -280,17 +288,15 @@ export class VideoCompositionEngine {
     timelineTime: number,
     source: FrameSource,
     _layout: WallpaperRenderResult,
-    zoomTransform: ZoomTransform
+    zoomTransform: ZoomTransform,
+    videoSegments: VideoSegment[]
   ): void {
-    const { cameraStyle, cameraVisibleRanges, cursorData, segments } =
-      this.config;
+    const { cameraStyle, cameraVisibleRanges, cursorData } = this.config;
 
     if (!source.camera) return;
 
     const effectiveStyle = cameraStyle ?? DEFAULT_CAMERA_STYLE;
     if (!effectiveStyle.visible) return;
-
-    const videoSegments = convertSegmentsToVideoSegments(segments);
 
     const { width: compositionWidth, height: compositionHeight } =
       this.getCompositionDimensions();
@@ -316,16 +322,16 @@ export class VideoCompositionEngine {
   private renderKeyboardOverlay(
     ctx: Context2D,
     timelineTime: number,
-    subtitleBounds: SubtitleBounds | null
+    subtitleBounds: SubtitleBounds | null,
+    videoSegments: VideoSegment[]
   ): void {
-    const { keyboardData, keyboardStyle, segments } = this.config;
+    const { keyboardData, keyboardStyle } = this.config;
 
     if (!keyboardData || keyboardData.events.length === 0) return;
 
     const effectiveStyle = keyboardStyle ?? DEFAULT_KEYBOARD_STYLE;
     if (!effectiveStyle.visible) return;
 
-    const videoSegments = convertSegmentsToVideoSegments(segments);
     const { width: compositionWidth, height: compositionHeight } =
       this.getCompositionDimensions();
 
@@ -352,15 +358,18 @@ export class VideoCompositionEngine {
     return getSubtitleBounds(effectiveStyle, compositionHeight);
   }
 
-  private renderSubtitleOverlay(ctx: Context2D, timelineTime: number): void {
-    const { subtitleData, subtitleStyle, segments } = this.config;
+  private renderSubtitleOverlay(
+    ctx: Context2D,
+    timelineTime: number,
+    videoSegments: VideoSegment[]
+  ): void {
+    const { subtitleData, subtitleStyle } = this.config;
 
     if (!subtitleData || subtitleData.segments.length === 0) return;
 
     const effectiveStyle = subtitleStyle ?? DEFAULT_SUBTITLE_STYLE;
     if (!effectiveStyle.visible) return;
 
-    const videoSegments = convertSegmentsToVideoSegments(segments);
     const { width: compositionWidth, height: compositionHeight } =
       this.getCompositionDimensions();
 
@@ -377,15 +386,14 @@ export class VideoCompositionEngine {
     ctx: Context2D,
     timelineTime: number,
     layout: WallpaperRenderResult,
-    zoomTransform: ZoomTransform
+    zoomTransform: ZoomTransform,
+    videoSegments: VideoSegment[]
   ): void {
-    const { cursorData, cursorStyle, segments, videoWidth, videoHeight } =
-      this.config;
+    const { cursorData, cursorStyle, videoWidth, videoHeight } = this.config;
 
     if (!cursorData || cursorData.events.length === 0) return;
     if (cursorStyle && !cursorStyle.enabled) return;
 
-    const videoSegments = convertSegmentsToVideoSegments(segments);
     const effectiveStyle = cursorStyle ?? DEFAULT_CURSOR_STYLE;
 
     ctx.save();

@@ -151,11 +151,15 @@ export function useVideoExport(): UseVideoExportReturn {
 
   const handleExport = useCallback(
     async (rawOptions: VideoExportOptions, config: ExportConfig) => {
-      if (
-        exportPendingRef.current ||
-        !config.filePath ||
-        !config.videoMetadata
-      ) {
+      if (exportPendingRef.current || !config.filePath) {
+        return;
+      }
+      if (!config.videoMetadata) {
+        showExportError(
+          new Error(
+            'Video metadata is unavailable, so export cannot start. The recording may be corrupted, or the bundled FFmpeg binary may be missing.'
+          )
+        );
         return;
       }
       exportPendingRef.current = true;

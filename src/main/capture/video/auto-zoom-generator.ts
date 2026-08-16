@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { loadCursorData } from './cursor-data';
 import { getEditorStatePath } from './recording-project';
 import { generateAutoZoomSegments } from '@/types/auto-zoom';
@@ -17,11 +18,13 @@ import { getConfig } from '@/main/settings';
 interface GenerateEditorStateOptions {
   projectPath: string;
   recordingType?: RecordingType;
+  duration?: number;
 }
 
 export async function generateInitialEditorState({
   projectPath,
   recordingType,
+  duration,
 }: GenerateEditorStateOptions): Promise<boolean> {
   const statePath = getEditorStatePath(projectPath);
   if (!statePath) {
@@ -40,6 +43,10 @@ export async function generateInitialEditorState({
   const recordingSettings = getConfig().recording;
   const shouldGenerateAutoZoom = recordingSettings.autoZoom;
   const cameraMirrored = recordingSettings.camera?.flipped ?? false;
+  const sourceDuration =
+    typeof duration === 'number' && Number.isFinite(duration) && duration > 0
+      ? duration
+      : undefined;
   const zoomSegments =
     shouldGenerateAutoZoom && cursorData
       ? generateAutoZoomSegments(cursorData)
@@ -53,7 +60,19 @@ export async function generateInitialEditorState({
     version: EDITOR_STATE_VERSION,
     savedAt: new Date().toISOString(),
     recordingType,
-    segments: [],
+    sourceDuration,
+    segments:
+      sourceDuration !== undefined
+        ? [
+            {
+              id: randomUUID(),
+              originalStart: 0,
+              originalEnd: sourceDuration,
+              trimMinStart: 0,
+              trimMaxEnd: sourceDuration,
+            },
+          ]
+        : [],
     cursorStyle: DEFAULT_CURSOR_STYLE,
     cameraStyle: { ...DEFAULT_CAMERA_STYLE, mirrored: cameraMirrored },
     keyboardStyle: DEFAULT_KEYBOARD_STYLE,

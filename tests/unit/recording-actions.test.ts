@@ -39,6 +39,7 @@ const mockDeleteVideo = vi.fn();
 const mockGetConfig = vi.fn();
 const mockUpdateConfig = vi.fn();
 const mockGenerateInitialEditorState = vi.fn();
+const mockStartRecordingCountdown = vi.fn();
 
 vi.mock('@/main/capture/video/recording-control.ts', () => ({
   showRecordingControl: () => mockShowRecordingControl(),
@@ -50,6 +51,10 @@ vi.mock('@/main/capture/video/recording-control.ts', () => ({
   showPreRecordingControl: (...a: unknown[]) =>
     mockShowPreRecordingControl(...a),
   updateRecordingControlPosition: (...a: unknown[]) => mockUpdatePosition(...a),
+  startRecordingCountdown: (...a: unknown[]) =>
+    mockStartRecordingCountdown(...a),
+  MIN_RECORDING_START_DELAY: 0,
+  MAX_RECORDING_START_DELAY: 10,
 }));
 
 vi.mock('@/main/capture/video/camera-preview.ts', () => ({
@@ -146,6 +151,7 @@ describe('recording-actions', () => {
     mockHideAreaSelector.mockResolvedValue(undefined);
     mockPrepareCapturePreview.mockReturnValue({ prepared: true });
     mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
+    mockStartRecordingCountdown.mockResolvedValue('completed');
   });
 
   describe('stopRecordingAction', () => {
@@ -162,7 +168,7 @@ describe('recording-actions', () => {
         'video',
         18
       );
-      expect(mockCreateVideoEditorWindow).toHaveBeenCalled();
+      expect(mockCreateVideoEditorWindow).not.toHaveBeenCalled();
       expect(result).toBe('/p/Rec.capty/recording.mov');
     });
 
@@ -198,7 +204,7 @@ describe('recording-actions', () => {
 
       expect(mockGenerateInitialEditorState).toHaveBeenCalledTimes(1);
       expect(mockAddToHistory).toHaveBeenCalledTimes(1);
-      expect(mockCreateVideoEditorWindow).toHaveBeenCalledTimes(1);
+      expect(mockCreateVideoEditorWindow).not.toHaveBeenCalled();
     });
 
     it('waits for a pending start before stopping the recording', async () => {
@@ -265,9 +271,7 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.stopRecordingAction();
       expect(mockShowCapturePreview).toHaveBeenCalled();
-      expect(mockCreateVideoEditorWindow).toHaveBeenCalledWith(
-        '/p/Rec.capty/recording.mov'
-      );
+      expect(mockCreateVideoEditorWindow).not.toHaveBeenCalled();
     });
 
     it('shows the preview without waiting for editor state generation', async () => {
@@ -289,9 +293,7 @@ describe('recording-actions', () => {
 
       finishEditorState(true);
       await stopping;
-      expect(mockCreateVideoEditorWindow).toHaveBeenCalledWith(
-        '/p/Rec.capty/recording.mov'
-      );
+      expect(mockCreateVideoEditorWindow).not.toHaveBeenCalled();
     });
 
     it('shows the preview before starting history persistence', async () => {
@@ -322,7 +324,7 @@ describe('recording-actions', () => {
       );
     });
 
-    it('falls back to the editor when preview creation fails', async () => {
+    it('still saves to history without opening the editor when preview creation fails', async () => {
       mockGetConfig.mockReturnValue({
         recording: { iosDevice: null, showPreview: true, camera: null },
       });
@@ -339,9 +341,7 @@ describe('recording-actions', () => {
       const result = await m.stopRecordingAction();
 
       expect(dispose).toHaveBeenCalledTimes(1);
-      expect(mockCreateVideoEditorWindow).toHaveBeenCalledWith(
-        '/p/Rec.capty/recording.mov'
-      );
+      expect(mockCreateVideoEditorWindow).not.toHaveBeenCalled();
       expect(mockAddToHistory).toHaveBeenCalledWith(
         '/p/Rec.capty/recording.mov',
         'video',
@@ -385,6 +385,7 @@ describe('recording-actions', () => {
       expect(mockGenerateInitialEditorState).toHaveBeenLastCalledWith({
         projectPath: '/p/Second.capty/recording.mov',
         recordingType: 'ios-device',
+        duration: 10,
       });
     });
 
@@ -640,6 +641,78 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording();
       expect(mockStartRecordingWithConfig).toHaveBeenCalled();
+    });
+
+    it('runs the configured countdown before starting', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: {
+          iosDevice: null,
+          showPreview: false,
+          camera: null,
+          startDelay: 3,
+        },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 10,
+        y: 20,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording();
+
+      expect(mockStartRecordingCountdown).toHaveBeenCalledWith(3);
+      expect(mockStartRecordingWithConfig).toHaveBeenCalled();
+    });
+
+    it('skips the countdown when the delay is zero', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: {
+          iosDevice: null,
+          showPreview: false,
+          camera: null,
+          startDelay: 0,
+        },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording();
+
+      expect(mockStartRecordingCountdown).not.toHaveBeenCalled();
+      expect(mockStartRecordingWithConfig).toHaveBeenCalled();
+    });
+
+    it('aborts the recording when the countdown is cancelled', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: {
+          iosDevice: null,
+          showPreview: false,
+          camera: null,
+          startDelay: 3,
+        },
+      });
+      mockStartRecordingCountdown.mockResolvedValue('cancelled');
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording();
+
+      expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
+      expect(mockConcealAreaSelectorOverlay).toHaveBeenCalled();
+      expect(mockHidePreRecordingControl).toHaveBeenCalled();
+      expect(mockHideRecordingOverlay).toHaveBeenCalledWith(true);
     });
 
     it('records the picked window instead of the area it covered', async () => {

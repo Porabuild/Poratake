@@ -9,6 +9,7 @@ import {
   Monitor,
   CloudUpload,
   Loader2,
+  FolderOpen,
 } from 'lucide-react';
 import type {
   CapturePreviewParams,
@@ -235,6 +236,11 @@ export default function CapturePreviewWindow({
     [isBusy, uploadToCloud]
   );
 
+  const handleShowInFolder = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    window.ipcRenderer.send('capture-preview:show-in-folder');
+  }, []);
+
   const handleDelete = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -320,7 +326,7 @@ export default function CapturePreviewWindow({
       )}
 
       {isCopying && !isFinished && (
-        <div className="pointer-events-none absolute right-2 bottom-2 left-2 z-10">
+        <div className="pointer-events-none absolute right-2 bottom-10 left-2 z-10">
           <div className="bg-background/30 h-1.5 w-full overflow-hidden rounded-full">
             <div
               className="bg-primary h-full rounded-full transition-all duration-300"
@@ -342,44 +348,60 @@ export default function CapturePreviewWindow({
             <div className="animate-in fade-in pointer-events-none absolute inset-0 bg-black/25 backdrop-blur-md duration-200" />
             <button
               onClick={handleClose}
+              title="Close preview"
+              aria-label="Close preview"
               className="bg-background/80 hover:bg-destructive absolute top-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors"
             >
               <X className="h-3.5 w-3.5" />
             </button>
-            <div className="absolute top-2 right-2 flex items-center gap-1">
-              {hasMultipleDisplays && (
-                <div ref={displayMenuRef} className="relative">
-                  <button
-                    onClick={handleToggleDisplayMenu}
-                    className="bg-background/80 hover:bg-primary flex h-6 w-6 items-center justify-center rounded-full transition-colors"
-                  >
-                    <Monitor className="h-3.5 w-3.5" />
-                  </button>
-                  {isDisplayMenuOpen && (
-                    <div className="bg-popover text-popover-foreground absolute top-7 right-0 z-20 min-w-32 overflow-hidden rounded-md border shadow-md">
-                      {displays.map(display => (
-                        <button
-                          key={display.id}
-                          onClick={e => handleSelectDisplay(e, display.id)}
-                          className="hover:bg-accent hover:text-accent-foreground flex w-full items-center justify-between gap-2 px-2 py-1.5 text-xs"
-                        >
-                          <span className="truncate">{display.label}</span>
-                          {display.isSelected && (
-                            <Check className="h-3 w-3 shrink-0" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+            <button
+              onClick={handleDelete}
+              title={isScreenshot ? 'Delete screenshot' : 'Delete recording'}
+              aria-label={
+                isScreenshot ? 'Delete screenshot' : 'Delete recording'
+              }
+              className="bg-background/80 hover:bg-destructive absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+            {!isScreenshot && (
               <button
-                onClick={handleDelete}
-                className="bg-background/80 hover:bg-destructive flex h-6 w-6 items-center justify-center rounded-full transition-colors"
+                onClick={handleShowInFolder}
+                title="Show in Folder"
+                aria-label="Show recording in folder"
+                className="bg-background/80 hover:bg-primary absolute bottom-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors"
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <FolderOpen className="h-3.5 w-3.5" />
               </button>
-            </div>
+            )}
+            {hasMultipleDisplays && (
+              <div ref={displayMenuRef} className="absolute right-2 bottom-2">
+                <button
+                  onClick={handleToggleDisplayMenu}
+                  title="Move previews to another display"
+                  aria-label="Move previews to another display"
+                  className="bg-background/80 hover:bg-primary flex h-6 w-6 items-center justify-center rounded-full transition-colors"
+                >
+                  <Monitor className="h-3.5 w-3.5" />
+                </button>
+                {isDisplayMenuOpen && (
+                  <div className="bg-popover text-popover-foreground absolute right-0 bottom-7 z-20 min-w-32 overflow-hidden rounded-md border shadow-md">
+                    {displays.map(display => (
+                      <button
+                        key={display.id}
+                        onClick={e => handleSelectDisplay(e, display.id)}
+                        className="hover:bg-accent hover:text-accent-foreground flex w-full items-center justify-between gap-2 px-2 py-1.5 text-xs"
+                      >
+                        <span className="truncate">{display.label}</span>
+                        {display.isSelected && (
+                          <Check className="h-3 w-3 shrink-0" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col gap-1">
               {isScreenshot ? (
                 polishPreset && (

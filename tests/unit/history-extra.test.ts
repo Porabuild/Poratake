@@ -21,6 +21,7 @@ const mockGetSystemAudioPath = vi.fn();
 const mockGetCameraVideoPath = vi.fn();
 const mockGetCursorPath = vi.fn();
 const mockIsHistoryPopoverWebContents = vi.fn(() => true);
+const mockShowItemInFolder = vi.fn();
 
 vi.mock('electron', () => ({
   app: {
@@ -35,6 +36,7 @@ vi.mock('electron', () => ({
   },
   BrowserWindow: { fromWebContents: () => null },
   dialog: { showMessageBox: (...a: unknown[]) => mockShowMessageBox(...a) },
+  shell: { showItemInFolder: (...a: unknown[]) => mockShowItemInFolder(...a) },
 }));
 
 vi.mock('fs', () => ({
@@ -236,6 +238,39 @@ describe('history extra', () => {
       });
     });
 
+    it('history:reveal reveals the original file in the file manager', async () => {
+      mockReadFile.mockResolvedValue(
+        JSON.stringify([
+          {
+            id: 'v1',
+            timestamp: 1,
+            originalPath: '/p/video.mov',
+            type: 'video',
+            editorState: null,
+          },
+        ])
+      );
+      mockExistsSync.mockImplementation((path: string) => {
+        const value = String(path);
+        return value.endsWith('history.json') || value === '/p/video.mov';
+      });
+      const { init } = await import('@/main/history');
+      await init();
+
+      const result = await ipcHandle['history:reveal']({ sender: {} }, 'v1');
+
+      expect(result).toBe(true);
+      expect(mockShowItemInFolder).toHaveBeenCalledWith('/p/video.mov');
+    });
+
+    it('history:reveal ignores missing items without revealing', async () => {
+      mockExistsSync.mockReturnValue(false);
+      await loadInit();
+
+      expect(ipcHandle['history:reveal']({ sender: {} }, 'gone')).toBe(false);
+      expect(mockShowItemInFolder).not.toHaveBeenCalled();
+    });
+
     it('rejects history access from another renderer', async () => {
       mockIsHistoryPopoverWebContents.mockReturnValue(false);
       await loadInit();
@@ -247,10 +282,12 @@ describe('history extra', () => {
       await expect(ipcHandle['history:clear']({ sender: {} })).resolves.toBe(
         false
       );
+      expect(ipcHandle['history:reveal']({ sender: {} }, 'h1')).toBe(false);
       await expect(
         ipcHandle['history:getThumbnail']({ sender: {} }, 'h1')
       ).resolves.toBeNull();
       expect(mockShowMessageBox).not.toHaveBeenCalled();
+      expect(mockShowItemInFolder).not.toHaveBeenCalled();
       expect(mockWriteFile).not.toHaveBeenCalled();
     });
   });

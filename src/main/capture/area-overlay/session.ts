@@ -72,6 +72,8 @@ interface OverlaySession {
   displays: Map<number, Display>;
   displayIdsByWebContents: Map<number, number>;
   freeze: boolean;
+  requestedFreeze: boolean;
+  freezeTransition: Promise<void>;
   interactive: boolean;
   autoConfirm: boolean;
   repeatablePicks: boolean;
@@ -84,6 +86,8 @@ interface OverlaySession {
   hidden: boolean;
   selection: AreaOverlayResult | null;
   pendingPreset: AreaOverlayResult | null;
+  freezeSettled: boolean;
+  pendingReady: Set<number>;
   callbacks: OverlayCallbacks;
   resolve: (selection: OverlaySelection | null) => void;
 }
@@ -289,26 +293,29 @@ async function concealOverlayWindow(window: BrowserWindow): Promise<void> {
   await prepareOverlayWindow(window, 'hideWindowWithoutTransitions');
 }
 
-function showOverlayWindow(window: BrowserWindow): Promise<void> {
+function canActivateOverlayWindow(
+  window: BrowserWindow,
+  version: number
+): boolean {
+  return (
+    !window.isDestroyed() && overlayVisibilityVersions.get(window) === version
+  );
+}
+
+async function showOverlayWindow(entry: OverlayWindowEntry): Promise<void> {
+  const { window } = entry;
   const version = nextOverlayVisibilityVersion(window);
 
   if (isWindows && window.isVisible()) {
     window.setIgnoreMouseEvents(false);
-    return Promise.resolve();
+    return;
   }
 
   window.setIgnoreMouseEvents(true);
-  return prepareOverlayWindow(window, 'showWindowWithoutTransitions').then(
-    () => {
-      if (
-        window.isDestroyed() ||
-        overlayVisibilityVersions.get(window) !== version
-      ) {
-        return;
-      }
-      window.setIgnoreMouseEvents(false);
-    }
-  );
+  await prepareOverlayWindow(window, 'showWindowWithoutTransitions');
+  if (!canActivateOverlayWindow(window, version)) return;
+
+  window.setIgnoreMouseEvents(false);
 }
 
 function setEscapeShortcutEnabled(
@@ -413,6 +420,11 @@ function registerOverlayIpc(): void {
     if (!session || !display) return;
     if (typeof sessionId === 'number' && sessionId !== session.id) return;
 
+    if (!session.freezeSettled) {
+      session.pendingReady.add(display.id);
+      return;
+    }
+
     revealOverlay(session, display.id);
     announcePreset(session, display);
   });
@@ -504,7 +516,7 @@ function revealOverlay(session: OverlaySession, displayId: number): void {
 
   void setOverlayWindowRegion(session, entry).then(() => {
     if (activeSession !== session || entry.window.isDestroyed()) return;
-    void showOverlayWindow(entry.window);
+    void showOverlayWindow(entry);
     entry.window.moveTop();
   });
 }
@@ -544,6 +556,7 @@ function adoptSelection(
   result: AreaOverlayResult,
   display: Display
 ): void {
+  session.pendingPreset = null;
   session.selection = result;
   broadcastRect(session, display.id);
   syncOverlayWindowRegions(session);
@@ -713,9 +726,13 @@ export function concealOverlayHandoff(): void {
 }
 
 async function releaseSession(session: OverlaySession): Promise<void> {
+  await session.freezeTransition;
   if (!session.freeze) return;
 
-  await releaseScreen();
+  const released = await releaseScreen();
+  if (released) {
+    session.freeze = false;
+  }
 }
 
 function reserveTeardown(session: OverlaySession): () => Promise<void> {
@@ -821,6 +838,42 @@ export function confirmOverlaySelection(keepVisible = false): void {
   void finishSession(session.selection, session, keepVisible);
 }
 
+export function setOverlayFreeze(enabled: boolean): Promise<void> {
+  const session = activeSession;
+  if (!session) return Promise.resolve();
+
+  session.requestedFreeze = enabled;
+  session.freezeTransition = session.freezeTransition
+    .then(async () => {
+      if (activeSession !== session) return;
+
+      const requestedFreeze = session.requestedFreeze;
+      if (requestedFreeze === session.freeze) return;
+
+      if (requestedFreeze) {
+        const frozen = await freezeScreen();
+        if (activeSession !== session) {
+          if (frozen) await releaseScreen();
+          session.freeze = false;
+          return;
+        }
+        session.freeze = frozen;
+      } else {
+        const released = await releaseScreen();
+        if (released) {
+          session.freeze = false;
+        }
+      }
+
+      syncOverlayWindowRegions(session);
+    })
+    .catch(error => {
+      console.error('Failed to update overlay freeze state:', error);
+    });
+
+  return session.freezeTransition;
+}
+
 export function updateOverlaySelection(rect: Rectangle): boolean {
   const session = activeSession;
   if (!session) return false;
@@ -864,6 +917,7 @@ export function setOverlayPickTargets(
   session.prompt = prompt;
   session.repeatablePicks = repeatablePicks;
   session.selection = null;
+  session.pendingPreset = null;
 
   for (const entry of session.entries) {
     if (entry.window.isDestroyed()) continue;
@@ -902,7 +956,7 @@ export function setOverlayVisible(visible: boolean): void {
     if (visible) {
       void setOverlayWindowRegion(session, entry).then(() => {
         if (activeSession !== session || entry.window.isDestroyed()) return;
-        showOverlayWindow(entry.window);
+        void showOverlayWindow(entry);
       });
       continue;
     }
@@ -973,8 +1027,6 @@ export async function startOverlaySession(
       pooledWindows.map(pooled => concealOverlayWindow(pooled.window))
     );
 
-    const freeze = requestedFreeze ? await freezeScreen() : false;
-
     let resolveSession!: (selection: OverlaySelection | null) => void;
     const resultPromise = new Promise<OverlaySelection | null>(resolve => {
       resolveSession = resolve;
@@ -984,7 +1036,9 @@ export async function startOverlaySession(
       id: nextSessionId++,
       displays: new Map(displays.map(display => [display.id, display])),
       displayIdsByWebContents: new Map(),
-      freeze,
+      freeze: false,
+      requestedFreeze,
+      freezeTransition: Promise.resolve(),
       interactive: options?.interactive ?? false,
       autoConfirm: options?.autoConfirm ?? true,
       repeatablePicks: options?.repeatablePicks ?? false,
@@ -997,6 +1051,8 @@ export async function startOverlaySession(
       hidden: options?.visible === false,
       selection: presetSelection(displays, options?.preset),
       pendingPreset: null,
+      freezeSettled: !requestedFreeze,
+      pendingReady: new Set(),
       callbacks: options?.callbacks ?? {},
       resolve: resolveSession,
     };
@@ -1028,7 +1084,26 @@ export async function startOverlaySession(
 
       if (session.entries.length === 0) {
         void finishSession(null, session);
+        return resultPromise;
       }
+
+      if (requestedFreeze) {
+        const freeze = await freezeScreen();
+        if (activeSession !== session) {
+          if (freeze) await releaseScreen();
+          return resultPromise;
+        }
+        session.freeze = freeze;
+      }
+
+      session.freezeSettled = true;
+      for (const displayId of session.pendingReady) {
+        const display = session.displays.get(displayId);
+        if (!display) continue;
+        revealOverlay(session, displayId);
+        announcePreset(session, display);
+      }
+      session.pendingReady.clear();
 
       return resultPromise;
     } catch (error) {

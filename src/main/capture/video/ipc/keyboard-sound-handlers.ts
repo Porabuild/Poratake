@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron';
 import { randomUUID } from 'crypto';
 import { getFFmpegPath } from '@/main/utils/ffmpeg';
+import { execFFmpegFile } from '@/main/utils/ffmpeg-process';
 import { getPublicAssetPath } from '@/main/utils/paths';
 import type { KeyboardSoundType } from '@/types/audio';
 import {
@@ -44,10 +45,6 @@ async function generateChunk(
   outputPath: string,
   signal?: AbortSignal
 ): Promise<void> {
-  const { execFile } = await import('child_process');
-  const { promisify } = await import('util');
-  const execFileAsync = promisify(execFile);
-
   const sampleCount = samplePaths.length;
   const inputArgs: string[] = [];
   const filterParts: string[] = [];
@@ -79,7 +76,7 @@ async function generateChunk(
   const mixFilter = `${mixInputs}[${silenceIdx}]amix=inputs=${keyPresses.length + 1}:duration=longest:normalize=0`;
   const filterComplex = `${filterParts.join(';')};${mixFilter}`;
 
-  await execFileAsync(
+  await execFFmpegFile(
     ffmpegPath,
     [
       ...inputArgs,
@@ -154,10 +151,7 @@ export function registerKeyboardSoundHandlers(): void {
           return { success: true };
         }
 
-        const { execFile } = await import('child_process');
-        const { promisify } = await import('util');
         const { dirname } = await import('path');
-        const execFileAsync = promisify(execFile);
 
         const tempDir = dirname(outputPath);
         const operationId = randomUUID();
@@ -191,7 +185,7 @@ export function registerKeyboardSoundHandlers(): void {
         }
         const mixFilter = `amix=inputs=${chunkPaths.length}:duration=longest:normalize=0`;
 
-        await execFileAsync(
+        await execFFmpegFile(
           ffmpegPath,
           [
             ...inputArgs,

@@ -382,12 +382,24 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const fileName = useMemo(() => getFileNameFromPath(filePath), [filePath]);
   const projectPath = useMemo(() => getProjectPath(filePath), [filePath]);
 
+  const exportVideoMetadata = useMemo(() => {
+    if (editorData.videoMetadata) return editorData.videoMetadata;
+    if (!videoDimensions || originalDuration <= 0) return null;
+    return {
+      fileSize: 0,
+      bitrate: 0,
+      width: videoDimensions.width,
+      height: videoDimensions.height,
+      duration: originalDuration,
+    };
+  }, [editorData.videoMetadata, videoDimensions, originalDuration]);
+
   const handleExport = useCallback(
     (options: VideoExportOptions) => {
       return videoExport.handleExport(options, {
         filePath,
         fileName,
-        videoMetadata: editorData.videoMetadata,
+        videoMetadata: exportVideoMetadata,
         segments,
         wallpaper,
         zoomSegments: zoomControl.zoomSegments,
@@ -416,6 +428,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
       filePath,
       fileName,
       editorData,
+      exportVideoMetadata,
       segments,
       wallpaper,
       zoomControl.zoomSegments,
@@ -772,6 +785,14 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
       );
     }
   }, [editorData.videoMetadata]);
+
+  useEffect(() => {
+    if (originalDuration > 0) return;
+    const savedDuration = loadedState?.sourceDuration;
+    if (savedDuration !== undefined && savedDuration > 0) {
+      setOriginalDuration(savedDuration);
+    }
+  }, [loadedState, originalDuration]);
 
   useEffect(() => {
     if (originalDuration <= 0 || !isStateLoaded || segments.length > 0) {

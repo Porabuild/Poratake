@@ -21,6 +21,10 @@ const RECORDING_CONFIG = {
   outputPath: '/tmp/project',
 };
 const mockGetDisplayMatching = vi.fn();
+const mockGetCursorScreenPoint = vi.fn();
+const mockGetDisplayNearestPoint = vi.fn();
+const mockGlobalShortcutRegister = vi.fn(() => true);
+const mockGlobalShortcutUnregister = vi.fn();
 const mockGetBrowserWindowWidth = vi.fn((mode: string) =>
   mode === 'recording' ? 400 : 236
 );
@@ -34,8 +38,15 @@ const mockClearBrowserWindowParent = vi.fn();
 vi.mock('electron', () => ({
   dialog: { showMessageBox: (...a: unknown[]) => mockShowMessageBox(...a) },
   BrowserWindow: { getFocusedWindow: vi.fn(() => null) },
+  globalShortcut: {
+    register: (...a: unknown[]) => mockGlobalShortcutRegister(...a),
+    unregister: (...a: unknown[]) => mockGlobalShortcutUnregister(...a),
+  },
   screen: {
     getDisplayMatching: (...a: unknown[]) => mockGetDisplayMatching(...a),
+    getCursorScreenPoint: () => mockGetCursorScreenPoint(),
+    getDisplayNearestPoint: (...a: unknown[]) =>
+      mockGetDisplayNearestPoint(...a),
   },
 }));
 
@@ -133,6 +144,7 @@ describe('recording-control', () => {
     Object.defineProperty(process, 'platform', { value: 'darwin' });
     vi.clearAllMocks();
     vi.resetModules();
+    mockUpdateConfig.mockReset();
     mockDaemonCall.mockResolvedValue({});
     mockCancelPendingRecording.mockResolvedValue(undefined);
     mockStartPendingRecording.mockResolvedValue(undefined);
@@ -150,6 +162,10 @@ describe('recording-control', () => {
     mockCheckMic.mockResolvedValue(true);
     mockGetCameraPreviewSettings.mockReturnValue(null);
     mockGetDisplayMatching.mockReturnValue({
+      workArea: { x: 0, y: 0, width: 1920, height: 1080 },
+    });
+    mockGetCursorScreenPoint.mockReturnValue({ x: 500, y: 500 });
+    mockGetDisplayNearestPoint.mockReturnValue({
       workArea: { x: 0, y: 0, width: 1920, height: 1080 },
     });
     mockGetConfig.mockReturnValue({
@@ -335,12 +351,12 @@ describe('recording-control', () => {
     );
   });
 
-  it('showPreRecordingControl falls back to default position', async () => {
+  it('showPreRecordingControl without an area follows the mouse display', async () => {
     const m = await import('@/main/capture/video/recording-control');
     m.showPreRecordingControl();
     expect(mockShowBrowserWindow).toHaveBeenCalledWith(
       expect.anything(),
-      { x: 100, y: 100 },
+      { x: 842, y: 24 },
       expect.any(Function)
     );
   });
@@ -560,6 +576,119 @@ describe('recording-control', () => {
       mockStartPendingRecording.mockResolvedValue(undefined);
       await setupAndFire('start');
       expect(mockStartPendingRecording).toHaveBeenCalled();
+    });
+
+    it('keeps and starts with separate All-in-One recording toggles', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: {
+          systemAudio: false,
+          micEnabled: false,
+          selectedMicId: 'shared-mic',
+          selectedMicName: 'Shared Mic',
+          camera: {
+            enabled: false,
+            selectedDeviceId: 'shared-camera',
+            selectedDeviceName: 'Shared Camera',
+          },
+          iosDevice: null,
+        },
+        allInOne: {
+          rememberChoices: true,
+          lastMode: 'record',
+          lastTargets: { screenshot: 'area', record: 'area' },
+          lastArea: null,
+          recording: {
+            systemAudio: true,
+            micEnabled: false,
+            cameraEnabled: false,
+          },
+        },
+      });
+      const m = await import('@/main/capture/video/recording-control');
+      m.showPreRecordingControl(undefined, undefined, {
+        preferenceScope: 'all-in-one',
+      });
+
+      expect(mockShowBrowserWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemAudio: true,
+          micEnabled: false,
+          cameraEnabled: false,
+        }),
+        expect.anything(),
+        expect.any(Function)
+      );
+
+      lastActionHandler()('toggle-system-audio');
+      await flush();
+      lastActionHandler()('toggle-mic');
+      await flush();
+      lastActionHandler()('toggle-camera');
+      await flush();
+
+      expect(mockUpdateConfig).toHaveBeenCalledWith({
+        allInOne: expect.objectContaining({
+          recording: {
+            systemAudio: false,
+            micEnabled: true,
+            cameraEnabled: true,
+          },
+        }),
+      });
+      expect(mockUpdateConfig).not.toHaveBeenCalledWith(
+        expect.objectContaining({ recording: expect.anything() })
+      );
+
+      lastActionHandler()('start');
+      await vi.waitFor(() =>
+        expect(mockStartPendingRecording).toHaveBeenCalledWith(
+          expect.objectContaining({
+            systemAudio: false,
+            micEnabled: true,
+            micDeviceId: 'shared-mic',
+            cameraEnabled: true,
+            cameraDeviceId: 'shared-camera',
+          })
+        )
+      );
+    });
+
+    it('does not persist All-in-One toggles when remembering is disabled', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: {
+          systemAudio: false,
+          micEnabled: true,
+          camera: { enabled: true },
+          iosDevice: null,
+        },
+        allInOne: {
+          rememberChoices: false,
+          recording: {
+            systemAudio: false,
+            micEnabled: true,
+            cameraEnabled: true,
+          },
+        },
+      });
+      const m = await import('@/main/capture/video/recording-control');
+      m.showPreRecordingControl(undefined, undefined, {
+        preferenceScope: 'all-in-one',
+      });
+      mockUpdateConfig.mockClear();
+
+      expect(mockShowBrowserWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemAudio: true,
+          micEnabled: false,
+          cameraEnabled: false,
+        }),
+        expect.anything(),
+        expect.any(Function)
+      );
+
+      lastActionHandler()('toggle-system-audio');
+      await flush();
+      expect(mockUpdateConfig).not.toHaveBeenCalled();
     });
 
     it('start is debounced', async () => {
@@ -944,6 +1073,74 @@ describe('recording-control', () => {
         { enabled: false }
       );
       await m.hideRecordingControl();
+    });
+  });
+
+  describe('recording countdown', () => {
+    it('ticks the countdown down and completes', async () => {
+      vi.useFakeTimers();
+      try {
+        const m = await import('@/main/capture/video/recording-control');
+        m.showPreRecordingControl({ x: 100, y: 100, width: 800, height: 600 });
+
+        const pending = m.startRecordingCountdown(3);
+        expect(mockGlobalShortcutRegister).toHaveBeenCalledWith(
+          'Escape',
+          expect.any(Function)
+        );
+        expect(mockUpdateBrowserWindow).toHaveBeenCalledWith({
+          countdownSeconds: 3,
+        });
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(mockUpdateBrowserWindow).toHaveBeenLastCalledWith({
+          countdownSeconds: 2,
+        });
+
+        await vi.advanceTimersByTimeAsync(2000);
+        await expect(pending).resolves.toBe('completed');
+        expect(mockGlobalShortcutUnregister).toHaveBeenCalledWith('Escape');
+        expect(mockUpdateBrowserWindow).toHaveBeenLastCalledWith({
+          countdownSeconds: null,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('cancels from the toolbar action while counting down', async () => {
+      vi.useFakeTimers();
+      try {
+        const m = await import('@/main/capture/video/recording-control');
+        m.showPreRecordingControl({ x: 100, y: 100, width: 800, height: 600 });
+
+        const pending = m.startRecordingCountdown(3);
+        lastActionHandler()('cancel');
+
+        await expect(pending).resolves.toBe('cancelled');
+        expect(mockUpdateBrowserWindow).toHaveBeenLastCalledWith({
+          countdownSeconds: null,
+        });
+        expect(mockCancelPendingRecording).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('cancels the countdown when the pre-recording control is hidden', async () => {
+      vi.useFakeTimers();
+      try {
+        const m = await import('@/main/capture/video/recording-control');
+        m.showPreRecordingControl({ x: 100, y: 100, width: 800, height: 600 });
+
+        const pending = m.startRecordingCountdown(3);
+        await m.hidePreRecordingControl();
+
+        await expect(pending).resolves.toBe('cancelled');
+        expect(mockHideBrowserWindow).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

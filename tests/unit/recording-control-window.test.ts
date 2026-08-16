@@ -630,6 +630,7 @@ describe('recording-control-window', () => {
         isPaused: false,
         isStarting: false,
         elapsedSeconds: 0,
+        countdownSeconds: null,
       }
     );
     expect(onAction).not.toHaveBeenCalled();

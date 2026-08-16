@@ -19,6 +19,7 @@ export interface PresetArea {
 
 export interface StartAreaSelectionOptions {
   mode?: AreaSelectionMode;
+  requireDisplayPick?: boolean;
   freeze?: boolean;
   visible?: boolean;
   preset?: PresetArea;
@@ -44,6 +45,7 @@ export interface AreaSelectorBackend {
     options?: ConfirmAreaSelectionOptions
   ): Promise<AreaSelection | null>;
   concealAreaSelectorOverlay(): void;
+  setAreaSelectorFreeze(enabled: boolean): Promise<void>;
   hasVisibleSelectorOverlay(): boolean;
   cancelAreaSelection(silent?: boolean): Promise<void>;
   hasPendingSelection(): boolean;

@@ -47,40 +47,39 @@ export function useExportProgress({
 
   const startTimeRef = useRef<number>(0);
   const smoothedRemainingRef = useRef<number | null>(null);
-  const lastProgressRef = useRef<number>(0);
+  const progressRef = useRef<number>(progress);
+
+  useEffect(() => {
+    progressRef.current = progress;
+  }, [progress]);
 
   useEffect(() => {
     if (!isExporting) return;
 
     startTimeRef.current = Date.now();
-    lastProgressRef.current = 0;
     smoothedRemainingRef.current = null;
     setElapsedSeconds(0);
     setRemainingSeconds(null);
 
     const interval = setInterval(() => {
       if (!startTimeRef.current) return;
-      setElapsedSeconds((Date.now() - startTimeRef.current) / 1000);
+
+      const elapsed = (Date.now() - startTimeRef.current) / 1000;
+      setElapsedSeconds(elapsed);
+
+      const currentProgress = progressRef.current;
+      if (currentProgress <= MIN_PROGRESS_FOR_ETA) return;
+
+      smoothedRemainingRef.current = smoothRemainingSeconds(
+        smoothedRemainingRef.current,
+        elapsed,
+        currentProgress
+      );
+      setRemainingSeconds(Math.round(smoothedRemainingRef.current));
     }, ELAPSED_TICK_MS);
 
     return () => clearInterval(interval);
   }, [isExporting]);
-
-  useEffect(() => {
-    if (!isExporting || !startTimeRef.current) return;
-    if (progress <= MIN_PROGRESS_FOR_ETA) return;
-    if (progress === lastProgressRef.current) return;
-
-    lastProgressRef.current = progress;
-
-    const elapsed = (Date.now() - startTimeRef.current) / 1000;
-    smoothedRemainingRef.current = smoothRemainingSeconds(
-      smoothedRemainingRef.current,
-      elapsed,
-      progress
-    );
-    setRemainingSeconds(Math.round(smoothedRemainingRef.current));
-  }, [progress, isExporting]);
 
   return { elapsedSeconds, remainingSeconds };
 }
