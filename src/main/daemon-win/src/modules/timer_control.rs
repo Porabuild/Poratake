@@ -20,8 +20,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, KillTimer, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
     SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOSIZE,
-    SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
 const CLASS_NAME: &str = "PoratakeTimerControl";
