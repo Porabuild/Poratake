@@ -10,6 +10,7 @@ const mockSetOverlayAspectRatio = vi.fn();
 const mockSetOverlayVisible = vi.fn();
 const mockIsOverlayActive = vi.fn();
 const mockSetOverlayPickTargets = vi.fn();
+const mockSetOverlayFreeze = vi.fn();
 const mockGetOverlayWindowIds = vi.fn();
 
 const mockSelectDisplay = vi.fn();
@@ -40,6 +41,7 @@ vi.mock('@/main/capture/area-overlay', () => ({
   setOverlayVisible: (...a: unknown[]) => mockSetOverlayVisible(...a),
   isOverlayActive: () => mockIsOverlayActive(),
   setOverlayPickTargets: (...a: unknown[]) => mockSetOverlayPickTargets(...a),
+  setOverlayFreeze: (...a: unknown[]) => mockSetOverlayFreeze(...a),
   getOverlayWindowIds: () => mockGetOverlayWindowIds(),
   resolveWindowPickTargets: () => mockResolveWindowPickTargets(),
 }));
@@ -122,6 +124,21 @@ describe('area-selector overlay backend', () => {
     expect(overlayOptions().preset).toEqual(primary.bounds);
   });
 
+  it('requires an explicit display pick when requested', async () => {
+    const m = await import('@/main/capture/area-selector/overlay-backend');
+    void m.startAreaSelection({
+      mode: 'display',
+      requireDisplayPick: true,
+    });
+    await Promise.resolve();
+
+    expect(overlayOptions().preset).toBeUndefined();
+    expect(overlayOptions().pickTargets).toEqual([
+      { id: primary.id, rect: primary.bounds },
+    ]);
+    expect(overlayOptions().repeatablePicks).toBe(true);
+  });
+
   it('passes native freeze ownership through the interactive overlay', async () => {
     const release = vi.fn().mockResolvedValue(undefined);
     mockStartInteractiveOverlay.mockResolvedValue({
@@ -184,14 +201,16 @@ describe('area-selector overlay backend', () => {
 
   it('returns null when no windows are available for picking', async () => {
     mockResolveWindowPickTargets.mockResolvedValue(null);
+    mockStartInteractiveOverlay.mockResolvedValue(null);
 
     const m = await import('@/main/capture/area-selector/overlay-backend');
 
     expect(await m.startAreaSelection({ mode: 'window' })).toBeNull();
-    expect(mockStartInteractiveOverlay).not.toHaveBeenCalled();
+    expect(mockStartInteractiveOverlay).toHaveBeenCalled();
+    expect(mockCancelOverlaySelection).toHaveBeenCalledWith(true);
   });
 
-  it('passes the resolved window pick targets to the overlay', async () => {
+  it('starts the overlay before window targets finish resolving', async () => {
     mockResolveWindowPickTargets.mockResolvedValue({
       targets: [{ id: 1, rect: { x: 100, y: 50, width: 400, height: 300 } }],
       names: new Map([[1, 'Window']]),
@@ -204,11 +223,14 @@ describe('area-selector overlay backend', () => {
     await flush();
 
     expect(overlayOptions().preset).toBeUndefined();
-    expect(overlayOptions().pickTargets).toEqual([
-      { id: 1, rect: { x: 100, y: 50, width: 400, height: 300 } },
-    ]);
+    expect(overlayOptions().pickTargets).toEqual([]);
     expect(overlayOptions().prompt).toBe(
       'Click a window to select it · Esc to cancel'
+    );
+    expect(mockSetOverlayPickTargets).toHaveBeenCalledWith(
+      [{ id: 1, rect: { x: 100, y: 50, width: 400, height: 300 } }],
+      'Click a window to select it · Esc to cancel',
+      false
     );
   });
 
@@ -309,6 +331,27 @@ describe('area-selector overlay backend', () => {
     const m = await import('@/main/capture/area-selector/overlay-backend');
     await m.setAreaSelectionMode('manual');
 
+    expect(mockSetOverlayPickTargets).toHaveBeenCalledWith(null, null, false);
+  });
+
+  it('ignores a stale asynchronous mode switch', async () => {
+    mockIsOverlayActive.mockReturnValue(true);
+    let resolveWindows: (
+      value: ReturnType<typeof windowPickTargets>
+    ) => void = () => {};
+    mockResolveWindowPickTargets.mockReturnValue(
+      new Promise(resolve => {
+        resolveWindows = resolve;
+      })
+    );
+
+    const m = await import('@/main/capture/area-selector/overlay-backend');
+    const windowSwitch = m.setAreaSelectionMode('window');
+    await m.setAreaSelectionMode('manual');
+    resolveWindows(windowPickTargets());
+    await windowSwitch;
+
+    expect(mockSetOverlayPickTargets).toHaveBeenCalledTimes(1);
     expect(mockSetOverlayPickTargets).toHaveBeenCalledWith(null, null, false);
   });
 

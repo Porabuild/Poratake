@@ -5,6 +5,7 @@ import {
   clipboard,
   nativeImage,
   app,
+  shell,
 } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -505,6 +506,13 @@ export function registerCapturePreviewIpc(): void {
     if (data && !data.window.isDestroyed()) {
       data.window.close();
     }
+  });
+
+  ipcMain.on('capture-preview:show-in-folder', event => {
+    const data = getPreviewDataByWebContentsId(event.sender.id);
+    if (!data) return;
+
+    shell.showItemInFolder(data.filePath);
   });
 
   ipcMain.on('capture-preview:copy', event => {

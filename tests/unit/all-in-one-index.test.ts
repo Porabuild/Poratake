@@ -22,11 +22,24 @@ const mockClipboardWriteText = vi.fn();
 const mockNotificationShow = vi.fn();
 const mockSetOverlayToolbar = vi.fn();
 const mockSetAreaSelectionMode = vi.fn();
+const mockSetAreaSelectorFreeze = vi.fn();
 const mockHideAreaSelector = vi.fn();
 const mockHideRecordingOverlay = vi.fn();
 const mockShowRecordedWindowOutline = vi.fn();
 const mockIsScreenFrozen = vi.fn();
 const mockIsFreezeScreenEnabled = vi.fn();
+
+const defaultAllInOneConfig = {
+  rememberChoices: true,
+  lastMode: 'screenshot',
+  lastTargets: { screenshot: 'area', record: 'area' },
+  lastArea: null,
+  recording: {
+    systemAudio: true,
+    micEnabled: false,
+    cameraEnabled: false,
+  },
+};
 
 class MockNotification {
   show = mockNotificationShow;
@@ -44,6 +57,7 @@ vi.mock('@/main/capture/area-selector', () => ({
   updateAreaSelectionCallbacks: (...a: unknown[]) =>
     mockUpdateAreaSelectionCallbacks(...a),
   setAreaSelectionMode: (...a: unknown[]) => mockSetAreaSelectionMode(...a),
+  setAreaSelectorFreeze: (...a: unknown[]) => mockSetAreaSelectorFreeze(...a),
 }));
 
 vi.mock('@/main/capture/area-overlay', () => ({
@@ -108,10 +122,12 @@ describe('all-in-one orchestrator', () => {
     vi.resetModules();
     mockCaptureArea.mockReset();
     mockCaptureText.mockReset();
-    mockGetConfig.mockReturnValue({ allInOne: {} });
+    mockGetConfig.mockReturnValue({ allInOne: defaultAllInOneConfig });
     mockIsFeatureSupported.mockReturnValue(true);
     mockIsScreenFrozen.mockReturnValue(false);
     mockIsFreezeScreenEnabled.mockReturnValue(true);
+    mockSetAreaSelectionMode.mockResolvedValue(undefined);
+    mockSetAreaSelectorFreeze.mockResolvedValue(undefined);
   });
 
   it('startAllInOne calls startAreaSelection', async () => {
@@ -121,15 +137,103 @@ describe('all-in-one orchestrator', () => {
     expect(mockStartAreaSelection).toHaveBeenCalled();
   });
 
-  it('starts without a preset even when a previous area exists', async () => {
+  it('does not restore the previous area as a selection preset', async () => {
     mockGetConfig.mockReturnValue({
-      allInOne: { lastArea: { x: 100, y: 100, width: 200, height: 200 } },
+      allInOne: {
+        ...defaultAllInOneConfig,
+        lastArea: { x: 100, y: 100, width: 200, height: 200 },
+      },
     });
     mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
     const startAllInOne = (await import('@/main/capture/all-in-one')).default;
     await startAllInOne();
     const [opts] = mockStartAreaSelection.mock.calls[0];
     expect(opts.preset).toBeUndefined();
+    expect(mockCaptureArea).not.toHaveBeenCalled();
+  });
+
+  it('restores a screen toolbar target without capturing it', async () => {
+    mockGetConfig.mockReturnValue({
+      allInOne: {
+        ...defaultAllInOneConfig,
+        lastTargets: { screenshot: 'screen', record: 'area' },
+      },
+    });
+    mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
+
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+    await startAllInOne();
+
+    const [options] = mockStartAreaSelection.mock.calls[0];
+    expect(options).toEqual(
+      expect.objectContaining({
+        mode: 'display',
+        requireDisplayPick: true,
+        toolbar: expect.objectContaining({
+          activeMode: 'screenshot',
+          activeTarget: 'screen',
+        }),
+      })
+    );
+    expect(options.preset).toBeUndefined();
+    expect(mockCaptureArea).not.toHaveBeenCalled();
+  });
+
+  it('restores the previous recording target without freezing the screen', async () => {
+    mockGetConfig.mockReturnValue({
+      allInOne: {
+        ...defaultAllInOneConfig,
+        lastMode: 'record',
+        lastTargets: { screenshot: 'area', record: 'window' },
+      },
+    });
+    mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
+
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+    await startAllInOne();
+
+    const [options] = mockStartAreaSelection.mock.calls[0];
+    expect(options).toEqual(
+      expect.objectContaining({
+        mode: 'window',
+        freeze: false,
+        toolbar: expect.objectContaining({
+          activeMode: 'record',
+          activeTarget: 'window',
+        }),
+      })
+    );
+    expect(options.preset).toBeUndefined();
+  });
+
+  it('uses defaults and does not persist when remembering is disabled', async () => {
+    mockGetConfig.mockReturnValue({
+      allInOne: {
+        ...defaultAllInOneConfig,
+        rememberChoices: false,
+        lastMode: 'record',
+        lastTargets: { screenshot: 'window', record: 'screen' },
+        lastArea: { x: 10, y: 20, width: 100, height: 100 },
+      },
+    });
+    mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
+
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+    await startAllInOne();
+
+    const [options] = mockStartAreaSelection.mock.calls[0];
+    expect(options).toEqual(
+      expect.objectContaining({
+        mode: 'manual',
+        freeze: true,
+        toolbar: expect.objectContaining({
+          activeMode: 'screenshot',
+          activeTarget: 'area',
+        }),
+      })
+    );
+    expect(options.preset).toBeUndefined();
+    expect(mockUpdateConfig).not.toHaveBeenCalled();
   });
 
   it('cleans up when area selection returns null', async () => {
@@ -161,7 +265,9 @@ describe('all-in-one orchestrator', () => {
     const startAllInOne = (await import('@/main/capture/all-in-one')).default;
     await startAllInOne();
     expect(mockUpdateConfig).toHaveBeenCalledWith({
-      allInOne: { lastArea: { x: 10, y: 20, width: 100, height: 100 } },
+      allInOne: expect.objectContaining({
+        lastArea: { x: 10, y: 20, width: 100, height: 100 },
+      }),
     });
     expect(mockShowAllInOneControl).toHaveBeenCalled();
   });
@@ -257,7 +363,8 @@ describe('all-in-one orchestrator', () => {
     );
     expect(mockShowPreRecordingControl).toHaveBeenCalledWith(
       { x: 10, y: 20, width: 100, height: 100 },
-      undefined
+      undefined,
+      { preferenceScope: 'all-in-one' }
     );
     expect(mockCaptureArea).not.toHaveBeenCalled();
   });
@@ -293,7 +400,8 @@ describe('all-in-one orchestrator', () => {
     expect(mockSetAreaSelectionMode).toHaveBeenCalledWith('window');
     expect(mockShowPreRecordingControl).toHaveBeenCalledWith(
       { x: 200, y: 100, width: 800, height: 600 },
-      'Window'
+      'Window',
+      { preferenceScope: 'all-in-one' }
     );
     expect(mockHideAreaSelector).toHaveBeenCalled();
     expect(mockShowRecordedWindowOutline).toHaveBeenCalledWith(4242);
@@ -370,7 +478,9 @@ describe('all-in-one orchestrator', () => {
       await new Promise(resolve => setImmediate(resolve));
       expect(mockCaptureArea).toHaveBeenCalled();
       expect(mockUpdateConfig).toHaveBeenCalledWith({
-        allInOne: { lastArea: { x: 1, y: 2, width: 30, height: 40 } },
+        allInOne: expect.objectContaining({
+          lastArea: { x: 1, y: 2, width: 30, height: 40 },
+        }),
       });
     });
 
@@ -438,6 +548,9 @@ describe('all-in-one orchestrator', () => {
         activeMode: 'ocr',
         activeTarget: 'area',
       });
+      expect(mockUpdateConfig).toHaveBeenCalledWith({
+        allInOne: expect.objectContaining({ lastMode: 'ocr' }),
+      });
     });
 
     it('switches the overlay to window picking for the active mode', async () => {
@@ -451,6 +564,65 @@ describe('all-in-one orchestrator', () => {
           activeTarget: 'window',
         })
       );
+      expect(mockUpdateConfig).toHaveBeenCalledWith({
+        allInOne: expect.objectContaining({
+          lastTargets: { screenshot: 'window', record: 'area' },
+        }),
+      });
+    });
+
+    it('does not replace the remembered manual area with window bounds', async () => {
+      mockGetCurrentAreaSelection.mockReturnValue({
+        x: 200,
+        y: 100,
+        width: 800,
+        height: 600,
+      });
+      const { onSelected, onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-target', target: 'window' });
+      mockUpdateConfig.mockClear();
+
+      onSelected({
+        status: 'selected',
+        x: 200,
+        y: 100,
+        width: 800,
+        height: 600,
+        windowId: 4242,
+      });
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(mockUpdateConfig).not.toHaveBeenCalled();
+    });
+
+    it('unfreezes the screen when entering record mode', async () => {
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
+
+      expect(mockSetAreaSelectorFreeze).toHaveBeenCalledWith(false);
+    });
+
+    it('keeps the screen live when switching targets in record mode', async () => {
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
+      mockSetAreaSelectorFreeze.mockClear();
+      onToolbarAction({ action: 'select-capture-target', target: 'window' });
+      onToolbarAction({ action: 'select-capture-target', target: 'screen' });
+      onToolbarAction({ action: 'select-capture-target', target: 'area' });
+
+      expect(mockSetAreaSelectorFreeze).toHaveBeenCalledTimes(3);
+      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(1, false);
+      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(2, false);
+      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(3, false);
+    });
+
+    it('restores the freeze preference after leaving record mode', async () => {
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
+      onToolbarAction({ action: 'select-capture-mode', mode: 'screenshot' });
+
+      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(1, false);
+      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(2, true);
     });
 
     it('keeps a target per capture mode', async () => {

@@ -16,6 +16,7 @@ export const updateAreaSelectionCallbacks =
   backend.updateAreaSelectionCallbacks;
 export const confirmAreaSelection = backend.confirmAreaSelection;
 export const concealAreaSelectorOverlay = backend.concealAreaSelectorOverlay;
+export const setAreaSelectorFreeze = backend.setAreaSelectorFreeze;
 export const hasVisibleSelectorOverlay = backend.hasVisibleSelectorOverlay;
 export const cancelAreaSelection = backend.cancelAreaSelection;
 export const hasPendingSelection = backend.hasPendingSelection;

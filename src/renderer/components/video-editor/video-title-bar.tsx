@@ -56,7 +56,7 @@ export default function VideoTitleBar({
       <div
         className={cn(
           'flex min-w-0 flex-1 items-center',
-          isMacPlatform() && 'pl-16'
+          isMacPlatform() && 'pl-20'
         )}
       >
         <span className="text-muted-foreground truncate text-sm">

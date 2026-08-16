@@ -91,6 +91,7 @@ describe('video editor state handlers', () => {
     mockFs.readFileSync.mockReturnValue(
       JSON.stringify({
         recordingType: 'ios-device',
+        sourceDuration: 12.5,
       })
     );
 
@@ -110,6 +111,7 @@ describe('video editor state handlers', () => {
     expect(mockGenerateInitialEditorState).toHaveBeenCalledWith({
       projectPath: '/project/video.cap',
       recordingType: 'ios-device',
+      duration: 12.5,
     });
   });
 
@@ -132,6 +134,7 @@ describe('video editor state handlers', () => {
     expect(mockGenerateInitialEditorState).toHaveBeenCalledWith({
       projectPath: '/project/video.cap',
       recordingType: undefined,
+      duration: undefined,
     });
   });
 
@@ -224,6 +227,44 @@ describe('video editor state handlers', () => {
 
     expect(state.version).toBe(2);
     expect(state.cursorStyle.size).toBe(100);
+  });
+
+  it('returns state with a numeric sourceDuration unchanged', async () => {
+    mockFs.existsSync.mockReturnValue(true);
+    mockFs.promises.readFile.mockResolvedValue(
+      JSON.stringify(createState({ sourceDuration: 21.77 }))
+    );
+
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+
+    registerStateHandlers();
+
+    const state = (await ipcHandlers['video-editor:getState']({
+      sender: { id: 1 },
+    })) as VideoEditorState;
+
+    expect(state.sourceDuration).toBe(21.77);
+  });
+
+  it('rejects state with a non-numeric sourceDuration', async () => {
+    mockFs.existsSync.mockReturnValue(true);
+    mockFs.promises.readFile.mockResolvedValue(
+      JSON.stringify(
+        createState({ sourceDuration: 'twenty' } as unknown as number)
+      )
+    );
+
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+
+    registerStateHandlers();
+
+    const state = (await ipcHandlers['video-editor:getState']({
+      sender: { id: 1 },
+    })) as VideoEditorState | null;
+
+    expect(state).toBeNull();
   });
 
   it('leaves v2 cursor size untouched', async () => {

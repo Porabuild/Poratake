@@ -13,6 +13,7 @@ vi.mock('mediabunny', () => ({
   CanvasSource: class {},
   VideoSampleSink: class {},
   ALL_FORMATS: [],
+  canEncodeVideo: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('@/renderer/components/video-editor/composition', () => ({
@@ -69,6 +70,7 @@ interface AudioMuxingHarness {
       speed: number;
     }>;
     firstFrameDuration?: number;
+    outputDurationSeconds: number;
     segments: Array<{
       id: string;
       originalStart: number;
@@ -96,6 +98,7 @@ const baseParams = {
   systemAudioVolume: 0.5,
   micAudioVolume: 0.75,
   hasEmbeddedAudio: false,
+  outputDurationSeconds: 10,
   segments: [
     {
       id: 'segment',

@@ -18,9 +18,10 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, KillTimer, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
-    HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_LBUTTONDOWN,
-    WM_PAINT, WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    DestroyWindow, KillTimer, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
+    SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOSIZE,
+    SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
 const CLASS_NAME: &str = "PoratakeTimerControl";
@@ -193,6 +194,8 @@ fn show_panel(x: i32, y: i32, duration: i32) -> Result<(), String> {
             height,
             SWP_NOACTIVATE,
         );
+
+        let _ = SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
 
         let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius, radius);
         let _ = SetWindowRgn(window, Some(region), true);

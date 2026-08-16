@@ -134,4 +134,56 @@ describe('auto zoom generator', () => {
     };
     expect(parsed.cameraStyle.mirrored).toBe(false);
   });
+
+  it('persists the recording duration and an initial full segment', async () => {
+    mockGetConfig.mockReturnValue({
+      recording: { autoZoom: false },
+    });
+
+    const { generateInitialEditorState } =
+      await import('../../src/main/capture/video/auto-zoom-generator');
+
+    await generateInitialEditorState({
+      projectPath: '/project',
+      duration: 21.77,
+    });
+
+    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const parsed = JSON.parse(writtenContent as string) as {
+      sourceDuration?: number;
+      segments: Array<{
+        originalStart: number;
+        originalEnd: number;
+        trimMinStart: number;
+        trimMaxEnd: number;
+      }>;
+    };
+    expect(parsed.sourceDuration).toBe(21.77);
+    expect(parsed.segments).toHaveLength(1);
+    expect(parsed.segments[0]).toMatchObject({
+      originalStart: 0,
+      originalEnd: 21.77,
+      trimMinStart: 0,
+      trimMaxEnd: 21.77,
+    });
+  });
+
+  it('omits the duration fields when no duration is provided', async () => {
+    mockGetConfig.mockReturnValue({
+      recording: { autoZoom: false },
+    });
+
+    const { generateInitialEditorState } =
+      await import('../../src/main/capture/video/auto-zoom-generator');
+
+    await generateInitialEditorState({ projectPath: '/project' });
+
+    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const parsed = JSON.parse(writtenContent as string) as {
+      sourceDuration?: number;
+      segments: unknown[];
+    };
+    expect(parsed.sourceDuration).toBeUndefined();
+    expect(parsed.segments).toEqual([]);
+  });
 });

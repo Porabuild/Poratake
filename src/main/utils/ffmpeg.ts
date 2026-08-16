@@ -1,5 +1,3 @@
-import { execFile, spawn, type ChildProcess } from 'child_process';
-import { promisify } from 'util';
 import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
@@ -11,8 +9,7 @@ import {
 } from '@/types/video';
 import { getNativeBinaryPath } from './paths';
 import { isWindows } from './platform';
-
-const execFileAsync = promisify(execFile);
+import { execFFmpegFile, spawnFFmpegProcess } from './ffmpeg-process';
 
 export type FFmpegProgressCallback = (progress: number) => void;
 
@@ -48,12 +45,31 @@ function execFFmpegWithAbort(
       return;
     }
 
-    const proc: ChildProcess = spawn(ffmpegPath, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const proc = spawnFFmpegProcess(
+      ffmpegPath,
+      args,
+      abortSignal
+        ? { stdio: ['pipe', 'pipe', 'pipe'], signal: abortSignal }
+        : { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
 
     let stderr = '';
     let lastReportedProgress = -1;
+    let terminalError: Error | null = null;
+    let settled = false;
+
+    const settle = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      abortSignal?.removeEventListener('abort', abortHandler);
+
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    };
 
     proc.stderr?.on('data', (data: Buffer) => {
       const chunk = data.toString();
@@ -79,35 +95,33 @@ function execFFmpegWithAbort(
     });
 
     const timeoutId = setTimeout(() => {
+      terminalError = new Error('FFmpeg timeout');
       proc.kill('SIGKILL');
-      reject(new Error('FFmpeg timeout'));
     }, timeout);
 
     const abortHandler = () => {
-      clearTimeout(timeoutId);
+      terminalError = new Error('Aborted');
       proc.kill('SIGKILL');
-      reject(new Error('Aborted'));
     };
 
     abortSignal?.addEventListener('abort', abortHandler);
 
     proc.on('close', code => {
-      clearTimeout(timeoutId);
-      abortSignal?.removeEventListener('abort', abortHandler);
+      if (terminalError) {
+        settle(terminalError);
+        return;
+      }
 
       if (code === 0) {
-        resolve();
-      } else if (abortSignal?.aborted) {
-        reject(new Error('Aborted'));
-      } else {
-        reject(new Error(`FFmpeg exited with code ${code}: ${stderr}`));
+        settle();
+        return;
       }
+
+      settle(new Error(`FFmpeg exited with code ${code}: ${stderr}`));
     });
 
     proc.on('error', err => {
-      clearTimeout(timeoutId);
-      abortSignal?.removeEventListener('abort', abortHandler);
-      reject(err);
+      settle(terminalError ?? err);
     });
   });
 }
@@ -182,7 +196,7 @@ async function runVideoProbe(
 
     let stderr = '';
     try {
-      await execFileAsync(ffmpegPath, ['-i', videoPath], { timeout: 10000 });
+      await execFFmpegFile(ffmpegPath, ['-i', videoPath], { timeout: 10000 });
     } catch (error) {
       stderr = (error as { stderr?: string }).stderr || '';
     }
@@ -567,7 +581,7 @@ export async function generateVideoThumbnail(
   }
 
   try {
-    await execFileAsync(
+    await execFFmpegFile(
       ffmpegPath,
       [
         '-ss',
@@ -898,7 +912,7 @@ export async function convertMp4ToGif(
 
   let totalDuration = 0;
   try {
-    await execFileAsync(ffmpegPath, ['-i', inputPath, '-f', 'null', '-'], {
+    await execFFmpegFile(ffmpegPath, ['-i', inputPath, '-f', 'null', '-'], {
       timeout: 30000,
       signal: abortSignal,
     }).catch(err => {

@@ -31,6 +31,7 @@ export interface VideoEditorState {
   version: 1 | 2;
   savedAt: string;
   recordingType?: RecordingType;
+  sourceDuration?: number;
 
   segments: Segment[];
 

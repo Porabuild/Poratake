@@ -15,6 +15,22 @@ export const RECORDING_ITEMS: SettingsItem[] = [
     }),
   },
   {
+    id: 'recording.startDelay',
+    category: 'recording',
+    section: 'Behavior',
+    type: 'slider',
+    min: 0,
+    max: 10,
+    step: 1,
+    label: 'Start delay',
+    description: 'Countdown shown before recording starts (seconds)',
+    keywords: ['delay', 'countdown', 'timer', 'start', 'recording'],
+    getValue: s => s.recording.startDelay,
+    setValue: (s, v) => ({
+      recording: { ...s.recording, startDelay: v },
+    }),
+  },
+  {
     id: 'recording.autoZoom',
     category: 'recording',
     section: 'Behavior',

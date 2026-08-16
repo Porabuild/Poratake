@@ -26,6 +26,7 @@ export {
   hasOverlayHandoff,
   isOverlayActive,
   prewarmAreaOverlay,
+  setOverlayFreeze,
   retainOverlayHandoffWindow,
   setOverlayAspectRatio,
   setOverlayPickTargets,

@@ -2,19 +2,16 @@ import { ipcMain, dialog, BrowserWindow } from 'electron';
 import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { getWindowData } from '../window-manager';
 import { getMusicFolderPath } from '../recording-project';
 import { getFFmpegPath } from '@/main/utils/ffmpeg';
+import { execFFmpegFile } from '@/main/utils/ffmpeg-process';
 import { SUPPORTED_MUSIC_EXTENSIONS } from '@/types/music';
 import {
   getExportAbortSignal,
   isExportOutputPathAllowed,
 } from './export-session';
 import { buildAtempoFilter } from './audio-handlers';
-
-const execFileAsync = promisify(execFile);
 
 function sanitizeFileName(fileName: string): string {
   return path.basename(fileName);
@@ -28,7 +25,7 @@ async function probeAudioDuration(
 
   let stderr = '';
   try {
-    await execFileAsync(ffmpegPath, ['-i', filePath], {
+    await execFFmpegFile(ffmpegPath, ['-i', filePath], {
       timeout: 10000,
       signal,
     });
@@ -291,7 +288,7 @@ export function registerMusicHandlers(): void {
             outputPath
           );
 
-          await execFileAsync(ffmpegPath, args, {
+          await execFFmpegFile(ffmpegPath, args, {
             timeout: 120000,
             signal,
           });
@@ -319,7 +316,7 @@ export function registerMusicHandlers(): void {
             outputPath
           );
 
-          await execFileAsync(ffmpegPath, args, {
+          await execFFmpegFile(ffmpegPath, args, {
             timeout: 120000,
             signal,
           });

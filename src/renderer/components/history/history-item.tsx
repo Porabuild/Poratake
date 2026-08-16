@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback, useRef, forwardRef } from 'react';
-import { Trash2, Play, Mic, Volume2, Video, MousePointer2 } from 'lucide-react';
+import {
+  Trash2,
+  Play,
+  Mic,
+  Volume2,
+  Video,
+  MousePointer2,
+  FolderOpen,
+} from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import type {
   HistoryItemSummary,
@@ -108,6 +116,14 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
       [item.id, onDelete]
     );
 
+    const handleReveal = useCallback(
+      (e: React.MouseEvent) => {
+        e.stopPropagation();
+        window.ipcRenderer.invoke('history:reveal', item.id);
+      },
+      [item.id]
+    );
+
     return (
       <div
         ref={setRefs}
@@ -178,14 +194,26 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
         </div>
 
         {(isHovered || isSelected) && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleDelete}
-            className="absolute top-1 right-1 h-6 w-6 bg-black/60 text-white hover:bg-red-500/80 hover:text-white"
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
+          <div className="absolute top-1 right-1 flex gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleReveal}
+              title="Show in folder"
+              aria-label="Show in folder"
+              className="h-6 w-6 bg-black/60 text-white transition-colors hover:bg-black/80 hover:text-white"
+            >
+              <FolderOpen className="h-3 w-3" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleDelete}
+              className="h-6 w-6 bg-black/60 text-white hover:bg-red-500/80 hover:text-white"
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          </div>
         )}
       </div>
     );
