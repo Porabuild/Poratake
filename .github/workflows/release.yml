@@ -127,6 +127,15 @@ jobs:
           echo "Generated release notes:"
           cat release_notes.txt
 
+      - name: Cache native binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/main/binaries/ffmpeg
+            src/main/binaries/whisper
+            src/main/daemon/capty-daemon
+          key: macos-native-${{ hashFiles('scripts/build-ffmpeg.sh', 'scripts/build-whisper.sh', 'scripts/build-daemon.sh', 'src/main/daemon/**/*.swift') }}
+
       - name: Setup macOS certificates
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
@@ -141,7 +150,10 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PWD" build.keychain
           rm certificate.p12
 
-      - name: Build macOS app
+      - name: Build native macOS binaries
+        run: bun run build-native-mac
+
+      - name: Package and notarize macOS app
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -150,7 +162,7 @@ jobs:
         run: |
           set -o pipefail
           BUILD_LOG=$(mktemp)
-          bun run build-mac 2>&1 | tee "$BUILD_LOG"
+          bun run package-mac 2>&1 | tee "$BUILD_LOG"
           if grep -qiE "notarize skipped|skipped macOS notarization|notarize.*options were unable to be generated" "$BUILD_LOG"; then
             rm -f "$BUILD_LOG"
             exit 1
