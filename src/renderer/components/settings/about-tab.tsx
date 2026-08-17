@@ -13,13 +13,14 @@ import {
 import { Separator } from '@/renderer/components/ui/separator';
 import { Button } from '@/renderer/components/ui/button';
 import type { UpdateState, UpdateStatus } from '@/types/update';
+import {
+  PORABUILD_URL,
+  PRODUCT_HOMEPAGE as PORATAKE_URL,
+  SOURCE_URL,
+  UPSTREAM_URL,
+} from '@/types/product';
 import appIcon from '@build/icon.png';
 import BrandLogo from '@/renderer/components/brand-logo';
-
-const SOURCE_URL = 'https://github.com/Porabuild/Poratake';
-const UPSTREAM_URL = 'https://github.com/capty-app/capty';
-const PORABUILD_URL = 'https://porabuild.com';
-const PORATAKE_URL = 'https://porabuild.com/poratake';
 
 export default function AboutTab() {
   const [version, setVersion] = useState('0.0.0');

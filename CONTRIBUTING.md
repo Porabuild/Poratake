@@ -7,7 +7,7 @@ Thanks for your interest in contributing to Poratake.
 - Discuss significant changes in an issue first.
 - Keep pull requests focused and small.
 - Follow the existing architecture, structure, and coding standards.
-- Poratake targets macOS 15 or later (Intel + Apple Silicon) and Windows 10/11 x64.
+- Poratake targets macOS 15 or later (Intel + Apple Silicon) and Windows 10/11 (x64 and arm64).
 
 ## Development Setup
 

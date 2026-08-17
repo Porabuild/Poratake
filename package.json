@@ -19,7 +19,7 @@
     "dev": "node scripts/dev.mjs",
     "build-mac": "bun run build-native-mac && rm -rf ./dist && rm -rf ./dist-electron && tsc && vite build && electron-builder --mac --universal -p never",
     "build-mac:local": "bun run build-native-mac && rm -rf ./dist && rm -rf ./dist-electron && tsc && vite build && electron-builder --mac --universal -c.mac.identity=null -p never",
-    "build-win": "bun run build-native-win && node -e \"const fs=require('node:fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('dist-electron',{recursive:true,force:true})\" && tsc && vite build && electron-builder --win -p never",
+    "build-win": "bun run build-native-win && node -e \"const fs=require('node:fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('dist-electron',{recursive:true,force:true})\" && tsc && vite build && node scripts/package-win.mjs",
     "build-daemon-win": "powershell -ExecutionPolicy Bypass -File scripts/build-daemon-win.ps1",
     "build-ffmpeg-win": "powershell -ExecutionPolicy Bypass -File scripts/build-ffmpeg-win.ps1",
     "build-whisper-win": "powershell -ExecutionPolicy Bypass -File scripts/build-whisper-win.ps1",

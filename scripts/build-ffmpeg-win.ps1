@@ -14,14 +14,28 @@ $bashCandidates += @(
 $bash = $bashCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 
 if (-not $bash) {
-    throw 'MSYS2 UCRT64 is required to build FFmpeg. Install MSYS2 with the UCRT64 gcc, make, nasm, pkg-config, curl, and tar packages.'
+    throw 'MSYS2 is required to build FFmpeg. Install UCRT64 gcc (x64) or CLANGARM64 clang (arm64) plus make, nasm, pkg-config, curl, and tar.'
 }
 
-$env:MSYSTEM = 'UCRT64'
+$hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+$arch = if ($env:PORATAKE_WIN_ARCH) { $env:PORATAKE_WIN_ARCH } else { $hostArch }
+if ($arch -ne 'x64' -and $arch -ne 'arm64') {
+    throw "Unsupported PORATAKE_WIN_ARCH: $arch"
+}
+
+if ($arch -eq 'arm64') {
+    $env:MSYSTEM = 'CLANGARM64'
+    $mingwPath = '/clangarm64/bin'
+} else {
+    $env:MSYSTEM = 'UCRT64'
+    $mingwPath = '/ucrt64/bin'
+}
+
 $env:CHERE_INVOKING = '1'
 $env:PORATAKE_PROJECT_ROOT = $projectRoot
 $env:PORATAKE_FFMPEG_BUILD_SCRIPT = $buildScript
-$command = 'export PATH=/ucrt64/bin:/usr/bin:$PATH; cd "$(cygpath -u "$PORATAKE_PROJECT_ROOT")"; bash "$(cygpath -u "$PORATAKE_FFMPEG_BUILD_SCRIPT")"'
+$env:PORATAKE_WIN_ARCH = $arch
+$command = "export PATH=$mingwPath" + ':/usr/bin:$PATH; cd "$(cygpath -u "$PORATAKE_PROJECT_ROOT")"; bash "$(cygpath -u "$PORATAKE_FFMPEG_BUILD_SCRIPT")"'
 $commandPath = Join-Path ([System.IO.Path]::GetTempPath()) ("poratake-ffmpeg-" + [guid]::NewGuid().ToString('N') + '.sh')
 [System.IO.File]::WriteAllText($commandPath, $command + "`n", [System.Text.UTF8Encoding]::new($false))
 
