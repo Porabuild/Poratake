@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="build/icon.png" width="128" height="128" alt="Poratake" />
+  <img src="https://raw.githubusercontent.com/Porabuild/Poratake/main/build/icon.png" width="128" height="128" alt="Poratake" />
 </p>
 
 <h1 align="center">Poratake</h1>
