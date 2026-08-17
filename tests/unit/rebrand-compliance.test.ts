@@ -229,6 +229,9 @@ describe('Poratake rebrand compliance', () => {
     );
     expect(read('scripts/build-ffmpeg.sh')).toContain('--retry-all-errors');
     expect(read('scripts/build-ffmpeg-win.sh')).toContain('--retry-all-errors');
+    expect(read('scripts/build-ffmpeg-win.sh')).toContain(
+      'FFMPEG_TOOLCHAIN_ARGS=(--cc=clang --cxx=clang++ --as=clang)'
+    );
     expect(read('scripts/build-whisper.sh')).toContain(
       '2eeeba56e9edd762b4b38467bab96c2517163158'
     );

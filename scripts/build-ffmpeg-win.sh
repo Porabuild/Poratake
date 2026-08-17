@@ -37,12 +37,12 @@ if [ "$ARCH" = "arm64" ]; then
     REQUIRED_COMMANDS=(curl sha256sum tar make clang nasm pkg-config)
     FFMPEG_CPU_ARCH="aarch64"
     FFMPEG_TARGET_OS="mingw32"
-    export CC="${CC:-clang}"
-    export CXX="${CXX:-clang++}"
+    FFMPEG_TOOLCHAIN_ARGS=(--cc=clang --cxx=clang++ --as=clang)
 else
     REQUIRED_COMMANDS=(curl sha256sum tar make gcc nasm pkg-config)
     FFMPEG_CPU_ARCH="x86_64"
     FFMPEG_TARGET_OS="mingw64"
+    FFMPEG_TOOLCHAIN_ARGS=()
 fi
 
 for command in "${REQUIRED_COMMANDS[@]}"; do
@@ -61,6 +61,7 @@ cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
     --prefix="$BUILD_DIR/install" \
     --arch="$FFMPEG_CPU_ARCH" \
     --target-os="$FFMPEG_TARGET_OS" \
+    "${FFMPEG_TOOLCHAIN_ARGS[@]}" \
     --enable-static \
     --disable-shared \
     --disable-gpl \
