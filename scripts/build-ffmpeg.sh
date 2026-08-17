@@ -29,6 +29,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="$PROJECT_ROOT/src/main/binaries/ffmpeg"
 
+if [ -f "$OUTPUT_DIR/ffmpeg" ]; then
+    echo "[INFO] ffmpeg already built, skipping."
+    exit 0
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

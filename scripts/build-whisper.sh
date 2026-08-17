@@ -16,6 +16,11 @@ WHISPER_VERSION="v1.8.3"
 WHISPER_REPO="https://github.com/ggml-org/whisper.cpp.git"
 WHISPER_COMMIT="2eeeba56e9edd762b4b38467bab96c2517163158"
 
+if [ -f "$OUTPUT_PATH" ]; then
+    echo -e "${GREEN}whisper already built, skipping.${NC}"
+    exit 0
+fi
+
 cleanup() {
     if [ -d "$BUILD_DIR" ]; then
         echo -e "${YELLOW}Cleaning up build directory...${NC}"
