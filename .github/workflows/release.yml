@@ -224,7 +224,19 @@ jobs:
 
   build-windows:
     needs: build
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            msystem: UCRT64
+            packages: mingw-w64-ucrt-x86_64-gcc make nasm pkgconf curl tar
+          - arch: arm64
+            runner: windows-11-arm
+            msystem: CLANGARM64
+            packages: mingw-w64-clang-aarch64-clang make nasm pkgconf curl tar
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout repository
@@ -239,11 +251,16 @@ jobs:
         with:
           bun-version: 1.3.8
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch == 'arm64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
+
       - name: Cache Bun installs
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-bun-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -252,20 +269,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: src/main/daemon-win/target
-          key: ${{ runner.os }}-rust-${{ hashFiles('src/main/daemon-win/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-rust-${{ hashFiles('src/main/daemon-win/Cargo.lock') }}
 
       - name: Setup MSYS2
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            make
-            nasm
-            pkgconf
-            curl
-            tar
+          msystem: ${{ matrix.msystem }}
+          install: ${{ matrix.packages }}
 
       - name: Cache native binaries
         id: native-cache
@@ -275,20 +286,22 @@ jobs:
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
             src/main/daemon/capty-daemon.exe
-          key: ${{ runner.os }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
 
       - name: Build Windows package
         run: bun run build-win
         env:
           PORATAKE_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+          PORATAKE_WIN_ARCH: ${{ matrix.arch }}
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Validate Windows release assets
         shell: bash
         run: |
           VERSION="${{ inputs.version }}"
+          ARCH="${{ matrix.arch }}"
           RELEASE_DIR="release/$VERSION"
-          NSIS="$RELEASE_DIR/Poratake-$VERSION-win-x64.exe"
+          NSIS="$RELEASE_DIR/Poratake-$VERSION-win-$ARCH.exe"
           METADATA="$RELEASE_DIR/latest.yml"
           BLOCKMAP="$NSIS.blockmap"
           node scripts/validate-release-assets-win.mjs "$VERSION" "$NSIS" "$METADATA" "$BLOCKMAP"
@@ -298,34 +311,44 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
           TAG="v$VERSION"
           RELEASE_DIR="release/$VERSION"
           gh release upload "$TAG" \
-            "$RELEASE_DIR/Poratake-$VERSION-win-x64.exe" \
-            "$RELEASE_DIR/latest.yml" \
-            "$RELEASE_DIR/Poratake-$VERSION-win-x64.exe.blockmap" \
+            "$RELEASE_DIR/Poratake-$VERSION-win-$ARCH.exe" \
+            "$RELEASE_DIR/Poratake-$VERSION-win-$ARCH.exe.blockmap" \
             --clobber
+          if [ "$ARCH" = "x64" ]; then
+            gh release upload "$TAG" "$RELEASE_DIR/latest.yml" --clobber
+          fi
 
   publish:
     needs: [build, build-windows]
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: v${{ inputs.version }}
+
       - name: Verify and publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
           TAG="v$VERSION"
-          EXPECTED_ASSETS=$(printf '%s\n' \
-            "Poratake-$VERSION-universal.dmg" \
-            "Poratake-$VERSION-universal-mac.zip" \
-            "latest-mac.yml" \
-            "Poratake-$VERSION-universal-mac.zip.blockmap" \
-            "Poratake-$VERSION-win-x64.exe" \
-            "latest.yml" \
-            "Poratake-$VERSION-win-x64.exe.blockmap" | sort)
+          WORKDIR=$(mktemp -d)
+          gh release download "$TAG" --dir "$WORKDIR" --pattern "Poratake-$VERSION-win-*.exe"
+          node scripts/merge-windows-latest-yml.mjs \
+            "$VERSION" \
+            "$WORKDIR/Poratake-$VERSION-win-x64.exe" \
+            "$WORKDIR/Poratake-$VERSION-win-arm64.exe" \
+            "$WORKDIR/latest.yml"
+          gh release upload "$TAG" "$WORKDIR/latest.yml" --clobber
+          EXPECTED_ASSETS=$(node scripts/published-release-assets.mjs expected "$VERSION")
           ACTUAL_ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)
           test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
           gh release edit "$TAG" --draft=false

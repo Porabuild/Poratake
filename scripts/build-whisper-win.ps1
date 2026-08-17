@@ -9,6 +9,13 @@ $buildRoot = Join-Path $tempRoot ("poratake-whisper-" + [guid]::NewGuid().ToStri
 $sourceDir = Join-Path $buildRoot 'whisper.cpp'
 $buildDir = Join-Path $sourceDir 'build'
 $whisperCommit = '2eeeba56e9edd762b4b38467bab96c2517163158'
+$hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+$arch = if ($env:PORATAKE_WIN_ARCH) { $env:PORATAKE_WIN_ARCH } else { $hostArch }
+$cmakeArch = if ($arch -eq 'arm64') { 'ARM64' } else { 'x64' }
+
+if ($arch -ne 'x64' -and $arch -ne 'arm64') {
+    throw "Unsupported PORATAKE_WIN_ARCH: $arch"
+}
 
 if (Test-Path -LiteralPath $outputPath) {
     Write-Host 'whisper.exe already built, skipping.'
@@ -37,7 +44,7 @@ try {
         throw 'Failed to fetch the pinned whisper.cpp commit'
     }
 
-    cmake -S $sourceDir -B $buildDir -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+    cmake -S $sourceDir -B $buildDir -A $cmakeArch -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to configure whisper.cpp'
     }
@@ -57,6 +64,11 @@ try {
 
     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     Copy-Item -LiteralPath $builtCli.FullName -Destination $outputPath -Force
+
+    if ($arch -ne $hostArch) {
+        Write-Host "Built $outputPath (skipped runtime check on cross-compile)"
+        return
+    }
 
     $helpProcessInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $helpProcessInfo.FileName = $outputPath

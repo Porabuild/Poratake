@@ -1,2 +1,1 @@
-export const UPDATE_OWNER = 'Porabuild';
-export const UPDATE_REPOSITORY = 'Poratake';
+export { UPDATE_OWNER, UPDATE_REPOSITORY } from '@/types/product.ts';

@@ -9,6 +9,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="$PROJECT_ROOT/src/main/binaries/ffmpeg"
 BUILD_DIR="$(mktemp -d)"
+HOST_MACHINE="$(uname -m)"
+if [ "$HOST_MACHINE" = "aarch64" ] || [ "$HOST_MACHINE" = "arm64" ]; then
+    HOST_ARCH="arm64"
+else
+    HOST_ARCH="x64"
+fi
+ARCH="${PORATAKE_WIN_ARCH:-$HOST_ARCH}"
+
+if [ "$ARCH" != "x64" ] && [ "$ARCH" != "arm64" ]; then
+    echo "Unsupported PORATAKE_WIN_ARCH: $ARCH" >&2
+    exit 1
+fi
 
 if [ -f "$OUTPUT_DIR/ffmpeg.exe" ]; then
     echo "ffmpeg.exe already built, skipping."
@@ -21,9 +33,21 @@ cleanup() {
 
 trap cleanup EXIT
 
-for command in curl sha256sum tar make gcc nasm pkg-config; do
+if [ "$ARCH" = "arm64" ]; then
+    REQUIRED_COMMANDS=(curl sha256sum tar make clang nasm pkg-config)
+    FFMPEG_CPU_ARCH="aarch64"
+    FFMPEG_TARGET_OS="mingw32"
+    export CC="${CC:-clang}"
+    export CXX="${CXX:-clang++}"
+else
+    REQUIRED_COMMANDS=(curl sha256sum tar make gcc nasm pkg-config)
+    FFMPEG_CPU_ARCH="x86_64"
+    FFMPEG_TARGET_OS="mingw64"
+fi
+
+for command in "${REQUIRED_COMMANDS[@]}"; do
     if ! command -v "$command" >/dev/null 2>&1; then
-        echo "Missing required MSYS2 UCRT64 command: $command" >&2
+        echo "Missing required MSYS2 command: $command" >&2
         exit 1
     fi
 done
@@ -35,8 +59,8 @@ cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
 
 ./configure \
     --prefix="$BUILD_DIR/install" \
-    --arch=x86_64 \
-    --target-os=mingw64 \
+    --arch="$FFMPEG_CPU_ARCH" \
+    --target-os="$FFMPEG_TARGET_OS" \
     --enable-static \
     --disable-shared \
     --disable-gpl \
@@ -102,22 +126,24 @@ make install
 mkdir -p "$OUTPUT_DIR"
 cp "$BUILD_DIR/install/bin/ffmpeg.exe" "$OUTPUT_DIR/ffmpeg.exe"
 
-VERSION_OUTPUT="$($OUTPUT_DIR/ffmpeg.exe -version 2>&1)"
-ENCODER_OUTPUT="$($OUTPUT_DIR/ffmpeg.exe -hide_banner -encoders 2>&1)"
+if [ "$ARCH" = "$HOST_ARCH" ]; then
+    VERSION_OUTPUT="$($OUTPUT_DIR/ffmpeg.exe -version 2>&1)"
+    ENCODER_OUTPUT="$($OUTPUT_DIR/ffmpeg.exe -hide_banner -encoders 2>&1)"
 
-if grep -q -- '--enable-gpl\|--enable-nonfree' <<<"$VERSION_OUTPUT"; then
-    echo 'FFmpeg build is not LGPL compliant' >&2
-    exit 1
-fi
+    if grep -q -- '--enable-gpl\|--enable-nonfree' <<<"$VERSION_OUTPUT"; then
+        echo 'FFmpeg build is not LGPL compliant' >&2
+        exit 1
+    fi
 
-if ! grep -q 'h264_mf' <<<"$ENCODER_OUTPUT"; then
-    echo 'FFmpeg build is missing h264_mf' >&2
-    exit 1
-fi
+    if ! grep -q 'h264_mf' <<<"$ENCODER_OUTPUT"; then
+        echo 'FFmpeg build is missing h264_mf' >&2
+        exit 1
+    fi
 
-if ! grep -q ' aac ' <<<"$ENCODER_OUTPUT"; then
-    echo 'FFmpeg build is missing the AAC encoder' >&2
-    exit 1
+    if ! grep -q ' aac ' <<<"$ENCODER_OUTPUT"; then
+        echo 'FFmpeg build is missing the AAC encoder' >&2
+        exit 1
+    fi
 fi
 
 echo "Built $OUTPUT_DIR/ffmpeg.exe"

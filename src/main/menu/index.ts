@@ -24,6 +24,7 @@ import recordArea, {
 } from '@/main/capture/video';
 import { createOrShowSettingsWindow } from '@/main/settings';
 import { preloadHistoryPopover, toggleHistoryPopover } from '@/main/history';
+import { ISSUES_URL } from '@/types/product';
 import {
   hideDesktopIcons,
   showDesktopIcons,
@@ -434,7 +435,7 @@ function buildContextMenu(): Menu {
       label: 'Poratake Issues',
       icon: icons.aperture,
       click: () => {
-        shell.openExternal('https://github.com/Porabuild/Poratake/issues');
+        shell.openExternal(ISSUES_URL);
       },
     },
     {

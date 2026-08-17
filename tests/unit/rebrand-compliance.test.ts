@@ -146,6 +146,7 @@ describe('Poratake rebrand compliance', () => {
 
   it('uses fork-owned release and support destinations', () => {
     const builder = read('electron-builder.json5');
+    const product = read('src/types/product.ts');
     const updater = read('src/main/update/config.ts');
     const readme = read('README.md');
     const about = read('src/renderer/components/settings/about-tab.tsx');
@@ -156,11 +157,24 @@ describe('Poratake rebrand compliance', () => {
 
     expect(builder).toContain('"owner": "Porabuild"');
     expect(builder).toContain('"repo": "Poratake"');
-    expect(updater).toContain("UPDATE_OWNER = 'Porabuild'");
-    expect(updater).toContain("UPDATE_REPOSITORY = 'Poratake'");
+    expect(product).toContain("UPDATE_OWNER = 'Porabuild'");
+    expect(product).toContain("UPDATE_REPOSITORY = 'Poratake'");
+    expect(product).toContain(
+      "SOURCE_URL = 'https://github.com/Porabuild/Poratake'"
+    );
+    expect(product).toContain(
+      "PRODUCT_HOMEPAGE = 'https://porabuild.com/poratake'"
+    );
+    expect(updater).toContain('UPDATE_OWNER');
+    expect(updater).toContain('UPDATE_REPOSITORY');
     expect(readme).toContain('https://github.com/Porabuild/Poratake');
-    expect(about).toContain('https://github.com/Porabuild/Poratake');
-    expect(menu).toContain('https://github.com/Porabuild/Poratake/issues');
+    expect(readme).not.toContain(
+      'A public Windows release is not available yet'
+    );
+    expect(readme).toContain('Windows 10/11 (x64 and arm64)');
+    expect(about).toContain('SOURCE_URL');
+    expect(about).toContain('PORATAKE_URL');
+    expect(menu).toContain('ISSUES_URL');
     expect(packageJson).toContain('https://porabuild.com/poratake');
     expect(packageJson).toContain(
       'git+https://github.com/Porabuild/Poratake.git'
@@ -168,8 +182,7 @@ describe('Poratake rebrand compliance', () => {
     expect(packageJson).toContain(
       'https://github.com/Porabuild/Poratake/issues'
     );
-    expect(about).toContain("PORABUILD_URL = 'https://porabuild.com'");
-    expect(about).toContain("PORATAKE_URL = 'https://porabuild.com/poratake'");
+    expect(about).toContain('PORABUILD_URL');
     expect(workflow).toContain('name: Poratake v${{ inputs.version }}');
     expect(workflow).toContain('release/${{ inputs.version }}/latest-mac.yml');
     expect(workflow).not.toContain('https://capty.app/api/versions');
@@ -188,6 +201,15 @@ describe('Poratake rebrand compliance', () => {
     expect(workflow).toContain('Validate release assets');
     expect(workflow).toContain('draft: true');
     expect(workflow).toContain('Verify and publish GitHub Release');
+    expect(workflow).toContain(
+      'node scripts/published-release-assets.mjs expected'
+    );
+    expect(workflow).toContain('win-arm64');
+    expect(workflow).toContain('win-x64');
+    expect(workflow).toContain('arch: arm64');
+    expect(read('electron-builder.json5')).toContain(
+      '"arch": ["x64", "arm64"]'
+    );
     expect(workflow).toContain('test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"');
     expect(releaseScript).toContain(
       'git status --porcelain --untracked-files=all'
