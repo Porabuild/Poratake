@@ -235,6 +235,9 @@ describe('Poratake rebrand compliance', () => {
     expect(read('scripts/build-whisper.sh')).toContain(
       '2eeeba56e9edd762b4b38467bab96c2517163158'
     );
+    expect(read('scripts/build-whisper-win.ps1')).toContain(
+      "@('-T', 'ClangCL')"
+    );
   });
 
   it('does not publish release refs before validating built assets', () => {
