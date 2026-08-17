@@ -219,8 +219,8 @@ describe('Poratake rebrand compliance', () => {
     expect(releaseScript).toContain('set -eo pipefail');
     expect(releaseScript).not.toContain('git push || log_warning');
     expect(packageJson).toContain('bun run build-native-mac');
-    expect(packageJson).toContain('"packageManager": "bun@1.3.8"');
-    expect(workflow).toContain('bun-version: 1.3.8');
+    expect(packageJson).toContain('"packageManager": "bun@1.3.14"');
+    expect(workflow).toContain('bun-version: 1.3.14');
     expect(read('.github/workflows/checks.yml')).toContain(
       'run: ./scripts/build-daemon.sh'
     );
