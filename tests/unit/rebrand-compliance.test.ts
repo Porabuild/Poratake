@@ -194,6 +194,7 @@ describe('Poratake rebrand compliance', () => {
   it('publishes only reproducible, tagged release assets', () => {
     const workflow = read('.github/workflows/release.yml');
     const releaseScript = read('scripts/release.sh');
+    const packageWinScript = read('scripts/package-win.mjs');
     const packageJson = read('package.json');
 
     expect(workflow).toContain('bun install --frozen-lockfile');
@@ -207,9 +208,8 @@ describe('Poratake rebrand compliance', () => {
     expect(workflow).toContain('win-arm64');
     expect(workflow).toContain('win-x64');
     expect(workflow).toContain('arch: arm64');
-    expect(read('electron-builder.json5')).toContain(
-      '"arch": ["x64", "arm64"]'
-    );
+    expect(packageWinScript).toContain("new Set(['x64', 'arm64'])");
+    expect(packageWinScript).toContain('`--${arch}`');
     expect(workflow).toContain('test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"');
     expect(releaseScript).toContain(
       'git status --porcelain --untracked-files=all'
