@@ -23,11 +23,6 @@ export interface CompletedRecording {
   duration: number;
 }
 
-export interface OverlayResponse {
-  success: boolean;
-  message?: string;
-}
-
 export interface RecordingConfig {
   x?: number;
   y?: number;
@@ -53,13 +48,6 @@ export interface RecordingConfig {
 export type RecorderState = 'idle' | 'recording' | 'paused';
 
 export type RecordingType = 'ios-device';
-
-export interface RecordingStateInfo {
-  state: RecorderState;
-  duration: number;
-  outputPath: string | null;
-  hasPendingSelection: boolean;
-}
 
 export type VideoResolution = 'original' | '4k' | '1080p' | '720p' | '480p';
 
@@ -88,42 +76,6 @@ export interface SocialMediaPreset {
   frameRate: SocialMediaFrameRate;
   bitrate: number;
 }
-
-export const SOCIAL_MEDIA_PRESETS: Record<
-  `${SocialMediaResolution}-${SocialMediaFrameRate}`,
-  SocialMediaPreset
-> = {
-  '4k-60': {
-    resolution: '4k',
-    frameRate: '60',
-    bitrate: 12000,
-  },
-  '4k-30': {
-    resolution: '4k',
-    frameRate: '30',
-    bitrate: 8000,
-  },
-  '1080p-60': {
-    resolution: '1080p',
-    frameRate: '60',
-    bitrate: 6000,
-  },
-  '1080p-30': {
-    resolution: '1080p',
-    frameRate: '30',
-    bitrate: 4000,
-  },
-  '720p-60': {
-    resolution: '720p',
-    frameRate: '60',
-    bitrate: 4000,
-  },
-  '720p-30': {
-    resolution: '720p',
-    frameRate: '30',
-    bitrate: 2500,
-  },
-};
 
 export interface FormatConfig {
   frameRates: VideoFrameRate[];

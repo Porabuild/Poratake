@@ -17,33 +17,26 @@ import {
   TEXT_BG_PADDING_X,
   TEXT_BG_PADDING_Y,
   TEXT_FONT_WEIGHT,
-} from './utils/textUtils';
+} from './text/text-utils';
 
 import {
   type ResizeHandle,
   renderPen,
-  exportPen,
   renderHighlight,
   renderRectangle,
   renderRectangleHandles,
-  exportRectangle,
   renderCircle,
   renderCircleHandles,
-  exportCircle,
   renderLine,
   renderLineHandles,
-  exportLine,
   renderArrow,
   renderArrowHandles,
-  exportArrow,
   renderText,
   renderTextHandles,
-  exportText,
   renderNumber,
-  exportNumber,
   renderRedact,
   renderRedactHandles,
-  exportRedact,
+  exportAnnotationToSvg,
 } from './annotations';
 
 export interface SvgAnnotationsOverlayHandle {
@@ -711,33 +704,8 @@ const SvgAnnotationsOverlay = forwardRef<
 
         const exportProps = { offsetX, offsetY, scale };
 
-        const renderAnnotationForExport = (ann: Annotation): string => {
-          switch (ann.type) {
-            case 'pen':
-              return exportPen({ annotation: ann, ...exportProps });
-            case 'highlight':
-              return '';
-            case 'rectangle':
-              return exportRectangle({ annotation: ann, ...exportProps });
-            case 'circle':
-              return exportCircle({ annotation: ann, ...exportProps });
-            case 'line':
-              return exportLine({ annotation: ann, ...exportProps });
-            case 'arrow':
-              return exportArrow({ annotation: ann, ...exportProps });
-            case 'text':
-              return exportText({ annotation: ann, ...exportProps });
-            case 'number':
-              return exportNumber({ annotation: ann, ...exportProps });
-            case 'redact':
-              return exportRedact({ annotation: ann, ...exportProps });
-            default:
-              return '';
-          }
-        };
-
         const annotationsContent = annotations
-          .map(renderAnnotationForExport)
+          .map(ann => exportAnnotationToSvg(ann, exportProps))
           .join('');
 
         return `<svg xmlns="http://www.w3.org/2000/svg" width="${scaledWidth}" height="${scaledHeight}">${annotationsContent}</svg>`;
