@@ -98,7 +98,7 @@ describe('Poratake rebrand compliance', () => {
       dependencies: Record<string, string>;
     };
 
-    expect(notices).toHaveLength(84);
+    expect(notices).toHaveLength(82);
     expect(noticeNames.size).toBe(notices.length);
     expect(noticeNames).not.toContain('input-otp');
     expect(noticeNames).not.toContain('mp4box');

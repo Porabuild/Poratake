@@ -561,12 +561,3 @@ export function renderCamera(
 
   ctx.restore();
 }
-
-export function getCameraLayoutInfo(
-  cameraStyle: CameraStyle | null,
-  videoWidth: number,
-  videoHeight: number
-): CameraLayout | null {
-  if (!cameraStyle?.visible) return null;
-  return calculateCameraLayout(cameraStyle, videoWidth, videoHeight);
-}

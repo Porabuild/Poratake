@@ -14,19 +14,3 @@ export const ASPECT_RATIOS: AspectRatio[] = [
   { name: '4:5', width: 4, height: 5 },
   { name: '3:2', width: 3, height: 2 },
 ];
-
-export const FREE_ASPECT_RATIO: AspectRatio = ASPECT_RATIOS[0];
-
-export function getAspectRatioDisplayName(ratio: AspectRatio): string {
-  if (ratio.width === 0 && ratio.height === 0) {
-    return 'Free';
-  }
-  return `${ratio.width}:${ratio.height}`;
-}
-
-export function findAspectRatio(
-  width: number,
-  height: number
-): AspectRatio | undefined {
-  return ASPECT_RATIOS.find(r => r.width === width && r.height === height);
-}

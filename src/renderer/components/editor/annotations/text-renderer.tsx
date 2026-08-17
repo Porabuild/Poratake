@@ -6,7 +6,7 @@ import {
   TEXT_BG_BORDER_RADIUS,
   SELECTION_BORDER_WIDTH,
   TEXT_FONT_WEIGHT,
-} from '../utils/textUtils';
+} from '../text/text-utils';
 import {
   type AnnotationRenderProps,
   type ExportRenderProps,

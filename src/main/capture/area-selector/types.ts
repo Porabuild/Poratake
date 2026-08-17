@@ -4,7 +4,6 @@ import type {
   AreaOverlayToolbar,
   AreaOverlayToolbarAction,
 } from '@/types/area-overlay';
-import type { AspectRatio } from '@/types/aspect-ratio';
 
 export type AreaSelectionCallback = (selection: AreaSelection) => void;
 
@@ -34,24 +33,4 @@ export interface StartAreaSelectionOptions {
 
 export interface ConfirmAreaSelectionOptions {
   keepOverlayVisible?: boolean;
-}
-
-export interface AreaSelectorBackend {
-  startAreaSelection(
-    options?: StartAreaSelectionOptions
-  ): Promise<AreaSelection | null>;
-  updateAreaSelectionCallbacks(options: StartAreaSelectionOptions): void;
-  confirmAreaSelection(
-    options?: ConfirmAreaSelectionOptions
-  ): Promise<AreaSelection | null>;
-  concealAreaSelectorOverlay(): void;
-  setAreaSelectorFreeze(enabled: boolean): Promise<void>;
-  hasVisibleSelectorOverlay(): boolean;
-  cancelAreaSelection(silent?: boolean): Promise<void>;
-  hasPendingSelection(): boolean;
-  hideAreaSelector(): Promise<void>;
-  showAreaSelector(): Promise<void>;
-  updateAreaSelection(bounds: PresetArea): Promise<boolean>;
-  setAreaSelectionMode(mode: AreaSelectionMode): Promise<void>;
-  setAreaSelectorAspectRatio(ratio: AspectRatio): Promise<void>;
 }

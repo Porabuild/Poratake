@@ -30,9 +30,7 @@ This file must list every third-party component that ships inside a Poratake rel
 | `@heroui/styles`                         |   3.2.4 | MIT           |
 | `@radix-ui/number`                       |   1.1.3 | MIT           |
 | `@radix-ui/primitive`                    |   1.1.7 | MIT           |
-| `@radix-ui/react-accordion`              |  1.2.20 | MIT           |
 | `@radix-ui/react-arrow`                  |  1.1.15 | MIT           |
-| `@radix-ui/react-collapsible`            |  1.1.20 | MIT           |
 | `@radix-ui/react-collection`             |  1.1.15 | MIT           |
 | `@radix-ui/react-compose-refs`           |   1.1.5 | MIT           |
 | `@radix-ui/react-context`                |   1.2.2 | MIT           |

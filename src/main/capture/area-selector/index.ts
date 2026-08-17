@@ -1,5 +1,4 @@
-import * as overlayBackend from './overlay-backend';
-import type { AreaSelectorBackend } from './types';
+import { cancelAreaSelection } from './overlay-backend';
 
 export type {
   AreaSelectionCallback,
@@ -9,23 +8,22 @@ export type {
   StartAreaSelectionOptions,
 } from './types';
 
-const backend: AreaSelectorBackend = overlayBackend;
-
-export const startAreaSelection = backend.startAreaSelection;
-export const updateAreaSelectionCallbacks =
-  backend.updateAreaSelectionCallbacks;
-export const confirmAreaSelection = backend.confirmAreaSelection;
-export const concealAreaSelectorOverlay = backend.concealAreaSelectorOverlay;
-export const setAreaSelectorFreeze = backend.setAreaSelectorFreeze;
-export const hasVisibleSelectorOverlay = backend.hasVisibleSelectorOverlay;
-export const cancelAreaSelection = backend.cancelAreaSelection;
-export const hasPendingSelection = backend.hasPendingSelection;
-export const hideAreaSelector = backend.hideAreaSelector;
-export const showAreaSelector = backend.showAreaSelector;
-export const updateAreaSelection = backend.updateAreaSelection;
-export const setAreaSelectionMode = backend.setAreaSelectionMode;
-export const setAreaSelectorAspectRatio = backend.setAreaSelectorAspectRatio;
+export {
+  startAreaSelection,
+  updateAreaSelectionCallbacks,
+  confirmAreaSelection,
+  concealAreaSelectorOverlay,
+  setAreaSelectorFreeze,
+  hasVisibleSelectorOverlay,
+  cancelAreaSelection,
+  hasPendingSelection,
+  hideAreaSelector,
+  showAreaSelector,
+  updateAreaSelection,
+  setAreaSelectionMode,
+  setAreaSelectorAspectRatio,
+} from './overlay-backend';
 
 export function killAreaSelector(): Promise<void> {
-  return backend.cancelAreaSelection(true);
+  return cancelAreaSelection(true);
 }
