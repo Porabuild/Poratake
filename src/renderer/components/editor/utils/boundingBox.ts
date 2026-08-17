@@ -101,38 +101,3 @@ export function boxesIntersect(a: BoundingBox, b: BoundingBox): boolean {
     a.y + a.height > b.y
   );
 }
-
-export function boxContains(container: BoundingBox, box: BoundingBox): boolean {
-  return (
-    box.x >= container.x &&
-    box.y >= container.y &&
-    box.x + box.width <= container.x + container.width &&
-    box.y + box.height <= container.y + container.height
-  );
-}
-
-export function getCombinedBoundingBox(annotations: Annotation[]): BoundingBox {
-  if (annotations.length === 0) {
-    return { x: 0, y: 0, width: 0, height: 0 };
-  }
-
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-
-  for (const annotation of annotations) {
-    const box = getBoundingBox(annotation);
-    minX = Math.min(minX, box.x);
-    minY = Math.min(minY, box.y);
-    maxX = Math.max(maxX, box.x + box.width);
-    maxY = Math.max(maxY, box.y + box.height);
-  }
-
-  return {
-    x: minX,
-    y: minY,
-    width: maxX - minX,
-    height: maxY - minY,
-  };
-}

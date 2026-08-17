@@ -99,18 +99,6 @@ function loadCursorImage(
   return null;
 }
 
-export function preloadCursorImages(
-  types: CursorType[],
-  fill: string,
-  stroke: string
-): void {
-  types.forEach(type => loadCursorImage(type, fill, stroke));
-}
-
-export function preloadCustomCursorImage(dataUrl: string): void {
-  loadCustomCursorImage(dataUrl);
-}
-
 const LIFE_SIZE_SPRITE_PX = 49;
 const MAX_DISPLAY_SCALE = 2.5;
 
