@@ -241,7 +241,7 @@ describe('Poratake rebrand compliance', () => {
       '- name: Validate release assets'
     );
     const workflowPush = workflow.indexOf(
-      '- name: Push release commit and tag'
+      '- name: Push release commit and staging tag'
     );
     const localValidation = releaseScript.indexOf(
       'node scripts/validate-release-assets.mjs'
