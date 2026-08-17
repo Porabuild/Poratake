@@ -135,12 +135,18 @@ describe('release asset validation', () => {
     expect(workflow).toContain('bun run build-native-mac');
     expect(workflow).toContain('bun run package-mac');
     expect(workflow).toContain('brew install nasm pkg-config cmake');
-    expect(readFileSync(path.join(process.cwd(), 'scripts', 'build-whisper.sh'), 'utf8')).toContain(
-      'whisper already built, skipping'
-    );
-    expect(readFileSync(path.join(process.cwd(), 'scripts', 'build-ffmpeg.sh'), 'utf8')).toContain(
-      'ffmpeg already built, skipping'
-    );
+    expect(
+      readFileSync(
+        path.join(process.cwd(), 'scripts', 'build-whisper.sh'),
+        'utf8'
+      )
+    ).toContain('whisper already built, skipping');
+    expect(
+      readFileSync(
+        path.join(process.cwd(), 'scripts', 'build-ffmpeg.sh'),
+        'utf8'
+      )
+    ).toContain('ffmpeg already built, skipping');
     expect(workflow).toContain('notarize.*options were unable to be generated');
     expect(workflow).toContain('codesign --verify --deep --strict');
     expect(workflow).toContain('xcrun stapler validate');
