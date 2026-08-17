@@ -132,9 +132,18 @@ describe('release asset validation', () => {
 
     expect(workflow).not.toContain('inputs.notarize');
     expect(workflow).not.toContain('build-mac:local');
+    expect(workflow).toContain('group: release-stable');
+    expect(workflow).toContain('cancel-in-progress: false');
+    expect(workflow).toContain('timeout-minutes: 60');
     expect(workflow).toContain('bun run build-native-mac');
     expect(workflow).toContain('bun run package-mac');
     expect(workflow).toContain('brew install nasm pkg-config cmake');
+    expect(workflow).toContain(
+      'security set-keychain-settings -lut 21600 build.keychain'
+    );
+    expect(workflow).toContain('ELECTRON_SKIP_BINARY_DOWNLOAD: 1');
+    expect(workflow).toContain('path: ~/Library/Caches/electron');
+    expect(workflow).toContain('path: ~/AppData/Local/electron/Cache');
     expect(
       readFileSync(
         path.join(process.cwd(), 'scripts', 'build-whisper.sh'),
