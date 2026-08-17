@@ -135,9 +135,9 @@ describe('release asset validation', () => {
     expect(workflow).toContain('group: release-stable');
     expect(workflow).toContain('cancel-in-progress: false');
     expect(workflow).toContain('timeout-minutes: 60');
-    expect(workflow).toMatch(/build-macos:\r?\n    needs: prepare/);
-    expect(workflow).toMatch(/build-windows:\r?\n    needs: prepare/);
-    expect(workflow).not.toMatch(/build-windows:\r?\n    needs: build-macos/);
+    expect(workflow).toMatch(/build-macos:\r?\n {4}needs: prepare/);
+    expect(workflow).toMatch(/build-windows:\r?\n {4}needs: prepare/);
+    expect(workflow).not.toMatch(/build-windows:\r?\n {4}needs: build-macos/);
     expect(workflow).toContain('uses: actions/upload-artifact@v7');
     expect(workflow).toContain('uses: actions/download-artifact@v8');
     expect(workflow).toContain('bun run build-native-mac');
