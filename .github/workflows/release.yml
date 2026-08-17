@@ -15,7 +15,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      source_ref: ${{ steps.release.outputs.source_ref }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release
+        id: release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Error: Version must be in format X.Y.Z (e.g., 1.1.0)"
+            exit 1
+          fi
+          if git rev-parse --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "Error: Tag v$VERSION already exists"
+            exit 1
+          fi
+          echo "source_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    needs: prepare
     runs-on: macos-latest
     timeout-minutes: 60
 
@@ -25,13 +55,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-
-      - name: Validate version format
-        run: |
-          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "Error: Version must be in format X.Y.Z (e.g., 1.1.0)"
-            exit 1
-          fi
+          ref: ${{ needs.prepare.outputs.source_ref }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -61,93 +85,9 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
       - name: Update package.json version
-        run: |
-          VERSION="${{ inputs.version }}"
-          jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp
-          mv package.json.tmp package.json
-
-      - name: Commit version update
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json
-          if git diff --cached --quiet; then
-            echo "Version is already set to ${{ inputs.version }}"
-          else
-            git commit -m "chore: bump version to ${{ inputs.version }}"
-          fi
-          echo "BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-
-      - name: Generate release notes from commits
-        id: release_notes
-        run: |
-          # Get the previous tag
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-
-          if [ -z "$PREVIOUS_TAG" ]; then
-            # If no previous tag, get all commits
-            COMMITS=$(git log --pretty=format:"%s" --no-merges)
-          else
-            # Get commits since the previous tag
-            COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"%s" --no-merges)
-          fi
-
-          # Initialize arrays for features and fixes (other commits are internal)
-          FEATURES=""
-          FIXES=""
-
-          # Parse commits and categorize them (only feat: and fix: are public, rest are internal)
-          while IFS= read -r commit; do
-            # Skip empty lines
-            if [ -z "$commit" ]; then
-              continue
-            fi
-
-            # Check for feature commits (feat: or feature:)
-            if echo "$commit" | grep -qiE "^feat(\(.*\))?:"; then
-              # Extract the message after feat: or feat(scope):
-              MSG=$(echo "$commit" | sed -E 's/^feat(\([^)]*\))?:[[:space:]]*//')
-              # Capitalize first letter
-              MSG="$(echo "${MSG:0:1}" | tr '[:lower:]' '[:upper:]')${MSG:1}"
-              FEATURES="${FEATURES}- ${MSG}\n"
-            # Check for fix commits (fix:)
-            elif echo "$commit" | grep -qiE "^fix(\(.*\))?:"; then
-              # Extract the message after fix: or fix(scope):
-              MSG=$(echo "$commit" | sed -E 's/^fix(\([^)]*\))?:[[:space:]]*//')
-              # Capitalize first letter
-              MSG="$(echo "${MSG:0:1}" | tr '[:lower:]' '[:upper:]')${MSG:1}"
-              FIXES="${FIXES}- ${MSG}\n"
-            fi
-            # All other commits (chore, refactor, docs, etc.) are considered internal and hidden
-          done <<< "$COMMITS"
-
-          # Build the release notes
-          RELEASE_NOTES=""
-
-          if [ -n "$FEATURES" ]; then
-            RELEASE_NOTES="${RELEASE_NOTES}## Features\n${FEATURES}"
-          fi
-
-          if [ -n "$FIXES" ]; then
-            if [ -n "$RELEASE_NOTES" ]; then
-              RELEASE_NOTES="${RELEASE_NOTES}\n"
-            fi
-            RELEASE_NOTES="${RELEASE_NOTES}## Bug Fixes\n${FIXES}"
-          fi
-
-          # If no features or fixes, provide default message
-          if [ -z "$RELEASE_NOTES" ]; then
-            RELEASE_NOTES="No changelog provided"
-          fi
-
-          # Remove trailing newlines and escape for GitHub Actions
-          RELEASE_NOTES=$(echo -e "$RELEASE_NOTES" | sed 's/\\n$//')
-
-          # Write to file for multi-line output
-          echo -e "$RELEASE_NOTES" > release_notes.txt
-
-          echo "Generated release notes:"
-          cat release_notes.txt
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.RELEASE_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
 
       - name: Cache native binaries
         uses: actions/cache@v5
@@ -208,60 +148,20 @@ jobs:
           test -n "$APP_RESOURCES"
           node scripts/validate-release-assets.mjs "$VERSION" "$DMG" "$ZIP" "$METADATA" "$BLOCKMAP" "$APP_RESOURCES"
 
-      - name: Push release commit and tag
-        run: |
-          VERSION="${{ inputs.version }}"
-          test -z "$(git status --porcelain --untracked-files=all)"
-          test "$(git rev-parse HEAD)" = "$BUILD_COMMIT"
-          if git rev-parse --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
-            test "$(git rev-list -n 1 "v$VERSION")" = "$BUILD_COMMIT"
-          else
-            git tag "v$VERSION"
-          fi
-          git push origin "HEAD:${GITHUB_REF}"
-          git push origin "v$VERSION"
-          REMOTE_TAG_COMMIT=$(git ls-remote origin "refs/tags/v$VERSION^{}" | awk '{print $1}')
-          if [ -z "$REMOTE_TAG_COMMIT" ]; then
-            REMOTE_TAG_COMMIT=$(git ls-remote origin "refs/tags/v$VERSION" | awk '{print $1}')
-          fi
-          test "$REMOTE_TAG_COMMIT" = "$BUILD_COMMIT"
-
-      - name: Create draft GitHub Release with macOS assets
-        uses: softprops/action-gh-release@v2
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v7
         with:
-          tag_name: v${{ inputs.version }}
-          name: Poratake v${{ inputs.version }}
-          body_path: release_notes.txt
-          draft: true
-          prerelease: false
-          fail_on_unmatched_files: true
-          files: |
+          name: release-macos
+          path: |
             release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal.dmg
             release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal-mac.zip
             release/${{ inputs.version }}/latest-mac.yml
             release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal-mac.zip.blockmap
-
-      - name: Verify macOS release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ inputs.version }}"
-          TAG="v$VERSION"
-          RELEASE_DIR="release/$VERSION"
-          for ASSET_PATH in \
-            "$RELEASE_DIR/Poratake-$VERSION-universal.dmg" \
-            "$RELEASE_DIR/Poratake-$VERSION-universal-mac.zip" \
-            "$RELEASE_DIR/latest-mac.yml" \
-            "$RELEASE_DIR/Poratake-$VERSION-universal-mac.zip.blockmap"; do
-            ASSET_NAME=$(basename "$ASSET_PATH")
-            ASSET_SIZE=$(stat -f%z "$ASSET_PATH")
-            REMOTE_SIZE=$(gh release view "$TAG" --json assets --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .size")
-            test -n "$REMOTE_SIZE"
-            test "$REMOTE_SIZE" = "$ASSET_SIZE"
-          done
+          if-no-files-found: error
+          retention-days: 7
 
   build-windows:
-    needs: build
+    needs: prepare
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -283,7 +183,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.prepare.outputs.source_ref }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -313,6 +213,11 @@ jobs:
         run: bun install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: Update package.json version
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.RELEASE_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
 
       - name: Cache Rust target
         uses: actions/cache@v5
@@ -355,50 +260,194 @@ jobs:
           BLOCKMAP="$NSIS.blockmap"
           node scripts/validate-release-assets-win.mjs "$VERSION" "$NSIS" "$METADATA" "$BLOCKMAP"
 
-      - name: Upload Windows assets to draft release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ inputs.version }}
-          ARCH: ${{ matrix.arch }}
-        run: |
-          TAG="v$VERSION"
-          RELEASE_DIR="release/$VERSION"
-          gh release upload "$TAG" \
-            "$RELEASE_DIR/Poratake-$VERSION-win-$ARCH.exe" \
-            "$RELEASE_DIR/Poratake-$VERSION-win-$ARCH.exe.blockmap" \
-            --clobber
-          if [ "$ARCH" = "x64" ]; then
-            gh release upload "$TAG" "$RELEASE_DIR/latest.yml" --clobber
-          fi
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-windows-${{ matrix.arch }}
+          path: |
+            release/${{ inputs.version }}/Poratake-${{ inputs.version }}-win-${{ matrix.arch }}.exe
+            release/${{ inputs.version }}/Poratake-${{ inputs.version }}-win-${{ matrix.arch }}.exe.blockmap
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
-    needs: [build, build-windows]
+    needs: [prepare, build-macos, build-windows]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/release-assets
+          pattern: release-*
+          merge-multiple: true
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: v${{ inputs.version }}
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Update package.json version
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.RELEASE_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+
+      - name: Generate release notes from commits
+        run: |
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"%s" --no-merges)
+          else
+            COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"%s" --no-merges)
+          fi
+
+          FEATURES=""
+          FIXES=""
+
+          while IFS= read -r commit; do
+            if [ -z "$commit" ]; then
+              continue
+            fi
+
+            if echo "$commit" | grep -qiE "^feat(\(.*\))?:"; then
+              MSG=$(echo "$commit" | sed -E 's/^feat(\([^)]*\))?:[[:space:]]*//')
+              MSG="$(echo "${MSG:0:1}" | tr '[:lower:]' '[:upper:]')${MSG:1}"
+              FEATURES="${FEATURES}- ${MSG}\n"
+            elif echo "$commit" | grep -qiE "^fix(\(.*\))?:"; then
+              MSG=$(echo "$commit" | sed -E 's/^fix(\([^)]*\))?:[[:space:]]*//')
+              MSG="$(echo "${MSG:0:1}" | tr '[:lower:]' '[:upper:]')${MSG:1}"
+              FIXES="${FIXES}- ${MSG}\n"
+            fi
+          done <<< "$COMMITS"
+
+          RELEASE_NOTES=""
+
+          if [ -n "$FEATURES" ]; then
+            RELEASE_NOTES="${RELEASE_NOTES}## Features\n${FEATURES}"
+          fi
+
+          if [ -n "$FIXES" ]; then
+            if [ -n "$RELEASE_NOTES" ]; then
+              RELEASE_NOTES="${RELEASE_NOTES}\n"
+            fi
+            RELEASE_NOTES="${RELEASE_NOTES}## Bug Fixes\n${FIXES}"
+          fi
+
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="No changelog provided"
+          fi
+
+          RELEASE_NOTES=$(echo -e "$RELEASE_NOTES" | sed 's/\\n$//')
+          echo -e "$RELEASE_NOTES" > release_notes.txt
+          cat release_notes.txt
+
+      - name: Merge Windows updater metadata
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          ASSET_DIR="${{ runner.temp }}/release-assets"
+          node scripts/merge-windows-latest-yml.mjs \
+            "$VERSION" \
+            "$ASSET_DIR/Poratake-$VERSION-win-x64.exe" \
+            "$ASSET_DIR/Poratake-$VERSION-win-arm64.exe" \
+            "$ASSET_DIR/latest.yml"
+
+      - name: Validate collected release assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          ASSET_DIR="${{ runner.temp }}/release-assets"
+          EXPECTED_ASSETS=$(node scripts/published-release-assets.mjs expected "$VERSION")
+          ACTUAL_ASSETS=$(find "$ASSET_DIR" -maxdepth 1 -type f -printf '%f\n' | sort)
+          test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
+
+      - name: Push release commit and staging tag
+        env:
+          DRAFT_TAG: release-draft-${{ github.run_id }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          if git diff --cached --quiet; then
+            echo "Version is already set to $VERSION"
+          else
+            git commit -m "chore: bump version to $VERSION"
+          fi
+          BUILD_COMMIT=$(git rev-parse HEAD)
+          echo "BUILD_COMMIT=$BUILD_COMMIT" >> "$GITHUB_ENV"
+          git tag "$DRAFT_TAG"
+          git push origin "HEAD:${GITHUB_REF}"
+          git push origin "$DRAFT_TAG"
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: release-draft-${{ github.run_id }}
+          name: Poratake v${{ inputs.version }}
+          body_path: release_notes.txt
+          draft: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: ${{ runner.temp }}/release-assets/*
 
       - name: Verify and publish GitHub Release
         env:
+          DRAFT_TAG: release-draft-${{ github.run_id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           TAG="v$VERSION"
-          WORKDIR=$(mktemp -d)
-          gh release download "$TAG" --dir "$WORKDIR" --pattern "Poratake-$VERSION-win-*.exe"
-          node scripts/merge-windows-latest-yml.mjs \
-            "$VERSION" \
-            "$WORKDIR/Poratake-$VERSION-win-x64.exe" \
-            "$WORKDIR/Poratake-$VERSION-win-arm64.exe" \
-            "$WORKDIR/latest.yml"
-          gh release upload "$TAG" "$WORKDIR/latest.yml" --clobber
+          ASSET_DIR="${{ runner.temp }}/release-assets"
           EXPECTED_ASSETS=$(node scripts/published-release-assets.mjs expected "$VERSION")
-          ACTUAL_ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)
+          ACTUAL_ASSETS=$(gh release view "$DRAFT_TAG" --json assets --jq '.assets[].name' | sort)
           test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
-          gh release edit "$TAG" --draft=false
+          for ASSET_PATH in "$ASSET_DIR"/*; do
+            ASSET_NAME=$(basename "$ASSET_PATH")
+            ASSET_SIZE=$(stat -c%s "$ASSET_PATH")
+            REMOTE_SIZE=$(gh release view "$DRAFT_TAG" --json assets --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .size")
+            test -n "$REMOTE_SIZE"
+            test "$REMOTE_SIZE" = "$ASSET_SIZE"
+          done
+          RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$DRAFT_TAG\") | .id")
+          test -n "$RELEASE_ID"
+          gh api --method PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$BUILD_COMMIT" \
+            -F draft=false \
+            -F prerelease=false \
+            -f make_latest=true
+          REMOTE_TAG_COMMIT=$(git ls-remote origin "refs/tags/$TAG^{}" | awk '{print $1}')
+          if [ -z "$REMOTE_TAG_COMMIT" ]; then
+            REMOTE_TAG_COMMIT=$(git ls-remote origin "refs/tags/$TAG" | awk '{print $1}')
+          fi
+          test "$REMOTE_TAG_COMMIT" = "$BUILD_COMMIT"
+          gh api --method DELETE "repos/${{ github.repository }}/git/refs/tags/$DRAFT_TAG" ||
+            echo "Published successfully but could not delete staging tag $DRAFT_TAG"
+
+  cleanup-failed-release:
+    needs: [prepare, build-macos, build-windows, publish]
+    if: ${{ always() && (needs.publish.result == 'failure' || needs.publish.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Remove failed release and tag
+        env:
+          DRAFT_TAG: release-draft-${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.prepare.outputs.version }}
+        run: |
+          gh release delete "$DRAFT_TAG" --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
+          gh release delete "$TAG" --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$DRAFT_TAG" >/dev/null 2>&1; then
+            gh api --method DELETE "repos/${{ github.repository }}/git/refs/tags/$DRAFT_TAG"
+          fi
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            gh api --method DELETE "repos/${{ github.repository }}/git/refs/tags/$TAG"
+          fi

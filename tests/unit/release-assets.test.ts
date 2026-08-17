@@ -135,6 +135,11 @@ describe('release asset validation', () => {
     expect(workflow).toContain('group: release-stable');
     expect(workflow).toContain('cancel-in-progress: false');
     expect(workflow).toContain('timeout-minutes: 60');
+    expect(workflow).toContain('build-macos:\n    needs: prepare');
+    expect(workflow).toContain('build-windows:\n    needs: prepare');
+    expect(workflow).not.toContain('build-windows:\n    needs: build-macos');
+    expect(workflow).toContain('uses: actions/upload-artifact@v7');
+    expect(workflow).toContain('uses: actions/download-artifact@v8');
     expect(workflow).toContain('bun run build-native-mac');
     expect(workflow).toContain('bun run package-mac');
     expect(workflow).toContain('brew install nasm pkg-config cmake');
@@ -144,6 +149,9 @@ describe('release asset validation', () => {
     expect(workflow).toContain('ELECTRON_SKIP_BINARY_DOWNLOAD: 1');
     expect(workflow).toContain('path: ~/Library/Caches/electron');
     expect(workflow).toContain('path: ~/AppData/Local/electron/Cache');
+    expect(workflow).toContain('release-draft-${{ github.run_id }}');
+    expect(workflow).toContain('-f tag_name="$TAG"');
+    expect(workflow).not.toContain('git push origin "v$VERSION"');
     expect(
       readFileSync(
         path.join(process.cwd(), 'scripts', 'build-whisper.sh'),
