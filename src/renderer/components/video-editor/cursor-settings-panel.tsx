@@ -144,11 +144,9 @@ export default function CursorSettingsPanel({
 
   const handleImport = useCallback(async () => {
     setIsImporting(true);
-    try {
-      await onCursorDataImport();
-    } finally {
+    await onCursorDataImport().finally(() => {
       setIsImporting(false);
-    }
+    });
   }, [onCursorDataImport]);
 
   if (!hasCursorData) {

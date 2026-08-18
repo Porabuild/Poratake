@@ -1,37 +1,37 @@
 use super::recording_audio::{
-    channel_sample, parse_audio_format, select_device, AudioFormat, AudioKind, OwnedHandle,
-    HNS_PER_SECOND,
+    AudioFormat, AudioKind, HNS_PER_SECOND, OwnedHandle, channel_sample, parse_audio_format,
+    select_device,
 };
 use crate::com::retain_process_mta;
-use crate::protocol::{param_str, send_event, Request};
-use crate::router::{method_not_found, Module, Reply};
-use serde_json::{json, Value};
+use crate::protocol::{Request, param_str, send_event};
+use crate::router::{Module, Reply, method_not_found};
+use serde_json::{Value, json};
 use std::ffi::c_void;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use windows::core::{Result, PCWSTR, PWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
-    eCapture, eMultimedia, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
-    MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE,
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+    DEVICE_STATE_ACTIVE, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, eCapture, eMultimedia,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, MFCreateAttributes, MFEnumDeviceSources, MFShutdown, MFStartup, MFSTARTUP_FULL,
-    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+    IMFActivate, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_VERSION,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_VERSION, MFCreateAttributes,
+    MFEnumDeviceSources, MFSTARTUP_FULL, MFShutdown, MFStartup,
 };
 use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToStringAlloc};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-    COINIT_MULTITHREADED, STGM_READ,
+    CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    CoUninitialize, STGM_READ,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::core::{PCWSTR, PWSTR, Result};
 
 const MIC_LEVEL_EVENT: &str = "media-devices:mic-level";
 const MIC_LEVEL_INTERVAL: Duration = Duration::from_millis(50);

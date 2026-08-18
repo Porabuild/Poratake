@@ -1,4 +1,3 @@
-import * as React from 'react';
 import { Switch as HeroSwitch } from '@heroui/react';
 import type { SwitchProps as HeroSwitchProps } from '@heroui/react';
 

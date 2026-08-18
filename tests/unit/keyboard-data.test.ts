@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import path from 'path';
 import type { KeyboardData } from '@/types/keyboard';
 
-const projectKeysJsonPath = path.join('/path/to/Rec.capty', 'keys.json');
+const projectKeysJsonPath = path.join('/path/to/Rec.poratake', 'keys.json');
 
 vi.mock('fs/promises', () => ({
   default: {
@@ -21,7 +21,7 @@ describe('keyboard-data', () => {
     it('returns keys.json inside project folder', async () => {
       const { getKeyboardDataPath } =
         await import('@/main/capture/video/keyboard-data');
-      expect(getKeyboardDataPath('/path/to/Rec.capty/recording.mov')).toBe(
+      expect(getKeyboardDataPath('/path/to/Rec.poratake/recording.mov')).toBe(
         projectKeysJsonPath
       );
     });
@@ -88,7 +88,7 @@ describe('keyboard-data', () => {
       vi.mocked(fs.default.unlink).mockResolvedValue();
       const { deleteKeyboardData } =
         await import('@/main/capture/video/keyboard-data');
-      await deleteKeyboardData('/path/to/Rec.capty/recording.mov');
+      await deleteKeyboardData('/path/to/Rec.poratake/recording.mov');
       expect(fs.default.unlink).toHaveBeenCalledWith(projectKeysJsonPath);
     });
 

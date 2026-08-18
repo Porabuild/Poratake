@@ -10,21 +10,9 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "base64"
-version = "0.22.1"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "capty-daemon"
-version = "0.1.0"
-dependencies = [
- "base64",
- "rqrr",
- "serde",
- "serde_json",
- "windows",
- "windows-core",
-]
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "equivalent"
@@ -97,6 +85,18 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "poratake-daemon"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "rqrr",
+ "serde",
+ "serde_json",
+ "windows",
+ "windows-core",
+]
 
 [[package]]
 name = "proc-macro2"

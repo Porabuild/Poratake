@@ -2,13 +2,12 @@
 
 set -euo pipefail
 
-FFMPEG_VERSION="7.1"
+FFMPEG_VERSION="9.0.1"
 FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
-FFMPEG_SHA256="40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6"
+FFMPEG_SHA256="cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="$PROJECT_ROOT/src/main/binaries/ffmpeg"
-BUILD_DIR="$(mktemp -d)"
 HOST_MACHINE="$(uname -m)"
 if [ "$HOST_MACHINE" = "aarch64" ] || [ "$HOST_MACHINE" = "arm64" ]; then
     HOST_ARCH="arm64"
@@ -22,16 +21,12 @@ if [ "$ARCH" != "x64" ] && [ "$ARCH" != "arm64" ]; then
     exit 1
 fi
 
-if [ -f "$OUTPUT_DIR/ffmpeg.exe" ]; then
+STAMP_PATH="$OUTPUT_DIR/.ffmpeg-win-build"
+BUILD_ID="$(sha256sum "$SCRIPT_DIR/build-ffmpeg-win.sh" "$SCRIPT_DIR/build-ffmpeg-win.ps1" | awk '{print $1}' | sha256sum | awk '{print $1}'):$ARCH"
+if [ -f "$OUTPUT_DIR/ffmpeg.exe" ] && [ "$(cat "$STAMP_PATH" 2>/dev/null || true)" = "$BUILD_ID" ]; then
     echo "ffmpeg.exe already built, skipping."
     exit 0
 fi
-
-cleanup() {
-    rm -rf "$BUILD_DIR"
-}
-
-trap cleanup EXIT
 
 if [ "$ARCH" = "arm64" ]; then
     REQUIRED_COMMANDS=(curl sha256sum tar make clang nasm pkg-config)
@@ -52,6 +47,14 @@ for command in "${REQUIRED_COMMANDS[@]}"; do
     fi
 done
 
+BUILD_DIR="$(mktemp -d)"
+
+cleanup() {
+    rm -rf "$BUILD_DIR"
+}
+
+trap cleanup EXIT
+
 curl --fail --location --retry 5 --retry-delay 2 --retry-all-errors --retry-max-time 120 --output "$BUILD_DIR/ffmpeg.tar.xz" "$FFMPEG_URL"
 echo "$FFMPEG_SHA256  $BUILD_DIR/ffmpeg.tar.xz" | sha256sum --check --status
 tar -xf "$BUILD_DIR/ffmpeg.tar.xz" -C "$BUILD_DIR"
@@ -66,6 +69,7 @@ cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
     --disable-shared \
     --disable-gpl \
     --disable-nonfree \
+    --disable-autodetect \
     --disable-libx264 \
     --disable-libx265 \
     --disable-libvpx \
@@ -124,12 +128,11 @@ cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
 
 make -j"$(nproc)"
 make install
-mkdir -p "$OUTPUT_DIR"
-cp "$BUILD_DIR/install/bin/ffmpeg.exe" "$OUTPUT_DIR/ffmpeg.exe"
+CANDIDATE_PATH="$BUILD_DIR/install/bin/ffmpeg.exe"
 
 if [ "$ARCH" = "$HOST_ARCH" ]; then
-    VERSION_OUTPUT="$($OUTPUT_DIR/ffmpeg.exe -version 2>&1)"
-    ENCODER_OUTPUT="$($OUTPUT_DIR/ffmpeg.exe -hide_banner -encoders 2>&1)"
+    VERSION_OUTPUT="$($CANDIDATE_PATH -version 2>&1)"
+    ENCODER_OUTPUT="$($CANDIDATE_PATH -hide_banner -encoders 2>&1)"
 
     if grep -q -- '--enable-gpl\|--enable-nonfree' <<<"$VERSION_OUTPUT"; then
         echo 'FFmpeg build is not LGPL compliant' >&2
@@ -147,4 +150,11 @@ if [ "$ARCH" = "$HOST_ARCH" ]; then
     fi
 fi
 
+mkdir -p "$OUTPUT_DIR"
+NEXT_OUTPUT="$OUTPUT_DIR/.ffmpeg-next-$$.exe"
+NEXT_STAMP="$OUTPUT_DIR/.ffmpeg-stamp-next-$$"
+cp "$CANDIDATE_PATH" "$NEXT_OUTPUT"
+printf '%s\n' "$BUILD_ID" > "$NEXT_STAMP"
+mv -f "$NEXT_OUTPUT" "$OUTPUT_DIR/ffmpeg.exe"
+mv -f "$NEXT_STAMP" "$STAMP_PATH"
 echo "Built $OUTPUT_DIR/ffmpeg.exe"

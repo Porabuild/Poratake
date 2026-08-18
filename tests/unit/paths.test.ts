@@ -228,8 +228,8 @@ describe('Path Utilities', () => {
       expect(getNativeBinaryPath('ffmpeg')).toBe(
         path.join('/mock/app', 'src/main/binaries/ffmpeg', 'ffmpeg')
       );
-      expect(getNativeBinaryPath('capty-daemon')).toBe(
-        path.join('/mock/app', 'src/main/daemon', 'capty-daemon')
+      expect(getNativeBinaryPath('poratake-daemon')).toBe(
+        path.join('/mock/app', 'src/main/daemon', 'poratake-daemon')
       );
     });
   });

@@ -38,6 +38,38 @@ function matchesGlob(value: string, glob: string): boolean {
   return new RegExp(`${pattern}$`).test(value);
 }
 
+interface PackageManifest {
+  name: string;
+  version: string;
+  license?: string;
+}
+
+interface InstalledPackage {
+  directory: string;
+  manifest: PackageManifest;
+}
+
+function collectInstalledPackages(): Map<string, InstalledPackage> {
+  const packages = new Map<string, InstalledPackage>();
+  fs.globSync('node_modules/**/package.json').forEach(packageJsonPath => {
+    const packageDirectory = path.dirname(path.resolve(packageJsonPath));
+    const manifest = JSON.parse(
+      fs.readFileSync(packageJsonPath, 'utf8')
+    ) as PackageManifest;
+    if (!manifest.name || !manifest.version) {
+      return;
+    }
+
+    const key = `${manifest.name}@${manifest.version}`;
+    const installed = packages.get(key);
+    if (!installed || packageDirectory.length < installed.directory.length) {
+      packages.set(key, { directory: packageDirectory, manifest });
+    }
+  });
+
+  return packages;
+}
+
 describe('Poratake rebrand compliance', () => {
   it('preserves upstream attribution and identifies the modified version', () => {
     const readme = read('README.md');
@@ -60,21 +92,32 @@ describe('Poratake rebrand compliance', () => {
 
     expect(builder).toContain('licenses/Poratake-AGPL-3.0.txt');
     expect(builder).toContain('licenses/THIRD_PARTY_NOTICES.md');
+    expect(builder).toContain('licenses/FFmpeg-LGPL-2.1.txt');
     expect(builder).toContain('licenses/Geist-OFL-1.1.txt');
     expect(builder).toContain('@heroui/**/LICENSE*');
     expect(fs.existsSync('licenses/Geist-OFL-1.1.txt')).toBe(true);
+    expect(fs.existsSync('licenses/FFmpeg-LGPL-2.1.txt')).toBe(true);
     expect(read('THIRD_PARTY_NOTICES.md')).toContain('## Geist fonts');
+    expect(read('THIRD_PARTY_NOTICES.md')).toContain(
+      'GNU Lesser General Public License v2.1'
+    );
   });
 
   it('uses fork-owned application and data identities', () => {
     const builder = read('electron-builder.json5');
     const paths = read('src/main/utils/paths.ts');
+    const video = read('src/types/video.ts');
+    const daemonManifest = read('src/main/daemon-win/Cargo.toml');
 
     expect(builder).toContain('"appId": "com.porabuild.poratake"');
     expect(builder).toContain(
       '"UTTypeIdentifier": "com.porabuild.poratake.recording"'
     );
+    expect(builder).toContain('"CFBundleTypeExtensions": ["poratake"]');
+    expect(builder).toContain('"public.filename-extension": ["poratake"]');
     expect(paths).toContain("isProduction ? 'poratake' : 'poratake-dev'");
+    expect(video).toContain("PROJECT_EXTENSION = '.poratake'");
+    expect(daemonManifest).toContain('name = "poratake-daemon"');
   });
 
   it('inventories every bundled npm package and packages its license', () => {
@@ -88,17 +131,15 @@ describe('Poratake rebrand compliance', () => {
       'lazy-val': 'licenses/npm/lazy-val-MIT.txt',
       'react-remove-scroll-bar': 'licenses/npm/react-remove-scroll-bar-MIT.txt',
     };
-    const installedPackagePaths: Record<string, string> = {
-      '@radix-ui/react-use-is-hydrated':
-        '@radix-ui/react-roving-focus/node_modules/@radix-ui/react-use-is-hydrated',
-    };
     const notices = parseNpmNotices();
     const noticeNames = new Set(notices.map(notice => notice.name));
     const packageJson = JSON.parse(read('package.json')) as {
       dependencies: Record<string, string>;
     };
+    const lockfile = read('bun.lock');
+    const installedPackages = collectInstalledPackages();
 
-    expect(notices).toHaveLength(82);
+    expect(notices).toHaveLength(74);
     expect(noticeNames.size).toBe(notices.length);
     expect(noticeNames).not.toContain('input-otp');
     expect(noticeNames).not.toContain('mp4box');
@@ -108,18 +149,19 @@ describe('Poratake rebrand compliance', () => {
     );
 
     notices.forEach(notice => {
-      const packageDirectory = path.join(
-        process.cwd(),
-        'node_modules',
-        installedPackagePaths[notice.name] ?? notice.name
+      expect(lockfile).toContain(`"${notice.name}@${notice.version}"`);
+      const installedPackage = installedPackages.get(
+        `${notice.name}@${notice.version}`
       );
-      const installed = JSON.parse(
-        fs.readFileSync(path.join(packageDirectory, 'package.json'), 'utf8')
-      ) as { version: string; license: string };
-      if (
-        installed.version !== notice.version ||
-        installed.license !== notice.license
-      ) {
+      if (!installedPackage) {
+        throw new Error(
+          `${notice.name}: installed version ${notice.version} was not found`
+        );
+      }
+
+      const { directory: packageDirectory, manifest: installed } =
+        installedPackage;
+      if (installed.license !== notice.license) {
         throw new Error(
           `${notice.name}: expected ${notice.version}/${notice.license}, found ${installed.version}/${installed.license}`
         );
@@ -140,17 +182,20 @@ describe('Poratake rebrand compliance', () => {
         return;
       }
 
-      const relativeLicensePath = `${installedPackagePaths[notice.name] ?? notice.name}/${licenseFile}`;
-      if (!filters.some(filter => matchesGlob(relativeLicensePath, filter))) {
+      const relativeLicensePath = path
+        .relative(path.join(process.cwd(), 'node_modules'), packageDirectory)
+        .replaceAll(path.sep, '/');
+      const packagedLicensePath = `${relativeLicensePath}/${licenseFile}`;
+      if (!filters.some(filter => matchesGlob(packagedLicensePath, filter))) {
         throw new Error(
-          `License path missing from extraResources filters: ${relativeLicensePath}`
+          `License path missing from extraResources filters: ${packagedLicensePath}`
         );
       }
     });
 
     expect(builder).toContain('"from": "licenses/npm"');
     expect(read('THIRD_PARTY_NOTICES.md')).toContain(
-      'Electron 39.8.10 under the MIT License'
+      'Electron 43.4.0 under the MIT License'
     );
   });
 
@@ -206,6 +251,19 @@ describe('Poratake rebrand compliance', () => {
     const releaseScript = read('scripts/release.sh');
     const packageWinScript = read('scripts/package-win.mjs');
     const packageJson = read('package.json');
+    const notices = read('THIRD_PARTY_NOTICES.md');
+    const ffmpegMacBuild = read('scripts/build-ffmpeg.sh');
+    const ffmpegWinBuild = read('scripts/build-ffmpeg-win.sh');
+    const whisperMacBuild = read('scripts/build-whisper.sh');
+    const whisperWinBuild = read('scripts/build-whisper-win.ps1');
+    const ffmpegVersion = ffmpegMacBuild.match(/FFMPEG_VERSION="([^"]+)"/)?.[1];
+    const ffmpegSha = ffmpegMacBuild.match(/FFMPEG_SHA256="([^"]+)"/)?.[1];
+    const whisperVersion = whisperMacBuild.match(
+      /WHISPER_VERSION="([^"]+)"/
+    )?.[1];
+    const whisperCommit = whisperMacBuild.match(
+      /WHISPER_COMMIT="([^"]+)"/
+    )?.[1];
 
     expect(workflow).toContain('bun install --frozen-lockfile');
     expect(workflow).toContain('fail_on_unmatched_files: true');
@@ -230,24 +288,64 @@ describe('Poratake rebrand compliance', () => {
     expect(releaseScript).not.toContain('git push || log_warning');
     expect(packageJson).toContain('bun run build-native-mac');
     expect(packageJson).toContain('"packageManager": "bun@1.3.14"');
+    expect(packageJson).toContain('"vite-plugin-electron": "1.1.1"');
     expect(workflow).toContain('bun-version: 1.3.14');
     expect(read('.github/workflows/checks.yml')).toContain(
       'run: ./scripts/build-daemon.sh'
     );
-    expect(read('scripts/build-ffmpeg.sh')).toContain(
-      '40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6'
+    expect(ffmpegVersion).toBe('9.0.1');
+    expect(ffmpegSha).toBe(
+      'cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635'
     );
-    expect(read('scripts/build-ffmpeg.sh')).toContain('--retry-all-errors');
-    expect(read('scripts/build-ffmpeg-win.sh')).toContain('--retry-all-errors');
-    expect(read('scripts/build-ffmpeg-win.sh')).toContain(
+    expect(ffmpegWinBuild).toContain(`FFMPEG_VERSION="${ffmpegVersion}"`);
+    expect(ffmpegWinBuild).toContain(`FFMPEG_SHA256="${ffmpegSha}"`);
+    expect(notices).toContain(`FFmpeg ${ffmpegVersion} release archive`);
+    expect(notices).toContain(ffmpegSha);
+    expect(notices).toContain('scripts/build-ffmpeg-win.sh');
+    expect(ffmpegMacBuild).toContain('--retry-all-errors');
+    expect(ffmpegMacBuild).toContain('.ffmpeg-build');
+    expect(ffmpegMacBuild).toContain(
+      'VERSION_OUTPUT="$("$candidate" -version 2>&1)"'
+    );
+    expect(ffmpegMacBuild).not.toContain('"$candidate" -version 2>&1 |');
+    expect(ffmpegWinBuild).toContain('--retry-all-errors');
+    expect(ffmpegWinBuild).toContain('.ffmpeg-win-build');
+    for (const build of [ffmpegMacBuild, ffmpegWinBuild]) {
+      expect(build).toContain('--disable-autodetect');
+      expect(build).toContain('--disable-gpl');
+      expect(build).toContain('--disable-nonfree');
+      expect(build).not.toMatch(/^\s+--enable-(?:gpl|nonfree|version3)/m);
+    }
+    expect(ffmpegMacBuild).toContain(
+      "grep -q -- '--enable-gpl\\|--enable-nonfree'"
+    );
+    expect(ffmpegWinBuild).toContain(
+      'sha256sum "$SCRIPT_DIR/build-ffmpeg-win.sh"'
+    );
+    expect(ffmpegWinBuild).toContain('"$SCRIPT_DIR/build-ffmpeg-win.ps1"');
+    expect(ffmpegWinBuild).toContain("| awk '{print $1}' | sha256sum");
+    expect(ffmpegWinBuild).toContain('):$ARCH"');
+    expect(ffmpegWinBuild.indexOf('already built, skipping')).toBeLessThan(
+      ffmpegWinBuild.indexOf('REQUIRED_COMMANDS=')
+    );
+    expect(ffmpegWinBuild).not.toContain('rm -f "$OUTPUT_DIR/ffmpeg.exe"');
+    expect(ffmpegWinBuild).toContain(
       'FFMPEG_TOOLCHAIN_ARGS=(--cc=clang --cxx=clang++ --as=clang)'
     );
-    expect(read('scripts/build-whisper.sh')).toContain(
-      '2eeeba56e9edd762b4b38467bab96c2517163158'
+    expect(whisperVersion).toBe('v1.9.2');
+    expect(whisperCommit).toBe('306c88f4d1286aec1bf96e544632897886af5501');
+    expect(whisperWinBuild).toContain(whisperCommit);
+    expect(notices).toContain(
+      `${whisperVersion} at commit \`${whisperCommit}\``
     );
-    expect(read('scripts/build-whisper-win.ps1')).toContain(
-      "@('-T', 'ClangCL')"
-    );
+    expect(notices).toContain('Copyright (c) 2023-2026 The ggml authors');
+    expect(notices).toContain('scripts/build-whisper-win.ps1');
+    expect(whisperMacBuild).toContain('-DGGML_METAL=ON');
+    expect(whisperMacBuild).not.toContain('-DWHISPER_METAL=');
+    expect(whisperMacBuild).toContain('.whisper-build');
+    expect(whisperWinBuild).toContain("@('-T', 'ClangCL')");
+    expect(whisperWinBuild).toContain('.whisper-win-build');
+    expect(whisperWinBuild).toContain('"${scriptHash}:$arch"');
   });
 
   it('does not publish release refs before validating built assets', () => {

@@ -6,17 +6,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_ROOT/build-whisper"
 OUTPUT_PATH="$PROJECT_ROOT/src/main/binaries/whisper/whisper"
+STAMP_PATH="$PROJECT_ROOT/src/main/binaries/whisper/.whisper-build"
+BUILD_ID="$(shasum -a 256 "$SCRIPT_DIR/build-whisper.sh" | awk '{print $1}'):universal"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-WHISPER_VERSION="v1.8.3"
+WHISPER_VERSION="v1.9.2"
 WHISPER_REPO="https://github.com/ggml-org/whisper.cpp.git"
-WHISPER_COMMIT="2eeeba56e9edd762b4b38467bab96c2517163158"
+WHISPER_COMMIT="306c88f4d1286aec1bf96e544632897886af5501"
 
-if [ -f "$OUTPUT_PATH" ]; then
+if [ -f "$OUTPUT_PATH" ] && [ "$(cat "$STAMP_PATH" 2>/dev/null || true)" = "$BUILD_ID" ]; then
     echo -e "${GREEN}whisper already built, skipping.${NC}"
     exit 0
 fi
@@ -48,7 +50,7 @@ echo -e "${YELLOW}Building for arm64 with Metal support...${NC}"
 cmake -B build-arm64 \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
-    -DWHISPER_METAL=ON \
+    -DGGML_METAL=ON \
     -DWHISPER_COREML=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DWHISPER_BUILD_TESTS=OFF \
@@ -62,7 +64,7 @@ cmake -B build-x86_64 \
     -DCMAKE_C_FLAGS="-march=x86-64" \
     -DCMAKE_CXX_FLAGS="-march=x86-64" \
     -DGGML_NATIVE=OFF \
-    -DWHISPER_METAL=OFF \
+    -DGGML_METAL=OFF \
     -DWHISPER_COREML=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DWHISPER_BUILD_TESTS=OFF \
@@ -70,14 +72,15 @@ cmake -B build-x86_64 \
 cmake --build build-x86_64 --config Release -j
 
 echo -e "${YELLOW}Creating universal binary...${NC}"
+CANDIDATE_PATH="$BUILD_DIR/whisper"
 lipo -create \
     build-arm64/bin/whisper-cli \
     build-x86_64/bin/whisper-cli \
-    -output "$OUTPUT_PATH"
+    -output "$CANDIDATE_PATH"
 
-chmod +x "$OUTPUT_PATH"
+chmod +x "$CANDIDATE_PATH"
 
-HELP_OUTPUT=$("$OUTPUT_PATH" --help 2>&1 || true)
+HELP_OUTPUT=$("$CANDIDATE_PATH" --help 2>&1 || true)
 if ! echo "$HELP_OUTPUT" | grep -qF -- "-dtw"; then
     echo -e "${RED}Error: whisper-cli does not support DTW timestamps${NC}"
     exit 1
@@ -87,7 +90,7 @@ if ! echo "$HELP_OUTPUT" | grep -qF -- "-ojf"; then
     exit 1
 fi
 
-ARCHS=$(lipo -archs "$OUTPUT_PATH")
+ARCHS=$(lipo -archs "$CANDIDATE_PATH")
 if [[ "$ARCHS" == *"arm64"* ]] && [[ "$ARCHS" == *"x86_64"* ]]; then
     echo -e "${GREEN}Successfully built universal binary${NC}"
     echo "  Architectures: $ARCHS"
@@ -96,6 +99,12 @@ else
     exit 1
 fi
 
+NEXT_OUTPUT="$(dirname "$OUTPUT_PATH")/.whisper-next-$$"
+NEXT_STAMP="$(dirname "$OUTPUT_PATH")/.whisper-stamp-next-$$"
+cp "$CANDIDATE_PATH" "$NEXT_OUTPUT"
+printf '%s\n' "$BUILD_ID" > "$NEXT_STAMP"
+mv -f "$NEXT_OUTPUT" "$OUTPUT_PATH"
+mv -f "$NEXT_STAMP" "$STAMP_PATH"
 echo ""
 echo -e "${GREEN}Build complete!${NC}"
 echo "  Binary installed to: $OUTPUT_PATH"

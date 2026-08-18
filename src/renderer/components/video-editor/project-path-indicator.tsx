@@ -25,15 +25,16 @@ export default function ProjectPathIndicator({
   const [isOpen, setIsOpen] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [editName, setEditName] = useState(fileName ?? '');
+  const [previousFileName, setPreviousFileName] = useState(fileName);
+  if (previousFileName !== fileName) {
+    setPreviousFileName(fileName);
+    setEditName(fileName ?? '');
+  }
   const [renameError, setRenameError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const popoverRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    setEditName(fileName ?? '');
-  }, [fileName]);
 
   useEffect(() => {
     if (!isOpen) return;

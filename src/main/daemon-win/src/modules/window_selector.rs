@@ -1,35 +1,35 @@
 use crate::overlay::{
-    add_key_handler, create_popup_window, default_wndproc, ensure_window_class, rect_height,
-    rect_width, remove_key_handler, WM_MOUSELEAVE,
+    WM_MOUSELEAVE, add_key_handler, create_popup_window, default_wndproc, ensure_window_class,
+    rect_height, rect_width, remove_key_handler,
 };
-use crate::protocol::{respond_error, respond_success, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, respond_error, respond_success};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CombineRgn, CreateRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-    SetWindowRgn, PAINTSTRUCT, RGN_DIFF,
+    PAINTSTRUCT, RGN_DIFF, SetWindowRgn,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcessId, OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE,
+    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, EnumWindows, GetClassNameW, GetSystemMetrics, GetWindowLongW, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, LoadCursorW, SetLayeredWindowAttributes,
-    SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    DestroyWindow, EnumWindows, GWL_EXSTYLE, GetClassNameW, GetSystemMetrics, GetWindowLongW,
+    GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST, IDC_ARROW, IsIconic, IsWindowVisible,
+    LWA_ALPHA, LoadCursorW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetLayeredWindowAttributes, SetWindowPos, ShowWindow, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const OVERLAY_CLASS: &str = "PoratakeWindowSelector";
@@ -80,7 +80,8 @@ thread_local! {
 
 fn take_pending_id() -> Option<String> {
     let pending = STATE.with(|state| state.borrow().pending.clone());
-    pending?.lock().ok()?.take()
+    let id = pending?.lock().ok()?.take();
+    id
 }
 
 fn window_process_name(pid: u32) -> String {

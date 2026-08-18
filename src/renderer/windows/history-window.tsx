@@ -64,6 +64,8 @@ export default function HistoryWindow() {
   const handleFilterChange = useCallback(
     (value: HistoryFilterType) => {
       setFilter(value);
+      setSelectedIndex(0);
+      scrollContainerRef.current?.scrollTo(0, 0);
       persistPreferences({ filter: value });
     },
     [persistPreferences]
@@ -72,6 +74,8 @@ export default function HistoryWindow() {
   const handleSortOrderChange = useCallback(
     (value: HistorySortOrder) => {
       setSortOrder(value);
+      setSelectedIndex(0);
+      scrollContainerRef.current?.scrollTo(0, 0);
       persistPreferences({ sortOrder: value });
     },
     [persistPreferences]
@@ -100,6 +104,8 @@ export default function HistoryWindow() {
           setSortOrder(settings.history.sortOrder);
         if (settings.history.layout) setLayout(settings.history.layout);
       }
+      setSelectedIndex(0);
+      scrollContainerRef.current?.scrollTo(0, 0);
     } catch (error) {
       console.error('Failed to load history:', error);
     } finally {
@@ -120,11 +126,6 @@ export default function HistoryWindow() {
       window.ipcRenderer.off('history:refresh', handleRefresh);
     };
   }, [loadHistory]);
-
-  useEffect(() => {
-    setSelectedIndex(0);
-    scrollContainerRef.current?.scrollTo(0, 0);
-  }, [filter, sortOrder]);
 
   const handleDelete = useCallback(async (id: string) => {
     try {

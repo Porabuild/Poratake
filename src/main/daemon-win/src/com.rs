@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
-use windows::core::{Interface, Result};
 use windows::Win32::System::Com::CoIncrementMTAUsage;
+use windows::core::{Interface, Result};
 
 static PROCESS_MTA: OnceLock<Result<()>> = OnceLock::new();
 
@@ -30,11 +30,11 @@ impl<T: Interface> MtaInterface<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::core::GUID;
     use windows::Win32::Media::MediaFoundation::{
-        IMFSourceReader, MFCreateAttributes, MFStartup, MFSTARTUP_FULL, MF_VERSION,
+        IMFSourceReader, MF_VERSION, MFCreateAttributes, MFSTARTUP_FULL, MFStartup,
     };
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+    use windows::core::GUID;
 
     const TEST_KEY: GUID = GUID::from_u128(0x2f3d6a4c_0f1b_4d64_9a0e_6f5c1b2d3e40);
 

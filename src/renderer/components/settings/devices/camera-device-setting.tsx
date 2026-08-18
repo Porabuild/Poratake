@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
 import { Switch } from '@/renderer/components/ui/switch';
@@ -24,7 +24,9 @@ export default function CameraDeviceSetting({
 
   const camera = settings.recording.camera;
   const cameraRef = useRef(camera);
-  cameraRef.current = camera;
+  useLayoutEffect(() => {
+    cameraRef.current = camera;
+  }, [camera]);
   const selectedId = camera.selectedDeviceId;
   const selectedName = camera.selectedDeviceName;
 

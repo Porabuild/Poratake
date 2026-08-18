@@ -1,8 +1,8 @@
 use super::recorder_types::{RecorderError, RecordingConfig, RecordingResult};
 use super::recording_audio::AudioDevice;
 use super::screen_capture::CaptureController;
-use crate::protocol::{param_bool, param_str, respond_error, respond_success, send_event, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_bool, param_str, respond_error, respond_success, send_event};
+use crate::router::{Module, Reply, method_not_found};
 use serde_json::json;
 use std::sync::mpsc::Receiver;
 

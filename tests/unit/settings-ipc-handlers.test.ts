@@ -29,7 +29,7 @@ vi.mock('electron', () => ({
         home: '/home',
         pictures: '/home/Pictures',
         videos: '/home/Movies',
-        userData: '/home/.config/capty',
+        userData: '/home/.config/poratake',
       };
       return paths[name] || '/tmp';
     },

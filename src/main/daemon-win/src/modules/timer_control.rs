@@ -2,27 +2,27 @@ use crate::overlay::{
     add_key_handler, create_popup_window, default_wndproc, ensure_window_class, remove_key_handler,
     to_wide,
 };
-use crate::protocol::{param_i32, respond_error, respond_success, send_event, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_i32, respond_error, respond_success, send_event};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW,
-    EndPaint, FillRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, SetWindowRgn,
-    DT_CENTER, DT_SINGLELINE, DT_VCENTER, FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION,
-    FONT_QUALITY, FW_SEMIBOLD, HFONT, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DT_CENTER, DT_SINGLELINE,
+    DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FONT_CHARSET, FONT_CLIP_PRECISION,
+    FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_SEMIBOLD, FillRect, HFONT, InvalidateRect, PAINTSTRUCT,
+    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, KillTimer, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
-    SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOSIZE,
-    SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
+    DestroyWindow, HWND_TOPMOST, KillTimer, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOSIZE, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
+    ShowWindow, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
+use windows::core::PCWSTR;
 
 const CLASS_NAME: &str = "PoratakeTimerControl";
 const PANEL_WIDTH: i32 = 140;

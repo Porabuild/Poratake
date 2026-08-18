@@ -1,9 +1,8 @@
 use crate::com::retain_process_mta;
-use crate::protocol::{param_str, respond_error, respond_success, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_str, respond_error, respond_success};
+use crate::router::{Module, Reply, method_not_found};
 use serde_json::json;
 use std::path::Path;
-use windows::core::HSTRING;
 use windows::Globalization::Language;
 use windows::Graphics::Imaging::{
     BitmapAlphaMode, BitmapDecoder, BitmapPixelFormat, BitmapTransform, ColorManagementMode,
@@ -11,7 +10,8 @@ use windows::Graphics::Imaging::{
 };
 use windows::Media::Ocr::OcrEngine;
 use windows::Storage::{FileAccessMode, StorageFile};
-use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
+use windows::core::HSTRING;
 
 const OCR_SCALE_FACTOR: u32 = 2;
 
@@ -126,7 +126,8 @@ fn create_ocr_engine() -> windows::core::Result<OcrEngine> {
         let Ok(language) = languages.GetAt(index) else {
             continue;
         };
-        if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&language) {
+        let engine = OcrEngine::TryCreateFromLanguage(&language);
+        if let Ok(engine) = engine {
             return Ok(engine);
         }
     }

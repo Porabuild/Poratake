@@ -36,7 +36,6 @@ type Interaction =
   | { type: 'resizing'; handle: SelectionHandle };
 
 export interface AreaSelectionOptions {
-  resetKey: number;
   interactive: boolean;
   initialRect: AreaOverlayRect | null;
   initialAspectRatio: number | null;
@@ -49,9 +48,8 @@ export interface AreaSelectionOptions {
 
 export default function useAreaSelection(options: AreaSelectionOptions) {
   const optionsRef = useRef(options);
-  optionsRef.current = options;
 
-  const [bounds, setBounds] = useState<Bounds>(() => ({
+  const [bounds] = useState<Bounds>(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
   }));
@@ -71,34 +69,14 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
   const pickingRef = useRef(options.pickTargets !== null);
   const lockedRef = useRef(false);
 
+  useLayoutEffect(() => {
+    optionsRef.current = options;
+  }, [options]);
+
   const applyRect = useCallback((next: AreaOverlayRect | null) => {
     rectRef.current = next;
     setRect(next);
   }, []);
-
-  useLayoutEffect(() => {
-    ratioRef.current = options.initialAspectRatio;
-    interactionRef.current = null;
-    pickTargetsRef.current = options.pickTargets;
-    repeatablePicksRef.current = options.repeatablePicks;
-    pickingRef.current = options.pickTargets !== null;
-    lockedRef.current = false;
-    setBounds({ width: window.innerWidth, height: window.innerHeight });
-    applyRect(options.initialRect);
-    setPointer(null);
-    setCursor('crosshair');
-    setInteracting(false);
-    setPicking(options.pickTargets !== null);
-    setLocked(false);
-    setHovered(null);
-  }, [
-    applyRect,
-    options.initialAspectRatio,
-    options.initialRect,
-    options.pickTargets,
-    options.repeatablePicks,
-    options.resetKey,
-  ]);
 
   const pickTargetAt = useCallback(
     (point: Point): AreaOverlayPickTarget | null => {

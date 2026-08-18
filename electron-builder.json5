@@ -39,7 +39,6 @@
         "@floating-ui/**/LICENSE*",
         "aria-hidden/LICENSE*",
         "builder-util-runtime/LICENSE*",
-        "class-variance-authority/LICENSE*",
         "clsx/license*",
         "debug/LICENSE*",
         "detect-node-es/LICENSE*",
@@ -47,7 +46,6 @@
         "fs-extra/LICENSE*",
         "get-nonce/LICENSE*",
         "graceful-fs/LICENSE*",
-        "has-flag/license*",
         "js-yaml/LICENSE*",
         "jsonfile/LICENSE*",
         "lodash.escaperegexp/LICENSE*",
@@ -66,7 +64,6 @@
         "sax/LICENSE*",
         "scheduler/LICENSE*",
         "semver/LICENSE*",
-        "supports-color/license*",
         "tailwind-merge/LICENSE*",
         "tailwind-variants/LICENSE*",
         "tiny-typed-emitter/LICENSE*",
@@ -140,8 +137,8 @@
   "mac": {
     "extraResources": [
       {
-        "from": "src/main/daemon/capty-daemon",
-        "to": "daemon/capty-daemon"
+        "from": "src/main/daemon/poratake-daemon",
+        "to": "daemon/poratake-daemon"
       },
       {
         "from": "src/main/binaries/ffmpeg/ffmpeg",
@@ -160,7 +157,7 @@
       "CFBundleDocumentTypes": [
         {
           "CFBundleTypeName": "Poratake Recording",
-          "CFBundleTypeExtensions": ["capty"],
+          "CFBundleTypeExtensions": ["poratake"],
           "CFBundleTypeRole": "Editor",
           "LSHandlerRank": "Owner",
           "LSTypeIsPackage": true
@@ -195,7 +192,7 @@
           "UTTypeConformsTo": ["public.package", "public.composite-content"],
           "UTTypeDescription": "Poratake Recording Project",
           "UTTypeTagSpecification": {
-            "public.filename-extension": ["capty"]
+            "public.filename-extension": ["poratake"]
           }
         }
       ]
@@ -223,8 +220,8 @@
     "artifactName": "${productName}-${version}-win-${arch}.${ext}",
     "extraResources": [
       {
-        "from": "src/main/daemon/capty-daemon.exe",
-        "to": "daemon/capty-daemon.exe"
+        "from": "src/main/daemon/poratake-daemon.exe",
+        "to": "daemon/poratake-daemon.exe"
       },
       {
         "from": "src/main/binaries/ffmpeg/ffmpeg.exe",

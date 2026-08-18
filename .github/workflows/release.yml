@@ -95,7 +95,7 @@ jobs:
           path: |
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
-            src/main/daemon/capty-daemon
+            src/main/daemon/poratake-daemon
           key: macos-native-${{ hashFiles('scripts/build-ffmpeg.sh', 'scripts/build-whisper.sh', 'scripts/build-daemon.sh', 'src/main/daemon/**/*.swift') }}
 
       - name: Setup macOS certificates
@@ -239,7 +239,7 @@ jobs:
           path: |
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
-            src/main/daemon/capty-daemon.exe
+            src/main/daemon/poratake-daemon.exe
           key: ${{ runner.os }}-${{ matrix.arch }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
 
       - name: Build Windows package

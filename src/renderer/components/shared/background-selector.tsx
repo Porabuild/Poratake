@@ -136,6 +136,8 @@ export default function BackgroundSelector({
     [editingBackground, onGradientChange, onBackgroundImageChange]
   );
 
+  const selectedGradientId = selectedGradient?.id;
+
   const handleDeleteBackground = useCallback(
     async (id: string) => {
       try {
@@ -145,7 +147,7 @@ export default function BackgroundSelector({
           id
         );
         setCustomBackgrounds(updatedBackgrounds);
-        if (selectedGradient?.id === id) {
+        if (selectedGradientId === id) {
           onGradientChange(null);
         }
         if (
@@ -160,7 +162,7 @@ export default function BackgroundSelector({
     },
     [
       customBackgrounds,
-      selectedGradient?.id,
+      selectedGradientId,
       selectedBackgroundImage,
       onGradientChange,
       onBackgroundImageChange,

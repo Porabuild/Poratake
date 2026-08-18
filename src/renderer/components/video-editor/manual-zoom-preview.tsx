@@ -23,6 +23,7 @@ export default function ManualZoomPreview({
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    if (video.getAttribute('src') !== videoSrc) return;
 
     const updateFrame = () => {
       const canvas = canvasRef.current;
@@ -52,6 +53,7 @@ export default function ManualZoomPreview({
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    if (video.getAttribute('src') !== videoSrc) return;
 
     const handleLoadedMetadata = () => {
       const videoWidth = video.videoWidth;

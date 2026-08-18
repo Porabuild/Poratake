@@ -87,18 +87,31 @@ interface DeviceDropdownProps {
 function usePopoverExit(isOpen: boolean, onExitComplete: () => void) {
   const isOpenRef = useRef(isOpen);
   const wasMountedRef = useRef(false);
+  const exitPendingRef = useRef(false);
   const onExitCompleteRef = useRef(onExitComplete);
-  isOpenRef.current = isOpen;
-  onExitCompleteRef.current = onExitComplete;
+
+  useLayoutEffect(() => {
+    isOpenRef.current = isOpen;
+    onExitCompleteRef.current = onExitComplete;
+    if (!isOpen && exitPendingRef.current) {
+      exitPendingRef.current = false;
+      onExitComplete();
+    }
+  }, [isOpen, onExitComplete]);
 
   return useCallback((element: HTMLElement | null) => {
     if (element) {
       wasMountedRef.current = true;
+      exitPendingRef.current = false;
       return;
     }
 
-    if (!wasMountedRef.current || isOpenRef.current) return;
+    if (!wasMountedRef.current) return;
     wasMountedRef.current = false;
+    if (isOpenRef.current) {
+      exitPendingRef.current = true;
+      return;
+    }
     onExitCompleteRef.current();
   }, []);
 }
@@ -326,15 +339,22 @@ export default function RecordingControlWindow({
   const [iosDevices, setIosDevices] = useState<MediaDeviceDescriptor[]>([]);
   const [openDeviceMenu, setOpenDeviceMenu] =
     useState<RecordingControlDeviceKind | null>(null);
+  const [previousParams, setPreviousParams] = useState(params);
+  if (previousParams !== params) {
+    setPreviousParams(params);
+    setOpenDeviceMenu(null);
+    setState(params);
+  }
   const openDeviceMenuRef = useRef<RecordingControlDeviceKind | null>(null);
+  const paramsRef = useRef(params);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const isRecording = state.mode === 'recording';
   const isMac = isMacPlatform();
 
   useLayoutEffect(() => {
+    if (paramsRef.current === params) return;
+    paramsRef.current = params;
     openDeviceMenuRef.current = null;
-    setOpenDeviceMenu(null);
-    setState(params);
   }, [params]);
 
   useEffect(() => {
@@ -422,7 +442,9 @@ export default function RecordingControlWindow({
   }, []);
 
   const selectedIOSDeviceIdRef = useRef(state.selectedIOSDeviceId);
-  selectedIOSDeviceIdRef.current = state.selectedIOSDeviceId;
+  useLayoutEffect(() => {
+    selectedIOSDeviceIdRef.current = state.selectedIOSDeviceId;
+  }, [state.selectedIOSDeviceId]);
 
   const refreshIOSDevices = useCallback(async () => {
     try {

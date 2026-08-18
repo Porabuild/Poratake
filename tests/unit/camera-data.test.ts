@@ -33,8 +33,8 @@ describe('camera-data', () => {
     it('returns camera.json inside project folder', async () => {
       const { getCameraDataPath } =
         await import('@/main/capture/video/camera-data');
-      expect(getCameraDataPath('/path/to/Rec.capty/recording.mov')).toBe(
-        path.join('/path/to/Rec.capty', 'camera.json')
+      expect(getCameraDataPath('/path/to/Rec.poratake/recording.mov')).toBe(
+        path.join('/path/to/Rec.poratake', 'camera.json')
       );
     });
 
@@ -51,8 +51,8 @@ describe('camera-data', () => {
     it('returns camera.mov inside project folder', async () => {
       const { getCameraVideoPath } =
         await import('@/main/capture/video/camera-data');
-      expect(getCameraVideoPath('/path/to/Rec.capty/recording.mov')).toBe(
-        path.join('/path/to/Rec.capty', 'camera.mov')
+      expect(getCameraVideoPath('/path/to/Rec.poratake/recording.mov')).toBe(
+        path.join('/path/to/Rec.poratake', 'camera.mov')
       );
     });
 
@@ -74,10 +74,12 @@ describe('camera-data', () => {
       vi.mocked(fs.default.access).mockResolvedValue();
       const { loadCameraData } =
         await import('@/main/capture/video/camera-data');
-      const result = await loadCameraData('/path/to/Rec.capty/recording.mov');
+      const result = await loadCameraData(
+        '/path/to/Rec.poratake/recording.mov'
+      );
       expect(result).toEqual(sampleCameraData);
       expect(fs.default.access).toHaveBeenCalledWith(
-        path.join('/path/to/Rec.capty', 'camera.mov')
+        path.join('/path/to/Rec.poratake', 'camera.mov')
       );
     });
 
@@ -90,7 +92,7 @@ describe('camera-data', () => {
       const { loadCameraData } =
         await import('@/main/capture/video/camera-data');
       expect(
-        await loadCameraData('/path/to/Rec.capty/recording.mov')
+        await loadCameraData('/path/to/Rec.poratake/recording.mov')
       ).toBeNull();
     });
 
@@ -134,10 +136,10 @@ describe('camera-data', () => {
       const { getAbsoluteCameraVideoPath } =
         await import('@/main/capture/video/camera-data');
       const result = getAbsoluteCameraVideoPath(
-        '/path/to/Rec.capty/recording.mov',
+        '/path/to/Rec.poratake/recording.mov',
         sampleCameraData
       );
-      expect(result).toBe(path.join('/path/to/Rec.capty', 'camera.mov'));
+      expect(result).toBe(path.join('/path/to/Rec.poratake', 'camera.mov'));
     });
 
     it('joins relative videoFile to legacy video directory', async () => {
@@ -157,12 +159,12 @@ describe('camera-data', () => {
       vi.mocked(fs.default.unlink).mockResolvedValue();
       const { deleteCameraData } =
         await import('@/main/capture/video/camera-data');
-      await deleteCameraData('/path/to/Rec.capty/recording.mov');
+      await deleteCameraData('/path/to/Rec.poratake/recording.mov');
       expect(fs.default.unlink).toHaveBeenCalledWith(
-        path.join('/path/to/Rec.capty', 'camera.json')
+        path.join('/path/to/Rec.poratake', 'camera.json')
       );
       expect(fs.default.unlink).toHaveBeenCalledWith(
-        path.join('/path/to/Rec.capty', 'camera.mov')
+        path.join('/path/to/Rec.poratake', 'camera.mov')
       );
     });
 

@@ -117,11 +117,11 @@ describe('window-manager', () => {
     it('uses project recording path when path is a project folder', async () => {
       mockExistsSync.mockReturnValue(true);
       const m = await import('@/main/capture/video/window-manager');
-      const win = m.createVideoEditorWindow('/path/Rec.capty');
+      const win = m.createVideoEditorWindow('/path/Rec.poratake');
       expect(win).toBeDefined();
       const data = m.getWindowData(browserWindows[0].webContents.id);
       expect(data?.filePath).toBe(
-        path.join('/path/Rec.capty', 'recording.mov')
+        path.join('/path/Rec.poratake', 'recording.mov')
       );
     });
   });

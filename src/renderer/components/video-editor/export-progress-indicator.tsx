@@ -25,7 +25,7 @@ export default function ExportProgressIndicator({
   const [isOpen, setIsOpen] = useState(false);
   const [showComplete, setShowComplete] = useState(false);
 
-  const wasExportingRef = useRef(false);
+  const [previousIsExporting, setPreviousIsExporting] = useState(isExporting);
   const popoverRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -34,25 +34,23 @@ export default function ExportProgressIndicator({
     progress,
   });
 
-  useEffect(() => {
+  if (previousIsExporting !== isExporting) {
+    setPreviousIsExporting(isExporting);
     if (isExporting) {
-      wasExportingRef.current = true;
       setShowComplete(false);
-      return;
-    }
-
-    if (wasExportingRef.current && progress >= 100) {
+    } else if (progress >= 100) {
       setShowComplete(true);
-      const timer = setTimeout(() => {
-        setShowComplete(false);
-        setIsOpen(false);
-      }, COMPLETION_DISPLAY_MS);
-      wasExportingRef.current = false;
-      return () => clearTimeout(timer);
     }
+  }
 
-    wasExportingRef.current = false;
-  }, [isExporting, progress]);
+  useEffect(() => {
+    if (!showComplete) return;
+    const timer = setTimeout(() => {
+      setShowComplete(false);
+      setIsOpen(false);
+    }, COMPLETION_DISPLAY_MS);
+    return () => clearTimeout(timer);
+  }, [showComplete]);
 
   useEffect(() => {
     if (!isOpen) return;

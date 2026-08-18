@@ -57,10 +57,10 @@ vi.mock('@/main/capture/video/window-manager', () => ({
 
 vi.mock('@/main/capture/video/recording-project', () => ({
   getMusicFolderPath: (p: string) => {
-    if (!p.includes('.capty')) return null;
-    if (p.endsWith('.capty')) return `${p}/music`;
-    const idx = p.indexOf('.capty');
-    return `${p.slice(0, idx + 6)}/music`;
+    if (!p.includes('.poratake')) return null;
+    if (p.endsWith('.poratake')) return `${p}/music`;
+    const idx = p.indexOf('.poratake');
+    return `${p.slice(0, idx + '.poratake'.length)}/music`;
   },
 }));
 
@@ -96,7 +96,7 @@ describe('music handlers', () => {
 
     it('returns error when user cancels dialog', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       mockShowOpenDialog.mockResolvedValue({
         canceled: true,
@@ -130,7 +130,7 @@ describe('music handlers', () => {
 
     it('copies file and probes duration', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       mockShowOpenDialog.mockResolvedValue({
         canceled: false,
@@ -163,7 +163,7 @@ describe('music handlers', () => {
 
     it('returns error when copyFile fails', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       mockShowOpenDialog.mockResolvedValue({
         canceled: false,
@@ -187,7 +187,7 @@ describe('music handlers', () => {
 
     it('returns error when duration is 0', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       mockShowOpenDialog.mockResolvedValue({
         canceled: false,
@@ -231,7 +231,7 @@ describe('music handlers', () => {
 
     it('unlinks file and returns success', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       mockUnlink.mockResolvedValue(undefined);
       const { registerMusicHandlers } =
@@ -246,7 +246,7 @@ describe('music handlers', () => {
 
     it('treats ENOENT as success', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       const err = new Error('not found');
       (err as NodeJS.ErrnoException).code = 'ENOENT';
@@ -263,7 +263,7 @@ describe('music handlers', () => {
 
     it('returns error on other unlink failures', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       mockUnlink.mockRejectedValue(new Error('locked'));
       const { registerMusicHandlers } =
@@ -293,7 +293,7 @@ describe('music handlers', () => {
 
     it('returns path when file exists', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       mockExistsSync.mockReturnValue(true);
       const { registerMusicHandlers } =
@@ -303,12 +303,12 @@ describe('music handlers', () => {
         { sender: { id: 1 } },
         { fileName: 'song.mp3' }
       );
-      expect(result).toBe(path.join('/p/Rec.capty/music', 'song.mp3'));
+      expect(result).toBe(path.join('/p/Rec.poratake/music', 'song.mp3'));
     });
 
     it('returns null when file missing', async () => {
       mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.capty/recording.mov',
+        filePath: '/p/Rec.poratake/recording.mov',
       });
       mockExistsSync.mockReturnValue(false);
       const { registerMusicHandlers } =

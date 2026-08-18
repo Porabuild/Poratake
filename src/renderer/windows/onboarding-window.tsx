@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/renderer/components/ui/button';
 import {
   Check,
@@ -336,28 +336,30 @@ export default function OnboardingWindow() {
   const allPermissionsGranted =
     isScreenRecordingGranted && isAccessibilityGranted;
 
-  const checkPermissions = useCallback(async () => {
-    const status = (await window.ipcRenderer.invoke(
-      'permissions:getStatus'
-    )) as PermissionsState;
-    setPermissions(status);
-  }, []);
-
-  const loadSettings = useCallback(async () => {
-    const loadedSettings = (await window.ipcRenderer.invoke(
-      'settings:get-ui'
-    )) as SettingsUiConfig;
-    setSettings(loadedSettings);
-  }, []);
-
   useEffect(() => {
+    let cancelled = false;
+    const checkPermissions = () => {
+      void window.ipcRenderer
+        .invoke('permissions:getStatus')
+        .then((status: PermissionsState) => {
+          if (!cancelled) setPermissions(status);
+        });
+    };
+
     checkPermissions();
-    loadSettings();
+    void window.ipcRenderer
+      .invoke('settings:get-ui')
+      .then((loadedSettings: SettingsUiConfig) => {
+        if (!cancelled) setSettings(loadedSettings);
+      });
 
     const interval = setInterval(checkPermissions, 1000);
 
-    return () => clearInterval(interval);
-  }, [checkPermissions, loadSettings]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   const handleOpenScreenRecording = () => {
     window.ipcRenderer.send('permissions:openScreenRecording');

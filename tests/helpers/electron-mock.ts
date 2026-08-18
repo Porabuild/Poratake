@@ -10,7 +10,7 @@ export function createMockApp(overrides: Partial<Electron.App> = {}) {
     getPath: vi.fn((name: string) => {
       const paths: Record<string, string> = {
         home: '/mock/home',
-        userData: '/mock/home/.config/capty',
+        userData: '/mock/home/.config/poratake',
         pictures: '/mock/home/Pictures',
         videos: '/mock/home/Movies',
         temp: '/mock/tmp',

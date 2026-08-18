@@ -143,7 +143,6 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
       editingTextId,
       textEditValue,
       textEditPosition,
-      isTextEditingRef,
       startTextEditing,
       finishTextEditing,
       handleTextChange,
@@ -207,7 +206,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
 
     useKeyboardShortcuts({
       selectedAnnotationIds,
-      isTextEditing: isTextEditingRef.current,
+      isTextEditing: editingTextId !== null,
       onDeleteMultiple: onAnnotationsDeleteMultiple,
       onDeselect: deselectAll,
       annotationIds: annotations.map(a => a.id),
@@ -237,7 +236,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
 
     const handleMouseDown = useCallback(
       (e: React.MouseEvent) => {
-        if (isTextEditingRef.current && editingTextId) {
+        if (editingTextId) {
           finishTextEditing();
           return;
         }
@@ -301,7 +300,6 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
       },
       [
         activeTool,
-        isTextEditingRef,
         editingTextId,
         finishTextEditing,
         getScaledPosition,

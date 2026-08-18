@@ -16,13 +16,13 @@ IFS='
 '
 for FILE in $(git diff --cached --name-only --diff-filter=ACMR); do
   case "$FILE" in
-    *.ts | *.tsx | *.js | *.jsx | *.json | *.css | *.md) ;;
+    *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs | *.json | *.css | *.md) ;;
     *) continue ;;
   esac
 
   MATCHED=1
-  mkdir -p "$TMP_DIR"
-  TMP_FILE="$TMP_DIR/$(basename "$FILE")"
+  TMP_FILE="$TMP_DIR/$FILE"
+  mkdir -p "$(dirname "$TMP_FILE")"
   git show ":$FILE" | sed 's/\r$//' > "$TMP_FILE"
   set -- "$@" "$TMP_FILE"
 done
@@ -33,7 +33,7 @@ if [ "$MATCHED" -eq 1 ]; then
     FAILED=1
   fi
 
-  if ! bunx oxlint "$@" --deny-warnings > /dev/null 2>&1; then
+  if ! bunx oxlint "$@" --deny-warnings --no-error-on-unmatched-pattern > /dev/null 2>&1; then
     echo "oxlint: staged files have lint errors. Run: bunx oxlint <files>"
     FAILED=1
   fi

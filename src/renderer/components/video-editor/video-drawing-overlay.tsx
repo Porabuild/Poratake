@@ -1,5 +1,11 @@
 import type { JSX } from 'react';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import type {
   Annotation,
   ArrowStyle,
@@ -163,7 +169,9 @@ export default function VideoDrawingOverlay({
 }: VideoDrawingOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const timelinePositionRef = useRef(timelinePosition);
-  timelinePositionRef.current = timelinePosition;
+  useLayoutEffect(() => {
+    timelinePositionRef.current = timelinePosition;
+  }, [timelinePosition]);
 
   const numberValue = useMemo(() => {
     const numberCount = drawingSegments.reduce((count, segment) => {

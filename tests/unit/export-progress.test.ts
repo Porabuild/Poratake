@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { act, createElement } from 'react';
+import {
+  act,
+  createElement,
+  createRef,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   formatExportTime,
@@ -45,24 +51,33 @@ describe('smoothRemainingSeconds', () => {
 });
 
 describe('useExportProgress', () => {
+  type ExportProgress = ReturnType<typeof useExportProgress>;
+
   let container: HTMLDivElement;
   let root: Root;
-  let latest: { elapsedSeconds: number; remainingSeconds: number | null };
+  let progressRef: ReturnType<typeof createRef<ExportProgress>>;
 
-  function Probe({
-    isExporting,
-    progress,
-  }: {
-    isExporting: boolean;
-    progress: number;
-  }): null {
-    latest = useExportProgress({ isExporting, progress });
+  const Probe = forwardRef<
+    ExportProgress,
+    { isExporting: boolean; progress: number }
+  >(function Probe({ isExporting, progress }, ref) {
+    const exportProgress = useExportProgress({ isExporting, progress });
+    useImperativeHandle(ref, () => exportProgress, [exportProgress]);
     return null;
+  });
+
+  function getLatest(): ExportProgress {
+    if (!progressRef.current) {
+      throw new Error('Export progress was not initialized');
+    }
+    return progressRef.current;
   }
 
   function render(isExporting: boolean, progress: number): void {
     act(() => {
-      root.render(createElement(Probe, { isExporting, progress }));
+      root.render(
+        createElement(Probe, { ref: progressRef, isExporting, progress })
+      );
     });
   }
 
@@ -74,6 +89,7 @@ describe('useExportProgress', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+    progressRef = createRef<ExportProgress>();
   });
 
   afterEach(() => {
@@ -88,15 +104,17 @@ describe('useExportProgress', () => {
     act(() => {
       vi.advanceTimersByTime(100);
     });
-    const firstRemaining = latest.remainingSeconds;
+    const firstRemaining = getLatest().remainingSeconds;
     expect(firstRemaining).not.toBeNull();
 
     act(() => {
       vi.advanceTimersByTime(10000);
     });
 
-    expect(latest.elapsedSeconds).toBeGreaterThan(10);
-    expect(latest.remainingSeconds).toBeGreaterThan(firstRemaining as number);
+    expect(getLatest().elapsedSeconds).toBeGreaterThan(10);
+    expect(getLatest().remainingSeconds).toBeGreaterThan(
+      firstRemaining as number
+    );
   });
 
   it('holds the remaining time empty below the minimum progress', () => {
@@ -106,8 +124,8 @@ describe('useExportProgress', () => {
       vi.advanceTimersByTime(1000);
     });
 
-    expect(latest.remainingSeconds).toBeNull();
-    expect(latest.elapsedSeconds).toBeGreaterThan(0);
+    expect(getLatest().remainingSeconds).toBeNull();
+    expect(getLatest().elapsedSeconds).toBeGreaterThan(0);
   });
 
   it('resets elapsed and remaining time when a new export starts', () => {
@@ -115,12 +133,12 @@ describe('useExportProgress', () => {
     act(() => {
       vi.advanceTimersByTime(2000);
     });
-    expect(latest.remainingSeconds).not.toBeNull();
+    expect(getLatest().remainingSeconds).not.toBeNull();
 
     render(false, 0);
     render(true, 0);
 
-    expect(latest.elapsedSeconds).toBe(0);
-    expect(latest.remainingSeconds).toBeNull();
+    expect(getLatest().elapsedSeconds).toBe(0);
+    expect(getLatest().remainingSeconds).toBeNull();
   });
 });
