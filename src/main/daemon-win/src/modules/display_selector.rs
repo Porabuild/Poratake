@@ -1,9 +1,9 @@
 use crate::overlay::{
-    add_key_handler, create_popup_window, default_wndproc, ensure_window_class, monitors,
-    rect_height, rect_width, remove_key_handler, WM_MOUSELEAVE,
+    WM_MOUSELEAVE, add_key_handler, create_popup_window, default_wndproc, ensure_window_class,
+    monitors, rect_height, rect_width, remove_key_handler,
 };
-use crate::protocol::{respond_error, respond_success, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, respond_error, respond_success};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
@@ -13,11 +13,11 @@ use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, PAINTSTRUCT,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE,
+    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_LBUTTONDOWN, WM_MOUSEMOVE,
+    DestroyWindow, HWND_TOPMOST, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, WM_LBUTTONDOWN, WM_MOUSEMOVE,
     WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
@@ -51,7 +51,8 @@ thread_local! {
 
 fn take_pending_id() -> Option<String> {
     let pending = STATE.with(|state| state.borrow().pending.clone());
-    pending?.lock().ok()?.take()
+    let id = pending?.lock().ok()?.take();
+    id
 }
 
 unsafe extern "system" fn wndproc(

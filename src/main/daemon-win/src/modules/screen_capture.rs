@@ -1,13 +1,13 @@
 use super::recorder_types::{
-    recording_project_dir, CaptureRect, RecorderError, RecorderState, RecorderStatus,
-    RecordingConfig, RecordingResult, StagedAsset,
+    CaptureRect, RecorderError, RecorderState, RecorderStatus, RecordingConfig, RecordingResult,
+    StagedAsset, recording_project_dir,
 };
 use super::recording_audio::{AudioCaptureSet, AudioDevice};
 use super::recording_camera::{CameraRecordingConfig, CameraSyncClock, RecordingCamera};
 use super::recording_input::{InputTracker, TrackerBounds, TrackerSource};
 use crate::com::retain_process_mta;
 use crate::display_color::hdr_white_scale;
-use crate::tone_map::{source_view, target_view, FitStage, ToneMapStage};
+use crate::tone_map::{FitStage, ToneMapStage, source_view, target_view};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
-use windows::core::{factory, implement, IInspectable, Interface, BOOL, PCWSTR};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
@@ -29,35 +28,36 @@ use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
 };
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Resource,
-    ID3D11ShaderResourceView, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
-    D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device,
+    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Resource, ID3D11ShaderResourceView,
+    ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO,
-    MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MONITORINFOEXW, MonitorFromWindow,
 };
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFAttributes,
-    IMFByteStream, IMFDXGIDeviceManager, IMFSample, IMFSinkWriter, MFCreateAttributes,
-    MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer, MFCreateMediaType,
-    MFCreateSinkWriterFromURL, MFCreateTrackedSample, MFMediaType_Video, MFShutdown, MFStartup,
-    MFVideoFormat_ARGB32, MFVideoFormat_H264, MFVideoInterlace_Progressive, MFSTARTUP_FULL,
-    MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE,
-    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE,
-    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE,
-    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_D3D_MANAGER, MF_VERSION,
+    IMFByteStream, IMFDXGIDeviceManager, IMFSample, IMFSinkWriter, MF_MT_ALL_SAMPLES_INDEPENDENT,
+    MF_MT_AVG_BITRATE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO,
+    MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+    MF_SINK_WRITER_D3D_MANAGER, MF_VERSION, MFCreateAttributes, MFCreateDXGIDeviceManager,
+    MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateSinkWriterFromURL, MFCreateTrackedSample,
+    MFMediaType_Video, MFSTARTUP_FULL, MFShutdown, MFStartup, MFVideoFormat_ARGB32,
+    MFVideoFormat_H264, MFVideoInterlace_Progressive,
 };
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows::Win32::UI::WindowsAndMessaging::{IsWindow, MONITORINFOF_PRIMARY};
+use windows::core::{BOOL, IInspectable, Interface, PCWSTR, factory, implement};
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -401,7 +401,8 @@ fn run_worker(
     let mut paused = false;
 
     loop {
-        match commands.try_recv() {
+        let command = commands.try_recv();
+        match command {
             Ok(command) => {
                 if handle_command(command, &mut runtime, &shared, &mut paused, generation) {
                     break;
@@ -447,7 +448,8 @@ fn run_worker(
             break;
         }
 
-        match runtime.frames.recv_timeout(FRAME_WAIT) {
+        let frame_message = runtime.frames.recv_timeout(FRAME_WAIT);
+        match frame_message {
             Ok(FrameMessage::Frame(frame)) => {
                 let source_time = match frame_time(&frame) {
                     Ok(source_time) => source_time,
@@ -484,7 +486,8 @@ fn run_worker(
                             }
                         }
                         update_duration(&shared, duration, generation);
-                        if let Some(sender) = start_sender.take() {
+                        let pending_sender = start_sender.take();
+                        if let Some(sender) = pending_sender {
                             let status = RecorderStatus {
                                 state: RecorderState::Recording,
                                 duration,

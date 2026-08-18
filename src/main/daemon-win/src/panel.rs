@@ -2,9 +2,9 @@ use crate::overlay::{scale_for_dpi, to_wide};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateSolidBrush,
-    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, RoundRect, SelectObject, SetBkMode,
-    SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, PAINTSTRUCT,
-    PS_SOLID, SRCCOPY, TRANSPARENT,
+    DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW,
+    EndPaint, FillRect, HDC, HFONT, PAINTSTRUCT, PS_SOLID, RoundRect, SRCCOPY, SelectObject,
+    SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 

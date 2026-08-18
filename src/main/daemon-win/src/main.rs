@@ -27,7 +27,7 @@ use modules::screenshot::ScreenshotModule;
 use modules::scroll_capture::ScrollCaptureModule;
 use modules::timer_control::TimerControlModule;
 use modules::window_selector::WindowSelectorModule;
-use protocol::{parse_request, send_event, send_response, Response};
+use protocol::{Response, parse_request, send_event, send_response};
 use router::Router;
 use serde_json::json;
 use std::io::BufRead;

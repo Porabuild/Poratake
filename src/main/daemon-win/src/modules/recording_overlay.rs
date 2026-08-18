@@ -3,28 +3,28 @@ use crate::overlay::{
     create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class,
     monitors, rect_height, rect_width, scale_for_dpi,
 };
-use crate::protocol::{param_i32, param_i64, param_str, respond_error, respond_success, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_i32, param_i64, param_str, respond_error, respond_success};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CombineRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-    SetWindowRgn, PAINTSTRUCT, RGN_DIFF,
+    PAINTSTRUCT, RGN_DIFF, SetWindowRgn,
 };
-use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, CHILDID_SELF,
-    EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, HWND_TOPMOST, LWA_ALPHA, OBJID_WINDOW,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    CHILDID_SELF, DestroyWindow, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
+    GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, LWA_ALPHA,
+    OBJID_WINDOW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
+    WDA_EXCLUDEFROMCAPTURE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_PAINT,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const CLASS_NAME: &str = "PoratakeRecordingOverlay";

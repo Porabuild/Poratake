@@ -1,21 +1,19 @@
 use crate::overlay::{
-    add_key_handler, create_popup_window, default_wndproc, ensure_window_class, monitors,
-    remove_key_handler, to_wide, WM_MOUSELEAVE,
+    WM_MOUSELEAVE, add_key_handler, create_popup_window, default_wndproc, ensure_window_class,
+    monitors, remove_key_handler, to_wide,
 };
-use crate::protocol::{param_bool, param_i32, respond_error, respond_success, send_event, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_bool, param_i32, respond_error, respond_success, send_event};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW,
-    EndPaint, FillRect, FrameRect, InvalidateRect, ScreenToClient, SelectObject, SetBkMode,
-    SetTextColor, SetWindowRgn, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FONT_CHARSET,
-    FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_NORMAL, HFONT, PAINTSTRUCT,
-    TRANSPARENT,
+    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DT_CENTER, DT_SINGLELINE,
+    DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FONT_CHARSET, FONT_CLIP_PRECISION,
+    FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_NORMAL, FillRect, FrameRect, HFONT, InvalidateRect,
+    PAINTSTRUCT, ScreenToClient, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
 };
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -23,19 +21,20 @@ use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, LogicalToPhysicalPointForPerMonitorDPI, PhysicalToLogicalPointForPerMonitorDPI,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE, VK_RETURN,
+    SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_RETURN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, GetClientRect,
-    GetWindowRect, GetWindowTextW, SetForegroundWindow, SetLayeredWindowAttributes, SetWindowPos,
-    SetWindowTextW, ShowWindow, TrackPopupMenu, BN_CLICKED, BS_DEFPUSHBUTTON, ES_NUMBER, ES_RIGHT,
-    HMENU, HTCAPTION, HTCLIENT, HWND_TOPMOST, LWA_ALPHA, MB_ICONWARNING, MF_CHECKED, MF_STRING,
-    SWP_NOACTIVATE, SW_SHOW, SW_SHOWNOACTIVATE, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
-    TPM_TOPALIGN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_CLOSE, WM_COMMAND, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETFONT, WS_BORDER,
-    WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_TABSTOP,
-    WS_VISIBLE,
+    AppendMenuW, BN_CLICKED, BS_DEFPUSHBUTTON, CreatePopupMenu, CreateWindowExW, DestroyMenu,
+    DestroyWindow, ES_NUMBER, ES_RIGHT, GetClientRect, GetWindowRect, GetWindowTextW, HMENU,
+    HTCAPTION, HTCLIENT, HWND_TOPMOST, LWA_ALPHA, MB_ICONWARNING, MF_CHECKED, MF_STRING, SW_SHOW,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetForegroundWindow, SetLayeredWindowAttributes,
+    SetWindowPos, SetWindowTextW, ShowWindow, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_TOPALIGN, TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_CLOSE, WM_COMMAND,
+    WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETFONT,
+    WS_BORDER, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_TABSTOP, WS_VISIBLE,
 };
+use windows::core::PCWSTR;
 
 const PANEL_CLASS_NAME: &str = "PoratakeAllInOnePanel";
 const SIZE_EDITOR_CLASS_NAME: &str = "PoratakeAllInOneSizeEditor";

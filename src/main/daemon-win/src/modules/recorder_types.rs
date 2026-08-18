@@ -1,4 +1,4 @@
-use crate::protocol::{param_bool, param_i32, param_i64, param_str, Request};
+use crate::protocol::{Request, param_bool, param_i32, param_i64, param_str};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 

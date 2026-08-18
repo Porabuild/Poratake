@@ -9,31 +9,31 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use windows::core::PCWSTR;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
-    eCapture, eMultimedia, eRender, IAudioCaptureClient, IAudioClient, IMMDevice,
-    IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY,
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
+    AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE_ACTIVE,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture, eMultimedia, eRender,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFAttributes, IMFByteStream, IMFSinkWriter, MFAudioFormat_AAC, MFAudioFormat_Float,
+    IMFAttributes, IMFByteStream, IMFSinkWriter, MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION,
+    MF_MT_AAC_PAYLOAD_TYPE, MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE,
+    MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
+    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+    MF_SINK_WRITER_DISABLE_THROTTLING, MF_VERSION, MFAudioFormat_AAC, MFAudioFormat_Float,
     MFAudioFormat_PCM, MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-    MFCreateSinkWriterFromURL, MFMediaType_Audio, MFShutdown, MFStartup, MFSTARTUP_FULL,
-    MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, MF_MT_AAC_PAYLOAD_TYPE,
-    MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT,
-    MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
-    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_DISABLE_THROTTLING, MF_VERSION,
+    MFCreateSinkWriterFromURL, MFMediaType_Audio, MFSTARTUP_FULL, MFShutdown, MFStartup,
 };
 use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-    COINIT_MULTITHREADED, STGM_READ,
+    CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    CoUninitialize, STGM_READ,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::core::PCWSTR;
 
 pub(super) const HNS_PER_SECOND: i64 = 10_000_000;
 const AAC_SAMPLE_RATE: u32 = 48_000;
@@ -878,7 +878,8 @@ pub(super) fn select_device(
         match selector {
             MicrophoneSelector::Id(device_id) => {
                 let wide = wide_string(device_id);
-                if let Ok(device) = unsafe { enumerator.GetDevice(PCWSTR(wide.as_ptr())) } {
+                let device = unsafe { enumerator.GetDevice(PCWSTR(wide.as_ptr())) };
+                if let Ok(device) = device {
                     if unsafe { device.GetState() }.is_ok_and(|state| state == DEVICE_STATE_ACTIVE)
                     {
                         return Ok(device);
@@ -886,7 +887,8 @@ pub(super) fn select_device(
                 }
             }
             MicrophoneSelector::Name(device_name) => {
-                if let Some(device) = find_device_by_name(enumerator, device_name)? {
+                let device = find_device_by_name(enumerator, device_name)?;
+                if let Some(device) = device {
                     return Ok(device);
                 }
             }

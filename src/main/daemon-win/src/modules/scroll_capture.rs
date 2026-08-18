@@ -1,16 +1,16 @@
 use crate::overlay::{
-    add_key_handler, apply_round_region, create_popup_window, create_ui_font, default_wndproc,
-    ensure_window_class, monitors, point_from_lparam, rects_intersect, remove_key_handler,
-    scale_for_dpi, WM_MOUSELEAVE,
+    WM_MOUSELEAVE, add_key_handler, apply_round_region, create_popup_window, create_ui_font,
+    default_wndproc, ensure_window_class, monitors, point_from_lparam, rects_intersect,
+    remove_key_handler, scale_for_dpi,
 };
 use crate::panel::{
+    ACTIVE_BUTTON, BUTTON_TEXT, BUTTON_TEXT_ON_FILL, NEUTRAL_BUTTON, PANEL_ALPHA,
+    PANEL_BUTTON_RADIUS, PANEL_CORNER_RADIUS, PANEL_FONT_SIZE, PANEL_FONT_WEIGHT, PRIMARY_BUTTON,
     button_at, button_fill, button_rect, button_state, draw_label, draw_pill, paint_buffered,
-    panel_height, panel_width, ACTIVE_BUTTON, BUTTON_TEXT, BUTTON_TEXT_ON_FILL, NEUTRAL_BUTTON,
-    PANEL_ALPHA, PANEL_BUTTON_RADIUS, PANEL_CORNER_RADIUS, PANEL_FONT_SIZE, PANEL_FONT_WEIGHT,
-    PRIMARY_BUTTON,
+    panel_height, panel_width,
 };
-use crate::protocol::{param_i32, param_str, respond_error, respond_success, send_event, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_i32, param_str, respond_error, respond_success, send_event};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
@@ -19,20 +19,20 @@ use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CombineRgn, CreateCompatibleBitmap, CreateCompatibleDC, CreateRectRgn,
-    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, FrameRect, GetDC, GetDIBits,
-    InvalidateRect, ReleaseDC, SelectObject, SetWindowRgn, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    CAPTUREBLT, DIB_RGB_COLORS, HFONT, PAINTSTRUCT, RGN_DIFF, SRCCOPY,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CAPTUREBLT, CombineRgn,
+    CreateCompatibleBitmap, CreateCompatibleDC, CreateRectRgn, CreateSolidBrush, DIB_RGB_COLORS,
+    DeleteDC, DeleteObject, EndPaint, FillRect, FrameRect, GetDC, GetDIBits, HFONT, InvalidateRect,
+    PAINTSTRUCT, RGN_DIFF, ReleaseDC, SRCCOPY, SelectObject, SetWindowRgn,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, TrackMouseEvent, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT,
-    TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE, VK_RETURN,
+    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, TME_LEAVE,
+    TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_RETURN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GetClientRect, GetCursorPos, GetWindowRect, IsWindowVisible, KillTimer,
-    LoadCursorW, SetCursorPos, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
-    SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, LWA_COLORKEY, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_ERASEBKGND,
+    DestroyWindow, GetClientRect, GetCursorPos, GetWindowRect, HWND_TOPMOST, IDC_ARROW,
+    IsWindowVisible, KillTimer, LWA_ALPHA, LWA_COLORKEY, LoadCursorW, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetCursorPos, SetLayeredWindowAttributes, SetTimer,
+    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE, WM_ERASEBKGND,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };

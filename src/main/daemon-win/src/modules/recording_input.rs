@@ -1,4 +1,4 @@
-use super::recorder_types::{fit_rect, CaptureRect, RecorderError, StagedAsset};
+use super::recorder_types::{CaptureRect, RecorderError, StagedAsset, fit_rect};
 use super::window_selector::window_bounds;
 use serde::Serialize;
 use std::ffi::c_void;
@@ -9,7 +9,6 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WAIT_FAILED, WAIT_OBJECT_0,
     WPARAM,
@@ -18,13 +17,14 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{CreateEventW, SetEvent};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetCursorInfo, GetCursorPos, LoadCursorW, MsgWaitForMultipleObjects,
-    PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx, CURSORINFO, CURSOR_SHOWING, IDC_CROSS,
-    IDC_HAND, IDC_IBEAM, IDC_SIZENS, IDC_SIZEWE, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE,
-    PM_REMOVE, QS_ALLINPUT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CURSOR_SHOWING, CURSORINFO, CallNextHookEx, GetCursorInfo, GetCursorPos, IDC_CROSS, IDC_HAND,
+    IDC_IBEAM, IDC_SIZENS, IDC_SIZEWE, KBDLLHOOKSTRUCT, LoadCursorW, MSG, MSLLHOOKSTRUCT,
+    MsgWaitForMultipleObjects, PM_NOREMOVE, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
+use windows::core::PCWSTR;
 
 const MOVEMENT_THRESHOLD: f64 = 0.001;
 const WHEEL_DELTA: f64 = 120.0;

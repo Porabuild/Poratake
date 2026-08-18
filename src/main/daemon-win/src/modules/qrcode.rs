@@ -1,17 +1,17 @@
 use crate::com::retain_process_mta;
-use crate::protocol::{param_str, respond_error, respond_success, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_str, respond_error, respond_success};
+use crate::router::{Module, Reply, method_not_found};
 use serde_json::json;
 use std::path::Path;
 use std::ptr::null;
-use windows::core::PCWSTR;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat8bppGray, IWICImagingFactory, IWICPalette,
     WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnLoad,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
+use windows::core::PCWSTR;
 
 pub struct QrCodeModule;
 

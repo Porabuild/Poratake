@@ -1,11 +1,11 @@
 use crate::protocol::Request;
-use crate::router::{method_not_found, Module, Reply};
-use base64::engine::general_purpose::STANDARD;
+use crate::router::{Module, Reply, method_not_found};
 use base64::Engine;
-use serde_json::{json, Value};
+use base64::engine::general_purpose::STANDARD;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use windows::Win32::UI::WindowsAndMessaging::{
-    SystemParametersInfoW, SPI_GETDESKWALLPAPER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SPI_GETDESKWALLPAPER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
 };
 
 pub struct DesktopWallpaperModule;
