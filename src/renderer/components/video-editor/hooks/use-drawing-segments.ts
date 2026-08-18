@@ -88,6 +88,14 @@ export function useDrawingSegments({
   } = slice;
 
   const [selectedDrawingIds, setSelectedDrawingIds] = useState<string[]>([]);
+  const drawingIdsKey = drawingSegments.map(drawing => drawing.id).join('\0');
+  const [previousDrawingIdsKey, setPreviousDrawingIdsKey] =
+    useState(drawingIdsKey);
+  if (previousDrawingIdsKey !== drawingIdsKey) {
+    const existingIds = new Set(drawingSegments.map(drawing => drawing.id));
+    setPreviousDrawingIdsKey(drawingIdsKey);
+    setSelectedDrawingIds(current => current.filter(id => existingIds.has(id)));
+  }
   const selectedDrawingId =
     selectedDrawingIds[selectedDrawingIds.length - 1] ?? null;
   const gestureActiveRef = useRef(false);
@@ -95,15 +103,6 @@ export function useDrawingSegments({
 
   useEffect(() => {
     drawingSegmentsRef.current = drawingSegments;
-  }, [drawingSegments]);
-
-  useEffect(() => {
-    setSelectedDrawingIds(prev => {
-      if (prev.length === 0) return prev;
-      const existingIds = new Set(drawingSegments.map(drawing => drawing.id));
-      const next = prev.filter(id => existingIds.has(id));
-      return next.length === prev.length ? prev : next;
-    });
   }, [drawingSegments]);
 
   useEffect(() => {

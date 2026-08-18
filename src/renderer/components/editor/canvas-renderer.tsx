@@ -316,21 +316,39 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
   ) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const pixelRatio = window.devicePixelRatio || 2;
-    const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
+    const [loadedBackground, setLoadedBackground] = useState<{
+      source: string;
+      image: HTMLImageElement;
+    } | null>(null);
+    const bgImage =
+      loadedBackground?.source === backgroundImage
+        ? loadedBackground.image
+        : null;
+    if (loadedBackground && loadedBackground.source !== backgroundImage) {
+      setLoadedBackground(null);
+    }
 
     useEffect(() => {
-      if (!backgroundImage) {
-        setBgImage(null);
-        return;
-      }
+      if (!backgroundImage) return;
 
+      let cancelled = false;
       const img = new Image();
-      img.onload = () => setBgImage(img);
+      img.onload = () => {
+        if (!cancelled) {
+          setLoadedBackground({ source: backgroundImage, image: img });
+        }
+      };
       img.onerror = () => {
-        console.error('Failed to load background image');
-        setBgImage(null);
+        if (!cancelled) {
+          console.error('Failed to load background image');
+        }
       };
       img.src = backgroundImage;
+      return () => {
+        cancelled = true;
+        img.onload = null;
+        img.onerror = null;
+      };
     }, [backgroundImage]);
 
     const hasWindowFrame = windowFrame !== 'none';
