@@ -377,7 +377,6 @@ class NativeDaemon extends EventEmitter {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        // oxlint-disable-next-line promise/no-multiple-resolved
         resolve();
       };
       const timer = setTimeout(() => {

@@ -282,14 +282,14 @@ describe('Poratake rebrand compliance', () => {
     expect(releaseScript).not.toContain('git push || log_warning');
     expect(packageJson).toContain('bun run build-native-mac');
     expect(packageJson).toContain('"packageManager": "bun@1.3.14"');
-    expect(packageJson).toContain('"vite-plugin-electron": "^0.29.1"');
+    expect(packageJson).toContain('"vite-plugin-electron": "1.1.1"');
     expect(workflow).toContain('bun-version: 1.3.14');
     expect(read('.github/workflows/checks.yml')).toContain(
       'run: ./scripts/build-daemon.sh'
     );
-    expect(ffmpegVersion).toBe('7.1.5');
+    expect(ffmpegVersion).toBe('9.0.1');
     expect(ffmpegSha).toBe(
-      'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f'
+      'cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635'
     );
     expect(ffmpegWinBuild).toContain(`FFMPEG_VERSION="${ffmpegVersion}"`);
     expect(ffmpegWinBuild).toContain(`FFMPEG_SHA256="${ffmpegSha}"`);
@@ -297,7 +297,6 @@ describe('Poratake rebrand compliance', () => {
     expect(notices).toContain(ffmpegSha);
     expect(notices).toContain('scripts/build-ffmpeg-win.sh');
     expect(ffmpegMacBuild).toContain('--retry-all-errors');
-    expect(ffmpegMacBuild).not.toContain('--enable-version3');
     expect(ffmpegMacBuild).toContain('.ffmpeg-build');
     expect(ffmpegMacBuild).toContain(
       'VERSION_OUTPUT="$("$candidate" -version 2>&1)"'
@@ -305,6 +304,15 @@ describe('Poratake rebrand compliance', () => {
     expect(ffmpegMacBuild).not.toContain('"$candidate" -version 2>&1 |');
     expect(ffmpegWinBuild).toContain('--retry-all-errors');
     expect(ffmpegWinBuild).toContain('.ffmpeg-win-build');
+    for (const build of [ffmpegMacBuild, ffmpegWinBuild]) {
+      expect(build).toContain('--disable-autodetect');
+      expect(build).toContain('--disable-gpl');
+      expect(build).toContain('--disable-nonfree');
+      expect(build).not.toMatch(/^\s+--enable-(?:gpl|nonfree|version3)/m);
+    }
+    expect(ffmpegMacBuild).toContain(
+      "grep -q -- '--enable-gpl\\|--enable-nonfree'"
+    );
     expect(ffmpegWinBuild).toContain(
       'sha256sum "$SCRIPT_DIR/build-ffmpeg-win.sh"'
     );

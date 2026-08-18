@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-FFMPEG_VERSION="7.1.5"
+FFMPEG_VERSION="9.0.1"
 FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
-FFMPEG_SHA256="de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
+FFMPEG_SHA256="cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="$PROJECT_ROOT/src/main/binaries/ffmpeg"
@@ -69,6 +69,7 @@ cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
     --disable-shared \
     --disable-gpl \
     --disable-nonfree \
+    --disable-autodetect \
     --disable-libx264 \
     --disable-libx265 \
     --disable-libvpx \

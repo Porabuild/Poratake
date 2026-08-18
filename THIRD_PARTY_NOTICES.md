@@ -16,15 +16,15 @@ This file must list every third-party component that ships inside a Poratake rel
 | `react-aria`                             |  3.51.0 | Apache-2.0    |
 | `react-aria-components`                  |  1.20.0 | Apache-2.0    |
 | `react-stately`                          |  3.49.0 | Apache-2.0    |
-| `sax`                                    |   1.4.3 | BlueOak-1.0.0 |
+| `sax`                                    |   1.6.1 | BlueOak-1.0.0 |
 | `graceful-fs`                            |  4.2.11 | ISC           |
 | `lucide-react`                           |  1.32.0 | ISC           |
-| `semver`                                 |   7.7.3 | ISC           |
+| `semver`                                 |   7.7.4 | ISC           |
 | `mediabunny`                             |  1.55.1 | MPL-2.0       |
-| `@floating-ui/core`                      |   1.7.3 | MIT           |
-| `@floating-ui/dom`                       |   1.7.4 | MIT           |
-| `@floating-ui/react-dom`                 |   2.1.6 | MIT           |
-| `@floating-ui/utils`                     |  0.2.10 | MIT           |
+| `@floating-ui/core`                      |   1.8.0 | MIT           |
+| `@floating-ui/dom`                       |   1.8.0 | MIT           |
+| `@floating-ui/react-dom`                 |   2.1.9 | MIT           |
+| `@floating-ui/utils`                     |  0.2.12 | MIT           |
 | `@heroui/react`                          |   3.2.4 | MIT           |
 | `@heroui/styles`                         |   3.2.4 | MIT           |
 | `@radix-ui/primitive`                    |   1.1.7 | MIT           |
@@ -61,8 +61,8 @@ This file must list every third-party component that ships inside a Poratake rel
 | `electron-updater`                       |   6.8.9 | MIT           |
 | `fs-extra`                               |  10.1.0 | MIT           |
 | `get-nonce`                              |   1.0.1 | MIT           |
-| `js-yaml`                                |   4.1.1 | MIT           |
-| `jsonfile`                               |   6.2.0 | MIT           |
+| `js-yaml`                                |   4.3.1 | MIT           |
+| `jsonfile`                               |   6.2.1 | MIT           |
 | `lazy-val`                               |   1.0.5 | MIT           |
 | `lodash.escaperegexp`                    |   4.1.2 | MIT           |
 | `lodash.isequal`                         |   4.5.0 | MIT           |
@@ -91,7 +91,7 @@ Poratake bundles Geist Sans and Geist Mono from the [Geist font project](https:/
 
 ## FFmpeg
 
-Poratake bundles an FFmpeg binary built from the unmodified FFmpeg 7.1.5 release archive with SHA-256 `de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f`, configured LGPL-only (`--disable-gpl --disable-nonfree`). FFmpeg is licensed under the GNU Lesser General Public License v2.1; the full license text ships with the app at `licenses/FFmpeg-LGPL-2.1.txt`. The exact corresponding source is the official release archive at <https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz>, and the complete platform build configurations are `scripts/build-ffmpeg.sh` and `scripts/build-ffmpeg-win.sh` in the Poratake source repository.
+Poratake bundles an FFmpeg binary built from the unmodified FFmpeg 9.0.1 release archive with SHA-256 `cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635`, configured LGPL-only (`--disable-gpl --disable-nonfree`). FFmpeg is licensed under the GNU Lesser General Public License v2.1; the full license text ships with the app at `licenses/FFmpeg-LGPL-2.1.txt`. The exact corresponding source is the official release archive at <https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz>, and the complete platform build configurations are `scripts/build-ffmpeg.sh` and `scripts/build-ffmpeg-win.sh` in the Poratake source repository.
 
 ## whisper.cpp
 

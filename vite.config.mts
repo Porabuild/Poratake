@@ -29,8 +29,8 @@ export default defineConfig({
         },
       },
       preload: {
-        // Shortcut of `build.rollupOptions.input`.
-        // Preload scripts may contain Web assets, so use the `build.rollupOptions.input` instead `build.lib.entry`.
+        // Shortcut of `build.rolldownOptions.input`.
+        // Preload scripts may contain Web assets, so use the `build.rolldownOptions.input` instead `build.lib.entry`.
         input: path.join(__dirname, 'src/preload/preload.ts'),
         vite: {
           resolve: { alias },
@@ -42,7 +42,7 @@ export default defineConfig({
     alias,
   },
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         main: path.resolve(__dirname, 'index.html'),
         history: path.resolve(__dirname, 'history.html'),
