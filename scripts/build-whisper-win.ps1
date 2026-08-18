@@ -14,7 +14,15 @@ $arch = if ($env:PORATAKE_WIN_ARCH) { $env:PORATAKE_WIN_ARCH } else { $hostArch 
 $cmakeArch = if ($arch -eq 'arm64') { 'ARM64' } else { 'x64' }
 $cmakeToolsetArgs = if ($arch -eq 'arm64') { @('-T', 'ClangCL') } else { @() }
 $stampPath = Join-Path $outputDir '.whisper-win-build'
-$scriptHash = (Get-FileHash -LiteralPath $MyInvocation.MyCommand.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+# Hash via .NET rather than Get-FileHash: that cmdlet lives in the autoloaded
+# Microsoft.PowerShell.Utility module, which MSYS2 breaks by rewriting PSModulePath.
+$scriptBytes = [System.IO.File]::ReadAllBytes($MyInvocation.MyCommand.Path)
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $scriptHash = [System.BitConverter]::ToString($sha256.ComputeHash($scriptBytes)).Replace('-', '').ToLowerInvariant()
+} finally {
+    $sha256.Dispose()
+}
 $buildIdentity = "${scriptHash}:$arch"
 
 if ($arch -ne 'x64' -and $arch -ne 'arm64') {
