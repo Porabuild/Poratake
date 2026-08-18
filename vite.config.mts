@@ -1,12 +1,13 @@
 import { defineConfig } from 'vite';
 import path from 'node:path';
+import babel from '@rolldown/plugin-babel';
 import electron from 'vite-plugin-electron/simple';
-import react from '@vitejs/plugin-react';
+import react, { reactCompilerPreset } from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 const alias = {
-  '@': path.resolve(__dirname, './src'),
-  '@build': path.resolve(__dirname, './build'),
+  '@': path.resolve(import.meta.dirname, './src'),
+  '@build': path.resolve(import.meta.dirname, './build'),
 };
 
 // https://vitejs.dev/config/
@@ -14,6 +15,7 @@ export default defineConfig({
   base: './',
   plugins: [
     react(),
+    babel({ presets: [reactCompilerPreset()] }),
     tailwindcss(),
     electron({
       main: {
@@ -31,7 +33,7 @@ export default defineConfig({
       preload: {
         // Shortcut of `build.rolldownOptions.input`.
         // Preload scripts may contain Web assets, so use the `build.rolldownOptions.input` instead `build.lib.entry`.
-        input: path.join(__dirname, 'src/preload/preload.ts'),
+        input: path.join(import.meta.dirname, 'src/preload/preload.ts'),
         vite: {
           resolve: { alias },
         },
@@ -44,8 +46,8 @@ export default defineConfig({
   build: {
     rolldownOptions: {
       input: {
-        main: path.resolve(__dirname, 'index.html'),
-        history: path.resolve(__dirname, 'history.html'),
+        main: path.resolve(import.meta.dirname, 'index.html'),
+        history: path.resolve(import.meta.dirname, 'history.html'),
       },
     },
   },
