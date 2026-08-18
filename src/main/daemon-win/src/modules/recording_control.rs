@@ -1,40 +1,40 @@
-use super::media_devices::{enumerate_cameras, enumerate_microphones, MediaDevice};
+use super::media_devices::{MediaDevice, enumerate_cameras, enumerate_microphones};
 use crate::overlay::{
-    add_key_handler, apply_round_region, create_popup_window, create_ui_font, default_wndproc,
-    ensure_window_class, monitors, point_from_lparam, remove_key_handler, scale_for_dpi, to_wide,
-    WM_MOUSELEAVE,
+    WM_MOUSELEAVE, add_key_handler, apply_round_region, create_popup_window, create_ui_font,
+    default_wndproc, ensure_window_class, monitors, point_from_lparam, remove_key_handler,
+    scale_for_dpi, to_wide,
 };
 use crate::panel::{
-    button_at, button_fill, button_rect, button_state, draw_label, draw_pill, paint_buffered,
-    panel_height, panel_width, ACTIVE_BUTTON, BUTTON_TEXT, BUTTON_TEXT_MUTED, BUTTON_TEXT_ON_FILL,
-    NEUTRAL_BUTTON, PANEL_ALPHA, PANEL_BUTTON_RADIUS, PANEL_CORNER_RADIUS, PANEL_FONT_SIZE,
-    PANEL_FONT_WEIGHT, PRIMARY_BUTTON,
+    ACTIVE_BUTTON, BUTTON_TEXT, BUTTON_TEXT_MUTED, BUTTON_TEXT_ON_FILL, NEUTRAL_BUTTON,
+    PANEL_ALPHA, PANEL_BUTTON_RADIUS, PANEL_CORNER_RADIUS, PANEL_FONT_SIZE, PANEL_FONT_WEIGHT,
+    PRIMARY_BUTTON, button_at, button_fill, button_rect, button_state, draw_label, draw_pill,
+    paint_buffered, panel_height, panel_width,
 };
 use crate::protocol::{
-    param_bool, param_i32, param_str, respond_error, respond_success, send_event, Request,
+    Request, param_bool, param_i32, param_str, respond_error, respond_success, send_event,
 };
-use crate::router::{method_not_found, Module, Reply};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{DeleteObject, InvalidateRect, ScreenToClient, HFONT};
+use windows::Win32::Graphics::Gdi::{DeleteObject, HFONT, InvalidateRect, ScreenToClient};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
-use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, DestroyWindow, GetCursorPos, GetWindowRect,
-    LoadCursorW, MessageBoxW, SetForegroundWindow, SetLayeredWindowAttributes,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TrackPopupMenu, HTCAPTION, HWND_TOPMOST,
-    IDC_ARROW, LWA_ALPHA, MB_ICONWARNING, MB_YESNO, MF_CHECKED, MF_STRING, SWP_NOACTIVATE,
-    SWP_NOMOVE, SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    HTCAPTION, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, LoadCursorW, MB_ICONWARNING, MB_YESNO,
+    MF_CHECKED, MF_STRING, MessageBoxW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
+    SetForegroundWindow, SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos,
+    ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
     WDA_EXCLUDEFROMCAPTURE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
+use windows::core::PCWSTR;
 
 const CLASS_NAME: &str = "PoratakeRecordingControl";
 const ITEM_WIDTH: i32 = 64;

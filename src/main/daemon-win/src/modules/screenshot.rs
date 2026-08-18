@@ -1,10 +1,10 @@
 use crate::desktop_frame::{
-    apply_alpha_mask, capture_rect, capture_window, frozen_rect, write_image, DesktopFrame,
+    DesktopFrame, apply_alpha_mask, capture_rect, capture_window, frozen_rect, write_image,
 };
 use crate::protocol::{
-    param_bool, param_i32, param_i64, param_str, respond_error, respond_success, Request,
+    Request, param_bool, param_i32, param_i64, param_str, respond_error, respond_success,
 };
-use crate::router::{method_not_found, Module, Reply};
+use crate::router::{Module, Reply, method_not_found};
 use serde_json::json;
 use std::ffi::c_void;
 use windows::Win32::Foundation::{HWND, RECT};

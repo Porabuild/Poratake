@@ -46,7 +46,7 @@ vi.mock('@/main/capture/video/window-manager', () => ({
 vi.mock('@/main/capture/video/recording-project', () => ({
   getMicAudioPath: (p: string) => `${p}.mic.m4a`,
   getSubtitlePath: (p: string) =>
-    p.includes('.capty') ? `${p}/subtitle.json` : null,
+    p.includes('.poratake') ? `${p}/subtitle.json` : null,
 }));
 
 vi.mock('@/main/utils/whisper', () => ({
@@ -136,7 +136,7 @@ describe('subtitle handlers', () => {
 
   it('generateSubtitles errors when mic audio missing', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(false);
     const { registerSubtitleHandlers } =
@@ -151,7 +151,7 @@ describe('subtitle handlers', () => {
 
   it('generateSubtitles writes subtitle file on success', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(true);
     mockTranscribeAudio.mockResolvedValue({
@@ -181,7 +181,7 @@ describe('subtitle handlers', () => {
 
   it('getSubtitleData returns parsed JSON', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
@@ -198,7 +198,7 @@ describe('subtitle handlers', () => {
 
   it('getSubtitleData returns null on parse error', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue('bad json');
@@ -212,7 +212,7 @@ describe('subtitle handlers', () => {
 
   it('saveSubtitleData writes JSON', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     const { registerSubtitleHandlers } =
       await import('@/main/capture/video/ipc/subtitle-handlers');
@@ -250,7 +250,7 @@ describe('subtitle handlers', () => {
 
   it('importSubtitleData returns Cancelled when dialog cancelled', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockShowOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
     const { registerSubtitleHandlers } =
@@ -264,7 +264,7 @@ describe('subtitle handlers', () => {
 
   it('importSubtitleData parses .srt files', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockShowOpenDialog.mockResolvedValue({
       canceled: false,
@@ -288,7 +288,7 @@ describe('subtitle handlers', () => {
 
   it('importSubtitleData parses .json files', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockShowOpenDialog.mockResolvedValue({
       canceled: false,
@@ -310,7 +310,7 @@ describe('subtitle handlers', () => {
 
   it('importSubtitleData rejects invalid subtitle data', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockShowOpenDialog.mockResolvedValue({
       canceled: false,
@@ -332,7 +332,7 @@ describe('subtitle handlers', () => {
 
   it('deleteSubtitleData returns true when no file exists', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(false);
     const { registerSubtitleHandlers } =
@@ -346,7 +346,7 @@ describe('subtitle handlers', () => {
 
   it('deleteSubtitleData unlinks existing file', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(true);
     const { registerSubtitleHandlers } =

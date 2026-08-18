@@ -52,7 +52,7 @@ requireFile(metadataPath);
 requireFile(blockmapPath);
 
 const nativePaths = [
-  path.join(resourcesPath, 'daemon', 'capty-daemon'),
+  path.join(resourcesPath, 'daemon', 'poratake-daemon'),
   path.join(resourcesPath, 'binaries', 'ffmpeg', 'ffmpeg'),
   path.join(resourcesPath, 'binaries', 'whisper', 'whisper'),
 ];

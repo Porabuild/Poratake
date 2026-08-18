@@ -17,8 +17,13 @@ const { execFileSync } = vi.hoisted(() => ({
 
 vi.mock('node:child_process', () => ({ execFileSync }));
 
-const { ensureFFmpeg, getFFmpegOutputPath, isFFmpegBuilt } =
-  await import('../../scripts/ensure-ffmpeg.mjs');
+const {
+  ensureFFmpeg,
+  getFFmpegBuildIdentity,
+  getFFmpegBuildStampPath,
+  getFFmpegOutputPath,
+  isFFmpegBuilt,
+} = await import('../../scripts/ensure-ffmpeg.mjs');
 
 const roots: string[] = [];
 const originalPlatform = process.platform;
@@ -34,11 +39,17 @@ afterAll(() => {
 function createRoot(withBinary = false): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'poratake-ffmpeg-'));
   roots.push(root);
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'build-ffmpeg.sh'), 'build');
   if (withBinary) {
     fs.mkdirSync(path.dirname(getFFmpegOutputPath(root)), {
       recursive: true,
     });
     fs.writeFileSync(getFFmpegOutputPath(root), '');
+    fs.writeFileSync(
+      getFFmpegBuildStampPath(root),
+      `${getFFmpegBuildIdentity(root)}\n`
+    );
   }
   return root;
 }
@@ -74,6 +85,10 @@ function mockEnvironment(root: string, commands: string[]): void {
         recursive: true,
       });
       fs.writeFileSync(getFFmpegOutputPath(root), '');
+      fs.writeFileSync(
+        getFFmpegBuildStampPath(root),
+        `${getFFmpegBuildIdentity(root)}\n`
+      );
       return undefined;
     }
     throw new Error(`unexpected command: ${command}`);
@@ -109,6 +124,30 @@ describe('ensure-ffmpeg', () => {
     expect(isFFmpegBuilt(root)).toBe(true);
   });
 
+  it('rebuilds when the binary has no build stamp', () => {
+    const root = createRoot(true);
+    fs.rmSync(getFFmpegBuildStampPath(root));
+    mockEnvironment(root, ['nasm', 'pkg-config']);
+
+    expect(ensureFFmpeg(root)).toBe(true);
+    expect(recordedCommands()).toContainEqual([
+      'bash',
+      ['scripts/build-ffmpeg.sh'],
+    ]);
+  });
+
+  it('rebuilds when the build script changed after the binary was built', () => {
+    const root = createRoot(true);
+    fs.writeFileSync(path.join(root, 'scripts', 'build-ffmpeg.sh'), 'updated');
+    mockEnvironment(root, ['nasm', 'pkg-config']);
+
+    expect(ensureFFmpeg(root)).toBe(true);
+    expect(recordedCommands()).toContainEqual([
+      'bash',
+      ['scripts/build-ffmpeg.sh'],
+    ]);
+  });
+
   it('does not install missing prerequisites without user approval', () => {
     const root = createRoot(false);
     mockEnvironment(root, ['brew', 'pkg-config']);
@@ -142,6 +181,31 @@ describe('ensure-ffmpeg', () => {
 
     expect(ensureFFmpeg(root)).toBe(false);
     expect(isFFmpegBuilt(root)).toBe(false);
+  });
+
+  it('preserves the previous binary when a stale build fails', () => {
+    const root = createRoot(true);
+    fs.writeFileSync(getFFmpegOutputPath(root), 'previous');
+    const previousStamp = fs.readFileSync(
+      getFFmpegBuildStampPath(root),
+      'utf8'
+    );
+    fs.writeFileSync(path.join(root, 'scripts', 'build-ffmpeg.sh'), 'updated');
+    mockEnvironment(root, ['nasm', 'pkg-config']);
+    const implementation = vi.mocked(execFileSync).getMockImplementation();
+    vi.mocked(execFileSync).mockImplementation(((
+      command: string,
+      args: string[]
+    ) => {
+      if (command === 'bash') throw new Error('build error');
+      return implementation?.(command, args);
+    }) as typeof execFileSync);
+
+    expect(ensureFFmpeg(root)).toBe(false);
+    expect(fs.readFileSync(getFFmpegOutputPath(root), 'utf8')).toBe('previous');
+    expect(fs.readFileSync(getFFmpegBuildStampPath(root), 'utf8')).toBe(
+      previousStamp
+    );
   });
 
   it('returns false when the build succeeds without producing the binary', () => {

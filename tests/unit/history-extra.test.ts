@@ -124,12 +124,12 @@ describe('history extra', () => {
     });
 
     it('returns feature flags based on file existence', async () => {
-      mockGetProjectFolder.mockReturnValue('/p/Rec.capty');
+      mockGetProjectFolder.mockReturnValue('/p/Rec.poratake');
       mockExistsSync.mockImplementation(
         (p: string) => String(p).endsWith('.cam') || String(p).endsWith('.cur')
       );
       const { getVideoRecordingFeatures } = await import('@/main/history');
-      const result = getVideoRecordingFeatures('/p/Rec.capty/recording.mov');
+      const result = getVideoRecordingFeatures('/p/Rec.poratake/recording.mov');
       expect(result).toEqual({
         hasMic: false,
         hasSystemAudio: false,
@@ -213,7 +213,7 @@ describe('history extra', () => {
           },
         ])
       );
-      mockGetProjectFolder.mockReturnValue('/p/video.capty');
+      mockGetProjectFolder.mockReturnValue('/p/video.poratake');
       mockExistsSync.mockImplementation((path: string) => {
         const value = String(path);
         return (

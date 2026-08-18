@@ -1,44 +1,45 @@
-use crate::com::{retain_process_mta, MtaInterface};
+use crate::com::{MtaInterface, retain_process_mta};
 use crate::overlay::{
     create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class, monitors,
 };
-use crate::protocol::{param_bool, param_i32, param_str, respond_error, respond_success, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_bool, param_i32, param_str, respond_error, respond_success};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use windows::core::PWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateRoundRectRgn,
-    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, InvalidateRect, SelectObject,
-    SetStretchBltMode, SetWindowRgn, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS, HALFTONE, PAINTSTRUCT, SRCCOPY,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CreateCompatibleBitmap,
+    CreateCompatibleDC, CreateRoundRectRgn, CreateSolidBrush, DIB_RGB_COLORS, DeleteDC,
+    DeleteObject, EndPaint, FillRect, HALFTONE, InvalidateRect, PAINTSTRUCT, SRCCOPY, SelectObject,
+    SetStretchBltMode, SetWindowRgn, StretchDIBits,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFMediaSource, IMFSample, IMFSourceReader, MFCreateAttributes,
-    MFCreateMediaType, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFMediaType_Video,
-    MFShutdown, MFStartup, MFVideoFormat_RGB32, MFSTARTUP_FULL,
+    IMFActivate, IMFAttributes, IMFMediaSource, IMFSample, IMFSourceReader,
     MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READERF_ENDOFSTREAM,
-    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION,
+    MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+    MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION, MFCreateAttributes, MFCreateMediaType,
+    MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFMediaType_Video, MFSTARTUP_FULL,
+    MFShutdown, MFStartup, MFVideoFormat_RGB32,
 };
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED,
+    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GetClientRect, GetWindowRect, PostMessageW, SetLayeredWindowAttributes,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, HTCAPTION, HWND_TOPMOST, LWA_ALPHA,
-    SWP_NOACTIVATE, SWP_NOMOVE, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_APP,
+    DestroyWindow, GetClientRect, GetWindowRect, HTCAPTION, HWND_TOPMOST, LWA_ALPHA, PostMessageW,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SetLayeredWindowAttributes,
+    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_APP,
     WM_DPICHANGED, WM_EXITSIZEMOVE, WM_NCHITTEST, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
+use windows::core::PWSTR;
 
 const CLASS_NAME: &str = "PoratakeCameraPreview";
 const PREVIEW_SIZE: i32 = 230;

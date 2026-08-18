@@ -116,12 +116,12 @@ describe('main.ts extra', () => {
     expect(process.env.HOME).toBe('/mock/home');
   });
 
-  it('handles open-file for .capty projects (before ready)', async () => {
+  it('handles open-file for .poratake projects (before ready)', async () => {
     await import('@/main/main');
     const openHandler = appEventHandlers['open-file'];
     expect(openHandler).toBeDefined();
     const fakeEvent = { preventDefault: vi.fn() };
-    openHandler!(fakeEvent, '/p/My.capty');
+    openHandler!(fakeEvent, '/p/My.poratake');
     expect(fakeEvent.preventDefault).toHaveBeenCalled();
     // before app ready, should not create window
     expect(mockCreateVideoEditorWindow).not.toHaveBeenCalled();

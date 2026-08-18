@@ -120,6 +120,9 @@ jobs:
           # No packaging here, so skip the ~120MB Electron binary download.
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
+      - name: React Compiler
+        run: bun run test:react-compiler
+
       - name: Tests
         run: bun run test:run
 
@@ -215,7 +218,7 @@ jobs:
           path: |
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
-            src/main/daemon/capty-daemon.exe
+            src/main/daemon/poratake-daemon.exe
           key: ${{ runner.os }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
 
       - name: Build Windows package

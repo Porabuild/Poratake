@@ -1,5 +1,5 @@
-use crate::protocol::{send_response, Request, Response};
-use serde_json::{json, Value};
+use crate::protocol::{Request, Response, send_response};
+use serde_json::{Value, json};
 
 pub type MethodResult = Result<Option<Value>, (String, String)>;
 

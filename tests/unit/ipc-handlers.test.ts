@@ -76,7 +76,9 @@ vi.mock('@/main/capture/video/window-manager', () => ({
 vi.mock('@/main/capture/video/recording-project', () => ({
   renameRecordingProject: (...a: unknown[]) => mockRenameRecordingProject(...a),
   getProjectFolder: (p: string) =>
-    p.endsWith('.capty') || p.includes('.capty/') ? '/Rec.capty' : null,
+    p.endsWith('.poratake') || p.includes('.poratake/')
+      ? '/Rec.poratake'
+      : null,
 }));
 
 vi.mock('@/main/capture/video/delete-video', () => ({
@@ -542,12 +544,12 @@ describe('project handlers', () => {
 
   it('rename success syncs history, thumbnail, window path', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/Rec.capty/recording.mov',
+      filePath: '/Rec.poratake/recording.mov',
     });
     mockRenameRecordingProject.mockReturnValue({
       success: true,
-      newProjectPath: '/Renamed.capty',
-      newVideoPath: '/Renamed.capty/recording.mov',
+      newProjectPath: '/Renamed.poratake',
+      newVideoPath: '/Renamed.poratake/recording.mov',
     });
     mockGetHistoryPopover.mockReturnValue({
       isDestroyed: () => false,
@@ -561,8 +563,8 @@ describe('project handlers', () => {
       'Renamed'
     );
     expect(mockUpdateHistoryItemPath).toHaveBeenCalledWith(
-      '/Rec.capty/recording.mov',
-      '/Renamed.capty/recording.mov'
+      '/Rec.poratake/recording.mov',
+      '/Renamed.poratake/recording.mov'
     );
     expect(mockRekeyThumbnail).toHaveBeenCalled();
     expect(mockUpdateWindowFilePath).toHaveBeenCalled();
@@ -571,12 +573,12 @@ describe('project handlers', () => {
 
   it('rename success without popover does not throw', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/Rec.capty/recording.mov',
+      filePath: '/Rec.poratake/recording.mov',
     });
     mockRenameRecordingProject.mockReturnValue({
       success: true,
-      newProjectPath: '/Renamed.capty',
-      newVideoPath: '/Renamed.capty/recording.mov',
+      newProjectPath: '/Renamed.poratake',
+      newVideoPath: '/Renamed.poratake/recording.mov',
     });
     mockGetHistoryPopover.mockReturnValue(null);
     const { registerProjectHandlers } =
@@ -591,12 +593,12 @@ describe('project handlers', () => {
 
   it('rename failure is returned through', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/Rec.capty/recording.mov',
+      filePath: '/Rec.poratake/recording.mov',
     });
     mockRenameRecordingProject.mockReturnValue({
       success: false,
-      newProjectPath: '/Rec.capty',
-      newVideoPath: '/Rec.capty/recording.mov',
+      newProjectPath: '/Rec.poratake',
+      newVideoPath: '/Rec.poratake/recording.mov',
       error: 'busy',
     });
     const { registerProjectHandlers } =

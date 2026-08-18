@@ -1,4 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from 'react';
 import type { Segment } from '../types';
 import { getSegmentDuration, getTimelineStartForSegment } from '../utils';
 
@@ -35,9 +41,11 @@ export function useReorderDrag({
   const pixelsPerSecondRef = useRef(pixelsPerSecond);
   const onReorderRef = useRef(onReorder);
 
-  segmentsRef.current = segments;
-  pixelsPerSecondRef.current = pixelsPerSecond;
-  onReorderRef.current = onReorder;
+  useLayoutEffect(() => {
+    segmentsRef.current = segments;
+    pixelsPerSecondRef.current = pixelsPerSecond;
+    onReorderRef.current = onReorder;
+  }, [onReorder, pixelsPerSecond, segments]);
 
   const getDropIndex = useCallback(
     (clientX: number, trackEl: HTMLElement, draggedId: string): number => {

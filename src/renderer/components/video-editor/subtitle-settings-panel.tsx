@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Edit3, FileUp, Loader2 } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
 import { Label } from '@/renderer/components/ui/label';
@@ -54,6 +54,21 @@ const BACKGROUND_OPTIONS: {
   { value: 'none', label: 'None' },
 ];
 
+async function getWhisperDownloadStatus(
+  model: WhisperModel
+): Promise<WhisperDownloadStatus> {
+  const status = await window.ipcRenderer.invoke(
+    'video-editor:getWhisperStatus'
+  );
+  const modelAvailable = await window.ipcRenderer.invoke(
+    'video-editor:isWhisperModelAvailable',
+    model
+  );
+  return status.binaryAvailable && modelAvailable
+    ? { status: 'ready' }
+    : { status: 'not-downloaded' };
+}
+
 export default function SubtitleSettingsPanel({
   subtitleStyle,
   onStyleChange,
@@ -67,30 +82,27 @@ export default function SubtitleSettingsPanel({
 }: SubtitleSettingsPanelProps) {
   const [selectedModel, setSelectedModel] = useState<WhisperModel>('base');
   const [customPrompt, setCustomPrompt] = useState('');
-  const [downloadStatus, setDownloadStatus] = useState<WhisperDownloadStatus>({
-    status: 'not-checked',
-  });
+  const [downloadStatus, setDownloadStatus] = useState<WhisperDownloadStatus>(
+    hasMicAudio ? { status: 'checking' } : { status: 'not-checked' }
+  );
   const [generationStatus, setGenerationStatus] =
     useState<SubtitleGenerationStatus>({ status: 'idle' });
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-
-  const checkWhisperStatus = useCallback(async () => {
-    setDownloadStatus({ status: 'checking' });
-    const status = await window.ipcRenderer.invoke(
-      'video-editor:getWhisperStatus'
+  const statusRequestRef = useRef(0);
+  const [statusContext, setStatusContext] = useState({
+    hasMicAudio,
+    selectedModel,
+  });
+  if (
+    statusContext.hasMicAudio !== hasMicAudio ||
+    statusContext.selectedModel !== selectedModel
+  ) {
+    setStatusContext({ hasMicAudio, selectedModel });
+    setDownloadStatus(
+      hasMicAudio ? { status: 'checking' } : { status: 'not-checked' }
     );
-    const modelAvailable = await window.ipcRenderer.invoke(
-      'video-editor:isWhisperModelAvailable',
-      selectedModel
-    );
-
-    if (status.binaryAvailable && modelAvailable) {
-      setDownloadStatus({ status: 'ready' });
-    } else {
-      setDownloadStatus({ status: 'not-downloaded' });
-    }
-  }, [selectedModel]);
+  }
 
   useEffect(() => {
     const handleDownloadProgress = (
@@ -127,10 +139,17 @@ export default function SubtitleSettingsPanel({
   }, []);
 
   useEffect(() => {
-    if (hasMicAudio) {
-      checkWhisperStatus();
-    }
-  }, [selectedModel, checkWhisperStatus, hasMicAudio]);
+    if (!hasMicAudio) return;
+    const request = ++statusRequestRef.current;
+    void getWhisperDownloadStatus(selectedModel).then(status => {
+      if (request === statusRequestRef.current) {
+        setDownloadStatus(status);
+      }
+    });
+    return () => {
+      statusRequestRef.current += 1;
+    };
+  }, [hasMicAudio, selectedModel]);
 
   const updateStyle = useStyleUpdater(subtitleStyle, onStyleChange);
 
@@ -186,11 +205,9 @@ export default function SubtitleSettingsPanel({
 
   const handleImport = useCallback(async () => {
     setIsImporting(true);
-    try {
-      await onSubtitleDataImport();
-    } finally {
+    await onSubtitleDataImport().finally(() => {
       setIsImporting(false);
-    }
+    });
   }, [onSubtitleDataImport]);
 
   const hasSubtitles = subtitleData && subtitleData.segments.length > 0;

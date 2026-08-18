@@ -9,27 +9,27 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use windows::core::{implement, PCWSTR};
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFAttributes, IMFByteStream, IMFMediaEvent, IMFMediaSource, IMFMediaType,
     IMFSample, IMFSinkWriter, IMFSourceReader, IMFSourceReaderCallback,
-    IMFSourceReaderCallback_Impl, MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer,
-    MFCreateSample, MFCreateSinkWriterFromURL, MFCreateSourceReaderFromMediaSource,
-    MFEnumDeviceSources, MFMediaType_Video, MFShutdown, MFStartup, MFVideoFormat_H264,
-    MFVideoFormat_RGB32, MFVideoInterlace_Progressive, MFSTARTUP_FULL,
-    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+    IMFSourceReaderCallback_Impl, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_ALL_SAMPLES_INDEPENDENT,
     MF_MT_AVG_BITRATE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
     MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO,
     MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
-    MF_SINK_WRITER_DISABLE_THROTTLING, MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED,
-    MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READER_ASYNC_CALLBACK,
-    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION,
+    MF_SINK_WRITER_DISABLE_THROTTLING, MF_SOURCE_READER_ASYNC_CALLBACK,
+    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION,
+    MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
+    MFCreateSinkWriterFromURL, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources,
+    MFMediaType_Video, MFSTARTUP_FULL, MFShutdown, MFStartup, MFVideoFormat_H264,
+    MFVideoFormat_RGB32, MFVideoInterlace_Progressive,
 };
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED,
+    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
+use windows::core::{PCWSTR, implement};
 
 const CAMERA_VIDEO_NAME: &str = "camera.mov";
 const CAMERA_METADATA_NAME: &str = "camera.json";
@@ -398,16 +398,19 @@ fn run_worker(
             }
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => {
-                if let Some(ready) = ready.take() {
-                    let _ = ready.send(Err(RecorderError::start(
-                        "Camera worker event channel disconnected",
-                    )));
-                } else {
-                    set_terminal_error(
-                        &mut terminal_error,
-                        &health,
-                        RecorderError::capture("Camera worker event channel disconnected"),
-                    );
+                match ready.take() {
+                    Some(ready) => {
+                        let _ = ready.send(Err(RecorderError::start(
+                            "Camera worker event channel disconnected",
+                        )));
+                    }
+                    None => {
+                        set_terminal_error(
+                            &mut terminal_error,
+                            &health,
+                            RecorderError::capture("Camera worker event channel disconnected"),
+                        );
+                    }
                 }
                 runtime.abort(&events);
                 break;
@@ -426,7 +429,8 @@ fn run_worker(
                 }
                 if !frame.bytes.is_empty() {
                     if let Err(error) = runtime.handle_frame(frame) {
-                        if let Some(ready) = ready.take() {
+                        let pending_ready = ready.take();
+                        if let Some(ready) = pending_ready {
                             let _ = ready.send(Err(error));
                             runtime.abort(&events);
                             break;

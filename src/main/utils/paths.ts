@@ -10,7 +10,7 @@ export function getConfigDir(): string {
 }
 
 export function getNativeBinaryPath(binaryName: string): string {
-  const isDaemon = binaryName === 'capty-daemon';
+  const isDaemon = binaryName === 'poratake-daemon';
   const devBasePath = isDaemon
     ? 'src/main/daemon'
     : `src/main/binaries/${binaryName}`;

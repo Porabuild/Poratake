@@ -1,21 +1,21 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+use windows::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, CreateRoundRectRgn, EnumDisplayMonitors, GetMonitorInfoW, SetWindowRgn,
-    FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, HDC, HFONT, HMONITOR,
-    MONITORINFO, MONITORINFOEXW,
+    CreateFontW, CreateRoundRectRgn, EnumDisplayMonitors, FONT_CHARSET, FONT_CLIP_PRECISION,
+    FONT_OUTPUT_PRECISION, FONT_QUALITY, GetMonitorInfoW, HDC, HFONT, HMONITOR, MONITORINFO,
+    MONITORINFOEXW, SetWindowRgn,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowLongPtrW, LoadCursorW,
-    RegisterClassExW, SetWindowLongPtrW, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE,
-    HCURSOR, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, MONITORINFOF_PRIMARY, WH_KEYBOARD_LL,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetClientRect, GetWindowLongPtrW,
+    HCURSOR, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, LoadCursorW, MONITORINFOF_PRIMARY,
+    RegisterClassExW, SetWindowLongPtrW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
     WINDOW_EX_STYLE, WM_KEYDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WNDPROC, WS_EX_NOACTIVATE, WS_POPUP,
 };
+use windows::core::PCWSTR;
 
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
 

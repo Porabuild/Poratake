@@ -35,8 +35,8 @@ describe('getNativeBinaryPath on Windows', () => {
 
   it('appends .exe to the daemon binary name', async () => {
     const { getNativeBinaryPath } = await import('@/main/utils/paths');
-    expect(getNativeBinaryPath('capty-daemon')).toBe(
-      path.join('/mock/app', 'src/main/daemon', 'capty-daemon.exe')
+    expect(getNativeBinaryPath('poratake-daemon')).toBe(
+      path.join('/mock/app', 'src/main/daemon', 'poratake-daemon.exe')
     );
   });
 

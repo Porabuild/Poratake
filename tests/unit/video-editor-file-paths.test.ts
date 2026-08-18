@@ -84,7 +84,7 @@ describe('getFileNameFromPath', () => {
   it('uses the project folder name for a POSIX recording project', () => {
     expect(
       getFileNameFromPath(
-        '/Users/me/Movies/Capty/Recording 2026-08-07 at 11.25.29.capty/recording.mov'
+        '/Users/me/Movies/Poratake/Recording 2026-08-07 at 11.25.29.poratake/recording.mov'
       )
     ).toBe('Recording 2026-08-07 at 11.25.29');
   });
@@ -92,7 +92,7 @@ describe('getFileNameFromPath', () => {
   it('uses the project folder name for a Windows recording project', () => {
     expect(
       getFileNameFromPath(
-        'C:\\Users\\me\\Videos\\Capty\\Recording 2026-08-07 at 11.25.29.capty\\recording.mov'
+        'C:\\Users\\me\\Videos\\Poratake\\Recording 2026-08-07 at 11.25.29.poratake\\recording.mov'
       )
     ).toBe('Recording 2026-08-07 at 11.25.29');
   });
@@ -120,18 +120,20 @@ describe('getProjectPath', () => {
   it('returns the containing folder for a POSIX recording project', () => {
     expect(
       getProjectPath(
-        '/Users/me/Movies/Capty/Recording 2026-08-07 at 11.25.29.capty/recording.mov'
+        '/Users/me/Movies/Poratake/Recording 2026-08-07 at 11.25.29.poratake/recording.mov'
       )
-    ).toBe('/Users/me/Movies/Capty/Recording 2026-08-07 at 11.25.29.capty');
+    ).toBe(
+      '/Users/me/Movies/Poratake/Recording 2026-08-07 at 11.25.29.poratake'
+    );
   });
 
   it('returns the containing folder for a Windows recording project', () => {
     expect(
       getProjectPath(
-        'C:\\Users\\me\\Videos\\Capty\\Recording 2026-08-07 at 11.25.29.capty\\recording.mov'
+        'C:\\Users\\me\\Videos\\Poratake\\Recording 2026-08-07 at 11.25.29.poratake\\recording.mov'
       )
     ).toBe(
-      'C:\\Users\\me\\Videos\\Capty\\Recording 2026-08-07 at 11.25.29.capty'
+      'C:\\Users\\me\\Videos\\Poratake\\Recording 2026-08-07 at 11.25.29.poratake'
     );
   });
 

@@ -278,7 +278,7 @@ export const isPoratakeDevCommand = (root, command) => {
 
   if (normalizedCommand.includes('/scripts/dev.mjs')) return true;
   if (normalizedCommand.includes('/node_modules/electron/')) return true;
-  if (normalizedCommand.includes('/capty-daemon')) return true;
+  if (normalizedCommand.includes('/poratake-daemon')) return true;
 
   const viteIndex = normalizedCommand.indexOf('/node_modules/vite/');
   if (viteIndex < 0) return false;

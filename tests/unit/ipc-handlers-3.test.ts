@@ -104,7 +104,7 @@ vi.mock('@/main/capture/video/auto-zoom-generator', () => ({
 
 vi.mock('@/main/capture/video/recording-project', () => ({
   getEditorStatePath: (p: string) =>
-    p.includes('.capty') ? `${p}/state.json` : null,
+    p.includes('.poratake') ? `${p}/state.json` : null,
   getSystemAudioPath: (p: string) => `${p}.system.m4a`,
   getMicAudioPath: (p: string) => `${p}.mic.m4a`,
 }));
@@ -332,7 +332,7 @@ describe('state handlers', () => {
 
   it('getState returns null when state file missing', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(false);
     const { registerStateHandlers } =
@@ -345,7 +345,7 @@ describe('state handlers', () => {
 
   it('getState returns null when state is invalid', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(true);
     mockReadFileAsync.mockResolvedValue('{}');
@@ -359,7 +359,7 @@ describe('state handlers', () => {
 
   it('saveState returns false when state is invalid', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     const { registerStateHandlers } =
       await import('@/main/capture/video/ipc/state-handlers');
@@ -383,7 +383,7 @@ describe('state handlers', () => {
 
   it('resetState unlinks file and regenerates', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.capty/recording.mov',
+      filePath: '/p/Rec.poratake/recording.mov',
     });
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(

@@ -4,22 +4,21 @@ use crate::overlay::{
     remove_key_handler, to_wide,
 };
 use crate::protocol::{
-    param_bool, param_i32, param_str, respond_error, respond_success, send_event, Request,
+    Request, param_bool, param_i32, param_str, respond_error, respond_success, send_event,
 };
-use crate::router::{method_not_found, Module, Reply};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
-use windows::core::{Error, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CombineRgn, CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteObject, DrawTextW,
-    EndPaint, FillRect, FrameRect, GetTextExtentPoint32W, InvalidateRect, SelectObject, SetBkMode,
-    SetTextColor, SetWindowRgn, DT_CENTER, DT_SINGLELINE, DT_VCENTER, ERROR, FONT_CHARSET,
-    FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_SEMIBOLD, HFONT, PAINTSTRUCT,
-    RGN_DIFF, TRANSPARENT,
+    BeginPaint, CombineRgn, CreateFontW, CreateRectRgn, CreateSolidBrush, DT_CENTER, DT_SINGLELINE,
+    DT_VCENTER, DeleteObject, DrawTextW, ERROR, EndPaint, FONT_CHARSET, FONT_CLIP_PRECISION,
+    FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_SEMIBOLD, FillRect, FrameRect, GetTextExtentPoint32W,
+    HFONT, InvalidateRect, PAINTSTRUCT, RGN_DIFF, SelectObject, SetBkMode, SetTextColor,
+    SetWindowRgn, TRANSPARENT,
 };
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::HiDpi::{
@@ -28,13 +27,14 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, DestroyWindow, GetClientRect, GetForegroundWindow, GetWindowThreadProcessId,
-    IsIconic, IsWindow, LoadCursorW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes,
-    SetWindowPos, ShowWindow, HTTRANSPARENT, HWND_TOPMOST, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW,
-    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LWA_ALPHA, LWA_COLORKEY, SWP_HIDEWINDOW, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE,
-    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
+    HTTRANSPARENT, HWND_TOPMOST, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE,
+    IDC_SIZEWE, IsIconic, IsWindow, LWA_ALPHA, LWA_COLORKEY, LoadCursorW, SW_HIDE, SW_RESTORE,
+    SW_SHOWNOACTIVATE, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SWP_SHOWWINDOW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes, SetWindowPos,
+    ShowWindow, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
+use windows::core::{Error, PCWSTR};
 
 const INPUT_CLASS_NAME: &str = "PoratakeAreaSelectorInput";
 const VISUAL_CLASS_NAME: &str = "PoratakeAreaSelectorVisual";

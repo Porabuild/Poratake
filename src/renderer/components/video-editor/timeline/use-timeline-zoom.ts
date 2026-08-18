@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import {
   DEFAULT_PIXELS_PER_SECOND,
   MIN_PIXELS_PER_SECOND,
@@ -27,21 +27,24 @@ export function useTimelineZoom(
   const { initialPixelsPerSecond = DEFAULT_PIXELS_PER_SECOND, onZoomChange } =
     options;
 
-  const [pixelsPerSecond, setPixelsPerSecondState] = useState(
+  const [pixelsPerSecond, setPixelsPerSecond] = useState(() =>
     Math.max(
       MIN_PIXELS_PER_SECOND,
       Math.min(MAX_PIXELS_PER_SECOND, initialPixelsPerSecond)
     )
   );
+  const [previousInitialPixelsPerSecond, setPreviousInitialPixelsPerSecond] =
+    useState(initialPixelsPerSecond);
 
-  useEffect(() => {
+  if (previousInitialPixelsPerSecond !== initialPixelsPerSecond) {
+    setPreviousInitialPixelsPerSecond(initialPixelsPerSecond);
     if (
       initialPixelsPerSecond >= MIN_PIXELS_PER_SECOND &&
       initialPixelsPerSecond <= MAX_PIXELS_PER_SECOND
     ) {
-      setPixelsPerSecondState(initialPixelsPerSecond);
+      setPixelsPerSecond(initialPixelsPerSecond);
     }
-  }, [initialPixelsPerSecond]);
+  }
 
   const setZoomLevel = useCallback(
     (pixels: number) => {
@@ -49,14 +52,14 @@ export function useTimelineZoom(
         MIN_PIXELS_PER_SECOND,
         Math.min(MAX_PIXELS_PER_SECOND, pixels)
       );
-      setPixelsPerSecondState(clamped);
+      setPixelsPerSecond(clamped);
       onZoomChange?.(clamped);
     },
     [onZoomChange]
   );
 
   const zoomIn = useCallback(() => {
-    setPixelsPerSecondState(prev => {
+    setPixelsPerSecond(prev => {
       const next = Math.min(MAX_PIXELS_PER_SECOND, prev * ZOOM_STEP);
       onZoomChange?.(next);
       return next;
@@ -64,7 +67,7 @@ export function useTimelineZoom(
   }, [onZoomChange]);
 
   const zoomOut = useCallback(() => {
-    setPixelsPerSecondState(prev => {
+    setPixelsPerSecond(prev => {
       const next = Math.max(MIN_PIXELS_PER_SECOND, prev / ZOOM_STEP);
       onZoomChange?.(next);
       return next;
@@ -72,7 +75,7 @@ export function useTimelineZoom(
   }, [onZoomChange]);
 
   const resetZoom = useCallback(() => {
-    setPixelsPerSecondState(DEFAULT_PIXELS_PER_SECOND);
+    setPixelsPerSecond(DEFAULT_PIXELS_PER_SECOND);
     onZoomChange?.(DEFAULT_PIXELS_PER_SECOND);
   }, [onZoomChange]);
 

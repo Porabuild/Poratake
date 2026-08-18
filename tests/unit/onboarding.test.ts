@@ -170,13 +170,13 @@ describe('onboarding', () => {
 
   it('shell:reveal-in-finder shows item in folder', async () => {
     mockGetWindowData.mockReturnValue({
-      filePath: '/path/to/My.capty/recording.mov',
+      filePath: '/path/to/My.poratake/recording.mov',
     });
     const m = await import('@/main/onboarding');
     m.init();
     ipcHandlers['shell:reveal-in-finder']({ sender: { id: 1 } });
     expect(mockShellShowItemInFolder).toHaveBeenCalledWith(
-      '/path/to/My.capty/recording.mov'
+      '/path/to/My.poratake/recording.mov'
     );
   });
 

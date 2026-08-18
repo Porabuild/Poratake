@@ -49,13 +49,13 @@ vi.mock('@/main/utils/ffmpeg', () => ({
 }));
 
 vi.mock('@/main/capture/video/recording-project', () => ({
-  isRecordingProject: (p: string) => p.includes('.capty'),
+  isRecordingProject: (p: string) => p.includes('.poratake'),
   getRecordingVideoPath: (p: string) =>
-    p.includes('.capty') ? `${p}/recording.mov` : p,
+    p.includes('.poratake') ? `${p}/recording.mov` : p,
   getSystemAudioPath: (p: string) => `${p}.system.m4a`,
   getMicAudioPath: (p: string) => `${p}.mic.m4a`,
   getEditorStatePath: (p: string) =>
-    p.includes('.capty') ? `${p}/state.json` : null,
+    p.includes('.poratake') ? `${p}/state.json` : null,
 }));
 
 vi.mock('@/main/capture/video/cursor-data', () => ({
@@ -121,11 +121,11 @@ describe('capture-preview video-export', () => {
       );
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc(() => '/p/Rec.capty');
+      registerPreviewExportIpc(() => '/p/Rec.poratake');
       const result = (await ipcHandle['capture-preview:load-export-data'](
         previewEvent
       )) as Record<string, unknown>;
-      expect(result.videoPath).toBe('/p/Rec.capty/recording.mov');
+      expect(result.videoPath).toBe('/p/Rec.poratake/recording.mov');
       expect(result.cameraVideoPath).toBe('/p/camera.mov');
     });
 
@@ -157,7 +157,7 @@ describe('capture-preview video-export', () => {
       mockReadFileSync.mockReturnValue('not-json');
       const { registerPreviewExportIpc } =
         await import('@/main/capture/capture-preview/video-export');
-      registerPreviewExportIpc(() => '/p/Rec.capty');
+      registerPreviewExportIpc(() => '/p/Rec.poratake');
       const result = (await ipcHandle['capture-preview:load-export-data'](
         previewEvent
       )) as Record<string, unknown>;

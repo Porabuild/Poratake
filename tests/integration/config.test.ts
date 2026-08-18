@@ -55,8 +55,8 @@ vi.mock('electron', () => ({
 
 // Mock utils/paths
 vi.mock('@/main/utils/paths', () => ({
-  getConfigDir: vi.fn(() => '/mock/home/.config/capty-dev'),
-  getConfigFilePath: vi.fn(() => '/mock/home/.config/capty-dev/config.json'),
+  getConfigDir: vi.fn(() => '/mock/home/.config/poratake-dev'),
+  getConfigFilePath: vi.fn(() => '/mock/home/.config/poratake-dev/config.json'),
 }));
 
 vi.mock('@/main/settings/window', () => ({
@@ -247,7 +247,7 @@ describe('Config Management', () => {
       loadConfig();
 
       expect(mockFs.mkdirSync).toHaveBeenCalledWith(
-        '/mock/home/.config/capty-dev',
+        '/mock/home/.config/poratake-dev',
         { recursive: true }
       );
     });
@@ -265,7 +265,7 @@ describe('Config Management', () => {
       await vi.waitFor(() =>
         expect(mockFs.promises.rename).toHaveBeenCalledWith(
           expect.stringMatching(/config\.json\.\d+\.\d+\.tmp$/),
-          '/mock/home/.config/capty-dev/config.json'
+          '/mock/home/.config/poratake-dev/config.json'
         )
       );
       expect(mockFs.promises.writeFile).toHaveBeenCalledWith(
@@ -287,7 +287,7 @@ describe('Config Management', () => {
         expect(mockFs.promises.writeFile).toHaveBeenCalled()
       );
       expect(mockFs.mkdirSync).toHaveBeenCalledWith(
-        '/mock/home/.config/capty-dev',
+        '/mock/home/.config/poratake-dev',
         { recursive: true }
       );
     });
@@ -839,13 +839,13 @@ describe('Config Management', () => {
     quitHandler();
 
     expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-      '/mock/home/.config/capty-dev/config.json.flush.tmp',
+      '/mock/home/.config/poratake-dev/config.json.flush.tmp',
       JSON.stringify(DEFAULT_SETTINGS, null, 2),
       'utf-8'
     );
     expect(mockFs.renameSync).toHaveBeenCalledWith(
-      '/mock/home/.config/capty-dev/config.json.flush.tmp',
-      '/mock/home/.config/capty-dev/config.json'
+      '/mock/home/.config/poratake-dev/config.json.flush.tmp',
+      '/mock/home/.config/poratake-dev/config.json'
     );
   });
 });

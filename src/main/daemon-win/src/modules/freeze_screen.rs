@@ -5,22 +5,22 @@ use crate::overlay::{
     add_key_handler, create_popup_window, default_wndproc, disable_window_transitions,
     ensure_window_class, remove_key_handler,
 };
-use crate::protocol::{param_bool, respond_error, respond_success, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_bool, respond_error, respond_success};
+use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, MonitorFromPoint,
-    SelectObject, HBITMAP, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY,
+    BeginPaint, BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, HBITMAP,
+    MONITOR_DEFAULTTONEAREST, MonitorFromPoint, PAINTSTRUCT, SRCCOPY, SelectObject,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GetCursorPos, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
-    HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_PAINT,
+    DestroyWindow, GetCursorPos, HWND_TOPMOST, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, WM_PAINT,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 

@@ -1,11 +1,11 @@
 use crate::protocol::Request;
-use crate::router::{method_not_found, Module, Reply};
+use crate::router::{Module, Reply, method_not_found};
 use serde_json::json;
-use windows::core::w;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOW,
+    FindWindowExW, FindWindowW, IsWindowVisible, SW_HIDE, SW_SHOW, ShowWindow,
 };
+use windows::core::w;
 
 pub struct DesktopHelperModule;
 

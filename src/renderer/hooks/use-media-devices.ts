@@ -8,6 +8,10 @@ const EMPTY_LISTS: MediaDeviceLists = {
   defaultCameraId: null,
 };
 
+function listMediaDevices(): Promise<MediaDeviceLists> {
+  return window.ipcRenderer.invoke('devices:list');
+}
+
 export function useMediaDevices() {
   const [devices, setDevices] = useState<MediaDeviceLists>(EMPTY_LISTS);
   const isMountedRef = useRef(true);
@@ -23,8 +27,7 @@ export function useMediaDevices() {
   const refresh = useCallback(async () => {
     const sequence = ++refreshSequenceRef.current;
     try {
-      const lists: MediaDeviceLists =
-        await window.ipcRenderer.invoke('devices:list');
+      const lists = await listMediaDevices();
       if (isMountedRef.current && sequence === refreshSequenceRef.current) {
         setDevices(lists);
       }
@@ -34,8 +37,17 @@ export function useMediaDevices() {
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    const sequence = ++refreshSequenceRef.current;
+    void listMediaDevices()
+      .then(lists => {
+        if (isMountedRef.current && sequence === refreshSequenceRef.current) {
+          setDevices(lists);
+        }
+      })
+      .catch(error => {
+        console.error('Failed to list media devices:', error);
+      });
+  }, []);
 
   return { ...devices, refresh };
 }

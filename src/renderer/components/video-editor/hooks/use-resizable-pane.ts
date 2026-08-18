@@ -39,33 +39,35 @@ export function useResizablePane({
   minSize,
   maxSize,
 }: UseResizablePaneProps): UseResizablePaneReturn {
-  const [size, setSize] = useState(() =>
+  const [storedSize, setStoredSize] = useState(() =>
     clamp(readStoredSize(storageKey, defaultSize), minSize, maxSize)
   );
+  const [previousBounds, setPreviousBounds] = useState({ minSize, maxSize });
+  if (
+    previousBounds.minSize !== minSize ||
+    previousBounds.maxSize !== maxSize
+  ) {
+    setPreviousBounds({ minSize, maxSize });
+    setStoredSize(current => clamp(current, minSize, maxSize));
+  }
+  const size = clamp(storedSize, minSize, maxSize);
   const [isResizing, setIsResizing] = useState(false);
   const dragRef = useRef<{ start: number; startSize: number } | null>(null);
 
   useEffect(() => {
-    setSize(prev => clamp(prev, minSize, maxSize));
-  }, [minSize, maxSize]);
-
-  useEffect(() => {
     window.localStorage.setItem(storageKey, String(size));
   }, [storageKey, size]);
-
-  const sizeRef = useRef(size);
-  sizeRef.current = size;
 
   const startResize = useCallback(
     (event: React.MouseEvent) => {
       event.preventDefault();
       dragRef.current = {
         start: axis === 'vertical' ? event.clientY : event.clientX,
-        startSize: sizeRef.current,
+        startSize: size,
       };
       setIsResizing(true);
     },
-    [axis]
+    [axis, size]
   );
 
   useEffect(() => {
@@ -76,7 +78,7 @@ export function useResizablePane({
       if (!drag) return;
       const position = axis === 'vertical' ? event.clientY : event.clientX;
       const delta = drag.start - position;
-      setSize(clamp(drag.startSize + delta, minSize, maxSize));
+      setStoredSize(clamp(drag.startSize + delta, minSize, maxSize));
     };
 
     const handleMouseUp = () => {

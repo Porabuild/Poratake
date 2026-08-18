@@ -11,12 +11,12 @@ import { isDaemonEvent, isDaemonResponse } from '@/types/daemon';
 import { getNativeBinaryPath } from '@/main/utils/paths';
 import { isMac, isWindows } from '@/main/utils/platform';
 
-const DAEMON_BINARY = 'capty-daemon';
+const DAEMON_BINARY = 'poratake-daemon';
 const REQUEST_TIMEOUT = 30000;
 const MAX_RESTART_ATTEMPTS = 5;
 const RESTART_BACKOFF_BASE = 1000;
 const WINDOWS_STALE_PROCESS_SCRIPT =
-  "$target = [IO.Path]::GetFullPath($env:PORATAKE_DAEMON_PATH); Get-Process -Name 'capty-daemon' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and [string]::Equals([IO.Path]::GetFullPath($_.Path), $target, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } | Stop-Process -Force";
+  "$target = [IO.Path]::GetFullPath($env:PORATAKE_DAEMON_PATH); Get-Process -Name 'poratake-daemon' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and [string]::Equals([IO.Path]::GetFullPath($_.Path), $target, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } | Stop-Process -Force";
 
 class NativeDaemon extends EventEmitter {
   private process: ChildProcess | null = null;
@@ -377,7 +377,6 @@ class NativeDaemon extends EventEmitter {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        // oxlint-disable-next-line promise/no-multiple-resolved
         resolve();
       };
       const timer = setTimeout(() => {

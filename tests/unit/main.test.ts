@@ -9,7 +9,7 @@ const mockApp = {
   getPath: vi.fn((name: string) => {
     const paths: Record<string, string> = {
       home: '/mock/home',
-      userData: '/mock/home/.config/capty',
+      userData: '/mock/home/.config/poratake',
     };
     return paths[name] || `/mock/${name}`;
   }),

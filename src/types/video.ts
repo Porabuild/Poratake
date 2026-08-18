@@ -1,4 +1,4 @@
-export const PROJECT_EXTENSION = '.capty';
+export const PROJECT_EXTENSION = '.poratake';
 
 export interface RecorderResponse {
   success: boolean;

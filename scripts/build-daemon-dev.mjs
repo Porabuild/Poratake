@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const daemonDir = path.join(root, 'src', 'main', 'daemon');
-const output = path.join(daemonDir, 'capty-daemon');
+const output = path.join(daemonDir, 'poratake-daemon');
 const plist = path.join(daemonDir, 'Info.plist');
 
 const RED = '\x1b[31m';
@@ -57,7 +57,7 @@ const arch = execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim();
 const target = `${arch}-apple-macosx13.0`;
 
 console.log(
-  `${YELLOW}[daemon-dev] building capty-daemon (${arch}, -Onone)${NC}`
+  `${YELLOW}[daemon-dev] building poratake-daemon (${arch}, -Onone)${NC}`
 );
 
 const startedAt = Date.now();

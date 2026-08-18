@@ -155,12 +155,8 @@ export function useEditorHistory(): UseEditorHistoryReturn {
     documentRef.current = document;
   }, [document]);
 
-  const isInitialized = useRef(false);
-
   const initializeDocument = useCallback(
     (partial: Partial<EditorDocument>) => {
-      if (isInitialized.current) return;
-      isInitialized.current = true;
       reset(mergeDocument(INITIAL_DOCUMENT, partial));
     },
     [reset]

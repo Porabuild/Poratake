@@ -1,4 +1,4 @@
-# Capty - Screenshot Tool (Electron + React + Bun)
+# Poratake - Screenshot Tool (Electron + React + Bun)
 
 ## Supported Platforms
 
@@ -91,7 +91,7 @@ Poratake is a rebranded fork of Capty (https://github.com/capty-app/capty) and i
 - If there is a refactor needed, ask user's opinion first.
 - Avoid creating big files and components. Instead, modularize and break them into smaller pieces.
 - NEVER NEVER NEVER code comment!
-- Native functionality is provided by a unified daemon (`capty-daemon`): Swift on macOS (`src/main/daemon/`, build with `./scripts/build-daemon.sh` for universal arm64 + x86_64) and Rust on Windows (`src/main/daemon-win/`, build with `bun run build-daemon-win`). Both speak the same JSON-RPC protocol over stdin/stdout, and module contracts must stay identical across platforms.
+- Native functionality is provided by a unified daemon (`poratake-daemon`): Swift on macOS (`src/main/daemon/`, build with `./scripts/build-daemon.sh` for universal arm64 + x86_64) and Rust on Windows (`src/main/daemon-win/`, build with `bun run build-daemon-win`). Both speak the same JSON-RPC protocol over stdin/stdout, and module contracts must stay identical across platforms.
 - The daemon uses JSON-RPC over stdin/stdout.
 - When adding new native modules, add them to `src/main/daemon/Modules/` and register in `main.swift` (macOS), and to `src/main/daemon-win/src/modules/` and register in `main.rs` (Windows).
 - When adding assets to the project like images, icons, sounds, etc, make sure you also consider them for production build and packing and notarizing to work on packaged app too.

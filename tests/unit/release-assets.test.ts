@@ -49,7 +49,7 @@ function createFixture(
   writeFileSync(zipPath, zip);
   writeFileSync(blockmapPath, 'blockmap-bytes');
   for (const nativePath of [
-    path.join(resourcesPath, 'daemon', 'capty-daemon'),
+    path.join(resourcesPath, 'daemon', 'poratake-daemon'),
     path.join(resourcesPath, 'binaries', 'ffmpeg', 'ffmpeg'),
     path.join(resourcesPath, 'binaries', 'whisper', 'whisper'),
   ]) {

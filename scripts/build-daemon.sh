@@ -12,9 +12,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 PLIST_FILE="$DAEMON_DIR/Info.plist"
-OUTPUT_FILE="$DAEMON_DIR/capty-daemon"
+OUTPUT_FILE="$DAEMON_DIR/poratake-daemon"
 
-echo -e "${YELLOW}Building capty-daemon...${NC}"
+echo -e "${YELLOW}Building poratake-daemon...${NC}"
 
 SWIFT_FILES=$(find "$DAEMON_DIR" -name "*.swift" -type f)
 if [ -z "$SWIFT_FILES" ]; then

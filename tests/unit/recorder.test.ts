@@ -105,10 +105,12 @@ describe('recorder', () => {
       expect(getRecordingsDir()).toBe('/custom/path');
     });
 
-    it('generateRecordingProjectName appends .capty extension', async () => {
+    it('generateRecordingProjectName appends .poratake extension', async () => {
       const { generateRecordingProjectName } =
         await import('@/main/capture/video/recorder');
-      expect(generateRecordingProjectName()).toBe('Recording 2025-01-01.capty');
+      expect(generateRecordingProjectName()).toBe(
+        'Recording 2025-01-01.poratake'
+      );
     });
 
     it('createRecordingProject delegates to createProjectFolder', async () => {
@@ -137,7 +139,7 @@ describe('recorder', () => {
         path.join(
           '/Users/me/Movies',
           'Poratake',
-          'Recording 2025-01-01 3.capty',
+          'Recording 2025-01-01 3.poratake',
           'recording.mov'
         )
       );

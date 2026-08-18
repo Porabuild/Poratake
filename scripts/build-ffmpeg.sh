@@ -21,15 +21,17 @@
 set -e
 
 # Configuration
-FFMPEG_VERSION="7.1"
+FFMPEG_VERSION="9.0.1"
 FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
-FFMPEG_SHA256="40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6"
+FFMPEG_SHA256="cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
 BUILD_DIR="/tmp/ffmpeg-build-$$"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="$PROJECT_ROOT/src/main/binaries/ffmpeg"
+STAMP_PATH="$OUTPUT_DIR/.ffmpeg-build"
+BUILD_ID="$(shasum -a 256 "$SCRIPT_DIR/build-ffmpeg.sh" | awk '{print $1}'):universal"
 
-if [ -f "$OUTPUT_DIR/ffmpeg" ]; then
+if [ -f "$OUTPUT_DIR/ffmpeg" ] && [ "$(cat "$STAMP_PATH" 2>/dev/null || true)" = "$BUILD_ID" ]; then
     echo "[INFO] ffmpeg already built, skipping."
     exit 0
 fi
@@ -129,6 +131,7 @@ build_for_arch() {
         --disable-shared \
         --disable-gpl \
         --disable-nonfree \
+        --disable-autodetect \
         --disable-libx264 \
         --disable-libx265 \
         --disable-libvpx \
@@ -140,7 +143,6 @@ build_for_arch() {
         --disable-ffprobe \
         --disable-debug \
         --enable-pthreads \
-        --enable-version3 \
         --pkg-config-flags=--static \
         --cc="clang" \
         --extra-cflags="$extra_cflags" \
@@ -201,30 +203,39 @@ build_for_arch() {
 create_universal_binary() {
     log_info "Creating universal binary..."
     
-    mkdir -p "$OUTPUT_DIR"
-    
+    local candidate="$BUILD_DIR/ffmpeg"
+    local next_output="$OUTPUT_DIR/.ffmpeg-next-$$"
+    local next_stamp="$OUTPUT_DIR/.ffmpeg-stamp-next-$$"
+
     lipo -create \
         "$BUILD_DIR/install-arm64/bin/ffmpeg" \
         "$BUILD_DIR/install-x86_64/bin/ffmpeg" \
-        -output "$OUTPUT_DIR/ffmpeg"
+        -output "$candidate"
     
     # Make executable
-    chmod +x "$OUTPUT_DIR/ffmpeg"
+    chmod +x "$candidate"
     
     # Verify the binary
     log_info "Verifying universal binary..."
-    file "$OUTPUT_DIR/ffmpeg"
-    lipo -info "$OUTPUT_DIR/ffmpeg"
+    file "$candidate"
+    lipo -info "$candidate"
     
     # Check license compliance
     log_info "Checking license configuration..."
-    "$OUTPUT_DIR/ffmpeg" -version 2>&1 | head -5
+    VERSION_OUTPUT="$("$candidate" -version 2>&1)"
+    printf '%s\n' "$VERSION_OUTPUT" | head -5
     
     # Verify no GPL in configuration
-    if "$OUTPUT_DIR/ffmpeg" -version 2>&1 | grep -q "enable-gpl"; then
+    if grep -q -- '--enable-gpl\|--enable-nonfree' <<<"$VERSION_OUTPUT"; then
         log_error "WARNING: GPL flag detected! This build may not be LGPL-compliant."
         exit 1
     fi
+
+    mkdir -p "$OUTPUT_DIR"
+    cp "$candidate" "$next_output"
+    printf '%s\n' "$BUILD_ID" > "$next_stamp"
+    mv -f "$next_output" "$OUTPUT_DIR/ffmpeg"
+    mv -f "$next_stamp" "$STAMP_PATH"
     
     log_info "License check passed - build is LGPL-compliant."
 }

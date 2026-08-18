@@ -1,5 +1,5 @@
-use crate::display_color::{hdr_white_scale, ToneMapper};
-use crate::overlay::{monitors, rect_height, rect_width, to_wide, MonitorEntry};
+use crate::display_color::{ToneMapper, hdr_white_scale};
+use crate::overlay::{MonitorEntry, monitors, rect_height, rect_width, to_wide};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs::File;
@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
-use windows::core::{factory, IInspectable, Interface, PCWSTR};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
@@ -22,28 +21,30 @@ use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL_11_1,
 };
 use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC,
-    MonitorFromPoint, MonitorFromWindow, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HBITMAP, HMONITOR, MONITOR_DEFAULTTONEAREST, SRCCOPY,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetDC, HBITMAP, HMONITOR,
+    MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MonitorFromWindow, ReleaseDC, SRCCOPY,
+    SelectObject,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
     IWICBitmapFrameEncode, IWICImagingFactory, WICBitmapEncoderNoCache,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoIncrementMTAUsage, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoIncrementMTAUsage,
+    CoInitializeEx, CoUninitialize,
 };
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::core::{IInspectable, Interface, PCWSTR, factory};
 
 const FRAME_POOL_SIZE: i32 = 1;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
@@ -181,13 +182,6 @@ pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
 pub fn store_frozen(frames: Vec<DesktopFrame>) {
     if let Ok(mut frozen) = frozen_frames().lock() {
         *frozen = frames;
-    }
-}
-
-pub fn retain_frozen(frame: DesktopFrame) {
-    if let Ok(mut frozen) = frozen_frames().lock() {
-        frozen.retain(|existing| existing.bounds != frame.bounds);
-        frozen.push(frame);
     }
 }
 
@@ -595,13 +589,14 @@ fn run_isolated<T: Send + 'static>(
         })
         .ok()?;
 
-    match receiver.recv_timeout(timeout) {
+    let result = match receiver.recv_timeout(timeout) {
         Ok(result) => Some(result),
         Err(_) => {
             gate.cancel(token, &cancelled);
             None
         }
-    }
+    };
+    result
 }
 
 fn capture_interop() -> Result<IGraphicsCaptureItemInterop, String> {
@@ -1039,10 +1034,6 @@ fn center_of(rect: RECT) -> POINT {
     }
 }
 
-fn contains(rect: &RECT, point: POINT) -> bool {
-    point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom
-}
-
 fn monitor_for_rect(bounds: RECT) -> Option<MonitorEntry> {
     let handle = unsafe { MonitorFromPoint(center_of(bounds), MONITOR_DEFAULTTONEAREST) };
     monitors()
@@ -1220,16 +1211,18 @@ mod tests {
     #[test]
     fn rejects_empty_crops() {
         let source = frame(10, 10, 0);
-        assert!(crop(
-            &source,
-            RECT {
-                left: 12,
-                top: 12,
-                right: 16,
-                bottom: 16,
-            }
-        )
-        .is_none());
+        assert!(
+            crop(
+                &source,
+                RECT {
+                    left: 12,
+                    top: 12,
+                    right: 16,
+                    bottom: 16,
+                }
+            )
+            .is_none()
+        );
     }
 
     #[test]

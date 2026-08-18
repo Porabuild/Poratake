@@ -1,34 +1,35 @@
 use crate::com::retain_process_mta;
-use crate::protocol::{param_str, respond_error, respond_success, Request};
-use crate::router::{method_not_found, Module, Reply};
+use crate::protocol::{Request, param_str, respond_error, respond_success};
+use crate::router::{Module, Reply, method_not_found};
 use base64::engine::general_purpose::STANDARD;
-use base64::{decoded_len_estimate, Engine};
+use base64::{Engine, decoded_len_estimate};
 use serde_json::json;
 use std::collections::HashMap;
 use std::mem::size_of;
 use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GlobalFree, HGLOBAL};
 use windows::Win32::Graphics::Gdi::{
-    DeleteDC, GetDeviceCaps, SetBrushOrgEx, SetStretchBltMode, StretchDIBits, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, GDI_ERROR, HALFTONE, HDC, HORZRES, LOGPIXELSX,
-    LOGPIXELSY, PHYSICALHEIGHT, PHYSICALOFFSETX, PHYSICALOFFSETY, PHYSICALWIDTH, SRCCOPY, VERTRES,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteDC, GDI_ERROR, GetDeviceCaps,
+    HALFTONE, HDC, HORZRES, LOGPIXELSX, LOGPIXELSY, PHYSICALHEIGHT, PHYSICALOFFSETX,
+    PHYSICALOFFSETY, PHYSICALWIDTH, SRCCOPY, SetBrushOrgEx, SetStretchBltMode, StretchDIBits,
+    VERTRES,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory, IWICPalette,
     WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnLoad,
 };
-use windows::Win32::Storage::Xps::{AbortDoc, EndDoc, EndPage, StartDocW, StartPage, DOCINFOW};
+use windows::Win32::Storage::Xps::{AbortDoc, DOCINFOW, EndDoc, EndPage, StartDocW, StartPage};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    CoUninitialize,
 };
 use windows::Win32::UI::Controls::Dialogs::{
-    PrintDlgExW, PD_NOPAGENUMS, PD_NOSELECTION, PD_RESULT_PRINT, PD_RETURNDC,
-    PD_USEDEVMODECOPIESANDCOLLATE, PRINTDLGEXW, START_PAGE_GENERAL,
+    PD_NOPAGENUMS, PD_NOSELECTION, PD_RESULT_PRINT, PD_RETURNDC, PD_USEDEVMODECOPIESANDCOLLATE,
+    PRINTDLGEXW, PrintDlgExW, START_PAGE_GENERAL,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+use windows::core::PCWSTR;
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const DEFAULT_IMAGE_DPI: f64 = 96.0;

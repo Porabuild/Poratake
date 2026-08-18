@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 $daemonDir = Join-Path $projectRoot 'src\main\daemon-win'
-$outputFile = Join-Path $projectRoot 'src\main\daemon\capty-daemon.exe'
+$outputFile = Join-Path $projectRoot 'src\main\daemon\poratake-daemon.exe'
 $hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
 $arch = if ($env:PORATAKE_WIN_ARCH) { $env:PORATAKE_WIN_ARCH } else { $hostArch }
 
@@ -13,10 +13,10 @@ if ($arch -ne 'x64' -and $arch -ne 'arm64') {
 
 $rustTarget = if ($arch -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
 
-Write-Host "Building capty-daemon for Windows $arch..." -ForegroundColor Yellow
+Write-Host "Building poratake-daemon for Windows $arch..." -ForegroundColor Yellow
 
 if ((Test-Path -LiteralPath $outputFile) -and $env:CI) {
-    Write-Host 'capty-daemon.exe already built (CI), skipping.'
+    Write-Host 'poratake-daemon.exe already built (CI), skipping.'
     exit 0
 }
 
@@ -32,6 +32,6 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Copy-Item (Join-Path $daemonDir "target\$rustTarget\release\capty-daemon.exe") $outputFile -Force
+Copy-Item (Join-Path $daemonDir "target\$rustTarget\release\poratake-daemon.exe") $outputFile -Force
 
 Write-Host "Successfully built: $outputFile" -ForegroundColor Green

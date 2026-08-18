@@ -245,13 +245,11 @@ export function migrateCloudConfig(savedCloud: unknown): CloudConfig {
   }
 
   const enabled =
-    raw.activeProvider === 'capty'
-      ? false
-      : typeof raw.enabled === 'boolean'
-        ? raw.enabled
-        : hasLegacyFlatS3 && hasConfiguredS3
-          ? true
-          : DEFAULT_CLOUD_CONFIG.enabled;
+    typeof raw.enabled === 'boolean'
+      ? raw.enabled
+      : hasLegacyFlatS3 && hasConfiguredS3
+        ? true
+        : DEFAULT_CLOUD_CONFIG.enabled;
 
   return {
     enabled,
