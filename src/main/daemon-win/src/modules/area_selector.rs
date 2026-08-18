@@ -21,17 +21,19 @@ use windows::Win32::Graphics::Gdi::{
     FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_SEMIBOLD, HFONT, PAINTSTRUCT,
     RGN_DIFF, TRANSPARENT,
 };
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, LogicalToPhysicalPointForPerMonitorDPI, PhysicalToLogicalPointForPerMonitorDPI,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GetClientRect, LoadCursorW, SetCursor, SetLayeredWindowAttributes, SetWindowPos,
-    ShowWindow, HTTRANSPARENT, HWND_TOPMOST, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS,
-    IDC_SIZENWSE, IDC_SIZEWE, LWA_ALPHA, LWA_COLORKEY, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    BringWindowToTop, DestroyWindow, GetClientRect, GetForegroundWindow, GetWindowThreadProcessId,
+    IsIconic, IsWindow, LoadCursorW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes,
+    SetWindowPos, ShowWindow, HTTRANSPARENT, HWND_TOPMOST, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LWA_ALPHA, LWA_COLORKEY, SWP_HIDEWINDOW, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const INPUT_CLASS_NAME: &str = "PoratakeAreaSelectorInput";
@@ -1476,6 +1478,68 @@ impl Module for AreaSelectorModule {
 
     fn handle(&mut self, request: &Request) -> Reply {
         match request.method.as_str() {
+            "getForegroundWindow" => {
+                let window = unsafe { GetForegroundWindow() };
+                let handle = if window.0.is_null() {
+                    json!(null)
+                } else {
+                    json!(window.0 as usize)
+                };
+                Reply::Now(Ok(Some(json!({ "windowHandle": handle }))))
+            }
+            "setForegroundWindow" => {
+                let Some(window_handle) = param_str(&request.params, "windowHandle")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value != 0)
+                else {
+                    return Reply::Now(Err((
+                        "INVALID_PARAMS".to_string(),
+                        "setForegroundWindow requires a windowHandle".to_string(),
+                    )));
+                };
+                let request_id = request.id.clone();
+                run_on_ui(move || {
+                    let window = HWND(window_handle as *mut c_void);
+
+                    unsafe {
+                        if !IsWindow(Some(window)).as_bool() {
+                            respond_success(&request_id, json!({ "restored": false }));
+                            return;
+                        }
+
+                        if IsIconic(window).as_bool() {
+                            let _ = ShowWindow(window, SW_RESTORE);
+                        }
+
+                        let foreground = GetForegroundWindow();
+                        let foreground_thread = GetWindowThreadProcessId(foreground, None);
+                        let target_thread = GetWindowThreadProcessId(window, None);
+                        let current_thread = GetCurrentThreadId();
+
+                        let attached_foreground = foreground_thread != 0
+                            && foreground_thread != current_thread
+                            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
+                        let attached_target = target_thread != 0
+                            && target_thread != current_thread
+                            && AttachThreadInput(current_thread, target_thread, true).as_bool();
+
+                        let restored = SetForegroundWindow(window).as_bool();
+                        if restored {
+                            let _ = BringWindowToTop(window);
+                        }
+
+                        if attached_foreground {
+                            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+                        }
+                        if attached_target {
+                            let _ = AttachThreadInput(current_thread, target_thread, false);
+                        }
+
+                        respond_success(&request_id, json!({ "restored": restored }));
+                    }
+                });
+                Reply::Deferred
+            }
             "start" => {
                 let preset = match (
                     param_i32(&request.params, "presetX"),

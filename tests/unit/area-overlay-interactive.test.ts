@@ -918,4 +918,158 @@ describe('interactive area overlay', () => {
       'area-overlay:handoff'
     );
   });
+
+  it('focuses the overlay under the cursor on Windows when revealed', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    fire('area-overlay:ready', windowFor(1).webContents.id);
+
+    await vi.waitFor(() => expect(windowFor(0).focus).toHaveBeenCalledTimes(1));
+    expect(windowFor(1).focus).not.toHaveBeenCalled();
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('does not focus the overlay on other platforms', async () => {
+    mockPlatform.isWindows = false;
+    mockPlatform.isMac = true;
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    await settle();
+    await settle();
+
+    expect(windowFor(0).focus).not.toHaveBeenCalled();
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('restores the previous foreground window after the overlay disappears', async () => {
+    let foregroundHandle = 4321;
+    mockDaemonCall.mockImplementation(
+      (_module: string, method: string, params: { windowHandle?: string }) => {
+        if (method === 'getForegroundWindow') {
+          return Promise.resolve({ windowHandle: foregroundHandle });
+        }
+        if (method === 'setForegroundWindow') {
+          return Promise.resolve({ restored: true });
+        }
+        if (method === 'showWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = true;
+        }
+        if (method === 'hideWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = false;
+        }
+        return Promise.resolve({ disabled: true });
+      }
+    );
+
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+
+    await vi.waitFor(() => expect(windowFor(0).focus).toHaveBeenCalledTimes(1));
+
+    foregroundHandle = windowFor(0).webContents.id;
+    module.cancelOverlaySelection();
+    await session;
+
+    await vi.waitFor(() =>
+      expect(mockDaemonCall).toHaveBeenCalledWith(
+        'area-selector',
+        'setForegroundWindow',
+        { windowHandle: '4321' }
+      )
+    );
+  });
+
+  it('skips the conceal round-trip for already-hidden pooled windows', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    await settle();
+    module.cancelOverlaySelection();
+    await session;
+    await settle();
+    await settle();
+
+    const hideCalls = () =>
+      mockDaemonCall.mock.calls.filter(
+        call => call[1] === 'hideWindowWithoutTransitions'
+      ).length;
+    const before = hideCalls();
+
+    const second = module.startInteractiveOverlay({});
+    await settle();
+    await settle();
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    await settle();
+    await settle();
+
+    expect(hideCalls()).toBe(before);
+
+    module.cancelOverlaySelection();
+    await second;
+  });
+
+  it('does not restore focus when the overlay itself is the foreground window', async () => {
+    mockDaemonCall.mockImplementation(
+      (_module: string, method: string, params: { windowHandle?: string }) => {
+        if (method === 'getForegroundWindow') {
+          return Promise.resolve({
+            windowHandle: windowFor(0).webContents.id,
+          });
+        }
+        if (method === 'setForegroundWindow') {
+          return Promise.resolve({ restored: true });
+        }
+        if (method === 'showWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = true;
+        }
+        if (method === 'hideWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = false;
+        }
+        return Promise.resolve({ disabled: true });
+      }
+    );
+
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+
+    await vi.waitFor(() => expect(windowFor(0).focus).toHaveBeenCalledTimes(1));
+
+    module.cancelOverlaySelection();
+    await session;
+    await settle();
+    await settle();
+
+    expect(
+      mockDaemonCall.mock.calls.some(call => call[1] === 'setForegroundWindow')
+    ).toBe(false);
+  });
 });

@@ -27,6 +27,8 @@ import * as devices from '@/main/devices';
 import * as onboarding from '@/main/onboarding';
 import { initDock } from '@/main/utils/dock';
 import { initWindowLoad } from '@/main/utils/window-load';
+import { monitorEventLoopLag } from '@/main/utils/event-loop-lag';
+import { isDev } from '@/main/utils/env';
 import { createVideoEditorWindow } from '@/main/capture/video/video-editor';
 import {
   bufferImageFile,
@@ -133,6 +135,9 @@ const initializeModules = async () => {
 
 app.whenReady().then(async () => {
   initDock();
+  if (isDev) {
+    monitorEventLoopLag();
+  }
   await initializeModules();
   await update.handleAppUpdate();
 

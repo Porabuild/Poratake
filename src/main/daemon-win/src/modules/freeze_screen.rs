@@ -1,5 +1,5 @@
 use crate::desktop_frame::{
-    capture_monitors, clear_frozen, prewarm_capture, store_frozen, to_hbitmap,
+    clear_frozen, prewarm_capture, store_frozen, stream_capture_monitors, to_hbitmap,
 };
 use crate::overlay::{
     add_key_handler, create_popup_window, default_wndproc, disable_window_transitions,
@@ -12,19 +12,20 @@ use serde_json::json;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, SelectObject,
-    HBITMAP, PAINTSTRUCT, SRCCOPY,
+    BeginPaint, BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, MonitorFromPoint,
+    SelectObject, HBITMAP, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_PAINT, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    DestroyWindow, GetCursorPos, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
+    HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WM_PAINT,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const CLASS_NAME: &str = "PoratakeFreezeOverlay";
+const FREEZE_RECEIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 struct FrozenWindow {
     window: HWND,
@@ -87,15 +88,31 @@ fn paint(window: HWND) {
     }
 }
 
+fn cursor_monitor_handle() -> Option<isize> {
+    let mut point = POINT::default();
+    unsafe { GetCursorPos(&mut point).ok()? };
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    Some(monitor.0 as isize)
+}
+
 fn create_overlays() {
     teardown();
 
     ensure_window_class(CLASS_NAME, Some(wndproc), None);
 
-    let frames = capture_monitors();
+    let started = std::time::Instant::now();
+    let frames = stream_capture_monitors(cursor_monitor_handle());
+    let deadline = started + FREEZE_RECEIVE_TIMEOUT;
+    let mut stored = Vec::new();
+    let mut captured_at = started.elapsed();
 
-    for frame in &frames {
-        let Some(bitmap) = to_hbitmap(frame) else {
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let Ok(frame) = frames.recv_timeout(remaining) else {
+            break;
+        };
+
+        let Some(bitmap) = to_hbitmap(&frame) else {
             continue;
         };
 
@@ -133,9 +150,22 @@ fn create_overlays() {
                 height: frame.height as i32,
             });
         });
+
+        stored.push(frame);
+        captured_at = started.elapsed();
     }
 
-    store_frozen(frames);
+    store_frozen(stored);
+
+    if crate::desktop_frame::capture_timing_enabled() {
+        let total = started.elapsed();
+        eprintln!(
+            "[freeze-timing] capture={:?} present={:?} total={:?}",
+            captured_at,
+            total - captured_at,
+            total
+        );
+    }
 }
 
 fn teardown() {

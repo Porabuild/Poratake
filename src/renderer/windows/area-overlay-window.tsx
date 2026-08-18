@@ -145,6 +145,29 @@ export default function AreaOverlayWindow({
     image.decode().then(announceReady, announceReady);
   }, [params.displayId, params.imageUrl, params.sessionId]);
 
+  const revealedSessionIdRef = useRef(params.sessionId);
+
+  useEffect(() => {
+    revealedSessionIdRef.current = params.sessionId;
+  }, [params.sessionId]);
+
+  useEffect(() => {
+    const handleRevealed = (_event: unknown, sessionId: number) => {
+      if (sessionId !== revealedSessionIdRef.current) return;
+      requestAnimationFrame(() => {
+        window.ipcRenderer.send(
+          'area-overlay:visible',
+          revealedSessionIdRef.current
+        );
+      });
+    };
+
+    window.ipcRenderer.on('area-overlay:revealed', handleRevealed);
+    return () => {
+      window.ipcRenderer.off('area-overlay:revealed', handleRevealed);
+    };
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !isPickingColor) {

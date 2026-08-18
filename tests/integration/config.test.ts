@@ -8,6 +8,11 @@ const mockFs = {
   mkdirSync: vi.fn(),
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
+  renameSync: vi.fn(),
+  promises: {
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    rename: vi.fn().mockResolvedValue(undefined),
+  },
 };
 
 vi.mock('fs', () => ({
@@ -16,10 +21,13 @@ vi.mock('fs', () => ({
   mkdirSync: mockFs.mkdirSync,
   readFileSync: mockFs.readFileSync,
   writeFileSync: mockFs.writeFileSync,
+  renameSync: mockFs.renameSync,
+  promises: mockFs.promises,
 }));
 
 // Mock Electron
 const mockApp = {
+  on: vi.fn(),
   setLoginItemSettings: vi.fn(),
   getVersion: vi.fn(() => '1.0.0'),
   getPath: vi.fn((name: string) => {
@@ -80,7 +88,9 @@ describe('Config Management', () => {
 
       expect(config).toEqual(DEFAULT_SETTINGS);
       expect(config.general.playSoundOnScreenshot).toBe(false);
-      expect(mockFs.writeFileSync).toHaveBeenCalled(); // Should save defaults
+      await vi.waitFor(() =>
+        expect(mockFs.promises.writeFile).toHaveBeenCalled()
+      );
     });
 
     it('should load config from file when it exists', async () => {
@@ -252,8 +262,14 @@ describe('Config Management', () => {
 
       saveConfig(DEFAULT_SETTINGS);
 
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        '/mock/home/.config/capty-dev/config.json',
+      await vi.waitFor(() =>
+        expect(mockFs.promises.rename).toHaveBeenCalledWith(
+          expect.stringMatching(/config\.json\.\d+\.\d+\.tmp$/),
+          '/mock/home/.config/capty-dev/config.json'
+        )
+      );
+      expect(mockFs.promises.writeFile).toHaveBeenCalledWith(
+        expect.stringMatching(/config\.json\.\d+\.\d+\.tmp$/),
         JSON.stringify(DEFAULT_SETTINGS, null, 2),
         'utf-8'
       );
@@ -267,22 +283,37 @@ describe('Config Management', () => {
 
       saveConfig(DEFAULT_SETTINGS);
 
+      await vi.waitFor(() =>
+        expect(mockFs.promises.writeFile).toHaveBeenCalled()
+      );
       expect(mockFs.mkdirSync).toHaveBeenCalledWith(
         '/mock/home/.config/capty-dev',
         { recursive: true }
       );
     });
 
-    it('should throw error on save failure', async () => {
+    it('should log errors instead of throwing when saving fails', async () => {
       mockFs.existsSync.mockReturnValue(true);
-      mockFs.writeFileSync.mockImplementation(() => {
-        throw new Error('Permission denied');
-      });
+      mockFs.promises.writeFile.mockRejectedValueOnce(
+        new Error('Permission denied')
+      );
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const { DEFAULT_SETTINGS } = await import('@/types/settings');
-      const { saveConfig } = await import('@/main/settings');
+      const { saveConfig, getConfig } = await import('@/main/settings');
 
-      expect(() => saveConfig(DEFAULT_SETTINGS)).toThrow('Permission denied');
+      expect(() => saveConfig(DEFAULT_SETTINGS)).not.toThrow(
+        'Permission denied'
+      );
+      await vi.waitFor(() =>
+        expect(errorSpy).toHaveBeenCalledWith(
+          'Failed to save config:',
+          expect.any(Error)
+        )
+      );
+      expect(getConfig()).toEqual(DEFAULT_SETTINGS);
+
+      errorSpy.mockRestore();
     });
   });
 
@@ -321,7 +352,9 @@ describe('Config Management', () => {
 
       expect(config.general.startOnLogin).toBe(true);
       expect(config.general.playSoundOnScreenshot).toBe(false);
-      expect(mockFs.writeFileSync).toHaveBeenCalled();
+      await vi.waitFor(() =>
+        expect(mockFs.promises.writeFile).toHaveBeenCalled()
+      );
     });
 
     it('should merge nested objects correctly', async () => {
@@ -790,5 +823,31 @@ describe('Config Management', () => {
         result.find((p: { id: string }) => p.id === 'test-preset')
       ).toBeUndefined();
     });
+  });
+
+  it('flushes pending writes synchronously on quit', async () => {
+    mockFs.existsSync.mockReturnValue(false);
+
+    const { DEFAULT_SETTINGS } = await import('@/types/settings');
+    const { init, saveConfig } = await import('@/main/settings');
+    init();
+
+    const quitHandler = mockApp.on.mock.calls.find(
+      call => call[0] === 'will-quit'
+    )?.[1] as () => void;
+    expect(quitHandler).toBeInstanceOf(Function);
+
+    saveConfig(DEFAULT_SETTINGS);
+    quitHandler();
+
+    expect(mockFs.writeFileSync).toHaveBeenCalledWith(
+      '/mock/home/.config/capty-dev/config.json.flush.tmp',
+      JSON.stringify(DEFAULT_SETTINGS, null, 2),
+      'utf-8'
+    );
+    expect(mockFs.renameSync).toHaveBeenCalledWith(
+      '/mock/home/.config/capty-dev/config.json.flush.tmp',
+      '/mock/home/.config/capty-dev/config.json'
+    );
   });
 });
