@@ -201,7 +201,7 @@ jobs:
         with:
           msystem: UCRT64
           install: >-
-            mingw-w64-ucrt-x64-gcc
+            mingw-w64-ucrt-x86_64-gcc
             make
             nasm
             pkgconf
