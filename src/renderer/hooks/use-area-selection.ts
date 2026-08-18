@@ -49,7 +49,6 @@ export interface AreaSelectionOptions {
 
 export default function useAreaSelection(options: AreaSelectionOptions) {
   const optionsRef = useRef(options);
-  optionsRef.current = options;
 
   const [bounds, setBounds] = useState<Bounds>(() => ({
     width: window.innerWidth,
@@ -70,6 +69,10 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
   const repeatablePicksRef = useRef(options.repeatablePicks);
   const pickingRef = useRef(options.pickTargets !== null);
   const lockedRef = useRef(false);
+
+  useLayoutEffect(() => {
+    optionsRef.current = options;
+  }, [options]);
 
   const applyRect = useCallback((next: AreaOverlayRect | null) => {
     rectRef.current = next;

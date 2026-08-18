@@ -53,19 +53,16 @@ export function useResizablePane({
     window.localStorage.setItem(storageKey, String(size));
   }, [storageKey, size]);
 
-  const sizeRef = useRef(size);
-  sizeRef.current = size;
-
   const startResize = useCallback(
     (event: React.MouseEvent) => {
       event.preventDefault();
       dragRef.current = {
         start: axis === 'vertical' ? event.clientY : event.clientX,
-        startSize: sizeRef.current,
+        startSize: size,
       };
       setIsResizing(true);
     },
-    [axis]
+    [axis, size]
   );
 
   useEffect(() => {

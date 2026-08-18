@@ -87,18 +87,31 @@ interface DeviceDropdownProps {
 function usePopoverExit(isOpen: boolean, onExitComplete: () => void) {
   const isOpenRef = useRef(isOpen);
   const wasMountedRef = useRef(false);
+  const exitPendingRef = useRef(false);
   const onExitCompleteRef = useRef(onExitComplete);
-  isOpenRef.current = isOpen;
-  onExitCompleteRef.current = onExitComplete;
+
+  useLayoutEffect(() => {
+    isOpenRef.current = isOpen;
+    onExitCompleteRef.current = onExitComplete;
+    if (!isOpen && exitPendingRef.current) {
+      exitPendingRef.current = false;
+      onExitComplete();
+    }
+  }, [isOpen, onExitComplete]);
 
   return useCallback((element: HTMLElement | null) => {
     if (element) {
       wasMountedRef.current = true;
+      exitPendingRef.current = false;
       return;
     }
 
-    if (!wasMountedRef.current || isOpenRef.current) return;
+    if (!wasMountedRef.current) return;
     wasMountedRef.current = false;
+    if (isOpenRef.current) {
+      exitPendingRef.current = true;
+      return;
+    }
     onExitCompleteRef.current();
   }, []);
 }
@@ -422,7 +435,9 @@ export default function RecordingControlWindow({
   }, []);
 
   const selectedIOSDeviceIdRef = useRef(state.selectedIOSDeviceId);
-  selectedIOSDeviceIdRef.current = state.selectedIOSDeviceId;
+  useLayoutEffect(() => {
+    selectedIOSDeviceIdRef.current = state.selectedIOSDeviceId;
+  }, [state.selectedIOSDeviceId]);
 
   const refreshIOSDevices = useCallback(async () => {
     try {

@@ -154,7 +154,7 @@ const SvgAnnotationsOverlay = forwardRef<
           onSelect(id, false);
         }
 
-        const svg = svgRef.current;
+        const svg = (e.currentTarget as SVGElement).ownerSVGElement;
         if (!svg) return;
 
         const rect = svg.getBoundingClientRect();
@@ -491,10 +491,9 @@ const SvgAnnotationsOverlay = forwardRef<
     const handleSvgMouseDown = useCallback(
       (e: React.MouseEvent) => {
         if (activeTool !== 'select') return;
-        if (e.target !== svgRef.current) return;
+        if (e.target !== e.currentTarget) return;
 
-        const svg = svgRef.current;
-        if (!svg) return;
+        const svg = e.currentTarget as SVGSVGElement;
 
         const rect = svg.getBoundingClientRect();
         const x = (e.clientX - rect.left) / zoom;
@@ -518,7 +517,7 @@ const SvgAnnotationsOverlay = forwardRef<
         const annotation = annotations.find(a => a.id === id);
         if (!annotation) return;
 
-        const svg = svgRef.current;
+        const svg = (e.currentTarget as SVGElement).ownerSVGElement;
         if (!svg) return;
 
         const rect = svg.getBoundingClientRect();

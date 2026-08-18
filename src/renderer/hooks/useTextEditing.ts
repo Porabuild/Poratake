@@ -118,7 +118,6 @@ export const useTextEditing = ({
     editingTextId,
     textEditValue,
     textEditPosition,
-    isTextEditingRef,
     startTextEditing,
     finishTextEditing,
     handleTextChange,

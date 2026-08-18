@@ -63,7 +63,6 @@ export function useEditorStatePersistence({
   const hasAppliedStateRef = useRef(false);
   const isMountedRef = useRef(true);
   const isSavingRef = useRef(false);
-  const recordingTypeRef = useRef<RecordingType | undefined>(undefined);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -83,7 +82,6 @@ export function useEditorStatePersistence({
       .invoke('video-editor:getState')
       .then((state: VideoEditorState | null) => {
         if (!isMountedRef.current) return;
-        recordingTypeRef.current = state?.recordingType;
         setLoadedState(state);
         setIsStateLoaded(true);
       })
@@ -109,7 +107,7 @@ export function useEditorStatePersistence({
     const state: VideoEditorState = {
       version: EDITOR_STATE_VERSION,
       savedAt: new Date().toISOString(),
-      recordingType: recordingTypeRef.current,
+      recordingType: loadedState?.recordingType,
       segments: values.segments,
       cursorStyle: values.cursorStyle,
       cameraStyle: values.cameraStyle,
@@ -140,7 +138,7 @@ export function useEditorStatePersistence({
       .finally(() => {
         isSavingRef.current = false;
       });
-  }, [values]);
+  }, [loadedState?.recordingType, values]);
 
   useEffect(() => {
     if (
@@ -186,7 +184,7 @@ export function useEditorStatePersistence({
   return {
     loadedState,
     isStateLoaded,
-    recordingType: recordingTypeRef.current,
+    recordingType: loadedState?.recordingType,
     resetState,
   };
 }

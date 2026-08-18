@@ -24,6 +24,7 @@ vi.mock('react', async importOriginal => {
   return {
     ...actual,
     useCallback: (callback: unknown) => callback,
+    useLayoutEffect: (callback: () => void) => callback(),
     useRef: (initial: unknown) => ({ current: initial }),
   };
 });

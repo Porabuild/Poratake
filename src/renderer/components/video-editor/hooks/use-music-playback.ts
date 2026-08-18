@@ -39,8 +39,6 @@ export function useMusicPlayback({
   embeddedAudioPath,
 }: UseMusicPlaybackProps) {
   const audioRefsMap = useRef<Map<string, AudioRef>>(new Map());
-  const isPlayingRef = useRef(isPlaying);
-  isPlayingRef.current = isPlaying;
 
   const resolvePath = useCallback(
     (track: MusicTrack): string | null =>

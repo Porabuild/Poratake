@@ -52,7 +52,7 @@
     "react/memo-dependencies": "error",
     "react/no-deriving-state-in-effects": "error",
     "react/preserve-manual-memoization": "error",
-    "react/refs": "off",
+    "react/refs": "error",
     "react/set-state-in-effect": "off",
     "vitest/require-mock-type-parameters": "off",
     "promise/always-return": "off",
