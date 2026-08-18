@@ -211,6 +211,11 @@ export const DEFAULT_GLOBAL_SHORTCUT_MODIFIERS =
 export const DEFAULT_ALL_IN_ONE_SHORTCUT =
   getRuntimePlatform() === 'win32' ? 'Alt+Shift+S' : 'CommandOrControl+Shift+S';
 
+export const DEFAULT_SCREENSHOT_WINDOW_SHORTCUT =
+  getRuntimePlatform() === 'win32'
+    ? `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+2`
+    : `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+5`;
+
 export interface EditorActionShortcuts {
   uploadToCloud: string;
 }
@@ -464,7 +469,7 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
   shortcuts: {
     screenshot: {
       area: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+4`,
-      window: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+5`,
+      window: DEFAULT_SCREENSHOT_WINDOW_SHORTCUT,
       screen: `${DEFAULT_GLOBAL_SHORTCUT_MODIFIERS}+3`,
     },
     captureText: '',

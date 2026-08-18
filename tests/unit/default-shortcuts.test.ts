@@ -38,7 +38,7 @@ describe('default global shortcuts', () => {
     expect(DEFAULT_GLOBAL_SHORTCUT_MODIFIERS).toBe('Alt+Shift');
     expect(DEFAULT_SETTINGS.shortcuts.screenshot).toEqual({
       area: 'Alt+Shift+4',
-      window: 'Alt+Shift+5',
+      window: 'Alt+Shift+2',
       screen: 'Alt+Shift+3',
     });
     expect(DEFAULT_SETTINGS.shortcuts.allInOne).toBe('Alt+Shift+S');

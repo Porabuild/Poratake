@@ -19,6 +19,7 @@ import { deleteVideo } from '@/main/capture/video/delete-video';
 import * as settings from '@/main/settings';
 import { registerPreviewExportIpc } from './video-export';
 import { animateWindowMove } from '@/main/utils/window-animation';
+import { isWindows } from '@/main/utils/platform';
 import type { ContentType, PreviewDisplayInfo } from '@/types/capture-preview';
 import type { PreviewCorner } from '@/types/settings';
 
@@ -207,7 +208,7 @@ function createPreviewBrowserWindow(index: number): {
     show: false,
     hasShadow: true,
     roundedCorners: true,
-    focusable: false,
+    focusable: isWindows,
     acceptFirstMouse: true,
     alwaysOnTop: true,
     webPreferences: {
