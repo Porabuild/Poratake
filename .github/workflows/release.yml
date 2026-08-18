@@ -77,7 +77,11 @@ jobs:
             electron-${{ runner.os }}-
 
       - name: Install macOS native build tools
-        run: brew install nasm pkg-config cmake
+        run: |
+          # Runner images preinstall aws/tap, which trips Homebrew's tap-trust
+          # check and prints a notice on every invocation. We don't use it.
+          brew untap aws/tap || true
+          brew install nasm pkg-config cmake
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
