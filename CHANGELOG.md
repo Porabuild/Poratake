@@ -4,6 +4,21 @@ All notable changes to Poratake are documented in this file. Entries are
 generated from the commit history (`feat:` → Features, `fix:` → Bug Fixes,
 everything else → Internal), matching the published release notes.
 
+## [0.9.1] - 2026-08-18
+
+### Bug Fixes
+
+- Optimize frozen overlays and persist settings reliably
+- Enable Windows preview clicks and update shortcut
+
+### Internal
+
+- Modernize dependencies and adopt React Compiler (#6)
+- Correct Windows GCC package name
+- Migrate toolchain to Oxlint, Oxfmt and TypeScript 7 native; add staged pre-commit checks (#5)
+- Use hosted icon image URL in README
+- Refresh README project overview and attribution
+
 ## [0.9.0] - 2026-08-17
 
 First Poratake release.
