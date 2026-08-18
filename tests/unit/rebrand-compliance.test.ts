@@ -38,6 +38,38 @@ function matchesGlob(value: string, glob: string): boolean {
   return new RegExp(`${pattern}$`).test(value);
 }
 
+interface PackageManifest {
+  name: string;
+  version: string;
+  license?: string;
+}
+
+interface InstalledPackage {
+  directory: string;
+  manifest: PackageManifest;
+}
+
+function collectInstalledPackages(): Map<string, InstalledPackage> {
+  const packages = new Map<string, InstalledPackage>();
+  fs.globSync('node_modules/**/package.json').forEach(packageJsonPath => {
+    const packageDirectory = path.dirname(path.resolve(packageJsonPath));
+    const manifest = JSON.parse(
+      fs.readFileSync(packageJsonPath, 'utf8')
+    ) as PackageManifest;
+    if (!manifest.name || !manifest.version) {
+      return;
+    }
+
+    const key = `${manifest.name}@${manifest.version}`;
+    const installed = packages.get(key);
+    if (!installed || packageDirectory.length < installed.directory.length) {
+      packages.set(key, { directory: packageDirectory, manifest });
+    }
+  });
+
+  return packages;
+}
+
 describe('Poratake rebrand compliance', () => {
   it('preserves upstream attribution and identifies the modified version', () => {
     const readme = read('README.md');
@@ -93,19 +125,15 @@ describe('Poratake rebrand compliance', () => {
       'lazy-val': 'licenses/npm/lazy-val-MIT.txt',
       'react-remove-scroll-bar': 'licenses/npm/react-remove-scroll-bar-MIT.txt',
     };
-    const installedPackagePaths: Record<string, string> = {
-      '@radix-ui/react-use-callback-ref':
-        '@radix-ui/react-dismissable-layer/node_modules/@radix-ui/react-use-callback-ref',
-      '@radix-ui/react-use-is-hydrated':
-        '@radix-ui/react-roving-focus/node_modules/@radix-ui/react-use-is-hydrated',
-    };
     const notices = parseNpmNotices();
     const noticeNames = new Set(notices.map(notice => notice.name));
     const packageJson = JSON.parse(read('package.json')) as {
       dependencies: Record<string, string>;
     };
+    const lockfile = read('bun.lock');
+    const installedPackages = collectInstalledPackages();
 
-    expect(notices).toHaveLength(79);
+    expect(notices).toHaveLength(74);
     expect(noticeNames.size).toBe(notices.length);
     expect(noticeNames).not.toContain('input-otp');
     expect(noticeNames).not.toContain('mp4box');
@@ -115,18 +143,19 @@ describe('Poratake rebrand compliance', () => {
     );
 
     notices.forEach(notice => {
-      const packageDirectory = path.join(
-        process.cwd(),
-        'node_modules',
-        installedPackagePaths[notice.name] ?? notice.name
+      expect(lockfile).toContain(`"${notice.name}@${notice.version}"`);
+      const installedPackage = installedPackages.get(
+        `${notice.name}@${notice.version}`
       );
-      const installed = JSON.parse(
-        fs.readFileSync(path.join(packageDirectory, 'package.json'), 'utf8')
-      ) as { version: string; license: string };
-      if (
-        installed.version !== notice.version ||
-        installed.license !== notice.license
-      ) {
+      if (!installedPackage) {
+        throw new Error(
+          `${notice.name}: installed version ${notice.version} was not found`
+        );
+      }
+
+      const { directory: packageDirectory, manifest: installed } =
+        installedPackage;
+      if (installed.license !== notice.license) {
         throw new Error(
           `${notice.name}: expected ${notice.version}/${notice.license}, found ${installed.version}/${installed.license}`
         );
@@ -147,10 +176,13 @@ describe('Poratake rebrand compliance', () => {
         return;
       }
 
-      const relativeLicensePath = `${installedPackagePaths[notice.name] ?? notice.name}/${licenseFile}`;
-      if (!filters.some(filter => matchesGlob(relativeLicensePath, filter))) {
+      const relativeLicensePath = path
+        .relative(path.join(process.cwd(), 'node_modules'), packageDirectory)
+        .replaceAll(path.sep, '/');
+      const packagedLicensePath = `${relativeLicensePath}/${licenseFile}`;
+      if (!filters.some(filter => matchesGlob(packagedLicensePath, filter))) {
         throw new Error(
-          `License path missing from extraResources filters: ${relativeLicensePath}`
+          `License path missing from extraResources filters: ${packagedLicensePath}`
         );
       }
     });

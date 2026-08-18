@@ -27,7 +27,6 @@ This file must list every third-party component that ships inside a Poratake rel
 | `@floating-ui/utils`                     |  0.2.10 | MIT           |
 | `@heroui/react`                          |   3.2.4 | MIT           |
 | `@heroui/styles`                         |   3.2.4 | MIT           |
-| `@radix-ui/number`                       |   1.1.3 | MIT           |
 | `@radix-ui/primitive`                    |   1.1.7 | MIT           |
 | `@radix-ui/react-arrow`                  |  1.1.15 | MIT           |
 | `@radix-ui/react-collection`             |  1.1.15 | MIT           |
@@ -52,9 +51,7 @@ This file must list every third-party component that ships inside a Poratake rel
 | `@radix-ui/react-use-effect-event`       |   0.0.5 | MIT           |
 | `@radix-ui/react-use-is-hydrated`        |   0.1.3 | MIT           |
 | `@radix-ui/react-use-layout-effect`      |   1.1.4 | MIT           |
-| `@radix-ui/react-use-previous`           |   1.1.4 | MIT           |
 | `@radix-ui/react-use-size`               |   1.1.4 | MIT           |
-| `@radix-ui/react-visually-hidden`        |  1.2.11 | MIT           |
 | `aria-hidden`                            |   1.2.6 | MIT           |
 | `builder-util-runtime`                   |   9.7.0 | MIT           |
 | `client-only`                            |   0.0.1 | MIT           |
@@ -64,7 +61,6 @@ This file must list every third-party component that ships inside a Poratake rel
 | `electron-updater`                       |   6.8.9 | MIT           |
 | `fs-extra`                               |  10.1.0 | MIT           |
 | `get-nonce`                              |   1.0.1 | MIT           |
-| `has-flag`                               |   4.0.0 | MIT           |
 | `js-yaml`                                |   4.1.1 | MIT           |
 | `jsonfile`                               |   6.2.0 | MIT           |
 | `lazy-val`                               |   1.0.5 | MIT           |
@@ -78,7 +74,6 @@ This file must list every third-party component that ships inside a Poratake rel
 | `react-remove-scroll-bar`                |   2.3.8 | MIT           |
 | `react-style-singleton`                  |   2.2.3 | MIT           |
 | `scheduler`                              |  0.27.0 | MIT           |
-| `supports-color`                         |   7.2.0 | MIT           |
 | `tailwind-merge`                         |   3.4.0 | MIT           |
 | `tailwind-variants`                      |   3.3.1 | MIT           |
 | `tiny-typed-emitter`                     |   2.1.0 | MIT           |
