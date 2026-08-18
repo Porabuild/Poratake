@@ -35,7 +35,7 @@ export default function SettingsSearchResults({
   if (results.length === 0) {
     return (
       <div className="mx-auto flex max-w-[720px] flex-col items-center justify-center py-16">
-        <p className="text-muted-foreground text-sm">
+        <p className="text-sm text-muted-foreground">
           No settings found for &quot;{query}&quot;
         </p>
       </div>
@@ -44,10 +44,10 @@ export default function SettingsSearchResults({
 
   return (
     <div className="mx-auto min-h-full max-w-[720px]">
-      <h1 className="text-foreground mb-2 text-lg font-semibold">
+      <h1 className="mb-2 text-lg font-semibold text-foreground">
         Search results
       </h1>
-      <p className="text-muted-foreground mb-6 text-xs">
+      <p className="mb-6 text-xs text-muted-foreground">
         {results.length} {results.length === 1 ? 'result' : 'results'}
       </p>
 
@@ -57,7 +57,7 @@ export default function SettingsSearchResults({
 
           return (
             <section key={category.id} className="space-y-4">
-              <h2 className="text-muted-foreground flex items-center gap-2 text-xs font-semibold tracking-wider uppercase">
+              <h2 className="flex items-center gap-2 text-xs font-semibold tracking-wider text-muted-foreground uppercase">
                 <category.icon className="size-4" />
                 {category.label}
               </h2>

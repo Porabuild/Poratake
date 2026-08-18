@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import type { Annotation } from '@/types/editor';
 import type { ResizeHandle } from '../types';
 

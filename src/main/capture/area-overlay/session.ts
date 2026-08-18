@@ -1,5 +1,5 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron';
-import type { Display, Point, Rectangle } from 'electron';
+import { app, globalShortcut, ipcMain, screen } from 'electron';
+import type { Display, Point, Rectangle, BrowserWindow } from 'electron';
 import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
 import { daemon } from '@/main/daemon';
 import { isWindows } from '@/main/utils/platform';

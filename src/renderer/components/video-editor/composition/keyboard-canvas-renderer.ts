@@ -40,16 +40,16 @@ const WINDOWS_MODIFIER_LABELS: Partial<Record<ModifierKey, string>> = {
   meta: 'Win',
 };
 
-const COMMAND_MODIFIERS: ModifierKey[] = [
+const COMMAND_MODIFIERS: ReadonlySet<ModifierKey> = new Set([
   'command',
   'control',
   'option',
   'meta',
   'alt',
-];
+]);
 
 function isShortcutCombo(event: KeyboardKeyEvent): boolean {
-  return event.modifiers.some(mod => COMMAND_MODIFIERS.includes(mod));
+  return event.modifiers.some(mod => COMMAND_MODIFIERS.has(mod));
 }
 
 const KEY_SYMBOLS: Record<string, string> = {

@@ -174,7 +174,7 @@ export default function Toolbar({
         icon={<MousePointer2 className="size-4" />}
       />
 
-      <div className="bg-border mx-1 h-[18px] w-px" />
+      <div className="mx-1 h-[18px] w-px bg-border" />
 
       <ToolButton
         tool="crop"
@@ -206,7 +206,7 @@ export default function Toolbar({
         </TooltipContent>
       </Tooltip>
 
-      <div className="bg-border mx-1 h-[18px] w-px" />
+      <div className="mx-1 h-[18px] w-px bg-border" />
 
       <UndoRedoButtons
         onUndo={onUndo}

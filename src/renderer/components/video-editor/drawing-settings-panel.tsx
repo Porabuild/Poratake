@@ -132,7 +132,7 @@ function SettingRow({
 }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <Label className="text-muted-foreground text-sm">{label}</Label>
+      <Label className="text-sm text-muted-foreground">{label}</Label>
       <div className="flex items-center gap-2 [&>div.w-px]:hidden">
         {children}
       </div>
@@ -309,7 +309,7 @@ export default function DrawingSettingsPanel({
               step={1}
               onValueChange={([value]) => handleStrokeWidthChange(value)}
             />
-            <span className="text-muted-foreground w-5 text-right text-xs">
+            <span className="w-5 text-right text-xs text-muted-foreground">
               {displayStrokeWidth}
             </span>
           </SettingRow>
@@ -478,7 +478,7 @@ export default function DrawingSettingsPanel({
       </div>
 
       {selectedDrawing && selectedAnnotation ? (
-        <div className="border-border space-y-3 border-t pt-4">
+        <div className="space-y-3 border-t border-border pt-4">
           <div className="flex items-center justify-between">
             <Label className="text-sm">Selected Drawing</Label>
             <Button
@@ -506,7 +506,7 @@ export default function DrawingSettingsPanel({
           )}
         </div>
       ) : (
-        <p className="text-muted-foreground border-border border-t pt-4 text-sm">
+        <p className="border-t border-border pt-4 text-sm text-muted-foreground">
           Select a drawing segment on the timeline to edit it.
         </p>
       )}

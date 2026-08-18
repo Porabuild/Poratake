@@ -78,7 +78,7 @@ export function mapVideoRangesToCameraSegments(
 
   const effectiveRanges =
     ranges && ranges.length > 0
-      ? [...ranges].sort((a, b) => a.start - b.start)
+      ? ranges.toSorted((a, b) => a.start - b.start)
       : [{ start: 0, end: videoDuration }];
 
   const effectiveSegments =

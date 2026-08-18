@@ -12,7 +12,7 @@ export default function TrackRow({
 }: TrackRowProps) {
   return (
     <div
-      className={`border-border shrink-0 border-b ${className}`}
+      className={`shrink-0 border-b border-border ${className}`}
       style={{ height: TRACK_HEIGHT, ...style }}
       {...rest}
     >

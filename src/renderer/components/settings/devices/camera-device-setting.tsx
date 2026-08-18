@@ -90,7 +90,7 @@ export default function CameraDeviceSetting({
     <div className="space-y-3 py-2">
       <div className="space-y-0.5">
         <Label className="text-sm">Camera</Label>
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           Choose which camera is used for recordings
         </p>
       </div>
@@ -106,7 +106,7 @@ export default function CameraDeviceSetting({
       <div className="flex items-center justify-between gap-4">
         <div className="space-y-0.5">
           <Label htmlFor="mirror-camera">Mirror camera</Label>
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             Flip the camera horizontally in previews and recordings
           </p>
         </div>
@@ -126,7 +126,7 @@ export default function CameraDeviceSetting({
           {testing ? 'Stop Test' : 'Test Video'}
         </Button>
         {testing && (
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             The camera preview opens in a floating window — the same one shown
             while recording
           </p>

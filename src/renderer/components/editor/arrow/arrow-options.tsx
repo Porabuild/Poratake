@@ -48,7 +48,7 @@ export default function ArrowOptions({
           </ListBox>
         </Select.Popover>
       </Select>
-      <div className="bg-border mx-1 h-[18px] w-px" />
+      <div className="mx-1 h-[18px] w-px bg-border" />
     </>
   );
 }

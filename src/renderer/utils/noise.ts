@@ -1,5 +1,6 @@
 type NoiseContext =
-  CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+  | CanvasRenderingContext2D
+  | OffscreenCanvasRenderingContext2D;
 
 export function renderNoise(
   ctx: NoiseContext,

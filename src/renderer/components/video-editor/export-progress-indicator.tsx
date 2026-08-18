@@ -94,9 +94,9 @@ export default function ExportProgressIndicator({
         onClick={handleToggle}
       >
         {showComplete ? (
-          <div className="bg-primary flex size-4 items-center justify-center rounded-full">
+          <div className="flex size-4 items-center justify-center rounded-full bg-primary">
             <Check
-              className="text-primary-foreground size-2.5"
+              className="size-2.5 text-primary-foreground"
               strokeWidth={3}
             />
           </div>
@@ -109,16 +109,16 @@ export default function ExportProgressIndicator({
         <div
           ref={popoverRef}
           className={cn(
-            'bg-popover text-popover-foreground border-border absolute top-full right-0 z-50 mt-1.5 w-64 rounded-lg border shadow-lg',
+            'absolute top-full right-0 z-50 mt-1.5 w-64 rounded-lg border border-border bg-popover text-popover-foreground shadow-lg',
             'animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2'
           )}
         >
           <div className="space-y-3 p-3">
             {showComplete ? (
               <div className="flex items-center gap-2">
-                <div className="bg-primary flex size-5 items-center justify-center rounded-full">
+                <div className="flex size-5 items-center justify-center rounded-full bg-primary">
                   <Check
-                    className="text-primary-foreground size-3"
+                    className="size-3 text-primary-foreground"
                     strokeWidth={3}
                   />
                 </div>
@@ -128,7 +128,7 @@ export default function ExportProgressIndicator({
               <>
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">Exporting...</span>
-                  <span className="text-muted-foreground text-xs tabular-nums">
+                  <span className="text-xs text-muted-foreground tabular-nums">
                     {Math.round(progress)}%
                   </span>
                 </div>
@@ -136,10 +136,10 @@ export default function ExportProgressIndicator({
                 <Progress value={progress} className="h-1.5" />
 
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground text-xs tabular-nums">
+                  <span className="text-xs text-muted-foreground tabular-nums">
                     {formatExportTime(elapsedSeconds)} elapsed
                   </span>
-                  <span className="text-muted-foreground text-xs tabular-nums">
+                  <span className="text-xs text-muted-foreground tabular-nums">
                     {remainingSeconds !== null
                       ? `${formatExportTime(remainingSeconds)} remaining`
                       : 'Calculating...'}

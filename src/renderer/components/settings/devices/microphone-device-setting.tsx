@@ -68,7 +68,7 @@ export default function MicrophoneDeviceSetting({
     <div className="space-y-3 py-2">
       <div className="space-y-0.5">
         <Label className="text-sm">Microphone</Label>
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           Choose which microphone is used for recordings
         </p>
       </div>
@@ -93,7 +93,7 @@ export default function MicrophoneDeviceSetting({
         <LevelMeter level={level} active={testing} />
       </div>
       {testing && (
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           Speak into your microphone — the meter should react to your voice
         </p>
       )}

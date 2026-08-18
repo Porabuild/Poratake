@@ -51,13 +51,16 @@ export default function CapturePreviewWindow({
     );
     if (nextSources.length === 0) return;
 
-    setImageSources(sources =>
-      nextSources.reduce(
-        (result, source) =>
-          result.includes(source) ? result : [...result, source],
-        sources
-      )
-    );
+    setImageSources(sources => {
+      const seen = new Set(sources);
+      const merged = [...sources];
+      for (const source of nextSources) {
+        if (seen.has(source)) continue;
+        seen.add(source);
+        merged.push(source);
+      }
+      return merged;
+    });
   }, [imageUrl, thumbnailUrl]);
 
   useEffect(() => {
@@ -307,29 +310,29 @@ export default function CapturePreviewWindow({
       ))}
       {!visibleImageSource && (
         <div
-          className={`bg-muted flex h-full w-full items-center justify-center ${thumbnailClassName}`}
+          className={`flex h-full w-full items-center justify-center bg-muted ${thumbnailClassName}`}
         >
           {contentType === 'video' ? (
-            <Film className="text-muted-foreground h-12 w-12" />
+            <Film className="h-12 w-12 text-muted-foreground" />
           ) : (
-            <Image className="text-muted-foreground h-12 w-12" />
+            <Image className="h-12 w-12 text-muted-foreground" />
           )}
         </div>
       )}
 
       {isFinished && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-          <div className="animate-in zoom-in-50 bg-foreground flex h-10 w-10 items-center justify-center rounded-full duration-300">
-            <Check className="text-background h-5 w-5" strokeWidth={3} />
+          <div className="flex h-10 w-10 animate-in items-center justify-center rounded-full bg-foreground duration-300 zoom-in-50">
+            <Check className="h-5 w-5 text-background" strokeWidth={3} />
           </div>
         </div>
       )}
 
       {isCopying && !isFinished && (
         <div className="pointer-events-none absolute right-2 bottom-10 left-2 z-10">
-          <div className="bg-background/30 h-1.5 w-full overflow-hidden rounded-full">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-background/30">
             <div
-              className="bg-primary h-full rounded-full transition-all duration-300"
+              className="h-full rounded-full bg-primary transition-all duration-300"
               style={{ width: `${copyProgress}%` }}
             />
           </div>
@@ -345,12 +348,12 @@ export default function CapturePreviewWindow({
       >
         {showControls && (
           <>
-            <div className="animate-in fade-in pointer-events-none absolute inset-0 bg-black/25 backdrop-blur-md duration-200" />
+            <div className="pointer-events-none absolute inset-0 animate-in bg-black/25 backdrop-blur-md duration-200 fade-in" />
             <button
               onClick={handleClose}
               title="Close preview"
               aria-label="Close preview"
-              className="bg-background/80 hover:bg-destructive absolute top-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors"
+              className="absolute top-2 left-2 flex h-6 w-6 items-center justify-center rounded-full bg-background/80 transition-colors hover:bg-destructive"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -360,7 +363,7 @@ export default function CapturePreviewWindow({
               aria-label={
                 isScreenshot ? 'Delete screenshot' : 'Delete recording'
               }
-              className="bg-background/80 hover:bg-destructive absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors"
+              className="absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-background/80 transition-colors hover:bg-destructive"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -369,7 +372,7 @@ export default function CapturePreviewWindow({
                 onClick={handleShowInFolder}
                 title="Show in Folder"
                 aria-label="Show recording in folder"
-                className="bg-background/80 hover:bg-primary absolute bottom-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors"
+                className="absolute bottom-2 left-2 flex h-6 w-6 items-center justify-center rounded-full bg-background/80 transition-colors hover:bg-primary"
               >
                 <FolderOpen className="h-3.5 w-3.5" />
               </button>
@@ -380,17 +383,17 @@ export default function CapturePreviewWindow({
                   onClick={handleToggleDisplayMenu}
                   title="Move previews to another display"
                   aria-label="Move previews to another display"
-                  className="bg-background/80 hover:bg-primary flex h-6 w-6 items-center justify-center rounded-full transition-colors"
+                  className="flex h-6 w-6 items-center justify-center rounded-full bg-background/80 transition-colors hover:bg-primary"
                 >
                   <Monitor className="h-3.5 w-3.5" />
                 </button>
                 {isDisplayMenuOpen && (
-                  <div className="bg-popover text-popover-foreground absolute right-0 bottom-7 z-20 min-w-32 overflow-hidden rounded-md border shadow-md">
+                  <div className="absolute right-0 bottom-7 z-20 min-w-32 overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md">
                     {displays.map(display => (
                       <button
                         key={display.id}
                         onClick={e => handleSelectDisplay(e, display.id)}
-                        className="hover:bg-accent hover:text-accent-foreground flex w-full items-center justify-between gap-2 px-2 py-1.5 text-xs"
+                        className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground"
                       >
                         <span className="truncate">{display.label}</span>
                         {display.isSelected && (
@@ -409,7 +412,7 @@ export default function CapturePreviewWindow({
                     onClick={handlePolish}
                     disabled={isBusy}
                     title={`Copy with "${polishPreset.name}"`}
-                    className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                    className="rounded-full bg-background/80 px-3 py-1 text-xs font-medium transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-background/80"
                   >
                     {isPolishing ? 'Polishing...' : 'Polish'}
                   </button>
@@ -418,7 +421,7 @@ export default function CapturePreviewWindow({
                 <button
                   onClick={handleCopy}
                   disabled={isCopying}
-                  className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                  className="rounded-full bg-background/80 px-3 py-1 text-xs font-medium transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-background/80"
                 >
                   {isCopying ? 'Exporting...' : 'Copy'}
                 </button>
@@ -426,14 +429,14 @@ export default function CapturePreviewWindow({
               {isCopying ? (
                 <button
                   onClick={cancelExport}
-                  className="bg-background/80 hover:bg-destructive rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                  className="rounded-full bg-background/80 px-3 py-1 text-xs font-medium transition-colors hover:bg-destructive"
                 >
                   Cancel
                 </button>
               ) : (
                 <button
                   onClick={handleEdit}
-                  className="bg-background/80 hover:bg-primary rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                  className="rounded-full bg-background/80 px-3 py-1 text-xs font-medium transition-colors hover:bg-primary"
                 >
                   Edit
                 </button>
@@ -444,7 +447,7 @@ export default function CapturePreviewWindow({
                 onClick={handleCopy}
                 disabled={isBusy}
                 title="Copy"
-                className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 absolute bottom-2 left-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                className="absolute bottom-2 left-2 flex h-6 w-6 items-center justify-center rounded-full bg-background/80 transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-background/80"
               >
                 <Copy className="h-3.5 w-3.5" />
               </button>
@@ -454,7 +457,7 @@ export default function CapturePreviewWindow({
                 onClick={handleUpload}
                 disabled={isBusy}
                 title="Upload to Cloud"
-                className="bg-background/80 hover:bg-primary disabled:hover:bg-background/80 absolute right-2 bottom-2 flex h-6 w-6 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                className="absolute right-2 bottom-2 flex h-6 w-6 items-center justify-center rounded-full bg-background/80 transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-background/80"
               >
                 {isUploading ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />

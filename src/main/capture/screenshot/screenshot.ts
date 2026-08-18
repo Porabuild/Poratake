@@ -35,7 +35,7 @@ import {
   rememberSaveDirectory,
   resolveSaveDialogPath,
 } from '@/main/utils/save-location';
-import { EditorState } from '@/types/history.ts';
+import type { EditorState } from '@/types/history.ts';
 import type { ScreenshotFormat } from '@/types/settings';
 import { openScreenshotFromHistory } from '@/main/capture/screenshot/open-from-history.ts';
 import { createOrShowSettingsWindow } from '@/main/settings';
@@ -113,10 +113,8 @@ async function captureScreenWithDisplaySelector(
   const screenshotPath = generateScreenshotPath();
   const captured = await withHiddenDesktopIcons(
     () => captureDisplayToFile(display, screenshotPath),
-    captured =>
-      captured
-        ? finalizeCapture(screenshotPath, preparation)
-        : Promise.resolve()
+    result =>
+      result ? finalizeCapture(screenshotPath, preparation) : Promise.resolve()
   );
 
   if (!captured) {
@@ -145,10 +143,8 @@ async function captureAreaWithSelector(
   const screenshotPath = generateScreenshotPath();
   const captured = await withHiddenDesktopIcons(
     () => captureAreaToFile(screenshotPath),
-    captured =>
-      captured
-        ? finalizeCapture(screenshotPath, preparation)
-        : Promise.resolve()
+    result =>
+      result ? finalizeCapture(screenshotPath, preparation) : Promise.resolve()
   );
 
   if (!captured) {

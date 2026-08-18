@@ -152,7 +152,7 @@ export function useCameraSegments({
         endTime,
       };
       setCameraSegments(prev =>
-        [...prev, newSegment].sort((a, b) => a.startTime - b.startTime)
+        [...prev, newSegment].toSorted((a, b) => a.startTime - b.startTime)
       );
       setSelectedCameraId(newSegment.id);
       selectedCameraIdRef.current = newSegment.id;

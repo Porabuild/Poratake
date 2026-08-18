@@ -237,7 +237,7 @@ export default function SubtitleSettingsPanel({
                   ))}
                 </TabsList>
               </Tabs>
-              <div className="text-muted-foreground space-y-1 text-xs">
+              <div className="space-y-1 text-xs text-muted-foreground">
                 <p>
                   {
                     WHISPER_MODELS.find(m => m.id === selectedModel)
@@ -270,7 +270,7 @@ export default function SubtitleSettingsPanel({
                 className="h-20 resize-none text-sm"
                 disabled={isProcessing}
               />
-              <p className="text-muted-foreground text-xs">
+              <p className="text-xs text-muted-foreground">
                 Add context like speaker names, technical terms, or topics
               </p>
             </div>
@@ -297,13 +297,13 @@ export default function SubtitleSettingsPanel({
             </Button>
 
             {generationStatus.status === 'error' && (
-              <p className="text-destructive text-center text-xs">
+              <p className="text-center text-xs text-destructive">
                 {generationStatus.message}
               </p>
             )}
 
-            <div className="border-border relative border-t pt-4">
-              <span className="text-muted-foreground bg-muted-background absolute -top-2.5 left-1/2 -translate-x-1/2 px-2 text-xs">
+            <div className="relative border-t border-border pt-4">
+              <span className="bg-muted-background absolute -top-2.5 left-1/2 -translate-x-1/2 px-2 text-xs text-muted-foreground">
                 or
               </span>
             </div>
@@ -311,7 +311,7 @@ export default function SubtitleSettingsPanel({
         )}
 
         <div className="space-y-2">
-          <p className="text-muted-foreground text-sm">
+          <p className="text-sm text-muted-foreground">
             {hasMicAudio
               ? 'You can also add subtitles manually by importing a JSON/SRT file or creating them in the editor.'
               : 'You can add subtitles manually by importing a JSON/SRT file or creating them in the editor.'}
@@ -341,9 +341,9 @@ export default function SubtitleSettingsPanel({
           </div>
         </div>
 
-        <div className="border-border bg-muted-background space-y-2 rounded-md border p-3">
+        <div className="bg-muted-background space-y-2 rounded-md border border-border p-3">
           <p className="text-sm font-medium">Subtitle Data Format</p>
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             Subtitle data is a JSON file containing segments with start/end
             times (in seconds) and text content. You can also import standard
             SRT files.
@@ -371,7 +371,7 @@ export default function SubtitleSettingsPanel({
       />
 
       {!subtitleStyle.visible ? (
-        <p className="text-muted-foreground text-sm">
+        <p className="text-sm text-muted-foreground">
           Subtitles are disabled. Enable them to show subtitles in your video.
         </p>
       ) : (
@@ -434,7 +434,7 @@ export default function SubtitleSettingsPanel({
                 size="xs"
                 onClick={handleDelete}
                 disabled={isProcessing}
-                className="text-destructive hover:text-destructive flex-1"
+                className="flex-1 text-destructive hover:text-destructive"
               >
                 Delete
               </Button>
@@ -447,7 +447,7 @@ export default function SubtitleSettingsPanel({
               size="xs"
               onClick={handleDelete}
               disabled={isProcessing}
-              className="text-destructive hover:text-destructive w-full"
+              className="w-full text-destructive hover:text-destructive"
             >
               Delete Subtitles
             </Button>

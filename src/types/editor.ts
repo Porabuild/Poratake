@@ -39,7 +39,11 @@ export type HighlightColor = string;
 export type TextFontSize = number;
 
 export type WindowFrameStyle =
-  'none' | 'macos-light' | 'macos-dark' | 'windows-light' | 'windows-dark';
+  | 'none'
+  | 'macos-light'
+  | 'macos-dark'
+  | 'windows-light'
+  | 'windows-dark';
 
 export interface WindowFrameSettings {
   style: WindowFrameStyle;

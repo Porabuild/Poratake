@@ -361,7 +361,7 @@ export default function EditorSidebar({
 
   return (
     <div
-      className="bg-card border-border flex h-full shrink-0 border-l"
+      className="flex h-full shrink-0 border-l border-border bg-card"
       style={{ width }}
     >
       <div
@@ -384,7 +384,7 @@ export default function EditorSidebar({
       <div className="min-w-0 flex-1 overflow-y-auto">
         <Suspense
           fallback={
-            <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               Loading...
             </div>
           }

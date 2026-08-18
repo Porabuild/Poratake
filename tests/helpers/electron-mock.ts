@@ -26,6 +26,7 @@ export function createMockApp(overrides: Partial<Electron.App> = {}) {
  * Mock the entire electron module.
  */
 export function mockElectron(appOverrides: Partial<Electron.App> = {}) {
+  // oxlint-disable-next-line vitest/hoisted-apis-on-top
   vi.mock('electron', () => ({
     app: createMockApp(appOverrides),
     ipcMain: {

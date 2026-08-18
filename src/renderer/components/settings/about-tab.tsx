@@ -88,7 +88,7 @@ export default function AboutTab() {
       case 'error':
         return <AlertCircle className="h-4 w-4 text-red-500" />;
       case 'unsupported':
-        return <AlertCircle className="text-muted-foreground h-4 w-4" />;
+        return <AlertCircle className="h-4 w-4 text-muted-foreground" />;
       case 'up_to_date':
         return <CheckCircle className="h-4 w-4 text-green-500" />;
       default:
@@ -142,13 +142,13 @@ export default function AboutTab() {
 
         {status === 'downloading' && (
           <div className="space-y-1">
-            <div className="bg-muted h-2 w-full overflow-hidden rounded-full">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
-                className="bg-primary h-full transition-all duration-300"
+                className="h-full bg-primary transition-all duration-300"
                 style={{ width: `${downloadProgress}%` }}
               />
             </div>
-            <p className="text-muted-foreground text-right text-xs">
+            <p className="text-right text-xs text-muted-foreground">
               {Math.floor(downloadProgress)}%
             </p>
           </div>
@@ -161,8 +161,8 @@ export default function AboutTab() {
                 Version {updateState.latestVersion} is available
               </p>
               {updateState.releaseNotes && (
-                <div className="text-muted-foreground mt-2 max-h-32 overflow-y-auto text-xs">
-                  <p className="text-foreground mb-1 font-medium">
+                <div className="mt-2 max-h-32 overflow-y-auto text-xs text-muted-foreground">
+                  <p className="mb-1 font-medium text-foreground">
                     What&apos;s New:
                   </p>
                   <pre className="font-sans whitespace-pre-wrap">
@@ -193,13 +193,13 @@ export default function AboutTab() {
         <img src={appIcon} alt="Poratake" className="h-16 w-16 rounded-xl" />
         <div>
           <BrandLogo />
-          <p className="text-muted-foreground mt-1 text-sm">
+          <p className="mt-1 text-sm text-muted-foreground">
             Version {version}
           </p>
         </div>
       </div>
 
-      <p className="text-muted-foreground text-sm">
+      <p className="text-sm text-muted-foreground">
         Capture, annotate, record, edit, and share from one focused workspace on
         macOS and Windows.
       </p>
@@ -212,59 +212,59 @@ export default function AboutTab() {
 
       <div className="space-y-3">
         <div className="flex items-center gap-3 text-sm">
-          <Globe className="text-muted-foreground h-4 w-4" />
+          <Globe className="h-4 w-4 text-muted-foreground" />
           <a
             href="#"
             onClick={e => {
               e.preventDefault();
               window.ipcRenderer.send('open-external', PORABUILD_URL);
             }}
-            className="text-muted-foreground hover:text-foreground transition-colors"
+            className="text-muted-foreground transition-colors hover:text-foreground"
           >
             Porabuild website
           </a>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <Globe className="text-muted-foreground h-4 w-4" />
+          <Globe className="h-4 w-4 text-muted-foreground" />
           <a
             href="#"
             onClick={e => {
               e.preventDefault();
               window.ipcRenderer.send('open-external', PORATAKE_URL);
             }}
-            className="text-muted-foreground hover:text-foreground transition-colors"
+            className="text-muted-foreground transition-colors hover:text-foreground"
           >
             Poratake website
           </a>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <Code2 className="text-muted-foreground h-4 w-4" />
+          <Code2 className="h-4 w-4 text-muted-foreground" />
           <a
             href="#"
             onClick={e => {
               e.preventDefault();
               window.ipcRenderer.send('open-external', versionSourceUrl);
             }}
-            className="text-muted-foreground hover:text-foreground transition-colors"
+            className="text-muted-foreground transition-colors hover:text-foreground"
           >
             This version&apos;s source
           </a>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <Code2 className="text-muted-foreground h-4 w-4" />
+          <Code2 className="h-4 w-4 text-muted-foreground" />
           <a
             href="#"
             onClick={e => {
               e.preventDefault();
               window.ipcRenderer.send('open-external', UPSTREAM_URL);
             }}
-            className="text-muted-foreground hover:text-foreground transition-colors"
+            className="text-muted-foreground transition-colors hover:text-foreground"
           >
             Original Capty project
           </a>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <Heart className="text-muted-foreground h-4 w-4" />
+          <Heart className="h-4 w-4 text-muted-foreground" />
           <span className="text-muted-foreground">
             Made for people who capture, explain, and share
           </span>
@@ -274,7 +274,7 @@ export default function AboutTab() {
       <Separator />
 
       <div className="space-y-3">
-        <div className="text-muted-foreground space-y-1 text-xs">
+        <div className="space-y-1 text-xs text-muted-foreground">
           <p>
             Poratake is a modified version of Capty. Modifications made in 2026.
           </p>

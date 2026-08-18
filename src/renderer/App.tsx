@@ -66,7 +66,7 @@ function CapturePreviewFallback({ params }: { params: CapturePreviewParams }) {
   }, [previewImageUrl]);
 
   return (
-    <div className="bg-muted h-screen w-screen overflow-hidden rounded-lg">
+    <div className="h-screen w-screen overflow-hidden rounded-lg bg-muted">
       {previewImageUrl && (
         <img
           src={previewImageUrl}
@@ -156,7 +156,7 @@ function WindowFallback({ data }: { data: LoadEvent }) {
   }
 
   return (
-    <div className="bg-background flex h-screen w-full items-center justify-center">
+    <div className="flex h-screen w-full items-center justify-center bg-background">
       <div className="text-muted-foreground">Loading...</div>
     </div>
   );
@@ -269,11 +269,11 @@ function App() {
     }
 
     if (isCapturePreviewWindow) {
-      return <div className="bg-background h-screen w-full" />;
+      return <div className="h-screen w-full bg-background" />;
     }
 
     return (
-      <div className="bg-background flex h-screen w-full items-center justify-center">
+      <div className="flex h-screen w-full items-center justify-center bg-background">
         <div className="text-muted-foreground">Loading...</div>
       </div>
     );

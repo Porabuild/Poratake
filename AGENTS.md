@@ -19,9 +19,11 @@ Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config),
 
 ## Code Style
 
-- **Formatting**: Use `bun run format` to fix, `bun run format:check` to verify
-- **Linting**: ESLint - Use `bun lint` to make sure no lint errors
+- **Formatting**: Oxfmt (Rust) - use `bun run format` to fix, `bun run format:check` to verify; config lives in `.oxfmtrc.json` (includes Tailwind class sorting via `sortTailwindcss`)
+- **Linting**: Oxlint (Rust) - use `bun run lint` (zero warnings enforced via `--deny-warnings`); config lives in `.oxlintrc.json`
+- **Typecheck**: TypeScript 7 native - use `bun run typecheck`
 - **All checks**: `bun run checks` runs typecheck + lint + format check + tests + the Windows daemon tests (verify only, no fixing)
+- **Pre-commit**: `.githooks/pre-commit` runs fast checks on staged files (oxfmt format check + oxlint with `--deny-warnings`) followed by a full `bun run typecheck`
 - **Windows daemon**: `bun run test:daemon-win` runs `cargo test` for `src/main/daemon-win/`. It is a no-op off Windows or without cargo, so a Rust compile break can only be caught locally on Windows — CI's `windows-native` job is the backstop.
 - **Imports**: Group by external → components → hooks → types → utils. Use `type` for type-only imports (`import type { ToolType }`)
 - **Types**: Store shared types in `src/types/` (accessible to main + renderer). Use discriminated unions for polymorphic data

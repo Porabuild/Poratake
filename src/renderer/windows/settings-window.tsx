@@ -7,7 +7,7 @@ import type { SettingsConfig, SettingsUiConfig } from '@/types/settings';
 import { DEFAULT_SETTINGS } from '@/types/settings';
 import { SETTINGS_CATEGORIES } from '@/renderer/components/settings/settings-registry';
 
-const ALL_TABS = SETTINGS_CATEGORIES.map(c => c.id);
+const ALL_TABS = new Set(SETTINGS_CATEGORIES.map(c => c.id));
 const DEFAULT_TAB = 'general';
 
 export default function SettingsWindow() {
@@ -19,7 +19,7 @@ export default function SettingsWindow() {
 
   const getTabFromHash = useCallback(() => {
     const hash = window.location.hash.slice(1);
-    return ALL_TABS.includes(hash) ? hash : DEFAULT_TAB;
+    return ALL_TABS.has(hash) ? hash : DEFAULT_TAB;
   }, []);
 
   useEffect(() => {
@@ -49,7 +49,7 @@ export default function SettingsWindow() {
 
   useEffect(() => {
     const handleNavigateTab = (_event: unknown, tab: string) => {
-      if (ALL_TABS.includes(tab)) {
+      if (ALL_TABS.has(tab)) {
         setActiveTab(tab);
         setSearchQuery('');
         window.location.hash = tab;
@@ -87,7 +87,7 @@ export default function SettingsWindow() {
 
   if (isLoading) {
     return (
-      <div className="bg-background flex h-screen w-full items-center justify-center">
+      <div className="flex h-screen w-full items-center justify-center bg-background">
         <p className="text-muted-foreground">Loading...</p>
       </div>
     );
@@ -121,7 +121,7 @@ export default function SettingsWindow() {
   };
 
   return (
-    <div className="poratake-settings-shell bg-content flex h-screen w-full">
+    <div className="poratake-settings-shell flex h-screen w-full bg-content">
       <SettingsSidebar
         activeCategory={activeTab}
         searchQuery={searchQuery}
@@ -129,7 +129,7 @@ export default function SettingsWindow() {
         onSearchChange={setSearchQuery}
       />
 
-      <div className="poratake-settings-content bg-content flex min-w-0 flex-1 flex-col">
+      <div className="poratake-settings-content flex min-w-0 flex-1 flex-col bg-content">
         <div
           className="h-10 w-full shrink-0"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}

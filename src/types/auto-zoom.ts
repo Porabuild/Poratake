@@ -249,7 +249,7 @@ function extractActions(events: CursorEvent[]): Action[] {
   return [
     ...extractPointerActions(events),
     ...extractScrollActions(events),
-  ].sort((a, b) => a.startTime - b.startTime);
+  ].toSorted((a, b) => a.startTime - b.startTime);
 }
 
 /** Screen fractions per second the camera must travel to link two actions. */
@@ -465,7 +465,7 @@ export function generateAutoZoomSegments(
     return [];
   }
 
-  const sortedEvents = [...events].sort((a, b) => a.timestamp - b.timestamp);
+  const sortedEvents = events.toSorted((a, b) => a.timestamp - b.timestamp);
   const worthwhile = clusterActions(extractActions(sortedEvents)).filter(
     cluster => zoomLevelOf(cluster) >= MIN_AUTO_ZOOM_LEVEL
   );
@@ -494,5 +494,7 @@ export function mergeAutoZoomSegments(
       )
   );
 
-  return [...manual, ...additions].sort((a, b) => a.startTime - b.startTime);
+  return [...manual, ...additions].toSorted(
+    (a, b) => a.startTime - b.startTime
+  );
 }

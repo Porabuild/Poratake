@@ -481,7 +481,7 @@ describe('recorder', () => {
         vi.fn(),
         vi.fn()
       );
-      const rejected = expect(start).rejects.toThrow('Capture failed');
+      start.catch(() => {});
 
       await vi.waitFor(() => expect(mockShowOverlay).toHaveBeenCalled());
       for (const handler of daemonEventHandlers) {
@@ -494,7 +494,7 @@ describe('recorder', () => {
 
       expect(mockHideOverlay).not.toHaveBeenCalled();
       resolveOverlay();
-      await rejected;
+      await expect(start).rejects.toThrow('Capture failed');
       expect(mockHideOverlay).toHaveBeenCalledWith(true);
     });
 

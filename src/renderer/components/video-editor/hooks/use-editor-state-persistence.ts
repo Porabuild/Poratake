@@ -63,7 +63,7 @@ export function useEditorStatePersistence({
   const hasAppliedStateRef = useRef(false);
   const isMountedRef = useRef(true);
   const isSavingRef = useRef(false);
-  const recordingTypeRef = useRef<RecordingType | undefined>();
+  const recordingTypeRef = useRef<RecordingType | undefined>(undefined);
 
   useEffect(() => {
     isMountedRef.current = true;

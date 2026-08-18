@@ -52,7 +52,7 @@ const INITIAL_DOCUMENT: EditorDocument = {
   audioStyle: DEFAULT_AUDIO_STYLE,
 };
 
-const OBJECT_KEYS_WITH_DEFAULTS: ReadonlyArray<keyof EditorDocument> = [
+const OBJECT_KEYS_WITH_DEFAULTS: ReadonlySet<keyof EditorDocument> = new Set([
   'zoomSettings',
   'wallpaper',
   'firstFrame',
@@ -61,7 +61,7 @@ const OBJECT_KEYS_WITH_DEFAULTS: ReadonlyArray<keyof EditorDocument> = [
   'keyboardStyle',
   'subtitleStyle',
   'audioStyle',
-];
+]);
 
 export const INITIAL_EDITOR_DOCUMENT = INITIAL_DOCUMENT;
 
@@ -82,7 +82,7 @@ export function mergeDocument(
     const value = partial[key];
     if (value === undefined) continue;
     if (
-      OBJECT_KEYS_WITH_DEFAULTS.includes(key) &&
+      OBJECT_KEYS_WITH_DEFAULTS.has(key) &&
       value !== null &&
       typeof value === 'object' &&
       !Array.isArray(value)

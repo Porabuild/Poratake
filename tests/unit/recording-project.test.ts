@@ -168,7 +168,9 @@ describe('recording-project', () => {
     it('throws when path is not a .capty project', async () => {
       const { createProjectFolder } =
         await import('@/main/capture/video/recording-project');
-      expect(() => createProjectFolder('/path/to/video.mov')).toThrow();
+      expect(() => createProjectFolder('/path/to/video.mov')).toThrow(
+        'Project path must end with'
+      );
     });
 
     it('creates folder when missing', async () => {

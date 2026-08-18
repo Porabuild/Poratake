@@ -116,26 +116,36 @@ describe('Poratake rebrand compliance', () => {
       const installed = JSON.parse(
         fs.readFileSync(path.join(packageDirectory, 'package.json'), 'utf8')
       ) as { version: string; license: string };
-      expect(installed.version, notice.name).toBe(notice.version);
-      expect(installed.license, notice.name).toBe(notice.license);
+      if (
+        installed.version !== notice.version ||
+        installed.license !== notice.license
+      ) {
+        throw new Error(
+          `${notice.name}: expected ${notice.version}/${notice.license}, found ${installed.version}/${installed.license}`
+        );
+      }
 
       const licenseFile = fs
         .readdirSync(packageDirectory)
         .find(file => /^licen[cs]e/i.test(file));
       if (!licenseFile) {
         const manualLicense = manualLicenses[notice.name];
-        expect(manualLicense, notice.name).toBeDefined();
-        expect(fs.existsSync(path.join(process.cwd(), manualLicense))).toBe(
-          true
-        );
+        const manualLicensePath =
+          manualLicense && path.join(process.cwd(), manualLicense);
+        if (!manualLicensePath || !fs.existsSync(manualLicensePath)) {
+          throw new Error(
+            `${notice.name}: no bundled license file and no valid manual license entry`
+          );
+        }
         return;
       }
 
       const relativeLicensePath = `${installedPackagePaths[notice.name] ?? notice.name}/${licenseFile}`;
-      expect(
-        filters.some(filter => matchesGlob(relativeLicensePath, filter)),
-        relativeLicensePath
-      ).toBe(true);
+      if (!filters.some(filter => matchesGlob(relativeLicensePath, filter))) {
+        throw new Error(
+          `License path missing from extraResources filters: ${relativeLicensePath}`
+        );
+      }
     });
 
     expect(builder).toContain('"from": "licenses/npm"');

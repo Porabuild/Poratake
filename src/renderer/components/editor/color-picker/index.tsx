@@ -65,18 +65,18 @@ export default function ColorPicker({
     >
       <HeroColorPicker.Trigger
         aria-label="Choose color"
-        className="group bg-default hover:bg-default-hover flex h-7 items-center gap-2 rounded-3xl px-2 outline-none"
+        className="group flex h-7 items-center gap-2 rounded-3xl bg-default px-2 outline-none hover:bg-default-hover"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         <ColorSwatch
           size="xs"
           style={{ opacity: isHighlight ? highlightOpacity : undefined }}
         />
-        <ChevronDown className="text-muted-foreground size-3.5 transition-transform group-aria-expanded:rotate-180" />
+        <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-aria-expanded:rotate-180" />
       </HeroColorPicker.Trigger>
       <HeroColorPicker.Popover
         placement="bottom left"
-        className="border-border bg-overlay w-64 rounded-2xl! border p-3! shadow-xl"
+        className="w-64 rounded-2xl! border border-border bg-overlay p-3! shadow-xl"
       >
         <ColorSwatchPicker
           aria-label="Preset colors"

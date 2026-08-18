@@ -26,7 +26,7 @@ function formatShortcut(shortcut: string, singleKey = false): string {
   return formatAccelerator(shortcut, ' ');
 }
 
-const MODIFIER_KEYS = ['META', 'CONTROL', 'SHIFT', 'ALT', 'ALTGRAPH'];
+const MODIFIER_KEYS = new Set(['META', 'CONTROL', 'SHIFT', 'ALT', 'ALTGRAPH']);
 
 function eventKeyToAccelerator(key: string): string {
   switch (key) {
@@ -56,7 +56,7 @@ function eventToAccelerator(e: KeyboardEvent): string {
   if (e.altKey) parts.push('Alt');
 
   const key = e.key.toUpperCase();
-  if (!MODIFIER_KEYS.includes(key)) {
+  if (!MODIFIER_KEYS.has(key)) {
     parts.push(acceleratorKeyFromCode(e.code) ?? eventKeyToAccelerator(key));
   }
 

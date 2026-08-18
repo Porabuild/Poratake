@@ -348,7 +348,7 @@ export function WallpaperSheetContent({
     return (
       <div
         className={cn(
-          'bg-popover flex h-full w-80 flex-col gap-4 overflow-y-auto border-r p-5 shadow-lg transition-transform duration-300 ease-in-out',
+          'flex h-full w-80 flex-col gap-4 overflow-y-auto border-r bg-popover p-5 shadow-lg transition-transform duration-300 ease-in-out',
           isAnimating ? 'translate-x-0' : '-translate-x-full'
         )}
       >
@@ -367,7 +367,7 @@ export function WallpaperSheetContent({
   return (
     <div
       className={cn(
-        'bg-popover flex h-full w-80 flex-col gap-4 overflow-y-auto border-r p-5 shadow-lg transition-transform duration-300 ease-in-out',
+        'flex h-full w-80 flex-col gap-4 overflow-y-auto border-r bg-popover p-5 shadow-lg transition-transform duration-300 ease-in-out',
         isAnimating ? 'translate-x-0' : '-translate-x-full'
       )}
     >
@@ -375,7 +375,7 @@ export function WallpaperSheetContent({
         <span className="text-sm font-medium">Wallpaper</span>
         <button
           onClick={onClose}
-          className="ring-offset-background focus:ring-ring rounded-xs bg-transparent opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden"
+          className="rounded-xs bg-transparent opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden"
         >
           <XIcon className="size-4" />
           <span className="sr-only">Close</span>
@@ -397,7 +397,7 @@ export function WallpaperSheetContent({
 
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <span className="text-muted-foreground text-xs font-medium">
+            <span className="text-xs font-medium text-muted-foreground">
               Backgrounds
             </span>
             <div className="flex items-center gap-1">
@@ -409,7 +409,7 @@ export function WallpaperSheetContent({
                         onClick={() =>
                           handleEditBackground(selectedCustomBackground)
                         }
-                        className="text-muted-foreground hover:text-foreground p-1"
+                        className="p-1 text-muted-foreground hover:text-foreground"
                       >
                         <Pencil className="size-3" />
                       </button>
@@ -422,7 +422,7 @@ export function WallpaperSheetContent({
                         onClick={() =>
                           handleDeleteBackground(selectedCustomBackground.id)
                         }
-                        className="text-muted-foreground hover:text-destructive p-1"
+                        className="p-1 text-muted-foreground hover:text-destructive"
                       >
                         <Trash2 className="size-3" />
                       </button>
@@ -435,7 +435,7 @@ export function WallpaperSheetContent({
                 <TooltipTrigger asChild>
                   <button
                     onClick={() => setShowBackgroundEditor(true)}
-                    className="text-muted-foreground hover:text-foreground p-1"
+                    className="p-1 text-muted-foreground hover:text-foreground"
                   >
                     <Plus className="size-3.5" />
                   </button>
@@ -454,7 +454,7 @@ export function WallpaperSheetContent({
                     'relative aspect-square overflow-hidden rounded-lg transition-all',
                     wallpaper.backgroundImage &&
                       wallpaper.backgroundImage === desktopWallpaperPreview
-                      ? 'ring-ring ring-2 ring-offset-2'
+                      ? 'ring-2 ring-ring ring-offset-2'
                       : 'hover:scale-105',
                     isLoadingDesktopWallpaper && 'cursor-wait',
                     desktopWallpaperError && 'cursor-not-allowed opacity-50'
@@ -468,13 +468,13 @@ export function WallpaperSheetContent({
                   }}
                 >
                   {!desktopWallpaperPreview && !isLoadingDesktopWallpaper && (
-                    <div className="bg-muted flex h-full w-full items-center justify-center">
-                      <Monitor className="text-muted-foreground size-4" />
+                    <div className="flex h-full w-full items-center justify-center bg-muted">
+                      <Monitor className="size-4 text-muted-foreground" />
                     </div>
                   )}
                   {isLoadingDesktopWallpaper && (
-                    <div className="bg-muted absolute inset-0 flex items-center justify-center">
-                      <div className="border-primary size-3 animate-spin rounded-full border-2 border-t-transparent" />
+                    <div className="absolute inset-0 flex items-center justify-center bg-muted">
+                      <div className="size-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                     </div>
                   )}
                 </button>
@@ -495,7 +495,7 @@ export function WallpaperSheetContent({
                 className={cn(
                   'aspect-square rounded-lg transition-all',
                   wallpaper.backgroundImage === preset.imageUrl
-                    ? 'ring-ring ring-2 ring-offset-2'
+                    ? 'ring-2 ring-ring ring-offset-2'
                     : 'hover:scale-105'
                 )}
                 style={{
@@ -516,7 +516,7 @@ export function WallpaperSheetContent({
                     className={cn(
                       'aspect-square rounded-lg transition-all',
                       wallpaper.gradient?.id === background.id
-                        ? 'ring-ring ring-2 ring-offset-2'
+                        ? 'ring-2 ring-ring ring-offset-2'
                         : 'hover:scale-105'
                     )}
                     style={{
@@ -535,7 +535,7 @@ export function WallpaperSheetContent({
                     className={cn(
                       'aspect-square rounded-lg transition-all',
                       isSelected
-                        ? 'ring-ring ring-2 ring-offset-2'
+                        ? 'ring-2 ring-ring ring-offset-2'
                         : 'hover:scale-105'
                     )}
                     style={{
@@ -594,7 +594,7 @@ export function WallpaperSheetContent({
                 onBackgroundImageChange(null);
                 onGradientChange(null);
               }}
-              className="text-muted-foreground hover:text-foreground text-xs"
+              className="text-xs text-muted-foreground hover:text-foreground"
             >
               Clear background
             </button>
@@ -701,7 +701,7 @@ export function WallpaperSheetContent({
             disabled={!hasMultipleLayers}
           />
           {!hasMultipleLayers && (
-            <span className="text-muted-foreground text-xs">
+            <span className="text-xs text-muted-foreground">
               Drop another image to enable spacing
             </span>
           )}
@@ -710,7 +710,7 @@ export function WallpaperSheetContent({
         <Separator />
 
         <div className="flex flex-col gap-3">
-          <span className="text-muted-foreground text-xs font-medium">
+          <span className="text-xs font-medium text-muted-foreground">
             Window Frame
           </span>
           <div className="grid grid-cols-3 gap-2">

@@ -332,9 +332,9 @@ describe('NativeDaemon', () => {
 
     const { daemon } = await import('@/main/daemon');
     const firstStart = daemon.start();
-    const firstResult = expect(firstStart).rejects.toThrow('spawn failed');
+    firstStart.catch(() => {});
     firstChild.emit('error', new Error('spawn failed'));
-    await firstResult;
+    await expect(firstStart).rejects.toThrow('spawn failed');
 
     const secondStart = daemon.start();
     secondChild.stdout.emit(
@@ -356,11 +356,11 @@ describe('NativeDaemon', () => {
 
     const { daemon } = await import('@/main/daemon');
     const firstStart = daemon.start();
-    const firstResult = expect(firstStart).rejects.toThrow(
+    firstStart.catch(() => {});
+    firstChild.emit('close', 1, null);
+    await expect(firstStart).rejects.toThrow(
       'Daemon closed before ready: code=1 signal=null'
     );
-    firstChild.emit('close', 1, null);
-    await firstResult;
 
     const secondStart = daemon.start();
     secondChild.stdout.emit(
@@ -382,11 +382,11 @@ describe('NativeDaemon', () => {
 
     const { daemon } = await import('@/main/daemon');
     const firstStart = daemon.start();
-    const firstResult = expect(firstStart).rejects.toThrow(
+    firstStart.catch(() => {});
+    firstChild.emit('exit', 1, null);
+    await expect(firstStart).rejects.toThrow(
       'Daemon exited before ready: code=1 signal=null'
     );
-    firstChild.emit('exit', 1, null);
-    await firstResult;
 
     const secondStart = daemon.start();
     secondChild.stdout.emit(
@@ -409,11 +409,9 @@ describe('NativeDaemon', () => {
 
     const { daemon } = await import('@/main/daemon');
     const firstStart = daemon.start();
-    const firstResult = expect(firstStart).rejects.toThrow(
-      'Daemon ready timeout'
-    );
+    firstStart.catch(() => {});
     await vi.advanceTimersByTimeAsync(10000);
-    await firstResult;
+    await expect(firstStart).rejects.toThrow('Daemon ready timeout');
 
     expect(firstChild.kill).toHaveBeenCalledWith('SIGKILL');
 

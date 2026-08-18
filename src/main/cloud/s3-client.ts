@@ -105,7 +105,7 @@ export class S3Client {
 
     const signedHeadersList = Object.keys(headersToSign)
       .map(k => k.toLowerCase())
-      .sort();
+      .toSorted();
     const signedHeadersStr = signedHeadersList.join(';');
 
     const canonicalHeaders =

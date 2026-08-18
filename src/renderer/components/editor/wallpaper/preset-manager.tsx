@@ -88,8 +88,8 @@ export default function PresetManager({
           </button>
         </div>
 
-        <div className="bg-muted/50 rounded-md p-2 text-xs">
-          <div className="text-muted-foreground mb-1">Preview:</div>
+        <div className="rounded-md bg-muted/50 p-2 text-xs">
+          <div className="mb-1 text-muted-foreground">Preview:</div>
           <div className="flex items-center gap-2">
             {currentSettings.gradient && (
               <div
@@ -111,7 +111,7 @@ export default function PresetManager({
           value={presetName}
           onChange={e => setPresetName(e.target.value)}
           placeholder="Preset name"
-          className="bg-field text-field-foreground placeholder:text-field-placeholder focus:ring-ring rounded-field h-7 border-0 px-2 text-xs focus:ring-2 focus:outline-none"
+          className="h-7 rounded-field border-0 bg-field px-2 text-xs text-field-foreground placeholder:text-field-placeholder focus:ring-2 focus:ring-ring focus:outline-none"
           autoFocus
           onKeyDown={e => {
             if (e.key === 'Enter' && presetName.trim()) {
@@ -145,12 +145,12 @@ export default function PresetManager({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="text-muted-foreground text-xs font-medium">
+        <span className="text-xs font-medium text-muted-foreground">
           Presets
         </span>
         <button
           onClick={() => setShowSaveDialog(true)}
-          className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs"
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           title="Save current settings as preset"
         >
           <Save className="size-3" />
@@ -207,14 +207,14 @@ export default function PresetManager({
             )}
           </div>
 
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             {defaultPreset
               ? `Polish on the capture preview copies with "${defaultPreset.name}".`
               : 'Star a preset to enable Polish on the capture preview.'}
           </p>
         </>
       ) : (
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           No presets saved yet. Use the Save button to create one.
         </p>
       )}

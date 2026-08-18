@@ -115,14 +115,14 @@ function NamingPatternControl({
           <Label>Naming Pattern</Label>
           <Tooltip>
             <TooltipTrigger asChild>
-              <HelpCircle className="text-muted-foreground size-4 cursor-help" />
+              <HelpCircle className="size-4 cursor-help text-muted-foreground" />
             </TooltipTrigger>
             <TooltipContent side="right" className="max-w-xs">
               <p className="mb-2 font-medium">Available tokens:</p>
               <div className="space-y-1 text-xs">
                 {tokens.map(t => (
                   <div key={t.token} className="flex justify-between gap-4">
-                    <code className="bg-muted rounded px-1">{t.token}</code>
+                    <code className="rounded bg-muted px-1">{t.token}</code>
                     <span className="text-muted-foreground">
                       {t.description} ({t.example})
                     </span>
@@ -149,11 +149,11 @@ function NamingPatternControl({
           </Tooltip>
         </div>
         {patternError && (
-          <p className="text-destructive text-sm">{patternError}</p>
+          <p className="text-sm text-destructive">{patternError}</p>
         )}
-        <p className="text-muted-foreground text-sm">
+        <p className="text-sm text-muted-foreground">
           Preview:{' '}
-          <code className="bg-muted rounded px-1.5 py-0.5 text-xs">
+          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
             {previewFilename}
           </code>
         </p>
@@ -311,7 +311,7 @@ function CloudTestConnectionControl({
         </span>
       )}
       {!isConfigured && (
-        <span className="text-muted-foreground text-xs">
+        <span className="text-xs text-muted-foreground">
           Fill in all required fields first
         </span>
       )}
@@ -364,11 +364,12 @@ function RestHeadersControl({
   return (
     <div className="grid gap-2 py-2">
       <Label>Request Headers</Label>
-      <p className="text-muted-foreground text-xs">
+      <p className="text-xs text-muted-foreground">
         Custom headers sent with the upload request (e.g. Authorization)
       </p>
       <div className="grid gap-2">
         {headers.map((header, index) => (
+          // oxlint-disable-next-line react/no-array-index-key
           <div key={index} className="flex gap-2">
             <Input
               placeholder="Header name"
@@ -459,7 +460,7 @@ export default function SettingItemRenderer({
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0 flex-1">
             <Label className="text-sm">{item.label}</Label>
-            <p className="text-muted-foreground text-xs">{item.description}</p>
+            <p className="text-xs text-muted-foreground">{item.description}</p>
           </div>
           <Switch
             aria-label={item.label}
@@ -475,7 +476,7 @@ export default function SettingItemRenderer({
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0 flex-1">
             <Label className="text-sm">{item.label}</Label>
-            <p className="text-muted-foreground text-xs">{item.description}</p>
+            <p className="text-xs text-muted-foreground">{item.description}</p>
           </div>
           <SettingsSelect
             label={item.label}
@@ -491,7 +492,7 @@ export default function SettingItemRenderer({
         <div className="space-y-3 py-2">
           <div className="flex items-center justify-between">
             <Label className="text-sm">{item.label}</Label>
-            <span className="text-muted-foreground text-sm">
+            <span className="text-sm text-muted-foreground">
               {item.getValue(settings)}
             </span>
           </div>
@@ -502,7 +503,7 @@ export default function SettingItemRenderer({
             max={item.max}
             step={item.step}
           />
-          <p className="text-muted-foreground text-xs">{item.description}</p>
+          <p className="text-xs text-muted-foreground">{item.description}</p>
         </div>
       );
 
@@ -528,7 +529,7 @@ export default function SettingItemRenderer({
             onChange={e => onUpdate(item.setValue(settings, e.target.value))}
           />
           {item.hint && (
-            <p className="text-muted-foreground text-xs">{item.hint}</p>
+            <p className="text-xs text-muted-foreground">{item.hint}</p>
           )}
         </div>
       );

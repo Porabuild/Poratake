@@ -25,7 +25,7 @@ export default function ZoomControl({
   // `rounded-3xl` is the button radius here: HeroUI maps the radius scale onto --radius.
   return (
     <div
-      className="bg-surface/90 fixed right-4 bottom-4 flex items-center gap-0.5 rounded-3xl p-1 shadow-lg backdrop-blur-md"
+      className="fixed right-4 bottom-4 flex items-center gap-0.5 rounded-3xl bg-surface/90 p-1 shadow-lg backdrop-blur-md"
       style={{ zIndex: 9999999 }}
     >
       <Button
@@ -42,7 +42,7 @@ export default function ZoomControl({
         size="xs"
         onClick={onZoomReset}
         title="Reset Zoom"
-        className="text-muted-foreground min-w-14 tabular-nums"
+        className="min-w-14 text-muted-foreground tabular-nums"
       >
         {zoomPercentage}%
       </Button>

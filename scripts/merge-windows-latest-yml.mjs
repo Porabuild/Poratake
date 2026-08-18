@@ -37,19 +37,26 @@ function yamlQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-if (!outputPath) fail('Usage: merge-windows-latest-yml.mjs <version> <x64.exe> <arm64.exe> <latest.yml>');
+if (!outputPath)
+  fail(
+    'Usage: merge-windows-latest-yml.mjs <version> <x64.exe> <arm64.exe> <latest.yml>'
+  );
 
 const x64Stats = requireFile(x64Path);
 const arm64Stats = requireFile(arm64Path);
 const x64Name = path.basename(x64Path);
 const arm64Name = path.basename(arm64Path);
 
-if (!x64Name.includes('win-x64')) fail(`x64 installer name must include win-x64: ${x64Name}`);
+if (!x64Name.includes('win-x64'))
+  fail(`x64 installer name must include win-x64: ${x64Name}`);
 if (!arm64Name.includes('win-arm64')) {
   fail(`arm64 installer name must include win-arm64: ${arm64Name}`);
 }
 
-const [x64Hash, arm64Hash] = await Promise.all([hashFile(x64Path), hashFile(arm64Path)]);
+const [x64Hash, arm64Hash] = await Promise.all([
+  hashFile(x64Path),
+  hashFile(arm64Path),
+]);
 
 const yaml = [
   `version: ${yamlQuote(version)}`,

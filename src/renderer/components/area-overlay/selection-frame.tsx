@@ -16,7 +16,7 @@ export default function SelectionFrame({
 
   return (
     <div
-      className="border-primary pointer-events-none absolute border shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+      className="pointer-events-none absolute border border-primary shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
       style={{
         left: rect.x,
         top: rect.y,

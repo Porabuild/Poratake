@@ -50,8 +50,8 @@ function PositionGrid({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      {POSITION_GRID.map((row, rowIndex) => (
-        <div key={rowIndex} className="flex gap-1">
+      {POSITION_GRID.map(row => (
+        <div key={row.join('-')} className="flex gap-1">
           {row.map(position => (
             <button
               key={position}

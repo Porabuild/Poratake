@@ -126,8 +126,12 @@ export async function terminateFFmpegProcesses(): Promise<void> {
             return;
           }
 
+          let settled = false;
           const finish = (): void => {
+            if (settled) return;
+            settled = true;
             clearTimeout(fallbackId);
+            // oxlint-disable-next-line promise/no-multiple-resolved
             resolve();
           };
           const fallbackId = setTimeout(finish, 1000);

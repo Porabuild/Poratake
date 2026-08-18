@@ -127,7 +127,7 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
     return (
       <div
         ref={setRefs}
-        className={`group bg-secondary hover:bg-muted relative cursor-default overflow-hidden rounded-lg transition-all ${
+        className={`group relative cursor-default overflow-hidden rounded-lg bg-secondary transition-all hover:bg-muted ${
           isSelected
             ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-transparent'
             : ''
@@ -138,8 +138,8 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
       >
         <div className="relative aspect-video w-full overflow-hidden">
           {loading ? (
-            <div className="bg-muted flex h-full w-full items-center justify-center">
-              <div className="border-muted-foreground/30 border-t-muted-foreground h-4 w-4 animate-spin rounded-full border-2" />
+            <div className="flex h-full w-full items-center justify-center bg-muted">
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
             </div>
           ) : imageSrc ? (
             <>
@@ -181,14 +181,14 @@ const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(
               )}
             </>
           ) : (
-            <div className="bg-muted text-muted-foreground flex h-full w-full items-center justify-center text-xs">
+            <div className="flex h-full w-full items-center justify-center bg-muted text-xs text-muted-foreground">
               No preview
             </div>
           )}
         </div>
 
         <div className="px-2 py-1.5">
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             {formatRelativeTime(item.timestamp)}
           </p>
         </div>
