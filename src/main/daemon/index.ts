@@ -372,15 +372,20 @@ class NativeDaemon extends EventEmitter {
         return;
       }
 
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // oxlint-disable-next-line promise/no-multiple-resolved
+        resolve();
+      };
       const timer = setTimeout(() => {
         this.process?.kill('SIGKILL');
-        resolve();
+        finish();
       }, timeout);
 
-      this.process.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
+      this.process.once('exit', finish);
     });
   }
 

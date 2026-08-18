@@ -51,7 +51,7 @@ export function CircularProgress({
         strokeDasharray={circumference}
         strokeDashoffset={offset}
         className={cn(
-          'stroke-foreground origin-center -rotate-90 transition-[stroke-dashoffset] duration-300 ease-out',
+          'origin-center -rotate-90 stroke-foreground transition-[stroke-dashoffset] duration-300 ease-out',
           indicatorClassName
         )}
       />

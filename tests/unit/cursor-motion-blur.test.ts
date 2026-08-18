@@ -62,12 +62,7 @@ beforeEach(() => {
   bufferContexts = [];
   vi.stubGlobal('Image', MockImage);
   vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas);
-  vi.stubGlobal(
-    'Blob',
-    class {
-      constructor(..._args: unknown[]) {}
-    }
-  );
+  vi.stubGlobal('Blob', class {});
   URL.createObjectURL = () => 'blob:mock';
   URL.revokeObjectURL = () => {};
 });

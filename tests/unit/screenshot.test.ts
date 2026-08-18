@@ -26,23 +26,27 @@ const mockRmSync = vi.fn();
 
 vi.mock('fs', () => ({
   default: {
-    existsSync: (path: string) => mockExistsSync(path),
-    mkdirSync: (path: string, options?: object) => mockMkdirSync(path, options),
-    readFileSync: (path: string) => mockReadFileSync(path),
-    writeFileSync: (path: string, data: Buffer) =>
-      mockWriteFileSync(path, data),
+    existsSync: (filePath: string) => mockExistsSync(filePath),
+    mkdirSync: (filePath: string, options?: object) =>
+      mockMkdirSync(filePath, options),
+    readFileSync: (filePath: string) => mockReadFileSync(filePath),
+    writeFileSync: (filePath: string, data: Buffer) =>
+      mockWriteFileSync(filePath, data),
     copyFileSync: (src: string, dest: string) => mockCopyFileSync(src, dest),
-    rmSync: (path: string, options?: object) => mockRmSync(path, options),
+    rmSync: (filePath: string, options?: object) =>
+      mockRmSync(filePath, options),
     promises: {
-      readFile: (path: string) => mockReadFile(path),
+      readFile: (filePath: string) => mockReadFile(filePath),
     },
   },
-  existsSync: (path: string) => mockExistsSync(path),
-  mkdirSync: (path: string, options?: object) => mockMkdirSync(path, options),
-  readFileSync: (path: string) => mockReadFileSync(path),
-  writeFileSync: (path: string, data: Buffer) => mockWriteFileSync(path, data),
+  existsSync: (filePath: string) => mockExistsSync(filePath),
+  mkdirSync: (filePath: string, options?: object) =>
+    mockMkdirSync(filePath, options),
+  readFileSync: (filePath: string) => mockReadFileSync(filePath),
+  writeFileSync: (filePath: string, data: Buffer) =>
+    mockWriteFileSync(filePath, data),
   copyFileSync: (src: string, dest: string) => mockCopyFileSync(src, dest),
-  rmSync: (path: string, options?: object) => mockRmSync(path, options),
+  rmSync: (filePath: string, options?: object) => mockRmSync(filePath, options),
 }));
 
 const mockIpcMainOn = vi.fn();
@@ -182,10 +186,11 @@ const mockGetHistoryItem = vi.fn();
 const mockDeleteHistoryItem = vi.fn();
 
 vi.mock('@/main/history', () => ({
-  addToHistory: (path: string) => mockAddToHistory(path),
-  updateHistoryItemByPath: (path: string, state: unknown) =>
-    mockUpdateHistoryItemByPath(path, state),
-  getHistoryItemByPath: (path: string) => mockGetHistoryItemByPath(path),
+  addToHistory: (filePath: string) => mockAddToHistory(filePath),
+  updateHistoryItemByPath: (filePath: string, state: unknown) =>
+    mockUpdateHistoryItemByPath(filePath, state),
+  getHistoryItemByPath: (filePath: string) =>
+    mockGetHistoryItemByPath(filePath),
   getHistoryItem: (id: string) => mockGetHistoryItem(id),
   deleteHistoryItem: (id: string) => mockDeleteHistoryItem(id),
   isHistoryPopoverWebContents: vi.fn(() => true),
@@ -404,8 +409,8 @@ describe('Screenshot Module', () => {
 
   describe('screenshot() function', () => {
     it('should create Poratake directory if it does not exist', async () => {
-      mockExistsSync.mockImplementation((path: string) => {
-        if (path.includes('Poratake')) return false;
+      mockExistsSync.mockImplementation((filePath: string) => {
+        if (filePath.includes('Poratake')) return false;
         return true;
       });
 
@@ -559,8 +564,7 @@ describe('Screenshot Module', () => {
       });
       await import('@/main/capture/screenshot');
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const handlerCall = (mockIpcMainHandle.mock.calls as any[]).find(
+      const handlerCall = mockIpcMainHandle.mock.calls.find(
         call => call[0] === 'screenshot:read-file'
       );
       const handler = handlerCall?.[1];
@@ -585,8 +589,7 @@ describe('Screenshot Module', () => {
       });
       await import('@/main/capture/screenshot');
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const handlerCall = (mockIpcMainHandle.mock.calls as any[]).find(
+      const handlerCall = mockIpcMainHandle.mock.calls.find(
         call => call[0] === 'screenshot:read-file'
       );
       const handler = handlerCall?.[1];
@@ -603,8 +606,7 @@ describe('Screenshot Module', () => {
     it('should open settings window', async () => {
       await import('@/main/capture/screenshot');
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const handlerCall = (mockIpcMainOn.mock.calls as any[]).find(
+      const handlerCall = mockIpcMainOn.mock.calls.find(
         call => call[0] === 'open-settings'
       );
       const handler = handlerCall?.[1];
@@ -617,8 +619,7 @@ describe('Screenshot Module', () => {
     it('should open settings window without tab', async () => {
       await import('@/main/capture/screenshot');
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const handlerCall = (mockIpcMainOn.mock.calls as any[]).find(
+      const handlerCall = mockIpcMainOn.mock.calls.find(
         call => call[0] === 'open-settings'
       );
       const handler = handlerCall?.[1];

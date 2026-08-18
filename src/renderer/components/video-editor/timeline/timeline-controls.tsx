@@ -121,7 +121,7 @@ export default function TimelineControls({
                 onClick={onDeleteSegment}
                 variant="ghost"
                 size="icon-sm"
-                className="text-destructive hover:text-destructive size-8!"
+                className="size-8! text-destructive hover:text-destructive"
               >
                 <Trash2 className="size-4" />
               </Button>
@@ -135,7 +135,7 @@ export default function TimelineControls({
 
       <Separator orientation="vertical" className="mx-1 h-5" />
 
-      <span className="text-muted-foreground font-mono text-sm">
+      <span className="font-mono text-sm text-muted-foreground">
         {formatTime(timelinePosition)} / {formatTime(totalTimelineDuration)}
         {segmentCount > 1 && (
           <span className="ml-2 text-amber-500">({segmentCount} clips)</span>
@@ -219,7 +219,7 @@ export default function TimelineControls({
       <Separator orientation="vertical" className="mx-1 h-5" />
 
       <div className="flex items-center gap-2">
-        <span className="text-muted-foreground text-xs">Scrub Audio</span>
+        <span className="text-xs text-muted-foreground">Scrub Audio</span>
         <Switch
           size="sm"
           checked={scrubAudioEnabled}
@@ -233,7 +233,7 @@ export default function TimelineControls({
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon-sm" className="size-8!">
-            <HelpCircle className="text-muted-foreground size-4" />
+            <HelpCircle className="size-4 text-muted-foreground" />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="top" className="max-w-xs text-center">

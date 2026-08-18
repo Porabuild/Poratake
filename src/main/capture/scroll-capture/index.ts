@@ -235,8 +235,12 @@ async function runScrollCapture(): Promise<void> {
       const payload = (data ?? {}) as Record<string, unknown>;
 
       if (eventType === 'frame') {
-        frameCount = Number(payload.frameCount ?? frameCount);
-        estimatedHeight = Number(payload.estimatedHeight ?? estimatedHeight);
+        if (payload.frameCount != null) {
+          frameCount = Number(payload.frameCount);
+        }
+        if (payload.estimatedHeight != null) {
+          estimatedHeight = Number(payload.estimatedHeight);
+        }
         preview = (payload.preview as string) ?? preview;
         previewWidth = (payload.previewWidth as number) ?? previewWidth;
         previewHeight = (payload.previewHeight as number) ?? previewHeight;

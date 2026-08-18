@@ -242,7 +242,7 @@ export default function BackgroundSelector({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <span className="text-muted-foreground text-xs font-medium">
+        <span className="text-xs font-medium text-muted-foreground">
           Backgrounds
         </span>
         <div className="flex items-center gap-1">
@@ -254,7 +254,7 @@ export default function BackgroundSelector({
                     onClick={() =>
                       handleEditBackground(selectedCustomBackground)
                     }
-                    className="text-muted-foreground hover:text-foreground p-1"
+                    className="p-1 text-muted-foreground hover:text-foreground"
                   >
                     <Pencil className="size-3" />
                   </button>
@@ -267,7 +267,7 @@ export default function BackgroundSelector({
                     onClick={() =>
                       handleDeleteBackground(selectedCustomBackground.id)
                     }
-                    className="text-muted-foreground hover:text-destructive p-1"
+                    className="p-1 text-muted-foreground hover:text-destructive"
                   >
                     <Trash2 className="size-3" />
                   </button>
@@ -281,7 +281,7 @@ export default function BackgroundSelector({
               <TooltipTrigger asChild>
                 <button
                   onClick={() => setShowBackgroundEditor(true)}
-                  className="text-muted-foreground hover:text-foreground p-1"
+                  className="p-1 text-muted-foreground hover:text-foreground"
                 >
                   <Plus className="size-3.5" />
                 </button>
@@ -299,13 +299,13 @@ export default function BackgroundSelector({
               <button
                 onClick={noWallpaper.onSelect}
                 className={cn(
-                  'bg-muted flex aspect-square items-center justify-center rounded-lg transition-all',
+                  'flex aspect-square items-center justify-center rounded-lg bg-muted transition-all',
                   noWallpaper.selected
-                    ? 'ring-ring ring-2 ring-offset-2'
+                    ? 'ring-2 ring-ring ring-offset-2'
                     : 'hover:scale-105'
                 )}
               >
-                <Ban className="text-muted-foreground size-4" />
+                <Ban className="size-4 text-muted-foreground" />
               </button>
             </TooltipTrigger>
             <TooltipContent>No Wallpaper</TooltipContent>
@@ -324,7 +324,7 @@ export default function BackgroundSelector({
                   hasBackground &&
                     selectedBackgroundImage &&
                     selectedBackgroundImage === desktopWallpaperPreview
-                    ? 'ring-ring ring-2 ring-offset-2'
+                    ? 'ring-2 ring-ring ring-offset-2'
                     : 'hover:scale-105',
                   isLoadingDesktopWallpaper && 'cursor-wait',
                   desktopWallpaperError && 'cursor-not-allowed opacity-50'
@@ -338,13 +338,13 @@ export default function BackgroundSelector({
                 }}
               >
                 {!desktopWallpaperPreview && !isLoadingDesktopWallpaper && (
-                  <div className="bg-muted flex h-full w-full items-center justify-center">
-                    <Monitor className="text-muted-foreground size-4" />
+                  <div className="flex h-full w-full items-center justify-center bg-muted">
+                    <Monitor className="size-4 text-muted-foreground" />
                   </div>
                 )}
                 {isLoadingDesktopWallpaper && (
-                  <div className="bg-muted absolute inset-0 flex items-center justify-center">
-                    <div className="border-primary size-3 animate-spin rounded-full border-2 border-t-transparent" />
+                  <div className="absolute inset-0 flex items-center justify-center bg-muted">
+                    <div className="size-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                   </div>
                 )}
               </button>
@@ -370,7 +370,7 @@ export default function BackgroundSelector({
             className={cn(
               'aspect-square rounded-lg transition-all',
               hasBackground && selectedBackgroundImage === preset.imageUrl
-                ? 'ring-ring ring-2 ring-offset-2'
+                ? 'ring-2 ring-ring ring-offset-2'
                 : 'hover:scale-105'
             )}
             style={{
@@ -393,7 +393,7 @@ export default function BackgroundSelector({
                   className={cn(
                     'aspect-square rounded-lg transition-all',
                     hasBackground && selectedGradient?.id === background.id
-                      ? 'ring-ring ring-2 ring-offset-2'
+                      ? 'ring-2 ring-ring ring-offset-2'
                       : 'hover:scale-105'
                   )}
                   style={{
@@ -413,7 +413,7 @@ export default function BackgroundSelector({
                   className={cn(
                     'aspect-square rounded-lg transition-all',
                     isSelected
-                      ? 'ring-ring ring-2 ring-offset-2'
+                      ? 'ring-2 ring-ring ring-offset-2'
                       : 'hover:scale-105'
                   )}
                   style={{
@@ -431,7 +431,7 @@ export default function BackgroundSelector({
       {!noWallpaper && (selectedBackgroundImage || selectedGradient) && (
         <button
           onClick={handleClearBackground}
-          className="text-muted-foreground hover:text-foreground text-xs"
+          className="text-xs text-muted-foreground hover:text-foreground"
         >
           Clear background
         </button>

@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import type { HighlightAnnotation } from '@/types/editor';
 import {
   type AnnotationRenderProps,

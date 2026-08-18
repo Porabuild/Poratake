@@ -87,7 +87,7 @@ export default function EditorSidebarTabs({
   ];
 
   return (
-    <div className="bg-card border-border flex h-full w-10 shrink-0 flex-col items-center gap-1 border-l py-2">
+    <div className="flex h-full w-10 shrink-0 flex-col items-center gap-1 border-l border-border bg-card py-2">
       {tabs.map(tab => {
         const shortcutLabel = getShortcutLabel(tab.id);
         return (

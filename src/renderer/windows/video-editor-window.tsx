@@ -996,15 +996,15 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   if (!isEditorReady) {
     if (editorData.videoMetadataStatus === 'unavailable' && videoLoadFailed) {
       return (
-        <div className="bg-background flex h-screen w-full flex-col items-center justify-center gap-3 px-10 text-center select-none">
-          <TriangleAlert className="text-muted-foreground size-8" />
+        <div className="flex h-screen w-full flex-col items-center justify-center gap-3 bg-background px-10 text-center select-none">
+          <TriangleAlert className="size-8 text-muted-foreground" />
           <p className="text-sm font-medium">Could not read this recording</p>
-          <p className="text-muted-foreground max-w-md text-xs">
+          <p className="max-w-md text-xs text-muted-foreground">
             Poratake could not determine the video duration, so the editor
             cannot open. The recording may be corrupted, or the bundled FFmpeg
             binary may be missing from this build.
           </p>
-          <p className="text-muted-foreground max-w-md font-mono text-xs break-all">
+          <p className="max-w-md font-mono text-xs break-all text-muted-foreground">
             {filePath}
           </p>
         </div>
@@ -1012,8 +1012,8 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     }
 
     return (
-      <div className="bg-background flex h-screen w-full items-center justify-center select-none">
-        <span className="text-muted-foreground text-sm">
+      <div className="flex h-screen w-full items-center justify-center bg-background select-none">
+        <span className="text-sm text-muted-foreground">
           Loading recording...
         </span>
         <video
@@ -1028,7 +1028,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   }
 
   return (
-    <div className="bg-background flex h-screen w-full flex-col pt-10 select-none">
+    <div className="flex h-screen w-full flex-col bg-background pt-10 select-none">
       <VideoTitleBar
         fileName={fileName}
         projectPath={projectPath}
@@ -1113,7 +1113,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
             />
           </div>
 
-          <div className="bg-card border-border flex shrink-0 flex-col border-t">
+          <div className="flex shrink-0 flex-col border-t border-border bg-card">
             <div
               role="separator"
               aria-orientation="horizontal"
@@ -1169,21 +1169,21 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
                 className="scrollbar-overlay-vertical flex items-start overflow-y-auto"
                 style={{ height: timelineHeight }}
               >
-                <div className="border-border flex w-10 shrink-0 flex-col border-r">
+                <div className="flex w-10 shrink-0 flex-col border-r border-border">
                   <TrackRow className="flex items-center justify-center">
-                    <Film className="text-muted-foreground size-4" />
+                    <Film className="size-4 text-muted-foreground" />
                   </TrackRow>
                   <TrackRow className="flex items-center justify-center">
-                    <ZoomIn className="text-muted-foreground size-4" />
+                    <ZoomIn className="size-4 text-muted-foreground" />
                   </TrackRow>
                   {editorData.cameraData && (
                     <TrackRow className="flex items-center justify-center">
-                      <Camera className="text-muted-foreground size-4" />
+                      <Camera className="size-4 text-muted-foreground" />
                     </TrackRow>
                   )}
                   {drawingControl.drawingSegments.length === 0 ? (
                     <TrackRow className="flex items-center justify-center">
-                      <PenLine className="text-muted-foreground size-4" />
+                      <PenLine className="size-4 text-muted-foreground" />
                     </TrackRow>
                   ) : (
                     drawingControl.drawingSegments.map(drawing => (
@@ -1191,7 +1191,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
                         key={drawing.id}
                         className="flex items-center justify-center"
                       >
-                        <PenLine className="text-muted-foreground size-4" />
+                        <PenLine className="size-4 text-muted-foreground" />
                       </TrackRow>
                     ))
                   )}
@@ -1202,7 +1202,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
                         key={group[0].groupId}
                         className="flex items-center justify-center"
                       >
-                        <Icon className="text-muted-foreground size-4" />
+                        <Icon className="size-4 text-muted-foreground" />
                       </TrackRow>
                     );
                   })}

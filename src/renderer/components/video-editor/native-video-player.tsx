@@ -88,6 +88,8 @@ interface NativeVideoPlayerProps {
   onPlayingChange?: (isPlaying: boolean) => void;
 }
 
+const NO_SELECTED_DRAWING_IDS: string[] = [];
+
 const NativeVideoPlayer = forwardRef<
   NativeVideoPlayerHandle,
   NativeVideoPlayerProps
@@ -123,7 +125,7 @@ const NativeVideoPlayer = forwardRef<
       drawingSegments = null,
       drawingToolSettings = null,
       drawingTimelinePosition,
-      selectedDrawingIds = [],
+      selectedDrawingIds = NO_SELECTED_DRAWING_IDS,
       onAddDrawingSegment,
       onSelectDrawing,
       onSelectMultipleDrawings,
@@ -1297,8 +1299,8 @@ const NativeVideoPlayer = forwardRef<
       >
         {!isReady && (
           <div className="flex flex-col items-center gap-3">
-            <Loader2 className="text-muted-foreground size-8 animate-spin" />
-            <span className="text-muted-foreground text-sm">Loading...</span>
+            <Loader2 className="size-8 animate-spin text-muted-foreground" />
+            <span className="text-sm text-muted-foreground">Loading...</span>
           </div>
         )}
         <div

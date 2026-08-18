@@ -47,7 +47,13 @@ interface ToolOptionsProps {
   selectedColor?: string;
 }
 
-const TOOLS_WITH_THICKNESS = ['pen', 'rectangle', 'circle', 'line', 'arrow'];
+const TOOLS_WITH_THICKNESS = new Set([
+  'pen',
+  'rectangle',
+  'circle',
+  'line',
+  'arrow',
+]);
 const THICKNESS_OPTIONS = [1, 3, 8, 13, 21];
 const THICKNESS_OPTIONS_SIZE = [2, 4, 6, 8, 10];
 
@@ -79,7 +85,7 @@ export default function ToolOptions({
   onShapeFillModeChange,
   selectedColor = '#FF3B30',
 }: ToolOptionsProps) {
-  const showThickness = TOOLS_WITH_THICKNESS.includes(activeTool);
+  const showThickness = TOOLS_WITH_THICKNESS.has(activeTool);
   const showArrowStyle = activeTool === 'arrow';
   const showHighlightOptions = activeTool === 'highlight';
   const showNumberOptions = activeTool === 'number';
@@ -118,7 +124,7 @@ export default function ToolOptions({
           >
             <Select.Trigger className="h-7 min-h-7 items-center rounded-3xl py-0 ps-2">
               <div
-                className="bg-muted-foreground w-4 rounded-full"
+                className="w-4 rounded-full bg-muted-foreground"
                 style={{
                   height: `${THICKNESS_OPTIONS_SIZE[THICKNESS_OPTIONS.indexOf(strokeWidth)]}px`,
                 }}
@@ -135,7 +141,7 @@ export default function ToolOptions({
                   >
                     <div className="flex h-4 flex-1 items-center">
                       <div
-                        className="bg-muted-foreground w-8 rounded-full"
+                        className="w-8 rounded-full bg-muted-foreground"
                         style={{
                           height: `${THICKNESS_OPTIONS_SIZE[index]}px`,
                         }}
@@ -147,7 +153,7 @@ export default function ToolOptions({
               </ListBox>
             </Select.Popover>
           </Select>
-          <div className="bg-border mx-1 h-[18px] w-px" />
+          <div className="mx-1 h-[18px] w-px bg-border" />
         </>
       )}
       {showArrowStyle && onArrowStyleChange && (

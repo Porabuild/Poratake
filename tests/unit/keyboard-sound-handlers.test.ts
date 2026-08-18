@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as NodePath from 'path';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
@@ -36,7 +37,7 @@ vi.mock('fs/promises', () => ({
 }));
 
 vi.mock('path', async () => {
-  const actual = await vi.importActual<typeof import('path')>('path');
+  const actual = await vi.importActual<typeof NodePath>('path');
   return { ...actual, default: actual };
 });
 

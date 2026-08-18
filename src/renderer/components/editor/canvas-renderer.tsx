@@ -54,6 +54,10 @@ export interface CanvasRendererProps {
   layerInsetColors?: Record<string, string | null>;
 }
 
+const NO_EXTRA_LAYERS: ImageLayer[] = [];
+const NO_EXTRA_LAYER_IMAGES: Record<string, HTMLImageElement> = {};
+const NO_LAYER_INSET_COLORS: Record<string, string | null> = {};
+
 export interface CanvasRendererHandle {
   getCanvas: () => HTMLCanvasElement | null;
   toDataURL: (type?: string, quality?: number) => string;
@@ -123,7 +127,8 @@ interface DrawLayerArgs {
   hasWindowFrame: boolean;
   frameStyle: WindowFrameStyle;
   frameTheme:
-    (typeof WINDOW_FRAME_THEMES)[keyof typeof WINDOW_FRAME_THEMES] | null;
+    | (typeof WINDOW_FRAME_THEMES)[keyof typeof WINDOW_FRAME_THEMES]
+    | null;
   titleBarHeight: number;
   balanceCrop: BalanceCrop;
   insetColor: string | null;
@@ -299,13 +304,13 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       windowFrame = 'none',
       aspectRatioPaddingX = 0,
       aspectRatioPaddingY = 0,
-      extraLayers = [],
-      extraLayerImages = {},
+      extraLayers = NO_EXTRA_LAYERS,
+      extraLayerImages = NO_EXTRA_LAYER_IMAGES,
       layerRects,
       primaryRect,
       nativeBalanceCrop,
       primaryInsetColor,
-      layerInsetColors = {},
+      layerInsetColors = NO_LAYER_INSET_COLORS,
     },
     ref
   ) => {

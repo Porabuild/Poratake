@@ -28,11 +28,11 @@ export default function TextOptions({
       <Popover>
         <Popover.Trigger
           aria-label="Text options"
-          className="group bg-default hover:bg-default-hover flex h-7 items-center gap-2 rounded-3xl px-2 outline-none"
+          className="group flex h-7 items-center gap-2 rounded-3xl bg-default px-2 outline-none hover:bg-default-hover"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <TypeIcon className="size-4" />
-          <ChevronDown className="text-muted-foreground size-3.5 transition-transform group-aria-expanded:rotate-180" />
+          <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-aria-expanded:rotate-180" />
         </Popover.Trigger>
         <Popover.Content placement="bottom" className="min-w-40">
           <Popover.Dialog className="p-0">
@@ -64,7 +64,7 @@ export default function TextOptions({
                   </span>
                   <span
                     style={{ fontFamily }}
-                    className="text-muted-foreground text-xs"
+                    className="text-xs text-muted-foreground"
                   >
                     Aa
                   </span>
@@ -72,9 +72,9 @@ export default function TextOptions({
                 </ListBox.Item>
               ))}
             </ListBox>
-            <div className="bg-separator h-px" />
+            <div className="h-px bg-separator" />
             <div className="flex items-center justify-between px-2 py-1.5">
-              <span className="text-muted-foreground text-xs">Size:</span>
+              <span className="text-xs text-muted-foreground">Size:</span>
               <Select
                 aria-label="Font size"
                 variant="secondary"
@@ -118,9 +118,9 @@ export default function TextOptions({
                 </Select.Popover>
               </Select>
             </div>
-            <div className="bg-separator h-px" />
+            <div className="h-px bg-separator" />
             <div className="flex items-center justify-between px-2 py-1.5">
-              <span className="text-muted-foreground text-xs">Background:</span>
+              <span className="text-xs text-muted-foreground">Background:</span>
               <Switch
                 size="sm"
                 checked={textBackground}
@@ -131,7 +131,7 @@ export default function TextOptions({
           </Popover.Dialog>
         </Popover.Content>
       </Popover>
-      <div className="bg-border mx-1 h-[18px] w-px" />
+      <div className="mx-1 h-[18px] w-px bg-border" />
     </>
   );
 }

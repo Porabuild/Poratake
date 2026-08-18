@@ -1,5 +1,11 @@
 export type ModifierKey =
-  'command' | 'control' | 'option' | 'shift' | 'fn' | 'meta' | 'alt';
+  | 'command'
+  | 'control'
+  | 'option'
+  | 'shift'
+  | 'fn'
+  | 'meta'
+  | 'alt';
 
 export type KeyboardPlatform = 'macos' | 'windows';
 

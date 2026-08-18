@@ -143,8 +143,9 @@ function parseWhisperTokens(
     .filter((moment): moment is number => moment !== null);
   const hasDtw = dtwMoments.length > 0 && Math.max(...dtwMoments) > 0;
   const previousMoments: Array<number | null> = [];
-  const nextMoments: Array<number | null> = new Array(parsedTokens.length).fill(
-    null
+  const nextMoments: Array<number | null> = Array.from(
+    { length: parsedTokens.length },
+    () => null
   );
 
   if (hasDtw) {

@@ -18,13 +18,15 @@ export function windowsAssetNames(version) {
 }
 
 export function publishedAssetNames(version) {
-  return [...macAssetNames(version), ...windowsAssetNames(version)].sort();
+  return [...macAssetNames(version), ...windowsAssetNames(version)].toSorted();
 }
 
 const [command, version] = process.argv.slice(2);
 if (command === 'expected') {
   if (!version) {
-    process.stderr.write('Usage: published-release-assets.mjs expected <version>\n');
+    process.stderr.write(
+      'Usage: published-release-assets.mjs expected <version>\n'
+    );
     process.exit(1);
   }
   process.stdout.write(`${publishedAssetNames(version).join('\n')}\n`);

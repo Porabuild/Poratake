@@ -55,12 +55,12 @@ export default function CaptureEdgeOverlay({
           onContextMenu={e => e.preventDefault()}
         >
           <div
-            className={`absolute ${EDGE_CONFIG[edge].indicator} bg-primary/0 group-hover:bg-primary transition-colors duration-150`}
+            className={`absolute ${EDGE_CONFIG[edge].indicator} bg-primary/0 transition-colors duration-150 group-hover:bg-primary`}
           />
           <div
             className={`absolute ${EDGE_CONFIG[edge].pill} pointer-events-none`}
           >
-            <div className="bg-primary text-primary-foreground flex size-6 items-center justify-center rounded-full opacity-40 shadow-sm transition-opacity duration-150 group-hover:opacity-100">
+            <div className="flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground opacity-40 shadow-sm transition-opacity duration-150 group-hover:opacity-100">
               <Camera className="size-3" />
             </div>
           </div>

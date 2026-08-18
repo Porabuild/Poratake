@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import type { PenAnnotation } from '@/types/editor';
 import { getStroke } from 'perfect-freehand';
 import {

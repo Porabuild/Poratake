@@ -2,7 +2,7 @@ import type { RefObject } from 'react';
 
 export interface TimelineContextValue {
   pixelsPerSecond: number;
-  scrollContainerRef: RefObject<HTMLDivElement>;
+  scrollContainerRef: RefObject<HTMLDivElement | null>;
   timeToPixels: (time: number) => number;
   pixelsToTime: (pixels: number) => number;
   zoomIn: () => void;

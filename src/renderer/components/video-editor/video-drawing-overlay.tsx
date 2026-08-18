@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type {
   Annotation,
@@ -424,7 +425,8 @@ export default function VideoDrawingOverlay({
 
   const handleMouseUp = useCallback(() => {
     const committedTool = currentAnnotation?.type as
-      VideoDrawingTool | undefined;
+      | VideoDrawingTool
+      | undefined;
     finishDrawing();
     if (
       committedTool &&

@@ -54,7 +54,7 @@ export default function SpeedSelector({
 
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="text-muted-foreground w-10 text-center text-xs font-medium">
+          <span className="w-10 text-center text-xs font-medium text-muted-foreground">
             {formatPlaybackSpeed(speed)}
           </span>
         </TooltipTrigger>

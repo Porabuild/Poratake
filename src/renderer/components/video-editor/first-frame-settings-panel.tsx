@@ -75,7 +75,7 @@ export default function FirstFrameSettingsPanel({
           </Button>
         ) : (
           <>
-            <div className="border-border relative overflow-hidden rounded-lg border">
+            <div className="relative overflow-hidden rounded-lg border border-border">
               <img
                 src={firstFrame.imageData}
                 alt="First frame thumbnail"

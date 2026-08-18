@@ -143,7 +143,7 @@ export default function SubtitleDataEditorDialog({
               <Label htmlFor="subtitle-data">Subtitle Data (JSON)</Label>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <HelpCircle className="text-muted-foreground size-4 cursor-help" />
+                  <HelpCircle className="size-4 cursor-help text-muted-foreground" />
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs" side="right">
                   <div className="space-y-2 text-xs">
@@ -204,7 +204,7 @@ export default function SubtitleDataEditorDialog({
           </div>
 
           {error && (
-            <div className="bg-destructive/10 text-destructive flex items-center gap-2 rounded-md p-3 text-sm">
+            <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
               <AlertCircle className="size-4 shrink-0" />
               <span>{error}</span>
             </div>

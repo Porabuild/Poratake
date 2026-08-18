@@ -71,10 +71,10 @@ export default function TimelineRuler({
                   transform: isFirst ? 'none' : 'translateX(-50%)',
                 }}
               >
-                <span className="text-muted-foreground text-xs">
+                <span className="text-xs text-muted-foreground">
                   {formatTime(mark.time)}
                 </span>
-                <div className="bg-muted-foreground/30 mt-0.5 h-2 w-px" />
+                <div className="mt-0.5 h-2 w-px bg-muted-foreground/30" />
               </div>
             );
           })}

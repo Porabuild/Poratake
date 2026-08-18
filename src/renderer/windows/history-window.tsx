@@ -38,7 +38,7 @@ export default function HistoryWindow() {
     }
 
     if (sortOrder === 'oldest') {
-      result = [...result].reverse();
+      result = result.toReversed();
     }
 
     return result;
@@ -282,15 +282,15 @@ export default function HistoryWindow() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden rounded-xl">
-      <div className="border-border flex items-center justify-between border-b px-4 py-3">
-        <h1 className="text-foreground text-sm font-medium">History</h1>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <h1 className="text-sm font-medium text-foreground">History</h1>
         <div className="flex items-center gap-1">
           {hasItems && (
             <Button
               variant="ghost"
               size="sm"
               onClick={handleClearAll}
-              className="text-muted-foreground hover:text-foreground h-7 px-2 text-xs"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
             >
               <Trash2 className="mr-1 h-3 w-3" />
               Clear All
@@ -300,7 +300,7 @@ export default function HistoryWindow() {
             variant="ghost"
             size="icon"
             onClick={handleOpenSettings}
-            className="text-muted-foreground hover:text-foreground h-7 w-7"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
           >
             <Settings className="h-4 w-4" />
           </Button>
@@ -321,16 +321,16 @@ export default function HistoryWindow() {
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-3">
         {loading ? (
           <div className="flex h-full items-center justify-center">
-            <div className="text-muted-foreground text-sm">Loading...</div>
+            <div className="text-sm text-muted-foreground">Loading...</div>
           </div>
         ) : !hasItems ? (
-          <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2">
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
             <ImageOff className="h-10 w-10" />
             <p className="text-sm">No captures yet</p>
             <p className="text-xs">Take a screenshot or record a video</p>
           </div>
         ) : !hasFilteredItems ? (
-          <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2">
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
             <ImageOff className="h-8 w-8" />
             <p className="text-sm">
               No {filter === 'screenshot' ? 'screenshots' : 'videos'} found

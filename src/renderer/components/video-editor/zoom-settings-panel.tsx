@@ -44,7 +44,7 @@ function AutoZoomSection({
   onGenerateAutoZoom,
 }: AutoZoomSectionProps) {
   return (
-    <div className="border-border space-y-3 border-b p-4">
+    <div className="space-y-3 border-b border-border p-4">
       <SettingsPanelHeader
         title="Auto Zoom"
         description="Highlight clicks, drags and scrolls with zoom"
@@ -60,7 +60,7 @@ function AutoZoomSection({
         Generate from Interactions
       </Button>
       {!hasCursorData && (
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           No cursor data recorded for this video
         </p>
       )}
@@ -214,7 +214,7 @@ export default function ZoomSettingsPanel({
               </TabsTrigger>
             </TabsList>
             <TabsContent value="cursor">
-              <p className="text-muted-foreground text-xs">
+              <p className="text-xs text-muted-foreground">
                 Zoom follows cursor position and movement
               </p>
             </TabsContent>
@@ -234,7 +234,7 @@ export default function ZoomSettingsPanel({
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <Label className="text-sm">Zoom Level</Label>
-            <span className="text-muted-foreground text-xs">
+            <span className="text-xs text-muted-foreground">
               {formatZoomLevel(selectedZoom.zoomLevel)}
             </span>
           </div>
@@ -246,7 +246,7 @@ export default function ZoomSettingsPanel({
             max={MAX_ZOOM_LEVEL}
             step={ZOOM_LEVEL_STEP}
           />
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             Magnification level (100% = no zoom, {MAX_ZOOM_LEVEL * 100}% ={' '}
             {MAX_ZOOM_LEVEL}x)
           </p>
@@ -255,7 +255,7 @@ export default function ZoomSettingsPanel({
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <Label className="text-sm">Zoom Speed</Label>
-            <span className="text-muted-foreground text-xs">
+            <span className="text-xs text-muted-foreground">
               {formatZoomSpeed(effectiveSpeed)}
             </span>
           </div>
@@ -267,7 +267,7 @@ export default function ZoomSettingsPanel({
             max={2.0}
             step={0.1}
           />
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             Duration of zoom in/out transitions
           </p>
         </div>
@@ -276,7 +276,7 @@ export default function ZoomSettingsPanel({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label className="text-sm">Smooth Follow</Label>
-              <span className="text-muted-foreground text-xs">
+              <span className="text-xs text-muted-foreground">
                 {formatZoomSpeed(zoomSettings.followSmoothness)}
               </span>
             </div>
@@ -295,7 +295,7 @@ export default function ZoomSettingsPanel({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label className="text-sm">Look Ahead</Label>
-              <span className="text-muted-foreground text-xs">
+              <span className="text-xs text-muted-foreground">
                 {Math.round(zoomSettings.lookAhead * 1000)}ms
               </span>
             </div>

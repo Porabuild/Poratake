@@ -18,7 +18,7 @@ export default function ResetButton({
       onClick={onClick}
       className={
         className ??
-        'text-muted-foreground hover:text-foreground w-full text-xs'
+        'w-full text-xs text-muted-foreground hover:text-foreground'
       }
     >
       {label}

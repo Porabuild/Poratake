@@ -13,7 +13,7 @@ export default function BrandLogo({
     <span
       aria-label="Pora.take"
       className={cn(
-        'text-foreground inline-flex items-baseline',
+        'inline-flex items-baseline text-foreground',
         compact ? 'text-base' : 'text-2xl',
         className
       )}

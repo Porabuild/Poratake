@@ -40,26 +40,26 @@ export default function SettingsSidebar({
         )}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        <p className="text-muted-foreground text-xs font-semibold tracking-[0.12em]">
+        <p className="text-xs font-semibold tracking-[0.12em] text-muted-foreground">
           SETTINGS
         </p>
       </div>
 
       <div className="px-2 pb-2">
-        <label className="text-muted-foreground focus-within:text-foreground hover:text-foreground flex cursor-text items-center gap-2 rounded-3xl px-2 py-1.5 transition-colors focus-within:bg-[var(--row-active)] hover:bg-[var(--row-hover)]">
+        <label className="flex cursor-text items-center gap-2 rounded-3xl px-2 py-1.5 text-muted-foreground transition-colors focus-within:bg-[var(--row-active)] focus-within:text-foreground hover:bg-[var(--row-hover)] hover:text-foreground">
           <Search className="size-4 shrink-0" />
           <input
             ref={inputRef}
             value={searchQuery}
             onChange={e => onSearchChange(e.target.value)}
             placeholder="Search settings"
-            className="placeholder:text-muted-foreground text-foreground min-w-0 flex-1 bg-transparent text-sm outline-none"
+            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
           />
           {searchQuery && (
             <button
               type="button"
               aria-label="Clear settings search"
-              className="text-muted-foreground hover:text-foreground flex size-5 shrink-0 items-center justify-center rounded"
+              className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
               onClick={() => onSearchChange('')}
             >
               <X className="size-3.5" />
@@ -83,8 +83,8 @@ export default function SettingsSidebar({
               className={cn(
                 'flex w-full items-center gap-2.5 rounded-3xl px-2.5 py-1.5 text-sm transition-colors',
                 isActive
-                  ? 'text-foreground bg-[var(--row-active)]'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-[var(--row-hover)]'
+                  ? 'bg-[var(--row-active)] text-foreground'
+                  : 'text-muted-foreground hover:bg-[var(--row-hover)] hover:text-foreground'
               )}
             >
               <Icon className="size-4 shrink-0" />
@@ -111,8 +111,8 @@ export default function SettingsSidebar({
                 className={cn(
                   'flex w-full items-center gap-2.5 rounded-3xl px-2.5 py-1.5 text-sm transition-colors',
                   isActive
-                    ? 'text-foreground bg-[var(--row-active)]'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-[var(--row-hover)]'
+                    ? 'bg-[var(--row-active)] text-foreground'
+                    : 'text-muted-foreground hover:bg-[var(--row-hover)] hover:text-foreground'
                 )}
               >
                 <Icon className="size-4 shrink-0" />

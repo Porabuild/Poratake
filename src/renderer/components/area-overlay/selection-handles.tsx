@@ -19,7 +19,7 @@ export default function SelectionHandles() {
       {HANDLE_BARS.map(bar => (
         <span
           key={bar}
-          className={`bg-primary absolute ring-1 ring-black/20 ${bar}`}
+          className={`absolute bg-primary ring-1 ring-black/20 ${bar}`}
         />
       ))}
     </>

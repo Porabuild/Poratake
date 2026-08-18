@@ -84,8 +84,10 @@ describe('whisper utilities', () => {
 
     it('getAvailableModels returns models present', async () => {
       mockExistsSync.mockImplementation((p: unknown) => {
-        const path = String(p);
-        return path.includes('ggml-base') || path.includes('ggml-medium');
+        const filePath = String(p);
+        return (
+          filePath.includes('ggml-base') || filePath.includes('ggml-medium')
+        );
       });
       const { getAvailableModels } = await import('@/main/utils/whisper');
       expect(getAvailableModels()).toEqual(['base', 'medium']);

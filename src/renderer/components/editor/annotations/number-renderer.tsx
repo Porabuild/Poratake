@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import type { NumberAnnotation, NumberSize } from '@/types/editor';
 import {
   type AnnotationRenderProps,

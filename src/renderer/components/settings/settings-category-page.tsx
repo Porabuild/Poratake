@@ -45,26 +45,26 @@ export default function SettingsCategoryPage({
   return (
     <div className="mx-auto min-h-full max-w-[720px]">
       <div className="mb-4 flex items-center justify-between gap-4">
-        <h1 className="text-foreground text-lg font-semibold">
+        <h1 className="text-lg font-semibold text-foreground">
           {categoryInfo.label}
         </h1>
 
         {isShortcutsCategory && (
-          <label className="bg-field text-muted-foreground focus-within:text-foreground rounded-field flex h-8 w-64 items-center gap-2 border-0 px-2.5 transition-colors">
+          <label className="flex h-8 w-64 items-center gap-2 rounded-field border-0 bg-field px-2.5 text-muted-foreground transition-colors focus-within:text-foreground">
             <Search className="size-3.5 shrink-0" />
             <input
               value={shortcutSearchQuery}
               onChange={event => setShortcutSearchQuery(event.target.value)}
               placeholder="Search shortcuts"
               aria-label="Search shortcuts"
-              className="placeholder:text-muted-foreground text-foreground min-w-0 flex-1 bg-transparent text-sm outline-none"
+              className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
             {shortcutSearchQuery && (
               <button
                 type="button"
                 aria-label="Clear shortcut search"
                 onClick={() => setShortcutSearchQuery('')}
-                className="hover:text-foreground flex size-5 shrink-0 items-center justify-center rounded"
+                className="flex size-5 shrink-0 items-center justify-center rounded hover:text-foreground"
               >
                 <X className="size-3.5" />
               </button>
@@ -74,7 +74,7 @@ export default function SettingsCategoryPage({
       </div>
 
       {isShortcutsCategory && visibleItems.length === 0 ? (
-        <p className="text-muted-foreground py-12 text-center text-sm">
+        <p className="py-12 text-center text-sm text-muted-foreground">
           No shortcuts found for &quot;{shortcutSearchQuery}&quot;
         </p>
       ) : (
@@ -86,7 +86,7 @@ export default function SettingsCategoryPage({
                 className={isShortcutsCategory ? 'space-y-1' : 'space-y-4'}
               >
                 {isShortcutsCategory && (
-                  <h2 className="text-muted-foreground text-xs font-medium">
+                  <h2 className="text-xs font-medium text-muted-foreground">
                     {sectionName}
                   </h2>
                 )}

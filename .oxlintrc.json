@@ -1,0 +1,68 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "unicorn",
+    "oxc",
+    "react",
+    "import",
+    "promise",
+    "vitest"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn",
+    "pedantic": "off",
+    "restriction": "off",
+    "style": "off",
+    "nursery": "off"
+  },
+  "env": {
+    "browser": true,
+    "node": true,
+    "builtin": true
+  },
+  "ignorePatterns": [
+    "dist",
+    "dist-electron",
+    "build",
+    "coverage",
+    "src/main/daemon-win/target",
+    "src/renderer/components/ui"
+  ],
+  "rules": {
+    "no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
+    "react/exhaustive-deps": "error",
+    "react/rules-of-hooks": "error",
+    "typescript/consistent-type-imports": "warn",
+    "typescript/switch-exhaustiveness-check": "warn",
+    "typescript/no-explicit-any": "warn",
+    "react/react-in-jsx-scope": "off",
+    "vitest/require-mock-type-parameters": "off",
+    "promise/always-return": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/prefer-add-event-listener": "off",
+    "eslint/no-await-in-loop": "off",
+    "typescript/no-extraneous-class": "off",
+    "import/no-unassigned-import": "off",
+    "oxc/no-map-spread": "off",
+    "promise/no-promise-in-callback": "off"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.d.ts"],
+      "rules": {
+        "unicorn/require-module-specifiers": "off",
+        "typescript/consistent-type-imports": "off"
+      }
+    }
+  ]
+}
