@@ -60,6 +60,10 @@ echo "$FFMPEG_SHA256  $BUILD_DIR/ffmpeg.tar.xz" | sha256sum --check --status
 tar -xf "$BUILD_DIR/ffmpeg.tar.xz" -C "$BUILD_DIR"
 cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
 
+# gfxcapture is the only C++ source this configuration builds. On the
+# case-insensitive Windows filesystem the libc++ '#include <version>' it pulls in
+# resolves to FFmpeg's own VERSION file through -I., breaking the arm64 clang
+# build. Poratake captures through its own daemon, so the filter is not needed.
 ./configure \
     --prefix="$BUILD_DIR/install" \
     --arch="$FFMPEG_CPU_ARCH" \
@@ -76,6 +80,7 @@ cd "$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
     --disable-libaom \
     --enable-mediafoundation \
     --enable-d3d11va \
+    --disable-filter=gfxcapture \
     --disable-doc \
     --disable-ffplay \
     --disable-ffprobe \
