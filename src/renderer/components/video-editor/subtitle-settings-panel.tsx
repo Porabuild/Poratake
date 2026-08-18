@@ -186,11 +186,9 @@ export default function SubtitleSettingsPanel({
 
   const handleImport = useCallback(async () => {
     setIsImporting(true);
-    try {
-      await onSubtitleDataImport();
-    } finally {
+    await onSubtitleDataImport().finally(() => {
       setIsImporting(false);
-    }
+    });
   }, [onSubtitleDataImport]);
 
   const hasSubtitles = subtitleData && subtitleData.segments.length > 0;

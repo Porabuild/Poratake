@@ -480,20 +480,24 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     if (isConfirming.current) return;
     isConfirming.current = true;
 
-    try {
+    const resetEditor = async () => {
       const confirmed = await window.ipcRenderer.invoke(
         'video-editor:confirmReset'
       );
 
-      if (confirmed) {
-        const success = await resetState();
-        if (success) {
-          window.location.reload();
-        }
+      if (!confirmed) {
+        return;
       }
-    } finally {
+
+      const success = await resetState();
+      if (success) {
+        window.location.reload();
+      }
+    };
+
+    await resetEditor().finally(() => {
       isConfirming.current = false;
-    }
+    });
   }, [resetState]);
 
   const handleEscape = useCallback(() => {
