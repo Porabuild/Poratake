@@ -400,17 +400,15 @@ const NativeVideoPlayer = forwardRef<
         const { videoWidth, videoHeight } = video;
         if (videoWidth > 0 && videoHeight > 0) {
           let frameCanvas = lastVideoFrameRef.current;
-          if (!frameCanvas) {
-            frameCanvas = document.createElement('canvas');
-            lastVideoFrameRef.current = frameCanvas;
-          }
-
           if (
+            !frameCanvas ||
             frameCanvas.width !== videoWidth ||
             frameCanvas.height !== videoHeight
           ) {
+            frameCanvas = document.createElement('canvas');
             frameCanvas.width = videoWidth;
             frameCanvas.height = videoHeight;
+            lastVideoFrameRef.current = frameCanvas;
           }
 
           const frameCtx = frameCanvas.getContext('2d');
@@ -435,17 +433,15 @@ const NativeVideoPlayer = forwardRef<
           const { videoWidth, videoHeight } = cameraVideo;
           if (videoWidth > 0 && videoHeight > 0) {
             let frameCanvas = lastCameraFrameRef.current;
-            if (!frameCanvas) {
-              frameCanvas = document.createElement('canvas');
-              lastCameraFrameRef.current = frameCanvas;
-            }
-
             if (
+              !frameCanvas ||
               frameCanvas.width !== videoWidth ||
               frameCanvas.height !== videoHeight
             ) {
+              frameCanvas = document.createElement('canvas');
               frameCanvas.width = videoWidth;
               frameCanvas.height = videoHeight;
+              lastCameraFrameRef.current = frameCanvas;
             }
 
             const frameCtx = frameCanvas.getContext('2d');
@@ -606,101 +602,106 @@ const NativeVideoPlayer = forwardRef<
       return true;
     }, [segments]);
 
-    const updatePlayback = useCallback(() => {
-      const video = videoRef.current;
-      const systemAudio = systemAudioRef.current;
-      const micAudio = micAudioRef.current;
-      if (!video || !isPlaying || segments.length === 0) {
-        return;
-      }
+    const updatePlayback = useCallback(
+      function updatePlaybackFrame() {
+        const video = videoRef.current;
+        const systemAudio = systemAudioRef.current;
+        const micAudio = micAudioRef.current;
+        if (!video || !isPlaying || segments.length === 0) {
+          return;
+        }
 
-      const videoTimelineDuration = getTotalTimelineDuration(segments);
-      const fullDuration = firstFrameDuration + videoTimelineDuration;
+        const videoTimelineDuration = getTotalTimelineDuration(segments);
+        const fullDuration = firstFrameDuration + videoTimelineDuration;
 
-      if (firstFramePlaybackRef.current !== null) {
-        const { startWallTime, startTlPos } = firstFramePlaybackRef.current;
-        const elapsed = (performance.now() - startWallTime) / 1000;
-        const tlPos = Math.min(startTlPos + elapsed, firstFrameDuration);
+        if (firstFramePlaybackRef.current !== null) {
+          const { startWallTime, startTlPos } = firstFramePlaybackRef.current;
+          const elapsed = (performance.now() - startWallTime) / 1000;
+          const tlPos = Math.min(startTlPos + elapsed, firstFrameDuration);
 
-        if (tlPos >= firstFrameDuration) {
-          firstFramePlaybackRef.current = null;
-          timelinePositionRef.current = firstFrameDuration;
-          setTimelinePosition(firstFrameDuration);
-          onTimeUpdate?.(firstFrameDuration);
+          if (tlPos >= firstFrameDuration) {
+            firstFramePlaybackRef.current = null;
+            timelinePositionRef.current = firstFrameDuration;
+            setTimelinePosition(firstFrameDuration);
+            onTimeUpdate?.(firstFrameDuration);
 
-          currentSegmentIndexRef.current = 0;
-          video.currentTime = segments[0].originalStart;
-          const speed = segments[0].speed ?? 1;
+            currentSegmentIndexRef.current = 0;
+            video.currentTime = segments[0].originalStart;
+            const speed = segments[0].speed ?? 1;
+            video.playbackRate = speed;
+            if (systemAudio) systemAudio.playbackRate = speed;
+            if (micAudio) micAudio.playbackRate = speed;
+            video.play().catch(() => {});
+            systemAudio?.play().catch(() => {});
+            micAudio?.play().catch(() => {});
+            animationFrameRef.current =
+              requestAnimationFrame(updatePlaybackFrame);
+            return;
+          }
+
+          timelinePositionRef.current = tlPos;
+          setTimelinePosition(tlPos);
+          onTimeUpdate?.(tlPos);
+          animationFrameRef.current =
+            requestAnimationFrame(updatePlaybackFrame);
+          return;
+        }
+
+        const segIdx = currentSegmentIndexRef.current;
+        const seg = segments[segIdx];
+
+        if (!seg) {
+          video.pause();
+          setIsPlaying(false);
+          onPlayingChange?.(false);
+          return;
+        }
+
+        const speed = seg.speed ?? 1;
+        if (video.playbackRate !== speed) {
           video.playbackRate = speed;
           if (systemAudio) systemAudio.playbackRate = speed;
           if (micAudio) micAudio.playbackRate = speed;
-          video.play().catch(() => {});
-          systemAudio?.play().catch(() => {});
-          micAudio?.play().catch(() => {});
-          animationFrameRef.current = requestAnimationFrame(updatePlayback);
-          return;
         }
 
+        const currentVideoTime = video.currentTime;
+
+        if (currentVideoTime >= seg.originalEnd - 0.01) {
+          if (!moveToNextSegment()) {
+            video.pause();
+            video.playbackRate = 1;
+            if (systemAudio) systemAudio.playbackRate = 1;
+            if (micAudio) micAudio.playbackRate = 1;
+            setIsPlaying(false);
+            onPlayingChange?.(false);
+            timelinePositionRef.current = fullDuration;
+            setTimelinePosition(fullDuration);
+            onTimeUpdate?.(fullDuration);
+            return;
+          }
+        }
+
+        const videoTlPos = getTimelinePositionFromVideo(
+          video.currentTime,
+          currentSegmentIndexRef.current
+        );
+        const tlPos = firstFrameDuration + videoTlPos;
         timelinePositionRef.current = tlPos;
         setTimelinePosition(tlPos);
         onTimeUpdate?.(tlPos);
-        animationFrameRef.current = requestAnimationFrame(updatePlayback);
-        return;
-      }
 
-      const segIdx = currentSegmentIndexRef.current;
-      const seg = segments[segIdx];
-
-      if (!seg) {
-        video.pause();
-        setIsPlaying(false);
-        onPlayingChange?.(false);
-        return;
-      }
-
-      const speed = seg.speed ?? 1;
-      if (video.playbackRate !== speed) {
-        video.playbackRate = speed;
-        if (systemAudio) systemAudio.playbackRate = speed;
-        if (micAudio) micAudio.playbackRate = speed;
-      }
-
-      const currentVideoTime = video.currentTime;
-
-      if (currentVideoTime >= seg.originalEnd - 0.01) {
-        if (!moveToNextSegment()) {
-          video.pause();
-          video.playbackRate = 1;
-          if (systemAudio) systemAudio.playbackRate = 1;
-          if (micAudio) micAudio.playbackRate = 1;
-          setIsPlaying(false);
-          onPlayingChange?.(false);
-          timelinePositionRef.current = fullDuration;
-          setTimelinePosition(fullDuration);
-          onTimeUpdate?.(fullDuration);
-          return;
-        }
-      }
-
-      const videoTlPos = getTimelinePositionFromVideo(
-        video.currentTime,
-        currentSegmentIndexRef.current
-      );
-      const tlPos = firstFrameDuration + videoTlPos;
-      timelinePositionRef.current = tlPos;
-      setTimelinePosition(tlPos);
-      onTimeUpdate?.(tlPos);
-
-      animationFrameRef.current = requestAnimationFrame(updatePlayback);
-    }, [
-      isPlaying,
-      segments,
-      firstFrameDuration,
-      getTimelinePositionFromVideo,
-      moveToNextSegment,
-      onTimeUpdate,
-      onPlayingChange,
-    ]);
+        animationFrameRef.current = requestAnimationFrame(updatePlaybackFrame);
+      },
+      [
+        isPlaying,
+        segments,
+        firstFrameDuration,
+        getTimelinePositionFromVideo,
+        moveToNextSegment,
+        onTimeUpdate,
+        onPlayingChange,
+      ]
+    );
 
     useEffect(() => {
       if (isPlaying) {
@@ -775,6 +776,98 @@ const NativeVideoPlayer = forwardRef<
       video.addEventListener('seeked', handleSeeked);
       return () => video.removeEventListener('seeked', handleSeeked);
     }, [renderCanvas]);
+
+    const stopScrubAudio = useCallback(() => {
+      if (!scrubAudioActiveRef.current) return;
+      if (isPlaying) return;
+
+      const systemAudio = systemAudioRef.current;
+      const micAudio = micAudioRef.current;
+      const video = videoRef.current;
+
+      systemAudio?.pause();
+      micAudio?.pause();
+
+      if (
+        video &&
+        hasEmbeddedAudio &&
+        !systemAudioSrc &&
+        !micAudioSrc &&
+        !video.paused
+      ) {
+        video.pause();
+      }
+
+      scrubAudioActiveRef.current = false;
+      lastScrubUpdateRef.current = null;
+
+      if (scrubAudioRafRef.current !== null) {
+        cancelAnimationFrame(scrubAudioRafRef.current);
+        scrubAudioRafRef.current = null;
+      }
+    }, [hasEmbeddedAudio, isPlaying, micAudioSrc, systemAudioSrc]);
+
+    const startScrubAudio = useCallback(() => {
+      if (isPlaying) return;
+      if (!scrubAudioEnabledRef.current) return;
+
+      const systemAudio = systemAudioRef.current;
+      const micAudio = micAudioRef.current;
+      const video = videoRef.current;
+
+      if (audioContextRef.current?.state === 'suspended') {
+        audioContextRef.current.resume().catch(() => {});
+      }
+
+      if (systemAudio) {
+        systemAudio.play().catch(() => {});
+      }
+
+      if (micAudio) {
+        micAudio.play().catch(() => {});
+      }
+
+      if (
+        video &&
+        hasEmbeddedAudio &&
+        !systemAudioSrc &&
+        !micAudioSrc &&
+        video.paused
+      ) {
+        video.play().catch(() => {});
+      }
+
+      scrubAudioActiveRef.current = true;
+
+      if (scrubAudioRafRef.current !== null) return;
+
+      const loop = () => {
+        if (!scrubAudioActiveRef.current) {
+          scrubAudioRafRef.current = null;
+          return;
+        }
+        if (isPlaying || !scrubAudioEnabledRef.current) {
+          stopScrubAudio();
+          scrubAudioRafRef.current = null;
+          return;
+        }
+        const lastUpdate = lastScrubUpdateRef.current;
+        if (!lastUpdate || performance.now() - lastUpdate > 120) {
+          stopScrubAudio();
+          scrubAudioRafRef.current = null;
+          return;
+        }
+        scrubAudioRafRef.current = requestAnimationFrame(loop);
+      };
+
+      scrubAudioRafRef.current = requestAnimationFrame(loop);
+    }, [
+      hasEmbeddedAudio,
+      isPlaying,
+      micAudioSrc,
+      stopScrubAudio,
+      systemAudioSrc,
+    ]);
 
     useImperativeHandle(ref, () => ({
       getCurrentTime: () => timelinePosition,
@@ -1069,98 +1162,6 @@ const NativeVideoPlayer = forwardRef<
       micAudioEnabled,
       systemAudioVolume,
       micAudioVolume,
-    ]);
-
-    const stopScrubAudio = useCallback(() => {
-      if (!scrubAudioActiveRef.current) return;
-      if (isPlaying) return;
-
-      const systemAudio = systemAudioRef.current;
-      const micAudio = micAudioRef.current;
-      const video = videoRef.current;
-
-      systemAudio?.pause();
-      micAudio?.pause();
-
-      if (
-        video &&
-        hasEmbeddedAudio &&
-        !systemAudioSrc &&
-        !micAudioSrc &&
-        !video.paused
-      ) {
-        video.pause();
-      }
-
-      scrubAudioActiveRef.current = false;
-      lastScrubUpdateRef.current = null;
-
-      if (scrubAudioRafRef.current !== null) {
-        cancelAnimationFrame(scrubAudioRafRef.current);
-        scrubAudioRafRef.current = null;
-      }
-    }, [hasEmbeddedAudio, isPlaying, micAudioSrc, systemAudioSrc]);
-
-    const startScrubAudio = useCallback(() => {
-      if (isPlaying) return;
-      if (!scrubAudioEnabledRef.current) return;
-
-      const systemAudio = systemAudioRef.current;
-      const micAudio = micAudioRef.current;
-      const video = videoRef.current;
-
-      if (audioContextRef.current?.state === 'suspended') {
-        audioContextRef.current.resume().catch(() => {});
-      }
-
-      if (systemAudio) {
-        systemAudio.play().catch(() => {});
-      }
-
-      if (micAudio) {
-        micAudio.play().catch(() => {});
-      }
-
-      if (
-        video &&
-        hasEmbeddedAudio &&
-        !systemAudioSrc &&
-        !micAudioSrc &&
-        video.paused
-      ) {
-        video.play().catch(() => {});
-      }
-
-      scrubAudioActiveRef.current = true;
-
-      if (scrubAudioRafRef.current !== null) return;
-
-      const loop = () => {
-        if (!scrubAudioActiveRef.current) {
-          scrubAudioRafRef.current = null;
-          return;
-        }
-        if (isPlaying || !scrubAudioEnabledRef.current) {
-          stopScrubAudio();
-          scrubAudioRafRef.current = null;
-          return;
-        }
-        const lastUpdate = lastScrubUpdateRef.current;
-        if (!lastUpdate || performance.now() - lastUpdate > 120) {
-          stopScrubAudio();
-          scrubAudioRafRef.current = null;
-          return;
-        }
-        scrubAudioRafRef.current = requestAnimationFrame(loop);
-      };
-
-      scrubAudioRafRef.current = requestAnimationFrame(loop);
-    }, [
-      hasEmbeddedAudio,
-      isPlaying,
-      micAudioSrc,
-      stopScrubAudio,
-      systemAudioSrc,
     ]);
 
     useEffect(() => {

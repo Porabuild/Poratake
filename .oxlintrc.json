@@ -48,7 +48,7 @@
     "react/react-in-jsx-scope": "off",
     "react/exhaustive-effect-dependencies": "off",
     "react/globals": "off",
-    "react/immutability": "off",
+    "react/immutability": "error",
     "react/memo-dependencies": "off",
     "react/no-deriving-state-in-effects": "off",
     "react/preserve-manual-memoization": "off",
