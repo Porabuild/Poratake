@@ -339,15 +339,22 @@ export default function RecordingControlWindow({
   const [iosDevices, setIosDevices] = useState<MediaDeviceDescriptor[]>([]);
   const [openDeviceMenu, setOpenDeviceMenu] =
     useState<RecordingControlDeviceKind | null>(null);
+  const [previousParams, setPreviousParams] = useState(params);
+  if (previousParams !== params) {
+    setPreviousParams(params);
+    setOpenDeviceMenu(null);
+    setState(params);
+  }
   const openDeviceMenuRef = useRef<RecordingControlDeviceKind | null>(null);
+  const paramsRef = useRef(params);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const isRecording = state.mode === 'recording';
   const isMac = isMacPlatform();
 
   useLayoutEffect(() => {
+    if (paramsRef.current === params) return;
+    paramsRef.current = params;
     openDeviceMenuRef.current = null;
-    setOpenDeviceMenu(null);
-    setState(params);
   }, [params]);
 
   useEffect(() => {

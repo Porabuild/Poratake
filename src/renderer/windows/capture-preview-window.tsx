@@ -37,6 +37,20 @@ export default function CapturePreviewWindow({
       Boolean(source)
     )
   );
+  const incomingImageSources = [imageUrl, thumbnailUrl].filter(
+    (source): source is string => Boolean(source)
+  );
+  const incomingImageSourcesKey = JSON.stringify(incomingImageSources);
+  const [previousImageSourcesKey, setPreviousImageSourcesKey] = useState(
+    incomingImageSourcesKey
+  );
+  if (previousImageSourcesKey !== incomingImageSourcesKey) {
+    setPreviousImageSourcesKey(incomingImageSourcesKey);
+    setImageSources(current => [
+      ...current,
+      ...incomingImageSources.filter(source => !current.includes(source)),
+    ]);
+  }
   const [visibleImageSource, setVisibleImageSource] = useState<string | null>(
     null
   );
@@ -44,24 +58,6 @@ export default function CapturePreviewWindow({
   const contentReadySentRef = useRef(false);
   const isDeleting = useRef(false);
   const displayMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const nextSources = [imageUrl, thumbnailUrl].filter(
-      (source): source is string => Boolean(source)
-    );
-    if (nextSources.length === 0) return;
-
-    setImageSources(sources => {
-      const seen = new Set(sources);
-      const merged = [...sources];
-      for (const source of nextSources) {
-        if (seen.has(source)) continue;
-        seen.add(source);
-        merged.push(source);
-      }
-      return merged;
-    });
-  }, [imageUrl, thumbnailUrl]);
 
   useEffect(() => {
     const isPlaceholderReady = imageSources.length === 0;

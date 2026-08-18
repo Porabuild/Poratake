@@ -107,6 +107,8 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const isConfirming = useRef(false);
 
   const [originalDuration, setOriginalDuration] = useState(0);
+  const [initializedDocumentDuration, setInitializedDocumentDuration] =
+    useState<number | null>(null);
   const [videoSrc, setVideoSrc] = useState(() =>
     /^(https?|blob|data|file):/.test(params.filePath)
       ? params.filePath
@@ -120,6 +122,17 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('cursor');
   const [isScrubAudioEnabled, setIsScrubAudioEnabled] = useState(false);
+  const [iosDefaultWallpaper] = useState(() => {
+    const randomPreset =
+      SVG_WALLPAPER_PRESETS[
+        Math.floor(Math.random() * SVG_WALLPAPER_PRESETS.length)
+      ];
+    return {
+      ...DEFAULT_VIDEO_WALLPAPER,
+      ...IOS_DEVICE_DEFAULT_WALLPAPER,
+      backgroundImage: randomPreset.imageUrl,
+    };
+  });
   const [initialTimelineZoom, setInitialTimelineZoom] = useState(
     DEFAULT_PIXELS_PER_SECOND
   );
@@ -262,6 +275,19 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     embeddedAudioPath: editorData.hasEmbeddedAudio ? filePath : null,
   });
 
+  const hasScrubAudioSource =
+    editorData.hasEmbeddedAudio ||
+    !!editorData.systemAudioPath ||
+    !!editorData.micAudioPath;
+  const [previousHasScrubAudioSource, setPreviousHasScrubAudioSource] =
+    useState(hasScrubAudioSource);
+  if (previousHasScrubAudioSource !== hasScrubAudioSource) {
+    setPreviousHasScrubAudioSource(hasScrubAudioSource);
+    if (!hasScrubAudioSource) {
+      setIsScrubAudioEnabled(false);
+    }
+  }
+
   const { loadedState, isStateLoaded, recordingType, resetState } =
     useEditorStatePersistence({
       isReady: originalDuration > 0,
@@ -369,11 +395,11 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     musicTimelineDuration
   );
 
-  useEffect(() => {
+  if (displayTimelineDuration < playback.totalTimelineDuration) {
     setDisplayTimelineDuration(prev =>
       Math.max(prev, playback.totalTimelineDuration)
     );
-  }, [playback.totalTimelineDuration]);
+  }
 
   const fileName = useMemo(() => getFileNameFromPath(filePath), [filePath]);
   const projectPath = useMemo(() => getProjectPath(filePath), [filePath]);
@@ -775,110 +801,85 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     };
   }, [fileName]);
 
-  useEffect(() => {
-    if (
-      editorData.videoMetadata?.duration &&
-      editorData.videoMetadata.duration > 0
-    ) {
-      setOriginalDuration(current =>
-        current > 0 ? current : editorData.videoMetadata!.duration
+  const discoveredDuration =
+    editorData.videoMetadata?.duration && editorData.videoMetadata.duration > 0
+      ? editorData.videoMetadata.duration
+      : (loadedState?.sourceDuration ?? 0);
+  if (originalDuration <= 0 && discoveredDuration > 0) {
+    setOriginalDuration(discoveredDuration);
+  }
+
+  if (
+    originalDuration > 0 &&
+    isStateLoaded &&
+    segments.length === 0 &&
+    initializedDocumentDuration !== originalDuration
+  ) {
+    setInitializedDocumentDuration(originalDuration);
+    (() => {
+      const defaultSegments = [
+        {
+          id: crypto.randomUUID(),
+          originalStart: 0,
+          originalEnd: originalDuration,
+          trimMinStart: 0,
+          trimMaxEnd: originalDuration,
+        },
+      ];
+
+      if (!loadedState) {
+        history.initializeDocument({
+          segments: defaultSegments,
+          wallpaper:
+            recordingType === 'ios-device'
+              ? iosDefaultWallpaper
+              : DEFAULT_VIDEO_WALLPAPER,
+        });
+        return;
+      }
+
+      const validSegments = loadedState.segments.filter(
+        seg =>
+          seg.originalStart >= 0 &&
+          seg.originalEnd <= originalDuration &&
+          seg.originalStart < seg.originalEnd
       );
-    }
-  }, [editorData.videoMetadata]);
 
-  useEffect(() => {
-    if (originalDuration > 0) return;
-    const savedDuration = loadedState?.sourceDuration;
-    if (savedDuration !== undefined && savedDuration > 0) {
-      setOriginalDuration(savedDuration);
-    }
-  }, [loadedState, originalDuration]);
+      const savedMusicTracks = withDefaultGroupIds(
+        loadedState.musicTracks ?? []
+      );
 
-  useEffect(() => {
-    if (originalDuration <= 0 || !isStateLoaded || segments.length > 0) {
-      return;
-    }
-
-    const defaultSegments = [
-      {
-        id: crypto.randomUUID(),
-        originalStart: 0,
-        originalEnd: originalDuration,
-        trimMinStart: 0,
-        trimMaxEnd: originalDuration,
-      },
-    ];
-
-    const iosWallpaper = () => {
-      const randomPreset =
-        SVG_WALLPAPER_PRESETS[
-          Math.floor(Math.random() * SVG_WALLPAPER_PRESETS.length)
-        ];
-      return {
-        ...DEFAULT_VIDEO_WALLPAPER,
-        ...IOS_DEVICE_DEFAULT_WALLPAPER,
-        backgroundImage: randomPreset.imageUrl,
-      };
-    };
-
-    if (!loadedState) {
       history.initializeDocument({
-        segments: defaultSegments,
-        wallpaper:
-          recordingType === 'ios-device'
-            ? iosWallpaper()
+        segments: validSegments.length > 0 ? validSegments : defaultSegments,
+        zoomSegments: loadedState.zoomSegments,
+        zoomSettings: loadedState.zoomSettings,
+        cameraSegments: loadedState.cameraSegments,
+        drawingSegments: loadedState.drawingSegments ?? [],
+        musicTracks: savedMusicTracks.length > 0 ? savedMusicTracks : undefined,
+        wallpaper: loadedState.wallpaper
+          ? loadedState.wallpaper
+          : recordingType === 'ios-device'
+            ? iosDefaultWallpaper
             : DEFAULT_VIDEO_WALLPAPER,
+        firstFrame: loadedState.firstFrame ?? undefined,
+        cursorStyle: loadedState.cursorStyle,
+        cameraStyle: loadedState.cameraStyle,
+        keyboardStyle: loadedState.keyboardStyle,
+        subtitleStyle: loadedState.subtitleStyle,
+        audioStyle: loadedState.audioStyle,
       });
-      return;
-    }
 
-    const validSegments = loadedState.segments.filter(
-      seg =>
-        seg.originalStart >= 0 &&
-        seg.originalEnd <= originalDuration &&
-        seg.originalStart < seg.originalEnd
-    );
-
-    const savedMusicTracks = withDefaultGroupIds(loadedState.musicTracks ?? []);
-
-    history.initializeDocument({
-      segments: validSegments.length > 0 ? validSegments : defaultSegments,
-      zoomSegments: loadedState.zoomSegments,
-      zoomSettings: loadedState.zoomSettings,
-      cameraSegments: loadedState.cameraSegments,
-      drawingSegments: loadedState.drawingSegments ?? [],
-      musicTracks: savedMusicTracks.length > 0 ? savedMusicTracks : undefined,
-      wallpaper: loadedState.wallpaper
-        ? loadedState.wallpaper
-        : recordingType === 'ios-device'
-          ? iosWallpaper()
-          : DEFAULT_VIDEO_WALLPAPER,
-      firstFrame: loadedState.firstFrame ?? undefined,
-      cursorStyle: loadedState.cursorStyle,
-      cameraStyle: loadedState.cameraStyle,
-      keyboardStyle: loadedState.keyboardStyle,
-      subtitleStyle: loadedState.subtitleStyle,
-      audioStyle: loadedState.audioStyle,
-    });
-
-    if (loadedState.exportSettings) {
-      videoExport.restoreExportSettings(loadedState.exportSettings);
-    }
-    if (loadedState.timelineZoom) {
-      setInitialTimelineZoom(loadedState.timelineZoom);
-    }
-    setIsSidebarOpen(loadedState.ui.sidebarOpen);
-    setSidebarTab(loadedState.ui.sidebarTab);
-    setIsScrubAudioEnabled(loadedState.ui.scrubAudioEnabled ?? false);
-  }, [
-    originalDuration,
-    segments.length,
-    isStateLoaded,
-    loadedState,
-    recordingType,
-    history,
-    videoExport,
-  ]);
+      if (loadedState.exportSettings) {
+        videoExport.restoreExportSettings(loadedState.exportSettings);
+      }
+      if (loadedState.timelineZoom) {
+        setInitialTimelineZoom(loadedState.timelineZoom);
+      }
+      setIsSidebarOpen(loadedState.ui.sidebarOpen);
+      setSidebarTab(loadedState.ui.sidebarTab);
+      setIsScrubAudioEnabled(loadedState.ui.scrubAudioEnabled ?? false);
+    })();
+  }
 
   useEffect(() => {
     if (!editorData.audioPathsLoaded || segments.length === 0) return;
@@ -980,16 +981,6 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     minSize: MIN_SIDEBAR_WIDTH,
     maxSize: MAX_SIDEBAR_WIDTH,
   });
-
-  const hasScrubAudioSource =
-    editorData.hasEmbeddedAudio ||
-    !!editorData.systemAudioPath ||
-    !!editorData.micAudioPath;
-
-  useEffect(() => {
-    if (hasScrubAudioSource) return;
-    setIsScrubAudioEnabled(false);
-  }, [hasScrubAudioSource]);
 
   const isEditorReady = isStateLoaded && segments.length > 0;
 

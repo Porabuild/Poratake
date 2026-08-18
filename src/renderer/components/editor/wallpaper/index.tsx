@@ -67,8 +67,16 @@ export function WallpaperSheetContent({
   onClose,
   isOpen,
 }: WallpaperSheetProps & { onClose: () => void; isOpen: boolean }) {
-  const [shouldRender, setShouldRender] = useState(false);
+  const [shouldRender, setShouldRender] = useState(isOpen);
   const [isAnimating, setIsAnimating] = useState(false);
+  const [previousIsOpen, setPreviousIsOpen] = useState(isOpen);
+  if (previousIsOpen !== isOpen) {
+    setPreviousIsOpen(isOpen);
+    setIsAnimating(false);
+    if (isOpen) {
+      setShouldRender(true);
+    }
+  }
 
   const [customBackgrounds, setCustomBackgrounds] = useState<
     CustomBackground[]
@@ -140,18 +148,16 @@ export function WallpaperSheetContent({
 
   useEffect(() => {
     if (isOpen) {
-      setShouldRender(true);
       const timeout = setTimeout(() => {
         setIsAnimating(true);
       }, 10);
       return () => clearTimeout(timeout);
-    } else {
-      setIsAnimating(false);
-      const timeout = setTimeout(() => {
-        setShouldRender(false);
-      }, 300);
-      return () => clearTimeout(timeout);
     }
+
+    const timeout = setTimeout(() => {
+      setShouldRender(false);
+    }, 300);
+    return () => clearTimeout(timeout);
   }, [isOpen]);
 
   const handleSaveBackground = useCallback(

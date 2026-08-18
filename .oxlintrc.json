@@ -53,7 +53,7 @@
     "react/no-deriving-state-in-effects": "error",
     "react/preserve-manual-memoization": "error",
     "react/refs": "error",
-    "react/set-state-in-effect": "off",
+    "react/set-state-in-effect": "error",
     "vitest/require-mock-type-parameters": "off",
     "promise/always-return": "off",
     "unicorn/consistent-function-scoping": "off",

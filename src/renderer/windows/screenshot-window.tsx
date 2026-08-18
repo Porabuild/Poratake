@@ -117,6 +117,18 @@ export default function ScreenshotWindow({
   const [extraLayerImages, setExtraLayerImages] = useState<
     Record<string, HTMLImageElement>
   >({});
+  const extraLayerIdsKey = extraLayers.map(layer => layer.id).join('\0');
+  const [previousExtraLayerIdsKey, setPreviousExtraLayerIdsKey] =
+    useState(extraLayerIdsKey);
+  if (previousExtraLayerIdsKey !== extraLayerIdsKey) {
+    const currentLayerIds = new Set(extraLayers.map(layer => layer.id));
+    setPreviousExtraLayerIdsKey(extraLayerIdsKey);
+    setExtraLayerImages(current =>
+      Object.fromEntries(
+        Object.entries(current).filter(([id]) => currentLayerIds.has(id))
+      )
+    );
+  }
   const [zoom, setZoom] = useState(1);
   const [isCopied, setIsCopied] = useState(false);
   const [cloudUploadState, setCloudUploadState] =
@@ -210,21 +222,7 @@ export default function ScreenshotWindow({
     const layerIds = new Set(extraLayers.map(l => l.id));
     const missing = extraLayers.filter(l => !extraLayerImages[l.id]);
 
-    if (missing.length === 0) {
-      const hasStale = Object.keys(extraLayerImages).some(
-        id => !layerIds.has(id)
-      );
-      if (hasStale) {
-        setExtraLayerImages(prev => {
-          const next: Record<string, HTMLImageElement> = {};
-          for (const id of Object.keys(prev)) {
-            if (layerIds.has(id)) next[id] = prev[id];
-          }
-          return next;
-        });
-      }
-      return;
-    }
+    if (missing.length === 0) return;
 
     Promise.all(
       missing.map(async layer => {

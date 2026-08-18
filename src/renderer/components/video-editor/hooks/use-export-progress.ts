@@ -42,8 +42,22 @@ export function useExportProgress({
   isExporting,
   progress,
 }: UseExportProgressOptions): ExportProgressState {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+  const [progressState, setProgressState] = useState({
+    isExporting,
+    elapsedSeconds: 0,
+    remainingSeconds: null as number | null,
+  });
+  if (progressState.isExporting !== isExporting) {
+    setProgressState({
+      isExporting,
+      elapsedSeconds: 0,
+      remainingSeconds: null,
+    });
+  }
+  const currentProgressState =
+    progressState.isExporting === isExporting
+      ? progressState
+      : { isExporting, elapsedSeconds: 0, remainingSeconds: null };
 
   const startTimeRef = useRef<number>(0);
   const smoothedRemainingRef = useRef<number | null>(null);
@@ -58,28 +72,38 @@ export function useExportProgress({
 
     startTimeRef.current = Date.now();
     smoothedRemainingRef.current = null;
-    setElapsedSeconds(0);
-    setRemainingSeconds(null);
 
     const interval = setInterval(() => {
       if (!startTimeRef.current) return;
 
       const elapsed = (Date.now() - startTimeRef.current) / 1000;
-      setElapsedSeconds(elapsed);
-
       const currentProgress = progressRef.current;
-      if (currentProgress <= MIN_PROGRESS_FOR_ETA) return;
+      if (currentProgress <= MIN_PROGRESS_FOR_ETA) {
+        setProgressState({
+          isExporting: true,
+          elapsedSeconds: elapsed,
+          remainingSeconds: null,
+        });
+        return;
+      }
 
       smoothedRemainingRef.current = smoothRemainingSeconds(
         smoothedRemainingRef.current,
         elapsed,
         currentProgress
       );
-      setRemainingSeconds(Math.round(smoothedRemainingRef.current));
+      setProgressState({
+        isExporting: true,
+        elapsedSeconds: elapsed,
+        remainingSeconds: Math.round(smoothedRemainingRef.current),
+      });
     }, ELAPSED_TICK_MS);
 
     return () => clearInterval(interval);
   }, [isExporting]);
 
-  return { elapsedSeconds, remainingSeconds };
+  return {
+    elapsedSeconds: currentProgressState.elapsedSeconds,
+    remainingSeconds: currentProgressState.remainingSeconds,
+  };
 }

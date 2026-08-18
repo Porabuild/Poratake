@@ -10,17 +10,17 @@ import { SETTINGS_CATEGORIES } from '@/renderer/components/settings/settings-reg
 const ALL_TABS = new Set(SETTINGS_CATEGORIES.map(c => c.id));
 const DEFAULT_TAB = 'general';
 
+function getTabFromHash(): string {
+  const hash = window.location.hash.slice(1);
+  return ALL_TABS.has(hash) ? hash : DEFAULT_TAB;
+}
+
 export default function SettingsWindow() {
   const [settings, setSettings] = useState<SettingsConfig>(DEFAULT_SETTINGS);
-  const [activeTab, setActiveTab] = useState(DEFAULT_TAB);
+  const [activeTab, setActiveTab] = useState(getTabFromHash);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const updateSequence = useRef(0);
-
-  const getTabFromHash = useCallback(() => {
-    const hash = window.location.hash.slice(1);
-    return ALL_TABS.has(hash) ? hash : DEFAULT_TAB;
-  }, []);
 
   useEffect(() => {
     const loadInitialData = async () => {
@@ -34,18 +34,12 @@ export default function SettingsWindow() {
   }, []);
 
   useEffect(() => {
-    if (!isLoading) {
-      setActiveTab(getTabFromHash());
-    }
-  }, [isLoading, getTabFromHash]);
-
-  useEffect(() => {
     const handleHashChange = () => {
       setActiveTab(getTabFromHash());
     };
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [getTabFromHash]);
+  }, []);
 
   useEffect(() => {
     const handleNavigateTab = (_event: unknown, tab: string) => {
