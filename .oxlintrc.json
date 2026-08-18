@@ -50,7 +50,7 @@
     "react/globals": "off",
     "react/immutability": "error",
     "react/memo-dependencies": "error",
-    "react/no-deriving-state-in-effects": "off",
+    "react/no-deriving-state-in-effects": "error",
     "react/preserve-manual-memoization": "error",
     "react/refs": "off",
     "react/set-state-in-effect": "off",

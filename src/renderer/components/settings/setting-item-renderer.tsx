@@ -51,10 +51,16 @@ function NamingPatternControl({
   >([]);
   const [previewFilename, setPreviewFilename] = useState('');
   const [patternError, setPatternError] = useState('');
-  const [localPattern, setLocalPattern] = useState(
-    getStorageConfig(settings).namingPattern
-  );
+  const [patternDraft, setPatternDraft] = useState<{
+    sourceSettings: SettingsConfig;
+    value: string;
+  } | null>(null);
   const isMountedRef = useRef(true);
+  const storedPattern = getStorageConfig(settings).namingPattern;
+  const localPattern =
+    patternDraft?.sourceSettings === settings
+      ? patternDraft.value
+      : storedPattern;
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -77,13 +83,9 @@ function NamingPatternControl({
       });
   }, [localPattern]);
 
-  useEffect(() => {
-    setLocalPattern(getStorageConfig(settings).namingPattern);
-  }, [settings]);
-
   const handlePatternChange = useCallback(
     async (value: string) => {
-      setLocalPattern(value);
+      setPatternDraft({ sourceSettings: settings, value });
       const error = await window.ipcRenderer.invoke(
         'storage:validatePattern',
         value
@@ -101,7 +103,7 @@ function NamingPatternControl({
 
   const handleReset = useCallback(() => {
     const defaultPattern = DEFAULT_STORAGE_CONFIG.namingPattern;
-    setLocalPattern(defaultPattern);
+    setPatternDraft({ sourceSettings: settings, value: defaultPattern });
     setPatternError('');
     onUpdate({
       storage: { ...getStorageConfig(settings), namingPattern: defaultPattern },
