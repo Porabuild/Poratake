@@ -237,7 +237,7 @@ describe('Poratake rebrand compliance', () => {
       'run: ./scripts/build-daemon.sh'
     );
     expect(read('scripts/build-ffmpeg.sh')).toContain(
-      '40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6'
+      'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f'
     );
     expect(read('scripts/build-ffmpeg.sh')).toContain('--retry-all-errors');
     expect(read('scripts/build-ffmpeg-win.sh')).toContain('--retry-all-errors');
@@ -245,7 +245,7 @@ describe('Poratake rebrand compliance', () => {
       'FFMPEG_TOOLCHAIN_ARGS=(--cc=clang --cxx=clang++ --as=clang)'
     );
     expect(read('scripts/build-whisper.sh')).toContain(
-      '2eeeba56e9edd762b4b38467bab96c2517163158'
+      '306c88f4d1286aec1bf96e544632897886af5501'
     );
     expect(read('scripts/build-whisper-win.ps1')).toContain(
       "@('-T', 'ClangCL')"

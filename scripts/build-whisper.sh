@@ -12,9 +12,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-WHISPER_VERSION="v1.8.3"
+WHISPER_VERSION="v1.9.2"
 WHISPER_REPO="https://github.com/ggml-org/whisper.cpp.git"
-WHISPER_COMMIT="2eeeba56e9edd762b4b38467bab96c2517163158"
+WHISPER_COMMIT="306c88f4d1286aec1bf96e544632897886af5501"
 
 if [ -f "$OUTPUT_PATH" ]; then
     echo -e "${GREEN}whisper already built, skipping.${NC}"
