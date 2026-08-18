@@ -100,16 +100,16 @@ export default function WindowFramePreview({
       onClick={onClick}
       aria-pressed={isSelected}
       className={cn(
-        'focus-visible:ring-foreground flex w-full flex-col items-center gap-1.5 rounded-lg border p-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
+        'flex w-full flex-col items-center gap-1.5 rounded-lg border p-2 transition-colors focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:outline-none',
         isSelected
           ? 'border-foreground bg-muted'
-          : 'hover:border-border hover:bg-muted/50 border-transparent'
+          : 'border-transparent hover:border-border hover:bg-muted/50'
       )}
     >
       <div
         className={cn(
           'flex h-12 w-full flex-col overflow-hidden rounded-md border',
-          isNone && 'border-border border-dashed'
+          isNone && 'border-dashed border-border'
         )}
         style={theme ? { borderColor: theme.frameBorder } : undefined}
       >
@@ -135,8 +135,8 @@ export default function WindowFramePreview({
           </>
         )}
         {isNone && (
-          <div className="bg-muted/50 flex flex-1 items-center justify-center">
-            <span className="text-foreground text-xs">No frame</span>
+          <div className="flex flex-1 items-center justify-center bg-muted/50">
+            <span className="text-xs text-foreground">No frame</span>
           </div>
         )}
       </div>

@@ -52,14 +52,14 @@ export default function VideoTitleBar({
   onRename,
 }: VideoTitleBarProps) {
   return (
-    <div className="drag-region bg-card fixed top-0 right-0 left-0 z-50 flex h-10 w-full items-center justify-between px-2">
+    <div className="drag-region fixed top-0 right-0 left-0 z-50 flex h-10 w-full items-center justify-between bg-card px-2">
       <div
         className={cn(
           'flex min-w-0 flex-1 items-center',
           isMacPlatform() && 'pl-20'
         )}
       >
-        <span className="text-muted-foreground truncate text-sm">
+        <span className="truncate text-sm text-muted-foreground">
           {fileName || 'Untitled'}
         </span>
       </div>

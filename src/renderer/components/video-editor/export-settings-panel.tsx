@@ -124,13 +124,13 @@ function CloudUploadStatus({
     return (
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <span className="text-muted-foreground text-xs">
+          <span className="text-xs text-muted-foreground">
             Uploading to cloud...
           </span>
           <Button
             variant="ghost"
             size="xs"
-            className="text-muted-foreground h-6 px-2 text-xs"
+            className="h-6 px-2 text-xs text-muted-foreground"
             onClick={onCancel}
           >
             Cancel
@@ -143,7 +143,7 @@ function CloudUploadStatus({
 
   if (uploadState === 'error') {
     return (
-      <p className="text-destructive text-xs">
+      <p className="text-xs text-destructive">
         Cloud upload failed. Please try again.
       </p>
     );
@@ -154,12 +154,12 @@ function CloudUploadStatus({
   }
 
   return (
-    <div className="bg-muted/50 space-y-2 rounded-md p-3">
+    <div className="space-y-2 rounded-md bg-muted/50 p-3">
       <div className="flex items-center gap-1.5">
-        <Check className="text-primary size-3.5" />
+        <Check className="size-3.5 text-primary" />
         <span className="text-xs font-medium">Uploaded to cloud</span>
       </div>
-      <p className="text-muted-foreground truncate text-xs" title={uploadedUrl}>
+      <p className="truncate text-xs text-muted-foreground" title={uploadedUrl}>
         {uploadedUrl}
       </p>
       <div className="flex gap-2">
@@ -254,12 +254,12 @@ function ExportEstimateSection({
     exportSettings.format === 'gif' ? 'Export GIF' : 'Export Video';
 
   return (
-    <div className="border-border space-y-3 border-t p-4">
-      <div className="bg-muted/50 hidden space-y-2 rounded-md p-3">
+    <div className="space-y-3 border-t border-border p-4">
+      <div className="hidden space-y-2 rounded-md bg-muted/50 p-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Clock className="text-muted-foreground size-3.5" />
-            <span className="text-muted-foreground text-xs">Est. Time</span>
+            <Clock className="size-3.5 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">Est. Time</span>
           </div>
           <span className="text-xs font-medium">
             ~{formatDuration(estimate.estimatedTimeSeconds)}
@@ -268,8 +268,8 @@ function ExportEstimateSection({
         <Separator />
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <HardDrive className="text-muted-foreground size-3.5" />
-            <span className="text-muted-foreground text-xs">Est. Size</span>
+            <HardDrive className="size-3.5 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">Est. Size</span>
           </div>
           <span className="text-xs font-medium">
             ~{formatFileSize(estimate.estimatedFileSizeBytes)}
@@ -301,7 +301,7 @@ function ExportEstimateSection({
           />
         </div>
         {!cloudConfigured && (
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             Configure cloud storage in Settings to enable.
           </p>
         )}
@@ -310,16 +310,16 @@ function ExportEstimateSection({
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium">Exporting...</span>
-            <span className="text-muted-foreground text-xs tabular-nums">
+            <span className="text-xs text-muted-foreground tabular-nums">
               {Math.round(exportProgress)}%
             </span>
           </div>
           <Progress value={exportProgress} className="h-1.5" />
           <div className="flex items-center justify-between">
-            <span className="text-muted-foreground text-xs tabular-nums">
+            <span className="text-xs text-muted-foreground tabular-nums">
               {formatExportTime(elapsedSeconds)} elapsed
             </span>
-            <span className="text-muted-foreground text-xs tabular-nums">
+            <span className="text-xs text-muted-foreground tabular-nums">
               {remainingSeconds !== null
                 ? `${formatExportTime(remainingSeconds)} remaining`
                 : 'Calculating...'}
@@ -346,7 +346,7 @@ function ExportEstimateSection({
         </Button>
       )}
       {exportError && (
-        <p className="text-destructive text-xs" role="alert">
+        <p className="text-xs text-destructive" role="alert">
           {exportError}
         </p>
       )}
@@ -547,7 +547,7 @@ export default function ExportSettingsPanel({
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         <div>
           <h3 className="text-sm font-medium">Export Settings</h3>
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             Configure video export options
           </p>
         </div>

@@ -162,7 +162,7 @@ export default function ManualZoomPreview({
       >
         <div className="absolute top-1/2 left-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white" />
       </div>
-      <p className="text-muted-foreground mt-2 text-center text-xs">
+      <p className="mt-2 text-center text-xs text-muted-foreground">
         Click or drag to set zoom focus point
       </p>
     </div>

@@ -1,4 +1,5 @@
 import React from 'react';
+import type * as ReactModule from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { SettingsConfig } from '@/types/settings';
 import { DEFAULT_SETTINGS } from '@/types/settings';
@@ -19,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('react', async importOriginal => {
-  const actual = await importOriginal<typeof import('react')>();
+  const actual = await importOriginal<typeof ReactModule>();
   return {
     ...actual,
     useCallback: (callback: unknown) => callback,
@@ -167,13 +168,13 @@ describe('renderer UI adapters', () => {
 
     expect(select).not.toBeNull();
     expect(mirror).not.toBeNull();
-    (select?.props.onSelect as (device: { id: string; label: string }) => void)(
+    (select!.props.onSelect as (device: { id: string; label: string }) => void)(
       {
         id: 'camera-b',
         label: 'Camera B',
       }
     );
-    (mirror?.props.onCheckedChange as (checked: boolean) => void)(true);
+    (mirror!.props.onCheckedChange as (checked: boolean) => void)(true);
 
     const lastUpdate = mocks.onUpdate.mock.calls[1][0] as SettingsConfig;
     expect(lastUpdate.recording.camera).toMatchObject({

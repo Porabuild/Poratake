@@ -13,7 +13,14 @@ type LegacyVariant =
   | 'ghost'
   | 'link';
 type LegacySize =
-  'default' | 'xs' | 'sm' | 'lg' | 'icon' | 'icon-xs' | 'icon-sm' | 'icon-lg';
+  | 'default'
+  | 'xs'
+  | 'sm'
+  | 'lg'
+  | 'icon'
+  | 'icon-xs'
+  | 'icon-sm'
+  | 'icon-lg';
 
 interface ButtonProps extends Omit<
   HeroButtonProps,

@@ -160,7 +160,7 @@ export default function CursorSettingsPanel({
         />
 
         <div className="space-y-2">
-          <p className="text-muted-foreground text-sm">
+          <p className="text-sm text-muted-foreground">
             You can add cursor data manually by importing a JSON file or
             creating it in the editor.
           </p>
@@ -189,9 +189,9 @@ export default function CursorSettingsPanel({
           </div>
         </div>
 
-        <div className="border-border bg-muted-background space-y-2 rounded-md border p-3">
+        <div className="bg-muted-background space-y-2 rounded-md border border-border p-3">
           <p className="text-sm font-medium">Cursor Data Format</p>
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             Cursor data is a JSON file containing mouse movement events with
             normalized coordinates (0-1). Each event has a timestamp, x/y
             position, and event type (move, down, up, scroll).
@@ -223,7 +223,7 @@ export default function CursorSettingsPanel({
       />
 
       {!cursorStyle.enabled ? (
-        <p className="text-muted-foreground text-sm">
+        <p className="text-sm text-muted-foreground">
           Cursor overlay is disabled. Enable it to show cursor in your video.
         </p>
       ) : (
@@ -232,7 +232,7 @@ export default function CursorSettingsPanel({
             <Label className="text-sm">Custom Cursor</Label>
             {hasCustomCursor ? (
               <div className="flex items-center gap-2">
-                <div className="border-border flex size-10 items-center justify-center overflow-hidden rounded border bg-neutral-100 dark:bg-neutral-800">
+                <div className="flex size-10 items-center justify-center overflow-hidden rounded border border-border bg-neutral-100 dark:bg-neutral-800">
                   <img
                     src={cursorStyle.customCursorImage}
                     alt="Custom cursor"
@@ -261,7 +261,7 @@ export default function CursorSettingsPanel({
                 {isLoadingImage ? 'Loading...' : 'Upload Custom Cursor'}
               </Button>
             )}
-            <p className="text-muted-foreground text-xs">
+            <p className="text-xs text-muted-foreground">
               {hasCustomCursor
                 ? 'Using custom cursor image'
                 : 'Upload a PNG, SVG, or other image to use as cursor'}
@@ -271,7 +271,7 @@ export default function CursorSettingsPanel({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label className="text-sm">Size</Label>
-              <span className="text-muted-foreground text-xs">
+              <span className="text-xs text-muted-foreground">
                 {cursorStyle.size}%
               </span>
             </div>
@@ -288,7 +288,7 @@ export default function CursorSettingsPanel({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label className="text-sm">Smoothing</Label>
-              <span className="text-muted-foreground text-xs">
+              <span className="text-xs text-muted-foreground">
                 {getSmoothingLabel(cursorStyle.smoothing)}
               </span>
             </div>
@@ -300,7 +300,7 @@ export default function CursorSettingsPanel({
               max={1}
               step={0.1}
             />
-            <p className="text-muted-foreground text-xs">
+            <p className="text-xs text-muted-foreground">
               Reduces cursor shake for smoother movement
             </p>
           </div>
@@ -309,7 +309,7 @@ export default function CursorSettingsPanel({
             <div className="flex items-center justify-between">
               <div>
                 <Label className="text-sm">Motion Blur</Label>
-                <p className="text-muted-foreground text-xs">
+                <p className="text-xs text-muted-foreground">
                   Blur the cursor along its movement
                 </p>
               </div>
@@ -325,7 +325,7 @@ export default function CursorSettingsPanel({
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm">Blur Strength</Label>
-                  <span className="text-muted-foreground text-xs">
+                  <span className="text-xs text-muted-foreground">
                     {Math.round(cursorStyle.motionBlurStrength * 100)}%
                   </span>
                 </div>
@@ -364,7 +364,7 @@ export default function CursorSettingsPanel({
             <div className="flex items-center justify-between">
               <div>
                 <Label className="text-sm">Hide When Idle</Label>
-                <p className="text-muted-foreground text-xs">
+                <p className="text-xs text-muted-foreground">
                   Fade out cursor when not moving
                 </p>
               </div>
@@ -380,7 +380,7 @@ export default function CursorSettingsPanel({
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm">Timeout</Label>
-                  <span className="text-muted-foreground text-xs">
+                  <span className="text-xs text-muted-foreground">
                     {cursorStyle.hideOnIdleTimeout}s
                   </span>
                 </div>

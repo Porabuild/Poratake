@@ -117,14 +117,14 @@ export default function AllInOneToolbar({
           value={activeMode === 'ocr' ? '' : activeMode}
           onValueChange={selectCaptureTab}
         >
-          <TabsListContainer className="bg-muted-foreground/10 rounded-3xl">
+          <TabsListContainer className="rounded-3xl bg-muted-foreground/10">
             <TabsList className="p-0">
               <TabsTrigger
                 value="screenshot"
                 aria-label="Screenshot"
-                className="text-muted-foreground/60 hover:text-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground data-[focus-visible=true]:outline-muted-foreground flex size-8 items-center justify-center rounded-3xl p-0"
+                className="flex size-8 items-center justify-center rounded-3xl p-0 text-muted-foreground/60 hover:text-muted-foreground data-[focus-visible=true]:outline-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground"
               >
-                <TabsIndicator className="bg-muted-foreground/25 rounded-3xl shadow-none" />
+                <TabsIndicator className="rounded-3xl bg-muted-foreground/25 shadow-none" />
                 <Camera className="size-4" />
                 <span className="sr-only">Screenshot</span>
               </TabsTrigger>
@@ -132,9 +132,9 @@ export default function AllInOneToolbar({
                 <TabsTrigger
                   value="record"
                   aria-label="Record"
-                  className="text-muted-foreground/60 hover:text-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground data-[focus-visible=true]:outline-muted-foreground flex size-8 items-center justify-center rounded-3xl p-0"
+                  className="flex size-8 items-center justify-center rounded-3xl p-0 text-muted-foreground/60 hover:text-muted-foreground data-[focus-visible=true]:outline-muted-foreground data-[selected=true]:text-foreground data-[selected=true]:hover:text-foreground"
                 >
-                  <TabsIndicator className="bg-muted-foreground/25 rounded-3xl shadow-none" />
+                  <TabsIndicator className="rounded-3xl bg-muted-foreground/25 shadow-none" />
                   <Video className="size-4" />
                   <span className="sr-only">Record</span>
                 </TabsTrigger>
@@ -145,7 +145,7 @@ export default function AllInOneToolbar({
         {activeMode === 'ocr' ? null : (
           <CaptureTargetMenu target={activeTarget} onSelect={selectTarget} />
         )}
-        <div className="bg-border/70 mx-0.5 h-5 w-px" />
+        <div className="mx-0.5 h-5 w-px bg-border/70" />
         {ocrEnabled ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -175,7 +175,7 @@ export default function AllInOneToolbar({
             {colorPickerAvailable ? 'Pick color' : 'Color picker unavailable'}
           </TooltipContent>
         </Tooltip>
-        <div className="bg-border/70 mx-0.5 h-5 w-px" />
+        <div className="mx-0.5 h-5 w-px bg-border/70" />
         <Tooltip>
           <TooltipTrigger asChild>
             <ToolbarButton

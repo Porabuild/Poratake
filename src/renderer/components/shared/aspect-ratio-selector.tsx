@@ -25,7 +25,7 @@ export default function AspectRatioSelector({
 }: AspectRatioSelectorProps) {
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-muted-foreground text-xs font-medium">
+      <span className="text-xs font-medium text-muted-foreground">
         Aspect Ratio
       </span>
       <div className="grid grid-cols-4 gap-1.5">

@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import { ChevronDown, Grid3X3, Droplets, Square } from 'lucide-react';
 import { ListBox, Popover, Select } from '@heroui/react';
 import type { RedactIntensity, RedactStyle } from '@/types/editor';
@@ -43,11 +44,11 @@ export default function RedactOptions({
     <Popover>
       <Popover.Trigger
         aria-label="Redaction options"
-        className="group bg-default hover:bg-default-hover flex h-7 items-center gap-2 rounded-3xl px-2 outline-none"
+        className="group flex h-7 items-center gap-2 rounded-3xl bg-default px-2 outline-none hover:bg-default-hover"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         {selectedStyleOption?.icon}
-        <ChevronDown className="text-muted-foreground size-3.5 transition-transform group-aria-expanded:rotate-180" />
+        <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-aria-expanded:rotate-180" />
       </Popover.Trigger>
       <Popover.Content placement="bottom" className="min-w-40">
         <Popover.Dialog className="p-0">
@@ -83,9 +84,9 @@ export default function RedactOptions({
           </ListBox>
           {redactStyle !== 'blackout' && (
             <>
-              <div className="bg-separator h-px" />
+              <div className="h-px bg-separator" />
               <div className="flex items-center justify-between px-2 py-1.5">
-                <span className="text-muted-foreground text-xs">
+                <span className="text-xs text-muted-foreground">
                   Intensity:
                 </span>
                 <Select

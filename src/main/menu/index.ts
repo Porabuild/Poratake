@@ -1,9 +1,9 @@
+import type { NativeImage } from 'electron';
 import {
   app,
   Tray,
   Menu,
   nativeImage,
-  NativeImage,
   nativeTheme,
   dialog,
   BrowserWindow,

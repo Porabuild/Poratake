@@ -223,16 +223,15 @@ describe('settings IPC handlers', () => {
         sender: {},
       }) as { nativeCapable: boolean };
 
-      if (!result.nativeCapable) return;
-
       const { supportsWindowsAcrylic } = await import('@/main/utils/title-bar');
-      if (!supportsWindowsAcrylic()) {
-        expect(window.setBackgroundMaterial).not.toHaveBeenCalled();
-        return;
-      }
+      const expectAcrylic = result.nativeCapable && supportsWindowsAcrylic();
 
-      expect(window.setBackgroundMaterial).toHaveBeenCalledWith('acrylic');
-      expect(window.setBackgroundColor).toHaveBeenCalledWith('#00000000');
+      expect(window.setBackgroundMaterial.mock.calls).toEqual(
+        expectAcrylic ? [['acrylic']] : []
+      );
+      expect(window.setBackgroundColor.mock.calls).toEqual(
+        expectAcrylic ? [['#00000000']] : []
+      );
     });
   });
 

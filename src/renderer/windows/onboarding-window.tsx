@@ -33,9 +33,9 @@ function PermissionItem({
   onRequest,
 }: PermissionItemProps) {
   return (
-    <div className="bg-muted rounded-md p-3">
+    <div className="rounded-md bg-muted p-3">
       <div className="flex items-start gap-3">
-        <div className="bg-primary/10 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full">
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary/10">
           {icon}
         </div>
         <div className="min-w-0 flex-1">
@@ -49,11 +49,11 @@ function PermissionItem({
               {isGranted ? (
                 <Check className="h-3 w-3 text-green-500" />
               ) : (
-                <X className="text-destructive h-3 w-3" />
+                <X className="h-3 w-3 text-destructive" />
               )}
             </div>
           </div>
-          <p className="text-muted-foreground mt-0.5 text-xs">{description}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
           {!isGranted && (
             <Button
               variant="outline"
@@ -78,13 +78,13 @@ interface StepIndicatorProps {
 function StepIndicator({ currentStep, totalSteps }: StepIndicatorProps) {
   return (
     <div className="flex items-center justify-center gap-2">
-      {Array.from({ length: totalSteps }).map((_, index) => (
+      {Array.from({ length: totalSteps }, (_, position) => (
         <div
-          key={index}
+          key={position}
           className={`h-2 w-2 rounded-full transition-colors ${
-            index === currentStep
+            position === currentStep
               ? 'bg-primary'
-              : index < currentStep
+              : position < currentStep
                 ? 'bg-primary/50'
                 : 'bg-muted'
           }`}
@@ -95,7 +95,10 @@ function StepIndicator({ currentStep, totalSteps }: StepIndicatorProps) {
 }
 
 type OnboardingStep =
-  'welcome' | 'disable-macos-shortcuts' | 'shortcuts' | 'permissions';
+  | 'welcome'
+  | 'disable-macos-shortcuts'
+  | 'shortcuts'
+  | 'permissions';
 
 const ONBOARDING_STEPS: OnboardingStep[] = isMacPlatform()
   ? ['welcome', 'disable-macos-shortcuts', 'shortcuts', 'permissions']
@@ -110,12 +113,12 @@ function WelcomeStep() {
         className="mx-auto mb-4 h-16 w-16 rounded-2xl"
       />
       <h1 className="text-xl font-semibold">Welcome to Poratake</h1>
-      <p className="text-muted-foreground mt-2 text-sm">
+      <p className="mt-2 text-sm text-muted-foreground">
         Your new screenshot tool
       </p>
 
       <div className="mt-6 space-y-3 text-left">
-        <div className="bg-muted flex items-start gap-3 rounded-md p-3">
+        <div className="flex items-start gap-3 rounded-md bg-muted p-3">
           <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-500/10">
             <Monitor className="h-4 w-4 text-blue-500" />
           </div>
@@ -125,7 +128,7 @@ function WelcomeStep() {
                 ? 'Lives in Your Menu Bar'
                 : 'Lives in Your System Tray'}
             </h3>
-            <p className="text-muted-foreground mt-0.5 text-xs">
+            <p className="mt-0.5 text-xs text-muted-foreground">
               Poratake runs quietly in your{' '}
               {isMacPlatform() ? 'menu bar' : 'system tray'}. Click the icon to
               access all features or use keyboard shortcuts for quick captures.
@@ -133,13 +136,13 @@ function WelcomeStep() {
           </div>
         </div>
 
-        <div className="bg-muted flex items-start gap-3 rounded-md p-3">
+        <div className="flex items-start gap-3 rounded-md bg-muted p-3">
           <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-purple-500/10">
             <Keyboard className="h-4 w-4 text-purple-500" />
           </div>
           <div>
             <h3 className="text-sm font-medium">Powerful Shortcuts</h3>
-            <p className="text-muted-foreground mt-0.5 text-xs">
+            <p className="mt-0.5 text-xs text-muted-foreground">
               Capture screenshots instantly with customizable keyboard shortcuts
               for area, window, and full screen captures.
             </p>
@@ -164,24 +167,24 @@ function DisableMacOSShortcutsStep() {
         <h1 className="text-xl font-semibold">
           Disable macOS Screenshot Shortcuts
         </h1>
-        <p className="text-muted-foreground mt-1 text-sm">
+        <p className="mt-1 text-sm text-muted-foreground">
           To use Poratake&apos;s shortcuts, you need to disable the default
           macOS screenshot shortcuts first.
         </p>
       </div>
 
       <div className="space-y-3">
-        <div className="bg-muted rounded-md p-3">
+        <div className="rounded-md bg-muted p-3">
           <h3 className="mb-2 text-sm font-medium">Follow these steps:</h3>
-          <ol className="text-muted-foreground space-y-2 text-xs">
+          <ol className="space-y-2 text-xs text-muted-foreground">
             <li className="flex gap-2">
-              <span className="bg-primary text-primary-foreground flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground">
                 1
               </span>
               <span>Click the button below to open Keyboard Settings</span>
             </li>
             <li className="flex gap-2">
-              <span className="bg-primary text-primary-foreground flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground">
                 2
               </span>
               <span>
@@ -189,7 +192,7 @@ function DisableMacOSShortcutsStep() {
               </span>
             </li>
             <li className="flex gap-2">
-              <span className="bg-primary text-primary-foreground flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground">
                 3
               </span>
               <span>
@@ -209,7 +212,7 @@ function DisableMacOSShortcutsStep() {
           Open Keyboard Settings
         </Button>
 
-        <p className="text-muted-foreground text-center text-xs">
+        <p className="text-center text-xs text-muted-foreground">
           You can skip this step, but Poratake&apos;s shortcuts may conflict
           with macOS defaults.
         </p>
@@ -236,13 +239,13 @@ function ShortcutsStep({ settings, onShortcutChange }: ShortcutsStepProps) {
           <Keyboard className="h-8 w-8 text-green-500" />
         </div>
         <h1 className="text-xl font-semibold">Set Your Shortcuts</h1>
-        <p className="text-muted-foreground mt-1 text-sm">
+        <p className="mt-1 text-sm text-muted-foreground">
           Customize keyboard shortcuts for quick captures. Click to record a new
           shortcut.
         </p>
       </div>
 
-      <div className="bg-muted space-y-1 rounded-md p-3">
+      <div className="space-y-1 rounded-md bg-muted p-3">
         <ShortcutInput
           label="Capture Area"
           value={settings.shortcuts.screenshot.area}
@@ -262,7 +265,7 @@ function ShortcutsStep({ settings, onShortcutChange }: ShortcutsStepProps) {
         />
       </div>
 
-      <p className="text-muted-foreground mt-3 text-center text-xs">
+      <p className="mt-3 text-center text-xs text-muted-foreground">
         You can change these anytime in Settings → Shortcuts
       </p>
     </div>
@@ -286,11 +289,11 @@ function PermissionsStep({
   return (
     <div className="flex flex-col">
       <div className="mb-4 text-center">
-        <div className="bg-primary/10 mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full">
-          <Shield className="text-primary h-8 w-8" />
+        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+          <Shield className="h-8 w-8 text-primary" />
         </div>
         <h1 className="text-xl font-semibold">Setup Permissions</h1>
-        <p className="text-muted-foreground mt-1 text-sm">
+        <p className="mt-1 text-sm text-muted-foreground">
           Poratake needs these permissions to work properly
         </p>
       </div>
@@ -299,7 +302,7 @@ function PermissionsStep({
         <PermissionItem
           title="Screen Recording"
           description="Required to capture screenshots of your screen"
-          icon={<Monitor className="text-primary h-4 w-4" />}
+          icon={<Monitor className="h-4 w-4 text-primary" />}
           isGranted={isScreenRecordingGranted}
           onRequest={onOpenScreenRecording}
         />
@@ -307,7 +310,7 @@ function PermissionsStep({
         <PermissionItem
           title="Accessibility"
           description="Required to hide desktop icons when capturing"
-          icon={<Accessibility className="text-primary h-4 w-4" />}
+          icon={<Accessibility className="h-4 w-4 text-primary" />}
           isGranted={isAccessibilityGranted}
           onRequest={onOpenAccessibility}
         />
@@ -439,7 +442,7 @@ export default function OnboardingWindow() {
   };
 
   return (
-    <div className="bg-background flex h-screen flex-col">
+    <div className="flex h-screen flex-col bg-background">
       {/* Drag strip standing in for the hidden native title bar */}
       <div
         className="h-8 w-full flex-none"
@@ -483,7 +486,7 @@ export default function OnboardingWindow() {
           <Button
             variant="ghost"
             onClick={handleSkip}
-            className="text-muted-foreground w-full"
+            className="w-full text-muted-foreground"
           >
             Skip for now
           </Button>

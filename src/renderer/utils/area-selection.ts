@@ -44,14 +44,26 @@ const CURSORS: Record<SelectionHandle, string> = {
   right: 'ew-resize',
 };
 
-const LEFT_HANDLES: SelectionHandle[] = ['top-left', 'left', 'bottom-left'];
-const RIGHT_HANDLES: SelectionHandle[] = ['top-right', 'right', 'bottom-right'];
-const TOP_HANDLES: SelectionHandle[] = ['top-left', 'top', 'top-right'];
-const BOTTOM_HANDLES: SelectionHandle[] = [
+const LEFT_HANDLES: ReadonlySet<SelectionHandle> = new Set([
+  'top-left',
+  'left',
+  'bottom-left',
+]);
+const RIGHT_HANDLES: ReadonlySet<SelectionHandle> = new Set([
+  'top-right',
+  'right',
+  'bottom-right',
+]);
+const TOP_HANDLES: ReadonlySet<SelectionHandle> = new Set([
+  'top-left',
+  'top',
+  'top-right',
+]);
+const BOTTOM_HANDLES: ReadonlySet<SelectionHandle> = new Set([
   'bottom-left',
   'bottom',
   'bottom-right',
-];
+]);
 
 function toEdges(rect: AreaOverlayRect): Edges {
   return {
@@ -224,7 +236,7 @@ export function adjustRectToRatio(
       return toRect({ ...edges, left, right: left + width });
     }
 
-    return LEFT_HANDLES.includes(handle)
+    return LEFT_HANDLES.has(handle)
       ? toRect({ ...edges, left: edges.right - width })
       : toRect({ ...edges, right: edges.left + width });
   }
@@ -237,7 +249,7 @@ export function adjustRectToRatio(
     return toRect({ ...edges, top, bottom: top + height });
   }
 
-  return TOP_HANDLES.includes(handle)
+  return TOP_HANDLES.has(handle)
     ? toRect({ ...edges, top: edges.bottom - height })
     : toRect({ ...edges, bottom: edges.top + height });
 }
@@ -266,19 +278,19 @@ export function resizeRect(
   const edges = toEdges(rect);
   const resized = { ...edges };
 
-  if (LEFT_HANDLES.includes(handle)) {
+  if (LEFT_HANDLES.has(handle)) {
     resized.left = Math.min(point.x, edges.right - MIN_RESIZE_SIZE);
   }
 
-  if (RIGHT_HANDLES.includes(handle)) {
+  if (RIGHT_HANDLES.has(handle)) {
     resized.right = Math.max(point.x, edges.left + MIN_RESIZE_SIZE);
   }
 
-  if (TOP_HANDLES.includes(handle)) {
+  if (TOP_HANDLES.has(handle)) {
     resized.top = Math.min(point.y, edges.bottom - MIN_RESIZE_SIZE);
   }
 
-  if (BOTTOM_HANDLES.includes(handle)) {
+  if (BOTTOM_HANDLES.has(handle)) {
     resized.bottom = Math.max(point.y, edges.top + MIN_RESIZE_SIZE);
   }
 

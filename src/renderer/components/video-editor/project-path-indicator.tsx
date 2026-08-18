@@ -128,7 +128,7 @@ export default function ProjectPathIndicator({
         <div
           ref={popoverRef}
           className={cn(
-            'bg-popover text-popover-foreground border-border absolute top-full right-0 z-50 mt-1.5 w-80 rounded-lg border shadow-lg',
+            'absolute top-full right-0 z-50 mt-1.5 w-80 rounded-lg border border-border bg-popover text-popover-foreground shadow-lg',
             'animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2'
           )}
         >
@@ -159,7 +159,7 @@ export default function ProjectPathIndicator({
                   </Button>
                 </div>
                 {renameError && (
-                  <p className="text-destructive text-xs">{renameError}</p>
+                  <p className="text-xs text-destructive">{renameError}</p>
                 )}
               </>
             )}

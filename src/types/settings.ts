@@ -42,7 +42,10 @@ export const DEFAULT_SAVE_LOCATIONS_CONFIG: SaveLocationsConfig = {
 };
 
 export type PreviewCorner =
-  'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right';
 
 export interface PreviewConfig {
   displayId: number | null;

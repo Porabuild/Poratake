@@ -81,11 +81,11 @@ export default function NumberOptions({
       <Popover>
         <Popover.Trigger
           aria-label="Number options"
-          className="group bg-default hover:bg-default-hover flex h-7 items-center gap-2 rounded-3xl px-2 outline-none"
+          className="group flex h-7 items-center gap-2 rounded-3xl bg-default px-2 outline-none hover:bg-default-hover"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <NumberBadgePreview style={numberStyle} size={20} />
-          <ChevronDown className="text-muted-foreground size-3.5 transition-transform group-aria-expanded:rotate-180" />
+          <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-aria-expanded:rotate-180" />
         </Popover.Trigger>
         <Popover.Content placement="bottom" className="min-w-48">
           <Popover.Dialog className="p-0">
@@ -115,9 +115,9 @@ export default function NumberOptions({
                 </ListBox.Item>
               ))}
             </ListBox>
-            <div className="bg-separator h-px" />
+            <div className="h-px bg-separator" />
             <div className="flex items-center justify-between px-2 py-1.5">
-              <span className="text-muted-foreground text-xs">Starting:</span>
+              <span className="text-xs text-muted-foreground">Starting:</span>
               <Select
                 aria-label="Starting number"
                 variant="secondary"
@@ -155,9 +155,9 @@ export default function NumberOptions({
                 </Select.Popover>
               </Select>
             </div>
-            <div className="bg-separator h-px" />
+            <div className="h-px bg-separator" />
             <div className="flex items-center justify-between px-2 py-1.5">
-              <span className="text-muted-foreground text-xs">Size:</span>
+              <span className="text-xs text-muted-foreground">Size:</span>
               <Select
                 aria-label="Number size"
                 variant="secondary"
@@ -194,7 +194,7 @@ export default function NumberOptions({
           </Popover.Dialog>
         </Popover.Content>
       </Popover>
-      <div className="bg-border mx-1 h-[18px] w-px" />
+      <div className="mx-1 h-[18px] w-px bg-border" />
     </>
   );
 }

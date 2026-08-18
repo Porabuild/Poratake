@@ -191,7 +191,7 @@ export default function BackgroundEditor({
               {colors.length < 5 && (
                 <button
                   onClick={handleAddColor}
-                  className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs"
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                 >
                   <Plus className="size-3" />
                   Add
@@ -201,6 +201,7 @@ export default function BackgroundEditor({
 
             <div className="flex flex-col gap-2">
               {colors.map((color, index) => (
+                // oxlint-disable-next-line react/no-array-index-key
                 <div key={index} className="flex items-center gap-2">
                   <button
                     onClick={() =>
@@ -211,7 +212,7 @@ export default function BackgroundEditor({
                     className={cn(
                       'size-8 rounded-md border-2 transition-all',
                       activeColorIndex === index
-                        ? 'ring-ring ring-2 ring-offset-1'
+                        ? 'ring-2 ring-ring ring-offset-1'
                         : ''
                     )}
                     style={{ backgroundColor: color }}
@@ -220,7 +221,7 @@ export default function BackgroundEditor({
                     type="text"
                     value={color}
                     onChange={e => handleColorChange(index, e.target.value)}
-                    className="bg-field text-field-foreground rounded-field h-8 flex-1 border-0 px-2 font-mono text-xs outline-none"
+                    className="h-8 flex-1 rounded-field border-0 bg-field px-2 font-mono text-xs text-field-foreground outline-none"
                   />
                   {colors.length > 2 && (
                     <button
@@ -235,7 +236,7 @@ export default function BackgroundEditor({
             </div>
 
             {activeColorIndex !== null && (
-              <div className="bg-muted/50 mt-1 grid grid-cols-8 gap-1.5 rounded-md p-2">
+              <div className="mt-1 grid grid-cols-8 gap-1.5 rounded-md bg-muted/50 p-2">
                 {COLOR_PALETTE.map(paletteColor => (
                   <button
                     key={paletteColor}
@@ -246,7 +247,7 @@ export default function BackgroundEditor({
                     className={cn(
                       'size-6 rounded-md border transition-transform hover:scale-110',
                       colors[activeColorIndex] === paletteColor
-                        ? 'ring-ring ring-2'
+                        ? 'ring-2 ring-ring'
                         : ''
                     )}
                     style={{ backgroundColor: paletteColor }}
@@ -259,7 +260,7 @@ export default function BackgroundEditor({
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium">Angle</label>
-              <span className="text-muted-foreground text-xs tabular-nums">
+              <span className="text-xs text-muted-foreground tabular-nums">
                 {angle}°
               </span>
             </div>
@@ -300,31 +301,31 @@ export default function BackgroundEditor({
           >
             {!imageUrl && !isLoadingImage && (
               <>
-                <Upload className="text-muted-foreground size-6" />
-                <span className="text-muted-foreground text-xs">
+                <Upload className="size-6 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">
                   Click to select image
                 </span>
               </>
             )}
             {isLoadingImage && (
-              <div className="border-primary size-5 animate-spin rounded-full border-2 border-t-transparent" />
+              <div className="size-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
             )}
           </button>
           {imageUrl && (
             <div className="flex items-center justify-between">
-              <div className="text-muted-foreground flex items-center gap-1 text-xs">
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <ImageIcon className="size-3" />
                 Image selected
               </div>
               <button
                 onClick={handleSelectImage}
-                className="text-primary text-xs hover:underline"
+                className="text-xs text-primary hover:underline"
               >
                 Change
               </button>
             </div>
           )}
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs text-muted-foreground">
             Supports PNG, JPEG, SVG, and WebP
           </p>
         </div>

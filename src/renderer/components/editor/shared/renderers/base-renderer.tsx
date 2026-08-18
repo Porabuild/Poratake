@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import type { Annotation } from '@/types/editor';
 import { SELECTION_STROKE, SELECTION_STROKE_WIDTH } from '../colors';
 import { getHandleStyle } from '../types';

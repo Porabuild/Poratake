@@ -431,9 +431,9 @@ export default function ScreenshotWindow({
   );
 
   const handleStrokeWidthChange = useCallback(
-    (width: number) => {
-      setStrokeWidth(width);
-      updateSelectedAnnotations({ strokeWidth: width });
+    (nextStrokeWidth: number) => {
+      setStrokeWidth(nextStrokeWidth);
+      updateSelectedAnnotations({ strokeWidth: nextStrokeWidth });
     },
     [setStrokeWidth, updateSelectedAnnotations]
   );
@@ -1212,9 +1212,7 @@ export default function ScreenshotWindow({
   }, []);
 
   const handleCaptureAndAttach = useCallback(
-    async (
-      edge: NonNullable<import('@/renderer/hooks/useImageDrop').DropEdge>
-    ) => {
+    async (edge: NonNullable<DropEdge>) => {
       if (!imageElement) return;
 
       setIsCaptureMode(false);
@@ -1252,7 +1250,7 @@ export default function ScreenshotWindow({
   const showCaptureOverlay = isCaptureMode || isMetaHeld;
 
   return (
-    <div className="bg-background relative flex h-screen w-full flex-col p-0 pt-10">
+    <div className="relative flex h-screen w-full flex-col bg-background p-0 pt-10">
       <TitleBar
         activeTool={activeTool}
         onToolChange={handleToolChange}
@@ -1304,7 +1302,7 @@ export default function ScreenshotWindow({
         <div className="absolute top-0 left-0 z-10 h-full">
           {hasOpenedWallpaperSheet && (
             <Suspense
-              fallback={<div className="bg-popover h-full w-80 border-r" />}
+              fallback={<div className="h-full w-80 border-r bg-popover" />}
             >
               <WallpaperSheetContent
                 wallpaper={wallpaper}
@@ -1330,7 +1328,7 @@ export default function ScreenshotWindow({
         </div>
         <div
           ref={dropTargetRef}
-          className="bg-background relative h-full overflow-auto transition-all duration-300"
+          className="relative h-full overflow-auto bg-background transition-all duration-300"
           onMouseDownCapture={pan.onMouseDownCapture}
           style={{
             marginLeft: isWallpaperSheetOpen ? '320px' : '0',

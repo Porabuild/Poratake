@@ -22,7 +22,7 @@ export default function SettingsPanelHeader({
     <div className={showRight ? 'flex items-center justify-between' : ''}>
       <div>
         <h3 className="text-sm font-medium">{title}</h3>
-        <p className="text-muted-foreground text-xs">{description}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
       </div>
       {showToggle && (
         <Switch size="sm" checked={enabled} onCheckedChange={onEnabledChange} />

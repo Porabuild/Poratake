@@ -1,0 +1,32 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "semi": true,
+  "trailingComma": "es5",
+  "singleQuote": true,
+  "printWidth": 80,
+  "tabWidth": 2,
+  "useTabs": false,
+  "arrowParens": "avoid",
+  "endOfLine": "lf",
+  "sortPackageJson": false,
+  "sortTailwindcss": {
+    "stylesheet": "./src/renderer/styles/base.css",
+    "functions": ["cn", "clsx"]
+  },
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    "dist-electron",
+    "build",
+    "src/main/daemon-win/target",
+    "src/main/daemon-win/Cargo.lock",
+    "bun.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "*.log",
+    ".DS_Store",
+    "coverage",
+    "*.json5",
+    "CLAUDE.md"
+  ]
+}

@@ -66,7 +66,7 @@ export default function HistoryToolbar({
           onClick={() =>
             onSortOrderChange(sortOrder === 'newest' ? 'oldest' : 'newest')
           }
-          className="text-muted-foreground hover:text-foreground h-6 w-6"
+          className="h-6 w-6 text-muted-foreground hover:text-foreground"
           title={sortOrder === 'newest' ? 'Newest first' : 'Oldest first'}
         >
           <ArrowUpDown className="h-3.5 w-3.5" />
@@ -75,7 +75,7 @@ export default function HistoryToolbar({
           variant="ghost"
           size="icon"
           onClick={() => onLayoutChange(layout === 'grid' ? 'list' : 'grid')}
-          className="text-muted-foreground hover:text-foreground h-6 w-6"
+          className="h-6 w-6 text-muted-foreground hover:text-foreground"
           title={layout === 'grid' ? 'Switch to list' : 'Switch to grid'}
         >
           {layout === 'grid' ? (

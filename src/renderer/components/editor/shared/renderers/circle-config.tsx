@@ -1,7 +1,7 @@
 import type { CircleAnnotation } from '@/types/editor';
 import type { ShapeRenderConfig, HandlePosition } from './types';
 
-const DIAGONAL_FACTOR = 0.707;
+const DIAGONAL_FACTOR = Math.SQRT1_2;
 
 export const circleConfig: ShapeRenderConfig<CircleAnnotation> = {
   getGeometry(ann, offsetX, offsetY) {

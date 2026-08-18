@@ -116,12 +116,12 @@ describe('file-utils', () => {
       vi.stubGlobal(
         'Image',
         class {
-          private _src = '';
+          private srcValue = '';
           get src() {
-            return this._src;
+            return this.srcValue;
           }
           set src(value: string) {
-            this._src = value;
+            this.srcValue = value;
             capturedSrc = value;
           }
           onload: (() => void) | null = null;

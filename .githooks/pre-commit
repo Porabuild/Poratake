@@ -2,7 +2,7 @@
 set -e
 
 ROOT="$(git rev-parse --show-toplevel)"
-TMP_DIR="$ROOT/.poratake-format-check.$$"
+TMP_DIR="$ROOT/.poratake-fast-check.$$"
 FAILED=0
 
 cleanup() {
@@ -10,6 +10,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+MATCHED=0
+set --
 IFS='
 '
 for FILE in $(git diff --cached --name-only --diff-filter=ACMR); do
@@ -18,14 +20,28 @@ for FILE in $(git diff --cached --name-only --diff-filter=ACMR); do
     *) continue ;;
   esac
 
+  MATCHED=1
   mkdir -p "$TMP_DIR"
   TMP_FILE="$TMP_DIR/$(basename "$FILE")"
   git show ":$FILE" | sed 's/\r$//' > "$TMP_FILE"
+  set -- "$@" "$TMP_FILE"
+done
 
-  if ! bunx prettier --check "$TMP_FILE" > /dev/null 2>&1; then
-    echo "prettier: $FILE is not formatted. Run: bunx prettier --write \"$FILE\""
+if [ "$MATCHED" -eq 1 ]; then
+  if ! bunx oxfmt --check "$@" > /dev/null 2>&1; then
+    echo "oxfmt: staged files are not formatted. Run: bunx oxfmt <files>"
     FAILED=1
   fi
-done
+
+  if ! bunx oxlint "$@" --deny-warnings > /dev/null 2>&1; then
+    echo "oxlint: staged files have lint errors. Run: bunx oxlint <files>"
+    FAILED=1
+  fi
+fi
+
+if ! (cd "$ROOT" && bun run typecheck > /dev/null 2>&1); then
+  echo "typecheck: failed. Run: bun run typecheck"
+  FAILED=1
+fi
 
 exit $FAILED

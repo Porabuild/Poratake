@@ -23,7 +23,7 @@ export default function DataEditorSection({
   children,
 }: DataEditorSectionProps) {
   return (
-    <div className="border-border space-y-2 border-t pt-4">
+    <div className="space-y-2 border-t border-border pt-4">
       <Label className="text-sm">{label}</Label>
       <div className="flex gap-2">
         <Button
@@ -47,7 +47,7 @@ export default function DataEditorSection({
         </Button>
       </div>
       {children && (
-        <div className="text-muted-foreground text-xs">{children}</div>
+        <div className="text-xs text-muted-foreground">{children}</div>
       )}
     </div>
   );

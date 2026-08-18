@@ -61,6 +61,7 @@ interface DragState {
 const MIN_SEGMENT_DURATION = 0.3;
 const DEFAULT_SEGMENT_DURATION = 3;
 const CLICK_THRESHOLD = 0.1;
+const NO_FEATURES: TrackFeatures = {};
 const EDGE_RESIZE_RATIO = 0.15;
 const MAX_EDGE_THRESHOLD = 0.3;
 
@@ -72,7 +73,7 @@ const Track = forwardRef<HTMLDivElement, TrackProps>(
       selectedId,
       isToolActive = false,
       colors,
-      features = {},
+      features = NO_FEATURES,
       playheadPosition,
       disableTransitions = false,
       draggingSegmentId,
@@ -496,7 +497,7 @@ const Track = forwardRef<HTMLDivElement, TrackProps>(
         {segments.length === 0 &&
           !dragState &&
           (emptyText || emptyTextActive) && (
-            <div className="text-muted-foreground pointer-events-none absolute inset-0 flex items-center justify-center text-xs">
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
               {isToolActive ? emptyTextActive : emptyText}
             </div>
           )}

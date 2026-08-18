@@ -22,7 +22,7 @@ const CROSS_PLATFORM_FEATURES: readonly FeatureId[] = [
   'screenshot-area',
 ];
 
-const WINDOWS_FEATURES: readonly FeatureId[] = [
+const WINDOWS_FEATURES: ReadonlySet<FeatureId> = new Set([
   ...CROSS_PLATFORM_FEATURES,
   'screenshot-window',
   'ocr',
@@ -38,7 +38,7 @@ const WINDOWS_FEATURES: readonly FeatureId[] = [
   'recording',
   'video-editor',
   'transcription',
-];
+]);
 
 export function isFeatureSupportedOn(
   platform: string | undefined,
@@ -49,7 +49,7 @@ export function isFeatureSupportedOn(
     case 'darwin':
       return true;
     case 'win32':
-      return WINDOWS_FEATURES.includes(feature);
+      return WINDOWS_FEATURES.has(feature);
     default:
       return CROSS_PLATFORM_FEATURES.includes(feature);
   }

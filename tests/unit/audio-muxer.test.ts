@@ -206,7 +206,7 @@ describe('audio muxer', () => {
 
     expect(result).toEqual({ success: true });
     expect(progress).toEqual([0, 50, 100, 100]);
-    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+    expect(progress).toEqual(progress.toSorted((a, b) => a - b));
     expect(mockInvoke).toHaveBeenCalledWith(
       'video-editor:mux-audio',
       expect.objectContaining({ durationSeconds: 12.5 })

@@ -509,14 +509,12 @@ describe('Config Management', () => {
   });
 
   describe('init', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let ipcHandlers: Record<string, (...args: unknown[]) => any>;
+    let ipcHandlers: Record<string, (...args: unknown[]) => unknown>;
 
     beforeEach(() => {
       ipcHandlers = {};
       mockIpcMain.handle.mockImplementation(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (channel: string, handler: (...args: unknown[]) => any) => {
+        (channel: string, handler: (...args: unknown[]) => unknown) => {
           ipcHandlers[channel] = handler;
         }
       );

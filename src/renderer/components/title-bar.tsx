@@ -178,7 +178,7 @@ export default function TitleBar({
   );
 
   return (
-    <div className="drag-region bg-card fixed top-0 right-0 left-0 z-9999 flex h-10 w-full flex-none items-center px-2">
+    <div className="drag-region fixed top-0 right-0 left-0 z-9999 flex h-10 w-full flex-none items-center bg-card px-2">
       {isMac && <div className="w-[120px] flex-none" />}
       <div
         className={cn(
@@ -187,7 +187,7 @@ export default function TitleBar({
         )}
       >
         {isMac && contextualControls}
-        {isMac && <div className="bg-border mx-1 h-[18px] w-px" />}
+        {isMac && <div className="mx-1 h-[18px] w-px bg-border" />}
         <Toolbar
           activeTool={activeTool}
           onToolChange={onToolChange}
@@ -251,7 +251,7 @@ export default function TitleBar({
           </TooltipTrigger>
           <TooltipContent>Pin Screenshot</TooltipContent>
         </Tooltip>
-        {!isMac && <div className="bg-border mx-1 h-[18px] w-px" />}
+        {!isMac && <div className="mx-1 h-[18px] w-px bg-border" />}
         {!isMac && contextualControls}
       </div>
       <WindowControlsSpacer />

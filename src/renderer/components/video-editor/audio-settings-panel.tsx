@@ -63,7 +63,7 @@ export default function AudioSettingsPanel({
       />
 
       {musicTrackGroups.length === 0 && (
-        <p className="text-muted-foreground text-xs">No audio tracks.</p>
+        <p className="text-xs text-muted-foreground">No audio tracks.</p>
       )}
 
       {musicTrackGroups.map(group => {
@@ -75,7 +75,7 @@ export default function AudioSettingsPanel({
           <div key={track.groupId} className="space-y-2 rounded-md border p-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <Icon className="text-muted-foreground size-4 shrink-0" />
+                <Icon className="size-4 shrink-0 text-muted-foreground" />
                 <span className="truncate text-sm font-medium">
                   {track.name}
                 </span>
@@ -105,7 +105,7 @@ export default function AudioSettingsPanel({
             {track.enabled && (
               <>
                 <div className="flex items-center gap-3">
-                  <Label className="text-muted-foreground w-12 shrink-0 text-xs">
+                  <Label className="w-12 shrink-0 text-xs text-muted-foreground">
                     Volume
                   </Label>
                   <Slider
@@ -121,13 +121,13 @@ export default function AudioSettingsPanel({
                     step={1}
                     className="flex-1"
                   />
-                  <span className="text-muted-foreground w-8 text-right text-xs">
+                  <span className="w-8 text-right text-xs text-muted-foreground">
                     {Math.round(track.volume * 100)}%
                   </span>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <Label className="text-muted-foreground w-12 shrink-0 text-xs">
+                  <Label className="w-12 shrink-0 text-xs text-muted-foreground">
                     Speed
                   </Label>
                   <Select
@@ -153,7 +153,7 @@ export default function AudioSettingsPanel({
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Keyboard className="text-muted-foreground size-4" />
+              <Keyboard className="size-4 text-muted-foreground" />
               <Label className="text-sm">Keyboard Sound</Label>
             </div>
             <Switch
@@ -203,7 +203,7 @@ export default function AudioSettingsPanel({
                   step={1}
                   className="flex-1"
                 />
-                <span className="text-muted-foreground w-8 text-right text-xs">
+                <span className="w-8 text-right text-xs text-muted-foreground">
                   {Math.round(audioStyle.keyboardSoundVolume * 100)}%
                 </span>
               </div>

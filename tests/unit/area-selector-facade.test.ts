@@ -57,8 +57,11 @@ describe('area-selector facade', () => {
     const facade = await import('@/main/capture/area-selector');
 
     backendSurface.forEach(name => {
-      expect(typeof facade[name], name).toBe('function');
+      if (typeof facade[name] !== 'function') {
+        throw new Error(`area-selector facade does not expose "${name}"`);
+      }
     });
+    expect(backendSurface.length).toBeGreaterThan(0);
   });
 
   it('forwards calls straight through to the overlay backend', async () => {

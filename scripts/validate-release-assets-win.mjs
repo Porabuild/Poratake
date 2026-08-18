@@ -1,9 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  createReadStream,
-  readFileSync,
-  statSync,
-} from 'node:fs';
+import { createReadStream, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 const [version, nsisPath, metadataPath, blockmapPath] = process.argv.slice(2);

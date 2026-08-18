@@ -131,7 +131,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
     return (
       <div
         ref={setRefs}
-        className={`group bg-secondary hover:bg-muted flex cursor-default items-center gap-3 rounded-lg p-2 transition-all ${
+        className={`group flex cursor-default items-center gap-3 rounded-lg bg-secondary p-2 transition-all hover:bg-muted ${
           isSelected
             ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-transparent'
             : ''
@@ -142,8 +142,8 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
       >
         <div className="relative h-12 w-20 shrink-0 overflow-hidden rounded-md">
           {loading ? (
-            <div className="bg-muted flex h-full w-full items-center justify-center">
-              <div className="border-muted-foreground/30 border-t-muted-foreground h-3 w-3 animate-spin rounded-full border-2" />
+            <div className="flex h-full w-full items-center justify-center bg-muted">
+              <div className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
             </div>
           ) : imageSrc ? (
             <>
@@ -161,7 +161,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
               )}
             </>
           ) : (
-            <div className="bg-muted text-muted-foreground flex h-full w-full items-center justify-center text-xs">
+            <div className="flex h-full w-full items-center justify-center bg-muted text-xs text-muted-foreground">
               No preview
             </div>
           )}
@@ -170,31 +170,31 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex items-center gap-1.5">
             {isVideo ? (
-              <Video className="text-muted-foreground h-3 w-3 shrink-0" />
+              <Video className="h-3 w-3 shrink-0 text-muted-foreground" />
             ) : (
-              <Camera className="text-muted-foreground h-3 w-3 shrink-0" />
+              <Camera className="h-3 w-3 shrink-0 text-muted-foreground" />
             )}
-            <span className="text-foreground truncate text-xs font-medium">
+            <span className="truncate text-xs font-medium text-foreground">
               {isVideo ? 'Video' : 'Screenshot'}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-muted-foreground text-xs">
+            <span className="text-xs text-muted-foreground">
               {formatRelativeTime(item.timestamp)}
             </span>
             {isVideo && videoFeatures && (
               <div className="flex gap-0.5">
                 {videoFeatures.hasMic && (
-                  <Mic className="text-muted-foreground h-2.5 w-2.5" />
+                  <Mic className="h-2.5 w-2.5 text-muted-foreground" />
                 )}
                 {videoFeatures.hasSystemAudio && (
-                  <Volume2 className="text-muted-foreground h-2.5 w-2.5" />
+                  <Volume2 className="h-2.5 w-2.5 text-muted-foreground" />
                 )}
                 {videoFeatures.hasCamera && (
-                  <Video className="text-muted-foreground h-2.5 w-2.5" />
+                  <Video className="h-2.5 w-2.5 text-muted-foreground" />
                 )}
                 {videoFeatures.hasCursor && (
-                  <MousePointer2 className="text-muted-foreground h-2.5 w-2.5" />
+                  <MousePointer2 className="h-2.5 w-2.5 text-muted-foreground" />
                 )}
               </div>
             )}
@@ -209,7 +209,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
               onClick={handleReveal}
               title="Show in folder"
               aria-label="Show in folder"
-              className="text-muted-foreground hover:bg-accent hover:text-accent-foreground h-6 w-6 shrink-0 transition-colors"
+              className="h-6 w-6 shrink-0 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
             >
               <FolderOpen className="h-3 w-3" />
             </Button>

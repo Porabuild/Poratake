@@ -217,14 +217,14 @@ function CountdownSurface({
 }) {
   return (
     <ToolbarSurface className="gap-3 px-4 py-2.5">
-      <span className="text-foreground text-3xl leading-none font-semibold tabular-nums">
+      <span className="text-3xl leading-none font-semibold text-foreground tabular-nums">
         {seconds}
       </span>
       <div className="flex flex-col gap-0.5">
-        <span className="text-foreground text-xs font-medium">
+        <span className="text-xs font-medium text-foreground">
           Recording starts soon
         </span>
-        <span className="text-muted-foreground text-xs">
+        <span className="text-xs text-muted-foreground">
           Press Escape to cancel
         </span>
       </div>
@@ -571,12 +571,12 @@ export default function RecordingControlWindow({
         {state.targetName ? (
           <>
             <span
-              className="text-foreground max-w-32 truncate px-1 text-xs"
+              className="max-w-32 truncate px-1 text-xs text-foreground"
               title={state.targetName}
             >
               {state.targetName}
             </span>
-            <div className="bg-border/70 mx-0.5 h-5 w-px" />
+            <div className="mx-0.5 h-5 w-px bg-border/70" />
           </>
         ) : null}
         {isRecording ? (
@@ -595,16 +595,16 @@ export default function RecordingControlWindow({
               label="Stop recording"
               onClick={() => sendAction('stop')}
             >
-              <Square className="text-destructive size-3.5 fill-current" />
+              <Square className="size-3.5 fill-current text-destructive" />
             </ControlButton>
-            <span className="text-foreground min-w-16 px-1 text-center font-mono text-xs tabular-nums">
+            <span className="min-w-16 px-1 text-center font-mono text-xs text-foreground tabular-nums">
               {formatElapsedTime(state.elapsedSeconds)}
             </span>
-            <div className="bg-border/70 mx-0.5 h-5 w-px" />
+            <div className="mx-0.5 h-5 w-px bg-border/70" />
             {state.cameraLocked ? cameraDropdown : null}
             {microphoneDropdown}
             {systemAudioButton}
-            <div className="bg-border/70 mx-0.5 h-5 w-px" />
+            <div className="mx-0.5 h-5 w-px bg-border/70" />
             <ControlButton
               label="Discard recording"
               onClick={() => sendAction('delete')}
@@ -622,12 +622,12 @@ export default function RecordingControlWindow({
             >
               <Circle className="size-3.5 fill-current" />
             </ControlButton>
-            <div className="bg-border/70 mx-0.5 h-5 w-px" />
+            <div className="mx-0.5 h-5 w-px bg-border/70" />
             {cameraDropdown}
             {microphoneDropdown}
             {systemAudioButton}
             {isMac ? iosDeviceDropdown : null}
-            <div className="bg-border/70 mx-0.5 h-5 w-px" />
+            <div className="mx-0.5 h-5 w-px bg-border/70" />
             <ControlButton
               label="Close"
               disabled={state.isStarting}

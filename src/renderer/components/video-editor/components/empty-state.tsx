@@ -11,7 +11,7 @@ export default function EmptyState({ message, className }: EmptyStateProps) {
     <div
       className={cn('flex h-full items-center justify-center p-4', className)}
     >
-      <p className="text-muted-foreground text-center text-sm">{message}</p>
+      <p className="text-center text-sm text-muted-foreground">{message}</p>
     </div>
   );
 }

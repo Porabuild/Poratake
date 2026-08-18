@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import type { RedactAnnotation } from '@/types/editor';
 import {
   type AnnotationRenderProps,
