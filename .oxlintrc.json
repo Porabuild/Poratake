@@ -47,7 +47,7 @@
     "typescript/no-explicit-any": "warn",
     "react/react-in-jsx-scope": "off",
     "react/exhaustive-effect-dependencies": "off",
-    "react/globals": "off",
+    "react/globals": "error",
     "react/immutability": "error",
     "react/memo-dependencies": "error",
     "react/no-deriving-state-in-effects": "error",

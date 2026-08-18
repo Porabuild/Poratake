@@ -1,6 +1,13 @@
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+// @vitest-environment happy-dom
+import {
+  act,
+  createElement,
+  createRef,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it } from 'vitest';
 import { useVideoWallpaper } from '../../src/renderer/components/video-editor/hooks/use-video-wallpaper';
 import type { SliceController } from '../../src/renderer/components/video-editor/hooks/use-editor-history';
 import {
@@ -8,12 +15,33 @@ import {
   type VideoWallpaperSettings,
 } from '../../src/types/video-wallpaper';
 
+interface WallpaperHarnessProps {
+  slice: SliceController<VideoWallpaperSettings>;
+}
+
+const WallpaperHarness = forwardRef<
+  ReturnType<typeof useVideoWallpaper>,
+  WallpaperHarnessProps
+>(function WallpaperHarness({ slice }, ref) {
+  const controller = useVideoWallpaper(slice);
+  useImperativeHandle(ref, () => controller, [controller]);
+  return null;
+});
+
+const mountedRoots: Array<{ container: HTMLDivElement; root: Root }> = [];
+
+afterEach(() => {
+  for (const { container, root } of mountedRoots.splice(0)) {
+    act(() => root.unmount());
+    container.remove();
+  }
+});
+
 function createWallpaperController(): {
   controller: ReturnType<typeof useVideoWallpaper>;
   getWallpaper: () => VideoWallpaperSettings;
 } {
   let wallpaper = DEFAULT_VIDEO_WALLPAPER;
-  let controller: ReturnType<typeof useVideoWallpaper> | null = null;
 
   const set: SliceController<VideoWallpaperSettings>['set'] = updater => {
     wallpaper = typeof updater === 'function' ? updater(wallpaper) : updater;
@@ -26,19 +54,20 @@ function createWallpaperController(): {
     commit: () => {},
   };
 
-  function Harness() {
-    controller = useVideoWallpaper(slice);
-    return null;
-  }
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const controllerRef = createRef<ReturnType<typeof useVideoWallpaper>>();
+  mountedRoots.push({ container, root });
+  act(() => {
+    root.render(createElement(WallpaperHarness, { ref: controllerRef, slice }));
+  });
 
-  renderToStaticMarkup(createElement(Harness));
-
-  if (!controller) {
+  if (!controllerRef.current) {
     throw new Error('Wallpaper controller was not initialized');
   }
 
   return {
-    controller,
+    controller: controllerRef.current,
     getWallpaper: () => wallpaper,
   };
 }
