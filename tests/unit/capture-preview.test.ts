@@ -195,6 +195,35 @@ describe('capture-preview index', () => {
     });
   });
 
+  describe('preview window focusable flag', () => {
+    const originalPlatform = process.platform;
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', {
+        value: originalPlatform,
+      });
+      vi.resetModules();
+    });
+
+    it('keeps the preview non-focusable on macOS', async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      vi.resetModules();
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/img.png', 'screenshot');
+      expect(browserWindows[0].options).toMatchObject({ focusable: false });
+    });
+
+    it('makes the preview focusable on Windows so mouse presses are delivered', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      await showCapturePreview('/p/img.png', 'screenshot');
+      expect(browserWindows[0].options).toMatchObject({ focusable: true });
+    });
+  });
+
   it('preloads the preview renderer before a capture claims the window', async () => {
     const { prewarmCapturePreview } =
       await import('@/main/capture/capture-preview');
