@@ -1,5 +1,6 @@
 use crate::display_color::{hdr_white_scale, ToneMapper};
 use crate::overlay::{monitors, rect_height, rect_width, to_wide, MonitorEntry};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -59,40 +60,69 @@ pub struct DesktopFrame {
 }
 
 pub fn capture_monitors() -> Vec<DesktopFrame> {
-    let entries = monitors();
-    let captured = run_isolated(CAPTURE_TIMEOUT, || {
-        let targets = monitors();
+    collect_frames(stream_capture_monitors(None), CAPTURE_TIMEOUT)
+}
+
+pub fn stream_capture_monitors(priority: Option<isize>) -> std::sync::mpsc::Receiver<DesktopFrame> {
+    let (sender, receiver) = channel();
+
+    run_isolated(CAPTURE_TIMEOUT, move || {
+        let mut targets = monitors();
+        if let Some(handle) = priority {
+            targets.sort_by_key(|entry| entry.handle != handle);
+        }
+
+        let capture = |monitor: &MonitorEntry| {
+            capture_one_monitor(monitor).or_else(|| capture_with_gdi(monitor.rect))
+        };
+
         if targets.len() < 2 {
-            return targets.iter().map(capture_one_monitor).collect();
+            for monitor in &targets {
+                if let Some(frame) = capture(monitor) {
+                    let _ = sender.send(frame);
+                }
+            }
+            return;
         }
 
         // Each display needs its own capture device and waits a frame for its
         // first sample, so capturing them one after another makes the freeze
         // take as long as the whole set combined.
         std::thread::scope(|scope| {
-            let workers = targets
-                .iter()
-                .map(|monitor| scope.spawn(|| capture_one_monitor(monitor)))
-                .collect::<Vec<_>>();
+            for monitor in &targets {
+                let sender = sender.clone();
+                scope.spawn(move || {
+                    if let Some(frame) = capture(monitor) {
+                        let _ = sender.send(frame);
+                    }
+                });
+            }
+        });
+    });
 
-            workers
-                .into_iter()
-                .map(|worker| worker.join().unwrap_or(None))
-                .collect::<Vec<Option<DesktopFrame>>>()
-        })
-    })
-    .unwrap_or_default();
+    receiver
+}
 
-    entries
-        .iter()
-        .zip(captured.into_iter().chain(std::iter::repeat_with(|| None)))
-        .filter_map(|(monitor, frame)| frame.or_else(|| capture_with_gdi(monitor.rect)))
-        .collect()
+fn collect_frames(
+    receiver: std::sync::mpsc::Receiver<DesktopFrame>,
+    timeout: Duration,
+) -> Vec<DesktopFrame> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut frames = Vec::new();
+
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match receiver.recv_timeout(remaining) {
+            Ok(frame) => frames.push(frame),
+            Err(_) => break,
+        }
+    }
+
+    frames
 }
 
 fn capture_one_monitor(monitor: &MonitorEntry) -> Option<DesktopFrame> {
-    let device = CaptureDevice::create().ok()?;
-    capture_monitor(&device, monitor).ok()
+    capture_with_cached_device(monitor, capture_monitor).ok()
 }
 
 /// Loads the graphics stack ahead of the first capture. The initial
@@ -102,7 +132,7 @@ pub fn prewarm_capture() {
     let _ = std::thread::Builder::new().spawn(|| {
         ensure_multithreaded_apartment();
         let _ = capture_interop();
-        let _ = CaptureDevice::create();
+        let _ = capture_monitors();
     });
 }
 
@@ -117,10 +147,9 @@ pub fn capture_display_frame(bounds: RECT) -> Result<DesktopFrame, String> {
     let monitor_bounds = monitor.rect;
 
     let captured = run_isolated(CAPTURE_TIMEOUT, move || {
-        let device = CaptureDevice::create()?;
         let monitor = monitor_for_rect(monitor_bounds)
             .ok_or_else(|| "The display is no longer connected".to_string())?;
-        capture_monitor(&device, &monitor)
+        capture_with_cached_device(&monitor, capture_monitor)
     })
     .unwrap_or_else(|| Err("Timed out while capturing the screen".to_string()));
 
@@ -132,17 +161,19 @@ pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
 
     run_isolated(CAPTURE_TIMEOUT, move || {
         let window = HWND(handle as *mut c_void);
-        let device = CaptureDevice::create()?;
         let interop = capture_interop()?;
         let item = unsafe { interop.CreateForWindow(window) }
             .map_err(|error| format!("Failed to open window capture: {error}"))?;
         let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
-        let white_scale = monitors()
-            .iter()
+        let entry = monitors()
+            .into_iter()
             .find(|entry| entry.handle == monitor.0 as isize)
-            .and_then(|entry| hdr_white_scale(&entry.device));
+            .ok_or_else(|| "The window is not on a connected display".to_string())?;
+        let white_scale = hdr_white_scale(&entry.device);
 
-        capture_item(&device, &item, RECT::default(), white_scale, true)
+        capture_with_cached_device(&entry, |device, _| {
+            capture_item(device, &item, RECT::default(), white_scale, true)
+        })
     })
     .unwrap_or_else(|| Err("Timed out while capturing the window".to_string()))
 }
@@ -353,6 +384,8 @@ struct CaptureDevice {
     winrt: IDirect3DDevice,
 }
 
+unsafe impl Send for CaptureDevice {}
+
 impl CaptureDevice {
     fn create() -> Result<Self, String> {
         let (device, context) = create_d3d_device(D3D_DRIVER_TYPE_HARDWARE)
@@ -372,6 +405,49 @@ impl CaptureDevice {
             winrt,
         })
     }
+}
+
+fn capture_devices() -> &'static Mutex<HashMap<isize, Arc<Mutex<CaptureDevice>>>> {
+    static DEVICES: OnceLock<Mutex<HashMap<isize, Arc<Mutex<CaptureDevice>>>>> = OnceLock::new();
+    DEVICES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_capture_device(monitor_handle: isize) -> Option<Arc<Mutex<CaptureDevice>>> {
+    if let Ok(devices) = capture_devices().lock() {
+        if let Some(device) = devices.get(&monitor_handle) {
+            return Some(Arc::clone(device));
+        }
+    }
+
+    let device = Arc::new(Mutex::new(CaptureDevice::create().ok()?));
+    capture_devices()
+        .lock()
+        .ok()?
+        .insert(monitor_handle, Arc::clone(&device));
+    Some(device)
+}
+
+fn evict_capture_device(monitor_handle: isize) {
+    if let Ok(mut devices) = capture_devices().lock() {
+        devices.remove(&monitor_handle);
+    }
+}
+
+fn capture_with_cached_device(
+    monitor: &MonitorEntry,
+    capture: impl FnOnce(&CaptureDevice, &MonitorEntry) -> Result<DesktopFrame, String>,
+) -> Result<DesktopFrame, String> {
+    let device = cached_capture_device(monitor.handle)
+        .ok_or_else(|| "Failed to create the capture device".to_string())?;
+    let captured = device
+        .lock()
+        .map_err(|_| "The capture device is unavailable".to_string())
+        .and_then(|device| capture(&device, monitor));
+
+    if captured.is_err() {
+        evict_capture_device(monitor.handle);
+    }
+    captured
 }
 
 struct ImagingApartment {
@@ -552,6 +628,24 @@ fn capture_monitor(device: &CaptureDevice, monitor: &MonitorEntry) -> Result<Des
     )
 }
 
+pub(crate) fn capture_timing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("PORATAKE_CAPTURE_TIMING").is_some())
+}
+
+fn log_capture_timing<F, T>(phase: &str, job: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    if !capture_timing_enabled() {
+        return job();
+    }
+    let start = std::time::Instant::now();
+    let result = job();
+    eprintln!("[capture-timing] {phase}={:?}", start.elapsed());
+    result
+}
+
 fn capture_item(
     device: &CaptureDevice,
     item: &GraphicsCaptureItem,
@@ -559,6 +653,7 @@ fn capture_item(
     white_scale: Option<f32>,
     preserve_alpha: bool,
 ) -> Result<DesktopFrame, String> {
+    let setup_start = std::time::Instant::now();
     let size = item
         .Size()
         .map_err(|error| format!("Failed to read the capture size: {error}"))?;
@@ -598,15 +693,25 @@ fn capture_item(
         .FrameArrived(&handler)
         .map_err(|error| format!("Failed to subscribe to captured frames: {error}"))?;
 
+    if capture_timing_enabled() {
+        eprintln!("[capture-timing] setup={:?}", setup_start.elapsed());
+    }
+
     let captured = session
         .StartCapture()
         .map_err(|error| format!("Failed to start the capture: {error}"))
         .and_then(|_| {
-            receiver
-                .recv_timeout(FRAME_TIMEOUT)
-                .map_err(|_| "Timed out while waiting for the screen contents".to_string())
+            log_capture_timing("frame", || {
+                receiver
+                    .recv_timeout(FRAME_TIMEOUT)
+                    .map_err(|_| "Timed out while waiting for the screen contents".to_string())
+            })
         })
-        .and_then(|frame| read_pixels(device, &frame, white_scale, preserve_alpha));
+        .and_then(|frame| {
+            log_capture_timing("read", || {
+                read_pixels(device, &frame, white_scale, preserve_alpha)
+            })
+        });
 
     let _ = session.Close();
     let _ = pool.RemoveFrameArrived(token);
@@ -996,6 +1101,35 @@ mod tests {
         assert_eq!(half_to_f32(0x3c00), 1.0);
         assert_eq!(half_to_f32(0x4000), 2.0);
         assert_eq!(half_to_f32(0xbc00), -1.0);
+    }
+
+    #[test]
+    #[ignore = "benchmarks real screen capture; run with --ignored --nocapture"]
+    fn measures_capture_monitor_timings() {
+        prewarm_capture();
+        std::thread::sleep(Duration::from_millis(500));
+
+        let start = std::time::Instant::now();
+        let frames = capture_monitors();
+        let first = start.elapsed();
+
+        let start = std::time::Instant::now();
+        let second_frames = capture_monitors();
+        let second = start.elapsed();
+
+        let megabytes: usize = frames.iter().map(|f| f.pixels.len()).sum();
+
+        println!(
+            "[capture-bench] displays={} first={:?} second={:?} bytes={}MiB second_frames={}",
+            frames.len(),
+            first,
+            second,
+            megabytes / (1024 * 1024),
+            second_frames.len(),
+        );
+
+        assert!(!frames.is_empty(), "expected at least one captured display");
+        assert!(!second_frames.is_empty(), "expected a warm capture");
     }
 
     #[test]

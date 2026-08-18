@@ -139,11 +139,15 @@ class FreezeScreenModule: Module {
     
     private func createOverlays() {
         removeOverlays()
-        
+
+        let started = CFAbsoluteTimeGetCurrent()
+        var capturedAt = started
+
         for screen in NSScreen.screens {
             guard let frame = captureFrame(for: screen) else {
                 continue
             }
+            capturedAt = CFAbsoluteTimeGetCurrent()
 
             FrozenFrameStore.store(FrozenFrame(
                 image: frame.image,
@@ -180,6 +184,15 @@ class FreezeScreenModule: Module {
             CATransaction.commit()
             
             overlayWindows.append(window)
+        }
+
+        if ProcessInfo.processInfo.environment["PORATAKE_CAPTURE_TIMING"] != nil {
+            let total = CFAbsoluteTimeGetCurrent() - started
+            let capture = capturedAt - started
+            let line = "[freeze-timing] capture=\(capture)s present=\(total - capture)s total=\(total)s displays=\(overlayWindows.count)\n"
+            if let data = line.data(using: .utf8) {
+                FileHandle.standardError.write(data)
+            }
         }
     }
     

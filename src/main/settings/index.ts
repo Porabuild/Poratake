@@ -44,9 +44,16 @@ export { createOrShowSettingsWindow } from './window';
 
 const CONFIG_DIR = getConfigDir();
 const CONFIG_FILE = getConfigFilePath();
+const CONFIG_WRITE_DEBOUNCE_MS = 150;
 
 let currentConfig: SettingsConfig = { ...DEFAULT_SETTINGS };
 let configLoaded = false;
+let configWriteTimer: NodeJS.Timeout | null = null;
+let configWritePending = false;
+let configWriteInFlight = false;
+let configWriteGeneration = 0;
+let configWriteSequence = 0;
+let configWriteQueue: Promise<void> = Promise.resolve();
 const configUpdateListeners = new Set<
   (updates: Partial<SettingsConfig>) => void
 >();
@@ -363,15 +370,77 @@ export function loadConfig(): SettingsConfig {
   return currentConfig;
 }
 
-export function saveConfig(config: SettingsConfig): void {
+function writeConfigFileSync(): void {
+  configWriteGeneration += 1;
+  const tempFile = `${CONFIG_FILE}.flush.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(currentConfig, null, 2), 'utf-8');
+  fs.renameSync(tempFile, CONFIG_FILE);
+}
+
+async function writeConfigFile(): Promise<void> {
+  configWriteSequence += 1;
+  configWriteGeneration += 1;
+  const tempFile = `${CONFIG_FILE}.${process.pid}.${configWriteSequence}.tmp`;
+  const generation = configWriteGeneration;
+  configWriteInFlight = true;
+
   try {
     ensureConfigDir();
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
-    currentConfig = config;
+    await fs.promises.writeFile(
+      tempFile,
+      JSON.stringify(currentConfig, null, 2),
+      'utf-8'
+    );
+    if (generation !== configWriteGeneration) {
+      await fs.promises.unlink(tempFile).catch(() => {});
+      return;
+    }
+    await fs.promises.rename(tempFile, CONFIG_FILE);
+  } finally {
+    configWriteInFlight = false;
+  }
+}
+
+function flushConfigFile(): void {
+  if (configWriteTimer) {
+    clearTimeout(configWriteTimer);
+    configWriteTimer = null;
+  }
+
+  if (!configWritePending && !configWriteInFlight) {
+    return;
+  }
+  configWritePending = false;
+
+  try {
+    ensureConfigDir();
+    writeConfigFileSync();
   } catch (error) {
     console.error('Failed to save config:', error);
-    throw error;
   }
+}
+
+export function saveConfig(config: SettingsConfig): void {
+  currentConfig = config;
+  configWritePending = true;
+
+  if (configWriteTimer) {
+    clearTimeout(configWriteTimer);
+  }
+  configWriteTimer = setTimeout(() => {
+    configWriteTimer = null;
+    configWriteQueue = configWriteQueue
+      .then(async () => {
+        if (!configWritePending) {
+          return;
+        }
+        configWritePending = false;
+        await writeConfigFile();
+      })
+      .catch(error => {
+        console.error('Failed to save config:', error);
+      });
+  }, CONFIG_WRITE_DEBOUNCE_MS);
 }
 
 export function getConfig(): SettingsConfig {
@@ -498,6 +567,8 @@ function applyLoginItemSetting() {
 export function init() {
   const config = loadConfig();
   applyTitleBarAppearance(config.appearance);
+
+  app.on('will-quit', flushConfigFile);
 
   applyLoginItemSetting();
 

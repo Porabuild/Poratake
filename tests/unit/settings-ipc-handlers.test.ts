@@ -21,6 +21,7 @@ const mockIsSettingsWindowWebContents = vi.fn();
 
 vi.mock('electron', () => ({
   app: {
+    on: vi.fn(),
     isPackaged: false,
     getVersion: () => '1.0.0',
     getPath: (name: string) => {

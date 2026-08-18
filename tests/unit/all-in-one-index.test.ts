@@ -46,6 +46,7 @@ class MockNotification {
 }
 
 vi.mock('electron', () => ({
+  app: { isPackaged: false },
   clipboard: { writeText: (...a: unknown[]) => mockClipboardWriteText(...a) },
   Notification: MockNotification,
 }));

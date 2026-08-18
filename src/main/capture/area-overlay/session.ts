@@ -3,6 +3,8 @@ import type { Display, Point, Rectangle } from 'electron';
 import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
 import { daemon } from '@/main/daemon';
 import { isWindows } from '@/main/utils/platform';
+import { isDev } from '@/main/utils/env';
+import { formatClock } from '@/main/utils/clock';
 import { createOverlayWindow } from './window';
 import type {
   AreaOverlayPickTarget,
@@ -88,12 +90,18 @@ interface OverlaySession {
   pendingPreset: AreaOverlayResult | null;
   freezeSettled: boolean;
   pendingReady: Set<number>;
+  timingStart: number;
+  revealCompletedAt: number | null;
+  visibleAnnounced: boolean;
+  overlayFocused: boolean;
+  previousForegroundHandle: string | null;
   callbacks: OverlayCallbacks;
   resolve: (selection: OverlaySelection | null) => void;
 }
 
 let activeSession: OverlaySession | null = null;
 let pendingTeardown: Promise<void> | null = null;
+let pendingRestore: Promise<void> | null = null;
 let pendingHandoff: OverlayWindowEntry[] | null = null;
 let startingSession = false;
 let ipcRegistered = false;
@@ -425,8 +433,28 @@ function registerOverlayIpc(): void {
       return;
     }
 
-    revealOverlay(session, display.id);
+    void revealOverlay(session, display.id);
     announcePreset(session, display);
+  });
+
+  ipcMain.on('area-overlay:visible', (event, sessionId: unknown) => {
+    const session = activeSession;
+    if (!session || !session.displayIdsByWebContents.has(event.sender.id)) {
+      return;
+    }
+    if (sessionId !== session.id) return;
+    if (session.visibleAnnounced) return;
+
+    session.visibleAnnounced = true;
+    if (!isDev) return;
+
+    const now = performance.now();
+    const revealedAt = session.revealCompletedAt ?? session.timingStart;
+    const paint = Math.round(now - revealedAt);
+    const total = Math.round(now - session.timingStart);
+    console.log(
+      `[overlay-timing ${formatClock()}] paint=+${paint}ms total=${total}ms`
+    );
   });
 
   ipcMain.on('area-overlay:selected', (event, result: unknown) => {
@@ -508,17 +536,73 @@ function isValidToolbarAction(
   }
 }
 
-function revealOverlay(session: OverlaySession, displayId: number): void {
-  if (session.hidden) return;
+function revealOverlay(
+  session: OverlaySession,
+  displayId: number
+): Promise<void> {
+  if (session.hidden) return Promise.resolve();
 
   const entry = session.entries.find(item => item.display.id === displayId);
-  if (!entry || entry.window.isDestroyed()) return;
+  if (!entry || entry.window.isDestroyed()) return Promise.resolve();
 
-  void setOverlayWindowRegion(session, entry).then(() => {
+  return setOverlayWindowRegion(session, entry).then(() => {
     if (activeSession !== session || entry.window.isDestroyed()) return;
-    void showOverlayWindow(entry);
-    entry.window.moveTop();
+    return showOverlayWindow(entry).then(() => {
+      if (activeSession !== session || entry.window.isDestroyed()) return;
+      entry.window.moveTop();
+      focusRevealedOverlay(session, entry);
+      entry.window.webContents.send('area-overlay:revealed', session.id);
+    });
   });
+}
+
+function focusRevealedOverlay(
+  session: OverlaySession,
+  entry: OverlayWindowEntry
+): void {
+  if (!isWindows || session.overlayFocused) {
+    return;
+  }
+
+  const cursorDisplay = screen.getDisplayNearestPoint(
+    screen.getCursorScreenPoint()
+  );
+  if (cursorDisplay.id !== entry.display.id) {
+    return;
+  }
+
+  session.overlayFocused = true;
+
+  void daemon
+    .call<{ windowHandle: number | null }>(
+      'area-selector',
+      'getForegroundWindow'
+    )
+    .then(result => {
+      if (activeSession !== session) return;
+      const handle = result?.windowHandle ?? null;
+      session.previousForegroundHandle =
+        handle !== null && handle !== Number(nativeWindowId(entry.window))
+          ? String(handle)
+          : null;
+      if (!entry.window.isDestroyed()) {
+        entry.window.focus();
+      }
+    })
+    .catch(() => {});
+}
+
+function restorePreviousFocus(session: OverlaySession): Promise<void> {
+  if (!isWindows || !session.previousForegroundHandle) {
+    return Promise.resolve();
+  }
+
+  return daemon
+    .call('area-selector', 'setForegroundWindow', {
+      windowHandle: session.previousForegroundHandle,
+    })
+    .then(() => undefined)
+    .catch(() => {});
 }
 
 function announcePreset(session: OverlaySession, display: Display): void {
@@ -688,10 +772,10 @@ function isValidResult(
   );
 }
 
-function parkEntry(entry: OverlayWindowEntry): void {
-  if (entry.window.isDestroyed()) return;
+function parkEntry(entry: OverlayWindowEntry): Promise<void> {
+  if (entry.window.isDestroyed()) return Promise.resolve();
   entry.window.webContents.send('area-overlay:set-rect', { rect: null });
-  void concealOverlayWindow(entry.window);
+  return concealOverlayWindow(entry.window);
 }
 
 function handoffEntry(entry: OverlayWindowEntry): void {
@@ -766,17 +850,47 @@ function finishSession(
   activeSession = null;
   setEscapeShortcutEnabled(session, false);
 
+  const parks: Promise<void>[] = [];
   if (keepVisible && result) {
     pendingHandoff = session.entries;
     session.entries.forEach(handoffEntry);
   } else {
-    session.entries.forEach(parkEntry);
+    parks.push(...session.entries.map(entry => parkEntry(entry)));
   }
 
   const display = result ? session.displays.get(result.displayId) : undefined;
   const release = session.freeze
     ? reserveTeardown(session)
     : () => Promise.resolve();
+
+  const foregroundCheck =
+    isWindows && session.previousForegroundHandle
+      ? daemon
+          .call<{ windowHandle: number | null }>(
+            'area-selector',
+            'getForegroundWindow'
+          )
+          .catch(() => null)
+      : Promise.resolve(null);
+
+  pendingRestore = Promise.all(parks)
+    .then(() => release())
+    .then(async () => {
+      const foreground = await foregroundCheck;
+      if (
+        foreground?.windowHandle === null ||
+        foreground?.windowHandle === undefined
+      ) {
+        return;
+      }
+      if (!getOverlayWindowIds().has(foreground.windowHandle)) {
+        return;
+      }
+      await restorePreviousFocus(session);
+    })
+    .catch(error => {
+      console.error('Failed to release frozen displays:', error);
+    });
 
   if (!result || !display) {
     const teardown = release().catch(error => {
@@ -1010,7 +1124,15 @@ export async function startOverlaySession(
   startingSession = true;
 
   try {
+    const timingStart = performance.now();
+    let timingTeardown = timingStart;
+    let timingInit = timingStart;
+    let timingConceal = timingStart;
+    let timingFreeze = timingStart;
+
     await pendingTeardown;
+    await pendingRestore;
+    timingTeardown = performance.now();
 
     if (activeSession) {
       return null;
@@ -1023,9 +1145,15 @@ export async function startOverlaySession(
     const requestedFreeze = options?.freeze ?? true;
 
     await Promise.all(pooledWindows.map(pooled => pooled.initialized));
+    timingInit = performance.now();
     await Promise.all(
-      pooledWindows.map(pooled => concealOverlayWindow(pooled.window))
+      pooledWindows.map(pooled =>
+        pooled.window.isVisible()
+          ? concealOverlayWindow(pooled.window)
+          : Promise.resolve()
+      )
     );
+    timingConceal = performance.now();
 
     let resolveSession!: (selection: OverlaySelection | null) => void;
     const resultPromise = new Promise<OverlaySelection | null>(resolve => {
@@ -1053,6 +1181,11 @@ export async function startOverlaySession(
       pendingPreset: null,
       freezeSettled: !requestedFreeze,
       pendingReady: new Set(),
+      timingStart,
+      revealCompletedAt: null,
+      visibleAnnounced: false,
+      overlayFocused: false,
+      previousForegroundHandle: null,
       callbacks: options?.callbacks ?? {},
       resolve: resolveSession,
     };
@@ -1095,15 +1228,35 @@ export async function startOverlaySession(
         }
         session.freeze = freeze;
       }
+      timingFreeze = performance.now();
 
       session.freezeSettled = true;
+      const reveals: Promise<void>[] = [];
       for (const displayId of session.pendingReady) {
         const display = session.displays.get(displayId);
         if (!display) continue;
-        revealOverlay(session, displayId);
+        reveals.push(revealOverlay(session, displayId));
         announcePreset(session, display);
       }
       session.pendingReady.clear();
+
+      void Promise.all(reveals).then(() => {
+        session.revealCompletedAt = performance.now();
+        if (!isDev || reveals.length === 0) {
+          return;
+        }
+        const elapsed = (mark: number) => Math.round(mark - timingStart);
+        const total = Math.round(session.revealCompletedAt - timingStart);
+        console.log(
+          `[overlay-timing ${formatClock()}] teardown=${elapsed(
+            timingTeardown
+          )} init=${elapsed(timingInit)} conceal=${elapsed(
+            timingConceal
+          )} freeze=${elapsed(timingFreeze)} reveal=${
+            total - elapsed(timingFreeze)
+          } total=${total}ms`
+        );
+      });
 
       return resultPromise;
     } catch (error) {
