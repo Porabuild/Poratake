@@ -221,10 +221,11 @@ create_universal_binary() {
     
     # Check license compliance
     log_info "Checking license configuration..."
-    "$candidate" -version 2>&1 | head -5
+    VERSION_OUTPUT="$("$candidate" -version 2>&1)"
+    printf '%s\n' "$VERSION_OUTPUT" | head -5
     
     # Verify no GPL in configuration
-    if "$candidate" -version 2>&1 | grep -q "enable-gpl"; then
+    if grep -q "enable-gpl" <<<"$VERSION_OUTPUT"; then
         log_error "WARNING: GPL flag detected! This build may not be LGPL-compliant."
         exit 1
     fi

@@ -22,7 +22,7 @@ if [ "$ARCH" != "x64" ] && [ "$ARCH" != "arm64" ]; then
 fi
 
 STAMP_PATH="$OUTPUT_DIR/.ffmpeg-win-build"
-BUILD_ID="${FFMPEG_VERSION}:${FFMPEG_SHA256}:$ARCH"
+BUILD_ID="$(sha256sum "$SCRIPT_DIR/build-ffmpeg-win.sh" "$SCRIPT_DIR/build-ffmpeg-win.ps1" | awk '{print $1}' | sha256sum | awk '{print $1}'):$ARCH"
 if [ -f "$OUTPUT_DIR/ffmpeg.exe" ] && [ "$(cat "$STAMP_PATH" 2>/dev/null || true)" = "$BUILD_ID" ]; then
     echo "ffmpeg.exe already built, skipping."
     exit 0

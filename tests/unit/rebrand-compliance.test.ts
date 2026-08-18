@@ -282,6 +282,7 @@ describe('Poratake rebrand compliance', () => {
     expect(releaseScript).not.toContain('git push || log_warning');
     expect(packageJson).toContain('bun run build-native-mac');
     expect(packageJson).toContain('"packageManager": "bun@1.3.14"');
+    expect(packageJson).toContain('"vite-plugin-electron": "^0.29.1"');
     expect(workflow).toContain('bun-version: 1.3.14');
     expect(read('.github/workflows/checks.yml')).toContain(
       'run: ./scripts/build-daemon.sh'
@@ -298,11 +299,18 @@ describe('Poratake rebrand compliance', () => {
     expect(ffmpegMacBuild).toContain('--retry-all-errors');
     expect(ffmpegMacBuild).not.toContain('--enable-version3');
     expect(ffmpegMacBuild).toContain('.ffmpeg-build');
+    expect(ffmpegMacBuild).toContain(
+      'VERSION_OUTPUT="$("$candidate" -version 2>&1)"'
+    );
+    expect(ffmpegMacBuild).not.toContain('"$candidate" -version 2>&1 |');
     expect(ffmpegWinBuild).toContain('--retry-all-errors');
     expect(ffmpegWinBuild).toContain('.ffmpeg-win-build');
     expect(ffmpegWinBuild).toContain(
-      '"${FFMPEG_VERSION}:${FFMPEG_SHA256}:$ARCH"'
+      'sha256sum "$SCRIPT_DIR/build-ffmpeg-win.sh"'
     );
+    expect(ffmpegWinBuild).toContain('"$SCRIPT_DIR/build-ffmpeg-win.ps1"');
+    expect(ffmpegWinBuild).toContain("| awk '{print $1}' | sha256sum");
+    expect(ffmpegWinBuild).toContain('):$ARCH"');
     expect(ffmpegWinBuild.indexOf('already built, skipping')).toBeLessThan(
       ffmpegWinBuild.indexOf('REQUIRED_COMMANDS=')
     );
