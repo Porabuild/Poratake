@@ -18,9 +18,9 @@ This file must list every third-party component that ships inside a Poratake rel
 | `react-stately`                          |  3.49.0 | Apache-2.0    |
 | `sax`                                    |   1.4.3 | BlueOak-1.0.0 |
 | `graceful-fs`                            |  4.2.11 | ISC           |
-| `lucide-react`                           | 0.560.0 | ISC           |
+| `lucide-react`                           |  1.32.0 | ISC           |
 | `semver`                                 |   7.7.3 | ISC           |
-| `mediabunny`                             |  1.52.3 | MPL-2.0       |
+| `mediabunny`                             |  1.55.1 | MPL-2.0       |
 | `@floating-ui/core`                      |   1.7.3 | MIT           |
 | `@floating-ui/dom`                       |   1.7.4 | MIT           |
 | `@floating-ui/react-dom`                 |   2.1.6 | MIT           |
@@ -114,7 +114,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Electron and Chromium
 
-Poratake is built on Electron 39.8.10 under the MIT License. Electron's license and the licenses of Chromium and its bundled components are distributed with every packaged build (`LICENSE.electron.txt` and `LICENSES.chromium.html` in the application resources).
+Poratake is built on Electron 43.4.0 under the MIT License. Electron's license and the licenses of Chromium and its bundled components are distributed with every packaged build (`LICENSE.electron.txt` and `LICENSES.chromium.html` in the application resources).
 
 ## Native daemons
 

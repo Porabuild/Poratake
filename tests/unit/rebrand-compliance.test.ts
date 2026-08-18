@@ -152,7 +152,7 @@ describe('Poratake rebrand compliance', () => {
 
     expect(builder).toContain('"from": "licenses/npm"');
     expect(read('THIRD_PARTY_NOTICES.md')).toContain(
-      'Electron 39.8.10 under the MIT License'
+      'Electron 43.4.0 under the MIT License'
     );
   });
 
