@@ -191,6 +191,8 @@ export function WallpaperSheetContent({
     [editingBackground, onGradientChange, onBackgroundImageChange]
   );
 
+  const selectedGradientId = wallpaper.gradient?.id;
+
   const handleDeleteBackground = useCallback(
     async (id: string) => {
       try {
@@ -200,7 +202,7 @@ export function WallpaperSheetContent({
           id
         );
         setCustomBackgrounds(updatedBackgrounds);
-        if (wallpaper.gradient?.id === id) {
+        if (selectedGradientId === id) {
           onGradientChange(null);
         }
         if (
@@ -215,7 +217,7 @@ export function WallpaperSheetContent({
     },
     [
       customBackgrounds,
-      wallpaper.gradient?.id,
+      selectedGradientId,
       wallpaper.backgroundImage,
       onGradientChange,
       onBackgroundImageChange,
