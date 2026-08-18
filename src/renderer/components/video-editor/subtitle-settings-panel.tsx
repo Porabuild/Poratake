@@ -130,7 +130,7 @@ export default function SubtitleSettingsPanel({
     if (hasMicAudio) {
       checkWhisperStatus();
     }
-  }, [selectedModel, checkWhisperStatus, hasMicAudio]);
+  }, [checkWhisperStatus, hasMicAudio]);
 
   const updateStyle = useStyleUpdater(subtitleStyle, onStyleChange);
 

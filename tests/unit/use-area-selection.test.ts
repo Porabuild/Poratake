@@ -16,7 +16,6 @@ const target = { id: 7, x: 0, y: 0, width: 1000, height: 800 };
 
 function options(repeatablePicks: boolean) {
   return {
-    resetKey: 1,
     interactive: true,
     initialRect: null,
     initialAspectRatio: null,

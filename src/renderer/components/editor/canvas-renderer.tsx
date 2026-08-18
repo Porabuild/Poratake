@@ -507,7 +507,6 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       ctx.restore();
     }, [
       image,
-      padding,
       inset,
       primaryInsetColor,
       cornerRadius,

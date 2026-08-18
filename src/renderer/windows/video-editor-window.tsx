@@ -370,10 +370,6 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
   );
 
   useEffect(() => {
-    setDisplayTimelineDuration(0);
-  }, [filePath]);
-
-  useEffect(() => {
     setDisplayTimelineDuration(prev =>
       Math.max(prev, playback.totalTimelineDuration)
     );

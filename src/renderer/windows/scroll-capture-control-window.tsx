@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Check, Play, Square, X } from 'lucide-react';
 import ToolbarButton from '@/renderer/components/area-overlay/toolbar-button';
 import ToolbarSurface from '@/renderer/components/area-overlay/toolbar-surface';
@@ -22,9 +22,9 @@ export default function ScrollCaptureControlWindow() {
     };
   }, []);
 
-  const sendAction = (action: ScrollCaptureAction) => {
+  const sendAction = useCallback((action: ScrollCaptureAction) => {
     window.ipcRenderer.send('scroll-capture:action', action);
-  };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -36,7 +36,7 @@ export default function ScrollCaptureControlWindow() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [sendAction]);
 
   const autoScrollLabel = state.isAutoScrolling
     ? 'Stop auto-scroll'

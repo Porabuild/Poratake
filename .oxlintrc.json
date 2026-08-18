@@ -46,7 +46,7 @@
     "typescript/switch-exhaustiveness-check": "warn",
     "typescript/no-explicit-any": "warn",
     "react/react-in-jsx-scope": "off",
-    "react/exhaustive-effect-dependencies": "off",
+    "react/exhaustive-effect-dependencies": "error",
     "react/globals": "error",
     "react/immutability": "error",
     "react/memo-dependencies": "error",

@@ -202,7 +202,7 @@ export default function ScreenshotWindow({
     return () => {
       cancelled = true;
     };
-  }, [filePath, imageUrl]);
+  }, [imageUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -316,8 +316,6 @@ export default function ScreenshotWindow({
   } = useWallpaperState(initialEditorState?.wallpaper);
 
   const {
-    contentWidth: croppedWidth,
-    contentHeight: croppedHeight,
     nativeBalanceCrop,
     canvasWidth: totalCanvasWidth,
     canvasHeight: totalCanvasHeight,
@@ -627,17 +625,11 @@ export default function ScreenshotWindow({
   });
 
   useEffect(() => {
-    setZoom(calculateOptimalZoom(isWallpaperSheetOpen));
-  }, [
-    wallpaper.padding,
-    wallpaper.inset,
-    wallpaper.balance,
-    wallpaper.aspectRatio,
-    croppedWidth,
-    croppedHeight,
-    isWallpaperSheetOpen,
-    calculateOptimalZoom,
-  ]);
+    const frame = requestAnimationFrame(() => {
+      setZoom(calculateOptimalZoom(isWallpaperSheetOpen));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isWallpaperSheetOpen, calculateOptimalZoom]);
 
   useEffect(() => {
     const fitToWindow = () =>

@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AllInOneToolbar from '@/renderer/components/area-overlay/all-in-one-toolbar';
 import CrosshairGuides from '@/renderer/components/area-overlay/crosshair-guides';
 import SelectionFrame from '@/renderer/components/area-overlay/selection-frame';
@@ -19,23 +13,13 @@ import type {
 } from '@/types/area-overlay';
 import { isMacPlatform } from '@/renderer/utils/platform';
 
-export default function AreaOverlayWindow({
-  params,
-}: {
-  params: AreaOverlayParams;
-}) {
+function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
   const frozenFrame = useRef<HTMLImageElement>(null);
   const [toolbar, setToolbar] = useState(params.toolbar);
   const [prompt, setPrompt] = useState(params.prompt);
   const [isPickingColor, setIsPickingColor] = useState(false);
   const [handedOff, setHandedOff] = useState(false);
-
-  useLayoutEffect(() => {
-    setToolbar(params.toolbar);
-    setPrompt(params.prompt);
-    setIsPickingColor(false);
-    setHandedOff(false);
-  }, [params.prompt, params.sessionId, params.toolbar]);
+  const frameIdentity = `${params.displayId}:${params.imageUrl ?? ''}`;
 
   useEffect(() => {
     const handleHandoff = () => setHandedOff(true);
@@ -108,7 +92,6 @@ export default function AreaOverlayWindow({
     trackPointer,
     clearPointer,
   } = useAreaSelection({
-    resetKey: params.sessionId,
     interactive: params.interactive,
     initialRect: params.rect,
     initialAspectRatio: params.aspectRatio,
@@ -137,13 +120,13 @@ export default function AreaOverlayWindow({
       window.ipcRenderer.send('area-overlay:ready', params.sessionId);
     const image = frozenFrame.current;
 
-    if (!image) {
+    if (!image || image.dataset.frameIdentity !== frameIdentity) {
       announceReady();
       return;
     }
 
     image.decode().then(announceReady, announceReady);
-  }, [params.displayId, params.imageUrl, params.sessionId]);
+  }, [frameIdentity, params.sessionId]);
 
   const revealedSessionIdRef = useRef(params.sessionId);
 
@@ -206,6 +189,7 @@ export default function AreaOverlayWindow({
         <img
           ref={frozenFrame}
           src={params.imageUrl}
+          data-frame-identity={frameIdentity}
           className="pointer-events-none absolute inset-0 h-full w-full"
           alt=""
           draggable={false}
@@ -259,4 +243,12 @@ export default function AreaOverlayWindow({
       ) : null}
     </div>
   );
+}
+
+export default function AreaOverlayWindow({
+  params,
+}: {
+  params: AreaOverlayParams;
+}) {
+  return <AreaOverlaySession key={params.sessionId} params={params} />;
 }

@@ -70,7 +70,7 @@ export default function CapturePreviewWindow({
 
     contentReadySentRef.current = true;
     window.ipcRenderer.send('capture-preview:content-ready');
-  }, [contentType, imageSources.length, visibleImageSource]);
+  }, [imageSources.length, visibleImageSource]);
 
   const handleImageLoad = useCallback(
     (source: string) => {

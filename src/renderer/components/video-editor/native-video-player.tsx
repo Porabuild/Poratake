@@ -155,6 +155,10 @@ const NativeVideoPlayer = forwardRef<
     const isDrawingSelectModeRef = useRef(false);
     const lastCameraFrameRef = useRef<HTMLCanvasElement | null>(null);
     const lastVideoFrameRef = useRef<HTMLCanvasElement | null>(null);
+    const lastCameraFrameKeyRef = useRef<string | null>(null);
+    const lastVideoFrameSourceRef = useRef<string | null>(null);
+    const lastCameraSyncKeyRef = useRef<string | null>(null);
+    const lastAudioSyncKeyRef = useRef<string | null>(null);
 
     const audioContextRef = useRef<AudioContext | null>(null);
     const systemGainRef = useRef<GainNode | null>(null);
@@ -383,10 +387,15 @@ const NativeVideoPlayer = forwardRef<
     }, [firstFrame?.imageData]);
 
     useEffect(() => {
+      const frameKey = `${cameraSrc ?? ''}:${cameraStyle?.visible === true}`;
+      if (lastCameraFrameKeyRef.current === frameKey) return;
+      lastCameraFrameKeyRef.current = frameKey;
       lastCameraFrameRef.current = null;
     }, [cameraSrc, cameraStyle?.visible]);
 
     useEffect(() => {
+      if (lastVideoFrameSourceRef.current === videoSrc) return;
+      lastVideoFrameSourceRef.current = videoSrc;
       lastVideoFrameRef.current = null;
       setIsVideoLoaded(false);
     }, [videoSrc]);
@@ -1084,6 +1093,9 @@ const NativeVideoPlayer = forwardRef<
 
     useEffect(() => {
       if (!cameraSrc || !isCameraVisible) return;
+      const syncKey = `${timelinePosition}:${cameraSrc}:${isCameraVisible}`;
+      if (lastCameraSyncKeyRef.current === syncKey) return;
+      lastCameraSyncKeyRef.current = syncKey;
 
       const cameraVideo = cameraVideoRef.current;
       const mainVideo = videoRef.current;
@@ -1172,6 +1184,10 @@ const NativeVideoPlayer = forwardRef<
     }, [scrubAudioEnabled, stopScrubAudio]);
 
     useEffect(() => {
+      const syncKey = `${timelinePosition}:${systemAudioSrc ?? ''}:${micAudioSrc ?? ''}`;
+      if (lastAudioSyncKeyRef.current === syncKey) return;
+      lastAudioSyncKeyRef.current = syncKey;
+
       const mainVideo = videoRef.current;
       if (!mainVideo) return;
 
@@ -1205,12 +1221,12 @@ const NativeVideoPlayer = forwardRef<
 
       if (systemGainRef.current) {
         systemGainRef.current.gain.value = systemVol;
-      } else if (systemAudio) {
+      } else if (systemAudioSrc && systemAudio) {
         systemAudio.volume = systemVol;
       }
       if (micGainRef.current) {
         micGainRef.current.gain.value = micVol;
-      } else if (micAudio) {
+      } else if (micAudioSrc && micAudio) {
         micAudio.volume = micVol;
       }
 
@@ -1230,8 +1246,8 @@ const NativeVideoPlayer = forwardRef<
     ]);
 
     useEffect(() => {
-      const systemAudio = systemAudioRef.current;
-      const micAudio = micAudioRef.current;
+      const systemAudio = systemAudioSrc ? systemAudioRef.current : null;
+      const micAudio = micAudioSrc ? micAudioRef.current : null;
 
       if (!systemAudio && !micAudio) return;
       if (audioContextRef.current) return;
