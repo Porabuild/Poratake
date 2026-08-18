@@ -89,6 +89,8 @@ describe('Poratake rebrand compliance', () => {
       'react-remove-scroll-bar': 'licenses/npm/react-remove-scroll-bar-MIT.txt',
     };
     const installedPackagePaths: Record<string, string> = {
+      '@radix-ui/react-use-callback-ref':
+        '@radix-ui/react-dismissable-layer/node_modules/@radix-ui/react-use-callback-ref',
       '@radix-ui/react-use-is-hydrated':
         '@radix-ui/react-roving-focus/node_modules/@radix-ui/react-use-is-hydrated',
     };
@@ -98,7 +100,7 @@ describe('Poratake rebrand compliance', () => {
       dependencies: Record<string, string>;
     };
 
-    expect(notices).toHaveLength(82);
+    expect(notices).toHaveLength(79);
     expect(noticeNames.size).toBe(notices.length);
     expect(noticeNames).not.toContain('input-otp');
     expect(noticeNames).not.toContain('mp4box');

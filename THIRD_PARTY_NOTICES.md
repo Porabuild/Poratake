@@ -13,7 +13,6 @@ This file must list every third-party component that ships inside a Poratake rel
 | `@internationalized/string`              |  3.2.10 | Apache-2.0    |
 | `@react-aria/ssr`                        |  3.10.1 | Apache-2.0    |
 | `@react-aria/utils`                      |  3.34.1 | Apache-2.0    |
-| `class-variance-authority`               |   0.7.1 | Apache-2.0    |
 | `react-aria`                             |  3.51.0 | Apache-2.0    |
 | `react-aria-components`                  |  1.20.0 | Apache-2.0    |
 | `react-stately`                          |  3.49.0 | Apache-2.0    |
@@ -47,9 +46,7 @@ This file must list every third-party component that ships inside a Poratake rel
 | `@radix-ui/react-presence`               |  1.1.10 | MIT           |
 | `@radix-ui/react-primitive`              |  2.1.10 | MIT           |
 | `@radix-ui/react-roving-focus`           |  1.1.19 | MIT           |
-| `@radix-ui/react-select`                 |   2.3.7 | MIT           |
 | `@radix-ui/react-slot`                   |   1.3.3 | MIT           |
-| `@radix-ui/react-tooltip`                |  1.2.16 | MIT           |
 | `@radix-ui/react-use-callback-ref`       |   1.1.4 | MIT           |
 | `@radix-ui/react-use-controllable-state` |   1.2.6 | MIT           |
 | `@radix-ui/react-use-effect-event`       |   0.0.5 | MIT           |
@@ -82,7 +79,7 @@ This file must list every third-party component that ships inside a Poratake rel
 | `react-style-singleton`                  |   2.2.3 | MIT           |
 | `scheduler`                              |  0.27.0 | MIT           |
 | `supports-color`                         |   7.2.0 | MIT           |
-| `tailwind-merge`                         |   3.6.0 | MIT           |
+| `tailwind-merge`                         |   3.4.0 | MIT           |
 | `tailwind-variants`                      |   3.3.1 | MIT           |
 | `tiny-typed-emitter`                     |   2.1.0 | MIT           |
 | `tw-animate-css`                         |   1.4.0 | MIT           |
