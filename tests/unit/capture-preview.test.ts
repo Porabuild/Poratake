@@ -740,11 +740,11 @@ describe('capture-preview index', () => {
     it('show-in-folder reveals the recording file', async () => {
       const { showCapturePreview } =
         await import('@/main/capture/capture-preview');
-      await showCapturePreview('/p/Rec.capty/recording.mov', 'video');
+      await showCapturePreview('/p/Rec.poratake/recording.mov', 'video');
       const id = browserWindows[0].webContents.id;
       ipcOn['capture-preview:show-in-folder']({ sender: { id } });
       expect(mockShellShowItemInFolder).toHaveBeenCalledWith(
-        '/p/Rec.capty/recording.mov'
+        '/p/Rec.poratake/recording.mov'
       );
     });
 

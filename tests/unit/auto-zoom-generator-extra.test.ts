@@ -53,32 +53,32 @@ describe('auto-zoom-generator', () => {
   });
 
   it('returns false when state file already exists', async () => {
-    mockGetEditorStatePath.mockReturnValue('/p/Rec.capty/state.json');
+    mockGetEditorStatePath.mockReturnValue('/p/Rec.poratake/state.json');
     mockExistsSync.mockReturnValue(true);
     const { generateInitialEditorState } =
       await import('@/main/capture/video/auto-zoom-generator');
     const result = await generateInitialEditorState({
-      projectPath: '/p/Rec.capty',
+      projectPath: '/p/Rec.poratake',
     });
     expect(result).toBe(false);
   });
 
   it('writes initial state when state missing', async () => {
-    mockGetEditorStatePath.mockReturnValue('/p/Rec.capty/state.json');
+    mockGetEditorStatePath.mockReturnValue('/p/Rec.poratake/state.json');
     mockExistsSync.mockReturnValue(false);
     mockLoadCursorData.mockResolvedValue(null);
     mockWriteFile.mockResolvedValue(undefined);
     const { generateInitialEditorState } =
       await import('@/main/capture/video/auto-zoom-generator');
     const result = await generateInitialEditorState({
-      projectPath: '/p/Rec.capty',
+      projectPath: '/p/Rec.poratake',
     });
     expect(result).toBe(true);
     expect(mockWriteFile).toHaveBeenCalled();
   });
 
   it('generates auto-zoom segments when enabled and cursor data exists', async () => {
-    mockGetEditorStatePath.mockReturnValue('/p/Rec.capty/state.json');
+    mockGetEditorStatePath.mockReturnValue('/p/Rec.poratake/state.json');
     mockExistsSync.mockReturnValue(false);
     mockLoadCursorData.mockResolvedValue({ events: [], meta: {} });
     mockGetConfig.mockReturnValue({ recording: { autoZoom: true } });
@@ -89,7 +89,7 @@ describe('auto-zoom-generator', () => {
     const { generateInitialEditorState } =
       await import('@/main/capture/video/auto-zoom-generator');
     const result = await generateInitialEditorState({
-      projectPath: '/p/Rec.capty',
+      projectPath: '/p/Rec.poratake',
     });
     expect(result).toBe(true);
     expect(mockGenerateAutoZoomSegments).toHaveBeenCalled();
@@ -100,27 +100,27 @@ describe('auto-zoom-generator', () => {
   });
 
   it('returns false on write error', async () => {
-    mockGetEditorStatePath.mockReturnValue('/p/Rec.capty/state.json');
+    mockGetEditorStatePath.mockReturnValue('/p/Rec.poratake/state.json');
     mockExistsSync.mockReturnValue(false);
     mockLoadCursorData.mockResolvedValue(null);
     mockWriteFile.mockRejectedValue(new Error('disk full'));
     const { generateInitialEditorState } =
       await import('@/main/capture/video/auto-zoom-generator');
     const result = await generateInitialEditorState({
-      projectPath: '/p/Rec.capty',
+      projectPath: '/p/Rec.poratake',
     });
     expect(result).toBe(false);
   });
 
   it('passes recordingType to state', async () => {
-    mockGetEditorStatePath.mockReturnValue('/p/Rec.capty/state.json');
+    mockGetEditorStatePath.mockReturnValue('/p/Rec.poratake/state.json');
     mockExistsSync.mockReturnValue(false);
     mockLoadCursorData.mockResolvedValue(null);
     mockWriteFile.mockResolvedValue(undefined);
     const { generateInitialEditorState } =
       await import('@/main/capture/video/auto-zoom-generator');
     await generateInitialEditorState({
-      projectPath: '/p/Rec.capty',
+      projectPath: '/p/Rec.poratake',
       recordingType: 'ios-device',
     });
     const writeArg = mockWriteFile.mock.calls[0][1] as string;

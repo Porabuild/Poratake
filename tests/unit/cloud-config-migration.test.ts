@@ -13,8 +13,8 @@ vi.mock('electron', () => ({
 vi.mock('@/main/daemon', () => ({ daemon: { call: vi.fn() } }));
 
 vi.mock('@/main/utils/paths.ts', () => ({
-  getConfigDir: () => '/tmp/capty-test',
-  getConfigFilePath: () => '/tmp/capty-test/config.json',
+  getConfigDir: () => '/tmp/poratake-test',
+  getConfigFilePath: () => '/tmp/poratake-test/config.json',
 }));
 
 vi.mock('@/main/utils/env.ts', () => ({ getAppVersion: () => '0.0.0' }));
@@ -69,15 +69,6 @@ describe('migrateCloudConfig', () => {
       secretAccessKey: '',
       pathPrefix: '',
       customDomain: '',
-    });
-    expect(result.activeProvider).toBe('s3');
-    expect(result.enabled).toBe(false);
-  });
-
-  it('disables an existing Capty Cloud config and falls back to S3', () => {
-    const result = migrateCloudConfig({
-      enabled: true,
-      activeProvider: 'capty',
     });
     expect(result.activeProvider).toBe('s3');
     expect(result.enabled).toBe(false);

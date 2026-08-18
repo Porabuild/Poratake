@@ -13,7 +13,7 @@ First Poratake release.
 - Publish Windows arm64 installers and shared product URLs
 - Unify capture flows around Electron overlays
 - Enable Windows updates and validate release assets
-- Remove Capty licensing and complete Poratake rebrand (#2)
+- Remove proprietary licensing and complete Poratake rebrand (#2)
 - Add window recording, live controls, and editor tracks
 - Rebrand app as Poratake with new UI and theme system
 - Add interactive area overlay and camera/mic device settings

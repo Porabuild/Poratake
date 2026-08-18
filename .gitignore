@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+*.tsbuildinfo
 electron-dist
 release
 *.local
@@ -52,8 +53,8 @@ src/main/binaries/whisper/.whisper-build
 src/main/binaries/whisper/.whisper-win-build
 src/main/binaries/whisper/.whisper-next-*
 src/main/binaries/whisper/.whisper-stamp-next-*
-src/main/daemon/capty-daemon
-src/main/daemon/capty-daemon.exe
+src/main/daemon/poratake-daemon
+src/main/daemon/poratake-daemon.exe
 
 # Agent and editor tooling
 .poracode/worktrees/

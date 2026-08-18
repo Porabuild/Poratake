@@ -68,8 +68,10 @@ vi.mock('electron', () => ({
 
 // Mock utils/paths
 vi.mock('@/main/utils/paths', () => ({
-  getConfigDir: vi.fn(() => '/mock/home/.config/capty-dev'),
-  getHistoryFilePath: vi.fn(() => '/mock/home/.config/capty-dev/history.json'),
+  getConfigDir: vi.fn(() => '/mock/home/.config/poratake-dev'),
+  getHistoryFilePath: vi.fn(
+    () => '/mock/home/.config/poratake-dev/history.json'
+  ),
 }));
 
 // Mock config module
@@ -144,7 +146,7 @@ describe('History Management', () => {
 
       expect(history).toEqual(mockHistory);
       expect(mockFsPromises.readFile).toHaveBeenCalledWith(
-        '/mock/home/.config/capty-dev/history.json',
+        '/mock/home/.config/poratake-dev/history.json',
         'utf-8'
       );
     });
@@ -168,7 +170,8 @@ describe('History Management', () => {
       ];
 
       mockFs.existsSync.mockImplementation((path: string) => {
-        if (path === '/mock/home/.config/capty-dev/history.json') return true;
+        if (path === '/mock/home/.config/poratake-dev/history.json')
+          return true;
         if (path === '/existing/file.png') return true;
         return false;
       });
@@ -192,7 +195,8 @@ describe('History Management', () => {
       ];
 
       mockFs.existsSync.mockImplementation((path: string) => {
-        if (path === '/mock/home/.config/capty-dev/history.json') return true;
+        if (path === '/mock/home/.config/poratake-dev/history.json')
+          return true;
         if (path === '/test/screenshot.png') return true;
         return false;
       });
@@ -268,9 +272,9 @@ describe('History Management', () => {
         unlink: mockFsPromises.unlink,
       }));
       vi.doMock('@/main/utils/paths', () => ({
-        getConfigDir: vi.fn(() => '/mock/home/.config/capty-dev'),
+        getConfigDir: vi.fn(() => '/mock/home/.config/poratake-dev'),
         getHistoryFilePath: vi.fn(
-          () => '/mock/home/.config/capty-dev/history.json'
+          () => '/mock/home/.config/poratake-dev/history.json'
         ),
       }));
       vi.doMock('@/main/utils/thumbnails', () => ({
@@ -293,7 +297,7 @@ describe('History Management', () => {
       vi.resetModules();
       mockFs.existsSync.mockImplementation((path: string) => {
         // Return false for config dir but true for file path
-        if (path === '/mock/home/.config/capty-dev') return false;
+        if (path === '/mock/home/.config/poratake-dev') return false;
         if (path === '/test/screenshot.png') return true;
         return false;
       });
@@ -303,7 +307,7 @@ describe('History Management', () => {
       await addToHistory('/test/screenshot.png');
 
       expect(mockFs.mkdirSync).toHaveBeenCalledWith(
-        '/mock/home/.config/capty-dev',
+        '/mock/home/.config/poratake-dev',
         { recursive: true }
       );
     });
@@ -336,7 +340,8 @@ describe('History Management', () => {
       ];
 
       mockFs.existsSync.mockImplementation((path: string) => {
-        if (path === '/mock/home/.config/capty-dev/history.json') return true;
+        if (path === '/mock/home/.config/poratake-dev/history.json')
+          return true;
         if (path.startsWith('/old/')) return true;
         if (path === '/new/file.png') return true;
         return false;
@@ -652,7 +657,7 @@ describe('History Management', () => {
       expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/screenshot2.png');
       expect(clearAllThumbnails).toHaveBeenCalled();
       expect(mockFsPromises.writeFile).toHaveBeenCalledWith(
-        '/mock/home/.config/capty-dev/history.json',
+        '/mock/home/.config/poratake-dev/history.json',
         '[]',
         'utf-8'
       );

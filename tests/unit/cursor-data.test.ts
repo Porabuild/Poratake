@@ -3,7 +3,7 @@ import path from 'path';
 import type { CursorData } from '@/types/cursor';
 
 const projectCursorJsonPath = path.join(
-  '/path/to/Recording.capty',
+  '/path/to/Recording.poratake',
   'cursor.json'
 );
 
@@ -23,15 +23,15 @@ describe('Cursor Data Utilities', () => {
   });
 
   describe('getCursorDataPath', () => {
-    it('should return cursor.json in project folder for .capty paths', async () => {
+    it('should return cursor.json in project folder for .poratake paths', async () => {
       const { getCursorDataPath } =
         await import('@/main/capture/video/cursor-data');
 
-      // Project folder structure: cursor.json is in the .capty folder
-      expect(getCursorDataPath('/path/to/Recording.capty/recording.mov')).toBe(
-        projectCursorJsonPath
-      );
-      expect(getCursorDataPath('/path/to/Recording.capty')).toBe(
+      // Project folder structure: cursor.json is in the .poratake folder
+      expect(
+        getCursorDataPath('/path/to/Recording.poratake/recording.mov')
+      ).toBe(projectCursorJsonPath);
+      expect(getCursorDataPath('/path/to/Recording.poratake')).toBe(
         projectCursorJsonPath
       );
     });
@@ -74,7 +74,7 @@ describe('Cursor Data Utilities', () => {
         await import('@/main/capture/video/cursor-data');
 
       const result = await loadCursorData(
-        '/path/to/Recording.capty/recording.mov'
+        '/path/to/Recording.poratake/recording.mov'
       );
 
       expect(fs.default.readFile).toHaveBeenCalledWith(
@@ -147,7 +147,7 @@ describe('Cursor Data Utilities', () => {
       const { deleteCursorData } =
         await import('@/main/capture/video/cursor-data');
 
-      await deleteCursorData('/path/to/Recording.capty/recording.mov');
+      await deleteCursorData('/path/to/Recording.poratake/recording.mov');
 
       expect(fs.default.unlink).toHaveBeenCalledWith(projectCursorJsonPath);
     });

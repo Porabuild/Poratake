@@ -137,9 +137,9 @@ describe('delete-video', () => {
       mockGetHistoryItemByPath.mockReturnValue(null);
       mockExistsSync.mockReturnValue(true);
       const { deleteVideo } = await import('@/main/capture/video/delete-video');
-      const ok = await deleteVideo('/path/My.capty/recording.mov');
+      const ok = await deleteVideo('/path/My.poratake/recording.mov');
       expect(ok).toBe(true);
-      expect(mockRmSync).toHaveBeenCalledWith('/path/My.capty', {
+      expect(mockRmSync).toHaveBeenCalledWith('/path/My.poratake', {
         recursive: true,
         force: true,
       });
@@ -149,7 +149,7 @@ describe('delete-video', () => {
       mockGetHistoryItemByPath.mockReturnValue(null);
       mockExistsSync.mockReturnValue(false);
       const { deleteVideo } = await import('@/main/capture/video/delete-video');
-      expect(await deleteVideo('/path/Missing.capty/recording.mov')).toBe(
+      expect(await deleteVideo('/path/Missing.poratake/recording.mov')).toBe(
         false
       );
     });
@@ -181,7 +181,7 @@ describe('delete-video', () => {
       });
       mockShowMessageBox.mockResolvedValue({ response: 0 });
       const { deleteVideo } = await import('@/main/capture/video/delete-video');
-      expect(await deleteVideo('/path/My.capty/recording.mov')).toBe(false);
+      expect(await deleteVideo('/path/My.poratake/recording.mov')).toBe(false);
       expect(mockShowMessageBox).toHaveBeenCalled();
     });
 

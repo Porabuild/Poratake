@@ -87,7 +87,7 @@ describe('NativeDaemon platform support', () => {
     expect(args.join(' ')).not.toContain('taskkill');
     expect(options).toMatchObject({
       stdio: 'ignore',
-      env: { PORATAKE_DAEMON_PATH: '/mock/bin/capty-daemon' },
+      env: { PORATAKE_DAEMON_PATH: '/mock/bin/poratake-daemon' },
     });
     expect(mockExecSync).not.toHaveBeenCalled();
 
@@ -113,7 +113,7 @@ describe('NativeDaemon platform support', () => {
 
     expect(mockExecFileSync).toHaveBeenCalledWith(
       'pgrep',
-      ['-f', '/mock/bin/capty-daemon'],
+      ['-f', '/mock/bin/poratake-daemon'],
       { encoding: 'utf-8' }
     );
     expect(mockExecSync).not.toHaveBeenCalled();

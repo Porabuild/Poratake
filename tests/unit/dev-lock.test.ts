@@ -78,8 +78,8 @@ describe('dev lock', () => {
     });
   });
 
-  it('matches only Capty dev processes from the worktree', () => {
-    const root = 'C:\\work\\capty';
+  it('matches only Poratake dev processes from the worktree', () => {
+    const root = 'C:\\work\\poratake';
 
     expect(
       isPoratakeDevCommand(

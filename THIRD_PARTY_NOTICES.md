@@ -115,7 +115,7 @@ Poratake is built on Electron 43.4.0 under the MIT License. Electron's license a
 
 The macOS Swift daemon uses only Apple system frameworks and has no third-party dependencies.
 
-The Windows Rust daemon (`capty-daemon.exe`) statically links the following crates. Exact versions are pinned in `src/main/daemon-win/Cargo.lock`, and each crate's full license text is included in its published source at that version.
+The Windows Rust daemon (`poratake-daemon.exe`) statically links the following crates. Exact versions are pinned in `src/main/daemon-win/Cargo.lock`, and each crate's full license text is included in its published source at that version.
 
 Licensed under the MIT License (text below), some dual-licensed with Apache-2.0 with MIT elected here: allocator-api2, base64, equivalent, g2p, g2poly, hashbrown, itoa, lru (Copyright (c) 2016 Jerome Froelich), memchr (Copyright (c) 2015 Andrew Gallant), rqrr (Copyright 2019 Moritz Wanzenböck), serde, serde_core, serde_json, zmij, and the Microsoft `windows` crates: windows, windows-collections, windows-core, windows-future, windows-link, windows-numerics, windows-result, windows-strings, windows-threading (Copyright (c) Microsoft Corporation).
 

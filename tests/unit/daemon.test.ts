@@ -72,7 +72,7 @@ describe('NativeDaemon', () => {
       );
     });
     await startPromise;
-    expect(mockSpawn).toHaveBeenCalledWith('/mock/bin/capty-daemon', [], {
+    expect(mockSpawn).toHaveBeenCalledWith('/mock/bin/poratake-daemon', [], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const stopPromise = daemon.stop();

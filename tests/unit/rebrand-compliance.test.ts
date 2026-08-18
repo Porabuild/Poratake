@@ -106,12 +106,18 @@ describe('Poratake rebrand compliance', () => {
   it('uses fork-owned application and data identities', () => {
     const builder = read('electron-builder.json5');
     const paths = read('src/main/utils/paths.ts');
+    const video = read('src/types/video.ts');
+    const daemonManifest = read('src/main/daemon-win/Cargo.toml');
 
     expect(builder).toContain('"appId": "com.porabuild.poratake"');
     expect(builder).toContain(
       '"UTTypeIdentifier": "com.porabuild.poratake.recording"'
     );
+    expect(builder).toContain('"CFBundleTypeExtensions": ["poratake"]');
+    expect(builder).toContain('"public.filename-extension": ["poratake"]');
     expect(paths).toContain("isProduction ? 'poratake' : 'poratake-dev'");
+    expect(video).toContain("PROJECT_EXTENSION = '.poratake'");
+    expect(daemonManifest).toContain('name = "poratake-daemon"');
   });
 
   it('inventories every bundled npm package and packages its license', () => {
