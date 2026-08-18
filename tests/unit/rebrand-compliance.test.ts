@@ -60,10 +60,15 @@ describe('Poratake rebrand compliance', () => {
 
     expect(builder).toContain('licenses/Poratake-AGPL-3.0.txt');
     expect(builder).toContain('licenses/THIRD_PARTY_NOTICES.md');
+    expect(builder).toContain('licenses/FFmpeg-LGPL-2.1.txt');
     expect(builder).toContain('licenses/Geist-OFL-1.1.txt');
     expect(builder).toContain('@heroui/**/LICENSE*');
     expect(fs.existsSync('licenses/Geist-OFL-1.1.txt')).toBe(true);
+    expect(fs.existsSync('licenses/FFmpeg-LGPL-2.1.txt')).toBe(true);
     expect(read('THIRD_PARTY_NOTICES.md')).toContain('## Geist fonts');
+    expect(read('THIRD_PARTY_NOTICES.md')).toContain(
+      'GNU Lesser General Public License v2.1'
+    );
   });
 
   it('uses fork-owned application and data identities', () => {
@@ -208,6 +213,19 @@ describe('Poratake rebrand compliance', () => {
     const releaseScript = read('scripts/release.sh');
     const packageWinScript = read('scripts/package-win.mjs');
     const packageJson = read('package.json');
+    const notices = read('THIRD_PARTY_NOTICES.md');
+    const ffmpegMacBuild = read('scripts/build-ffmpeg.sh');
+    const ffmpegWinBuild = read('scripts/build-ffmpeg-win.sh');
+    const whisperMacBuild = read('scripts/build-whisper.sh');
+    const whisperWinBuild = read('scripts/build-whisper-win.ps1');
+    const ffmpegVersion = ffmpegMacBuild.match(/FFMPEG_VERSION="([^"]+)"/)?.[1];
+    const ffmpegSha = ffmpegMacBuild.match(/FFMPEG_SHA256="([^"]+)"/)?.[1];
+    const whisperVersion = whisperMacBuild.match(
+      /WHISPER_VERSION="([^"]+)"/
+    )?.[1];
+    const whisperCommit = whisperMacBuild.match(
+      /WHISPER_COMMIT="([^"]+)"/
+    )?.[1];
 
     expect(workflow).toContain('bun install --frozen-lockfile');
     expect(workflow).toContain('fail_on_unmatched_files: true');
@@ -236,20 +254,44 @@ describe('Poratake rebrand compliance', () => {
     expect(read('.github/workflows/checks.yml')).toContain(
       'run: ./scripts/build-daemon.sh'
     );
-    expect(read('scripts/build-ffmpeg.sh')).toContain(
+    expect(ffmpegVersion).toBe('7.1.5');
+    expect(ffmpegSha).toBe(
       'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f'
     );
-    expect(read('scripts/build-ffmpeg.sh')).toContain('--retry-all-errors');
-    expect(read('scripts/build-ffmpeg-win.sh')).toContain('--retry-all-errors');
-    expect(read('scripts/build-ffmpeg-win.sh')).toContain(
+    expect(ffmpegWinBuild).toContain(`FFMPEG_VERSION="${ffmpegVersion}"`);
+    expect(ffmpegWinBuild).toContain(`FFMPEG_SHA256="${ffmpegSha}"`);
+    expect(notices).toContain(`FFmpeg ${ffmpegVersion} release archive`);
+    expect(notices).toContain(ffmpegSha);
+    expect(notices).toContain('scripts/build-ffmpeg-win.sh');
+    expect(ffmpegMacBuild).toContain('--retry-all-errors');
+    expect(ffmpegMacBuild).not.toContain('--enable-version3');
+    expect(ffmpegMacBuild).toContain('.ffmpeg-build');
+    expect(ffmpegWinBuild).toContain('--retry-all-errors');
+    expect(ffmpegWinBuild).toContain('.ffmpeg-win-build');
+    expect(ffmpegWinBuild).toContain(
+      '"${FFMPEG_VERSION}:${FFMPEG_SHA256}:$ARCH"'
+    );
+    expect(ffmpegWinBuild.indexOf('already built, skipping')).toBeLessThan(
+      ffmpegWinBuild.indexOf('REQUIRED_COMMANDS=')
+    );
+    expect(ffmpegWinBuild).not.toContain('rm -f "$OUTPUT_DIR/ffmpeg.exe"');
+    expect(ffmpegWinBuild).toContain(
       'FFMPEG_TOOLCHAIN_ARGS=(--cc=clang --cxx=clang++ --as=clang)'
     );
-    expect(read('scripts/build-whisper.sh')).toContain(
-      '306c88f4d1286aec1bf96e544632897886af5501'
+    expect(whisperVersion).toBe('v1.9.2');
+    expect(whisperCommit).toBe('306c88f4d1286aec1bf96e544632897886af5501');
+    expect(whisperWinBuild).toContain(whisperCommit);
+    expect(notices).toContain(
+      `${whisperVersion} at commit \`${whisperCommit}\``
     );
-    expect(read('scripts/build-whisper-win.ps1')).toContain(
-      "@('-T', 'ClangCL')"
-    );
+    expect(notices).toContain('Copyright (c) 2023-2026 The ggml authors');
+    expect(notices).toContain('scripts/build-whisper-win.ps1');
+    expect(whisperMacBuild).toContain('-DGGML_METAL=ON');
+    expect(whisperMacBuild).not.toContain('-DWHISPER_METAL=');
+    expect(whisperMacBuild).toContain('.whisper-build');
+    expect(whisperWinBuild).toContain("@('-T', 'ClangCL')");
+    expect(whisperWinBuild).toContain('.whisper-win-build');
+    expect(whisperWinBuild).toContain('"${scriptHash}:$arch"');
   });
 
   it('does not publish release refs before validating built assets', () => {

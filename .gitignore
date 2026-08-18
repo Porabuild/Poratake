@@ -42,8 +42,16 @@ internal_release_notes.txt
 # Native build artifacts (see CONTRIBUTING.md)
 src/main/binaries/ffmpeg/ffmpeg
 src/main/binaries/ffmpeg/ffmpeg.exe
+src/main/binaries/ffmpeg/.ffmpeg-build
+src/main/binaries/ffmpeg/.ffmpeg-win-build
+src/main/binaries/ffmpeg/.ffmpeg-next-*
+src/main/binaries/ffmpeg/.ffmpeg-stamp-next-*
 src/main/binaries/whisper/whisper
 src/main/binaries/whisper/whisper.exe
+src/main/binaries/whisper/.whisper-build
+src/main/binaries/whisper/.whisper-win-build
+src/main/binaries/whisper/.whisper-next-*
+src/main/binaries/whisper/.whisper-stamp-next-*
 src/main/daemon/capty-daemon
 src/main/daemon/capty-daemon.exe
 

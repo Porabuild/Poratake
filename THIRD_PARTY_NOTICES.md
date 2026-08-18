@@ -96,15 +96,15 @@ Poratake bundles Geist Sans and Geist Mono from the [Geist font project](https:/
 
 ## FFmpeg
 
-Poratake bundles an FFmpeg binary built from the unmodified FFmpeg 7.1.5 release archive with SHA-256 `de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f`, configured LGPL-only (`--disable-gpl --disable-nonfree`). FFmpeg is licensed under the GNU Lesser General Public License v2.1; the full license text ships with the app at `licenses/FFmpeg-LGPL-2.1.txt`. The exact corresponding source is the official release archive at <https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz>, and the complete build configuration is `scripts/build-ffmpeg.sh` in the Poratake source repository.
+Poratake bundles an FFmpeg binary built from the unmodified FFmpeg 7.1.5 release archive with SHA-256 `de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f`, configured LGPL-only (`--disable-gpl --disable-nonfree`). FFmpeg is licensed under the GNU Lesser General Public License v2.1; the full license text ships with the app at `licenses/FFmpeg-LGPL-2.1.txt`. The exact corresponding source is the official release archive at <https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz>, and the complete platform build configurations are `scripts/build-ffmpeg.sh` and `scripts/build-ffmpeg-win.sh` in the Poratake source repository.
 
 ## whisper.cpp
 
-Poratake bundles a `whisper-cli` binary built from [whisper.cpp](https://github.com/ggml-org/whisper.cpp) v1.9.2 at commit `306c88f4d1286aec1bf96e544632897886af5501` using `scripts/build-whisper.sh`. Speech-recognition models are not distributed with Poratake; they are downloaded from Hugging Face at the user's request.
+Poratake bundles a `whisper-cli` binary built from [whisper.cpp](https://github.com/ggml-org/whisper.cpp) v1.9.2 at commit `306c88f4d1286aec1bf96e544632897886af5501` using `scripts/build-whisper.sh` and `scripts/build-whisper-win.ps1`. Speech-recognition models are not distributed with Poratake; they are downloaded from Hugging Face at the user's request.
 
 MIT License
 
-Copyright (c) 2023-2024 The ggml authors
+Copyright (c) 2023-2026 The ggml authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 

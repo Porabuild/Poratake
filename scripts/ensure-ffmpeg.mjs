@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,8 +13,26 @@ export function getFFmpegOutputPath(root) {
   return path.join(root, 'src', 'main', 'binaries', 'ffmpeg', 'ffmpeg');
 }
 
+export function getFFmpegBuildStampPath(root) {
+  return path.join(root, 'src', 'main', 'binaries', 'ffmpeg', '.ffmpeg-build');
+}
+
+export function getFFmpegBuildIdentity(root) {
+  const script = fs.readFileSync(path.join(root, 'scripts', 'build-ffmpeg.sh'));
+  return `${createHash('sha256').update(script).digest('hex')}:universal`;
+}
+
 export function isFFmpegBuilt(root) {
-  return fs.existsSync(getFFmpegOutputPath(root));
+  if (!fs.existsSync(getFFmpegOutputPath(root))) return false;
+
+  try {
+    return (
+      fs.readFileSync(getFFmpegBuildStampPath(root), 'utf8').trim() ===
+      getFFmpegBuildIdentity(root)
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function hasCommand(command, env = process.env) {
