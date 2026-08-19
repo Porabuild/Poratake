@@ -1,5 +1,8 @@
 import { app, screen } from 'electron';
 import { daemon } from '@/main/daemon';
+import startAllInOne from '@/main/capture/all-in-one';
+import { cancelAreaSelection } from '@/main/capture/area-selector';
+import { initAioDebugTrigger } from '@/main/utils/aio-trigger';
 import { debugLog, debugLogMs } from '@/main/utils/debug-log';
 import { isLinux } from '@/main/utils/platform';
 
@@ -125,6 +128,7 @@ const initializeModules = async () => {
   debugLogMs('boot', 'daemon start', bootStartedAt);
 
   initWindowLoad();
+  initAioDebugTrigger(() => void startAllInOne(), cancelAreaSelection);
   settings.init();
   onboarding.init();
   permissions.initPermissionsIPC();
