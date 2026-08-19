@@ -155,9 +155,7 @@ app.whenReady().then(async () => {
   process.env.PORATAKE_CAPTURE_TIMING ??= '1';
   debugLog('app', `ready isDev=${isDev} platform=${process.platform}`);
   initDock();
-  if (isDev) {
-    monitorEventLoopLag();
-  }
+  monitorEventLoopLag();
   await initializeModules();
   await update.handleAppUpdate();
 

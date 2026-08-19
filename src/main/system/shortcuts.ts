@@ -382,16 +382,25 @@ export function registerAllShortcuts(): void {
 }
 
 export function unregisterAllShortcuts(): void {
+  debugLog('shortcut-lifecycle', 'unregisterAllShortcuts');
   globalShortcut.unregisterAll();
   registeredShortcuts.clear();
 }
 
 export function init(): void {
   registerAllShortcuts();
+  debugLog(
+    'shortcut-lifecycle',
+    `init registered ${registeredShortcuts.size} shortcuts (allInOne=${registeredShortcuts.get('allInOne') ?? 'none'})`
+  );
 
   ipcMain.on(
     'shortcuts:register',
     (_event, action: CaptureMode, accelerator: string) => {
+      debugLog(
+        'shortcut-lifecycle',
+        `register ${action} -> ${accelerator || 'none'}`
+      );
       registerShortcut(action, accelerator);
     }
   );
@@ -401,6 +410,7 @@ export function init(): void {
   });
 
   ipcMain.on('shortcuts:reload', () => {
+    debugLog('shortcut-lifecycle', 'reload (unregister all + re-register)');
     unregisterAllShortcuts();
     registerAllShortcuts();
     rebuildTrayMenu();
