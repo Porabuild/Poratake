@@ -22,6 +22,12 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
   const frameIdentity = `${params.displayId}:${params.imageUrl ?? ''}`;
 
   useEffect(() => {
+    console.log(
+      `[overlay-renderer] mounted display=${params.displayId} session=${params.sessionId} interactive=${params.interactive}`
+    );
+  }, [params.displayId, params.interactive, params.sessionId]);
+
+  useEffect(() => {
     const handleHandoff = () => setHandedOff(true);
 
     window.ipcRenderer.on('area-overlay:handoff', handleHandoff);
@@ -116,8 +122,12 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
   }, []);
 
   useEffect(() => {
-    const announceReady = () =>
+    const announceReady = () => {
+      console.log(
+        `[overlay-renderer] ready display=${params.displayId} session=${params.sessionId} image=${params.imageUrl ? 'yes' : 'no'}`
+      );
       window.ipcRenderer.send('area-overlay:ready', params.sessionId);
+    };
     const image = frozenFrame.current;
 
     if (!image || image.dataset.frameIdentity !== frameIdentity) {
@@ -125,8 +135,22 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
       return;
     }
 
-    image.decode().then(announceReady, announceReady);
-  }, [frameIdentity, params.sessionId]);
+    const decodeStartedAt = performance.now();
+    image.decode().then(
+      () => {
+        console.log(
+          `[overlay-renderer] image decode display=${params.displayId} took=${Math.round(performance.now() - decodeStartedAt)}ms`
+        );
+        announceReady();
+      },
+      () => {
+        console.log(
+          `[overlay-renderer] image decode failed display=${params.displayId}`
+        );
+        announceReady();
+      }
+    );
+  }, [frameIdentity, params.displayId, params.imageUrl, params.sessionId]);
 
   const revealedSessionIdRef = useRef(params.sessionId);
 
@@ -137,6 +161,9 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
   useEffect(() => {
     const handleRevealed = (_event: unknown, sessionId: number) => {
       if (sessionId !== revealedSessionIdRef.current) return;
+      console.log(
+        `[overlay-renderer] revealed display=${params.displayId} session=${sessionId}`
+      );
       requestAnimationFrame(() => {
         window.ipcRenderer.send(
           'area-overlay:visible',
@@ -149,7 +176,7 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
     return () => {
       window.ipcRenderer.off('area-overlay:revealed', handleRevealed);
     };
-  }, []);
+  }, [params.displayId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
