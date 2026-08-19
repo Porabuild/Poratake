@@ -35,7 +35,6 @@ vi.mock('electron', () => ({
       scaleFactor: 2,
       workAreaSize: { width: 1920, height: 1080 },
     })),
-    getAllDisplays: vi.fn(() => []),
   },
 }));
 

@@ -9,7 +9,6 @@ import type {
 } from '@/types/daemon';
 import { isDaemonEvent, isDaemonResponse } from '@/types/daemon';
 import { getNativeBinaryPath } from '@/main/utils/paths';
-import { debugLog, debugLogMs } from '@/main/utils/debug-log';
 import { isMac, isWindows } from '@/main/utils/platform';
 
 const DAEMON_BINARY = 'poratake-daemon';
@@ -158,8 +157,6 @@ class NativeDaemon extends EventEmitter {
 
   private async spawn(): Promise<void> {
     const binaryPath = getNativeBinaryPath(DAEMON_BINARY);
-    const spawnStartedAt = performance.now();
-    debugLog('daemon', `spawning ${binaryPath}`);
 
     return new Promise((resolve, reject) => {
       const child = spawn(binaryPath, [], {
@@ -186,7 +183,6 @@ class NativeDaemon extends EventEmitter {
         this.restartAttempts = 0;
         clearTimeout(readyTimeout);
         this.off('daemon-event', onReadyHandler);
-        debugLogMs('daemon', 'ready (spawn to system:ready)', spawnStartedAt);
         resolve();
       };
       this.on('daemon-event', onReadyHandler);
@@ -220,10 +216,7 @@ class NativeDaemon extends EventEmitter {
       });
 
       child.stderr?.on('data', (data: Buffer) => {
-        const text = data.toString().trim();
-        if (text) {
-          debugLog('daemon-stderr', text);
-        }
+        console.error('[daemon stderr]', data.toString());
       });
 
       child.stdin?.on('error', () => {
@@ -236,10 +229,6 @@ class NativeDaemon extends EventEmitter {
 
       child.on('exit', (code, signal) => {
         exitHandled = true;
-        debugLog(
-          'daemon',
-          `exited code=${code} signal=${signal} ready=${isReady}`
-        );
         if (!isReady) {
           failStartup(
             new Error(

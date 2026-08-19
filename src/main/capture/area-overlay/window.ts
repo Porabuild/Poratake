@@ -2,7 +2,6 @@ import { BrowserWindow } from 'electron';
 import type { Display } from 'electron';
 import path from 'path';
 import { isDev, devServerUrl } from '@/main/utils/env';
-import { debugLog } from '@/main/utils/debug-log';
 import { isMac } from '@/main/utils/platform';
 
 export function createOverlayWindow(display: Display): BrowserWindow {
@@ -49,13 +48,8 @@ export function createOverlayWindow(display: Display): BrowserWindow {
   if (devServerUrl) {
     const url = new URL(devServerUrl);
     url.searchParams.set('window', 'area-overlay');
-    debugLog('overlay-window', `display=${display.id} loadURL dev server`);
     overlayWindow.loadURL(url.toString());
   } else {
-    debugLog(
-      'overlay-window',
-      `display=${display.id} loadFile packaged bundle`
-    );
     overlayWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
       query: { window: 'area-overlay' },
     });

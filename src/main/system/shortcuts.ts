@@ -12,7 +12,6 @@ import { toggleHistoryPopover } from '@/main/history';
 import { getTray, rebuildTrayMenu } from '@/main/menu';
 import { getConfig } from '@/main/settings';
 import startAllInOne from '@/main/capture/all-in-one';
-import { debugLog } from '@/main/utils/debug-log';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import type { FeatureId } from '@/types/capabilities';
 
@@ -247,7 +246,6 @@ function registerAllInOneShortcut(accelerator: string): boolean {
 
     if (accelerator) {
       const success = globalShortcut.register(accelerator, () => {
-        debugLog('shortcut', `all-in-one triggered (${accelerator})`);
         startAllInOne();
       });
 
