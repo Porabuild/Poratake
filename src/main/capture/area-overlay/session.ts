@@ -2,9 +2,8 @@ import { app, globalShortcut, ipcMain, screen } from 'electron';
 import type { Display, Point, Rectangle, BrowserWindow } from 'electron';
 import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
 import { daemon } from '@/main/daemon';
+import { debugLog, debugLogMs } from '@/main/utils/debug-log';
 import { isWindows } from '@/main/utils/platform';
-import { isDev } from '@/main/utils/env';
-import { formatClock } from '@/main/utils/clock';
 import { createOverlayWindow } from './window';
 import type {
   AreaOverlayPickTarget,
@@ -256,8 +255,36 @@ function showInactiveWithoutTransitions(window: BrowserWindow): void {
 }
 
 function createPooledWindow(display: Display): PooledOverlayWindow {
+  const createdStartedAt = performance.now();
+  debugLog(
+    'overlay',
+    `display=${display.id} creating pooled window ${display.bounds.width}x${display.bounds.height}@${display.scaleFactor}`
+  );
   const window = createOverlayWindow(display);
   showInactiveWithoutTransitions(window);
+
+  const loadStartedAt = performance.now();
+  window.webContents.once('did-finish-load', () => {
+    debugLogMs(
+      'overlay',
+      `display=${display.id} renderer did-finish-load`,
+      loadStartedAt
+    );
+  });
+  window.webContents.once('dom-ready', () => {
+    debugLogMs(
+      'overlay',
+      `display=${display.id} renderer dom-ready`,
+      loadStartedAt
+    );
+  });
+  window.webContents.on('console-message', (_event, level, message) => {
+    debugLog(
+      'overlay-renderer',
+      `display=${display.id} lvl${level} ${message}`
+    );
+  });
+
   const initialized = prepareOverlayWindow(
     window,
     'hideWindowWithoutTransitions'
@@ -274,8 +301,14 @@ function createPooledWindow(display: Display): PooledOverlayWindow {
   };
   pooledWindowsByDisplay.set(display.id, pooled);
   pooledWindowsByWebContents.set(pooled.webContentsId, pooled);
+  debugLogMs(
+    'overlay',
+    `display=${display.id} pooled window created`,
+    createdStartedAt
+  );
 
   window.webContents.on('render-process-gone', () => {
+    debugLog('overlay', `display=${display.id} renderer process gone`);
     removePooledWindow(pooled);
     const session = activeSession;
     if (session && sessionEntryFor(session, pooled)) {
@@ -429,10 +462,18 @@ function registerOverlayIpc(): void {
     if (typeof sessionId === 'number' && sessionId !== session.id) return;
 
     if (!session.freezeSettled) {
+      debugLog(
+        'overlay',
+        `session=${session.id} display=${display.id} renderer ready (freeze pending)`
+      );
       session.pendingReady.add(display.id);
       return;
     }
 
+    debugLog(
+      'overlay',
+      `session=${session.id} display=${display.id} renderer ready (freeze settled)`
+    );
     void revealOverlay(session, display.id);
     announcePreset(session, display);
   });
@@ -446,14 +487,14 @@ function registerOverlayIpc(): void {
     if (session.visibleAnnounced) return;
 
     session.visibleAnnounced = true;
-    if (!isDev) return;
 
     const now = performance.now();
     const revealedAt = session.revealCompletedAt ?? session.timingStart;
     const paint = Math.round(now - revealedAt);
     const total = Math.round(now - session.timingStart);
-    console.log(
-      `[overlay-timing ${formatClock()}] paint=+${paint}ms total=${total}ms`
+    debugLog(
+      'overlay',
+      `session=${session.id} paint=+${paint}ms total=${total}ms (renderer visible)`
     );
   });
 
@@ -545,12 +586,22 @@ function revealOverlay(
   const entry = session.entries.find(item => item.display.id === displayId);
   if (!entry || entry.window.isDestroyed()) return Promise.resolve();
 
+  const revealStartedAt = performance.now();
+  debugLog(
+    'overlay',
+    `session=${session.id} display=${displayId} reveal start`
+  );
   return setOverlayWindowRegion(session, entry).then(() => {
     if (activeSession !== session || entry.window.isDestroyed()) return;
     return showOverlayWindow(entry).then(() => {
       if (activeSession !== session || entry.window.isDestroyed()) return;
       entry.window.moveTop();
       focusRevealedOverlay(session, entry);
+      debugLogMs(
+        'overlay',
+        `session=${session.id} display=${displayId} revealed`,
+        revealStartedAt
+      );
       entry.window.webContents.send('area-overlay:revealed', session.id);
     });
   });
@@ -849,6 +900,10 @@ function finishSession(
   if (!session || session !== expectedSession) return Promise.resolve();
   activeSession = null;
   setEscapeShortcutEnabled(session, false);
+  debugLog(
+    'overlay',
+    `session=${session.id} finished outcome=${result ? 'selected' : 'cancelled'} keepVisible=${keepVisible}`
+  );
 
   const parks: Promise<void>[] = [];
   if (keepVisible && result) {
@@ -1130,9 +1185,15 @@ export async function startOverlaySession(
     let timingConceal = timingStart;
     let timingFreeze = timingStart;
 
+    debugLog(
+      'overlay',
+      `session start interactive=${options?.interactive ?? false} freeze=${options?.freeze ?? true} renderer=${options?.renderer ?? 'area-overlay'} toolbar=${options?.toolbar ? 'on' : 'off'}`
+    );
+
     await pendingTeardown;
     await pendingRestore;
     timingTeardown = performance.now();
+    debugLogMs('overlay', 'stage teardown', timingStart);
 
     if (activeSession) {
       return null;
@@ -1146,6 +1207,7 @@ export async function startOverlaySession(
 
     await Promise.all(pooledWindows.map(pooled => pooled.initialized));
     timingInit = performance.now();
+    debugLogMs('overlay', 'stage init (windows loaded)', timingTeardown);
     await Promise.all(
       pooledWindows.map(pooled =>
         pooled.window.isVisible()
@@ -1154,6 +1216,7 @@ export async function startOverlaySession(
       )
     );
     timingConceal = performance.now();
+    debugLogMs('overlay', 'stage conceal', timingInit);
 
     let resolveSession!: (selection: OverlaySelection | null) => void;
     const resultPromise = new Promise<OverlaySelection | null>(resolve => {
@@ -1221,7 +1284,13 @@ export async function startOverlaySession(
       }
 
       if (requestedFreeze) {
+        const freezeStartedAt = performance.now();
         const freeze = await freezeScreen();
+        debugLogMs(
+          'overlay',
+          `stage freeze (frozen=${freeze})`,
+          freezeStartedAt
+        );
         if (activeSession !== session) {
           if (freeze) await releaseScreen();
           return resultPromise;
@@ -1229,6 +1298,7 @@ export async function startOverlaySession(
         session.freeze = freeze;
       }
       timingFreeze = performance.now();
+      debugLogMs('overlay', 'stage freeze-settled', timingConceal);
 
       session.freezeSettled = true;
       const reveals: Promise<void>[] = [];
@@ -1242,13 +1312,11 @@ export async function startOverlaySession(
 
       void Promise.all(reveals).then(() => {
         session.revealCompletedAt = performance.now();
-        if (!isDev || reveals.length === 0) {
-          return;
-        }
         const elapsed = (mark: number) => Math.round(mark - timingStart);
         const total = Math.round(session.revealCompletedAt - timingStart);
-        console.log(
-          `[overlay-timing ${formatClock()}] teardown=${elapsed(
+        debugLog(
+          'overlay',
+          `session=${session.id} summary teardown=${elapsed(
             timingTeardown
           )} init=${elapsed(timingInit)} conceal=${elapsed(
             timingConceal

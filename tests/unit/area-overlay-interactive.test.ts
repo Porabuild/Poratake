@@ -30,6 +30,7 @@ class MockBrowserWindow {
         loadHandlers.set(this.webContents.id, handler);
       }
     },
+    once: vi.fn(),
     send: vi.fn(),
     sendInputEvent: vi.fn(),
   };
