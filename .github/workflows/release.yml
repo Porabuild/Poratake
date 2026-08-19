@@ -7,6 +7,11 @@ on:
         description: 'Version number (e.g., 1.1.0)'
         required: true
         type: string
+      skip_cache:
+        description: 'Build without any caches (fresh toolchain, deps, and native binaries)'
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: write
 
@@ -63,12 +68,14 @@ jobs:
           bun-version: 1.3.14
 
       - name: Cache Bun installs
+        if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
 
       - name: Cache Electron binary
+        if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/electron
@@ -94,6 +101,7 @@ jobs:
         run: node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.RELEASE_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
 
       - name: Cache native binaries
+        if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
           path: |
@@ -200,12 +208,14 @@ jobs:
           targets: ${{ matrix.arch == 'arm64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
 
       - name: Cache Bun installs
+        if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ matrix.arch }}-bun-${{ hashFiles('bun.lock') }}
 
       - name: Cache Electron binary
+        if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
           path: ~/AppData/Local/electron/Cache
@@ -224,6 +234,7 @@ jobs:
         run: node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.RELEASE_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
 
       - name: Cache Rust target
+        if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
           path: src/main/daemon-win/target
@@ -237,6 +248,7 @@ jobs:
           install: ${{ matrix.packages }}
 
       - name: Cache native binaries
+        if: ${{ !inputs.skip_cache }}
         id: native-cache
         uses: actions/cache@v5
         with:
