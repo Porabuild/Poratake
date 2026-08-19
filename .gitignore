@@ -67,3 +67,4 @@ skills-lock.json
 
 .envrc
 .direnv/
+.scratch*
