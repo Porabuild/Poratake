@@ -175,8 +175,18 @@ describe('screenshot on Windows', () => {
     });
     mockDesktopIconsSupported.mockReturnValue(false);
     mockCaptureDisplayToFile.mockResolvedValue(true);
-    mockCaptureWindowToFile.mockResolvedValue(true);
-    mockCaptureAreaToFile.mockResolvedValue(true);
+    mockCaptureWindowToFile.mockImplementation(
+      async (_path: string, onCaptureStarted: (() => void) | undefined) => {
+        onCaptureStarted?.();
+        return true;
+      }
+    );
+    mockCaptureAreaToFile.mockImplementation(
+      async (_path: string, onCaptureStarted: (() => void) | undefined) => {
+        onCaptureStarted?.();
+        return true;
+      }
+    );
     mockPrepareCapturePreview.mockReturnValue({
       dispose: mockDisposePreparedPreview,
     });
@@ -190,6 +200,7 @@ describe('screenshot on Windows', () => {
 
   describe('screen mode', () => {
     it('prepares the preview while native capture is running', async () => {
+      const calls: string[] = [];
       mockGetConfig.mockReturnValue({
         general: { playSoundOnScreenshot: false },
         screenshot: {
@@ -200,15 +211,21 @@ describe('screenshot on Windows', () => {
         },
       });
       let finishCapture: (captured: boolean) => void = () => {};
-      mockCaptureDisplayToFile.mockReturnValueOnce(
-        new Promise(resolve => {
+      mockCaptureDisplayToFile.mockImplementationOnce(() => {
+        calls.push('capture');
+        return new Promise(resolve => {
           finishCapture = resolve;
-        })
-      );
+        });
+      });
+      mockPrepareCapturePreview.mockImplementationOnce(() => {
+        calls.push('preview');
+        return { dispose: mockDisposePreparedPreview };
+      });
       const { default: screenshot } = await import('@/main/capture/screenshot');
 
       const capturing = screenshot('screen');
 
+      expect(calls).toEqual(['capture', 'preview']);
       expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1);
       expect(mockCaptureDisplayToFile).toHaveBeenCalledTimes(1);
       expect(mockShowCapturePreview).not.toHaveBeenCalled();
@@ -414,7 +431,10 @@ describe('screenshot on Windows', () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('window');
 
-      expect(mockCaptureWindowToFile).toHaveBeenCalledWith(expect.any(String));
+      expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Function)
+      );
       expect(mockClipboardWriteImage).toHaveBeenCalled();
     });
 

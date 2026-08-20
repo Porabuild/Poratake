@@ -11,6 +11,8 @@ const mockExistsSync = vi.fn();
 const mockReadFileSync = vi.fn();
 const mockClipboardWriteImage = vi.fn();
 const mockShowCapturePreview = vi.fn();
+const mockPrepareCapturePreview = vi.fn();
+const mockDisposeCapturePreview = vi.fn();
 const mockOpenScreenshotEditor = vi.fn();
 const mockAddToHistory = vi.fn();
 const mockDipToScreenRect = vi.fn();
@@ -75,6 +77,7 @@ vi.mock('@/main/capture/screenshot/utils', () => ({
 
 vi.mock('@/main/capture/capture-preview', () => ({
   showCapturePreview: (...a: unknown[]) => mockShowCapturePreview(...a),
+  prepareCapturePreview: () => mockPrepareCapturePreview(),
 }));
 
 vi.mock('@/main/capture/screenshot/open-editor', () => ({
@@ -118,6 +121,9 @@ describe('scroll-capture', () => {
     mockReleaseSelection.mockResolvedValue(undefined);
     mockConfirmAreaSelection.mockResolvedValue({ status: 'confirmed' });
     mockShowScrollCaptureOverlay.mockReturnValue(true);
+    mockPrepareCapturePreview.mockReturnValue({
+      dispose: mockDisposeCapturePreview,
+    });
   });
 
   describe('cancelScrollCapture', () => {
@@ -691,6 +697,7 @@ describe('scroll-capture', () => {
     });
 
     it('shows capture preview when configured', async () => {
+      const calls: string[] = [];
       const daemonModule = await import('@/main/daemon');
       const areaSelector = await import('@/main/capture/area-selector');
       let daemonHandler: ((e: string, d?: unknown) => void) | null = null;
@@ -708,16 +715,20 @@ describe('scroll-capture', () => {
         scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
       });
       mockExistsSync.mockReturnValue(true);
-      mockDaemonCall.mockImplementation(async (_module, method) => {
+      let finishCapture: (result: unknown) => void = () => {};
+      mockDaemonCall.mockImplementation((_module, method) => {
         if (method === 'finish') {
-          return {
-            success: true,
-            outputPath: '/p/out.png',
-            width: 200,
-            height: 1000,
-          };
+          calls.push('finish');
+          return new Promise(resolve => {
+            finishCapture = resolve;
+          });
         }
-        return {};
+        return Promise.resolve({});
+      });
+      const preparation = { dispose: mockDisposeCapturePreview };
+      mockPrepareCapturePreview.mockImplementationOnce(() => {
+        calls.push('preview');
+        return preparation;
       });
 
       vi.mocked(areaSelector.startAreaSelection).mockImplementation(((opts: {
@@ -739,11 +750,35 @@ describe('scroll-capture', () => {
 
       const { startScrollCapture } =
         await import('@/main/capture/scroll-capture');
-      await startScrollCapture();
-      expect(mockShowCapturePreview).toHaveBeenCalled();
+      const capturing = startScrollCapture();
+
+      await vi.waitFor(() => expect(calls).toEqual(['finish', 'preview']));
+      finishCapture({
+        success: true,
+        outputPath: '/p/out.png',
+        width: 200,
+        height: 1000,
+      });
+      await capturing;
+
+      expect(mockShowCapturePreview).toHaveBeenCalledWith(
+        '/p/out.png',
+        'screenshot',
+        undefined,
+        preparation,
+        expect.any(Promise)
+      );
     });
 
     it('handles failed daemon.finish response', async () => {
+      mockGetConfig.mockReturnValue({
+        screenshot: {
+          hideDesktopIcons: false,
+          captureToClipboard: false,
+          showPreview: true,
+        },
+        scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
+      });
       const daemonModule = await import('@/main/daemon');
       const areaSelector = await import('@/main/capture/area-selector');
       let daemonHandler: ((e: string, d?: unknown) => void) | null = null;
@@ -779,6 +814,191 @@ describe('scroll-capture', () => {
       const { startScrollCapture } =
         await import('@/main/capture/scroll-capture');
       await expect(startScrollCapture()).resolves.toBeUndefined();
+      expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1);
+      expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
+    });
+
+    it('disposes a pending finish preview immediately on cancellation', async () => {
+      mockGetConfig.mockReturnValue({
+        screenshot: {
+          hideDesktopIcons: false,
+          captureToClipboard: false,
+          showPreview: true,
+        },
+        scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
+      });
+      const daemonModule = await import('@/main/daemon');
+      const areaSelector = await import('@/main/capture/area-selector');
+      let daemonHandler: ((event: string) => void) | null = null;
+      let finishCapture: (result: unknown) => void = () => {};
+      let finishCancel: () => void = () => {};
+      vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
+        daemonHandler = handler as typeof daemonHandler;
+      }) as never);
+      mockDaemonCall.mockImplementation((_module, method) => {
+        if (method === 'finish') {
+          return new Promise(resolve => {
+            finishCapture = resolve;
+          });
+        }
+        if (method === 'cancel') {
+          return new Promise<void>(resolve => {
+            finishCancel = resolve;
+          });
+        }
+        return Promise.resolve({});
+      });
+      vi.mocked(areaSelector.startAreaSelection).mockImplementation(((opts: {
+        onSelected?: (selection: unknown) => Promise<void>;
+      }) => {
+        setImmediate(async () => {
+          await opts.onSelected?.({
+            status: 'selected',
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+          });
+          await new Promise(resolve => setImmediate(resolve));
+          daemonHandler?.('scroll-capture:done');
+        });
+        return undefined;
+      }) as never);
+
+      const { cancelScrollCapture, startScrollCapture } =
+        await import('@/main/capture/scroll-capture');
+      const capturing = startScrollCapture();
+      await vi.waitFor(() =>
+        expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1)
+      );
+
+      const cancellation = cancelScrollCapture();
+      await Promise.resolve();
+      expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
+      finishCancel();
+      await cancellation;
+      await capturing;
+
+      finishCapture({ success: true, outputPath: '/p/out.png' });
+      await Promise.resolve();
+      expect(mockShowCapturePreview).not.toHaveBeenCalled();
+      expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels a finish preview while session cleanup is pending', async () => {
+      mockGetConfig.mockReturnValue({
+        screenshot: {
+          hideDesktopIcons: true,
+          captureToClipboard: false,
+          showPreview: true,
+        },
+        scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
+      });
+      const daemonModule = await import('@/main/daemon');
+      const areaSelector = await import('@/main/capture/area-selector');
+      let daemonHandler: ((event: string) => void) | null = null;
+      let restoreIcons: () => void = () => {};
+      vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
+        daemonHandler = handler as typeof daemonHandler;
+      }) as never);
+      mockShowDesktopIcons.mockReturnValueOnce(
+        new Promise<boolean>(resolve => {
+          restoreIcons = () => resolve(true);
+        })
+      );
+      mockDaemonCall.mockImplementation((_module, method) => {
+        if (method === 'finish') {
+          return Promise.resolve({ success: true, outputPath: '/p/out.png' });
+        }
+        return Promise.resolve({});
+      });
+      vi.mocked(areaSelector.startAreaSelection).mockImplementation(((opts: {
+        onSelected?: (selection: unknown) => Promise<void>;
+      }) => {
+        setImmediate(async () => {
+          await opts.onSelected?.({
+            status: 'selected',
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+          });
+          await new Promise(resolve => setImmediate(resolve));
+          daemonHandler?.('scroll-capture:done');
+        });
+        return undefined;
+      }) as never);
+
+      const { cancelScrollCapture, startScrollCapture } =
+        await import('@/main/capture/scroll-capture');
+      const capturing = startScrollCapture();
+      await vi.waitFor(() =>
+        expect(mockShowDesktopIcons).toHaveBeenCalledTimes(1)
+      );
+
+      await cancelScrollCapture();
+      expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
+      expect(mockShowCapturePreview).not.toHaveBeenCalled();
+
+      restoreIcons();
+      await capturing;
+      expect(mockShowCapturePreview).not.toHaveBeenCalled();
+    });
+
+    it('shares one finish request across duplicate completion events', async () => {
+      mockGetConfig.mockReturnValue({
+        screenshot: {
+          hideDesktopIcons: false,
+          captureToClipboard: false,
+          showPreview: true,
+        },
+        scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
+      });
+      const daemonModule = await import('@/main/daemon');
+      const areaSelector = await import('@/main/capture/area-selector');
+      let daemonHandler: ((event: string) => void) | null = null;
+      let finishCapture: (result: unknown) => void = () => {};
+      vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
+        daemonHandler = handler as typeof daemonHandler;
+      }) as never);
+      mockDaemonCall.mockImplementation((_module, method) => {
+        if (method === 'finish') {
+          return new Promise(resolve => {
+            finishCapture = resolve;
+          });
+        }
+        return Promise.resolve({});
+      });
+      vi.mocked(areaSelector.startAreaSelection).mockImplementation(((opts: {
+        onSelected?: (selection: unknown) => Promise<void>;
+      }) => {
+        setImmediate(async () => {
+          await opts.onSelected?.({
+            status: 'selected',
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+          });
+          await new Promise(resolve => setImmediate(resolve));
+          daemonHandler?.('scroll-capture:done');
+          daemonHandler?.('scroll-capture:done');
+        });
+        return undefined;
+      }) as never);
+
+      const { startScrollCapture } =
+        await import('@/main/capture/scroll-capture');
+      const capturing = startScrollCapture();
+      await vi.waitFor(() =>
+        expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1)
+      );
+
+      expect(
+        mockDaemonCall.mock.calls.filter(([, method]) => method === 'finish')
+      ).toHaveLength(1);
+      finishCapture({ success: true, outputPath: '/p/out.png' });
+      await capturing;
     });
   });
 });

@@ -280,6 +280,34 @@ describe('captureArea', () => {
     );
   });
 
+  it('starts native capture before preparing the preview', async () => {
+    const calls: string[] = [];
+    mockGetConfig.mockReturnValue({
+      general: { playSoundOnScreenshot: true },
+      screenshot: { captureToClipboard: false, showPreview: true },
+    });
+    mockCaptureRegionToFile.mockImplementationOnce(async () => {
+      calls.push('capture');
+      return true;
+    });
+    mockPrepareCapturePreview.mockImplementationOnce(() => {
+      calls.push('preview');
+      return { dispose: mockDisposePreparedPreview };
+    });
+    const { captureArea } =
+      await import('@/main/capture/screenshot/capture-area');
+
+    await captureArea({
+      status: 'confirmed',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+
+    expect(calls).toEqual(['capture', 'preview']);
+  });
+
   it('hides desktop icons only while acquiring capture pixels', async () => {
     const calls: string[] = [];
     mockGetConfig.mockReturnValue({
