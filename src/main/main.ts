@@ -1,9 +1,5 @@
-import { app, screen } from 'electron';
+import { app } from 'electron';
 import { daemon } from '@/main/daemon';
-import startAllInOne from '@/main/capture/all-in-one';
-import { cancelAreaSelection } from '@/main/capture/area-selector';
-import { initAioDebugTrigger } from '@/main/utils/aio-trigger';
-import { debugLog, debugLogMs } from '@/main/utils/debug-log';
 import { isLinux } from '@/main/utils/platform';
 
 if (!process.env.HOME) {
@@ -121,14 +117,11 @@ const initializeRuntimeModules = async () => {
 };
 
 const initializeModules = async () => {
-  const bootStartedAt = performance.now();
   await daemon.start().catch(err => {
     console.error('[daemon] Failed to start:', err);
   });
-  debugLogMs('boot', 'daemon start', bootStartedAt);
 
   initWindowLoad();
-  initAioDebugTrigger(() => void startAllInOne(), cancelAreaSelection);
   settings.init();
   onboarding.init();
   permissions.initPermissionsIPC();
@@ -137,25 +130,14 @@ const initializeModules = async () => {
   preferences.init();
   cloud.init();
 
-  debugLog(
-    'boot',
-    `modules ready packaged=${app.isPackaged} version=${app.getVersion()} electron=${process.versions.electron} chrome=${process.versions.chrome} arch=${process.arch} displays=${screen
-      .getAllDisplays()
-      .map(
-        display =>
-          `${display.id}:${display.bounds.width}x${display.bounds.height}@${display.scaleFactor}`
-      )
-      .join(' ')}`
-  );
-
   await onboarding.showOnboardingOrRun(initializeRuntimeModules);
 };
 
 app.whenReady().then(async () => {
-  process.env.PORATAKE_CAPTURE_TIMING ??= '1';
-  debugLog('app', `ready isDev=${isDev} platform=${process.platform}`);
   initDock();
-  monitorEventLoopLag();
+  if (isDev) {
+    monitorEventLoopLag();
+  }
   await initializeModules();
   await update.handleAppUpdate();
 

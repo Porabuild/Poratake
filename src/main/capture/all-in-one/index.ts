@@ -37,7 +37,8 @@ import type {
 import { clipboard, Notification } from 'electron';
 import { getConfig, updateConfig } from '@/main/settings';
 import { isFeatureSupported } from '@/main/system/capabilities';
-import { debugLog, debugLogMs } from '@/main/utils/debug-log';
+import { formatClock } from '@/main/utils/clock';
+import { isDev } from '@/main/utils/env';
 import { setOverlayToolbar } from '@/main/capture/area-overlay';
 import { isScreenFrozen } from '@/main/capture/freeze-screen';
 import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
@@ -376,8 +377,9 @@ export default async function startAllInOne(): Promise<void> {
     return;
   }
 
-  const startedAt = performance.now();
-  debugLog('aio', `trigger received mode=${activeCaptureMode}`);
+  if (isDev) {
+    console.log(`[aio-timing ${formatClock()}] trigger received`);
+  }
 
   restorePreferences();
   currentSelection = null;
@@ -407,10 +409,6 @@ export default async function startAllInOne(): Promise<void> {
     activeCaptureMode === 'record' ? false : isFreezeScreenEnabled();
   const target = activeCaptureTarget();
 
-  debugLog(
-    'aio',
-    `selection starting freeze=${freeze} target=${target} mode=${SELECTION_MODES[target]}`
-  );
   const selection = await startAreaSelection({
     mode: SELECTION_MODES[target],
     requireDisplayPick: true,
@@ -422,10 +420,7 @@ export default async function startAllInOne(): Promise<void> {
     onToolbarAction: handleToolbarAction,
   });
 
-  debugLogMs('aio', 'selection finished', startedAt);
-
   if (!selection) {
-    debugLog('aio', 'selection cancelled');
     hideAllInOneControl();
     return;
   }
