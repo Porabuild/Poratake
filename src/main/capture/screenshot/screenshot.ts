@@ -52,6 +52,9 @@ import {
 import type { CapturePreviewPreparation } from '@/main/capture/capture-preview';
 
 export type CaptureMode = 'screen' | 'area' | 'window';
+type CapturePreviewPreparationRef = {
+  current: CapturePreviewPreparation | null;
+};
 
 async function withHiddenDesktopIcons<T>(
   capture: () => Promise<T>,
@@ -90,9 +93,7 @@ async function withHiddenDesktopIcons<T>(
   return result;
 }
 
-async function captureScreenWithDisplaySelector(
-  preparation?: CapturePreviewPreparation | null
-): Promise<void> {
+async function captureScreenWithDisplaySelector(): Promise<void> {
   let display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
 
   if (
@@ -111,11 +112,24 @@ async function captureScreenWithDisplaySelector(
   }
 
   const screenshotPath = generateScreenshotPath();
-  const captured = await withHiddenDesktopIcons(
-    () => captureDisplayToFile(display, screenshotPath),
-    result =>
-      result ? finalizeCapture(screenshotPath, preparation) : Promise.resolve()
-  );
+  const preparation: CapturePreviewPreparationRef = { current: null };
+  let captured: boolean;
+
+  try {
+    captured = await withHiddenDesktopIcons(
+      () => {
+        const capture = captureDisplayToFile(display, screenshotPath);
+        preparation.current = prepareScreenshotPreview();
+        return capture;
+      },
+      result =>
+        result
+          ? finalizeCapture(screenshotPath, preparation.current)
+          : Promise.resolve()
+    );
+  } finally {
+    preparation.current?.dispose();
+  }
 
   if (!captured) {
     console.error('Screen capture failed');
@@ -123,29 +137,47 @@ async function captureScreenWithDisplaySelector(
   }
 }
 
-async function captureWindowWithSelector(
-  preparation?: CapturePreviewPreparation | null
-): Promise<void> {
+async function captureWindowWithSelector(): Promise<void> {
   const screenshotPath = generateScreenshotPath();
-  const captured = await captureWindowToFile(screenshotPath);
+  const preparation: CapturePreviewPreparationRef = { current: null };
+  const capture = captureWindowToFile(screenshotPath, () => {
+    preparation.current = prepareScreenshotPreview();
+  });
 
-  if (!captured) {
-    console.error('Window capture failed');
-    return;
+  try {
+    const captured = await capture;
+
+    if (!captured) {
+      console.error('Window capture failed');
+      return;
+    }
+
+    await finalizeCapture(screenshotPath, preparation.current);
+  } finally {
+    preparation.current?.dispose();
   }
-
-  await finalizeCapture(screenshotPath, preparation);
 }
 
-async function captureAreaWithSelector(
-  preparation?: CapturePreviewPreparation | null
-): Promise<void> {
+async function captureAreaWithSelector(): Promise<void> {
   const screenshotPath = generateScreenshotPath();
-  const captured = await withHiddenDesktopIcons(
-    () => captureAreaToFile(screenshotPath),
-    result =>
-      result ? finalizeCapture(screenshotPath, preparation) : Promise.resolve()
-  );
+  const preparation: CapturePreviewPreparationRef = { current: null };
+  let captured: boolean;
+
+  try {
+    captured = await withHiddenDesktopIcons(
+      () => {
+        return captureAreaToFile(screenshotPath, () => {
+          preparation.current = prepareScreenshotPreview();
+        });
+      },
+      result =>
+        result
+          ? finalizeCapture(screenshotPath, preparation.current)
+          : Promise.resolve()
+    );
+  } finally {
+    preparation.current?.dispose();
+  }
 
   if (!captured) {
     return;
@@ -153,23 +185,17 @@ async function captureAreaWithSelector(
 }
 
 export default async function screenshot(mode: CaptureMode = 'area') {
-  const preparation = prepareScreenshotPreview();
-
-  try {
-    switch (mode) {
-      case 'screen':
-        return await captureScreenWithDisplaySelector(preparation);
-      case 'window':
-        if (!isFeatureSupported('screenshot-window')) {
-          console.warn('Window capture is not supported on this platform');
-          return;
-        }
-        return await captureWindowWithSelector(preparation);
-      case 'area':
-        return await captureAreaWithSelector(preparation);
-    }
-  } finally {
-    preparation?.dispose();
+  switch (mode) {
+    case 'screen':
+      return await captureScreenWithDisplaySelector();
+    case 'window':
+      if (!isFeatureSupported('screenshot-window')) {
+        console.warn('Window capture is not supported on this platform');
+        return;
+      }
+      return await captureWindowWithSelector();
+    case 'area':
+      return await captureAreaWithSelector();
   }
 }
 

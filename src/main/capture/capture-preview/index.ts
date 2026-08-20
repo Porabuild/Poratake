@@ -45,7 +45,6 @@ export interface CapturePreviewPreparation {
 }
 
 const previewWindows: PreviewWindowData[] = [];
-let preparedCapturePreview: CapturePreviewPreparation | null = null;
 
 const MAX_PREVIEW_WINDOWS = 4;
 const PREVIEW_WIDTH = 200;
@@ -274,51 +273,14 @@ function createCapturePreviewPreparation(): CapturePreviewPreparation {
       if (!preparation.window.isDestroyed()) {
         preparation.window.close();
       }
-      prewarmCapturePreview();
     },
   };
 
   return preparation;
 }
 
-function scheduleCapturePreviewPrewarm(): void {
-  setImmediate(prewarmCapturePreview);
-}
-
-export function prewarmCapturePreview(): void {
-  const { screenshot, recording } = settings.getConfig();
-  const shouldPrewarm =
-    (screenshot?.showPreview && !screenshot.captureToClipboard) ||
-    recording?.showPreview;
-  if (!shouldPrewarm) {
-    const prepared = preparedCapturePreview;
-    preparedCapturePreview = null;
-    if (prepared && !prepared.window.isDestroyed()) {
-      prepared.window.close();
-    }
-    return;
-  }
-
-  if (
-    preparedCapturePreview &&
-    !preparedCapturePreview.claimed &&
-    !preparedCapturePreview.window.isDestroyed()
-  ) {
-    return;
-  }
-
-  preparedCapturePreview = createCapturePreviewPreparation();
-}
-
 export function prepareCapturePreview(): CapturePreviewPreparation {
   cleanupDestroyedWindows();
-  const prepared = preparedCapturePreview;
-  preparedCapturePreview = null;
-
-  if (prepared && !prepared.claimed && !prepared.window.isDestroyed()) {
-    return prepared;
-  }
-
   return createCapturePreviewPreparation();
 }
 
@@ -342,12 +304,8 @@ export function showCapturePreview(
 
   const newIndex = previewWindows.length;
   const { x, y } = getPreviewPosition(newIndex);
-  const candidate = preparation ?? preparedCapturePreview;
-  if (!preparation) {
-    preparedCapturePreview = null;
-  }
   const preparedWindow =
-    candidate && !candidate.window.isDestroyed() ? candidate : null;
+    preparation && !preparation.window.isDestroyed() ? preparation : null;
   const preview =
     preparedWindow ?? createPreviewBrowserWindow(previewWindows.length);
   const previewWindow = preview.window;
@@ -405,7 +363,6 @@ export function showCapturePreview(
     previewWindow.showInactive();
     scheduleAutoDismiss();
     resolveRevealed();
-    scheduleCapturePreviewPrewarm();
   };
 
   const previewData: PreviewWindowData = {
@@ -459,7 +416,6 @@ export function showCapturePreview(
     resolveRevealed();
     clearDismissTimer();
     removePreviewWindow(webContentsId);
-    scheduleCapturePreviewPrewarm();
   });
 
   if (preparedWindow) {
@@ -658,12 +614,6 @@ export function registerCapturePreviewIpc(): void {
 }
 
 export function closeAllPreviewWindows(): void {
-  const prepared = preparedCapturePreview;
-  preparedCapturePreview = null;
-  if (prepared && !prepared.window.isDestroyed()) {
-    prepared.window.close();
-  }
-
   [...previewWindows].forEach(data => {
     if (!data.window.isDestroyed()) {
       data.window.close();

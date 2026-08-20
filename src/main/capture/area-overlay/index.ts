@@ -53,7 +53,10 @@ export function startInteractiveOverlay(
   });
 }
 
-export async function captureAreaToFile(filePath: string): Promise<boolean> {
+export async function captureAreaToFile(
+  filePath: string,
+  onCaptureStarted?: () => void
+): Promise<boolean> {
   const freeze = isFreezeScreenEnabled();
   const selection = await selectAreaWithOverlay({ freeze, interactive: true });
   if (!selection) {
@@ -61,15 +64,20 @@ export async function captureAreaToFile(filePath: string): Promise<boolean> {
   }
 
   try {
-    return await captureRegionToFile(selection.rect, filePath, {
+    const capture = captureRegionToFile(selection.rect, filePath, {
       cached: selection.frozen,
     });
+    onCaptureStarted?.();
+    return await capture;
   } finally {
     await selection.release();
   }
 }
 
-export async function captureWindowToFile(filePath: string): Promise<boolean> {
+export async function captureWindowToFile(
+  filePath: string,
+  onCaptureStarted?: () => void
+): Promise<boolean> {
   const pickTargets = await resolveWindowPickTargets();
   if (!pickTargets) {
     return false;
@@ -92,7 +100,9 @@ export async function captureWindowToFile(filePath: string): Promise<boolean> {
     }
 
     if (!selection.frozen) {
-      return await captureWindowByIdToFile(selection.pickId, filePath);
+      const capture = captureWindowByIdToFile(selection.pickId, filePath);
+      onCaptureStarted?.();
+      return await capture;
     }
 
     const captureRect = pickTargets.captureRects.get(selection.pickId);
@@ -100,11 +110,13 @@ export async function captureWindowToFile(filePath: string): Promise<boolean> {
       return false;
     }
 
-    return await captureFrozenWindowToFile(
+    const capture = captureFrozenWindowToFile(
       captureRect,
       filePath,
       selection.pickId
     );
+    onCaptureStarted?.();
+    return await capture;
   } finally {
     await selection.release();
   }

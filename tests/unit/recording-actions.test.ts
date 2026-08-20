@@ -33,12 +33,13 @@ const mockHideAreaSelector = vi.fn();
 const mockCreateVideoEditorWindow = vi.fn();
 const mockShowCapturePreview = vi.fn();
 const mockPrepareCapturePreview = vi.fn();
-const mockPrewarmCapturePreview = vi.fn();
+const mockDisposeCapturePreview = vi.fn();
 const mockAddToHistory = vi.fn();
 const mockShowRecordingError = vi.fn();
 const mockCheckMic = vi.fn();
 const mockDeleteVideo = vi.fn();
 const mockGetConfig = vi.fn();
+const mockOnConfigUpdated = vi.fn();
 const mockUpdateConfig = vi.fn();
 const mockGenerateInitialEditorState = vi.fn();
 const mockStartRecordingCountdown = vi.fn();
@@ -107,7 +108,6 @@ vi.mock('@/main/capture/video/video-editor.ts', () => ({
 vi.mock('@/main/capture/capture-preview', () => ({
   showCapturePreview: (...a: unknown[]) => mockShowCapturePreview(...a),
   prepareCapturePreview: () => mockPrepareCapturePreview(),
-  prewarmCapturePreview: () => mockPrewarmCapturePreview(),
 }));
 
 vi.mock('@/main/history', () => ({
@@ -125,6 +125,7 @@ vi.mock('@/main/capture/video/delete-video.ts', () => ({
 
 vi.mock('@/main/settings', () => ({
   getConfig: () => mockGetConfig(),
+  onConfigUpdated: (...a: unknown[]) => mockOnConfigUpdated(...a),
   updateConfig: (...a: unknown[]) => mockUpdateConfig(...a),
 }));
 
@@ -138,6 +139,7 @@ describe('recording-actions', () => {
     vi.clearAllMocks();
     vi.resetModules();
     mockIsRecording.mockReturnValue(false);
+    mockOnConfigUpdated.mockReturnValue(() => {});
     mockGetConfig.mockReturnValue({
       recording: { iosDevice: null, showPreview: false, camera: null },
     });
@@ -156,7 +158,10 @@ describe('recording-actions', () => {
     mockHideRecordingOverlay.mockResolvedValue(undefined);
     mockShowRecordedWindowOutline.mockResolvedValue(undefined);
     mockHideAreaSelector.mockResolvedValue(undefined);
-    mockPrepareCapturePreview.mockReturnValue({ prepared: true });
+    mockPrepareCapturePreview.mockReturnValue({
+      prepared: true,
+      dispose: mockDisposeCapturePreview,
+    });
     mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
     mockStartRecordingCountdown.mockResolvedValue('completed');
     mockSetAreaSelectorFreeze.mockResolvedValue(undefined);
@@ -182,11 +187,27 @@ describe('recording-actions', () => {
     });
 
     it('returns null when stop returns no path', async () => {
-      mockStopRecording.mockResolvedValue(null);
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const dispose = vi.fn();
+      mockPrepareCapturePreview.mockReturnValueOnce({ dispose });
       const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+      mockStopRecording.mockResolvedValue(null);
       const result = await m.stopRecordingAction();
+
       expect(result).toBeNull();
       expect(mockAddToHistory).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalledTimes(1);
     });
 
     it('shares finalization across overlapping stop actions', async () => {
@@ -401,10 +422,26 @@ describe('recording-actions', () => {
     });
 
     it('cleans up even on stop error', async () => {
-      mockStopRecording.mockRejectedValue(new Error('boom'));
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const dispose = vi.fn();
+      mockPrepareCapturePreview.mockReturnValueOnce({ dispose });
       const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+      mockStopRecording.mockRejectedValue(new Error('boom'));
       await expect(m.stopRecordingAction()).rejects.toThrow('boom');
+
       expect(mockHideRecordingControl).toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -671,6 +708,127 @@ describe('recording-actions', () => {
       await m.startPendingRecording();
       expect(mockConfirmAreaSelection).not.toHaveBeenCalled();
       expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
+    });
+
+    it('does not prepare a video preview from screenshot settings', async () => {
+      mockGetConfig.mockReturnValue({
+        screenshot: { showPreview: true, captureToClipboard: false },
+        recording: { iosDevice: null, showPreview: false, camera: null },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+
+      expect(mockPrepareCapturePreview).not.toHaveBeenCalled();
+    });
+
+    it('owns one prepared preview from recording start through stop', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const dispose = vi.fn();
+      const preparation = { dispose };
+      mockPrepareCapturePreview.mockReturnValueOnce(preparation);
+      const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+      await m.stopRecordingAction();
+
+      expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1);
+      expect(mockShowCapturePreview).toHaveBeenCalledWith(
+        '/p/Rec.poratake/recording.mov',
+        'video',
+        undefined,
+        preparation,
+        expect.any(Promise),
+        expect.any(Promise)
+      );
+      expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('tracks preview setting changes during an active recording', async () => {
+      const config = {
+        recording: { iosDevice: null, showPreview: false, camera: null },
+      };
+      mockGetConfig.mockImplementation(() => config);
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const firstPreparation = { dispose: vi.fn() };
+      const secondPreparation = { dispose: vi.fn() };
+      mockPrepareCapturePreview
+        .mockReturnValueOnce(firstPreparation)
+        .mockReturnValueOnce(secondPreparation);
+      const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+      mockIsRecording.mockReturnValue(true);
+      config.recording.showPreview = true;
+      const listener = mockOnConfigUpdated.mock.calls[0][0] as (
+        updates: unknown
+      ) => void;
+      listener({ recording: { showPreview: true } });
+
+      expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1);
+      config.recording.showPreview = false;
+      listener({ recording: { showPreview: false } });
+      expect(firstPreparation.dispose).toHaveBeenCalledTimes(1);
+      config.recording.showPreview = true;
+      listener({ recording: { showPreview: true } });
+
+      expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(2);
+      await m.stopRecordingAction();
+      expect(mockShowCapturePreview).toHaveBeenCalledWith(
+        '/p/Rec.poratake/recording.mov',
+        'video',
+        undefined,
+        secondPreparation,
+        expect.any(Promise),
+        expect.any(Promise)
+      );
+    });
+
+    it('starts recording when preview preparation fails', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      mockPrepareCapturePreview.mockImplementationOnce(() => {
+        throw new Error('preview failed');
+      });
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+
+      expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1);
+      consoleError.mockRestore();
     });
 
     it('runs the configured countdown before starting', async () => {
@@ -958,6 +1116,11 @@ describe('recording-actions', () => {
     });
 
     it('wires post-start recording failure cleanup', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      const dispose = vi.fn();
+      mockPrepareCapturePreview.mockReturnValueOnce({ dispose });
       mockConfirmAreaSelection.mockResolvedValue({
         status: 'selected',
         x: 0,
@@ -990,9 +1153,15 @@ describe('recording-actions', () => {
       expect(mockShowRecordingError).toHaveBeenCalledWith(
         expect.objectContaining({ message: 'capture failed' })
       );
+      expect(dispose).toHaveBeenCalledTimes(1);
     });
 
     it('shows error and cleans up on start failure', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      const dispose = vi.fn();
+      mockPrepareCapturePreview.mockReturnValueOnce({ dispose });
       mockConfirmAreaSelection.mockResolvedValue({
         status: 'selected',
         x: 0,
@@ -1013,6 +1182,7 @@ describe('recording-actions', () => {
           showErrorDialog: false,
         }
       );
+      expect(dispose).toHaveBeenCalledTimes(1);
     });
 
     it('shows error when the recording project cannot be created', async () => {
@@ -1074,6 +1244,28 @@ describe('recording-actions', () => {
   });
 
   describe('deleteRecordingAction', () => {
+    it('disposes the recording preview preparation', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: { iosDevice: null, showPreview: true, camera: null },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const dispose = vi.fn();
+      mockPrepareCapturePreview.mockReturnValueOnce({ dispose });
+      const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+      await m.deleteRecordingAction();
+
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(mockShowCapturePreview).not.toHaveBeenCalled();
+    });
+
     it('stops and deletes the current recording', async () => {
       mockGetCurrentRecordingPath.mockReturnValue('/p/x.mov');
       const m = await import('@/main/capture/video/recording-actions');

@@ -6,7 +6,6 @@ const mockExecFile =
 const mockPrewarmCapturePreview = vi.fn();
 const mockPrewarmAreaOverlay = vi.fn();
 const mockPrewarmFreezeScreen = vi.fn();
-const mockOnConfigUpdated = vi.fn();
 const mockPlatform = vi.hoisted(() => ({ isMac: true }));
 
 vi.mock('child_process', () => ({
@@ -24,11 +23,6 @@ vi.mock('@/main/capture/area-overlay', () => ({
 
 vi.mock('@/main/capture/freeze-screen', () => ({
   prewarmFreezeScreen: () => mockPrewarmFreezeScreen(),
-}));
-
-vi.mock('@/main/settings', () => ({
-  onConfigUpdated: (listener: (updates: Record<string, unknown>) => void) =>
-    mockOnConfigUpdated(listener),
 }));
 
 vi.mock('@/main/utils/platform', () => ({
@@ -63,11 +57,11 @@ describe('capture index', () => {
     expect(() => resetScreenCaptureCache()).not.toThrow();
   });
 
-  it('init prewarms the capture preview', async () => {
+  it('init prewarms the overlay and freeze but not the preview', async () => {
     mockPlatform.isMac = false;
     const { init } = await import('@/main/capture');
     init();
-    expect(mockPrewarmCapturePreview).toHaveBeenCalledTimes(1);
+    expect(mockPrewarmCapturePreview).not.toHaveBeenCalled();
     expect(mockPrewarmAreaOverlay).toHaveBeenCalledTimes(1);
     expect(mockPrewarmFreezeScreen).toHaveBeenCalledTimes(1);
   });
@@ -76,20 +70,5 @@ describe('capture index', () => {
     const { init } = await import('@/main/capture');
     init();
     expect(mockPrewarmFreezeScreen).toHaveBeenCalledTimes(1);
-  });
-
-  it('synchronizes the warm preview when preview settings change', async () => {
-    const { init } = await import('@/main/capture');
-    init();
-    const listener = mockOnConfigUpdated.mock.calls[0][0];
-
-    listener({ appearance: {} });
-    expect(mockPrewarmCapturePreview).toHaveBeenCalledTimes(1);
-
-    listener({ screenshot: {} });
-    expect(mockPrewarmCapturePreview).toHaveBeenCalledTimes(2);
-
-    listener({ recording: {} });
-    expect(mockPrewarmCapturePreview).toHaveBeenCalledTimes(3);
   });
 });

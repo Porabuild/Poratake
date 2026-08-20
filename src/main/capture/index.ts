@@ -1,9 +1,7 @@
 import { execFile } from 'child_process';
 import { isMac } from '@/main/utils/platform';
-import { prewarmCapturePreview } from '@/main/capture/capture-preview';
 import { prewarmAreaOverlay } from '@/main/capture/area-overlay';
 import { prewarmFreezeScreen } from '@/main/capture/freeze-screen';
-import { onConfigUpdated } from '@/main/settings';
 
 export function resetScreenCaptureCache(): void {
   if (!isMac) {
@@ -22,11 +20,6 @@ export function resetScreenCaptureCache(): void {
 }
 
 export function init(): void {
-  onConfigUpdated(updates => {
-    if (!updates.screenshot && !updates.recording) return;
-    prewarmCapturePreview();
-  });
-  prewarmCapturePreview();
   prewarmAreaOverlay();
   prewarmFreezeScreen();
   // Daemon cleanup is automatic - child process dies with parent

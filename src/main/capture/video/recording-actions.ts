@@ -44,7 +44,6 @@ import {
 } from './recording-control.ts';
 import {
   prepareCapturePreview,
-  prewarmCapturePreview,
   showCapturePreview,
 } from '@/main/capture/capture-preview';
 import type {
@@ -57,7 +56,7 @@ import {
   checkAndRequestMicrophonePermission,
 } from './permissions.ts';
 import { deleteVideo } from './delete-video.ts';
-import { getConfig, updateConfig } from '@/main/settings';
+import { getConfig, onConfigUpdated, updateConfig } from '@/main/settings';
 import { generateInitialEditorState } from './auto-zoom-generator.ts';
 import type {
   CompletedRecording,
@@ -74,6 +73,46 @@ let pendingRecordingAction: {
   type: 'stop' | 'delete' | 'restart';
   promise: Promise<unknown>;
 } | null = null;
+let recordingPreviewPreparation: CapturePreviewPreparation | null = null;
+
+function disposeRecordingPreviewPreparation(): void {
+  recordingPreviewPreparation?.dispose();
+  recordingPreviewPreparation = null;
+}
+
+function syncRecordingPreviewPreparation(): void {
+  if (!getConfig().recording.showPreview) {
+    disposeRecordingPreviewPreparation();
+    return;
+  }
+
+  if (recordingPreviewPreparation) return;
+
+  try {
+    recordingPreviewPreparation = prepareCapturePreview();
+  } catch (error) {
+    console.error('Failed to prepare recording preview:', error);
+  }
+}
+
+function prepareRecordingPreview(): void {
+  disposeRecordingPreviewPreparation();
+  syncRecordingPreviewPreparation();
+}
+
+function takeRecordingPreviewPreparation(): CapturePreviewPreparation | null {
+  const preparation = recordingPreviewPreparation;
+  recordingPreviewPreparation = null;
+  return preparation;
+}
+
+onConfigUpdated(updates => {
+  if (updates.recording?.showPreview === undefined || !isRecording()) {
+    return;
+  }
+
+  syncRecordingPreviewPreparation();
+});
 
 function isRecordingStartCancellation(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
@@ -111,6 +150,7 @@ async function handleTerminalRecordingFailure(
   error: Error,
   outputPath: string | null
 ): Promise<void> {
+  disposeRecordingPreviewPreparation();
   currentRecordingType = undefined;
   lastRecordingConfig = null;
   concealAreaSelectorOverlay();
@@ -142,6 +182,9 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
 
   try {
     recordingResult = await stopRecording(hideRecordingControl);
+  } catch (error) {
+    disposeRecordingPreviewPreparation();
+    throw error;
   } finally {
     currentRecordingType = undefined;
     concealAreaSelectorOverlay();
@@ -150,54 +193,59 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
     await hideRecordingControl();
   }
 
+  let previewPreparation = takeRecordingPreviewPreparation();
   if (recordingResult) {
-    const editorStatePromise = generateInitialEditorState({
-      projectPath: recordingResult.outputPath,
-      recordingType,
-      duration: recordingResult.duration,
-    });
+    try {
+      const editorStatePromise = generateInitialEditorState({
+        projectPath: recordingResult.outputPath,
+        recordingType,
+        duration: recordingResult.duration,
+      });
 
-    const config = getConfig();
-    let startHistoryPersistence: () => void = () => {};
-    const historyStart = new Promise<void>(resolve => {
-      startHistoryPersistence = resolve;
-    });
-    const historyItemPromise = historyStart.then(() =>
-      addToHistory(
-        recordingResult.outputPath,
-        'video',
-        recordingResult.duration
-      )
-    );
-    const historyIdPromise = historyItemPromise.then(item => item?.id);
-
-    let preview: CapturePreviewHandle | null = null;
-    let previewPreparation: CapturePreviewPreparation | null = null;
-
-    if (config.recording.showPreview) {
-      try {
-        previewPreparation = prepareCapturePreview();
-        preview = showCapturePreview(
+      const config = getConfig();
+      let startHistoryPersistence: () => void = () => {};
+      const historyStart = new Promise<void>(resolve => {
+        startHistoryPersistence = resolve;
+      });
+      const historyItemPromise = historyStart.then(() =>
+        addToHistory(
           recordingResult.outputPath,
           'video',
-          undefined,
-          previewPreparation,
-          historyIdPromise,
-          editorStatePromise
-        );
-      } catch (error) {
-        console.error('Failed to show recording preview:', error);
-        previewPreparation?.dispose();
+          recordingResult.duration
+        )
+      );
+      const historyIdPromise = historyItemPromise.then(item => item?.id);
+
+      let preview: CapturePreviewHandle | null = null;
+
+      if (config.recording.showPreview) {
+        try {
+          previewPreparation ??= prepareCapturePreview();
+          preview = showCapturePreview(
+            recordingResult.outputPath,
+            'video',
+            undefined,
+            previewPreparation,
+            historyIdPromise,
+            editorStatePromise
+          );
+        } catch (error) {
+          console.error('Failed to show recording preview:', error);
+        }
       }
-    }
 
-    if (preview) {
-      void preview.revealed.then(startHistoryPersistence);
-    } else {
-      startHistoryPersistence();
-    }
+      if (preview) {
+        void preview.revealed.then(startHistoryPersistence);
+      } else {
+        startHistoryPersistence();
+      }
 
-    await Promise.all([editorStatePromise, historyItemPromise]);
+      await Promise.all([editorStatePromise, historyItemPromise]);
+    } finally {
+      previewPreparation?.dispose();
+    }
+  } else {
+    previewPreparation?.dispose();
   }
 
   return recordingResult?.outputPath ?? null;
@@ -391,7 +439,7 @@ async function startPendingRecordingInternal(
     ? false
     : (options.keyboardEnabled ?? false);
 
-  prewarmCapturePreview();
+  prepareRecordingPreview();
 
   let outputPath: string | null = null;
   try {
@@ -435,6 +483,7 @@ async function startPendingRecordingInternal(
     );
     lastRecordingConfig = recordingConfig;
     currentRecordingType = recordingType;
+    syncRecordingPreviewPreparation();
 
     console.log('Recording started:', {
       x,
@@ -451,6 +500,7 @@ async function startPendingRecordingInternal(
       iosDeviceName,
     });
   } catch (error) {
+    disposeRecordingPreviewPreparation();
     console.error('Error starting recording:', error);
     lastRecordingConfig = null;
     currentRecordingType = undefined;
@@ -496,6 +546,7 @@ export function startPendingRecording(
 }
 
 export async function cancelPendingRecording(): Promise<void> {
+  disposeRecordingPreviewPreparation();
   cancelAreaSelection();
   hidePreRecordingControl();
   await hideRecordingOverlay(true);
@@ -505,6 +556,8 @@ async function deleteActiveRecording(): Promise<void> {
   if (pendingStartAction) {
     await pendingStartAction;
   }
+
+  disposeRecordingPreviewPreparation();
 
   const currentPath = getCurrentRecordingPath();
   let stopError: unknown;
@@ -547,6 +600,7 @@ async function restartActiveRecording(): Promise<void> {
   const config = { ...lastRecordingConfig };
   const recordingType = currentRecordingType;
   const currentPath = getCurrentRecordingPath();
+  disposeRecordingPreviewPreparation();
 
   try {
     await stopRecording(hideRecordingControl);
@@ -562,6 +616,7 @@ async function restartActiveRecording(): Promise<void> {
 
   let outputPath: string | null = null;
   try {
+    prepareRecordingPreview();
     outputPath = createRecordingProject();
     const recordingConfig: RecordingConfig = {
       ...config,
@@ -592,8 +647,10 @@ async function restartActiveRecording(): Promise<void> {
     );
     lastRecordingConfig = recordingConfig;
     currentRecordingType = recordingType;
+    syncRecordingPreviewPreparation();
     console.log('Recording restarted with same area');
   } catch (error) {
+    disposeRecordingPreviewPreparation();
     console.error('Error restarting recording:', error);
     if (outputPath) {
       await deleteVideo(outputPath, {
