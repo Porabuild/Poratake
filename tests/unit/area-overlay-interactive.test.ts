@@ -30,7 +30,6 @@ class MockBrowserWindow {
         loadHandlers.set(this.webContents.id, handler);
       }
     },
-    once: vi.fn(),
     send: vi.fn(),
     sendInputEvent: vi.fn(),
   };
@@ -711,6 +710,40 @@ describe('interactive area overlay', () => {
     expect(windowFor(1).setOpacity).toHaveBeenLastCalledWith(1);
     expect(windowFor(0).setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
     expect(windowFor(1).setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('schedules an event loop turn for toolbar actions', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const onToolbarAction = vi.fn();
+
+    const session = module.startInteractiveOverlay({
+      toolbar: {
+        kind: 'all-in-one',
+        recordingEnabled: true,
+        ocrEnabled: true,
+        activeMode: 'screenshot',
+      },
+      callbacks: { onToolbarAction },
+    });
+    await settle();
+
+    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate');
+    fire('area-overlay:toolbar', windowFor(0).webContents.id, {
+      action: 'select-capture-mode',
+      mode: 'record',
+    });
+    expect(onToolbarAction).toHaveBeenCalledTimes(1);
+    expect(setImmediateSpy).toHaveBeenCalledTimes(1);
+
+    setImmediateSpy.mockClear();
+    fire('area-overlay:toolbar', windowFor(0).webContents.id, {
+      action: 'unknown',
+    });
+    expect(setImmediateSpy).not.toHaveBeenCalled();
+    setImmediateSpy.mockRestore();
 
     module.cancelOverlaySelection();
     await session;

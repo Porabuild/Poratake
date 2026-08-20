@@ -12,9 +12,10 @@ import { toggleHistoryPopover } from '@/main/history';
 import { getTray, rebuildTrayMenu } from '@/main/menu';
 import { getConfig } from '@/main/settings';
 import startAllInOne from '@/main/capture/all-in-one';
-import { debugLog } from '@/main/utils/debug-log';
+import { flushPendingContinuations } from '@/main/utils/event-loop';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import type { FeatureId } from '@/types/capabilities';
+import type { SettingsConfig } from '@/types/settings';
 
 type ShortcutAction =
   | CaptureMode
@@ -29,378 +30,145 @@ type ShortcutAction =
   | 'openInEditor'
   | 'clipboardInEditor';
 
-const registeredShortcuts = new Map<string, string>();
+type ShortcutsConfig = SettingsConfig['shortcuts'];
 
-const ACTION_FEATURES: Partial<Record<ShortcutAction, FeatureId>> = {
-  window: 'screenshot-window',
-  captureText: 'ocr',
-  scanQRCode: 'qrcode',
-  timerCapture: 'timer-capture',
-  recordArea: 'recording',
-  recordScreen: 'recording',
-  recordWindow: 'recording',
-  allInOne: 'all-in-one',
+interface ShortcutDefinition {
+  accelerator: (shortcuts: ShortcutsConfig) => string | undefined;
+  run: () => void;
+  feature?: FeatureId;
+}
+
+const SHORTCUTS: Record<ShortcutAction, ShortcutDefinition> = {
+  area: {
+    accelerator: shortcuts => shortcuts.screenshot.area,
+    run: () => void screenshot('area'),
+  },
+  window: {
+    accelerator: shortcuts => shortcuts.screenshot.window,
+    run: () => void screenshot('window'),
+    feature: 'screenshot-window',
+  },
+  screen: {
+    accelerator: shortcuts => shortcuts.screenshot.screen,
+    run: () => void screenshot('screen'),
+  },
+  captureText: {
+    accelerator: shortcuts => shortcuts.captureText,
+    run: () => void captureText(),
+    feature: 'ocr',
+  },
+  scanQRCode: {
+    accelerator: shortcuts => shortcuts.scanQRCode,
+    run: () => void scanQRCode(),
+    feature: 'qrcode',
+  },
+  timerCapture: {
+    accelerator: shortcuts => shortcuts.timerCapture,
+    run: () => void timerCapture(),
+    feature: 'timer-capture',
+  },
+  recordArea: {
+    accelerator: shortcuts => shortcuts.recording.area,
+    run: () => void recordArea(),
+    feature: 'recording',
+  },
+  recordScreen: {
+    accelerator: shortcuts => shortcuts.recording.screen,
+    run: () => void recordScreen(),
+    feature: 'recording',
+  },
+  recordWindow: {
+    accelerator: shortcuts => shortcuts.recording.window,
+    run: () => void recordWindow(),
+    feature: 'recording',
+  },
+  history: {
+    accelerator: shortcuts => shortcuts.history,
+    run: () => void toggleHistoryPopover(getTray()?.getBounds()),
+  },
+  allInOne: {
+    accelerator: shortcuts => shortcuts.allInOne,
+    run: () => void startAllInOne(),
+    feature: 'all-in-one',
+  },
+  openInEditor: {
+    accelerator: shortcuts => shortcuts.openInEditor,
+    run: () => void openImageInEditor(),
+  },
+  clipboardInEditor: {
+    accelerator: shortcuts => shortcuts.clipboardInEditor,
+    run: () => void openClipboardInEditor(),
+  },
 };
 
-function isActionSupported(action: ShortcutAction): boolean {
-  const feature = ACTION_FEATURES[action];
-  return !feature || isFeatureSupported(feature);
-}
+const SHORTCUT_ACTIONS = Object.keys(SHORTCUTS) as ShortcutAction[];
 
-function registerScreenshotShortcut(
-  action: CaptureMode,
-  accelerator: string
-): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get(action);
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
+const registeredShortcuts = new Map<ShortcutAction, string>();
 
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        screenshot(action);
-      });
-
-      if (success) {
-        registeredShortcuts.set(action, accelerator);
-        return true;
-      } else {
-        console.error(`Failed to register shortcut: ${accelerator}`);
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete(action);
-      return true;
-    }
-  } catch (error) {
-    console.error(`Error registering shortcut for ${action}:`, error);
-    return false;
-  }
-}
-
-function registerCaptureTextShortcut(accelerator: string): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get('captureText');
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
-
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        captureText();
-      });
-
-      if (success) {
-        registeredShortcuts.set('captureText', accelerator);
-        return true;
-      } else {
-        console.error(
-          `Failed to register captureText shortcut: ${accelerator}`
-        );
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete('captureText');
-      return true;
-    }
-  } catch (error) {
-    console.error('Error registering captureText shortcut:', error);
-    return false;
-  }
-}
-
-function registerScanQRCodeShortcut(accelerator: string): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get('scanQRCode');
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
-
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        scanQRCode();
-      });
-
-      if (success) {
-        registeredShortcuts.set('scanQRCode', accelerator);
-        return true;
-      } else {
-        console.error(`Failed to register scanQRCode shortcut: ${accelerator}`);
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete('scanQRCode');
-      return true;
-    }
-  } catch (error) {
-    console.error('Error registering scanQRCode shortcut:', error);
-    return false;
-  }
-}
-
-function registerTimerCaptureShortcut(accelerator: string): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get('timerCapture');
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
-
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        timerCapture();
-      });
-
-      if (success) {
-        registeredShortcuts.set('timerCapture', accelerator);
-        return true;
-      } else {
-        console.error(
-          `Failed to register timerCapture shortcut: ${accelerator}`
-        );
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete('timerCapture');
-      return true;
-    }
-  } catch (error) {
-    console.error('Error registering timerCapture shortcut:', error);
-    return false;
-  }
-}
-
-function registerRecordingShortcut(
-  action: 'recordArea' | 'recordScreen' | 'recordWindow',
-  accelerator: string
-): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get(action);
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
-
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        if (action === 'recordArea') {
-          recordArea();
-        } else if (action === 'recordScreen') {
-          recordScreen();
-        } else {
-          recordWindow();
-        }
-      });
-
-      if (success) {
-        registeredShortcuts.set(action, accelerator);
-        return true;
-      } else {
-        console.error(`Failed to register ${action} shortcut: ${accelerator}`);
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete(action);
-      return true;
-    }
-  } catch (error) {
-    console.error(`Error registering ${action} shortcut:`, error);
-    return false;
-  }
-}
-
-function registerHistoryShortcut(accelerator: string): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get('history');
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
-
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        const tray = getTray();
-        toggleHistoryPopover(tray?.getBounds());
-      });
-
-      if (success) {
-        registeredShortcuts.set('history', accelerator);
-        return true;
-      } else {
-        console.error(`Failed to register history shortcut: ${accelerator}`);
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete('history');
-      return true;
-    }
-  } catch (error) {
-    console.error('Error registering history shortcut:', error);
-    return false;
-  }
-}
-
-function registerAllInOneShortcut(accelerator: string): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get('allInOne');
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
-
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        debugLog('shortcut', `all-in-one triggered (${accelerator})`);
-        startAllInOne();
-      });
-
-      if (success) {
-        registeredShortcuts.set('allInOne', accelerator);
-        return true;
-      } else {
-        console.error(`Failed to register allInOne shortcut: ${accelerator}`);
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete('allInOne');
-      return true;
-    }
-  } catch (error) {
-    console.error('Error registering allInOne shortcut:', error);
-    return false;
-  }
-}
-
-function registerOpenInEditorShortcut(accelerator: string): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get('openInEditor');
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
-
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        openImageInEditor();
-      });
-
-      if (success) {
-        registeredShortcuts.set('openInEditor', accelerator);
-        return true;
-      } else {
-        console.error(
-          `Failed to register openInEditor shortcut: ${accelerator}`
-        );
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete('openInEditor');
-      return true;
-    }
-  } catch (error) {
-    console.error('Error registering openInEditor shortcut:', error);
-    return false;
-  }
-}
-
-function registerClipboardInEditorShortcut(accelerator: string): boolean {
-  try {
-    const oldAccelerator = registeredShortcuts.get('clipboardInEditor');
-    if (oldAccelerator) {
-      globalShortcut.unregister(oldAccelerator);
-    }
-
-    if (accelerator) {
-      const success = globalShortcut.register(accelerator, () => {
-        openClipboardInEditor();
-      });
-
-      if (success) {
-        registeredShortcuts.set('clipboardInEditor', accelerator);
-        return true;
-      } else {
-        console.error(
-          `Failed to register clipboardInEditor shortcut: ${accelerator}`
-        );
-        return false;
-      }
-    } else {
-      registeredShortcuts.delete('clipboardInEditor');
-      return true;
-    }
-  } catch (error) {
-    console.error('Error registering clipboardInEditor shortcut:', error);
-    return false;
-  }
+function isShortcutAction(value: string): value is ShortcutAction {
+  return Object.hasOwn(SHORTCUTS, value);
 }
 
 function registerShortcut(
   action: ShortcutAction,
   accelerator: string
 ): boolean {
-  if (!isActionSupported(action)) {
+  const definition = SHORTCUTS[action];
+  if (definition.feature && !isFeatureSupported(definition.feature)) {
     return false;
   }
 
-  switch (action) {
-    case 'captureText':
-      return registerCaptureTextShortcut(accelerator);
-    case 'scanQRCode':
-      return registerScanQRCodeShortcut(accelerator);
-    case 'timerCapture':
-      return registerTimerCaptureShortcut(accelerator);
-    case 'recordArea':
-    case 'recordScreen':
-    case 'recordWindow':
-      return registerRecordingShortcut(action, accelerator);
-    case 'history':
-      return registerHistoryShortcut(accelerator);
-    case 'allInOne':
-      return registerAllInOneShortcut(accelerator);
-    case 'openInEditor':
-      return registerOpenInEditorShortcut(accelerator);
-    case 'clipboardInEditor':
-      return registerClipboardInEditorShortcut(accelerator);
-    default:
-      return registerScreenshotShortcut(action as CaptureMode, accelerator);
+  try {
+    const previous = registeredShortcuts.get(action);
+    if (previous) {
+      globalShortcut.unregister(previous);
+    }
+
+    if (!accelerator) {
+      registeredShortcuts.delete(action);
+      return true;
+    }
+
+    const success = globalShortcut.register(accelerator, () => {
+      definition.run();
+      flushPendingContinuations();
+    });
+
+    if (!success) {
+      console.error(`Failed to register ${action} shortcut: ${accelerator}`);
+      return false;
+    }
+
+    registeredShortcuts.set(action, accelerator);
+    return true;
+  } catch (error) {
+    console.error(`Error registering shortcut for ${action}:`, error);
+    return false;
   }
 }
 
 export function registerAllShortcuts(): void {
-  const config = getConfig();
-  const shortcuts = config.shortcuts;
+  const shortcuts = getConfig().shortcuts;
 
-  registerShortcut('area', shortcuts.screenshot.area);
-  registerShortcut('window', shortcuts.screenshot.window);
-  registerShortcut('screen', shortcuts.screenshot.screen);
-  registerShortcut('captureText', shortcuts.captureText);
-  registerShortcut('scanQRCode', shortcuts.scanQRCode ?? '');
-  registerShortcut('timerCapture', shortcuts.timerCapture ?? '');
-  registerShortcut('recordArea', shortcuts.recording.area);
-  registerShortcut('recordScreen', shortcuts.recording.screen);
-  registerShortcut('recordWindow', shortcuts.recording.window);
-  registerShortcut('history', shortcuts.history ?? '');
-  registerShortcut('allInOne', shortcuts.allInOne ?? '');
-  registerShortcut('openInEditor', shortcuts.openInEditor ?? '');
-  registerShortcut('clipboardInEditor', shortcuts.clipboardInEditor ?? '');
+  for (const action of SHORTCUT_ACTIONS) {
+    registerShortcut(action, SHORTCUTS[action].accelerator(shortcuts) ?? '');
+  }
 }
 
 export function unregisterAllShortcuts(): void {
-  debugLog('shortcut-lifecycle', 'unregisterAllShortcuts');
   globalShortcut.unregisterAll();
   registeredShortcuts.clear();
 }
 
 export function init(): void {
   registerAllShortcuts();
-  debugLog(
-    'shortcut-lifecycle',
-    `init registered ${registeredShortcuts.size} shortcuts (allInOne=${registeredShortcuts.get('allInOne') ?? 'none'})`
-  );
 
   ipcMain.on(
     'shortcuts:register',
-    (_event, action: CaptureMode, accelerator: string) => {
-      debugLog(
-        'shortcut-lifecycle',
-        `register ${action} -> ${accelerator || 'none'}`
-      );
+    (_event, action: string, accelerator: string) => {
+      if (!isShortcutAction(action)) {
+        return;
+      }
       registerShortcut(action, accelerator);
     }
   );
@@ -410,7 +178,6 @@ export function init(): void {
   });
 
   ipcMain.on('shortcuts:reload', () => {
-    debugLog('shortcut-lifecycle', 'reload (unregister all + re-register)');
     unregisterAllShortcuts();
     registerAllShortcuts();
     rebuildTrayMenu();
