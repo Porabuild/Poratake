@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { Camera, Pipette, ScanText, Video, X } from 'lucide-react';
 import CaptureTargetMenu from './capture-target-menu';
 import ToolbarButton from './toolbar-button';
@@ -22,45 +22,21 @@ import type {
   AllInOneCaptureTarget,
 } from '@/types/area-overlay';
 
-interface EyeDropperResult {
-  sRGBHex: string;
-}
-
-interface EyeDropperInstance {
-  open: () => Promise<EyeDropperResult>;
-}
-
-type EyeDropperConstructor = new () => EyeDropperInstance;
-
-function getEyeDropper(): EyeDropperInstance | null {
-  const Constructor = (
-    window as Window & { EyeDropper?: EyeDropperConstructor }
-  ).EyeDropper;
-  return Constructor ? new Constructor() : null;
-}
-
-function isEyeDropperAvailable(): boolean {
-  return 'EyeDropper' in window;
-}
-
 export default function AllInOneToolbar({
   recordingEnabled,
   ocrEnabled,
   activeMode,
   activeTarget,
   onAction,
-  onPickingColorChange,
+  onPickColor,
 }: {
   recordingEnabled: boolean;
   ocrEnabled: boolean;
   activeMode: AllInOneCaptureMode;
   activeTarget: AllInOneCaptureTarget;
   onAction: (action: AreaOverlayToolbarAction) => void;
-  onPickingColorChange: (active: boolean) => void;
+  onPickColor: () => void;
 }) {
-  const [isPickingColor, setIsPickingColor] = useState(false);
-  const colorPickerAvailable = isEyeDropperAvailable();
-
   const selectMode = useCallback(
     (mode: AllInOneCaptureMode) =>
       onAction({ action: 'select-capture-mode', mode }),
@@ -82,32 +58,11 @@ export default function AllInOneToolbar({
     [selectMode]
   );
 
-  const pickColor = useCallback(async () => {
-    const eyeDropper = getEyeDropper();
-    if (!eyeDropper || isPickingColor) return;
-
-    setIsPickingColor(true);
-    onPickingColorChange(true);
-    try {
-      const result = await eyeDropper.open();
-      onAction({ action: 'copy-color', color: result.sRGBHex });
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        console.error('Failed to pick color:', error);
-      }
-    } finally {
-      setIsPickingColor(false);
-      onPickingColorChange(false);
-    }
-  }, [isPickingColor, onAction, onPickingColorChange]);
-
   return (
     <div
       className={`absolute ${
         isMacPlatform() ? 'top-12' : 'top-6'
-      } left-1/2 -translate-x-1/2 cursor-default transition-opacity ${
-        isPickingColor ? 'pointer-events-none opacity-0' : 'opacity-100'
-      }`}
+      } left-1/2 -translate-x-1/2 cursor-default`}
       onMouseDown={event => event.stopPropagation()}
     >
       <ToolbarSurface>
@@ -163,17 +118,11 @@ export default function AllInOneToolbar({
         ) : null}
         <Tooltip>
           <TooltipTrigger asChild>
-            <ToolbarButton
-              aria-label="Pick color"
-              disabled={!colorPickerAvailable}
-              onClick={pickColor}
-            >
+            <ToolbarButton aria-label="Pick color" onClick={onPickColor}>
               <Pipette className="size-4" />
             </ToolbarButton>
           </TooltipTrigger>
-          <TooltipContent side="bottom">
-            {colorPickerAvailable ? 'Pick color' : 'Color picker unavailable'}
-          </TooltipContent>
+          <TooltipContent side="bottom">Pick color</TooltipContent>
         </Tooltip>
         <div className="mx-0.5 h-5 w-px bg-border/70" />
         <Tooltip>

@@ -17,6 +17,8 @@ const mockConcealAreaSelectorOverlay = vi.fn();
 const mockHasVisibleSelectorOverlay = vi.fn();
 const mockCancelAreaSelection = vi.fn();
 const mockKillAreaSelector = vi.fn();
+const mockSetAreaSelectorFreeze = vi.fn();
+const mockIsScreenFrozen = vi.fn();
 const mockIsRecording = vi.fn();
 const mockGetRecordingDuration = vi.fn(() => 5);
 const mockGetCurrentRecordingPath = vi.fn();
@@ -72,6 +74,11 @@ vi.mock('@/main/capture/area-selector', () => ({
   cancelAreaSelection: () => mockCancelAreaSelection(),
   hideAreaSelector: () => mockHideAreaSelector(),
   killAreaSelector: () => mockKillAreaSelector(),
+  setAreaSelectorFreeze: (...a: unknown[]) => mockSetAreaSelectorFreeze(...a),
+}));
+
+vi.mock('@/main/capture/freeze-screen', () => ({
+  isScreenFrozen: () => mockIsScreenFrozen(),
 }));
 
 vi.mock('@/main/capture/video/recorder.ts', () => ({
@@ -152,6 +159,8 @@ describe('recording-actions', () => {
     mockPrepareCapturePreview.mockReturnValue({ prepared: true });
     mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
     mockStartRecordingCountdown.mockResolvedValue('completed');
+    mockSetAreaSelectorFreeze.mockResolvedValue(undefined);
+    mockIsScreenFrozen.mockReturnValue(false);
   });
 
   describe('stopRecordingAction', () => {
@@ -643,6 +652,25 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording();
       expect(mockStartRecordingWithConfig).toHaveBeenCalled();
+    });
+
+    it('releases a held freeze before confirming the selection', async () => {
+      mockConfirmAreaSelection.mockImplementation(async () => {
+        expect(mockSetAreaSelectorFreeze).toHaveBeenCalledWith(false);
+        return { status: 'selected', x: 0, y: 0, width: 100, height: 100 };
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording();
+      expect(mockSetAreaSelectorFreeze).toHaveBeenCalledWith(false);
+      expect(mockStartRecordingWithConfig).toHaveBeenCalled();
+    });
+
+    it('does not record when the held freeze cannot be released', async () => {
+      mockIsScreenFrozen.mockReturnValue(true);
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.startPendingRecording();
+      expect(mockConfirmAreaSelection).not.toHaveBeenCalled();
+      expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
     });
 
     it('runs the configured countdown before starting', async () => {

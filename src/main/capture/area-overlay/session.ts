@@ -1,11 +1,16 @@
 import { app, globalShortcut, ipcMain, screen } from 'electron';
 import type { Display, Point, Rectangle, BrowserWindow } from 'electron';
+import fs from 'fs';
+import path from 'path';
+import { randomUUID } from 'crypto';
+import { pathToFileURL } from 'url';
 import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
 import { daemon } from '@/main/daemon';
 import { flushPendingContinuations } from '@/main/utils/event-loop';
 import { isWindows } from '@/main/utils/platform';
 import { isDev } from '@/main/utils/env';
 import { formatClock } from '@/main/utils/clock';
+import { captureRegionToFile } from '@/main/capture/screenshot/native-capture';
 import { createOverlayWindow } from './window';
 import type {
   AreaOverlayPickTarget,
@@ -96,6 +101,9 @@ interface OverlaySession {
   visibleAnnounced: boolean;
   overlayFocused: boolean;
   previousForegroundHandle: string | null;
+  colorPickerActive: boolean;
+  colorFramePaths: Map<number, string>;
+  colorFrameVersions: Map<number, number>;
   callbacks: OverlayCallbacks;
   resolve: (selection: OverlaySelection | null) => void;
 }
@@ -503,10 +511,76 @@ function registerOverlayIpc(): void {
   ipcMain.on('area-overlay:color-picker', (event, active: unknown) => {
     const session = activeSession;
     if (!session?.displayIdsByWebContents.has(event.sender.id)) return;
+    if (session.toolbar?.kind !== 'all-in-one') return;
     if (typeof active !== 'boolean') return;
 
-    setEscapeShortcutEnabled(session, !active);
+    setColorPickerActive(session, active);
   });
+
+  ipcMain.handle('area-overlay:color-picker-frame', async event => {
+    const session = activeSession;
+    const display = session && displayFor(session, event);
+    if (
+      !session ||
+      !display ||
+      session.toolbar?.kind !== 'all-in-one' ||
+      !session.colorPickerActive
+    ) {
+      return null;
+    }
+
+    const version = (session.colorFrameVersions.get(display.id) ?? 0) + 1;
+    session.colorFrameVersions.set(display.id, version);
+    removeColorFrame(session, display.id);
+
+    const filePath = path.join(
+      app.getPath('temp'),
+      `poratake-color-frame-${randomUUID()}.png`
+    );
+    const captured = await captureRegionToFile(display.bounds, filePath, {
+      cached: session.freeze,
+    });
+    if (
+      !captured ||
+      activeSession !== session ||
+      !session.colorPickerActive ||
+      session.colorFrameVersions.get(display.id) !== version
+    ) {
+      void fs.promises.unlink(filePath).catch(() => {});
+      return null;
+    }
+
+    session.colorFramePaths.set(display.id, filePath);
+    return { url: pathToFileURL(filePath).href };
+  });
+}
+
+function removeColorFrame(session: OverlaySession, displayId: number): void {
+  const filePath = session.colorFramePaths.get(displayId);
+  if (!filePath) return;
+
+  session.colorFramePaths.delete(displayId);
+  void fs.promises.unlink(filePath).catch(() => {});
+}
+
+function setColorPickerActive(session: OverlaySession, active: boolean): void {
+  if (session.colorPickerActive === active) return;
+
+  session.colorPickerActive = active;
+  setEscapeShortcutEnabled(session, !active);
+
+  for (const entry of session.entries) {
+    if (entry.window.isDestroyed()) continue;
+    entry.window.webContents.send('area-overlay:set-color-picker', active);
+  }
+
+  if (active) return;
+
+  for (const displayId of session.displays.keys()) {
+    const version = (session.colorFrameVersions.get(displayId) ?? 0) + 1;
+    session.colorFrameVersions.set(displayId, version);
+    removeColorFrame(session, displayId);
+  }
 }
 
 const SIMPLE_TOOLBAR_ACTIONS = new Set(['close']);
@@ -849,6 +923,7 @@ function finishSession(
 ): Promise<void> {
   const session = activeSession;
   if (!session || session !== expectedSession) return Promise.resolve();
+  setColorPickerActive(session, false);
   activeSession = null;
   setEscapeShortcutEnabled(session, false);
 
@@ -954,6 +1029,15 @@ export function confirmOverlaySelection(keepVisible = false): void {
   void finishSession(session.selection, session, keepVisible);
 }
 
+function raiseOverlayWindows(session: OverlaySession): void {
+  if (session.hidden) return;
+
+  for (const entry of session.entries) {
+    if (entry.window.isDestroyed()) continue;
+    entry.window.moveTop();
+  }
+}
+
 export function setOverlayFreeze(enabled: boolean): Promise<void> {
   const session = activeSession;
   if (!session) return Promise.resolve();
@@ -974,6 +1058,9 @@ export function setOverlayFreeze(enabled: boolean): Promise<void> {
           return;
         }
         session.freeze = frozen;
+        if (frozen) {
+          raiseOverlayWindows(session);
+        }
       } else {
         const released = await releaseScreen();
         if (released) {
@@ -1188,6 +1275,9 @@ export async function startOverlaySession(
       visibleAnnounced: false,
       overlayFocused: false,
       previousForegroundHandle: null,
+      colorPickerActive: false,
+      colorFramePaths: new Map(),
+      colorFrameVersions: new Map(),
       callbacks: options?.callbacks ?? {},
       resolve: resolveSession,
     };

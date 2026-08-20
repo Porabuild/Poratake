@@ -11,6 +11,7 @@ import {
 import { daemon } from '@/main/daemon';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import { preprocessImageForOcr } from '@/main/utils/ffmpeg';
+import { showTransientNotification } from '@/main/utils/notification';
 import { isMac } from '@/main/utils/platform';
 import { captureAreaToFile } from '@/main/capture/area-overlay';
 import { captureRegionToFile } from '@/main/capture/screenshot/native-capture';
@@ -110,8 +111,8 @@ async function recognizeAndCopy(imagePath: string): Promise<void> {
     if (extractedText && extractedText.trim()) {
       const trimmedText = extractedText.trim();
       clipboard.writeText(trimmedText);
-      showNotification(
-        'Text copied!',
+      showTransientNotification(
+        'Text copied',
         'Recognized text has been copied to the clipboard'
       );
     } else {

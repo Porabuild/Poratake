@@ -19,7 +19,9 @@ const mockUpdateConfig = vi.fn();
 const mockIsFeatureSupported = vi.fn();
 const mockCaptureText = vi.fn();
 const mockClipboardWriteText = vi.fn();
+const mockNotificationCreate = vi.fn();
 const mockNotificationShow = vi.fn();
+const mockNotificationClose = vi.fn();
 const mockSetOverlayToolbar = vi.fn();
 const mockSetAreaSelectionMode = vi.fn();
 const mockSetAreaSelectorFreeze = vi.fn();
@@ -42,6 +44,15 @@ const defaultAllInOneConfig = {
 };
 
 class MockNotification {
+  constructor(options: unknown) {
+    mockNotificationCreate(options);
+  }
+
+  once() {
+    return this;
+  }
+
+  close = mockNotificationClose;
   show = mockNotificationShow;
 }
 
@@ -180,7 +191,7 @@ describe('all-in-one orchestrator', () => {
     expect(mockCaptureArea).not.toHaveBeenCalled();
   });
 
-  it('restores the previous recording target without freezing the screen', async () => {
+  it('freezes the opening frame when restoring the previous recording target', async () => {
     mockGetConfig.mockReturnValue({
       allInOne: {
         ...defaultAllInOneConfig,
@@ -197,7 +208,7 @@ describe('all-in-one orchestrator', () => {
     expect(options).toEqual(
       expect.objectContaining({
         mode: 'window',
-        freeze: false,
+        freeze: true,
         toolbar: expect.objectContaining({
           activeMode: 'record',
           activeTarget: 'window',
@@ -205,6 +216,27 @@ describe('all-in-one orchestrator', () => {
       })
     );
     expect(options.preset).toBeUndefined();
+  });
+
+  it('does not restore a stored OCR mode on the next launch', async () => {
+    mockGetConfig.mockReturnValue({
+      allInOne: {
+        ...defaultAllInOneConfig,
+        lastMode: 'ocr',
+      },
+    });
+    mockStartAreaSelection.mockResolvedValue({ status: 'confirmed' });
+
+    const startAllInOne = (await import('@/main/capture/all-in-one')).default;
+    await startAllInOne();
+
+    const [options] = mockStartAreaSelection.mock.calls[0];
+    expect(options.toolbar).toEqual(
+      expect.objectContaining({
+        activeMode: 'screenshot',
+        activeTarget: 'area',
+      })
+    );
   });
 
   it('uses defaults and does not persist when remembering is disabled', async () => {
@@ -534,6 +566,12 @@ describe('all-in-one orchestrator', () => {
       const { onToolbarAction } = await getToolbarHandler();
       onToolbarAction({ action: 'copy-color', color: '#12abEF' });
       expect(mockClipboardWriteText).toHaveBeenCalledWith('#12abEF');
+      expect(mockNotificationCreate).toHaveBeenCalledWith({
+        title: 'Color copied',
+        body: '#12ABEF copied to the clipboard',
+        silent: true,
+        timeoutType: 'default',
+      });
       expect(mockNotificationShow).toHaveBeenCalled();
       expect(mockCancelAreaSelection).toHaveBeenCalled();
       expect(mockHideAllInOneControl).toHaveBeenCalled();
@@ -549,8 +587,19 @@ describe('all-in-one orchestrator', () => {
         activeMode: 'ocr',
         activeTarget: 'area',
       });
+    });
+
+    it('does not persist OCR as the remembered mode', async () => {
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'ocr' });
+      expect(mockUpdateConfig).not.toHaveBeenCalled();
+    });
+
+    it('still persists screenshot and record as the remembered mode', async () => {
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
       expect(mockUpdateConfig).toHaveBeenCalledWith({
-        allInOne: expect.objectContaining({ lastMode: 'ocr' }),
+        allInOne: expect.objectContaining({ lastMode: 'record' }),
       });
     });
 
@@ -596,34 +645,22 @@ describe('all-in-one orchestrator', () => {
       expect(mockUpdateConfig).not.toHaveBeenCalled();
     });
 
-    it('unfreezes the screen when entering record mode', async () => {
+    it('keeps the frozen frame when switching capture modes', async () => {
       const { onToolbarAction } = await getToolbarHandler();
       onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
+      onToolbarAction({ action: 'select-capture-mode', mode: 'screenshot' });
+      onToolbarAction({ action: 'select-capture-mode', mode: 'ocr' });
 
-      expect(mockSetAreaSelectorFreeze).toHaveBeenCalledWith(false);
+      expect(mockSetAreaSelectorFreeze).not.toHaveBeenCalled();
     });
 
-    it('keeps the screen live when switching targets in record mode', async () => {
+    it('keeps the frozen frame when switching capture targets', async () => {
       const { onToolbarAction } = await getToolbarHandler();
-      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
-      mockSetAreaSelectorFreeze.mockClear();
       onToolbarAction({ action: 'select-capture-target', target: 'window' });
       onToolbarAction({ action: 'select-capture-target', target: 'screen' });
       onToolbarAction({ action: 'select-capture-target', target: 'area' });
 
-      expect(mockSetAreaSelectorFreeze).toHaveBeenCalledTimes(3);
-      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(1, false);
-      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(2, false);
-      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(3, false);
-    });
-
-    it('restores the freeze preference after leaving record mode', async () => {
-      const { onToolbarAction } = await getToolbarHandler();
-      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
-      onToolbarAction({ action: 'select-capture-mode', mode: 'screenshot' });
-
-      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(1, false);
-      expect(mockSetAreaSelectorFreeze).toHaveBeenNthCalledWith(2, true);
+      expect(mockSetAreaSelectorFreeze).not.toHaveBeenCalled();
     });
 
     it('keeps a target per capture mode', async () => {
@@ -714,7 +751,7 @@ describe('all-in-one orchestrator', () => {
   it('renders every all-in-one toolbar action', async () => {
     const React = await import('react');
     vi.stubGlobal('React', React);
-    vi.stubGlobal('window', { EyeDropper: class {} });
+    vi.stubGlobal('window', {});
     const { renderToStaticMarkup } = await import('react-dom/server');
     const { default: AllInOneToolbar } =
       await import('@/renderer/components/area-overlay/all-in-one-toolbar');
@@ -724,8 +761,9 @@ describe('all-in-one orchestrator', () => {
         recordingEnabled: true,
         ocrEnabled: true,
         activeMode: 'screenshot',
+        activeTarget: 'area',
         onAction: vi.fn(),
-        onPickingColorChange: vi.fn(),
+        onPickColor: vi.fn(),
       })
     );
 

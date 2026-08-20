@@ -10,6 +10,7 @@ import {
 } from '@/main/capture/desktop-icons';
 import { daemon } from '@/main/daemon';
 import { isFeatureSupported } from '@/main/system/capabilities';
+import { showTransientNotification } from '@/main/utils/notification';
 import { captureAreaToFile } from '@/main/capture/area-overlay';
 
 let isScanningQRCode = false;
@@ -70,7 +71,7 @@ async function decodeAndCopy(imagePath: string): Promise<void> {
 
     if (qrCodeValue && qrCodeValue.trim()) {
       clipboard.writeText(qrCodeValue.trim());
-      showNotification(
+      showTransientNotification(
         'QR Code Copied',
         'QR code value has been copied to clipboard'
       );

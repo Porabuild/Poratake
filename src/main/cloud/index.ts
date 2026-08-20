@@ -8,6 +8,7 @@ import {
   type UploadSource,
 } from './upload-source.ts';
 import { getConfig } from '@/main/settings';
+import { showTransientNotification } from '@/main/utils/notification';
 import { getCapturePreviewUploadPath } from '@/main/capture/capture-preview';
 import { isExportOutputPathAllowed } from '@/main/capture/video/ipc/export-session';
 import type {
@@ -277,7 +278,7 @@ export function init(): void {
     try {
       const url = await uploadImage(imageBase64);
       clipboard.writeText(url);
-      showNotification('Image Uploaded', 'Link copied to clipboard');
+      showTransientNotification('Image Uploaded', 'Link copied to clipboard');
       return { success: true, url };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Upload failed';
@@ -305,7 +306,10 @@ export function init(): void {
     try {
       const url = await uploadFile(filePath, controller.signal);
       clipboard.writeText(url);
-      showNotification(`${label} Uploaded`, 'Link copied to clipboard');
+      showTransientNotification(
+        `${label} Uploaded`,
+        'Link copied to clipboard'
+      );
       return { success: true, url };
     } catch (error) {
       if (controller.signal.reason === 'cancelled') {

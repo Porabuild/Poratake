@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import AllInOneToolbar from '@/renderer/components/area-overlay/all-in-one-toolbar';
+import ColorPicker from '@/renderer/components/area-overlay/color-picker';
 import CrosshairGuides from '@/renderer/components/area-overlay/crosshair-guides';
 import SelectionFrame from '@/renderer/components/area-overlay/selection-frame';
 import SelectionScrim from '@/renderer/components/area-overlay/selection-scrim';
@@ -52,10 +53,21 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
     []
   );
 
-  const handlePickingColorChange = useCallback((active: boolean) => {
-    setIsPickingColor(active);
-    window.ipcRenderer.send('area-overlay:color-picker', active);
+  const startColorPick = useCallback(() => {
+    window.ipcRenderer.send('area-overlay:color-picker', true);
   }, []);
+
+  const stopColorPick = useCallback(() => {
+    window.ipcRenderer.send('area-overlay:color-picker', false);
+  }, []);
+
+  const handleColorPicked = useCallback(
+    (color: string) => {
+      stopColorPick();
+      sendToolbarAction({ action: 'copy-color', color });
+    },
+    [sendToolbarAction, stopColorPick]
+  );
 
   useEffect(() => {
     const handleToolbar = (
@@ -68,13 +80,21 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
       message: AreaOverlayPickTargetsMessage
     ) => setPrompt(message.prompt);
 
+    const handleColorPicker = (_event: unknown, active: boolean) =>
+      setIsPickingColor(active);
+
     window.ipcRenderer.on('area-overlay:set-toolbar', handleToolbar);
     window.ipcRenderer.on('area-overlay:set-pick-targets', handlePickTargets);
+    window.ipcRenderer.on('area-overlay:set-color-picker', handleColorPicker);
     return () => {
       window.ipcRenderer.off('area-overlay:set-toolbar', handleToolbar);
       window.ipcRenderer.off(
         'area-overlay:set-pick-targets',
         handlePickTargets
+      );
+      window.ipcRenderer.off(
+        'area-overlay:set-color-picker',
+        handleColorPicker
       );
     };
   }, []);
@@ -178,7 +198,7 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
   return (
     <div
       className="fixed inset-0 overflow-hidden select-none"
-      style={{ cursor: isPickingColor ? 'default' : cursor }}
+      style={{ cursor: isPickingColor ? 'crosshair' : cursor }}
       onMouseDown={isPickingColor ? undefined : startDrag}
       onMouseMove={event =>
         !isPickingColor && trackPointer({ x: event.clientX, y: event.clientY })
@@ -231,15 +251,18 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
             : 'Drag to select an area · Esc to cancel'}
         </div>
       ) : null}
-      {toolbar && !handedOff ? (
+      {toolbar && !handedOff && !isPickingColor ? (
         <AllInOneToolbar
           recordingEnabled={toolbar.recordingEnabled}
           ocrEnabled={toolbar.ocrEnabled}
           activeMode={toolbar.activeMode}
           activeTarget={toolbar.activeTarget}
           onAction={sendToolbarAction}
-          onPickingColorChange={handlePickingColorChange}
+          onPickColor={startColorPick}
         />
+      ) : null}
+      {isPickingColor ? (
+        <ColorPicker onPick={handleColorPicked} onCancel={stopColorPick} />
       ) : null}
     </div>
   );
