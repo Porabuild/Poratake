@@ -12,6 +12,7 @@ import { rebuildTrayMenu } from '@/main/menu';
 import * as capture from '@/main/capture';
 import { broadcastUpdateEvent } from './broadcast.ts';
 import { UPDATE_OWNER, UPDATE_REPOSITORY } from './config.ts';
+import { releaseNotesToText } from './release-notes.ts';
 
 const isSupportedPlatform = isMac || isWindows;
 
@@ -70,10 +71,11 @@ function configureAutoUpdater(): void {
 
   autoUpdater.on('update-available', info => {
     updateState.latestVersion = info.version;
-    updateState.releaseNotes =
+    const rawNotes =
       typeof info.releaseNotes === 'string'
         ? info.releaseNotes
         : (info.releaseNotes?.[0]?.note ?? null);
+    updateState.releaseNotes = rawNotes ? releaseNotesToText(rawNotes) : null;
     setStatus('available');
 
     void autoUpdater.downloadUpdate().catch(() => {});
@@ -120,7 +122,8 @@ export async function checkForUpdate(): Promise<UpdateState> {
     updateState.error = null;
     updateState.downloadedFilePath = null;
     updateState.latestVersion = devUpdateVersion;
-    updateState.releaseNotes = process.env.PORATAKE_DEV_UPDATE_NOTES || null;
+    const devNotes = process.env.PORATAKE_DEV_UPDATE_NOTES;
+    updateState.releaseNotes = devNotes ? releaseNotesToText(devNotes) : null;
     updateState.downloadProgress = 100;
 
     if (devUpdateVersion === currentVersion) {
