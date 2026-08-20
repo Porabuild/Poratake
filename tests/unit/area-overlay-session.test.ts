@@ -32,6 +32,7 @@ type IpcHandler = (...args: never[]) => void;
 
 const handlers = new Map<string, Set<IpcHandler>>();
 const send = vi.fn();
+const invoke = vi.fn();
 
 function emit(channel: string, ...args: unknown[]): void {
   for (const handler of handlers.get(channel) ?? []) {
@@ -69,13 +70,14 @@ let root: Root;
 beforeEach(() => {
   handlers.clear();
   send.mockClear();
+  invoke.mockReset();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   window.appPlatform = 'win32';
   window.ipcRenderer = {
     send,
-    invoke: vi.fn(),
+    invoke,
     on: vi.fn((channel: string, handler: IpcHandler) => {
       const channelHandlers = handlers.get(channel) ?? new Set<IpcHandler>();
       channelHandlers.add(handler);
@@ -90,6 +92,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('AreaOverlayWindow sessions', () => {
@@ -125,5 +129,69 @@ describe('AreaOverlayWindow sessions', () => {
       ['area-overlay:ready', 1],
       ['area-overlay:ready', 2],
     ]);
+  });
+
+  it('renders the last pointer position when the color frame becomes ready', async () => {
+    const drawImage = vi.fn();
+    const context = {
+      clearRect: vi.fn(),
+      createImageData: (width: number, height: number) => ({
+        data: new Uint8ClampedArray(width * height * 4),
+      }),
+      drawImage,
+      getImageData: () => ({ data: new Uint8ClampedArray(20 * 20 * 4) }),
+      imageSmoothingEnabled: true,
+      putImageData: vi.fn(),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      context as never
+    );
+    vi.stubGlobal(
+      'Image',
+      class {
+        naturalWidth = 20;
+        naturalHeight = 20;
+        src = '';
+        decode = () => Promise.resolve();
+      }
+    );
+    let renderFrame!: FrameRequestCallback;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      renderFrame = callback;
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+
+    let resolveFrame!: (frame: { url: string }) => void;
+    invoke.mockReturnValue(
+      new Promise(resolve => {
+        resolveFrame = resolve;
+      })
+    );
+    const { default: ColorPicker } =
+      await import('@/renderer/components/area-overlay/color-picker');
+
+    act(() => {
+      root.render(
+        createElement(ColorPicker, {
+          onPick: vi.fn(),
+          onCancel: vi.fn(),
+        })
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        new MouseEvent('mousemove', { clientX: 8, clientY: 9 })
+      );
+      renderFrame(0);
+    });
+
+    await act(async () => {
+      resolveFrame({ url: 'file:///tmp/frame.png' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(drawImage).toHaveBeenCalledTimes(2);
   });
 });

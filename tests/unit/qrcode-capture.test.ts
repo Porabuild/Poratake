@@ -8,6 +8,7 @@ type ExecCallback = (
 const mockExecFile =
   vi.fn<(file: string, args: string[], callback: ExecCallback) => void>();
 const mockClipboardWriteText = vi.fn();
+const mockNotificationCreate = vi.fn();
 const mockNotificationShow = vi.fn();
 const mockGetConfig = vi.fn();
 const mockHideDesktopIcons = vi.fn();
@@ -23,12 +24,16 @@ vi.mock('child_process', () => ({
 }));
 
 class MockNotification {
-  constructor(_args: unknown) {
-    void _args;
+  constructor(args: unknown) {
+    mockNotificationCreate(args);
   }
   show() {
     mockNotificationShow();
   }
+  once() {
+    return this;
+  }
+  close() {}
 }
 
 vi.mock('electron', () => ({
@@ -92,6 +97,12 @@ describe('scanQRCode', () => {
       expect.stringContaining('poratake-qrcode-')
     );
     expect(mockClipboardWriteText).toHaveBeenCalledWith('https://example.com');
+    expect(mockNotificationCreate).toHaveBeenCalledWith({
+      title: 'QR Code Copied',
+      body: 'QR code value has been copied to clipboard',
+      silent: true,
+      timeoutType: 'default',
+    });
   });
 
   it('notifies when no QR detected', async () => {

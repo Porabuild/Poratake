@@ -90,6 +90,7 @@ vi.mock('electron', () => ({
     ) => {
       ipcHandlers.set(channel, handler);
     },
+    handle: vi.fn(),
   },
   screen: {
     getAllDisplays: () => mockGetAllDisplays(),

@@ -13,6 +13,7 @@ const mockGlobalShortcutUnregister = vi.fn();
 const mockGetAllDisplays = vi.fn();
 const mockGetCursorScreenPoint = vi.fn();
 const mockGetDisplayNearestPoint = vi.fn();
+const mockUnlink = vi.fn();
 
 const ipcHandlers = new Map<string, (event: unknown, data?: unknown) => void>();
 const overlayWindows: MockBrowserWindow[] = [];
@@ -94,12 +95,26 @@ vi.mock('electron', () => ({
     ) => {
       ipcHandlers.set(channel, handler);
     },
+    handle: (
+      channel: string,
+      handler: (event: unknown, data?: unknown) => unknown
+    ) => {
+      ipcHandlers.set(channel, handler);
+    },
   },
   screen: {
     getAllDisplays: () => mockGetAllDisplays(),
     getCursorScreenPoint: () => mockGetCursorScreenPoint(),
     getDisplayNearestPoint: (...a: unknown[]) =>
       mockGetDisplayNearestPoint(...a),
+  },
+}));
+
+vi.mock('fs', () => ({
+  default: {
+    promises: {
+      unlink: (...a: unknown[]) => mockUnlink(...a),
+    },
   },
 }));
 
@@ -143,6 +158,18 @@ const display = {
   id: 7,
   bounds: { x: 100, y: 50, width: 1920, height: 1080 },
 };
+const secondDisplay = {
+  id: 8,
+  bounds: { x: 2020, y: 50, width: 1280, height: 720 },
+};
+
+const allInOneToolbar = {
+  kind: 'all-in-one' as const,
+  recordingEnabled: true,
+  ocrEnabled: true,
+  activeMode: 'screenshot' as const,
+  activeTarget: 'area' as const,
+};
 
 function settle(): Promise<void> {
   return new Promise(resolve => setImmediate(resolve));
@@ -168,6 +195,7 @@ describe('area overlay', () => {
     mockGetCursorScreenPoint.mockReturnValue({ x: 200, y: 100 });
     mockGetDisplayNearestPoint.mockReturnValue(display);
     mockCaptureRegionToFile.mockResolvedValue(true);
+    mockUnlink.mockResolvedValue(undefined);
     mockCaptureFrozenWindowToFile.mockResolvedValue(true);
     mockCaptureWindowByIdToFile.mockResolvedValue(true);
     mockFreezeScreen.mockResolvedValue(true);
@@ -342,7 +370,9 @@ describe('area overlay', () => {
 
   it('returns Escape handling to the color picker while it is active', async () => {
     const module = await import('@/main/capture/area-overlay');
-    const selection = module.selectAreaWithOverlay();
+    const selection = module.selectAreaWithOverlay({
+      toolbar: allInOneToolbar,
+    });
     await settle();
 
     fire('area-overlay:color-picker', overlayWindows[0].webContents.id, true);
@@ -405,14 +435,214 @@ describe('area overlay', () => {
     const selection = module.selectAreaWithOverlay({ freeze: false });
     await settle();
 
+    overlayWindows[0].moveTop.mockClear();
     await module.setOverlayFreeze(true);
 
     expect(mockFreezeScreen).toHaveBeenCalledTimes(1);
+    expect(overlayWindows[0].moveTop).toHaveBeenCalled();
 
     fire('area-overlay:cancel', overlayWindows[0].webContents.id);
     await selection;
 
     expect(mockReleaseScreen).toHaveBeenCalledTimes(1);
+  });
+
+  it('captures the frozen frame for the color picker', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay({
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, true);
+    const handler = ipcHandlers.get('area-overlay:color-picker-frame');
+    const result = (await handler?.({
+      sender: { id: overlayWindows[0].webContents.id },
+    })) as { url: string } | null;
+
+    expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
+      display.bounds,
+      expect.stringContaining('poratake-color-frame-'),
+      { cached: true }
+    );
+    expect(result?.url).toContain('file://');
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('synchronizes color-picker state across every display', async () => {
+    mockGetAllDisplays.mockReturnValue([display, secondDisplay]);
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay({
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, true);
+
+    for (const window of overlayWindows) {
+      expect(window.webContents.send).toHaveBeenCalledWith(
+        'area-overlay:set-color-picker',
+        true
+      );
+    }
+
+    fire('area-overlay:color-picker', overlayWindows[1].webContents.id, false);
+
+    for (const window of overlayWindows) {
+      expect(window.webContents.send).toHaveBeenCalledWith(
+        'area-overlay:set-color-picker',
+        false
+      );
+    }
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('captures a live frame for the color picker when not frozen', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, true);
+    const handler = ipcHandlers.get('area-overlay:color-picker-frame');
+    await handler?.({ sender: { id: overlayWindows[0].webContents.id } });
+
+    expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
+      display.bounds,
+      expect.stringContaining('poratake-color-frame-'),
+      { cached: false }
+    );
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('rejects color frames until the all-in-one picker is active', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay({
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    const handler = ipcHandlers.get('area-overlay:color-picker-frame');
+    const result = await handler?.({
+      sender: { id: overlayWindows[0].webContents.id },
+    });
+
+    expect(result).toBeNull();
+    expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('ignores color-picker activation outside all-in-one sessions', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay();
+    await settle();
+    mockGlobalShortcutUnregister.mockClear();
+
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, true);
+
+    expect(mockGlobalShortcutUnregister).not.toHaveBeenCalled();
+    expect(overlayWindows[0].webContents.send).not.toHaveBeenCalledWith(
+      'area-overlay:set-color-picker',
+      true
+    );
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('rejects stale color frames from overlapping requests', async () => {
+    let finishFirst!: (captured: boolean) => void;
+    let finishSecond!: (captured: boolean) => void;
+    mockCaptureRegionToFile
+      .mockReturnValueOnce(
+        new Promise<boolean>(resolve => {
+          finishFirst = resolve;
+        })
+      )
+      .mockReturnValueOnce(
+        new Promise<boolean>(resolve => {
+          finishSecond = resolve;
+        })
+      );
+
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay({
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, true);
+    const handler = ipcHandlers.get('area-overlay:color-picker-frame');
+    const event = { sender: { id: overlayWindows[0].webContents.id } };
+    const first = handler?.(event);
+    const second = handler?.(event);
+
+    finishSecond(true);
+    await expect(second).resolves.toEqual({
+      url: expect.stringContaining('file://'),
+    });
+    finishFirst(true);
+    await expect(first).resolves.toBeNull();
+    expect(mockUnlink).toHaveBeenCalledWith(
+      mockCaptureRegionToFile.mock.calls[0][1]
+    );
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('rejects a color frame that finishes after the picker closes', async () => {
+    let finishCapture!: (captured: boolean) => void;
+    mockCaptureRegionToFile.mockReturnValueOnce(
+      new Promise<boolean>(resolve => {
+        finishCapture = resolve;
+      })
+    );
+
+    const module = await import('@/main/capture/area-overlay');
+    const selection = module.selectAreaWithOverlay({
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, true);
+    const handler = ipcHandlers.get('area-overlay:color-picker-frame');
+    const result = handler?.({
+      sender: { id: overlayWindows[0].webContents.id },
+    });
+    fire('area-overlay:color-picker', overlayWindows[0].webContents.id, false);
+    finishCapture(true);
+
+    await expect(result).resolves.toBeNull();
+    expect(mockUnlink).toHaveBeenCalledWith(
+      mockCaptureRegionToFile.mock.calls[0][1]
+    );
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    await selection;
+  });
+
+  it('returns no color frame when there is no active session', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    module.prewarmAreaOverlay();
+    await settle();
+
+    const handler = ipcHandlers.get('area-overlay:color-picker-frame');
+    expect(handler).toBeDefined();
+    const result = await handler?.({ sender: { id: 999 } });
+
+    expect(result).toBeNull();
+    expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
   });
 
   it('ignores geometry that leaves the display', async () => {

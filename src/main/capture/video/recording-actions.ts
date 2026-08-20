@@ -21,7 +21,9 @@ import {
   cancelAreaSelection,
   hideAreaSelector,
   killAreaSelector,
+  setAreaSelectorFreeze,
 } from '@/main/capture/area-selector';
+import { isScreenFrozen } from '@/main/capture/freeze-screen';
 import {
   isRecording,
   getCurrentRecordingPath,
@@ -316,6 +318,11 @@ async function startPendingRecordingInternal(
 
   if (!isIOSRecording) {
     detachRecordingControlFromOverlay();
+    await setAreaSelectorFreeze(false);
+    if (isScreenFrozen()) {
+      console.error('Failed to release frozen displays before recording');
+      return;
+    }
     const selection = await confirmAreaSelection({ keepOverlayVisible: true });
 
     if (!selection || selection.status === 'cancelled') {

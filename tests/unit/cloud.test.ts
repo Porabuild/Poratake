@@ -11,9 +11,14 @@ const mockClipboardWriteText = vi.fn();
 
 class MockNotification {
   show = mockNotificationShow;
+  close = vi.fn();
 
   constructor(options: unknown) {
     mockNotificationConstructor(options);
+  }
+
+  once() {
+    return this;
   }
 }
 
@@ -799,12 +804,12 @@ describe('Cloud Upload Module', () => {
 
       await invokeUploadFile(1, '/tmp/recording.mp4');
       expect(mockNotificationConstructor).toHaveBeenCalledWith(
-        expect.objectContaining({ title: 'Video Uploaded' })
+        expect.objectContaining({ title: 'Video Uploaded', silent: true })
       );
 
       await invokeUploadFile(1, '/tmp/screenshot.png');
       expect(mockNotificationConstructor).toHaveBeenCalledWith(
-        expect.objectContaining({ title: 'Image Uploaded' })
+        expect.objectContaining({ title: 'Image Uploaded', silent: true })
       );
     });
 
