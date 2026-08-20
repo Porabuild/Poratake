@@ -84,7 +84,7 @@ export async function captureArea(
     height: area.height,
   };
 
-  const preparation = prepareScreenshotPreview();
+  let preparation: ReturnType<typeof prepareScreenshotPreview> = null;
 
   try {
     const config = getConfig();
@@ -101,7 +101,9 @@ export async function captureArea(
     let restoreIcons: Promise<boolean> | null = null;
     let captured: boolean;
     try {
-      captured = await captureRegion(rect, screenshotPath, options);
+      const capture = captureRegion(rect, screenshotPath, options);
+      preparation = prepareScreenshotPreview();
+      captured = await capture;
       restoreIcons = shouldHideIcons ? showDesktopIcons('capture') : null;
     } catch (error) {
       if (shouldHideIcons) {

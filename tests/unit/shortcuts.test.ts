@@ -86,6 +86,7 @@ const mockGetConfig = vi.fn(() => ({
 
 vi.mock('@/main/settings', () => ({
   getConfig: mockGetConfig,
+  onConfigUpdated: vi.fn(),
 }));
 
 describe('Shortcuts', () => {

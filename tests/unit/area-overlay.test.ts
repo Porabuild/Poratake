@@ -994,6 +994,48 @@ describe('area overlay', () => {
     expect(mockReleaseScreen).toHaveBeenCalled();
   });
 
+  it('announces capture preparation after native area capture starts', async () => {
+    const calls: string[] = [];
+    mockCaptureRegionToFile.mockImplementationOnce(async () => {
+      calls.push('native');
+      return true;
+    });
+    const onCaptureStarted = vi.fn(() => calls.push('preview'));
+    const module = await import('@/main/capture/area-overlay');
+    const captured = module.captureAreaToFile(
+      '/tmp/shot.png',
+      onCaptureStarted
+    );
+    await settle();
+
+    expect(onCaptureStarted).not.toHaveBeenCalled();
+    fire('area-overlay:confirm', overlayWindows[0].webContents.id, {
+      displayId: display.id,
+      x: 10,
+      y: 20,
+      width: 300,
+      height: 200,
+    });
+
+    expect(await captured).toBe(true);
+    expect(calls).toEqual(['native', 'preview']);
+  });
+
+  it('does not prepare a preview when area selection is cancelled', async () => {
+    const onCaptureStarted = vi.fn();
+    const module = await import('@/main/capture/area-overlay');
+    const captured = module.captureAreaToFile(
+      '/tmp/shot.png',
+      onCaptureStarted
+    );
+    await settle();
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+
+    expect(await captured).toBe(false);
+    expect(onCaptureStarted).not.toHaveBeenCalled();
+  });
+
   it('captures the live screen when the freeze screen setting is disabled', async () => {
     mockIsFreezeScreenEnabled.mockReturnValue(false);
 
@@ -1071,7 +1113,14 @@ describe('area overlay', () => {
     });
 
     const module = await import('@/main/capture/area-overlay');
-    const captured = module.captureWindowToFile('/tmp/window.png');
+    const calls: string[] = [];
+    mockCaptureWindowByIdToFile.mockImplementationOnce(async () => {
+      calls.push('native');
+      return true;
+    });
+    const captured = module.captureWindowToFile('/tmp/window.png', () => {
+      calls.push('preview');
+    });
     await settle();
 
     fire('area-overlay:confirm', overlayWindows[0].webContents.id, {
@@ -1090,5 +1139,6 @@ describe('area overlay', () => {
     );
     expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
     expect(mockReleaseScreen).not.toHaveBeenCalled();
+    expect(calls).toEqual(['native', 'preview']);
   });
 });

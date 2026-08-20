@@ -224,15 +224,11 @@ describe('capture-preview index', () => {
     });
   });
 
-  it('preloads the preview renderer before a capture claims the window', async () => {
-    const { prewarmCapturePreview } =
+  it('prepares the preview renderer before a capture claims the window', async () => {
+    const { prepareCapturePreview } =
       await import('@/main/capture/capture-preview');
-    mockGetConfig.mockReturnValue({
-      preview: { displayId: 1 },
-      screenshot: { showPreview: true, captureToClipboard: false },
-    });
 
-    prewarmCapturePreview();
+    prepareCapturePreview();
     preparePreviewRenderer(browserWindows[0]);
 
     expect(browserWindows[0].webContents.send).toHaveBeenCalledWith(
@@ -437,17 +433,22 @@ describe('capture-preview index', () => {
     expect(browserWindows[0].close).not.toHaveBeenCalled();
   });
 
-  it('reuses the prewarmed window before replenishing it after reveal', async () => {
+  it('does not retain another hidden window after reveal', async () => {
     mockGetConfig.mockReturnValue({
       preview: { displayId: 1 },
       screenshot: { showPreview: true, captureToClipboard: false },
     });
-    const { prewarmCapturePreview, showCapturePreview } =
+    const { prepareCapturePreview, showCapturePreview } =
       await import('@/main/capture/capture-preview');
 
-    prewarmCapturePreview();
+    const preparation = prepareCapturePreview();
     preparePreviewRenderer(browserWindows[0]);
-    const preview = showCapturePreview('/p/img.png', 'screenshot');
+    const preview = showCapturePreview(
+      '/p/img.png',
+      'screenshot',
+      undefined,
+      preparation
+    );
 
     expect(browserWindows).toHaveLength(1);
     await vi.waitFor(() => {
@@ -460,7 +461,7 @@ describe('capture-preview index', () => {
     await preview.revealed;
     await new Promise(resolve => setImmediate(resolve));
 
-    expect(browserWindows).toHaveLength(2);
+    expect(browserWindows).toHaveLength(1);
   });
 
   it('reveals a prewarmed screenshot as soon as its content is ready', async () => {
@@ -468,10 +469,10 @@ describe('capture-preview index', () => {
       preview: { displayId: 1 },
       screenshot: { showPreview: true, captureToClipboard: false },
     });
-    const { prepareCapturePreview, prewarmCapturePreview, showCapturePreview } =
+    const { prepareCapturePreview, showCapturePreview } =
       await import('@/main/capture/capture-preview');
 
-    prewarmCapturePreview();
+    const preparation = prepareCapturePreview();
     expect(browserWindows).toHaveLength(1);
 
     preparePreviewRenderer(browserWindows[0]);
@@ -481,7 +482,6 @@ describe('capture-preview index', () => {
       expect.anything()
     );
 
-    const preparation = prepareCapturePreview();
     const preview = showCapturePreview(
       '/p/img.png',
       'screenshot',
@@ -512,7 +512,7 @@ describe('capture-preview index', () => {
     expect(browserWindows[0].showInactive).toHaveBeenCalledTimes(1);
     expect(revealed).toBe(true);
     expect(mockGetThumbnail).toHaveBeenCalledWith('/p/img.png', 'screenshot');
-    expect(browserWindows).toHaveLength(2);
+    expect(browserWindows).toHaveLength(1);
   });
 
   it('does not start the next preview while current content loads', async () => {
@@ -520,12 +520,12 @@ describe('capture-preview index', () => {
       preview: { displayId: 1 },
       screenshot: { showPreview: true, captureToClipboard: false },
     });
-    const { prewarmCapturePreview, showCapturePreview } =
+    const { prepareCapturePreview, showCapturePreview } =
       await import('@/main/capture/capture-preview');
 
-    prewarmCapturePreview();
+    const preparation = prepareCapturePreview();
     preparePreviewRenderer(browserWindows[0]);
-    showCapturePreview('/p/img.png', 'screenshot');
+    showCapturePreview('/p/img.png', 'screenshot', undefined, preparation);
 
     expect(browserWindows).toHaveLength(1);
     expect(browserWindows[0].showInactive).not.toHaveBeenCalled();
@@ -536,12 +536,11 @@ describe('capture-preview index', () => {
       preview: { displayId: 1 },
       screenshot: { showPreview: true, captureToClipboard: false },
     });
-    const { prepareCapturePreview, prewarmCapturePreview, showCapturePreview } =
+    const { prepareCapturePreview, showCapturePreview } =
       await import('@/main/capture/capture-preview');
 
-    prewarmCapturePreview();
-    preparePreviewRenderer(browserWindows[0]);
     const firstPreparation = prepareCapturePreview();
+    preparePreviewRenderer(browserWindows[0]);
     showCapturePreview(
       '/p/first.png',
       'screenshot',
@@ -583,6 +582,7 @@ describe('capture-preview index', () => {
     preparation.dispose();
 
     expect(browserWindows[0].close).toHaveBeenCalledTimes(1);
+    expect(browserWindows).toHaveLength(1);
   });
 
   it('keeps a prepared preview active after it is claimed', async () => {
