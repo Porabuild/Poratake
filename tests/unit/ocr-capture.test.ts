@@ -32,6 +32,10 @@ class MockNotification {
   show() {
     mockNotificationShow();
   }
+  once() {
+    return this;
+  }
+  close() {}
 }
 
 vi.mock('electron', () => ({
@@ -104,6 +108,12 @@ describe('captureText (OCR)', () => {
       expect.stringContaining('poratake-ocr-')
     );
     expect(mockClipboardWriteText).toHaveBeenCalledWith('Hello world');
+    expect(mockNotificationCreate).toHaveBeenCalledWith({
+      title: 'Text copied',
+      body: 'Recognized text has been copied to the clipboard',
+      silent: true,
+      timeoutType: 'default',
+    });
     expect(mockNotificationShow).toHaveBeenCalled();
     expect(mockFsUnlinkSync).toHaveBeenCalled();
   });
@@ -114,6 +124,10 @@ describe('captureText (OCR)', () => {
     await captureText();
     await flush();
     expect(mockClipboardWriteText).not.toHaveBeenCalled();
+    expect(mockNotificationCreate).toHaveBeenCalledWith({
+      title: 'No Text Found',
+      body: 'No text was detected in the selected area',
+    });
     expect(mockNotificationShow).toHaveBeenCalled();
   });
 
