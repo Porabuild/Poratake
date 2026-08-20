@@ -2,6 +2,7 @@ import { app, globalShortcut, ipcMain, screen } from 'electron';
 import type { Display, Point, Rectangle, BrowserWindow } from 'electron';
 import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
 import { daemon } from '@/main/daemon';
+import { flushPendingContinuations } from '@/main/utils/event-loop';
 import { isWindows } from '@/main/utils/platform';
 import { isDev } from '@/main/utils/env';
 import { formatClock } from '@/main/utils/clock';
@@ -496,6 +497,7 @@ function registerOverlayIpc(): void {
     if (!isValidToolbarAction(action)) return;
 
     session.callbacks.onToolbarAction?.(action);
+    flushPendingContinuations();
   });
 
   ipcMain.on('area-overlay:color-picker', (event, active: unknown) => {

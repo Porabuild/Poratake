@@ -12,6 +12,7 @@ import {
 import path from 'path';
 import fs from 'fs';
 import { updateConfig } from '@/main/settings';
+import { flushPendingContinuations } from '@/main/utils/event-loop';
 import screenshot from '@/main/capture/screenshot';
 import captureText from '@/main/capture/ocr';
 import scanQRCode from '@/main/capture/qrcode';
@@ -55,6 +56,17 @@ type GatedMenuItem = Electron.MenuItemConstructorOptions & {
   feature?: FeatureId;
 };
 
+type MenuClickHandler = NonNullable<
+  Electron.MenuItemConstructorOptions['click']
+>;
+
+function withEventLoopTurn(click: MenuClickHandler): MenuClickHandler {
+  return (...args) => {
+    click(...args);
+    flushPendingContinuations();
+  };
+}
+
 function pruneMenuItems(
   items: GatedMenuItem[]
 ): Electron.MenuItemConstructorOptions[] {
@@ -71,7 +83,9 @@ function pruneMenuItems(
       continue;
     }
 
-    result.push(item);
+    result.push(
+      item.click ? { ...item, click: withEventLoopTurn(item.click) } : item
+    );
   }
 
   while (result.length && result[result.length - 1].type === 'separator') {

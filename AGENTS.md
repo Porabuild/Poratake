@@ -38,6 +38,7 @@ Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config),
 
 - **Electron**: Main process (`src/main/`), renderer (`src/renderer/`), preload (`src/preload/`)
 - **IPC**: Use `ipcMain.on` (main) / `ipcRenderer.send` (renderer) for process communication
+- **Main-process event loop**: in the main process, promise continuations only run when the libuv loop turns. While the app is idle (no pending timers or I/O) the loop parks, so a callback that arrives from Chromium rather than from libuv (`globalShortcut`, tray/menu clicks, `ipcMain`) stalls at its first `await` until some unrelated event wakes the loop — measured at 100–2250ms. A flow whose first act is real I/O is immune, because `daemon.call()` writes to the daemon's stdin synchronously before returning its promise; a flow that awaits first is not. Never rely on that incidentally: call `flushPendingContinuations()` from `@/main/utils/event-loop` once at such a boundary (the shortcut dispatcher in `src/main/system/shortcuts.ts` is the reference). It schedules one loop turn, and a single microtask checkpoint drains the queue to empty, so the whole resolved chain unwinds to the first real I/O. Do not replace it with a periodic timer — that masks the problem and costs battery on every idle machine.
 - **State**: Local hooks (`useState`, custom hooks in `src/renderer/hooks/`) - no global state library
 
 ## Performance & Design

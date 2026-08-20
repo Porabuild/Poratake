@@ -715,6 +715,40 @@ describe('interactive area overlay', () => {
     await session;
   });
 
+  it('schedules an event loop turn for toolbar actions', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const onToolbarAction = vi.fn();
+
+    const session = module.startInteractiveOverlay({
+      toolbar: {
+        kind: 'all-in-one',
+        recordingEnabled: true,
+        ocrEnabled: true,
+        activeMode: 'screenshot',
+      },
+      callbacks: { onToolbarAction },
+    });
+    await settle();
+
+    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate');
+    fire('area-overlay:toolbar', windowFor(0).webContents.id, {
+      action: 'select-capture-mode',
+      mode: 'record',
+    });
+    expect(onToolbarAction).toHaveBeenCalledTimes(1);
+    expect(setImmediateSpy).toHaveBeenCalledTimes(1);
+
+    setImmediateSpy.mockClear();
+    fire('area-overlay:toolbar', windowFor(0).webContents.id, {
+      action: 'unknown',
+    });
+    expect(setImmediateSpy).not.toHaveBeenCalled();
+    setImmediateSpy.mockRestore();
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
   it('forwards valid toolbar actions and broadcasts toolbar changes', async () => {
     const module = await import('@/main/capture/area-overlay');
     const onToolbarAction = vi.fn();
