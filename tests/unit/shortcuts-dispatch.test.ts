@@ -86,6 +86,7 @@ vi.mock('@/main/capture/timer-capture', () => ({
 }));
 
 vi.mock('@/main/capture/video', () => ({
+  default: () => mockRecordArea(),
   recordArea: () => mockRecordArea(),
   recordScreen: () => mockRecordScreen(),
   recordWindow: () => mockRecordWindow(),
@@ -191,12 +192,41 @@ describe('shortcuts dispatch', () => {
     expect(mockRegister).toHaveBeenCalled();
   });
 
-  it('shortcuts:register defaults to screenshot for unknown', async () => {
+  it('shortcuts:register dispatches to area', async () => {
     const { init } = await import('@/main/system/shortcuts');
     init();
     mockRegister.mockClear();
     ipcOn['shortcuts:register']({}, 'area', 'Cmd+1');
     expect(mockRegister).toHaveBeenCalled();
+  });
+
+  it('shortcuts:register ignores an unknown action', async () => {
+    const { init } = await import('@/main/system/shortcuts');
+    init();
+    mockRegister.mockClear();
+    mockUnregister.mockClear();
+    ipcOn['shortcuts:register']({}, 'notAnAction', 'Cmd+9');
+    expect(mockRegister).not.toHaveBeenCalled();
+    expect(mockUnregister).not.toHaveBeenCalled();
+  });
+
+  it('every registered shortcut schedules an event loop turn', async () => {
+    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate');
+    const { init } = await import('@/main/system/shortcuts');
+    init();
+
+    const callbacks = mockRegister.mock.calls.map(
+      call => call[1] as () => void
+    );
+    expect(callbacks.length).toBeGreaterThan(0);
+
+    for (const callback of callbacks) {
+      setImmediateSpy.mockClear();
+      callback();
+      expect(setImmediateSpy).toHaveBeenCalledTimes(1);
+    }
+
+    setImmediateSpy.mockRestore();
   });
 
   it('shortcuts:reload calls unregisterAll then re-registers', async () => {

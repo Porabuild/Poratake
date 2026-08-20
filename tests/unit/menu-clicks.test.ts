@@ -145,6 +145,30 @@ describe('menu click handlers', () => {
     mockMenu.buildFromTemplate.mockReturnValue({ items: [] } as never);
   });
 
+  it('menu clicks schedule an event loop turn', async () => {
+    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate');
+    const { init } = await import('@/main/menu');
+    await init();
+
+    const labels = [
+      'Capture Screen',
+      'Capture Area',
+      'Capture Window',
+      'Capture Text (OCR)',
+      'All-in-one',
+    ];
+
+    for (const label of labels) {
+      const item = getMenuItems().find(entry => entry.label === label);
+      expect(item?.click).toBeTypeOf('function');
+      setImmediateSpy.mockClear();
+      await item!.click!();
+      expect(setImmediateSpy).toHaveBeenCalledTimes(1);
+    }
+
+    setImmediateSpy.mockRestore();
+  });
+
   it('Capture Screen click triggers screenshot screen mode', async () => {
     const { init } = await import('@/main/menu');
     await init();
