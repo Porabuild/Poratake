@@ -56,14 +56,19 @@ if (isTransparentUtilityWindow) {
   document.body.classList.add('window-transparent');
 }
 
-function CapturePreviewFallback({ params }: { params: CapturePreviewParams }) {
-  const previewImageUrl = params.thumbnailUrl ?? params.imageUrl;
+export function CapturePreviewFallback({
+  params,
+}: {
+  params: CapturePreviewParams;
+}) {
+  const previewImageUrl =
+    params.contentType === 'video' ? params.thumbnailUrl : params.imageUrl;
 
   useEffect(() => {
-    if (previewImageUrl) return;
+    if (previewImageUrl || params.contentType === 'video') return;
 
     window.ipcRenderer.send('capture-preview:content-ready');
-  }, [previewImageUrl]);
+  }, [params.contentType, previewImageUrl]);
 
   return (
     <div className="h-screen w-screen overflow-hidden rounded-lg bg-muted">
@@ -76,9 +81,11 @@ function CapturePreviewFallback({ params }: { params: CapturePreviewParams }) {
           onLoad={() =>
             window.ipcRenderer.send('capture-preview:content-ready')
           }
-          onError={() =>
-            window.ipcRenderer.send('capture-preview:content-ready')
-          }
+          onError={() => {
+            if (params.contentType === 'screenshot') {
+              window.ipcRenderer.send('capture-preview:content-ready');
+            }
+          }}
         />
       )}
     </div>
@@ -227,12 +234,12 @@ function App() {
       applyLoadEvent(data);
     };
 
-    window.ipcRenderer.on('load', handleLoad);
-    window.ipcRenderer.on(
+    const unsubscribeLoad = window.ipcRenderer.on('load', handleLoad);
+    const unsubscribeCapturePreview = window.ipcRenderer.on(
       'capture-preview:prepare-renderer',
       handlePrepareCapturePreview
     );
-    window.ipcRenderer.on(
+    const unsubscribeAreaOverlay = window.ipcRenderer.on(
       'area-overlay:prepare-renderer',
       handlePrepareAreaOverlay
     );
@@ -251,15 +258,9 @@ function App() {
       .catch(() => {});
 
     return () => {
-      window.ipcRenderer.off('load', handleLoad);
-      window.ipcRenderer.off(
-        'capture-preview:prepare-renderer',
-        handlePrepareCapturePreview
-      );
-      window.ipcRenderer.off(
-        'area-overlay:prepare-renderer',
-        handlePrepareAreaOverlay
-      );
+      unsubscribeLoad();
+      unsubscribeCapturePreview();
+      unsubscribeAreaOverlay();
     };
   }, []);
 

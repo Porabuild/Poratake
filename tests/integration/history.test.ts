@@ -58,6 +58,7 @@ const mockApp = {
 const mockBrowserWindow = {
   fromWebContents: vi.fn(() => null),
 };
+const mockEmbedWallpaperImage = vi.fn((imageUrl: string) => imageUrl);
 
 vi.mock('electron', () => ({
   ipcMain: mockIpcMain,
@@ -82,6 +83,10 @@ vi.mock('@/main/settings', () => ({
       maxItems: 100,
     },
   })),
+}));
+
+vi.mock('@/main/settings/wallpaper-assets', () => ({
+  embedWallpaperImage: (imageUrl: string) => mockEmbedWallpaperImage(imageUrl),
 }));
 
 vi.mock('@/main/history/popover', () => ({
@@ -110,7 +115,9 @@ describe('History Management', () => {
 
     // Default mock behavior - empty history
     mockFs.existsSync.mockReturnValue(false);
+    mockFs.unlinkSync.mockImplementation(() => {});
     mockFsPromises.readFile.mockResolvedValue('[]');
+    mockEmbedWallpaperImage.mockImplementation((imageUrl: string) => imageUrl);
   });
 
   afterEach(() => {
@@ -151,7 +158,7 @@ describe('History Management', () => {
       );
     });
 
-    it('should filter out items with missing files', async () => {
+    it('should preserve items with temporarily missing files', async () => {
       const mockHistory: HistoryItem[] = [
         {
           id: 'test-1',
@@ -180,8 +187,7 @@ describe('History Management', () => {
       const { loadHistory } = await import('@/main/history');
       const history = await loadHistory();
 
-      expect(history).toHaveLength(1);
-      expect(history[0].id).toBe('test-1');
+      expect(history).toEqual(mockHistory);
     });
 
     it('should add type to legacy items without type field', async () => {
@@ -362,6 +368,46 @@ describe('History Management', () => {
       expect(['/old/file1.png', '/old/file2.png']).toContain(deletedPath);
     });
 
+    it('should retain an old item when pruning cannot delete its file', async () => {
+      vi.doMock('@/main/settings', () => ({
+        getConfig: vi.fn(() => ({
+          history: { enabled: true, maxItems: 1 },
+        })),
+      }));
+      vi.resetModules();
+      const existingHistory: HistoryItem[] = [
+        {
+          id: 'old-1',
+          timestamp: Date.now() - 1000,
+          originalPath: '/old/file.png',
+          type: 'screenshot',
+          editorState: null,
+        },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.unlinkSync.mockImplementation(filePath => {
+        if (filePath === '/old/file.png') {
+          throw new Error('locked');
+        }
+      });
+      mockFsPromises.readFile.mockResolvedValue(
+        JSON.stringify(existingHistory)
+      );
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { addToHistory, getHistory } = await import('@/main/history');
+
+      await addToHistory('/new/file.png');
+
+      expect(getHistory().map(item => item.id)).toContain('old-1');
+      expect(getHistory()).toHaveLength(2);
+      warnSpy.mockRestore();
+      vi.doMock('@/main/settings', () => ({
+        getConfig: vi.fn(() => ({
+          history: { enabled: true, maxItems: 100 },
+        })),
+      }));
+    });
+
     it('should generate unique IDs for each item', async () => {
       mockFs.existsSync.mockReturnValue(true);
 
@@ -465,6 +511,49 @@ describe('History Management', () => {
 
       expect(updated).toBeNull();
     });
+
+    it('should embed managed wallpaper assets in screenshot history', async () => {
+      const mockHistory: HistoryItem[] = [
+        {
+          id: 'test-1',
+          timestamp: Date.now(),
+          originalPath: '/test/screenshot.png',
+          type: 'screenshot',
+          editorState: null,
+        },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(mockHistory));
+      mockEmbedWallpaperImage.mockReturnValue(
+        'data:image/jpeg;base64,aW1hZ2U='
+      );
+      const { loadHistory, updateHistoryItem } = await import('@/main/history');
+      await loadHistory();
+
+      const editorState = {
+        annotations: [],
+        wallpaper: {
+          gradient: null,
+          backgroundImage: 'file:///config/wallpapers/image.jpg',
+          backgroundBlur: 0,
+          noise: 0,
+          padding: 32,
+          inset: 0,
+          corners: 12,
+          shadow: 24,
+          spacing: 0,
+          windowFrame: { style: 'none' as const },
+          balance: false,
+          aspectRatio: 'auto' as const,
+        },
+      };
+
+      const updated = await updateHistoryItem('test-1', editorState);
+
+      expect(updated?.editorState?.wallpaper?.backgroundImage).toBe(
+        'data:image/jpeg;base64,aW1hZ2U='
+      );
+    });
   });
 
   describe('updateHistoryItemByPath', () => {
@@ -564,7 +653,7 @@ describe('History Management', () => {
       expect(mockFsPromises.writeFile).toHaveBeenCalled();
     });
 
-    it('should delete video and mouse data file', async () => {
+    it('should delete every legacy video asset', async () => {
       const mockHistory: HistoryItem[] = [
         {
           id: 'test-1',
@@ -585,7 +674,77 @@ describe('History Management', () => {
       await deleteHistoryItem('test-1');
 
       expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/video.mov');
+      expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/video.system.m4a');
+      expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/video.mic.m4a');
       expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/video.mouse.json');
+      expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/video.keys.json');
+    });
+
+    it('should release an open video preview before deleting its files', async () => {
+      const mockHistory: HistoryItem[] = [
+        {
+          id: 'test-1',
+          timestamp: Date.now(),
+          originalPath: '/test/video.mov',
+          type: 'video',
+          editorState: null,
+        },
+      ];
+      let finishRelease: () => void = () => {};
+      const release = vi.fn(
+        () =>
+          new Promise<void>(resolve => {
+            finishRelease = resolve;
+          })
+      );
+      mockFs.existsSync.mockReturnValue(true);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(mockHistory));
+      const { loadHistory, deleteHistoryItem, setHistoryFileReleaseHandler } =
+        await import('@/main/history');
+      await loadHistory();
+      setHistoryFileReleaseHandler(release);
+
+      const deleting = deleteHistoryItem('test-1');
+      await vi.waitFor(() => {
+        expect(release).toHaveBeenCalledWith('/test/video.mov');
+      });
+      expect(mockFs.unlinkSync).not.toHaveBeenCalled();
+
+      finishRelease();
+      await deleting;
+
+      expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/video.mov');
+    });
+
+    it('should not remove another row after repeated deletion', async () => {
+      const mockHistory: HistoryItem[] = [
+        {
+          id: 'test-1',
+          timestamp: 2,
+          originalPath: '/test/video.mov',
+          type: 'video',
+          editorState: null,
+        },
+        {
+          id: 'test-2',
+          timestamp: 1,
+          originalPath: '/test/screenshot.png',
+          type: 'screenshot',
+          editorState: null,
+        },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(mockHistory));
+      const { loadHistory, deleteHistoryItem, getHistory } =
+        await import('@/main/history');
+      await loadHistory();
+
+      await Promise.all([
+        deleteHistoryItem('test-1'),
+        deleteHistoryItem('test-1'),
+      ]);
+
+      expect(getHistory().map(item => item.id)).toEqual(['test-2']);
     });
 
     it('should return false for non-existent item', async () => {
@@ -617,11 +776,13 @@ describe('History Management', () => {
         throw new Error('Permission denied');
       });
 
-      const { loadHistory, deleteHistoryItem } = await import('@/main/history');
+      const { loadHistory, deleteHistoryItem, getHistory } =
+        await import('@/main/history');
       await loadHistory();
 
-      // Should not throw - just log and continue
-      await expect(deleteHistoryItem('test-1')).resolves.not.toThrow();
+      await expect(deleteHistoryItem('test-1')).resolves.toBe(false);
+      expect(getHistory()).toHaveLength(1);
+      expect(mockFsPromises.writeFile).not.toHaveBeenCalled();
     });
   });
 
@@ -651,7 +812,7 @@ describe('History Management', () => {
       const { loadHistory, clearHistory } = await import('@/main/history');
       await loadHistory();
 
-      await clearHistory();
+      expect(await clearHistory()).toBe(true);
 
       expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/screenshot1.png');
       expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/screenshot2.png');
@@ -661,6 +822,31 @@ describe('History Management', () => {
         '[]',
         'utf-8'
       );
+    });
+
+    it('should report when some items could not be cleared', async () => {
+      const mockHistory: HistoryItem[] = [
+        {
+          id: 'test-1',
+          timestamp: Date.now(),
+          originalPath: '/test/screenshot.png',
+          type: 'screenshot',
+          editorState: null,
+        },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.unlinkSync.mockImplementation(() => {
+        throw new Error('locked');
+      });
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(mockHistory));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { loadHistory, clearHistory, getHistory } =
+        await import('@/main/history');
+      await loadHistory();
+
+      expect(await clearHistory()).toBe(false);
+      expect(getHistory()).toEqual(mockHistory);
+      warnSpy.mockRestore();
     });
   });
 

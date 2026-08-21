@@ -5,13 +5,14 @@ contextBridge.exposeInMainWorld('appPlatform', process.platform);
 contextBridge.exposeInMainWorld('ipcRenderer', {
   on(...args: Parameters<typeof ipcRenderer.on>) {
     const [channel, listener] = args;
-    return ipcRenderer.on(channel, (event, ...listenerArgs) =>
-      listener(event, ...listenerArgs)
-    );
-  },
-  off(...args: Parameters<typeof ipcRenderer.off>) {
-    const [channel, ...omit] = args;
-    return ipcRenderer.off(channel, ...omit);
+    const wrappedListener = (
+      event: Electron.IpcRendererEvent,
+      ...listenerArgs: unknown[]
+    ) => listener(event, ...listenerArgs);
+    ipcRenderer.on(channel, wrappedListener);
+    return () => {
+      ipcRenderer.off(channel, wrappedListener);
+    };
   },
   send(...args: Parameters<typeof ipcRenderer.send>) {
     const [channel, ...omit] = args;

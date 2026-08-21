@@ -128,24 +128,33 @@ export function useVideoExport(): UseVideoExportReturn {
       setExportProgress(0);
     };
 
-    window.ipcRenderer.on('video-editor:export-started', handleExportStarted);
-    window.ipcRenderer.on('video-editor:saved', handleSaved);
-    window.ipcRenderer.on('video-editor:save-error', handleSaveError);
-    window.ipcRenderer.on('video-editor:save-progress', handleSaveProgress);
-    window.ipcRenderer.on('video-editor:save-cancelled', handleSaveCancelled);
+    const unsubscribeStarted = window.ipcRenderer.on(
+      'video-editor:export-started',
+      handleExportStarted
+    );
+    const unsubscribeSaved = window.ipcRenderer.on(
+      'video-editor:saved',
+      handleSaved
+    );
+    const unsubscribeError = window.ipcRenderer.on(
+      'video-editor:save-error',
+      handleSaveError
+    );
+    const unsubscribeProgress = window.ipcRenderer.on(
+      'video-editor:save-progress',
+      handleSaveProgress
+    );
+    const unsubscribeCancelled = window.ipcRenderer.on(
+      'video-editor:save-cancelled',
+      handleSaveCancelled
+    );
 
     return () => {
-      window.ipcRenderer.off(
-        'video-editor:export-started',
-        handleExportStarted
-      );
-      window.ipcRenderer.off('video-editor:saved', handleSaved);
-      window.ipcRenderer.off('video-editor:save-error', handleSaveError);
-      window.ipcRenderer.off('video-editor:save-progress', handleSaveProgress);
-      window.ipcRenderer.off(
-        'video-editor:save-cancelled',
-        handleSaveCancelled
-      );
+      unsubscribeStarted();
+      unsubscribeSaved();
+      unsubscribeError();
+      unsubscribeProgress();
+      unsubscribeCancelled();
     };
   }, []);
 

@@ -9,6 +9,9 @@ const mockFs = {
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
   renameSync: vi.fn(),
+  readdirSync: vi.fn(() => []),
+  unlinkSync: vi.fn(),
+  copyFileSync: vi.fn(),
   promises: {
     writeFile: vi.fn().mockResolvedValue(undefined),
     rename: vi.fn().mockResolvedValue(undefined),
@@ -22,6 +25,9 @@ vi.mock('fs', () => ({
   readFileSync: mockFs.readFileSync,
   writeFileSync: mockFs.writeFileSync,
   renameSync: mockFs.renameSync,
+  readdirSync: mockFs.readdirSync,
+  unlinkSync: mockFs.unlinkSync,
+  copyFileSync: mockFs.copyFileSync,
   promises: mockFs.promises,
 }));
 
@@ -37,6 +43,13 @@ const mockApp = {
     return paths[name] || `/mock/${name}`;
   }),
 };
+const mockSafeStorage = {
+  isEncryptionAvailable: vi.fn(() => true),
+  encryptString: vi.fn((value: string) => Buffer.from(`encrypted:${value}`)),
+  decryptString: vi.fn((value: Buffer) =>
+    value.toString().replace(/^encrypted:/, '')
+  ),
+};
 
 const mockIpcMain = {
   handle: vi.fn(),
@@ -51,6 +64,7 @@ vi.mock('electron', () => ({
   nativeTheme: {
     themeSource: 'system',
   },
+  safeStorage: mockSafeStorage,
 }));
 
 // Mock utils/paths
@@ -70,6 +84,17 @@ describe('Config Management', () => {
 
     // Default behavior - no config file exists
     mockFs.existsSync.mockReturnValue(false);
+    mockApp.getPath.mockImplementation((name: string) => {
+      const paths: Record<string, string> = { home: '/mock/home' };
+      return paths[name] || `/mock/${name}`;
+    });
+    mockSafeStorage.isEncryptionAvailable.mockReturnValue(true);
+    mockSafeStorage.encryptString.mockImplementation((value: string) =>
+      Buffer.from(`encrypted:${value}`)
+    );
+    mockSafeStorage.decryptString.mockImplementation((value: Buffer) =>
+      value.toString().replace(/^encrypted:/, '')
+    );
     // Reset writeFileSync to default behavior
     mockFs.writeFileSync.mockImplementation(() => {});
   });
@@ -87,6 +112,10 @@ describe('Config Management', () => {
       const config = loadConfig();
 
       expect(config).toEqual(DEFAULT_SETTINGS);
+      expect(config).not.toBe(DEFAULT_SETTINGS);
+      expect(config.wallpaper.customBackgrounds).not.toBe(
+        DEFAULT_SETTINGS.wallpaper.customBackgrounds
+      );
       expect(config.general.playSoundOnScreenshot).toBe(false);
       await vi.waitFor(() =>
         expect(mockFs.promises.writeFile).toHaveBeenCalled()
@@ -119,6 +148,126 @@ describe('Config Management', () => {
       );
     });
 
+    it('should migrate plaintext cloud secrets to OS-protected values', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          cloud: {
+            enabled: true,
+            activeProvider: 'rest',
+            s3: { secretAccessKey: 's3-secret' },
+            rest: {
+              url: 'https://example.com/upload',
+              headers: [{ key: 'Authorization', value: 'Bearer secret' }],
+            },
+          },
+        })
+      );
+
+      const { loadConfig } = await import('@/main/settings');
+      const config = loadConfig();
+
+      expect(config.cloud.s3.secretAccessKey).toBe('s3-secret');
+      expect(config.cloud.rest.headers[0].value).toBe('Bearer secret');
+      await vi.waitFor(() =>
+        expect(mockFs.promises.writeFile).toHaveBeenCalled()
+      );
+
+      const serialized = mockFs.promises.writeFile.mock.calls.at(
+        -1
+      )?.[1] as string;
+      const persisted = JSON.parse(serialized) as SettingsConfig;
+      expect(serialized).not.toContain('s3-secret');
+      expect(serialized).not.toContain('Bearer secret');
+      expect(persisted.cloud.s3.secretAccessKey).toMatch(
+        /^poratake-safe-storage:v1:/
+      );
+      expect(persisted.cloud.rest.headers[0].value).toMatch(
+        /^poratake-safe-storage:v1:/
+      );
+    });
+
+    it('should preserve encrypted credentials and unrelated settings when OS encryption is unavailable', async () => {
+      const storedSecret = `poratake-safe-storage:v1:${Buffer.from('encrypted:s3-secret').toString('base64')}`;
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          general: { startOnLogin: true },
+          cloud: { s3: { secretAccessKey: storedSecret } },
+        })
+      );
+      mockSafeStorage.isEncryptionAvailable.mockReturnValue(false);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const { loadConfig, updateConfig } = await import('@/main/settings');
+      const config = loadConfig();
+
+      expect(config.general.startOnLogin).toBe(true);
+      expect(config.cloud.s3.secretAccessKey).toBe('');
+
+      updateConfig({ screenshot: { format: 'jpeg' } });
+      await vi.waitFor(() =>
+        expect(mockFs.promises.writeFile).toHaveBeenCalled()
+      );
+      const serialized = mockFs.promises.writeFile.mock.calls.at(
+        -1
+      )?.[1] as string;
+      const persisted = JSON.parse(serialized) as SettingsConfig;
+      expect(persisted.general.startOnLogin).toBe(true);
+      expect(persisted.screenshot.format).toBe('jpeg');
+      expect(persisted.cloud.s3.secretAccessKey).toBe(storedSecret);
+
+      errorSpy.mockRestore();
+    });
+
+    it('should preserve settings when an encrypted credential cannot be decrypted', async () => {
+      const storedSecret = `poratake-safe-storage:v1:${Buffer.from('invalid').toString('base64')}`;
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          general: { startOnLogin: true },
+          cloud: { s3: { secretAccessKey: storedSecret } },
+        })
+      );
+      mockSafeStorage.decryptString.mockImplementation(() => {
+        throw new Error('decrypt failed');
+      });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const { loadConfig } = await import('@/main/settings');
+      const config = loadConfig();
+
+      expect(config.general.startOnLogin).toBe(true);
+      expect(config.cloud.s3.secretAccessKey).toBe('');
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Failed to reveal cloud credential:',
+        expect.any(Error)
+      );
+
+      errorSpy.mockRestore();
+    });
+
+    it('should preserve valid settings around malformed wallpaper entries', async () => {
+      const storedSecret = `poratake-safe-storage:v1:${Buffer.from('encrypted:secret').toString('base64')}`;
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          general: { startOnLogin: true },
+          cloud: { s3: { secretAccessKey: storedSecret } },
+          wallpaper: {
+            customBackgrounds: [{ id: 'bad', type: 'image' }],
+            presets: [{ id: 'bad', backgroundImage: 42 }],
+          },
+        })
+      );
+
+      const { loadConfig } = await import('@/main/settings');
+      const config = loadConfig();
+
+      expect(config.general.startOnLogin).toBe(true);
+      expect(config.cloud.s3.secretAccessKey).toBe('secret');
+    });
+
     it('should keep the saved default wallpaper preset', async () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue(
@@ -134,6 +283,50 @@ describe('Config Management', () => {
       const { loadConfig } = await import('@/main/settings');
 
       expect(loadConfig().wallpaper.defaultPresetId).toBe('p1');
+    });
+
+    it('should migrate wallpaper image data out of config JSON', async () => {
+      const imageData = `data:image/png;base64,${Buffer.from('wallpaper').toString('base64')}`;
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          wallpaper: {
+            customBackgrounds: [
+              { id: 'image-1', type: 'image', data: { imageUrl: imageData } },
+            ],
+            presets: [
+              {
+                id: 'preset-1',
+                name: 'Image',
+                gradient: null,
+                backgroundImage: imageData,
+                padding: 10,
+                corners: 10,
+                shadow: 10,
+              },
+            ],
+          },
+        })
+      );
+
+      const { loadConfig } = await import('@/main/settings');
+      const config = loadConfig();
+
+      expect(config.wallpaper.customBackgrounds[0]).toMatchObject({
+        type: 'image',
+        data: { imageUrl: expect.stringMatching(/^file:/) },
+      });
+      expect(config.wallpaper.presets[0].backgroundImage).toMatch(/^file:/);
+      await vi.waitFor(() =>
+        expect(mockFs.promises.writeFile).toHaveBeenCalled()
+      );
+      const serialized = mockFs.promises.writeFile.mock.calls.at(
+        -1
+      )?.[1] as string;
+      expect(serialized).not.toContain('data:image');
+      expect(serialized).not.toContain(
+        Buffer.from('wallpaper').toString('base64')
+      );
     });
 
     it('should drop a default wallpaper preset that no longer exists', async () => {
@@ -238,6 +431,66 @@ describe('Config Management', () => {
       const config = loadConfig();
 
       expect(config).toEqual(DEFAULT_SETTINGS);
+      expect(mockFs.renameSync).toHaveBeenCalledWith(
+        '/mock/home/.config/poratake-dev/config.json',
+        expect.stringMatching(/config\.corrupt-\d+\.json$/)
+      );
+    });
+
+    it('should sanitize structurally invalid config fields', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          general: { startOnLogin: true },
+          wallpaper: {
+            customBackgrounds: [],
+            presets: [],
+            customGradients: {},
+          },
+          cloud: { s3: { secretAccessKey: 42 } },
+        })
+      );
+
+      const { loadConfig } = await import('@/main/settings');
+      const config = loadConfig();
+
+      expect(config.general.startOnLogin).toBe(true);
+      expect(config.wallpaper.customBackgrounds).toEqual([]);
+      expect(config.wallpaper.presets).toEqual([]);
+      expect(config.cloud.s3.secretAccessKey).toBe('');
+    });
+
+    it('should preserve a failed migration without plaintext cloud secrets', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          general: { startOnLogin: true },
+          cloud: { s3: { secretAccessKey: 'plain-secret' } },
+        })
+      );
+      mockApp.getPath.mockImplementation((name: string) => {
+        if (name === 'pictures') {
+          throw new Error('storage failure');
+        }
+        return `/mock/${name}`;
+      });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const { DEFAULT_SETTINGS } = await import('@/types/settings');
+      const { loadConfig } = await import('@/main/settings');
+      expect(loadConfig()).toEqual(DEFAULT_SETTINGS);
+      const recoveryWrite = mockFs.writeFileSync.mock.calls.find(([filePath]) =>
+        /config\.corrupt-\d+\.json$/.test(String(filePath))
+      );
+      expect(recoveryWrite).toBeDefined();
+      expect(String(recoveryWrite?.[1])).not.toContain('plain-secret');
+      expect(JSON.parse(String(recoveryWrite?.[1]))).not.toHaveProperty(
+        'cloud'
+      );
+      expect(mockFs.unlinkSync).toHaveBeenCalledWith(
+        '/mock/home/.config/poratake-dev/config.json'
+      );
+      errorSpy.mockRestore();
     });
 
     it('should create config directory if it does not exist', async () => {
@@ -311,6 +564,7 @@ describe('Config Management', () => {
           expect.any(Error)
         )
       );
+      mockFs.existsSync.mockReturnValue(false);
       expect(getConfig()).toEqual(DEFAULT_SETTINGS);
 
       errorSpy.mockRestore();
@@ -680,6 +934,7 @@ describe('Config Management', () => {
       mockFs.existsSync.mockReturnValue(false);
 
       const { init } = await import('@/main/settings');
+      const { DEFAULT_SETTINGS } = await import('@/types/settings');
       init();
 
       const background = {
@@ -695,6 +950,7 @@ describe('Config Management', () => {
       const result = handler({}, background);
 
       expect(result).toContainEqual(background);
+      expect(DEFAULT_SETTINGS.wallpaper.customBackgrounds).toEqual([]);
     });
 
     it('should handle wallpaper:updateBackground IPC call', async () => {

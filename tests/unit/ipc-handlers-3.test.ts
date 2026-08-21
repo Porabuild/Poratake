@@ -102,6 +102,11 @@ vi.mock('@/main/capture/video/auto-zoom-generator', () => ({
     mockGenerateInitialEditorState(...a),
 }));
 
+vi.mock('@/main/settings/wallpaper-assets', () => ({
+  localizeWallpaperImage: (imageUrl: string) => imageUrl,
+  resolveLocalizedWallpaperImage: (imageUrl: string) => imageUrl,
+}));
+
 vi.mock('@/main/capture/video/recording-project', () => ({
   getEditorStatePath: (p: string) =>
     p.includes('.poratake') ? `${p}/state.json` : null,

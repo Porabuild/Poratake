@@ -18,8 +18,6 @@ class FreezeScreenModule: Module {
             handleRelease(requestId: requestId)
         case "prewarm":
             handlePrewarm(requestId: requestId)
-        case "status":
-            handleStatus(requestId: requestId)
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -45,10 +43,6 @@ class FreezeScreenModule: Module {
         }
     }
     
-    private func handleStatus(requestId: String) {
-        respond(id: requestId, result: ["frozen": !overlayWindows.isEmpty])
-    }
-
     private func handlePrewarm(requestId: String) {
         let frame = NSScreen.screens.first?.frame ?? .zero
         DispatchQueue.global(qos: .utility).async { [weak self] in

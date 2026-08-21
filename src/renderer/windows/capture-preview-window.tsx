@@ -29,17 +29,19 @@ export default function CapturePreviewWindow({
   params,
 }: CapturePreviewWindowProps) {
   const { contentType, imageUrl, thumbnailUrl, filePath } = params;
+  const videoUrl = contentType === 'video' ? imageUrl : null;
   const [isHovered, setIsHovered] = useState(false);
   const [displays, setDisplays] = useState<PreviewDisplayInfo[]>([]);
   const [isDisplayMenuOpen, setIsDisplayMenuOpen] = useState(false);
   const [imageSources, setImageSources] = useState<string[]>(() =>
-    [imageUrl, thumbnailUrl].filter((source): source is string =>
-      Boolean(source)
+    [contentType === 'screenshot' ? imageUrl : null, thumbnailUrl].filter(
+      (source): source is string => Boolean(source)
     )
   );
-  const incomingImageSources = [imageUrl, thumbnailUrl].filter(
-    (source): source is string => Boolean(source)
-  );
+  const incomingImageSources = [
+    contentType === 'screenshot' ? imageUrl : null,
+    thumbnailUrl,
+  ].filter((source): source is string => Boolean(source));
   const incomingImageSourcesKey = JSON.stringify(incomingImageSources);
   const [previousImageSourcesKey, setPreviousImageSourcesKey] = useState(
     incomingImageSourcesKey
@@ -54,19 +56,26 @@ export default function CapturePreviewWindow({
   const [visibleImageSource, setVisibleImageSource] = useState<string | null>(
     null
   );
+  const [videoState, setVideoState] = useState<'loading' | 'ready' | 'failed'>(
+    videoUrl ? 'loading' : 'failed'
+  );
   const visibleImageSourceRef = useRef<string | null>(null);
   const contentReadySentRef = useRef(false);
   const isDeleting = useRef(false);
   const displayMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const isPlaceholderReady = imageSources.length === 0;
-    if (!visibleImageSource && !isPlaceholderReady) return;
+    const isPlaceholderReady =
+      imageSources.length === 0 &&
+      (contentType === 'screenshot' || videoState === 'failed');
+    if (videoState !== 'ready' && !visibleImageSource && !isPlaceholderReady) {
+      return;
+    }
     if (contentReadySentRef.current) return;
 
     contentReadySentRef.current = true;
     window.ipcRenderer.send('capture-preview:content-ready');
-  }, [imageSources.length, visibleImageSource]);
+  }, [contentType, imageSources.length, videoState, visibleImageSource]);
 
   const handleImageLoad = useCallback(
     (source: string) => {
@@ -141,17 +150,10 @@ export default function CapturePreviewWindow({
       setDisplays(items);
     };
 
-    window.ipcRenderer.on(
+    return window.ipcRenderer.on(
       'capture-preview:displays-changed',
       handleDisplaysChanged
     );
-
-    return () => {
-      window.ipcRenderer.off(
-        'capture-preview:displays-changed',
-        handleDisplaysChanged
-      );
-    };
   }, []);
 
   useEffect(() => {
@@ -291,20 +293,35 @@ export default function CapturePreviewWindow({
       draggable={contentType === 'screenshot'}
       onDragStart={handleDragStart}
     >
-      {imageSources.map(source => (
-        <img
-          key={source}
-          src={source}
-          alt="Preview"
-          className={`absolute inset-0 h-full w-full object-cover ${thumbnailClassName} ${
-            source === visibleImageSource ? '' : 'opacity-0'
-          }`}
-          draggable={false}
-          onLoad={() => handleImageLoad(source)}
-          onError={() => handleImageError(source)}
+      {videoUrl && videoState !== 'failed' && (
+        <video
+          src={videoUrl}
+          poster={thumbnailUrl}
+          className={`absolute inset-0 h-full w-full object-cover ${thumbnailClassName}`}
+          autoPlay
+          loop
+          muted
+          playsInline
+          preload="auto"
+          onLoadedData={() => setVideoState('ready')}
+          onError={() => setVideoState('failed')}
         />
-      ))}
-      {!visibleImageSource && (
+      )}
+      {(contentType === 'screenshot' || videoState === 'failed') &&
+        imageSources.map(source => (
+          <img
+            key={source}
+            src={source}
+            alt="Preview"
+            className={`absolute inset-0 h-full w-full object-cover ${thumbnailClassName} ${
+              source === visibleImageSource ? '' : 'opacity-0'
+            }`}
+            draggable={false}
+            onLoad={() => handleImageLoad(source)}
+            onError={() => handleImageError(source)}
+          />
+        ))}
+      {videoState !== 'ready' && !visibleImageSource && (
         <div
           className={`flex h-full w-full items-center justify-center bg-muted ${thumbnailClassName}`}
         >

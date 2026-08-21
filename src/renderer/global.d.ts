@@ -1,20 +1,16 @@
 import type { IpcRenderer } from 'electron';
 
+type IpcRendererBridge = Pick<IpcRenderer, 'send' | 'invoke'> & {
+  on: (
+    channel: Parameters<IpcRenderer['on']>[0],
+    listener: Parameters<IpcRenderer['on']>[1]
+  ) => () => void;
+};
+
 declare global {
   interface Window {
     appPlatform: NodeJS.Platform;
-    ipcRenderer: {
-      on: (
-        channel: string,
-        listener: (event: Electron.IpcRendererEvent, ...args: unknown[]) => void
-      ) => IpcRenderer;
-      off: (
-        channel: string,
-        listener: (event: Electron.IpcRendererEvent, ...args: unknown[]) => void
-      ) => IpcRenderer;
-      send: (channel: string, ...args: unknown[]) => void;
-      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
-    };
+    ipcRenderer: IpcRendererBridge;
   }
 }
 

@@ -9,8 +9,6 @@ use crate::ui::run_on_ui;
 use serde_json::json;
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CombineRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
@@ -426,15 +424,11 @@ fn show_overlay(recording: RECT) -> Result<bool, OverlayWindowError> {
     Ok(visible)
 }
 
-pub struct RecordingOverlayModule {
-    visible: Arc<AtomicBool>,
-}
+pub struct RecordingOverlayModule;
 
 impl RecordingOverlayModule {
     pub fn new() -> Self {
-        Self {
-            visible: Arc::new(AtomicBool::new(false)),
-        }
+        Self
     }
 }
 
@@ -479,7 +473,6 @@ impl Module for RecordingOverlayModule {
                 }
 
                 let request_id = request.id.clone();
-                let visible = self.visible.clone();
                 run_on_ui(move || {
                     let result = show_overlay(RECT {
                         left: x,
@@ -489,11 +482,9 @@ impl Module for RecordingOverlayModule {
                     });
                     match result {
                         Ok(shown) => {
-                            visible.store(shown, Ordering::Release);
                             respond_success(&request_id, json!({ "visible": shown }));
                         }
                         Err(OverlayWindowError::Create) => {
-                            visible.store(false, Ordering::Release);
                             respond_error(
                                 &request_id,
                                 "WINDOW_ERROR",
@@ -501,7 +492,6 @@ impl Module for RecordingOverlayModule {
                             );
                         }
                         Err(OverlayWindowError::ContentProtection) => {
-                            visible.store(false, Ordering::Release);
                             respond_error(
                                 &request_id,
                                 "CONTENT_PROTECTION_ERROR",
@@ -523,18 +513,15 @@ impl Module for RecordingOverlayModule {
                 let color = parse_color(param_str(&request.params, "color"));
                 let insert_after_handle = param_i64(&request.params, "belowWindowId");
                 let request_id = request.id.clone();
-                let visible = self.visible.clone();
                 run_on_ui(move || {
                     let target = HWND(handle as isize as *mut c_void);
                     let insert_after =
                         insert_after_handle.map(|handle| HWND(handle as isize as *mut c_void));
                     match show_window_highlight(target, color, insert_after) {
                         Ok(shown) => {
-                            visible.store(shown, Ordering::Release);
                             respond_success(&request_id, json!({ "visible": shown }));
                         }
                         Err(OverlayWindowError::Create) => {
-                            visible.store(false, Ordering::Release);
                             respond_error(
                                 &request_id,
                                 "WINDOW_ERROR",
@@ -542,7 +529,6 @@ impl Module for RecordingOverlayModule {
                             );
                         }
                         Err(OverlayWindowError::ContentProtection) => {
-                            visible.store(false, Ordering::Release);
                             respond_error(
                                 &request_id,
                                 "CONTENT_PROTECTION_ERROR",
@@ -555,17 +541,12 @@ impl Module for RecordingOverlayModule {
             }
             "hide" => {
                 let request_id = request.id.clone();
-                let visible = self.visible.clone();
                 run_on_ui(move || {
                     teardown();
-                    visible.store(false, Ordering::Release);
                     respond_success(&request_id, json!({ "visible": false }));
                 });
                 Reply::Deferred
             }
-            "status" => Reply::Now(Ok(Some(json!({
-                "visible": self.visible.load(Ordering::Acquire)
-            })))),
             method => method_not_found(method),
         }
     }

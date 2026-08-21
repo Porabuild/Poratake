@@ -23,17 +23,10 @@ export function useAccentColor() {
       updatePrimaryCssVariable(color);
     };
 
-    window.ipcRenderer.on(
+    return window.ipcRenderer.on(
       'system:preferences:accent-color-changed',
       handleAccentColorChanged
     );
-
-    return () => {
-      window.ipcRenderer.off(
-        'system:preferences:accent-color-changed',
-        handleAccentColorChanged
-      );
-    };
   }, []);
 
   return accentColor;

@@ -8,6 +8,8 @@ import { registerAllVideoEditorHandlers } from './ipc';
 export type { VideoMetadata } from '@/types/video';
 export type { VideoEditorWindowData } from './window-manager';
 
-registerAllVideoEditorHandlers();
+export function initVideoEditor(): void {
+  registerAllVideoEditorHandlers();
+}
 
 export { createVideoEditorWindow, getVideoEditorWindow, openVideoInEditor };

@@ -3,11 +3,22 @@ import path from 'path';
 import { isProduction } from '@/main/utils/env.ts';
 import { getPublicAssetPath } from '@/main/utils/paths.ts';
 import { isWindows } from '@/main/utils/platform.ts';
-import { stopRecordingAction } from '@/main/capture/video';
-import { rebuildTrayMenu } from './index.ts';
+import { flushPendingContinuations } from '@/main/utils/event-loop.ts';
 import { createTrayIcon } from './tray-icon.ts';
 
 let recordingTray: Tray | null = null;
+let stopRecording: (() => Promise<unknown>) | null = null;
+let rebuildMenu: (() => void) | null = null;
+
+export function setRecordingTrayStopHandler(
+  handler: () => Promise<unknown>
+): void {
+  stopRecording = handler;
+}
+
+export function setRecordingTrayMenuRebuild(handler: () => void): void {
+  rebuildMenu = handler;
+}
 
 function updateRecordingTrayIcon(): void {
   recordingTray?.setImage(createTrayIcon(getRecordingTrayIconPath()));
@@ -32,13 +43,17 @@ function getRecordingTrayIconPath(): string {
 }
 
 async function handleStopRecording(): Promise<void> {
+  if (!stopRecording) {
+    return;
+  }
+  flushPendingContinuations();
   try {
-    await stopRecordingAction();
+    await stopRecording();
   } catch (error) {
     console.error('Error stopping recording from tray:', error);
   } finally {
     hideRecordingTray();
-    rebuildTrayMenu();
+    rebuildMenu?.();
   }
 }
 

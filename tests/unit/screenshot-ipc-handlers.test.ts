@@ -206,6 +206,7 @@ describe('screenshot IPC handlers', () => {
     Object.keys(ipcOn).forEach(k => delete ipcOn[k]);
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
     mockIsHistoryPopoverWebContents.mockReturnValue(true);
+    mockDeleteHistoryItem.mockResolvedValue(true);
   });
 
   async function registerHandlers(): Promise<void> {

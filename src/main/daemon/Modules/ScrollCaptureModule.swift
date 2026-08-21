@@ -39,18 +39,12 @@ class ScrollCaptureModule: Module {
             handleStartAutoScroll(params: params, requestId: requestId)
         case "stopAutoScroll":
             handleStopAutoScroll(requestId: requestId)
-        case "captureFrame":
-            handleCaptureFrame(requestId: requestId)
         case "finish":
             handleFinish(params: params, requestId: requestId)
         case "cancel":
             handleCancel(requestId: requestId)
         case "status":
             handleStatus(requestId: requestId)
-        case "hide":
-            respond(id: requestId, result: ["hidden": true])
-        case "show":
-            respond(id: requestId, result: ["visible": true])
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -125,23 +119,6 @@ class ScrollCaptureModule: Module {
             guard let self = self else { return }
             self.stopAutoScroll()
             self.respond(id: requestId, result: ["autoScrolling": false])
-        }
-    }
-
-    private func handleCaptureFrame(requestId: String) {
-        guard isCapturing else {
-            respondError(id: requestId, code: "NOT_CAPTURING", message: "Not in capture mode")
-            return
-        }
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            let frameIndex = self.captureCurrentFrame()
-            self.respond(id: requestId, result: [
-                "captured": true,
-                "frameCount": self.capturedFrames.count,
-                "frameIndex": frameIndex ?? -1
-            ])
         }
     }
 

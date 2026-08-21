@@ -119,17 +119,20 @@ export default function HistoryWindow() {
       setSelectedIndex(0);
       loadHistory();
     };
-    window.ipcRenderer.on('history:refresh', handleRefresh);
+    const unsubscribe = window.ipcRenderer.on('history:refresh', handleRefresh);
     window.ipcRenderer.send('history:ready');
 
-    return () => {
-      window.ipcRenderer.off('history:refresh', handleRefresh);
-    };
+    return unsubscribe;
   }, [loadHistory]);
 
   const handleDelete = useCallback(async (id: string) => {
     try {
-      await window.ipcRenderer.invoke('history:delete', id);
+      const deleted = (await window.ipcRenderer.invoke(
+        'history:delete',
+        id
+      )) as boolean;
+      if (!deleted) return;
+
       setItems(prev => {
         const newItems = prev.filter(item => item.id !== id);
         setSelectedIndex(currentIndex => {
@@ -149,13 +152,16 @@ export default function HistoryWindow() {
       const cleared = (await window.ipcRenderer.invoke(
         'history:clear'
       )) as boolean;
-      if (!cleared) return;
+      if (!cleared) {
+        await loadHistory();
+        return;
+      }
 
       setItems([]);
     } catch (error) {
       console.error('Failed to clear history:', error);
     }
-  }, []);
+  }, [loadHistory]);
 
   const handleOpenItem = useCallback((item: HistoryItemSummary) => {
     if (item.type === 'video') {

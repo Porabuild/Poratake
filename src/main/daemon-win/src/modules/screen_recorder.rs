@@ -156,14 +156,6 @@ impl Module for ScreenRecorderModule {
                     "duration": status.duration,
                 }))))
             }
-            "setMicMuted" => {
-                let muted = param_bool(&request.params, "muted").unwrap_or(false);
-                self.recorder.set_mic_muted(muted);
-                Reply::Now(Ok(Some(json!({
-                    "success": true,
-                    "muted": muted,
-                }))))
-            }
             "setMicrophone" => self.set_microphone(request),
             "setSystemAudio" => self.set_system_audio(request),
             "setCamera" => self.set_camera(request),

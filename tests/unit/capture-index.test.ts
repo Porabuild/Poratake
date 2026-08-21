@@ -6,6 +6,7 @@ const mockExecFile =
 const mockPrewarmCapturePreview = vi.fn();
 const mockPrewarmAreaOverlay = vi.fn();
 const mockPrewarmFreezeScreen = vi.fn();
+const mockInitVideoCapture = vi.fn();
 const mockPlatform = vi.hoisted(() => ({ isMac: true }));
 
 vi.mock('child_process', () => ({
@@ -23,6 +24,10 @@ vi.mock('@/main/capture/area-overlay', () => ({
 
 vi.mock('@/main/capture/freeze-screen', () => ({
   prewarmFreezeScreen: () => mockPrewarmFreezeScreen(),
+}));
+
+vi.mock('@/main/capture/video', () => ({
+  init: () => mockInitVideoCapture(),
 }));
 
 vi.mock('@/main/utils/platform', () => ({
@@ -61,6 +66,7 @@ describe('capture index', () => {
     mockPlatform.isMac = false;
     const { init } = await import('@/main/capture');
     init();
+    expect(mockInitVideoCapture).toHaveBeenCalledTimes(1);
     expect(mockPrewarmCapturePreview).not.toHaveBeenCalled();
     expect(mockPrewarmAreaOverlay).toHaveBeenCalledTimes(1);
     expect(mockPrewarmFreezeScreen).toHaveBeenCalledTimes(1);

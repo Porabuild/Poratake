@@ -4,7 +4,3 @@ declare namespace NodeJS {
     VITE_PUBLIC: string;
   }
 }
-
-interface Window {
-  ipcRenderer: import('electron').IpcRenderer;
-}

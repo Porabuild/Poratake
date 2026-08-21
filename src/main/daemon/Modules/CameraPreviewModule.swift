@@ -24,10 +24,6 @@ class CameraPreviewModule: Module {
             handleUpdate(params: params, requestId: requestId)
         case "setContentProtection":
             handleSetContentProtection(params: params, requestId: requestId)
-        case "getPosition":
-            handleGetPosition(requestId: requestId)
-        case "status":
-            handleStatus(requestId: requestId)
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -122,26 +118,6 @@ class CameraPreviewModule: Module {
             self.panel?.sharingType = self.isContentProtected ? .none : .readOnly
             self.respond(id: requestId, result: ["protected": self.isContentProtected])
         }
-    }
-    
-    private func handleGetPosition(requestId: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, let panel = self.panel else {
-                self?.respond(id: requestId, result: ["x": nil, "y": nil])
-                return
-            }
-            
-            let mainScreenHeight = NSScreen.main?.frame.height ?? 0
-            let x = Int(panel.frame.origin.x)
-            let y = Int(mainScreenHeight - panel.frame.origin.y - panel.frame.height)
-            
-            self.respond(id: requestId, result: ["x": x, "y": y])
-        }
-    }
-    
-    private func handleStatus(requestId: String) {
-        let isVisible = panel != nil && panel?.isVisible == true
-        respond(id: requestId, result: ["visible": isVisible])
     }
     
     private func showPanel(x: Int?, y: Int?) {

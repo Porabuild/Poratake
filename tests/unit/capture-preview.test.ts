@@ -9,6 +9,7 @@ const mockUpdateConfig = vi.fn();
 const mockGetThumbnail = vi.fn();
 const mockDeleteHistoryItem = vi.fn();
 const mockGetHistoryItemByPath = vi.fn();
+const mockSetHistoryFileReleaseHandler = vi.fn();
 const mockOpenScreenshotEditor = vi.fn();
 const mockCreateVideoEditorWindow = vi.fn();
 const mockDeleteVideo = vi.fn();
@@ -141,6 +142,8 @@ vi.mock('@/main/utils/thumbnails', () => ({
 vi.mock('@/main/history', () => ({
   deleteHistoryItem: (...a: unknown[]) => mockDeleteHistoryItem(...a),
   getHistoryItemByPath: (...a: unknown[]) => mockGetHistoryItemByPath(...a),
+  setHistoryFileReleaseHandler: (...a: unknown[]) =>
+    mockSetHistoryFileReleaseHandler(...a),
 }));
 
 vi.mock('@/main/capture/screenshot/open-editor', () => ({
@@ -301,7 +304,7 @@ describe('capture-preview index', () => {
     });
   });
 
-  it('reveals a video placeholder before its thumbnail is generated', async () => {
+  it('sends a direct video URL before its thumbnail is generated', async () => {
     let finishThumbnail: (value: {
       base64: string;
       cached: boolean;
@@ -320,7 +323,9 @@ describe('capture-preview index', () => {
       expect(browserWindows[0].webContents.send).toHaveBeenCalledWith(
         'load',
         expect.objectContaining({
-          params: expect.objectContaining({ imageUrl: null }),
+          params: expect.objectContaining({
+            imageUrl: expect.stringMatching(/^file:/),
+          }),
         })
       );
     });
@@ -356,7 +361,9 @@ describe('capture-preview index', () => {
       expect(browserWindows[0].webContents.send).toHaveBeenCalledWith(
         'load',
         expect.objectContaining({
-          params: expect.objectContaining({ imageUrl: null }),
+          params: expect.objectContaining({
+            imageUrl: expect.stringMatching(/^file:/),
+          }),
         })
       );
     });
@@ -696,6 +703,19 @@ describe('capture-preview index', () => {
       expect(browserWindows[0].setBounds).not.toHaveBeenCalled();
     });
 
+    it('releases a matching preview before history deletes its file', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      showCapturePreview('/p/video.mov', 'video');
+      const releaseFile = mockSetHistoryFileReleaseHandler.mock.calls.at(
+        -1
+      )?.[0] as (filePath: string) => Promise<void>;
+
+      await releaseFile('/p/video.mov');
+
+      expect(browserWindows[0].close).toHaveBeenCalledOnce();
+    });
+
     it('reveals the preview only once when its data updates', async () => {
       const { showCapturePreview } =
         await import('@/main/capture/capture-preview');
@@ -908,6 +928,72 @@ describe('capture-preview index', () => {
       expect(mockDeleteVideo).toHaveBeenCalledWith('/p/v.mov', {
         showNotification: false,
       });
+    });
+
+    it('waits for the video preview window to close before deleting', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      showCapturePreview('/p/v.mov', 'video');
+      const previewWindow = browserWindows[0];
+      const id = previewWindow.webContents.id;
+      previewWindow.close.mockImplementationOnce(() => {});
+
+      const deleting = ipcOn['capture-preview:delete']({ sender: { id } });
+      await Promise.resolve();
+      expect(mockDeleteVideo).not.toHaveBeenCalled();
+
+      previewWindow.destroyedFlag = true;
+      previewWindow.windowHandlers['closed'].forEach(handler => handler());
+      await deleting;
+
+      expect(mockDeleteVideo).toHaveBeenCalledWith('/p/v.mov', {
+        showNotification: false,
+      });
+    });
+
+    it('waits for video thumbnail generation before deleting', async () => {
+      let finishThumbnail: (result: { base64: string }) => void = () => {};
+      mockGetThumbnail.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishThumbnail = resolve;
+        })
+      );
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      showCapturePreview('/p/v.mov', 'video');
+      const previewWindow = browserWindows[0];
+      preparePreviewRenderer(previewWindow);
+      await vi.waitFor(() => {
+        expect(mockGetThumbnail).toHaveBeenCalledWith('/p/v.mov', 'video');
+      });
+
+      const deleting = ipcOn['capture-preview:delete']({
+        sender: { id: previewWindow.webContents.id },
+      });
+      expect(mockDeleteVideo).not.toHaveBeenCalled();
+
+      finishThumbnail({ base64: 'abc' });
+      await deleting;
+
+      expect(mockDeleteVideo).toHaveBeenCalledWith('/p/v.mov', {
+        showNotification: false,
+      });
+    });
+
+    it('ignores repeated delete requests for one preview', async () => {
+      const { showCapturePreview } =
+        await import('@/main/capture/capture-preview');
+      showCapturePreview('/p/v.mov', 'video');
+      const previewWindow = browserWindows[0];
+      const id = previewWindow.webContents.id;
+      previewWindow.close.mockImplementation(() => {});
+
+      const firstDelete = ipcOn['capture-preview:delete']({ sender: { id } });
+      const secondDelete = ipcOn['capture-preview:delete']({ sender: { id } });
+      previewWindow.windowHandlers['closed'].forEach(handler => handler());
+      await Promise.all([firstDelete, secondDelete]);
+
+      expect(mockDeleteVideo).toHaveBeenCalledTimes(1);
     });
 
     it('waits for video history persistence before deleting', async () => {

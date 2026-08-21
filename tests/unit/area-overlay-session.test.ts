@@ -82,9 +82,9 @@ beforeEach(() => {
       const channelHandlers = handlers.get(channel) ?? new Set<IpcHandler>();
       channelHandlers.add(handler);
       handlers.set(channel, channelHandlers);
-    }),
-    off: vi.fn((channel: string, handler: IpcHandler) => {
-      handlers.get(channel)?.delete(handler);
+      return () => {
+        handlers.get(channel)?.delete(handler);
+      };
     }),
   } as never;
 });

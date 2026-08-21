@@ -11,6 +11,7 @@ const mockNativeImageCreateFromPath = vi.fn(() => ({
 }));
 const mockStopRecordingAction = vi.fn();
 const mockRebuildTrayMenu = vi.fn();
+const mockFlushPendingContinuations = vi.fn();
 const nativeTheme = Object.assign(new EventEmitter(), {
   shouldUseDarkColors: true,
 });
@@ -49,14 +50,16 @@ vi.mock('@/main/utils/platform.ts', () => ({ isWindows: true }));
 vi.mock('@/main/utils/paths.ts', () => ({
   getPublicAssetPath: (asset: string) => `/public/${asset}`,
 }));
-
-vi.mock('@/main/capture/video', () => ({
-  stopRecordingAction: () => mockStopRecordingAction(),
+vi.mock('@/main/utils/event-loop.ts', () => ({
+  flushPendingContinuations: () => mockFlushPendingContinuations(),
 }));
 
-vi.mock('@/main/menu/index.ts', () => ({
-  rebuildTrayMenu: () => mockRebuildTrayMenu(),
-}));
+async function loadRecordingTray() {
+  const recordingTray = await import('@/main/menu/recording-tray');
+  recordingTray.setRecordingTrayStopHandler(() => mockStopRecordingAction());
+  recordingTray.setRecordingTrayMenuRebuild(() => mockRebuildTrayMenu());
+  return recordingTray;
+}
 
 describe('recording-tray', () => {
   beforeEach(() => {
@@ -67,7 +70,7 @@ describe('recording-tray', () => {
   });
 
   it('showRecordingTray creates a Tray', async () => {
-    const { showRecordingTray } = await import('@/main/menu/recording-tray');
+    const { showRecordingTray } = await loadRecordingTray();
     showRecordingTray();
     expect(trayInstances.length).toBe(1);
     expect(trayInstances[0].setToolTip).toHaveBeenCalledWith(
@@ -80,7 +83,7 @@ describe('recording-tray', () => {
   });
 
   it('showRecordingTray is idempotent', async () => {
-    const { showRecordingTray } = await import('@/main/menu/recording-tray');
+    const { showRecordingTray } = await loadRecordingTray();
     showRecordingTray();
     showRecordingTray();
     expect(trayInstances.length).toBe(1);
@@ -97,10 +100,14 @@ describe('recording-tray', () => {
 
   it('clicking the tray stops recording and rebuilds menu', async () => {
     mockStopRecordingAction.mockResolvedValue(undefined);
-    const { showRecordingTray } = await import('@/main/menu/recording-tray');
+    const { showRecordingTray } = await loadRecordingTray();
     showRecordingTray();
     const tray = trayInstances[0];
     await (tray.handlers['click'] || [])[0]();
+    expect(mockFlushPendingContinuations).toHaveBeenCalledOnce();
+    expect(
+      mockFlushPendingContinuations.mock.invocationCallOrder[0]
+    ).toBeLessThan(mockStopRecordingAction.mock.invocationCallOrder[0]);
     expect(mockStopRecordingAction).toHaveBeenCalled();
     expect(tray.destroy).toHaveBeenCalled();
     expect(mockRebuildTrayMenu).toHaveBeenCalled();
@@ -111,7 +118,7 @@ describe('recording-tray', () => {
     const consoleError = vi
       .spyOn(console, 'error')
       .mockImplementation(() => {});
-    const { showRecordingTray } = await import('@/main/menu/recording-tray');
+    const { showRecordingTray } = await loadRecordingTray();
     showRecordingTray();
     const tray = trayInstances[0];
 
@@ -127,8 +134,7 @@ describe('recording-tray', () => {
   });
 
   it('hideRecordingTray destroys the tray', async () => {
-    const { showRecordingTray, hideRecordingTray } =
-      await import('@/main/menu/recording-tray');
+    const { showRecordingTray, hideRecordingTray } = await loadRecordingTray();
     showRecordingTray();
     hideRecordingTray();
     expect(trayInstances[0].destroy).toHaveBeenCalled();
@@ -136,7 +142,7 @@ describe('recording-tray', () => {
   });
 
   it('hideRecordingTray is safe when no tray exists', async () => {
-    const { hideRecordingTray } = await import('@/main/menu/recording-tray');
+    const { hideRecordingTray } = await loadRecordingTray();
     expect(() => hideRecordingTray()).not.toThrow();
   });
 });

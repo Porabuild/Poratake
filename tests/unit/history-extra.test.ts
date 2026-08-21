@@ -20,6 +20,7 @@ const mockGetMicAudioPath = vi.fn();
 const mockGetSystemAudioPath = vi.fn();
 const mockGetCameraVideoPath = vi.fn();
 const mockGetCursorPath = vi.fn();
+const mockDeleteRecordingAssets = vi.fn();
 const mockIsHistoryPopoverWebContents = vi.fn(() => true);
 const mockShowItemInFolder = vi.fn();
 
@@ -82,6 +83,7 @@ vi.mock('@/main/capture/video/recording-project', () => ({
   getSystemAudioPath: (...a: unknown[]) => mockGetSystemAudioPath(...a),
   getCameraVideoPath: (...a: unknown[]) => mockGetCameraVideoPath(...a),
   getCursorPath: (...a: unknown[]) => mockGetCursorPath(...a),
+  deleteRecordingAssets: (...a: unknown[]) => mockDeleteRecordingAssets(...a),
 }));
 
 vi.mock('@/main/history/popover', () => ({

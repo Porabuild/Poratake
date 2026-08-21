@@ -387,10 +387,7 @@ export default function RecordingControlWindow({
       update: Partial<RecordingControlState>
     ) => setState(current => ({ ...current, ...update }));
 
-    window.ipcRenderer.on('recording-control:update', handleUpdate);
-    return () => {
-      window.ipcRenderer.off('recording-control:update', handleUpdate);
-    };
+    return window.ipcRenderer.on('recording-control:update', handleUpdate);
   }, []);
 
   const sendAction = useCallback((action: RecordingControlAction) => {

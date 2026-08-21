@@ -25,10 +25,7 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
   useEffect(() => {
     const handleHandoff = () => setHandedOff(true);
 
-    window.ipcRenderer.on('area-overlay:handoff', handleHandoff);
-    return () => {
-      window.ipcRenderer.off('area-overlay:handoff', handleHandoff);
-    };
+    return window.ipcRenderer.on('area-overlay:handoff', handleHandoff);
   }, []);
 
   const send = useCallback(
@@ -83,19 +80,22 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
     const handleColorPicker = (_event: unknown, active: boolean) =>
       setIsPickingColor(active);
 
-    window.ipcRenderer.on('area-overlay:set-toolbar', handleToolbar);
-    window.ipcRenderer.on('area-overlay:set-pick-targets', handlePickTargets);
-    window.ipcRenderer.on('area-overlay:set-color-picker', handleColorPicker);
+    const unsubscribeToolbar = window.ipcRenderer.on(
+      'area-overlay:set-toolbar',
+      handleToolbar
+    );
+    const unsubscribePickTargets = window.ipcRenderer.on(
+      'area-overlay:set-pick-targets',
+      handlePickTargets
+    );
+    const unsubscribeColorPicker = window.ipcRenderer.on(
+      'area-overlay:set-color-picker',
+      handleColorPicker
+    );
     return () => {
-      window.ipcRenderer.off('area-overlay:set-toolbar', handleToolbar);
-      window.ipcRenderer.off(
-        'area-overlay:set-pick-targets',
-        handlePickTargets
-      );
-      window.ipcRenderer.off(
-        'area-overlay:set-color-picker',
-        handleColorPicker
-      );
+      unsubscribeToolbar();
+      unsubscribePickTargets();
+      unsubscribeColorPicker();
     };
   }, []);
 
@@ -165,10 +165,7 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
       });
     };
 
-    window.ipcRenderer.on('area-overlay:revealed', handleRevealed);
-    return () => {
-      window.ipcRenderer.off('area-overlay:revealed', handleRevealed);
-    };
+    return window.ipcRenderer.on('area-overlay:revealed', handleRevealed);
   }, []);
 
   useEffect(() => {

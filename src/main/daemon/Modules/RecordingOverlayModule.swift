@@ -25,8 +25,6 @@ class RecordingOverlayModule: Module {
             handleShowWindow(params: params, requestId: requestId)
         case "hide":
             handleHide(requestId: requestId)
-        case "status":
-            handleStatus(requestId: requestId)
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -92,10 +90,6 @@ class RecordingOverlayModule: Module {
         }
     }
     
-    private func handleStatus(requestId: String) {
-        respond(id: requestId, result: ["visible": !windows.isEmpty || highlightWindow != nil])
-    }
-
     /// Frames the recorded window from the outside and keeps up with it, so it
     /// stays obvious which window the recording is following.
     private func showWindowHighlight(windowID: CGWindowID, color: NSColor) -> Bool {

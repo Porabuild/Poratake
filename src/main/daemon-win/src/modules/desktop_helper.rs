@@ -3,7 +3,7 @@ use crate::router::{Module, Reply, method_not_found};
 use serde_json::json;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, IsWindowVisible, SW_HIDE, SW_SHOW, ShowWindow,
+    FindWindowExW, FindWindowW, SW_HIDE, SW_SHOW, ShowWindow,
 };
 use windows::core::w;
 
@@ -22,12 +22,6 @@ impl Module for DesktopHelperModule {
             "show" => set_icons_visible(true)
                 .map(|_| Some(json!({ "hidden": false })))
                 .into(),
-            "status" => {
-                let hidden = find_desktop_view()
-                    .map(|hwnd| !unsafe { IsWindowVisible(hwnd) }.as_bool())
-                    .unwrap_or(false);
-                Reply::Now(Ok(Some(json!({ "hidden": hidden }))))
-            }
             method => method_not_found(method),
         }
     }

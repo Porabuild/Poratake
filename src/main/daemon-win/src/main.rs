@@ -9,7 +9,6 @@ mod router;
 mod tone_map;
 mod ui;
 
-use modules::all_in_one::AllInOneModule;
 use modules::area_selector::AreaSelectorModule;
 use modules::camera_preview::CameraPreviewModule;
 use modules::desktop_helper::DesktopHelperModule;
@@ -36,7 +35,6 @@ fn main() {
     ui::init();
 
     let mut router = Router::new();
-    router.register(Box::new(AllInOneModule::new()));
     router.register(Box::new(AreaSelectorModule::new()));
     router.register(Box::new(OcrModule));
     router.register(Box::new(QrCodeModule));

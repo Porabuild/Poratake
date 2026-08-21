@@ -47,6 +47,7 @@ import { isFeatureSupported } from '@/main/system/capabilities';
 import type { FeatureId } from '@/types/capabilities';
 import { isMac, isWindows } from '@/main/utils/platform';
 import { getPublicAssetPath } from '@/main/utils/paths';
+import { setRecordingTrayMenuRebuild } from './recording-tray.ts';
 import { createTrayIcon } from './tray-icon.ts';
 
 if (!isMac) {
@@ -476,6 +477,7 @@ function getTrayIconPath(): string {
 }
 
 export const init = async () => {
+  setRecordingTrayMenuRebuild(rebuildTrayMenu);
   const config = getConfig();
 
   if (config.general.hideMenuBarIcon) {

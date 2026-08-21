@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -192,13 +191,12 @@ struct AudioSegment {
 pub struct AudioCaptureSet {
     parent: PathBuf,
     clock: Arc<Mutex<AudioClockState>>,
-    mic_muted: Arc<AtomicBool>,
     system: Option<AudioTrack>,
     microphone: Option<AudioTrack>,
 }
 
 impl AudioCaptureSet {
-    pub fn start(config: &RecordingConfig, mic_muted: bool) -> Result<Self, RecorderError> {
+    pub fn start(config: &RecordingConfig) -> Result<Self, RecorderError> {
         let parent = config
             .output_path
             .parent()
@@ -209,7 +207,6 @@ impl AudioCaptureSet {
         let mut set = Self {
             parent,
             clock: Arc::new(Mutex::new(AudioClockState::default())),
-            mic_muted: Arc::new(AtomicBool::new(mic_muted)),
             system: None,
             microphone: None,
         };
@@ -253,10 +250,6 @@ impl AudioCaptureSet {
         }
     }
 
-    pub fn set_mic_muted(&self, muted: bool) {
-        self.mic_muted.store(muted, Ordering::Release);
-    }
-
     pub fn set_microphone(&mut self, device: Option<AudioDevice>) -> Result<(), RecorderError> {
         if let Some(track) = &self.microphone {
             return track.reconfigure(device);
@@ -265,12 +258,8 @@ impl AudioCaptureSet {
         let Some(device) = device else {
             return Ok(());
         };
-        self.microphone = Some(self.open_track(
-            AudioKind::Microphone,
-            MICROPHONE_AUDIO_FILE,
-            device,
-            self.mic_muted.clone(),
-        )?);
+        self.microphone =
+            Some(self.open_track(AudioKind::Microphone, MICROPHONE_AUDIO_FILE, device)?);
         Ok(())
     }
 
@@ -282,12 +271,8 @@ impl AudioCaptureSet {
         if !enabled {
             return Ok(());
         }
-        self.system = Some(self.open_track(
-            AudioKind::System,
-            SYSTEM_AUDIO_FILE,
-            AudioDevice::default(),
-            Arc::new(AtomicBool::new(false)),
-        )?);
+        self.system =
+            Some(self.open_track(AudioKind::System, SYSTEM_AUDIO_FILE, AudioDevice::default())?);
         Ok(())
     }
 
@@ -296,14 +281,12 @@ impl AudioCaptureSet {
         kind: AudioKind,
         file_name: &str,
         device: AudioDevice,
-        muted: Arc<AtomicBool>,
     ) -> Result<AudioTrack, RecorderError> {
         AudioTrack::start(
             kind,
             self.parent.join(file_name),
             device,
             self.clock.clone(),
-            muted,
         )
     }
 
@@ -384,7 +367,6 @@ impl AudioTrack {
         output_path: PathBuf,
         device: AudioDevice,
         clock: Arc<Mutex<AudioClockState>>,
-        muted: Arc<AtomicBool>,
     ) -> Result<Self, RecorderError> {
         let (command_sender, command_receiver) = std::sync::mpsc::channel();
         let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
@@ -400,7 +382,6 @@ impl AudioTrack {
                 completion_sender,
                 health_sender,
                 clock,
-                muted,
             );
         });
 
@@ -488,7 +469,6 @@ fn run_audio_worker(
     completion: Sender<Result<StagedAsset, RecorderError>>,
     health: Sender<RecorderError>,
     clock: Arc<Mutex<AudioClockState>>,
-    muted: Arc<AtomicBool>,
 ) {
     let apartment = match ComApartment::initialize() {
         Ok(apartment) => apartment,
@@ -532,7 +512,7 @@ fn run_audio_worker(
     }
 
     let _ = ready.send(Ok(()));
-    let mut processor = AudioProcessor::new(encoder, capture.format, clock, muted);
+    let mut processor = AudioProcessor::new(encoder, capture.format, clock);
     let mut capture = Some(capture);
     let mut fatal = false;
     let result = loop {
@@ -1069,7 +1049,6 @@ struct AudioProcessor {
     encoder: Option<AudioEncoder>,
     format: AudioFormat,
     clock: Arc<Mutex<AudioClockState>>,
-    muted: Arc<AtomicBool>,
     next_time: i64,
     last_source_end: Option<i64>,
     pending: VecDeque<BufferedAudioPacket>,
@@ -1077,17 +1056,11 @@ struct AudioProcessor {
 }
 
 impl AudioProcessor {
-    fn new(
-        encoder: AudioEncoder,
-        format: AudioFormat,
-        clock: Arc<Mutex<AudioClockState>>,
-        muted: Arc<AtomicBool>,
-    ) -> Self {
+    fn new(encoder: AudioEncoder, format: AudioFormat, clock: Arc<Mutex<AudioClockState>>) -> Self {
         Self {
             encoder: Some(encoder),
             format,
             clock,
-            muted,
             next_time: 0,
             last_source_end: None,
             pending: VecDeque::new(),
@@ -1134,8 +1107,7 @@ impl AudioProcessor {
             packet_start.saturating_add(frames_to_hns(packet.frames, self.format.sample_rate)),
         );
         let segments = clock.visible_segments(packet_start, packet.frames, self.format.sample_rate);
-        let silent = packet.flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0
-            || self.muted.load(Ordering::Acquire);
+        let silent = packet.flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
         let discontinuity = packet.flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0;
 
         for segment in segments {

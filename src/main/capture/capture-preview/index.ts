@@ -12,10 +12,15 @@ import fs from 'fs';
 import { pathToFileURL } from 'url';
 import { isDev, devServerUrl } from '@/main/utils/env';
 import { getThumbnail } from '@/main/utils/thumbnails';
-import { deleteHistoryItem, getHistoryItemByPath } from '@/main/history';
+import {
+  deleteHistoryItem,
+  getHistoryItemByPath,
+  setHistoryFileReleaseHandler,
+} from '@/main/history';
 import { openScreenshotEditor } from '@/main/capture/screenshot/open-editor';
 import { createVideoEditorWindow } from '@/main/capture/video/video-editor';
 import { deleteVideo } from '@/main/capture/video/delete-video';
+import { getRecordingVideoPath } from '@/main/capture/video/recording-project.ts';
 import * as settings from '@/main/settings';
 import { registerPreviewExportIpc } from './video-export';
 import { animateWindowMove } from '@/main/utils/window-animation';
@@ -30,6 +35,8 @@ interface PreviewWindowData {
   historyId?: string;
   historyIdPromise?: Promise<string | undefined>;
   actionReadyPromise?: Promise<unknown>;
+  thumbnailReadyPromise?: Promise<void>;
+  isDeleting: boolean;
   setAutoDismissPaused: (paused: boolean) => void;
 }
 
@@ -372,6 +379,7 @@ export function showCapturePreview(
     historyId,
     historyIdPromise,
     actionReadyPromise,
+    isDeleting: false,
     setAutoDismissPaused,
   };
 
@@ -379,8 +387,9 @@ export function showCapturePreview(
 
   previewWindow.webContents.ipc.once('capture-preview:content-ready', reveal);
 
-  const initialImageUrl =
-    contentType === 'screenshot' ? pathToFileURL(filePath).href : null;
+  const initialImageUrl = pathToFileURL(
+    contentType === 'video' ? getRecordingVideoPath(filePath) : filePath
+  ).href;
 
   const sendPreviewData = (thumbnailUrl?: string) => {
     if (previewWindow.isDestroyed()) return;
@@ -397,15 +406,18 @@ export function showCapturePreview(
     });
   };
 
-  void preview.loaded.then(async loaded => {
+  void preview.loaded.then(loaded => {
     if (!loaded) return;
 
     sendPreviewData();
     if (previewWindow.isDestroyed()) return;
 
-    const result = await getThumbnail(filePath, contentType).catch(() => null);
-    if (!result?.base64) return;
-    sendPreviewData(`data:image/jpeg;base64,${result.base64}`);
+    previewData.thumbnailReadyPromise = getThumbnail(filePath, contentType)
+      .then(result => {
+        if (!result?.base64) return;
+        sendPreviewData(`data:image/jpeg;base64,${result.base64}`);
+      })
+      .catch(() => {});
   });
 
   previewWindow.on('moved', () => {
@@ -439,7 +451,35 @@ export function getCapturePreviewUploadPath(
   return getPreviewDataByWebContentsId(webContentsId)?.filePath ?? null;
 }
 
+async function releaseCapturePreviewFile(filePath: string): Promise<void> {
+  const targetPath = path.resolve(filePath);
+  const matchingPreviews = previewWindows.filter(data => {
+    const previewPath = path.resolve(data.filePath);
+    return isWindows
+      ? previewPath.toLowerCase() === targetPath.toLowerCase()
+      : previewPath === targetPath;
+  });
+
+  await Promise.all(
+    matchingPreviews.map(async data => {
+      data.isDeleting = true;
+      const previewClosed = data.window.isDestroyed()
+        ? Promise.resolve()
+        : new Promise<void>(resolve => {
+            data.window.once('closed', resolve);
+            data.window.close();
+          });
+      await Promise.allSettled([
+        data.actionReadyPromise,
+        data.thumbnailReadyPromise,
+        previewClosed,
+      ]);
+    })
+  );
+}
+
 export function registerCapturePreviewIpc(): void {
+  setHistoryFileReleaseHandler(releaseCapturePreviewFile);
   registerPreviewExportIpc(webContentsId => {
     const data = getPreviewDataByWebContentsId(webContentsId);
     return data?.contentType === 'video' ? data.filePath : null;
@@ -549,7 +589,8 @@ export function registerCapturePreviewIpc(): void {
 
   ipcMain.on('capture-preview:delete', async event => {
     const data = getPreviewDataByWebContentsId(event.sender.id);
-    if (!data) return;
+    if (!data || data.isDeleting) return;
+    data.isDeleting = true;
 
     const {
       filePath,
@@ -559,15 +600,23 @@ export function registerCapturePreviewIpc(): void {
       actionReadyPromise,
     } = data;
 
-    if (!data.window.isDestroyed()) {
+    const previewClosed = new Promise<void>(resolve => {
+      data.window.once('closed', resolve);
       data.window.close();
-    }
+    });
 
     if (contentType === 'video') {
-      await Promise.allSettled([historyIdPromise, actionReadyPromise]);
+      await Promise.allSettled([
+        historyIdPromise,
+        actionReadyPromise,
+        data.thumbnailReadyPromise,
+        previewClosed,
+      ]);
       await deleteVideo(filePath, { showNotification: false });
       return;
     }
+
+    await previewClosed;
 
     const resolvedHistoryId =
       historyId ??

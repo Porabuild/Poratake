@@ -1,8 +1,13 @@
 import { ipcMain } from 'electron';
 import fs from 'fs';
+import path from 'path';
 import { getWindowData } from '../window-manager';
 import { getEditorStatePath } from '../recording-project';
 import { generateInitialEditorState } from '../auto-zoom-generator';
+import {
+  localizeWallpaperImage,
+  resolveLocalizedWallpaperImage,
+} from '@/main/settings/wallpaper-assets.ts';
 import type { VideoEditorState } from '@/types/video-editor-state';
 import { EDITOR_STATE_VERSION } from '@/types/video-editor-state';
 
@@ -230,6 +235,73 @@ function migrateEditorState(state: VideoEditorState): VideoEditorState {
   return { ...state, version: EDITOR_STATE_VERSION, cursorStyle };
 }
 
+function localizeStateWallpaper(
+  state: VideoEditorState,
+  statePath: string
+): VideoEditorState {
+  const wallpaper = state.wallpaper;
+  if (!wallpaper?.backgroundImage) {
+    return state;
+  }
+
+  let localizedImage: string;
+  try {
+    localizedImage = localizeWallpaperImage(
+      wallpaper.backgroundImage,
+      path.dirname(statePath)
+    );
+  } catch (error) {
+    console.warn('Failed to localize editor wallpaper:', error);
+    try {
+      const savedState = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as {
+        wallpaper?: { backgroundImage?: unknown };
+      };
+      if (typeof savedState.wallpaper?.backgroundImage === 'string') {
+        localizedImage = savedState.wallpaper.backgroundImage;
+      } else {
+        return state;
+      }
+    } catch {
+      return state;
+    }
+  }
+  if (localizedImage === wallpaper.backgroundImage) {
+    return state;
+  }
+  return {
+    ...state,
+    wallpaper: {
+      ...wallpaper,
+      backgroundImage: localizedImage,
+    },
+  };
+}
+
+function resolveStateWallpaper(
+  state: VideoEditorState,
+  statePath: string
+): VideoEditorState {
+  const wallpaper = state.wallpaper;
+  if (!wallpaper?.backgroundImage) {
+    return state;
+  }
+
+  const resolvedImage = resolveLocalizedWallpaperImage(
+    wallpaper.backgroundImage,
+    path.dirname(statePath)
+  );
+  if (resolvedImage === wallpaper.backgroundImage) {
+    return state;
+  }
+  return {
+    ...state,
+    wallpaper: {
+      ...wallpaper,
+      backgroundImage: resolvedImage,
+    },
+  };
+}
+
 function getRecordingMetadataFromStateFile(statePath: string): {
   recordingType?: VideoEditorState['recordingType'];
   sourceDuration?: number;
@@ -277,7 +349,7 @@ export function registerStateHandlers(): void {
           return null;
         }
 
-        return migrateEditorState(parsed);
+        return resolveStateWallpaper(migrateEditorState(parsed), statePath);
       } catch (error) {
         console.error('Failed to load editor state:', error);
         return null;
@@ -300,7 +372,8 @@ export function registerStateHandlers(): void {
       }
 
       try {
-        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        const stateToSave = localizeStateWallpaper(state, statePath);
+        fs.writeFileSync(statePath, JSON.stringify(stateToSave, null, 2));
         return true;
       } catch (error) {
         console.error('Failed to save editor state:', error);

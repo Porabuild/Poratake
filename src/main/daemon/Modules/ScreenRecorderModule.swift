@@ -36,8 +36,6 @@ class ScreenRecorderModule: Module {
             handleStop(requestId: requestId)
         case "status":
             handleStatus(requestId: requestId)
-        case "setMicMuted":
-            handleSetMicMuted(params: params, requestId: requestId)
         case "setMicrophone":
             handleSetMicrophone(params: params, requestId: requestId)
         case "setSystemAudio":
@@ -227,19 +225,6 @@ class ScreenRecorderModule: Module {
         ])
     }
     
-    private func handleSetMicMuted(params: [String: AnyCodable]?, requestId: String) {
-        let muted = params?["muted"]?.bool() ?? false
-        if isIOSRecording {
-            iosRecorder.setMicMuted(muted)
-        } else {
-            screenRecorder.setMicMuted(muted)
-        }
-        respond(id: requestId, result: [
-            "success": true,
-            "muted": muted
-        ])
-    }
-
     private func guardLiveDeviceChange(requestId: String) -> Bool {
         if isIOSRecording {
             respondError(

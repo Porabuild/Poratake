@@ -11,7 +11,13 @@ import { registerProjectHandlers } from './project-handlers';
 import { registerMusicHandlers } from './music-handlers';
 import { registerExportSessionHandlers } from './export-session';
 
+let registered = false;
+
 export function registerAllVideoEditorHandlers(): void {
+  if (registered) {
+    return;
+  }
+  registered = true;
   registerExportSessionHandlers();
   registerDialogHandlers();
   registerDataHandlers();

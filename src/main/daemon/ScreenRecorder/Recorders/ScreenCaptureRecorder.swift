@@ -44,7 +44,6 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var videoHeight: Int = 1080
 
     private var micEnabled: Bool = false
-    private var micMuted: Bool = false
     private var micCaptureSession: AVCaptureSession?
     private var micAudioOutput: AVCaptureAudioDataOutput?
     private let micQueue = DispatchQueue(label: "com.porabuild.poratake.screen-recorder.mic")
@@ -656,16 +655,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         guard micAudioSessionStarted else { return }
 
         micSampleCount += 1
-        
-        if micMuted {
-            if let mutedBuffer = createMutedSampleBuffer(from: sampleBuffer) {
-                writeMicAudioSample(mutedBuffer)
-            } else {
-                writeMicAudioSample(sampleBuffer)
-            }
-        } else {
-            writeMicAudioSample(sampleBuffer)
-        }
+        writeMicAudioSample(sampleBuffer)
     }
 
     private func writeMicAudioSample(_ sampleBuffer: CMSampleBuffer) {
@@ -772,14 +762,6 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         micAudioOutput = nil
     }
 
-    func setMicMuted(_ muted: Bool) {
-        micMuted = muted
-    }
-    
-    func isMicMuted() -> Bool {
-        return micMuted
-    }
-    
     private func createMutedSampleBuffer(from originalBuffer: CMSampleBuffer) -> CMSampleBuffer? {
         guard let formatDescription = CMSampleBufferGetFormatDescription(originalBuffer),
               let originalBlockBuffer = CMSampleBufferGetDataBuffer(originalBuffer) else {

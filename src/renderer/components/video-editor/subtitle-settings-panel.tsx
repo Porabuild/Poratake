@@ -120,21 +120,18 @@ export default function SubtitleSettingsPanel({
       setGenerationStatus({ status: 'generating', progress: percent });
     };
 
-    window.ipcRenderer.on('whisper:download-progress', handleDownloadProgress);
-    window.ipcRenderer.on(
+    const unsubscribeDownload = window.ipcRenderer.on(
+      'whisper:download-progress',
+      handleDownloadProgress
+    );
+    const unsubscribeGeneration = window.ipcRenderer.on(
       'subtitle:generation-progress',
       handleGenerationProgress
     );
 
     return () => {
-      window.ipcRenderer.off(
-        'whisper:download-progress',
-        handleDownloadProgress
-      );
-      window.ipcRenderer.off(
-        'subtitle:generation-progress',
-        handleGenerationProgress
-      );
+      unsubscribeDownload();
+      unsubscribeGeneration();
     };
   }, []);
 

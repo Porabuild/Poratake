@@ -1357,24 +1357,6 @@ impl Module for CameraPreviewModule {
                 });
                 Reply::Deferred
             }
-            "getPosition" => {
-                let position = self
-                    .runtime
-                    .position
-                    .lock()
-                    .ok()
-                    .and_then(|position| *position);
-                Reply::Now(Ok(Some(match position {
-                    Some((x, y)) => json!({ "x": x, "y": y }),
-                    None => json!({ "x": null, "y": null }),
-                })))
-            }
-            "status" => {
-                let lifecycle = self.runtime.lifecycle();
-                Reply::Now(Ok(Some(json!({
-                    "visible": lifecycle.visible && lifecycle.running
-                }))))
-            }
             method => method_not_found(method),
         }
     }

@@ -49,10 +49,7 @@ export default function SettingsWindow() {
         window.location.hash = tab;
       }
     };
-    window.ipcRenderer.on('navigate-tab', handleNavigateTab);
-    return () => {
-      window.ipcRenderer.off('navigate-tab', handleNavigateTab);
-    };
+    return window.ipcRenderer.on('navigate-tab', handleNavigateTab);
   }, []);
 
   const handleTabChange = useCallback((value: string) => {
