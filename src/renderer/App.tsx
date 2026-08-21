@@ -168,6 +168,17 @@ function App() {
     };
 
     const handleLoad = (_event: unknown, data: WindowLoadPayload) => {
+      if (data.type === 'capture-preview') {
+        void loadCapturePreviewWindow()
+          .then(() => {
+            applyWindowLoadPayload(data);
+          })
+          .catch(() => {
+            window.ipcRenderer.send('capture-preview:renderer-failed');
+          });
+        return;
+      }
+
       applyWindowLoadPayload(data);
     };
 
