@@ -1,28 +1,27 @@
 use super::camera_devices::{enumerate_cameras, select_camera};
 use super::recorder_types::{RecorderError, StagedAsset};
 use crate::com::retain_process_mta;
+use crate::mf::{create_attributes, create_video_type, wide_path};
+use crate::time_format::format_system_time;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 use windows::Win32::Media::MediaFoundation::{
     IMFAttributes, IMFByteStream, IMFMediaEvent, IMFMediaSource, IMFMediaType, IMFSample,
     IMFSinkWriter, IMFSourceReader, IMFSourceReaderCallback, IMFSourceReaderCallback_Impl,
-    MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE,
-    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE,
-    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE,
-    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_DISABLE_THROTTLING,
-    MF_SOURCE_READER_ASYNC_CALLBACK, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
-    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED,
-    MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION, MFCreateAttributes, MFCreateMediaType,
+    MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_MPEG2_PROFILE, MF_MT_SAMPLE_SIZE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+    MF_SINK_WRITER_DISABLE_THROTTLING, MF_SOURCE_READER_ASYNC_CALLBACK,
+    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION,
     MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL,
-    MFCreateSourceReaderFromMediaSource, MFMediaType_Video, MFSTARTUP_FULL, MFShutdown, MFStartup,
-    MFVideoFormat_H264, MFVideoFormat_RGB32, MFVideoInterlace_Progressive,
+    MFCreateSourceReaderFromMediaSource, MFSTARTUP_FULL, MFShutdown, MFStartup, MFVideoFormat_H264,
+    MFVideoFormat_RGB32,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows::core::{PCWSTR, implement};
@@ -1281,58 +1280,6 @@ fn validate_config(config: &CameraRecordingConfig) -> Result<(), RecorderError> 
     Ok(())
 }
 
-fn create_attributes(capacity: u32) -> Result<IMFAttributes, RecorderError> {
-    let mut attributes = None;
-    unsafe { MFCreateAttributes(&mut attributes, capacity) }.map_err(|error| {
-        RecorderError::capture(format!(
-            "Failed to create Media Foundation attributes: {error}"
-        ))
-    })?;
-    attributes.ok_or_else(|| RecorderError::capture("Media Foundation attributes are unavailable"))
-}
-
-fn create_video_type(
-    subtype: windows::core::GUID,
-    width: u32,
-    height: u32,
-    frame_rate_numerator: u32,
-    frame_rate_denominator: u32,
-    bitrate: Option<u32>,
-) -> Result<IMFMediaType, RecorderError> {
-    let media_type = unsafe { MFCreateMediaType() }.map_err(|error| {
-        RecorderError::capture(format!("Failed to create camera video type: {error}"))
-    })?;
-    unsafe {
-        media_type
-            .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(mf_error)?;
-        media_type
-            .SetGUID(&MF_MT_SUBTYPE, &subtype)
-            .map_err(mf_error)?;
-        media_type
-            .SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))
-            .map_err(mf_error)?;
-        media_type
-            .SetUINT64(
-                &MF_MT_FRAME_RATE,
-                pack_ratio(frame_rate_numerator, frame_rate_denominator),
-            )
-            .map_err(mf_error)?;
-        media_type
-            .SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_ratio(1, 1))
-            .map_err(mf_error)?;
-        media_type
-            .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
-            .map_err(mf_error)?;
-        if let Some(bitrate) = bitrate {
-            media_type
-                .SetUINT32(&MF_MT_AVG_BITRATE, bitrate)
-                .map_err(mf_error)?;
-        }
-    }
-    Ok(media_type)
-}
-
 fn mf_error(error: windows::core::Error) -> RecorderError {
     RecorderError::capture(format!(
         "Failed to configure camera Media Foundation state: {error}"
@@ -1344,10 +1291,6 @@ fn camera_bitrate(width: u32, height: u32) -> u32 {
         .saturating_mul(u64::from(height))
         .saturating_mul(8)
         .clamp(4_000_000, 40_000_000) as u32
-}
-
-fn pack_ratio(numerator: u32, denominator: u32) -> u64 {
-    (u64::from(numerator) << 32) | u64::from(denominator)
 }
 
 fn duration_hns(duration: Duration) -> i64 {
@@ -1382,13 +1325,6 @@ fn add_pause_duration(total_pause: i64, pause_started: i64, pause_ended: i64) ->
 
 fn camera_duration_hns(last_written: i64, frame_duration: i64) -> i64 {
     last_written.saturating_add(frame_duration).max(0)
-}
-
-fn wide_path(path: &Path) -> Vec<u16> {
-    path.as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
 }
 
 fn remove_if_exists(path: &Path) -> Result<(), RecorderError> {
@@ -1437,40 +1373,6 @@ fn hns_to_seconds(value: i64) -> f64 {
 fn round(value: f64, decimals: u32) -> f64 {
     let factor = 10_f64.powi(decimals as i32);
     (value * factor).round() / factor
-}
-
-fn format_system_time(time: SystemTime) -> String {
-    let elapsed = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let total_seconds = elapsed.as_secs() as i64;
-    let days = total_seconds.div_euclid(86_400);
-    let seconds = total_seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_date(days);
-    let hour = seconds / 3_600;
-    let minute = (seconds % 3_600) / 60;
-    let second = seconds % 60;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{:03}Z",
-        elapsed.subsec_millis()
-    )
-}
-
-fn civil_date(days_since_epoch: i64) -> (i64, i64, i64) {
-    let shifted = days_since_epoch + 719_468;
-    let era = if shifted >= 0 {
-        shifted
-    } else {
-        shifted - 146_096
-    } / 146_097;
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += i64::from(month <= 2);
-    (year, month, day)
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
 
 vi.mock('@/main/utils/platform', () => mockPlatform);
 
-vi.mock('@/main/capture/area-overlay/session', () => ({
+vi.mock('@/main/capture/area-overlay/window-pool', () => ({
   getOverlayWindowIds: () => mockGetOverlayWindowIds(),
 }));
 

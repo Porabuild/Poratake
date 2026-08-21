@@ -115,10 +115,7 @@ export interface CloudConfig {
 
 export type BackgroundType = 'gradient' | 'image';
 
-export interface GradientBackgroundData {
-  colors: string[];
-  angle: number;
-}
+export type GradientBackgroundData = Omit<GradientOption, 'id'>;
 
 export interface ImageBackgroundData {
   imageUrl: string;
@@ -354,21 +351,6 @@ export const DEFAULT_CAMERA_SETTINGS: CameraSettings = {
   position: null,
   resolution: '720p',
   flipped: false,
-};
-
-export const CAMERA_SIZE_DIMENSIONS: Record<CameraSize, number> = {
-  small: 120,
-  medium: 180,
-  large: 260,
-};
-
-export const CAMERA_RESOLUTION_DIMENSIONS: Record<
-  CameraResolution,
-  { width: number; height: number }
-> = {
-  '480p': { width: 640, height: 480 },
-  '720p': { width: 1280, height: 720 },
-  '1080p': { width: 1920, height: 1080 },
 };
 
 export interface IOSDeviceSettings {

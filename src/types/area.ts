@@ -1,12 +1,7 @@
-export interface WindowBounds {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+import type { Rect } from './geometry';
 
 export interface AreaSelection {
-  status: 'ok' | 'cancelled' | 'selected' | 'updated' | 'confirmed';
+  status: 'cancelled' | 'selected' | 'updated' | 'confirmed';
   x?: number;
   y?: number;
   width?: number;
@@ -14,5 +9,5 @@ export interface AreaSelection {
   screenId?: number;
   windowId?: number;
   windowName?: string;
-  windowBounds?: WindowBounds;
+  windowBounds?: Rect;
 }

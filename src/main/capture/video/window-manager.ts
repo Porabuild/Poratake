@@ -1,7 +1,10 @@
 import { BrowserWindow, screen, app, dialog } from 'electron';
-import path from 'path';
 import fs from 'fs';
-import { isDev, devServerUrl } from '@/main/utils/env';
+import {
+  appWebPreferences,
+  centeredPosition,
+  loadAppWindow,
+} from '@/main/utils/window-factory';
 import { isRecordingProject, getRecordingVideoPath } from './recording-project';
 import { registerDockWindow } from '@/main/utils/dock';
 import { sendWindowLoad } from '@/main/utils/window-load';
@@ -90,15 +93,13 @@ export function createVideoEditorWindow(
     maximizable: true,
     minimizable: true,
     resizable: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      devTools: isDev,
-      webSecurity: !isDev,
-    },
+    webPreferences: appWebPreferences(),
     alwaysOnTop: false,
     ...titleBarWindowOptions(),
-    x: Math.floor((screenWidth - windowWidth) / 2) + positionOffset,
-    y: Math.floor((screenHeight - windowHeight) / 2) + positionOffset,
+    ...centeredPosition(
+      { width: windowWidth, height: windowHeight },
+      positionOffset
+    ),
     show: false,
     backgroundColor: '#1e1e1e',
   });
@@ -115,15 +116,7 @@ export function createVideoEditorWindow(
     videoProbe: probeVideo(videoPath),
   });
 
-  if (devServerUrl) {
-    const url = new URL(devServerUrl);
-    url.searchParams.set('window', 'video-editor');
-    newWindow.loadURL(url.toString());
-  } else {
-    newWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
-      query: { window: 'video-editor' },
-    });
-  }
+  loadAppWindow(newWindow, { type: 'video-editor' });
 
   newWindow.webContents.on('did-finish-load', () => {
     const currentData = videoEditorWindows.get(webContentsId);

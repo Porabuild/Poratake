@@ -1,8 +1,7 @@
 use crate::com::retain_process_mta;
-use crate::protocol::{Request, param_str, respond_error, respond_success};
+use crate::protocol::{Request, require_existing_path, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use serde_json::json;
-use std::path::Path;
 use std::ptr::null;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat8bppGray, IWICImagingFactory, IWICPalette,
@@ -32,19 +31,10 @@ impl Module for QrCodeModule {
 
 impl QrCodeModule {
     fn detect(&self, request: &Request) -> Reply {
-        let Some(image_path) = param_str(&request.params, "imagePath") else {
-            return Reply::Now(Err((
-                "INVALID_PARAMS".to_string(),
-                "Missing imagePath parameter".to_string(),
-            )));
+        let image_path = match require_existing_path(&request.params, "imagePath") {
+            Ok(path) => path,
+            Err(error) => return Reply::Now(Err(error)),
         };
-
-        if !Path::new(image_path).exists() {
-            return Reply::Now(Err((
-                "FILE_NOT_FOUND".to_string(),
-                format!("Image file not found: {image_path}"),
-            )));
-        }
 
         let request_id = request.id.clone();
         let image_path = image_path.to_string();
@@ -208,7 +198,7 @@ fn qr_image_buffer_size(width: u32, height: u32) -> Result<usize, String> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn fixture_path(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

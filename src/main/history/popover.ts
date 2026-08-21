@@ -5,8 +5,7 @@ import {
   ipcMain,
   type WebContents,
 } from 'electron';
-import path from 'path';
-import { isDev, devServerUrl } from '@/main/utils/env';
+import { appWebPreferences, loadAppWindow } from '@/main/utils/window-factory';
 
 let historyPopover: BrowserWindow | null = null;
 let isReady = false;
@@ -60,17 +59,10 @@ export function preloadHistoryPopover(): void {
     hasShadow: true,
     roundedCorners: true,
     backgroundColor: '#00000000',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      devTools: isDev,
-    },
+    webPreferences: appWebPreferences(),
   });
 
-  if (devServerUrl) {
-    historyPopover.loadURL(`${devServerUrl}/history.html`);
-  } else {
-    historyPopover.loadFile(path.join(__dirname, '../dist/history.html'));
-  }
+  loadAppWindow(historyPopover, { page: 'history' });
 
   historyPopover.webContents.on('did-finish-load', () => {
     isReady = true;

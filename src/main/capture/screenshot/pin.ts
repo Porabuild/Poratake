@@ -7,8 +7,7 @@ import {
   dialog,
 } from 'electron';
 import fs from 'fs';
-import path from 'path';
-import { isDev, devServerUrl } from '@/main/utils/env.ts';
+import { appWebPreferences, loadAppWindow } from '@/main/utils/window-factory';
 import {
   openScreenshotWindow,
   getWindowData,
@@ -79,20 +78,13 @@ function createPinWindow(
     minimizable: false,
     maximizable: false,
     closable: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      devTools: isDev,
-    },
+    webPreferences: appWebPreferences(),
     show: false,
     transparent: false,
     hasShadow: true,
   });
 
-  if (devServerUrl) {
-    pinWindow.loadURL(devServerUrl);
-  } else {
-    pinWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
+  loadAppWindow(pinWindow);
 
   pinWindow.webContents.on('did-finish-load', () => {
     sendWindowLoad(pinWindow.webContents, {

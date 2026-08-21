@@ -1,10 +1,13 @@
-import { BrowserWindow, globalShortcut, ipcMain, screen } from 'electron';
-import path from 'path';
+import { globalShortcut, ipcMain, screen } from 'electron';
+import type { BrowserWindow } from 'electron';
 import {
   concealOverlayHandoff,
   retainOverlayHandoffWindow,
 } from '@/main/capture/area-overlay';
-import { isDev, devServerUrl } from '@/main/utils/env';
+import {
+  createClickThroughWindow,
+  loadAppWindow,
+} from '@/main/utils/window-factory';
 import { sendWindowLoad } from '@/main/utils/window-load';
 import { EMPTY_SCROLL_CAPTURE_STATE } from '@/types/scroll-capture';
 import type {
@@ -101,44 +104,11 @@ function revealControlWindow(): void {
 }
 
 function createControlWindow(bounds: Electron.Rectangle): BrowserWindow {
-  const win = new BrowserWindow({
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-    frame: false,
-    thickFrame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    hiddenInMissionControl: true,
-    alwaysOnTop: true,
-    show: false,
-    opacity: 0,
-    paintWhenInitiallyHidden: true,
-    roundedCorners: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: !isDev,
-      devTools: isDev,
-      backgroundThrottling: false,
-    },
+  const win = createClickThroughWindow({
+    bounds,
+    level: 'pop-up-menu',
+    forwardMouse: true,
   });
-
-  win.setAlwaysOnTop(true, 'pop-up-menu');
-  win.setBounds(bounds);
-  win.setIgnoreMouseEvents(true, { forward: true });
-  win.setContentProtection(true);
-  if (process.platform === 'darwin') {
-    win.excludedFromShownWindowsMenu = true;
-  }
 
   win.webContents.on('did-finish-load', () => {
     if (win.isDestroyed()) return;
@@ -156,15 +126,7 @@ function createControlWindow(bounds: Electron.Rectangle): BrowserWindow {
     controlLoaded = false;
   });
 
-  if (devServerUrl) {
-    const url = new URL(devServerUrl);
-    url.searchParams.set('window', 'scroll-capture-control');
-    win.loadURL(url.toString());
-  } else {
-    win.loadFile(path.join(__dirname, '../dist/index.html'), {
-      query: { window: 'scroll-capture-control' },
-    });
-  }
+  loadAppWindow(win, { type: 'scroll-capture-control' });
 
   return win;
 }

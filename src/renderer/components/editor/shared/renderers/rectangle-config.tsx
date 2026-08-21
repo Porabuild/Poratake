@@ -1,25 +1,12 @@
 import type { RectAnnotation } from '@/types/editor';
 import type { ShapeRenderConfig, HandlePosition } from './types';
-
-function normalizeRect(
-  x: number,
-  y: number,
-  width: number,
-  height: number
-): { x: number; y: number; width: number; height: number } {
-  return {
-    x: width < 0 ? x + width : x,
-    y: height < 0 ? y + height : y,
-    width: Math.abs(width),
-    height: Math.abs(height),
-  };
-}
+import { normalizeNegativeRect } from '@/renderer/utils/annotation-geometry';
 
 export const rectangleConfig: ShapeRenderConfig<RectAnnotation> = {
   getGeometry(ann, offsetX, offsetY) {
     const x = ann.x + offsetX;
     const y = ann.y + offsetY;
-    const bounds = normalizeRect(x, y, ann.width, ann.height);
+    const bounds = normalizeNegativeRect(x, y, ann.width, ann.height);
     return {
       bounds,
       center: {
@@ -97,7 +84,7 @@ export const rectangleConfig: ShapeRenderConfig<RectAnnotation> = {
     const y = (ann.y + offsetY) * scale;
     const w = ann.width * scale;
     const h = ann.height * scale;
-    const rect = normalizeRect(x, y, w, h);
+    const rect = normalizeNegativeRect(x, y, w, h);
     return `<rect x="${rect.x}" y="${rect.y}" width="${rect.width}" height="${rect.height}" fill="${ann.fill ?? 'none'}" stroke="${ann.stroke}" stroke-width="${ann.strokeWidth * scale}" rx="1"/>`;
   },
 };

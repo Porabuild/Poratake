@@ -1,13 +1,12 @@
 import { randomUUID } from 'crypto';
-import { app, clipboard, Notification } from 'electron';
+import { app, clipboard } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { getConfig } from '@/main/settings';
 import {
   hideDesktopIcons,
   showDesktopIcons,
-  isSupported as isDesktopIconsSupported,
 } from '@/main/capture/desktop-icons';
+import { shouldHideDesktopIconsForCapture } from '@/main/capture/desktop-icons/preference';
 import { daemon } from '@/main/daemon';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import { preprocessImageForOcr } from '@/main/utils/ffmpeg';
@@ -15,6 +14,7 @@ import { showTransientNotification } from '@/main/utils/notification';
 import { isMac } from '@/main/utils/platform';
 import { captureAreaToFile } from '@/main/capture/area-overlay';
 import { captureRegionToFile } from '@/main/capture/screenshot/native-capture';
+import { showNotification } from '@/main/utils/notification';
 
 let isCapturingText = false;
 
@@ -51,9 +51,7 @@ async function captureAndRecognizeText(
   area?: CaptureTextArea,
   options?: CaptureTextOptions
 ): Promise<void> {
-  const config = getConfig();
-  const shouldHideIcons =
-    config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
+  const shouldHideIcons = shouldHideDesktopIconsForCapture();
 
   if (shouldHideIcons) {
     await hideDesktopIcons('capture');
@@ -142,12 +140,4 @@ async function extractTextFromImage(imagePath: string): Promise<string> {
     imagePath,
   });
   return result?.text || '';
-}
-
-function showNotification(title: string, body: string): void {
-  const notification = new Notification({
-    title,
-    body,
-  });
-  notification.show();
 }

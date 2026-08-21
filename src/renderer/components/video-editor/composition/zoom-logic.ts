@@ -1,8 +1,10 @@
 import type { ZoomSegment, ZoomSettings } from '@/types/zoom';
-import type { CursorData, CursorEvent } from '@/types/cursor';
+import type { CursorData } from '@/types/cursor';
 import type { VideoSegment } from '@/types/video';
 import { BOUNDING_RATIO } from '@/types/zoom';
 import { mapTimelineToVideoTime } from './types';
+import { interpolatePosition } from './cursor-logic';
+import { clamp } from '@/types/geometry';
 
 export interface ZoomState {
   scale: number;
@@ -29,10 +31,6 @@ export interface Position {
 
 function applyEasing(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
 }
 
 export function getZoomState(
@@ -125,52 +123,6 @@ export function getZoomState(
   };
 }
 
-function findSurroundingEvents(
-  events: CursorEvent[],
-  timestamp: number
-): { before: number; after: number } | null {
-  let before = -1;
-  let after = -1;
-
-  for (let i = 0; i < events.length; i++) {
-    if (events[i].timestamp <= timestamp) before = i;
-    if (events[i].timestamp >= timestamp && after === -1) {
-      after = i;
-      break;
-    }
-  }
-
-  if (before === -1 && after === -1) return null;
-  return {
-    before: before === -1 ? after : before,
-    after: after === -1 ? before : after,
-  };
-}
-
-function interpolateCursorPosition(
-  events: CursorEvent[],
-  timestamp: number
-): Position | null {
-  if (events.length === 0) return null;
-
-  const indices = findSurroundingEvents(events, timestamp);
-  if (!indices) return null;
-
-  const before = events[indices.before];
-  const after = events[indices.after];
-
-  if (indices.before === indices.after) {
-    return { x: before.x, y: before.y };
-  }
-
-  const t =
-    (timestamp - before.timestamp) / (after.timestamp - before.timestamp);
-  return {
-    x: before.x + (after.x - before.x) * t,
-    y: before.y + (after.y - before.y) * t,
-  };
-}
-
 export function getCursorAtTime(
   cursorData: CursorData,
   videoSegments: VideoSegment[],
@@ -178,7 +130,7 @@ export function getCursorAtTime(
 ): Position | null {
   const videoTime = mapTimelineToVideoTime(timelineTime, videoSegments);
   if (videoTime === null) return null;
-  return interpolateCursorPosition(cursorData.events, videoTime);
+  return interpolatePosition(cursorData.events, videoTime);
 }
 
 export function collectCursorPositionsDuringSegment(

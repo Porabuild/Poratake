@@ -11,7 +11,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
-import { isDev, devServerUrl } from '@/main/utils/env.ts';
+import {
+  appWebPreferences,
+  centeredPosition,
+  loadAppWindow,
+} from '@/main/utils/window-factory';
 import { updateHistoryItemByPath, getHistoryItemByPath } from '@/main/history';
 import { getConfig } from '@/main/settings';
 import { registerDockWindow } from '@/main/utils/dock';
@@ -126,14 +130,8 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
   const existingWindowCount = screenshotWindows.size;
   const positionOffset = existingWindowCount * 30;
 
-  const {
-    windowWidth,
-    windowHeight,
-    screenWidth,
-    screenHeight,
-    minWidth,
-    minHeight,
-  } = calculateWindowSize(width, height);
+  const { windowWidth, windowHeight, minWidth, minHeight } =
+    calculateWindowSize(width, height);
 
   const newWindow = new BrowserWindow({
     width: windowWidth,
@@ -143,15 +141,13 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
     maximizable: true,
     minimizable: true,
     resizable: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      devTools: isDev,
-      webSecurity: !isDev,
-    },
+    webPreferences: appWebPreferences(),
     alwaysOnTop: false,
     ...titleBarWindowOptions(),
-    x: Math.floor((screenWidth - windowWidth) / 2) + positionOffset,
-    y: Math.floor((screenHeight - windowHeight) / 2) + positionOffset,
+    ...centeredPosition(
+      { width: windowWidth, height: windowHeight },
+      positionOffset
+    ),
     show: false,
     backgroundColor: '#1e1e1e',
   });
@@ -168,15 +164,7 @@ export function openScreenshotWindow(options: OpenScreenshotOptions): void {
     editorState: editorState || null,
   });
 
-  if (devServerUrl) {
-    const url = new URL(devServerUrl);
-    url.searchParams.set('window', 'screenshot');
-    newWindow.loadURL(url.toString());
-  } else {
-    newWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
-      query: { window: 'screenshot' },
-    });
-  }
+  loadAppWindow(newWindow, { type: 'screenshot' });
 
   newWindow.webContents.on('did-finish-load', () => {
     const windowData = screenshotWindows.get(webContentsId);

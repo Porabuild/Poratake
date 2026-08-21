@@ -1,10 +1,8 @@
-import { getConfig, updateConfig } from '@/main/settings';
 import {
   hideDesktopIcons,
   showDesktopIcons,
-  isSupported as isDesktopIconsSupported,
-  checkAccessibilityPermission,
 } from '@/main/capture/desktop-icons';
+import { shouldHideDesktopIconsForCapture } from '@/main/capture/desktop-icons/preference';
 import {
   startAreaSelection,
   cancelAreaSelection,
@@ -25,21 +23,6 @@ import { isMac } from '@/main/utils/platform';
 const TIMER_DURATION = 5;
 
 let isTimerActive = false;
-
-function resolveHideIcons(): boolean {
-  const config = getConfig();
-  let shouldHideIcons =
-    config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
-
-  if (shouldHideIcons && !checkAccessibilityPermission(false)) {
-    shouldHideIcons = false;
-    updateConfig({
-      screenshot: { ...config.screenshot, hideDesktopIcons: false },
-    });
-  }
-
-  return shouldHideIcons;
-}
 
 async function timerCaptureWindows(shouldHideIcons: boolean): Promise<void> {
   let timerRequested = false;
@@ -214,7 +197,7 @@ export default async function timerCapture(): Promise<void> {
     return;
   }
 
-  const shouldHideIcons = resolveHideIcons();
+  const shouldHideIcons = shouldHideDesktopIconsForCapture();
   isTimerActive = true;
 
   if (isMac) {

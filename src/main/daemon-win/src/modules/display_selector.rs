@@ -1,6 +1,6 @@
 use crate::overlay::{
     WM_MOUSELEAVE, add_key_handler, create_popup_window, default_wndproc, ensure_window_class,
-    monitors, rect_height, rect_width, remove_key_handler,
+    monitors, rect_height, rect_width, remove_key_handler, show_window_topmost,
 };
 use crate::protocol::{Request, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
@@ -16,9 +16,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, HWND_TOPMOST, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, WM_LBUTTONDOWN, WM_MOUSEMOVE,
-    WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    DestroyWindow, LWA_ALPHA, SetLayeredWindowAttributes, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
 const CLASS_NAME: &str = "PoratakeDisplaySelector";
@@ -217,17 +216,8 @@ fn create_display_overlay(rect: RECT, display_number: i32, screen_id: i32) {
 
     unsafe {
         let _ = SetLayeredWindowAttributes(window, COLORREF(0), IDLE_ALPHA, LWA_ALPHA);
-        let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
-        let _ = SetWindowPos(
-            window,
-            Some(HWND_TOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
     }
+    show_window_topmost(window);
 
     STATE.with(|state| {
         state.borrow_mut().entries.push(DisplayEntry {

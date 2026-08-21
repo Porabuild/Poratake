@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, forwardRef } from 'react';
+import { forwardRef, useCallback } from 'react';
 import {
   Trash2,
   Play,
@@ -10,122 +10,38 @@ import {
   FolderOpen,
 } from 'lucide-react';
 import { Button } from '@/renderer/components/ui/button';
-import type {
-  HistoryItemSummary,
-  VideoRecordingFeatures,
-} from '@/types/history';
 import { formatRelativeTime } from '@/renderer/components/history/utils';
+import { useHistoryItem } from './use-history-item';
+import type { HistoryItemProps } from './use-history-item';
 
-interface HistoryListItemProps {
-  item: HistoryItemSummary;
-  isSelected?: boolean;
-  onOpen: (item: HistoryItemSummary) => void;
-  onDelete: (id: string) => void;
-}
-
-const HistoryListItem = forwardRef<HTMLDivElement, HistoryListItemProps>(
+const HistoryListItem = forwardRef<HTMLDivElement, HistoryItemProps>(
   function HistoryListItem(
     { item, isSelected = false, onOpen, onDelete },
     ref
   ) {
-    const [imageSrc, setImageSrc] = useState<string | null>(null);
-    const [isHovered, setIsHovered] = useState(false);
-    const [loading, setLoading] = useState(true);
-    const [isVisible, setIsVisible] = useState(false);
-    const [videoFeatures, setVideoFeatures] =
-      useState<VideoRecordingFeatures | null>(null);
-    const internalRef = useRef<HTMLDivElement | null>(null);
-
-    const isVideo = item.type === 'video';
+    const {
+      elementRef,
+      imageSrc,
+      loading,
+      isHovered,
+      setIsHovered,
+      videoFeatures,
+      isVideo,
+      handleClick,
+      handleDelete,
+      handleReveal,
+    } = useHistoryItem({ item, onOpen, onDelete });
 
     const setRefs = useCallback(
       (element: HTMLDivElement | null) => {
-        internalRef.current = element;
+        elementRef.current = element;
         if (typeof ref === 'function') {
           ref(element);
         } else if (ref) {
-          (ref as React.MutableRefObject<HTMLDivElement | null>).current =
-            element;
+          ref.current = element;
         }
       },
-      [ref]
-    );
-
-    useEffect(() => {
-      const element = internalRef.current;
-      if (!element) return;
-
-      const observer = new IntersectionObserver(
-        entries => {
-          if (entries[0].isIntersecting) {
-            setIsVisible(true);
-            observer.disconnect();
-          }
-        },
-        { rootMargin: '50px' }
-      );
-
-      observer.observe(element);
-      return () => observer.disconnect();
-    }, []);
-
-    useEffect(() => {
-      if (!isVisible) return;
-
-      const loadThumbnail = async () => {
-        try {
-          const base64 = (await window.ipcRenderer.invoke(
-            'history:getThumbnail',
-            item.id
-          )) as string | null;
-
-          if (base64) {
-            setImageSrc(`data:image/jpeg;base64,${base64}`);
-          }
-        } catch (error) {
-          console.error('Failed to load thumbnail:', error);
-        } finally {
-          setLoading(false);
-        }
-      };
-      loadThumbnail();
-    }, [isVisible, item.id]);
-
-    useEffect(() => {
-      if (!isVisible || !isVideo) return;
-
-      const loadVideoFeatures = async () => {
-        try {
-          const features = (await window.ipcRenderer.invoke(
-            'history:getVideoFeatures',
-            item.id
-          )) as VideoRecordingFeatures;
-          setVideoFeatures(features);
-        } catch (error) {
-          console.error('Failed to load video features:', error);
-        }
-      };
-      loadVideoFeatures();
-    }, [isVisible, isVideo, item.id]);
-
-    const handleClick = useCallback(() => {
-      onOpen(item);
-    }, [item, onOpen]);
-
-    const handleDelete = useCallback(
-      (e: React.MouseEvent) => {
-        e.stopPropagation();
-        onDelete(item.id);
-      },
-      [item.id, onDelete]
-    );
-
-    const handleReveal = useCallback(
-      (e: React.MouseEvent) => {
-        e.stopPropagation();
-        window.ipcRenderer.invoke('history:reveal', item.id);
-      },
-      [item.id]
+      [ref, elementRef]
     );
 
     return (

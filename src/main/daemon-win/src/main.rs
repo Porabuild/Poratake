@@ -1,11 +1,13 @@
 mod com;
 mod desktop_frame;
 mod display_color;
+mod mf;
 mod modules;
 mod overlay;
 mod panel;
 mod protocol;
 mod router;
+mod time_format;
 mod tone_map;
 mod ui;
 

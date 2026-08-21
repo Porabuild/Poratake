@@ -15,6 +15,8 @@ import {
   type BalanceCrop,
 } from '@/renderer/utils/color-detection';
 import { renderNoise } from '@/renderer/utils/noise';
+import { pointsToCoordinates } from '@/renderer/utils/annotation-geometry';
+import { loadImage } from '@/renderer/utils/image';
 import {
   pixelateImageData,
   REDACT_INTENSITY_MAP,
@@ -28,7 +30,6 @@ import {
   type FramedWindowStyle,
 } from '@/renderer/utils/window-frame';
 import {
-  loadImageFromDataUrl,
   renderBackgroundImageToCanvas,
   renderGradientToCanvas,
   renderImageToCanvas,
@@ -61,34 +62,33 @@ interface UseCanvasExportReturn {
   exportToImage: (format?: ScreenshotFormat) => Promise<string>;
 }
 
-const svgToImage = (svgString: string): Promise<HTMLImageElement> => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const blob = new Blob([svgString], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(blob);
+const svgToImage = async (svgString: string): Promise<HTMLImageElement> => {
+  const blob = new Blob([svgString], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
 
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Failed to load SVG as image'));
-    };
-
-    img.src = url;
-  });
+  try {
+    return await loadImage(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 };
 
-const pixelateRegion = (
+interface ClampedRegion {
+  canvasWidth: number;
+  canvasHeight: number;
+  clampedX: number;
+  clampedY: number;
+  clampedWidth: number;
+  clampedHeight: number;
+}
+
+const clampRegionToCanvas = (
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   width: number,
-  height: number,
-  blockSize: number
-) => {
+  height: number
+): ClampedRegion | null => {
   const canvasWidth = ctx.canvas.width;
   const canvasHeight = ctx.canvas.height;
 
@@ -105,7 +105,30 @@ const pixelateRegion = (
     canvasHeight - clampedY
   );
 
-  if (clampedWidth <= 0 || clampedHeight <= 0) return;
+  if (clampedWidth <= 0 || clampedHeight <= 0) return null;
+
+  return {
+    canvasWidth,
+    canvasHeight,
+    clampedX,
+    clampedY,
+    clampedWidth,
+    clampedHeight,
+  };
+};
+
+const pixelateRegion = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  blockSize: number
+) => {
+  const region = clampRegionToCanvas(ctx, x, y, width, height);
+  if (!region) return;
+
+  const { clampedX, clampedY, clampedWidth, clampedHeight } = region;
 
   const imageData = ctx.getImageData(
     clampedX,
@@ -127,23 +150,11 @@ const blurRegion = (
   height: number,
   radius: number
 ) => {
-  const canvasWidth = ctx.canvas.width;
-  const canvasHeight = ctx.canvas.height;
+  const region = clampRegionToCanvas(ctx, x, y, width, height);
+  if (!region) return;
 
-  const flooredX = Math.floor(x);
-  const flooredY = Math.floor(y);
-  const clampedX = Math.max(0, flooredX);
-  const clampedY = Math.max(0, flooredY);
-  const clampedWidth = Math.min(
-    Math.ceil(width) - (clampedX - flooredX),
-    canvasWidth - clampedX
-  );
-  const clampedHeight = Math.min(
-    Math.ceil(height) - (clampedY - flooredY),
-    canvasHeight - clampedY
-  );
-
-  if (clampedWidth <= 0 || clampedHeight <= 0) return;
+  const { canvasWidth, canvasHeight, clampedX, clampedY } = region;
+  const { clampedWidth, clampedHeight } = region;
 
   const tempCanvas = document.createElement('canvas');
   const padding = radius * 2;
@@ -214,14 +225,6 @@ const blackoutRegion = (
 
   ctx.fillStyle = '#000000';
   ctx.fillRect(clampedX, clampedY, clampedWidth, clampedHeight);
-};
-
-const pointsToCoordinates = (points: number[]): [number, number][] => {
-  const coords: [number, number][] = [];
-  for (let i = 0; i < points.length; i += 2) {
-    coords.push([points[i], points[i + 1]]);
-  }
-  return coords;
 };
 
 const applyHighlightEffect = (
@@ -434,7 +437,7 @@ export const useCanvasExport = ({
 
       if (backgroundImage) {
         try {
-          const bgImg = await loadImageFromDataUrl(backgroundImage);
+          const bgImg = await loadImage(backgroundImage);
           renderBackgroundImageToCanvas(
             ctx,
             bgImg,

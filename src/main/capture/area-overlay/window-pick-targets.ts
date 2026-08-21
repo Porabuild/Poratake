@@ -1,7 +1,7 @@
 import { screen } from 'electron';
 import { listWindows } from '@/main/capture/window-selector';
 import { isWindows } from '@/main/utils/platform';
-import { getOverlayWindowIds } from './session';
+import { getOverlayWindowIds } from './window-pool';
 import type { OverlayPickTarget } from './session';
 
 export interface WindowPickTargets {

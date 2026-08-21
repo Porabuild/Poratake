@@ -64,6 +64,12 @@ vi.mock('@/main/capture/desktop-icons', () => ({
   isSupported: () => mockIsDesktopIconsSupported(),
 }));
 
+vi.mock('@/main/capture/desktop-icons/preference', () => ({
+  shouldHideDesktopIconsForCapture: () =>
+    Boolean(mockGetConfig().screenshot?.hideDesktopIcons) &&
+    mockIsDesktopIconsSupported(),
+}));
+
 vi.mock('@/main/daemon', () => ({
   daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
 }));

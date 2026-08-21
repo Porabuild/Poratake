@@ -10,7 +10,8 @@ import {
 import path from 'path';
 import fs from 'fs';
 import { pathToFileURL } from 'url';
-import { isDev, devServerUrl } from '@/main/utils/env';
+import { appWebPreferences, loadAppWindow } from '@/main/utils/window-factory';
+import type { WindowLoadPayload } from '@/types/window-load';
 import { getThumbnail } from '@/main/utils/thumbnails';
 import {
   deleteHistoryItem,
@@ -217,12 +218,7 @@ function createPreviewBrowserWindow(index: number): {
     focusable: isWindows,
     acceptFirstMouse: true,
     alwaysOnTop: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      devTools: isDev,
-      webSecurity: !isDev,
-      backgroundThrottling: false,
-    },
+    webPreferences: appWebPreferences({ backgroundThrottling: false }),
   });
 
   window.setVisibleOnAllWorkspaces(true, {
@@ -256,15 +252,7 @@ function createPreviewBrowserWindow(index: number): {
     });
   });
 
-  if (devServerUrl) {
-    const url = new URL(devServerUrl);
-    url.searchParams.set('window', 'capture-preview');
-    window.loadURL(url.toString());
-  } else {
-    window.loadFile(path.join(__dirname, '../dist/index.html'), {
-      query: { window: 'capture-preview' },
-    });
-  }
+  loadAppWindow(window, { type: 'capture-preview' });
 
   return { window, loaded };
 }
@@ -394,7 +382,7 @@ export function showCapturePreview(
   const sendPreviewData = (thumbnailUrl?: string) => {
     if (previewWindow.isDestroyed()) return;
 
-    previewWindow.webContents.send('load', {
+    const payload: WindowLoadPayload = {
       type: 'capture-preview',
       params: {
         filePath,
@@ -403,7 +391,8 @@ export function showCapturePreview(
         thumbnailUrl,
         historyId,
       },
-    });
+    };
+    previewWindow.webContents.send('load', payload);
   };
 
   void preview.loaded.then(loaded => {

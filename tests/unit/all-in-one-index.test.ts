@@ -70,10 +70,7 @@ vi.mock('@/main/capture/area-selector', () => ({
     mockUpdateAreaSelectionCallbacks(...a),
   setAreaSelectionMode: (...a: unknown[]) => mockSetAreaSelectionMode(...a),
   setAreaSelectorFreeze: (...a: unknown[]) => mockSetAreaSelectorFreeze(...a),
-}));
-
-vi.mock('@/main/capture/area-overlay', () => ({
-  setOverlayToolbar: (...a: unknown[]) => mockSetOverlayToolbar(...a),
+  setAreaSelectorToolbar: (...a: unknown[]) => mockSetOverlayToolbar(...a),
 }));
 
 vi.mock('@/main/capture/freeze-screen', () => ({

@@ -22,7 +22,6 @@ export {
   concealOverlayHandoff,
   confirmOverlaySelection,
   getActiveOverlayWindowAtPoint,
-  getOverlayWindowIds,
   hasOverlayHandoff,
   isOverlayActive,
   prewarmAreaOverlay,
@@ -36,6 +35,7 @@ export {
   updateOverlaySelection,
 } from './session';
 
+export { getOverlayWindowIds } from './window-pool';
 export { resolveWindowPickTargets } from './window-pick-targets';
 
 export function selectAreaWithOverlay(

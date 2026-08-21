@@ -2,6 +2,14 @@ import { Notification } from 'electron';
 
 const TRANSIENT_NOTIFICATION_DURATION_MS = 5_000;
 
+export function showNotification(title: string, body: string): void {
+  const notification = new Notification({
+    title,
+    body,
+  });
+  notification.show();
+}
+
 export function showTransientNotification(title: string, body: string): void {
   const notification = new Notification({
     title,

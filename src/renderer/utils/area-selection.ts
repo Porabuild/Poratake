@@ -1,4 +1,4 @@
-import type { AreaOverlayRect } from '@/types/area-overlay';
+import type { Point, Rect, Size } from '@/types/geometry';
 
 export const MIN_SELECTION_SIZE = 10;
 export const MIN_RESIZE_SIZE = 20;
@@ -15,16 +15,6 @@ export type SelectionHandle =
   | 'bottom'
   | 'bottom-left'
   | 'left';
-
-export interface Point {
-  x: number;
-  y: number;
-}
-
-export interface Bounds {
-  width: number;
-  height: number;
-}
 
 interface Edges {
   left: number;
@@ -65,7 +55,7 @@ const BOTTOM_HANDLES: ReadonlySet<SelectionHandle> = new Set([
   'bottom-right',
 ]);
 
-function toEdges(rect: AreaOverlayRect): Edges {
+function toEdges(rect: Rect): Edges {
   return {
     left: rect.x,
     top: rect.y,
@@ -74,7 +64,7 @@ function toEdges(rect: AreaOverlayRect): Edges {
   };
 }
 
-function toRect(edges: Edges): AreaOverlayRect {
+function toRect(edges: Edges): Rect {
   return {
     x: edges.left,
     y: edges.top,
@@ -92,14 +82,14 @@ function within(edges: Edges, point: Point): boolean {
   );
 }
 
-export function clampPoint(point: Point, bounds: Bounds): Point {
+export function clampPoint(point: Point, bounds: Size): Point {
   return {
     x: Math.min(Math.max(point.x, 0), bounds.width),
     y: Math.min(Math.max(point.y, 0), bounds.height),
   };
 }
 
-export function normalizeRect(first: Point, second: Point): AreaOverlayRect {
+export function normalizeRect(first: Point, second: Point): Rect {
   return toRect({
     left: Math.min(first.x, second.x),
     top: Math.min(first.y, second.y),
@@ -108,16 +98,16 @@ export function normalizeRect(first: Point, second: Point): AreaOverlayRect {
   });
 }
 
-export function containsPoint(rect: AreaOverlayRect, point: Point): boolean {
+export function containsPoint(rect: Rect, point: Point): boolean {
   return within(toEdges(rect), point);
 }
 
-export function isUsableSelection(rect: AreaOverlayRect): boolean {
+export function isUsableSelection(rect: Rect): boolean {
   return rect.width > MIN_SELECTION_SIZE && rect.height > MIN_SELECTION_SIZE;
 }
 
 export function hitTestHandle(
-  rect: AreaOverlayRect,
+  rect: Rect,
   point: Point
 ): SelectionHandle | null {
   const edges = toEdges(rect);
@@ -203,7 +193,7 @@ export function hitTestHandle(
   return tests.find(([, box]) => within(box, point))?.[0] ?? null;
 }
 
-export function cursorFor(rect: AreaOverlayRect | null, point: Point): string {
+export function cursorFor(rect: Rect | null, point: Point): string {
   if (!rect) {
     return 'crosshair';
   }
@@ -217,10 +207,10 @@ export function cursorFor(rect: AreaOverlayRect | null, point: Point): string {
 }
 
 export function adjustRectToRatio(
-  rect: AreaOverlayRect,
+  rect: Rect,
   ratio: number,
   handle: SelectionHandle | null
-): AreaOverlayRect {
+): Rect {
   if (ratio <= 0 || rect.width <= 0 || rect.height <= 0) {
     return rect;
   }
@@ -254,10 +244,7 @@ export function adjustRectToRatio(
     : toRect({ ...edges, bottom: edges.top + height });
 }
 
-export function fitRect(
-  rect: AreaOverlayRect,
-  bounds: Bounds
-): AreaOverlayRect {
+export function fitRect(rect: Rect, bounds: Size): Rect {
   const width = Math.min(Math.max(rect.width, 1), bounds.width);
   const height = Math.min(Math.max(rect.height, 1), bounds.height);
 
@@ -270,11 +257,11 @@ export function fitRect(
 }
 
 export function resizeRect(
-  rect: AreaOverlayRect,
+  rect: Rect,
   point: Point,
   handle: SelectionHandle,
   ratio: number | null
-): AreaOverlayRect {
+): Rect {
   const edges = toEdges(rect);
   const resized = { ...edges };
 
@@ -300,11 +287,11 @@ export function resizeRect(
 }
 
 export function moveRect(
-  rect: AreaOverlayRect,
+  rect: Rect,
   point: Point,
   offset: Point,
-  bounds: Bounds
-): AreaOverlayRect {
+  bounds: Size
+): Rect {
   return {
     ...rect,
     x:

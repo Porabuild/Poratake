@@ -115,6 +115,38 @@ export function applySmoothing(
   };
 }
 
+function lerpBetween(
+  events: CursorEvent[],
+  indices: { before: number; after: number },
+  timestamp: number
+): { x: number; y: number } {
+  const before = events[indices.before];
+  const after = events[indices.after];
+
+  if (indices.before === indices.after) {
+    return { x: before.x, y: before.y };
+  }
+
+  const t =
+    (timestamp - before.timestamp) / (after.timestamp - before.timestamp);
+  return {
+    x: before.x + (after.x - before.x) * t,
+    y: before.y + (after.y - before.y) * t,
+  };
+}
+
+export function interpolatePosition(
+  events: CursorEvent[],
+  timestamp: number
+): { x: number; y: number } | null {
+  if (events.length === 0) return null;
+
+  const indices = findSurroundingEvents(events, timestamp);
+  if (!indices) return null;
+
+  return lerpBetween(events, indices, timestamp);
+}
+
 export function interpolateCursorPosition(
   events: CursorEvent[],
   timestamp: number,
@@ -125,19 +157,7 @@ export function interpolateCursorPosition(
   const indices = findSurroundingEvents(events, timestamp);
   if (!indices) return null;
 
-  const before = events[indices.before];
-  const after = events[indices.after];
-
-  let x: number, y: number;
-  if (indices.before === indices.after) {
-    x = before.x;
-    y = before.y;
-  } else {
-    const t =
-      (timestamp - before.timestamp) / (after.timestamp - before.timestamp);
-    x = before.x + (after.x - before.x) * t;
-    y = before.y + (after.y - before.y) * t;
-  }
+  let { x, y } = lerpBetween(events, indices, timestamp);
 
   if (smoothing > 0) {
     const smoothed = applySmoothing(

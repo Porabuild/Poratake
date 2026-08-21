@@ -2,7 +2,7 @@ import { systemPreferences, ipcMain, BrowserWindow } from 'electron';
 import { isMac, isWindows } from '@/main/utils/platform';
 import { openExternalUrl } from '@/main/utils/external-url';
 
-export function getAccentColor(): string {
+export function getSystemAccentColor(): string {
   try {
     const color = systemPreferences.getAccentColor();
     return `#${color.substring(0, 6)}`;
@@ -14,7 +14,7 @@ export function getAccentColor(): string {
 
 export function init() {
   ipcMain.handle('system:preferences:get-accent-color', () => {
-    return getAccentColor();
+    return getSystemAccentColor();
   });
 
   ipcMain.on('open-external', (_event, url: unknown) => {
@@ -23,7 +23,7 @@ export function init() {
 
   const notifyAccentColorChange = () => {
     setTimeout(() => {
-      const newColor = getAccentColor();
+      const newColor = getSystemAccentColor();
       BrowserWindow.getAllWindows().forEach(window => {
         window.webContents.send(
           'system:preferences:accent-color-changed',

@@ -1,7 +1,8 @@
 use super::camera_devices::{enumerate_cameras, select_camera};
 use crate::com::{MtaInterface, retain_process_mta};
 use crate::overlay::{
-    create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class, monitors,
+    create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class,
+    monitors, scale_for_dpi,
 };
 use crate::protocol::{Request, param_bool, param_i32, param_str, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
@@ -227,10 +228,6 @@ thread_local! {
     }) };
 }
 
-fn scale(value: i32, dpi: u32) -> i32 {
-    ((value as i64 * dpi.max(96) as i64) / 96) as i32
-}
-
 unsafe extern "system" fn wndproc(
     window: HWND,
     message: u32,
@@ -295,8 +292,8 @@ fn paint(window: HWND) {
 
         if let Some(frame) = frame {
             let dpi = GetDpiForWindow(window).max(96);
-            let padding = scale(SHADOW_PADDING, dpi);
-            let preview = scale(PREVIEW_SIZE, dpi);
+            let padding = scale_for_dpi(SHADOW_PADDING, dpi);
+            let preview = scale_for_dpi(PREVIEW_SIZE, dpi);
             let crop = frame.width.min(frame.height);
             let source_x = (frame.width - crop) / 2;
             let source_y = (frame.height - crop) / 2;
@@ -355,9 +352,9 @@ fn paint(window: HWND) {
 
 fn update_region(window: HWND) {
     let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-    let padding = scale(SHADOW_PADDING, dpi);
-    let preview = scale(PREVIEW_SIZE, dpi);
-    let radius = scale(130, dpi);
+    let padding = scale_for_dpi(SHADOW_PADDING, dpi);
+    let preview = scale_for_dpi(PREVIEW_SIZE, dpi);
+    let radius = scale_for_dpi(130, dpi);
     unsafe {
         let region = CreateRoundRectRgn(
             padding,
@@ -461,7 +458,7 @@ fn create_or_update_window(
     let window = create_popup_window(CLASS_NAME, styles, &rect).ok_or(CameraWindowError::Create)?;
     let _ = disable_window_transitions(window);
     let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-    let size = scale(TOTAL_SIZE, dpi);
+    let size = scale_for_dpi(TOTAL_SIZE, dpi);
     let position = match (x, y) {
         (Some(x), Some(y)) => (x, y),
         _ => default_position(size),

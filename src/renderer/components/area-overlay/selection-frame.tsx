@@ -1,5 +1,5 @@
 import SelectionHandles from './selection-handles';
-import type { AreaOverlayRect } from '@/types/area-overlay';
+import type { Rect } from '@/types/geometry';
 
 const LABEL_CLEARANCE = 36;
 
@@ -8,7 +8,7 @@ export default function SelectionFrame({
   viewportHeight,
   interactive,
 }: {
-  rect: AreaOverlayRect;
+  rect: Rect;
   viewportHeight: number;
   interactive: boolean;
 }) {

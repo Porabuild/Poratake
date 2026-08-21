@@ -427,6 +427,59 @@ function getEncoderQuality(crf: string): string {
   }
 }
 
+function missingInputs(
+  ffmpegPath: string,
+  inputPath: string
+): FFmpegResult | null {
+  if (!ensureFFmpegExists(ffmpegPath)) {
+    return {
+      success: false,
+      message: `FFmpeg binary not found at: ${ffmpegPath}`,
+    };
+  }
+
+  if (!fs.existsSync(inputPath)) {
+    return {
+      success: false,
+      message: `Input file not found: ${inputPath}`,
+    };
+  }
+
+  return null;
+}
+
+function clearOutput(outputPath: string): void {
+  if (fs.existsSync(outputPath)) {
+    fs.unlinkSync(outputPath);
+  }
+}
+
+interface ResolvedEncoding {
+  videoFilters: string[];
+  crf: string;
+  fps: string;
+  socialOptions?: SocialMediaEncodingOptions;
+}
+
+function resolveEncoding(exportOptions?: VideoExportOptions): ResolvedEncoding {
+  const scaleFilter = exportOptions
+    ? getScaleFilter(exportOptions.resolution)
+    : null;
+
+  return {
+    videoFilters: scaleFilter ? [scaleFilter] : [],
+    crf: getCrfValue(exportOptions?.qualityPreset ?? 'studio'),
+    fps: exportOptions ? getFrameRate(exportOptions.frameRate) : '60',
+    socialOptions:
+      exportOptions?.preset === 'social' && exportOptions.socialPreset
+        ? {
+            bitrate: exportOptions.socialPreset.bitrate,
+            resolution: exportOptions.socialPreset.resolution,
+          }
+        : undefined,
+  };
+}
+
 export interface FFmpegResult {
   success: boolean;
   message?: string;
@@ -446,46 +499,17 @@ export async function trimVideo(options: TrimOptions): Promise<FFmpegResult> {
 
   const ffmpegPath = getFFmpegPath();
 
-  if (!fs.existsSync(ffmpegPath)) {
-    return {
-      success: false,
-      message: `FFmpeg binary not found at: ${ffmpegPath}`,
-    };
+  const missing = missingInputs(ffmpegPath, inputPath);
+  if (missing) {
+    return missing;
   }
 
-  if (!fs.existsSync(inputPath)) {
-    return {
-      success: false,
-      message: `Input file not found: ${inputPath}`,
-    };
-  }
-
-  if (fs.existsSync(outputPath)) {
-    fs.unlinkSync(outputPath);
-  }
+  clearOutput(outputPath);
 
   const duration = endTime - startTime;
 
-  const videoFilters: string[] = [];
-  const scaleFilter = exportOptions
-    ? getScaleFilter(exportOptions.resolution)
-    : null;
-  if (scaleFilter) {
-    videoFilters.push(scaleFilter);
-  }
-
-  const qualityPreset = exportOptions?.qualityPreset ?? 'studio';
-  const crf = getCrfValue(qualityPreset);
-
-  const fps = exportOptions ? getFrameRate(exportOptions.frameRate) : '60';
-
-  const socialOptions =
-    exportOptions?.preset === 'social' && exportOptions.socialPreset
-      ? {
-          bitrate: exportOptions.socialPreset.bitrate,
-          resolution: exportOptions.socialPreset.resolution,
-        }
-      : undefined;
+  const { videoFilters, crf, fps, socialOptions } =
+    resolveEncoding(exportOptions);
 
   const encoding = getOutputEncodingArgs(crf, videoFilters, fps, socialOptions);
 
@@ -544,7 +568,7 @@ export async function trimVideo(options: TrimOptions): Promise<FFmpegResult> {
   }
 }
 
-export interface VideoSegment {
+interface TrimRange {
   start: number;
   end: number;
 }
@@ -562,23 +586,12 @@ export async function generateVideoThumbnail(
 
   const ffmpegPath = getFFmpegPath();
 
-  if (!ensureFFmpegExists(ffmpegPath)) {
-    return {
-      success: false,
-      message: `FFmpeg binary not found at: ${ffmpegPath}`,
-    };
+  const missing = missingInputs(ffmpegPath, inputPath);
+  if (missing) {
+    return missing;
   }
 
-  if (!fs.existsSync(inputPath)) {
-    return {
-      success: false,
-      message: `Input file not found: ${inputPath}`,
-    };
-  }
-
-  if (fs.existsSync(outputPath)) {
-    fs.unlinkSync(outputPath);
-  }
+  clearOutput(outputPath);
 
   try {
     await execFFmpegFile(
@@ -622,7 +635,7 @@ export async function generateVideoThumbnail(
 export interface ProcessSegmentsOptions {
   inputPath: string;
   outputPath: string;
-  segments: VideoSegment[];
+  segments: TrimRange[];
   exportOptions?: VideoExportOptions;
   abortSignal?: AbortSignal;
   onProgress?: FFmpegProgressCallback;
@@ -642,18 +655,9 @@ export async function processVideoSegments(
 
   const ffmpegPath = getFFmpegPath();
 
-  if (!fs.existsSync(ffmpegPath)) {
-    return {
-      success: false,
-      message: `FFmpeg binary not found at: ${ffmpegPath}`,
-    };
-  }
-
-  if (!fs.existsSync(inputPath)) {
-    return {
-      success: false,
-      message: `Input file not found: ${inputPath}`,
-    };
+  const missing = missingInputs(ffmpegPath, inputPath);
+  if (missing) {
+    return missing;
   }
 
   if (segments.length === 0) {
@@ -663,9 +667,7 @@ export async function processVideoSegments(
     };
   }
 
-  if (fs.existsSync(outputPath)) {
-    fs.unlinkSync(outputPath);
-  }
+  clearOutput(outputPath);
 
   if (segments.length === 1) {
     return trimVideo({
@@ -679,26 +681,8 @@ export async function processVideoSegments(
     });
   }
 
-  const videoFilters: string[] = [];
-  const scaleFilter = exportOptions
-    ? getScaleFilter(exportOptions.resolution)
-    : null;
-  if (scaleFilter) {
-    videoFilters.push(scaleFilter);
-  }
-
-  const qualityPreset = exportOptions?.qualityPreset ?? 'studio';
-  const crf = getCrfValue(qualityPreset);
-
-  const fps = exportOptions ? getFrameRate(exportOptions.frameRate) : '60';
-
-  const socialOptions =
-    exportOptions?.preset === 'social' && exportOptions.socialPreset
-      ? {
-          bitrate: exportOptions.socialPreset.bitrate,
-          resolution: exportOptions.socialPreset.resolution,
-        }
-      : undefined;
+  const { videoFilters, crf, fps, socialOptions } =
+    resolveEncoding(exportOptions);
 
   const tempDir = path.join(app.getPath('temp'), `video-edit-${Date.now()}`);
 
@@ -716,7 +700,7 @@ export async function processVideoSegments(
     fs.mkdirSync(tempDir, { recursive: true });
 
     const extractSegment = async (
-      segment: VideoSegment,
+      segment: TrimRange,
       index: number
     ): Promise<string> => {
       const segmentPath = path.join(tempDir, `segment-${index}.mp4`);
@@ -889,23 +873,12 @@ export async function convertMp4ToGif(
 
   const ffmpegPath = getFFmpegPath();
 
-  if (!fs.existsSync(ffmpegPath)) {
-    return {
-      success: false,
-      message: `FFmpeg binary not found at: ${ffmpegPath}`,
-    };
+  const missing = missingInputs(ffmpegPath, inputPath);
+  if (missing) {
+    return missing;
   }
 
-  if (!fs.existsSync(inputPath)) {
-    return {
-      success: false,
-      message: `Input file not found: ${inputPath}`,
-    };
-  }
-
-  if (fs.existsSync(outputPath)) {
-    fs.unlinkSync(outputPath);
-  }
+  clearOutput(outputPath);
 
   const scaleWidth = getGifScaleWidth(resolution);
   const fps = parseInt(frameRate, 10);

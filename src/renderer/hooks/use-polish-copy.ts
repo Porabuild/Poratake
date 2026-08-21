@@ -1,20 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SettingsConfig, WallpaperPreset } from '@/types/settings';
 import { renderWallpaperComposite } from '@/renderer/utils/wallpaper-render';
+import { loadImage } from '@/renderer/utils/image';
 
 interface UsePolishCopyReturn {
   preset: WallpaperPreset | null;
   isPolishing: boolean;
   polish: () => Promise<void>;
 }
-
-const loadImage = (src: string): Promise<HTMLImageElement> =>
-  new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('Failed to load capture image'));
-    image.src = src;
-  });
 
 export function usePolishCopy(enabled: boolean): UsePolishCopyReturn {
   const [preset, setPreset] = useState<WallpaperPreset | null>(null);

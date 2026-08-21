@@ -1,20 +1,30 @@
-import { app, globalShortcut, ipcMain, screen } from 'electron';
+import { globalShortcut, ipcMain, screen } from 'electron';
 import type { Display, Point, Rectangle, BrowserWindow } from 'electron';
-import fs from 'fs';
-import path from 'path';
-import { randomUUID } from 'crypto';
-import { pathToFileURL } from 'url';
 import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
 import { daemon } from '@/main/daemon';
 import { flushPendingContinuations } from '@/main/utils/event-loop';
 import { isWindows } from '@/main/utils/platform';
 import { isDev } from '@/main/utils/env';
 import { formatClock } from '@/main/utils/clock';
-import { captureRegionToFile } from '@/main/capture/screenshot/native-capture';
-import { createOverlayWindow } from './window';
+import {
+  concealOverlayWindow,
+  nativeWindowHandle,
+  nativeWindowId,
+  nextOverlayVisibilityVersion,
+  pooledWindowForWebContents,
+  removePooledWindow,
+  showOverlayWindow,
+  syncPooledWindows,
+  syncPooledWindowsForAllDisplays,
+  setOverlayWindowLostHandler,
+  type PooledOverlayWindow,
+} from './window-pool';
+import { clipToDisplay, fitToDisplay, presetSelection } from './geometry';
+import { getOverlayWindowIds } from './window-pool';
+import { captureColorFrame, setColorPickerActive } from './color-picker';
+import type { WindowLoadPayload } from '@/types/window-load';
 import type {
   AreaOverlayPickTarget,
-  AreaOverlayRect,
   AreaOverlayRenderer,
   AreaOverlayResult,
   AreaOverlayToolbar,
@@ -66,14 +76,6 @@ interface OverlayWindowEntry {
   loaded: boolean;
 }
 
-interface PooledOverlayWindow {
-  window: BrowserWindow;
-  webContentsId: number;
-  displayId: number;
-  prepared: boolean;
-  initialized: Promise<void>;
-}
-
 interface OverlaySession {
   entries: OverlayWindowEntry[];
   id: number;
@@ -118,42 +120,7 @@ let startingSession = false;
 let ipcRegistered = false;
 let escapeShortcutRegistered = false;
 let nextSessionId = 1;
-const pooledWindowsByDisplay = new Map<number, PooledOverlayWindow>();
-const pooledWindowsByWebContents = new Map<number, PooledOverlayWindow>();
-const overlayVisibilityVersions = new WeakMap<BrowserWindow, number>();
 const OVERLAY_REGION_INSET = 16;
-
-function nativeWindowId(window: BrowserWindow): number {
-  return Number(window.getNativeWindowHandle().readBigUInt64LE());
-}
-
-function nativeWindowHandle(window: BrowserWindow): string {
-  return nativeWindowId(window).toString();
-}
-
-export function getOverlayWindowIds(): Set<number> {
-  const ids = new Set<number>();
-
-  for (const pooled of pooledWindowsByDisplay.values()) {
-    if (pooled.window.isDestroyed()) continue;
-    ids.add(nativeWindowId(pooled.window));
-  }
-
-  return ids;
-}
-
-function nextOverlayVisibilityVersion(window: BrowserWindow): number {
-  const version = (overlayVisibilityVersions.get(window) ?? 0) + 1;
-  overlayVisibilityVersions.set(window, version);
-  return version;
-}
-
-function removePooledWindow(entry: PooledOverlayWindow): void {
-  if (pooledWindowsByDisplay.get(entry.displayId) === entry) {
-    pooledWindowsByDisplay.delete(entry.displayId);
-  }
-  pooledWindowsByWebContents.delete(entry.webContentsId);
-}
 
 function sessionEntryFor(
   session: OverlaySession,
@@ -164,7 +131,7 @@ function sessionEntryFor(
 
 function mountWarmOverlay(pooled: PooledOverlayWindow): void {
   if (pooled.window.isDestroyed()) return;
-  pooled.window.webContents.send('load', {
+  const payload: WindowLoadPayload = {
     type: 'area-overlay',
     params: {
       sessionId: 0,
@@ -180,34 +147,8 @@ function mountWarmOverlay(pooled: PooledOverlayWindow): void {
       pickTargets: null,
       prompt: null,
     },
-  });
-}
-
-function prepareOverlayWindow(
-  window: BrowserWindow,
-  method: 'hideWindowWithoutTransitions' | 'showWindowWithoutTransitions'
-): Promise<void> {
-  if (window.isDestroyed()) return Promise.resolve();
-
-  if (!isWindows) {
-    if (method === 'hideWindowWithoutTransitions') {
-      window.setOpacity(0);
-      return Promise.resolve();
-    }
-
-    if (!window.isVisible()) {
-      showInactiveWithoutTransitions(window);
-    }
-    window.setOpacity(1);
-    return Promise.resolve();
-  }
-
-  return daemon
-    .call('area-selector', method, { windowHandle: nativeWindowHandle(window) })
-    .then(() => undefined)
-    .catch(error => {
-      console.error(`Failed to apply overlay window ${method}:`, error);
-    });
+  };
+  pooled.window.webContents.send('load', payload);
 }
 
 function setOverlayWindowRegion(
@@ -250,93 +191,6 @@ function syncOverlayWindowRegions(session: OverlaySession): void {
   }
 }
 
-function showInactiveWithoutTransitions(window: BrowserWindow): void {
-  const animationsDisabled = app.commandLine.hasSwitch(
-    'wm-window-animations-disabled'
-  );
-  if (!animationsDisabled) {
-    app.commandLine.appendSwitch('wm-window-animations-disabled');
-  }
-  try {
-    window.showInactive();
-  } finally {
-    if (!animationsDisabled) {
-      app.commandLine.removeSwitch('wm-window-animations-disabled');
-    }
-  }
-}
-
-function createPooledWindow(display: Display): PooledOverlayWindow {
-  const window = createOverlayWindow(display);
-  showInactiveWithoutTransitions(window);
-  const initialized = prepareOverlayWindow(
-    window,
-    'hideWindowWithoutTransitions'
-  ).then(() => {
-    if (window.isDestroyed() || window.isVisible()) return;
-    window.setOpacity(1);
-  });
-  const pooled: PooledOverlayWindow = {
-    window,
-    webContentsId: window.webContents.id,
-    displayId: display.id,
-    prepared: false,
-    initialized,
-  };
-  pooledWindowsByDisplay.set(display.id, pooled);
-  pooledWindowsByWebContents.set(pooled.webContentsId, pooled);
-
-  window.webContents.on('render-process-gone', () => {
-    removePooledWindow(pooled);
-    const session = activeSession;
-    if (session && sessionEntryFor(session, pooled)) {
-      void cancelSession(session);
-    }
-  });
-
-  window.on('closed', () => {
-    removePooledWindow(pooled);
-    const session = activeSession;
-    if (session && sessionEntryFor(session, pooled)) {
-      void cancelSession(session);
-    }
-  });
-
-  return pooled;
-}
-
-async function concealOverlayWindow(window: BrowserWindow): Promise<void> {
-  if (window.isDestroyed()) return;
-  nextOverlayVisibilityVersion(window);
-  window.setIgnoreMouseEvents(true);
-  await prepareOverlayWindow(window, 'hideWindowWithoutTransitions');
-}
-
-function canActivateOverlayWindow(
-  window: BrowserWindow,
-  version: number
-): boolean {
-  return (
-    !window.isDestroyed() && overlayVisibilityVersions.get(window) === version
-  );
-}
-
-async function showOverlayWindow(entry: OverlayWindowEntry): Promise<void> {
-  const { window } = entry;
-  const version = nextOverlayVisibilityVersion(window);
-
-  if (isWindows && window.isVisible()) {
-    window.setIgnoreMouseEvents(false);
-    return;
-  }
-
-  window.setIgnoreMouseEvents(true);
-  await prepareOverlayWindow(window, 'showWindowWithoutTransitions');
-  if (!canActivateOverlayWindow(window, version)) return;
-
-  window.setIgnoreMouseEvents(false);
-}
-
 function setEscapeShortcutEnabled(
   session: OverlaySession,
   enabled: boolean
@@ -354,34 +208,9 @@ function setEscapeShortcutEnabled(
   });
 }
 
-function getPooledWindow(display: Display): PooledOverlayWindow {
-  const existing = pooledWindowsByDisplay.get(display.id);
-  const pooled =
-    existing && !existing.window.isDestroyed()
-      ? existing
-      : createPooledWindow(display);
-
-  pooled.window.setBounds(display.bounds);
-
-  return pooled;
-}
-
-function syncPooledWindows(displays: Display[]): PooledOverlayWindow[] {
-  const displayIds = new Set(displays.map(display => display.id));
-  for (const pooled of pooledWindowsByDisplay.values()) {
-    if (displayIds.has(pooled.displayId)) continue;
-    removePooledWindow(pooled);
-    if (!pooled.window.isDestroyed()) {
-      pooled.window.destroy();
-    }
-  }
-
-  return displays.map(getPooledWindow);
-}
-
 export function prewarmAreaOverlay(): void {
   registerOverlayIpc();
-  syncPooledWindows(screen.getAllDisplays());
+  syncPooledWindowsForAllDisplays();
 }
 
 function displayFor(
@@ -397,14 +226,21 @@ function registerOverlayIpc(): void {
   if (ipcRegistered) return;
   ipcRegistered = true;
 
+  setOverlayWindowLostHandler(pooled => {
+    const session = activeSession;
+    if (session && sessionEntryFor(session, pooled)) {
+      void cancelSession(session);
+    }
+  });
+
   ipcMain.on('area-overlay:renderer-mounted', event => {
-    const pooled = pooledWindowsByWebContents.get(event.sender.id);
+    const pooled = pooledWindowForWebContents(event.sender.id);
     if (!pooled || pooled.window.isDestroyed()) return;
     pooled.window.webContents.send('area-overlay:prepare-renderer');
   });
 
   ipcMain.on('area-overlay:renderer-prepared', event => {
-    const pooled = pooledWindowsByWebContents.get(event.sender.id);
+    const pooled = pooledWindowForWebContents(event.sender.id);
     if (!pooled) return;
     pooled.prepared = true;
 
@@ -420,7 +256,7 @@ function registerOverlayIpc(): void {
   });
 
   ipcMain.on('area-overlay:renderer-failed', event => {
-    const pooled = pooledWindowsByWebContents.get(event.sender.id);
+    const pooled = pooledWindowForWebContents(event.sender.id);
     if (!pooled) return;
     removePooledWindow(pooled);
     if (!pooled.window.isDestroyed()) {
@@ -516,7 +352,9 @@ function registerOverlayIpc(): void {
     if (session.toolbar?.kind !== 'all-in-one') return;
     if (typeof active !== 'boolean') return;
 
-    setColorPickerActive(session, active);
+    setColorPickerActive(session, active, enabled =>
+      setEscapeShortcutEnabled(session, enabled)
+    );
   });
 
   ipcMain.handle('area-overlay:color-picker-frame', async event => {
@@ -531,58 +369,8 @@ function registerOverlayIpc(): void {
       return null;
     }
 
-    const version = (session.colorFrameVersions.get(display.id) ?? 0) + 1;
-    session.colorFrameVersions.set(display.id, version);
-    removeColorFrame(session, display.id);
-
-    const filePath = path.join(
-      app.getPath('temp'),
-      `poratake-color-frame-${randomUUID()}.png`
-    );
-    const captured = await captureRegionToFile(display.bounds, filePath, {
-      cached: session.freeze,
-    });
-    if (
-      !captured ||
-      activeSession !== session ||
-      !session.colorPickerActive ||
-      session.colorFrameVersions.get(display.id) !== version
-    ) {
-      void fs.promises.unlink(filePath).catch(() => {});
-      return null;
-    }
-
-    session.colorFramePaths.set(display.id, filePath);
-    return { url: pathToFileURL(filePath).href };
+    return captureColorFrame(session, display, () => activeSession === session);
   });
-}
-
-function removeColorFrame(session: OverlaySession, displayId: number): void {
-  const filePath = session.colorFramePaths.get(displayId);
-  if (!filePath) return;
-
-  session.colorFramePaths.delete(displayId);
-  void fs.promises.unlink(filePath).catch(() => {});
-}
-
-function setColorPickerActive(session: OverlaySession, active: boolean): void {
-  if (session.colorPickerActive === active) return;
-
-  session.colorPickerActive = active;
-  setEscapeShortcutEnabled(session, !active);
-
-  for (const entry of session.entries) {
-    if (entry.window.isDestroyed()) continue;
-    entry.window.webContents.send('area-overlay:set-color-picker', active);
-  }
-
-  if (active) return;
-
-  for (const displayId of session.displays.keys()) {
-    const version = (session.colorFrameVersions.get(displayId) ?? 0) + 1;
-    session.colorFrameVersions.set(displayId, version);
-    removeColorFrame(session, displayId);
-  }
 }
 
 const SIMPLE_TOOLBAR_ACTIONS = new Set(['close']);
@@ -631,7 +419,7 @@ function revealOverlay(
     ) {
       return;
     }
-    return showOverlayWindow(entry).then(() => {
+    return showOverlayWindow(entry.window).then(() => {
       if (
         activeSession !== session ||
         session.hidden ||
@@ -765,31 +553,6 @@ function hideInactiveOverlays(
   }
 }
 
-function clipToDisplay(
-  display: Display,
-  rect: Rectangle
-): AreaOverlayRect | null {
-  const x = Math.max(rect.x, display.bounds.x);
-  const y = Math.max(rect.y, display.bounds.y);
-  const right = Math.min(
-    rect.x + rect.width,
-    display.bounds.x + display.bounds.width
-  );
-  const bottom = Math.min(
-    rect.y + rect.height,
-    display.bounds.y + display.bounds.height
-  );
-
-  if (right <= x || bottom <= y) return null;
-
-  return {
-    x: Math.round(x - display.bounds.x),
-    y: Math.round(y - display.bounds.y),
-    width: Math.round(right - x),
-    height: Math.round(bottom - y),
-  };
-}
-
 function localPickTargets(
   session: OverlaySession,
   display: Display
@@ -815,7 +578,7 @@ function deliverOverlayParams(
       ? session.selection
       : null;
 
-  entry.window.webContents.send('load', {
+  const payload: WindowLoadPayload = {
     type: session.renderer,
     params: {
       sessionId: session.id,
@@ -831,7 +594,8 @@ function deliverOverlayParams(
       pickTargets: localPickTargets(session, entry.display),
       prompt: session.prompt,
     },
-  });
+  };
+  entry.window.webContents.send('load', payload);
 }
 
 function isValidResult(
@@ -937,7 +701,9 @@ function finishSession(
 ): Promise<void> {
   const session = activeSession;
   if (!session || session !== expectedSession) return Promise.resolve();
-  setColorPickerActive(session, false);
+  setColorPickerActive(session, false, enabled =>
+    setEscapeShortcutEnabled(session, enabled)
+  );
   activeSession = null;
   setEscapeShortcutEnabled(session, false);
 
@@ -1180,7 +946,7 @@ function applyOverlayVisibility(
         ) {
           return;
         }
-        void showOverlayWindow(entry);
+        void showOverlayWindow(entry.window);
       });
       continue;
     }
@@ -1219,41 +985,6 @@ export function suspendOverlayVisibility(): () => void {
       session.requestedVisible && session.visibilitySuspensions === 0
     );
   };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-function fitToDisplay(
-  display: Display,
-  rect: Rectangle
-): AreaOverlayResult | null {
-  const { width: displayWidth, height: displayHeight } = display.bounds;
-  const width = clamp(Math.round(rect.width), 1, displayWidth);
-  const height = clamp(Math.round(rect.height), 1, displayHeight);
-
-  if (!Number.isFinite(rect.x) || !Number.isFinite(rect.y)) return null;
-
-  return {
-    displayId: display.id,
-    width,
-    height,
-    x: clamp(Math.round(rect.x - display.bounds.x), 0, displayWidth - width),
-    y: clamp(Math.round(rect.y - display.bounds.y), 0, displayHeight - height),
-  };
-}
-
-function presetSelection(
-  displays: Display[],
-  preset?: Rectangle
-): AreaOverlayResult | null {
-  if (!preset) return null;
-
-  const display = screen.getDisplayMatching(preset);
-  if (!displays.some(item => item.id === display.id)) return null;
-
-  return fitToDisplay(display, preset);
 }
 
 export async function startOverlaySession(

@@ -1,4 +1,6 @@
-const TRANSPARENT_WINDOW_TYPES = new Set([
+import type { WindowType } from '@/types/window-load';
+
+const TRANSPARENT_WINDOW_TYPES = new Set<WindowType>([
   'area-overlay',
   'recording-control',
   'scroll-capture-overlay',
@@ -8,5 +10,8 @@ const TRANSPARENT_WINDOW_TYPES = new Set([
 export function usesTransparentWindowFallback(
   windowType: string | null
 ): boolean {
-  return windowType !== null && TRANSPARENT_WINDOW_TYPES.has(windowType);
+  return (
+    windowType !== null &&
+    TRANSPARENT_WINDOW_TYPES.has(windowType as WindowType)
+  );
 }

@@ -4,7 +4,6 @@ export type {
   AreaSelectionCallback,
   AreaSelectionMode,
   ConfirmAreaSelectionOptions,
-  PresetArea,
   StartAreaSelectionOptions,
 } from './types';
 
@@ -23,6 +22,7 @@ export {
   updateAreaSelection,
   setAreaSelectionMode,
   setAreaSelectorAspectRatio,
+  setAreaSelectorToolbar,
 } from './overlay-backend';
 
 export function killAreaSelector(): Promise<void> {

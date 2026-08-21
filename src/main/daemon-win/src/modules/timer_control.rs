@@ -1,6 +1,6 @@
 use crate::overlay::{
     add_key_handler, create_popup_window, default_wndproc, ensure_window_class, remove_key_handler,
-    to_wide,
+    scale_for_dpi, to_wide,
 };
 use crate::protocol::{Request, param_i32, respond_error, respond_success, send_event};
 use crate::router::{Module, Reply, method_not_found};
@@ -134,10 +134,6 @@ fn cancel() {
     send_event("timer-control:cancel", None);
 }
 
-fn scaled(value: i32, dpi: u32) -> i32 {
-    (value * dpi as i32) / 96
-}
-
 fn show_panel(x: i32, y: i32, duration: i32) -> Result<(), String> {
     STATE.with(|state| {
         state.borrow_mut().remaining = duration;
@@ -180,9 +176,9 @@ fn show_panel(x: i32, y: i32, duration: i32) -> Result<(), String> {
     };
 
     let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-    let width = scaled(PANEL_WIDTH, dpi);
-    let height = scaled(PANEL_HEIGHT, dpi);
-    let radius = scaled(CORNER_RADIUS, dpi) * 2;
+    let width = scale_for_dpi(PANEL_WIDTH, dpi);
+    let height = scale_for_dpi(PANEL_HEIGHT, dpi);
+    let radius = scale_for_dpi(CORNER_RADIUS, dpi) * 2;
 
     unsafe {
         let _ = SetWindowPos(
@@ -204,7 +200,7 @@ fn show_panel(x: i32, y: i32, duration: i32) -> Result<(), String> {
 
         let font_name = to_wide("Segoe UI");
         let font = CreateFontW(
-            -scaled(22, dpi),
+            -scale_for_dpi(22, dpi),
             0,
             0,
             0,

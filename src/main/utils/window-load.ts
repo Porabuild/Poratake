@@ -1,10 +1,6 @@
 import { ipcMain } from 'electron';
 import type { WebContents } from 'electron';
-
-interface WindowLoadPayload {
-  type: string;
-  params: unknown;
-}
+import type { WindowLoadPayload } from '@/types/window-load';
 
 const loadPayloads = new Map<number, WindowLoadPayload>();
 const trackedWebContents = new Set<number>();

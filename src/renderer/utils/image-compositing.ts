@@ -10,15 +10,6 @@ export interface LayerScaledSize {
   height: number;
 }
 
-export function loadImageFromBase64(base64: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Failed to load image'));
-    img.src = `data:image/png;base64,${base64}`;
-  });
-}
-
 export function scaleLayerToEdge(
   anchor: ImageNaturalSize,
   layer: ImageNaturalSize,

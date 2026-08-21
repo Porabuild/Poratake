@@ -1,5 +1,5 @@
 use crate::display_color::{ToneMapper, hdr_white_scale};
-use crate::overlay::{MonitorEntry, monitors, rect_height, rect_width, to_wide};
+use crate::overlay::{MonitorEntry, bitmap_info, monitors, rect_height, rect_width, to_wide};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs::File;
@@ -27,10 +27,9 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetDC, HBITMAP, HMONITOR,
-    MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MonitorFromWindow, ReleaseDC, SRCCOPY,
-    SelectObject,
+    BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
+    DeleteObject, GdiFlush, GetDC, HBITMAP, HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint,
+    MonitorFromWindow, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
@@ -257,7 +256,11 @@ fn intersect_rects(left: RECT, right: RECT) -> Option<RECT> {
 }
 
 pub fn to_hbitmap(frame: &DesktopFrame) -> Option<HBITMAP> {
-    let info = bitmap_info(frame.width as i32, frame.height as i32);
+    let info = bitmap_info(
+        frame.width as i32,
+        frame.height as i32,
+        frame.width * frame.height * BYTES_PER_PIXEL as u32,
+    );
     let mut bits: *mut c_void = null_mut();
     let bitmap =
         unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0) }.ok()?;
@@ -937,7 +940,11 @@ fn capture_with_gdi(bounds: RECT) -> Option<DesktopFrame> {
     }
 
     let stride = width as usize * BYTES_PER_PIXEL;
-    let info = bitmap_info(width, height);
+    let info = bitmap_info(
+        width,
+        height,
+        (width * height * BYTES_PER_PIXEL as i32) as u32,
+    );
     let mut pixels = Vec::new();
     pixels.try_reserve_exact(stride * height as usize).ok()?;
 
@@ -1005,22 +1012,6 @@ fn capture_with_gdi(bounds: RECT) -> Option<DesktopFrame> {
         height: height as u32,
         pixels,
     })
-}
-
-fn bitmap_info(width: i32, height: i32) -> BITMAPINFO {
-    BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width,
-            biHeight: -height,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            biSizeImage: (width * height * BYTES_PER_PIXEL as i32) as u32,
-            ..Default::default()
-        },
-        ..Default::default()
-    }
 }
 
 fn scaled(value: i32, scale: f64) -> i32 {

@@ -1,14 +1,14 @@
 import { daemon } from '@/main/daemon';
-import type { WindowBounds } from '@/types/area';
+import type { Rect } from '@/types/geometry';
 
-export type { WindowBounds };
+export type { Rect };
 
 export interface WindowListItem {
   windowId: number;
   title: string;
   ownerName: string;
   ownerPid: number;
-  bounds: WindowBounds;
+  bounds: Rect;
 }
 
 export async function listWindows(): Promise<WindowListItem[]> {

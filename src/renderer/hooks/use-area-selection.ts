@@ -1,3 +1,4 @@
+import type { Point, Rect, Size } from '@/types/geometry';
 import {
   useCallback,
   useEffect,
@@ -17,16 +18,11 @@ import {
   normalizeRect,
   resizeRect,
 } from '@/renderer/utils/area-selection';
-import type {
-  Bounds,
-  Point,
-  SelectionHandle,
-} from '@/renderer/utils/area-selection';
+import type { SelectionHandle } from '@/renderer/utils/area-selection';
 import type {
   AreaOverlayAspectRatioMessage,
   AreaOverlayPickTarget,
   AreaOverlayPickTargetsMessage,
-  AreaOverlayRect,
   AreaOverlayRectMessage,
 } from '@/types/area-overlay';
 
@@ -37,29 +33,29 @@ type Interaction =
 
 export interface AreaSelectionOptions {
   interactive: boolean;
-  initialRect: AreaOverlayRect | null;
+  initialRect: Rect | null;
   initialAspectRatio: number | null;
   pickTargets: AreaOverlayPickTarget[] | null;
   repeatablePicks: boolean;
-  onSelected: (rect: AreaOverlayRect, pickId?: number) => void;
-  onUpdated: (rect: AreaOverlayRect) => void;
+  onSelected: (rect: Rect, pickId?: number) => void;
+  onUpdated: (rect: Rect) => void;
   onDiscarded: () => void;
 }
 
 export default function useAreaSelection(options: AreaSelectionOptions) {
   const optionsRef = useRef(options);
 
-  const [bounds] = useState<Bounds>(() => ({
+  const [bounds] = useState<Size>(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
   }));
-  const [rect, setRect] = useState<AreaOverlayRect | null>(options.initialRect);
+  const [rect, setRect] = useState<Rect | null>(options.initialRect);
   const [pointer, setPointer] = useState<Point | null>(null);
   const [cursor, setCursor] = useState('crosshair');
   const [interacting, setInteracting] = useState(false);
   const [picking, setPicking] = useState(options.pickTargets !== null);
   const [locked, setLocked] = useState(false);
-  const [hovered, setHovered] = useState<AreaOverlayRect | null>(null);
+  const [hovered, setHovered] = useState<Rect | null>(null);
 
   const rectRef = useRef(options.initialRect);
   const ratioRef = useRef(options.initialAspectRatio);
@@ -73,7 +69,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
     optionsRef.current = options;
   }, [options]);
 
-  const applyRect = useCallback((next: AreaOverlayRect | null) => {
+  const applyRect = useCallback((next: Rect | null) => {
     rectRef.current = next;
     setRect(next);
   }, []);
@@ -264,7 +260,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
         const target = pickTargetAt(point);
         if (!target) return;
 
-        const picked: AreaOverlayRect = {
+        const picked: Rect = {
           x: target.x,
           y: target.y,
           width: target.width,

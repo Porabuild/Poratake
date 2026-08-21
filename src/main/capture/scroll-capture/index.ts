@@ -1,13 +1,12 @@
 import { screen } from 'electron';
 import fs from 'fs';
 import { daemon } from '@/main/daemon';
-import { getConfig, updateConfig } from '@/main/settings';
+import { getConfig } from '@/main/settings';
 import {
   hideDesktopIcons,
   showDesktopIcons,
-  isSupported as isDesktopIconsSupported,
-  checkAccessibilityPermission,
 } from '@/main/capture/desktop-icons';
+import { shouldHideDesktopIconsForCapture } from '@/main/capture/desktop-icons/preference';
 import { generateScreenshotPath } from '@/main/capture/screenshot/utils';
 import {
   finalizeCapture,
@@ -66,15 +65,7 @@ export async function startScrollCapture(): Promise<void> {
 
 async function runScrollCapture(): Promise<void> {
   const config = getConfig();
-  let shouldHideIcons =
-    config.screenshot.hideDesktopIcons && isDesktopIconsSupported();
-
-  if (shouldHideIcons && !checkAccessibilityPermission(false)) {
-    shouldHideIcons = false;
-    updateConfig({
-      screenshot: { ...config.screenshot, hideDesktopIcons: false },
-    });
-  }
+  const shouldHideIcons = shouldHideDesktopIconsForCapture();
 
   if (shouldHideIcons) {
     await hideDesktopIcons('capture');

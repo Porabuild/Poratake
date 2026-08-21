@@ -1,5 +1,6 @@
 use super::recorder_types::{RecorderError, RecordingConfig, StagedAsset};
 use crate::com::retain_process_mta;
+use crate::mf::{create_attributes, wide_path};
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -23,7 +24,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
     MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
     MF_SINK_WRITER_DISABLE_THROTTLING, MF_VERSION, MFAudioFormat_AAC, MFAudioFormat_Float,
-    MFAudioFormat_PCM, MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
+    MFAudioFormat_PCM, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
     MFCreateSinkWriterFromURL, MFMediaType_Audio, MFSTARTUP_FULL, MFShutdown, MFStartup,
 };
 use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
@@ -1526,14 +1527,6 @@ impl Drop for AudioEncoder {
     }
 }
 
-fn create_attributes(capacity: u32) -> Result<IMFAttributes, RecorderError> {
-    let mut attributes = None;
-    unsafe { MFCreateAttributes(&mut attributes, capacity) }.map_err(|error| {
-        RecorderError::capture(format!("Failed to create audio writer attributes: {error}"))
-    })?;
-    attributes.ok_or_else(|| RecorderError::capture("Audio writer attributes were not created"))
-}
-
 fn audio_attribute_error(error: windows::core::Error) -> RecorderError {
     RecorderError::capture(format!("Failed to configure AAC media type: {error}"))
 }
@@ -1709,13 +1702,6 @@ fn temporary_audio_path(output_path: &Path) -> Result<PathBuf, RecorderError> {
 
 fn wide_string(value: &str) -> Vec<u16> {
     std::ffi::OsStr::new(value)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
-fn wide_path(path: &Path) -> Vec<u16> {
-    path.as_os_str()
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()

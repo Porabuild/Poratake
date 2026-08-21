@@ -3,7 +3,7 @@ use crate::desktop_frame::{
 };
 use crate::overlay::{
     add_key_handler, create_popup_window, default_wndproc, disable_window_transitions,
-    ensure_window_class, remove_key_handler,
+    ensure_window_class, remove_key_handler, show_window_topmost,
 };
 use crate::protocol::{Request, param_bool, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
@@ -19,9 +19,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GetCursorPos, HWND_TOPMOST, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, WM_PAINT,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    DestroyWindow, GetCursorPos, LWA_ALPHA, SetLayeredWindowAttributes, WM_PAINT, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const CLASS_NAME: &str = "PoratakeFreezeOverlay";
@@ -134,17 +133,8 @@ fn create_overlays() -> bool {
 
         unsafe {
             let _ = SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA);
-            let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
-            let _ = SetWindowPos(
-                window,
-                Some(HWND_TOPMOST),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
         }
+        show_window_topmost(window);
 
         STATE.with(|state| {
             state.borrow_mut().windows.push(FrozenWindow {

@@ -2,6 +2,8 @@ import { screen } from 'electron';
 import type { Rectangle } from 'electron';
 import type { AreaSelection } from '@/types/area';
 import type { AspectRatio } from '@/types/aspect-ratio';
+import type { AreaOverlayToolbar } from '@/types/area-overlay';
+import type { Rect } from '@/types/geometry';
 import {
   cancelOverlaySelection,
   concealOverlayHandoff,
@@ -12,6 +14,7 @@ import {
   resolveWindowPickTargets,
   setOverlayAspectRatio,
   setOverlayPickTargets,
+  setOverlayToolbar,
   setOverlayVisible,
   startInteractiveOverlay,
   suspendOverlayVisibility,
@@ -26,7 +29,6 @@ import type {
 import type {
   AreaSelectionMode,
   ConfirmAreaSelectionOptions,
-  PresetArea,
   StartAreaSelectionOptions,
 } from './types';
 
@@ -302,9 +304,7 @@ export function suspendAreaSelector(): () => void {
   return suspendOverlayVisibility();
 }
 
-export async function updateAreaSelection(
-  bounds: PresetArea
-): Promise<boolean> {
+export async function updateAreaSelection(bounds: Rect): Promise<boolean> {
   if (!isOverlayActive()) {
     return false;
   }
@@ -333,6 +333,12 @@ export async function setAreaSelectionMode(
     resolved.prompt ?? null,
     resolved.repeatablePicks ?? false
   );
+}
+
+export function setAreaSelectorToolbar(
+  toolbar: AreaOverlayToolbar | null
+): void {
+  setOverlayToolbar(toolbar);
 }
 
 export async function setAreaSelectorAspectRatio(

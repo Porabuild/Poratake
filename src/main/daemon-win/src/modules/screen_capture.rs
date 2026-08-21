@@ -7,6 +7,7 @@ use super::recording_camera::{CameraRecordingConfig, CameraSyncClock, RecordingC
 use super::recording_input::{InputTracker, TrackerBounds, TrackerSource};
 use crate::com::retain_process_mta;
 use crate::display_color::hdr_white_scale;
+use crate::mf::{create_attributes, create_video_type};
 use crate::tone_map::{FitStage, ToneMapStage, source_view, target_view};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -43,13 +44,11 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFAttributes,
     IMFByteStream, IMFDXGIDeviceManager, IMFSample, IMFSinkWriter, MF_MT_ALL_SAMPLES_INDEPENDENT,
-    MF_MT_AVG_BITRATE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
-    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO,
-    MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
-    MF_SINK_WRITER_D3D_MANAGER, MF_VERSION, MFCreateAttributes, MFCreateDXGIDeviceManager,
-    MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateSinkWriterFromURL, MFCreateTrackedSample,
-    MFMediaType_Video, MFSTARTUP_FULL, MFShutdown, MFStartup, MFVideoFormat_ARGB32,
-    MFVideoFormat_H264, MFVideoInterlace_Progressive,
+    MF_MT_FIXED_SIZE_SAMPLES, MF_MT_MPEG2_PROFILE, MF_MT_SAMPLE_SIZE,
+    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_D3D_MANAGER, MF_VERSION,
+    MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer, MFCreateSinkWriterFromURL,
+    MFCreateTrackedSample, MFSTARTUP_FULL, MFShutdown, MFStartup, MFVideoFormat_ARGB32,
+    MFVideoFormat_H264,
 };
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
@@ -2031,6 +2030,7 @@ impl MediaFoundationEncoder {
             width,
             height,
             frame_rate,
+            1,
             Some(video_bitrate(width, height, frame_rate)),
         )?;
         unsafe {
@@ -2042,7 +2042,8 @@ impl MediaFoundationEncoder {
             RecorderError::capture(format!("Failed to add H.264 stream: {error}"))
         })?;
 
-        let input_type = create_video_type(MFVideoFormat_ARGB32, width, height, frame_rate, None)?;
+        let input_type =
+            create_video_type(MFVideoFormat_ARGB32, width, height, frame_rate, 1, None)?;
         unsafe {
             input_type
                 .SetUINT32(&MF_MT_FIXED_SIZE_SAMPLES, 1)
@@ -2413,64 +2414,10 @@ impl Drop for MediaFoundationEncoder {
     }
 }
 
-fn create_attributes(capacity: u32) -> Result<IMFAttributes, RecorderError> {
-    let mut attributes = None;
-    unsafe {
-        MFCreateAttributes(&mut attributes, capacity).map_err(|error| {
-            RecorderError::capture(format!(
-                "Failed to create Media Foundation attributes: {error}"
-            ))
-        })?;
-    }
-    attributes.ok_or_else(|| RecorderError::capture("Media Foundation attributes were not created"))
-}
-
-fn create_video_type(
-    subtype: windows::core::GUID,
-    width: u32,
-    height: u32,
-    frame_rate: u32,
-    bitrate: Option<u32>,
-) -> Result<windows::Win32::Media::MediaFoundation::IMFMediaType, RecorderError> {
-    let media_type = unsafe { MFCreateMediaType() }.map_err(|error| {
-        RecorderError::capture(format!("Failed to create video media type: {error}"))
-    })?;
-    unsafe {
-        media_type
-            .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(mf_attribute_error)?;
-        media_type
-            .SetGUID(&MF_MT_SUBTYPE, &subtype)
-            .map_err(mf_attribute_error)?;
-        media_type
-            .SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))
-            .map_err(mf_attribute_error)?;
-        media_type
-            .SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(frame_rate, 1))
-            .map_err(mf_attribute_error)?;
-        media_type
-            .SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_ratio(1, 1))
-            .map_err(mf_attribute_error)?;
-        media_type
-            .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
-            .map_err(mf_attribute_error)?;
-        if let Some(bitrate) = bitrate {
-            media_type
-                .SetUINT32(&MF_MT_AVG_BITRATE, bitrate)
-                .map_err(mf_attribute_error)?;
-        }
-    }
-    Ok(media_type)
-}
-
 fn mf_attribute_error(error: windows::core::Error) -> RecorderError {
     RecorderError::capture(format!(
         "Failed to configure Media Foundation media type: {error}"
     ))
-}
-
-fn pack_ratio(numerator: u32, denominator: u32) -> u64 {
-    (u64::from(numerator) << 32) | u64::from(denominator)
 }
 
 fn video_bitrate(width: u32, height: u32, frame_rate: u32) -> u32 {

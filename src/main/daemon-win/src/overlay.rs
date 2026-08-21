@@ -4,15 +4,16 @@ use std::rc::Rc;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, CreateRoundRectRgn, EnumDisplayMonitors, FONT_CHARSET, FONT_CLIP_PRECISION,
-    FONT_OUTPUT_PRECISION, FONT_QUALITY, GetMonitorInfoW, HDC, HFONT, HMONITOR, MONITORINFO,
-    MONITORINFOEXW, SetWindowRgn,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateFontW, CreateRoundRectRgn, EnumDisplayMonitors,
+    FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, GetMonitorInfoW, HDC,
+    HFONT, HMONITOR, MONITORINFO, MONITORINFOEXW, SetWindowRgn,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetClientRect, GetWindowLongPtrW,
-    HCURSOR, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, LoadCursorW, MONITORINFOF_PRIMARY,
-    RegisterClassExW, SetWindowLongPtrW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+    HCURSOR, HHOOK, HWND_TOPMOST, IDC_ARROW, KBDLLHOOKSTRUCT, LoadCursorW, MONITORINFOF_PRIMARY,
+    RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW,
+    SetWindowPos, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, WH_KEYBOARD_LL,
     WINDOW_EX_STYLE, WM_KEYDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WNDPROC, WS_EX_NOACTIVATE, WS_POPUP,
 };
 use windows::core::PCWSTR;
@@ -39,6 +40,37 @@ pub fn rect_height(rect: &RECT) -> i32 {
 
 pub fn to_wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+pub fn bitmap_info(width: i32, height: i32, buffer_size: u32) -> BITMAPINFO {
+    BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            biSizeImage: buffer_size,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+pub fn show_window_topmost(window: HWND) {
+    unsafe {
+        let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
+        let _ = SetWindowPos(
+            window,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
 }
 
 pub fn scale_for_dpi(value: i32, dpi: u32) -> i32 {

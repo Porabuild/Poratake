@@ -66,12 +66,13 @@ describe('Preferences', () => {
     vi.restoreAllMocks();
   });
 
-  describe('getAccentColor', () => {
+  describe('getSystemAccentColor', () => {
     it('should return formatted accent color', async () => {
       mockSystemPreferences.getAccentColor.mockReturnValue('007AFFFF');
 
-      const { getAccentColor } = await import('@/main/system/preferences');
-      const result = getAccentColor();
+      const { getSystemAccentColor } =
+        await import('@/main/system/preferences');
+      const result = getSystemAccentColor();
 
       expect(result).toBe('#007AFF');
     });
@@ -84,8 +85,9 @@ describe('Preferences', () => {
         .spyOn(console, 'error')
         .mockImplementation(() => {});
 
-      const { getAccentColor } = await import('@/main/system/preferences');
-      const result = getAccentColor();
+      const { getSystemAccentColor } =
+        await import('@/main/system/preferences');
+      const result = getSystemAccentColor();
 
       expect(result).toBe('#007AFF');
       consoleSpy.mockRestore();
@@ -94,8 +96,9 @@ describe('Preferences', () => {
     it('should handle various color formats', async () => {
       mockSystemPreferences.getAccentColor.mockReturnValue('FF5500AA');
 
-      const { getAccentColor } = await import('@/main/system/preferences');
-      const result = getAccentColor();
+      const { getSystemAccentColor } =
+        await import('@/main/system/preferences');
+      const result = getSystemAccentColor();
 
       expect(result).toBe('#FF5500');
     });

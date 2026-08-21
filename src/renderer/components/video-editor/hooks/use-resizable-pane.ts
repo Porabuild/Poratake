@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { clamp } from '@/types/geometry';
 
 type ResizeAxis = 'vertical' | 'horizontal';
 
@@ -15,10 +16,6 @@ interface UseResizablePaneReturn {
   size: number;
   isResizing: boolean;
   startResize: (event: React.MouseEvent) => void;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 function readStoredSize(storageKey: string, fallback: number): number {

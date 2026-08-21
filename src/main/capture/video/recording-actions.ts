@@ -328,6 +328,51 @@ export async function recordArea(): Promise<void> {
   }
 }
 
+async function launchRecording(
+  config: RecordingConfig,
+  recordingType: RecordingType | undefined
+): Promise<void> {
+  await startRecordingWithConfig(
+    config,
+    () => showRecordingControl(config),
+    hideRecordingControl,
+    handleTerminalRecordingFailure,
+    isWindows || hasVisibleSelectorOverlay() || config.windowId !== undefined,
+    stopRecordingWhenTargetClosed
+  );
+
+  lastRecordingConfig = config;
+  currentRecordingType = recordingType;
+  syncRecordingPreviewPreparation();
+}
+
+async function abortRecordingStart(
+  outputPath: string | null,
+  error: unknown,
+  message: string
+): Promise<void> {
+  disposeRecordingPreviewPreparation();
+  console.error(message, error);
+  lastRecordingConfig = null;
+  currentRecordingType = undefined;
+  concealAreaSelectorOverlay();
+
+  if (outputPath) {
+    await deleteVideo(outputPath, {
+      showNotification: false,
+      showErrorDialog: false,
+    });
+  }
+
+  await hideRecordingControl();
+  await disableCameraContentProtection();
+  hideCameraPreview();
+
+  if (error instanceof Error && !isRecordingStartCancellation(error)) {
+    await showRecordingError(error);
+  }
+}
+
 async function startPendingRecordingInternal(
   options: RecordingOptions = {}
 ): Promise<void> {
@@ -462,20 +507,7 @@ async function startPendingRecordingInternal(
       await enableCameraContentProtection();
     }
 
-    const skipNativeRecordingOverlay =
-      isWindows || hasVisibleSelectorOverlay() || windowId !== undefined;
-
-    await startRecordingWithConfig(
-      recordingConfig,
-      () => showRecordingControl(recordingConfig),
-      hideRecordingControl,
-      handleTerminalRecordingFailure,
-      skipNativeRecordingOverlay,
-      stopRecordingWhenTargetClosed
-    );
-    lastRecordingConfig = recordingConfig;
-    currentRecordingType = recordingType;
-    syncRecordingPreviewPreparation();
+    await launchRecording(recordingConfig, recordingType);
 
     console.log('Recording started:', {
       x,
@@ -492,23 +524,7 @@ async function startPendingRecordingInternal(
       iosDeviceName,
     });
   } catch (error) {
-    disposeRecordingPreviewPreparation();
-    console.error('Error starting recording:', error);
-    lastRecordingConfig = null;
-    currentRecordingType = undefined;
-    concealAreaSelectorOverlay();
-    if (outputPath) {
-      await deleteVideo(outputPath, {
-        showNotification: false,
-        showErrorDialog: false,
-      });
-    }
-    await hideRecordingControl();
-    await disableCameraContentProtection();
-    hideCameraPreview();
-    if (error instanceof Error && !isRecordingStartCancellation(error)) {
-      await showRecordingError(error);
-    }
+    await abortRecordingStart(outputPath, error, 'Error starting recording:');
   }
 }
 
@@ -625,34 +641,10 @@ async function restartActiveRecording(): Promise<void> {
       await enableCameraContentProtection();
     }
 
-    await startRecordingWithConfig(
-      recordingConfig,
-      () => showRecordingControl(recordingConfig),
-      hideRecordingControl,
-      handleTerminalRecordingFailure,
-      isWindows || hasVisibleSelectorOverlay() || config.windowId !== undefined,
-      stopRecordingWhenTargetClosed
-    );
-    lastRecordingConfig = recordingConfig;
-    currentRecordingType = recordingType;
-    syncRecordingPreviewPreparation();
+    await launchRecording(recordingConfig, recordingType);
     console.log('Recording restarted with same area');
   } catch (error) {
-    disposeRecordingPreviewPreparation();
-    console.error('Error restarting recording:', error);
-    if (outputPath) {
-      await deleteVideo(outputPath, {
-        showNotification: false,
-        showErrorDialog: false,
-      });
-    }
-    lastRecordingConfig = null;
-    await disableCameraContentProtection();
-    hideCameraPreview();
-    await hideRecordingControl();
-    if (error instanceof Error && !isRecordingStartCancellation(error)) {
-      await showRecordingError(error);
-    }
+    await abortRecordingStart(outputPath, error, 'Error restarting recording:');
   }
 }
 

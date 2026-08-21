@@ -1,14 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import type {
-  EditorActionShortcuts,
-  EditorPreferences,
-  EditorShortcuts,
-  ScreenshotFormat,
-} from '@/types/settings';
-import type { EditorState } from '@/types/history';
 import type { CapturePreviewParams } from '@/types/capture-preview';
-import type { AreaOverlayParams } from '@/types/area-overlay';
-import type { RecordingControlState } from '@/types/recording-control';
+import type { WindowLoadPayload } from '@/types/window-load';
 import { useAccentColor } from '@/renderer/hooks/useAccentColor';
 import { useAppTheme } from '@/renderer/hooks/use-app-theme';
 import { usesTransparentWindowFallback } from '@/renderer/utils/window-fallback';
@@ -92,66 +84,11 @@ export function CapturePreviewFallback({
   );
 }
 
-interface ScreenshotParams {
-  filePath: string;
-  imageUrl?: string;
-  width?: number;
-  height?: number;
-  editorState?: EditorState;
-  historyId?: string;
-  initialPreferences: EditorPreferences;
-  screenshotSettings: {
-    closeOnCopy: boolean;
-    closeOnSave: boolean;
-    format: ScreenshotFormat;
-  };
-  editorShortcuts: EditorShortcuts;
-  editorActionShortcuts: EditorActionShortcuts;
-}
-
-interface PinParams {
-  imageBase64: string;
-  width: number;
-  height: number;
-  pinId: string;
-}
-
-interface VideoEditorParams {
-  filePath: string;
-}
-
-interface SettingsParams {
-  nativeMaterial: boolean;
-}
-
 interface WindowMaterialResult {
   nativeCapable: boolean;
 }
 
-interface LoadEvent {
-  type:
-    | 'screenshot'
-    | 'settings'
-    | 'onboarding'
-    | 'pin'
-    | 'video-editor'
-    | 'capture-preview'
-    | 'area-overlay'
-    | 'recording-control'
-    | 'scroll-capture-overlay'
-    | 'scroll-capture-control';
-  params:
-    | ScreenshotParams
-    | PinParams
-    | VideoEditorParams
-    | CapturePreviewParams
-    | AreaOverlayParams
-    | RecordingControlState
-    | SettingsParams
-    | Record<string, never>;
-}
-
-function WindowFallback({ data }: { data: LoadEvent }) {
+function WindowFallback({ data }: { data: WindowLoadPayload }) {
   if (usesTransparentWindowFallback(data.type)) {
     return null;
   }
@@ -173,8 +110,8 @@ function App() {
   useAccentColor();
   useAppTheme();
 
-  const [windowData, setWindowData] = useState<LoadEvent | null>(null);
-  const windowDataRef = useRef<LoadEvent | null>(null);
+  const [windowData, setWindowData] = useState<WindowLoadPayload | null>(null);
+  const windowDataRef = useRef<WindowLoadPayload | null>(null);
 
   useEffect(() => {
     const handlePrepareCapturePreview = () => {
@@ -197,7 +134,7 @@ function App() {
         });
     };
 
-    const applyLoadEvent = (data: LoadEvent) => {
+    const applyWindowLoadPayload = (data: WindowLoadPayload) => {
       if (data.type === 'video-editor') {
         void loadVideoEditorWindow();
       }
@@ -206,7 +143,7 @@ function App() {
         const reducedTransparency =
           typeof window.matchMedia === 'function' &&
           window.matchMedia('(prefers-reduced-transparency: reduce)').matches;
-        const settingsParams = data.params as SettingsParams;
+        const settingsParams = data.params;
         document.documentElement.dataset.platform = window.appPlatform;
         document.documentElement.dataset.sidebarGlass = reducedTransparency
           ? 'off'
@@ -230,8 +167,8 @@ function App() {
       setWindowData(data);
     };
 
-    const handleLoad = (_event: unknown, data: LoadEvent) => {
-      applyLoadEvent(data);
+    const handleLoad = (_event: unknown, data: WindowLoadPayload) => {
+      applyWindowLoadPayload(data);
     };
 
     const unsubscribeLoad = window.ipcRenderer.on('load', handleLoad);
@@ -252,7 +189,7 @@ function App() {
       .invoke('window:get-load-data')
       .then(data => {
         if (data && windowDataRef.current === null) {
-          applyLoadEvent(data as LoadEvent);
+          applyWindowLoadPayload(data as WindowLoadPayload);
         }
       })
       .catch(() => {});
@@ -283,7 +220,7 @@ function App() {
   const renderWindow = () => {
     switch (windowData.type) {
       case 'screenshot': {
-        const screenshotParams = windowData.params as ScreenshotParams;
+        const screenshotParams = windowData.params;
         return (
           <ScreenshotWindow
             key={screenshotParams.filePath}
@@ -300,24 +237,15 @@ function App() {
       case 'onboarding':
         return <OnboardingWindow />;
       case 'pin':
-        return <PinWindow params={windowData.params as PinParams} />;
+        return <PinWindow params={windowData.params} />;
       case 'video-editor':
-        return (
-          <VideoEditorWindow params={windowData.params as VideoEditorParams} />
-        );
+        return <VideoEditorWindow params={windowData.params} />;
       case 'capture-preview':
-        return (
-          <CapturePreviewWindow
-            params={windowData.params as CapturePreviewParams}
-          />
-        );
+        return <CapturePreviewWindow params={windowData.params} />;
       case 'area-overlay':
-        return (
-          <AreaOverlayWindow params={windowData.params as AreaOverlayParams} />
-        );
+        return <AreaOverlayWindow params={windowData.params} />;
       case 'recording-control': {
-        const recordingControlParams =
-          windowData.params as RecordingControlState;
+        const recordingControlParams = windowData.params;
         return (
           <RecordingControlWindow
             key={recordingControlParams.mode}
@@ -328,8 +256,8 @@ function App() {
       case 'scroll-capture-overlay':
         return (
           <ScrollCaptureOverlayWindow
-            key={(windowData.params as AreaOverlayParams).sessionId}
-            params={windowData.params as AreaOverlayParams}
+            key={windowData.params.sessionId}
+            params={windowData.params}
           />
         );
       case 'scroll-capture-control':

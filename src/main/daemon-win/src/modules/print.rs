@@ -1,4 +1,5 @@
 use crate::com::retain_process_mta;
+use crate::overlay::bitmap_info;
 use crate::protocol::{Request, param_str, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use base64::engine::general_purpose::STANDARD;
@@ -10,10 +11,9 @@ use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{GlobalFree, HGLOBAL};
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteDC, GDI_ERROR, GetDeviceCaps,
-    HALFTONE, HDC, HORZRES, LOGPIXELSX, LOGPIXELSY, PHYSICALHEIGHT, PHYSICALOFFSETX,
-    PHYSICALOFFSETY, PHYSICALWIDTH, SRCCOPY, SetBrushOrgEx, SetStretchBltMode, StretchDIBits,
-    VERTRES,
+    DIB_RGB_COLORS, DeleteDC, GDI_ERROR, GetDeviceCaps, HALFTONE, HDC, HORZRES, LOGPIXELSX,
+    LOGPIXELSY, PHYSICALHEIGHT, PHYSICALOFFSETX, PHYSICALOFFSETY, PHYSICALWIDTH, SRCCOPY,
+    SetBrushOrgEx, SetStretchBltMode, StretchDIBits, VERTRES,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory, IWICPalette,
@@ -280,22 +280,6 @@ fn composite_onto_white(pixels: &mut [u8]) {
     }
 }
 
-fn bitmap_info(width: u32, height: u32, buffer_size: u32) -> BITMAPINFO {
-    BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width as i32,
-            biHeight: -(height as i32),
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            biSizeImage: buffer_size,
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
 struct PrinterContext {
     dc: HDC,
     dev_mode: HGLOBAL,
@@ -440,7 +424,11 @@ fn print_document(printer: &PrinterContext, image: &DecodedImage) -> Result<(), 
     }
     let destination_height = destination_height.round().max(1.0) as i32;
 
-    let bitmap_info = bitmap_info(image.width, image.height, image.pixels.len() as u32);
+    let bitmap_info = bitmap_info(
+        image.width as i32,
+        image.height as i32,
+        image.pixels.len() as u32,
+    );
 
     let title: Vec<u16> = "Poratake Screenshot"
         .encode_utf16()
@@ -529,6 +517,7 @@ fn print_document(printer: &PrinterContext, image: &DecodedImage) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Graphics::Gdi::BI_RGB;
 
     #[test]
     fn composites_straight_alpha_onto_white() {

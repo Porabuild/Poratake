@@ -29,8 +29,6 @@ export const getFontSizePx = (size: TextFontSize): number => {
   return size;
 };
 
-export const DEFAULT_FONT_SIZE: TextFontSize = 20;
-
 export const TEXT_FONT_WEIGHT = 500;
 export const TEXT_BG_COLOR = 'rgba(0, 0, 0, 0.75)';
 export const TEXT_BG_PADDING_X = 8;

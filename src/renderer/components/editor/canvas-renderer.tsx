@@ -12,6 +12,11 @@ import type {
 } from '@/types/editor';
 import type { BalanceCrop } from '@/renderer/utils/color-detection';
 import { renderNoise } from '@/renderer/utils/noise';
+import {
+  applyImageShadow,
+  renderBackgroundImageToCanvas,
+  renderGradientToCanvas,
+} from '@/renderer/utils/wallpaper-render';
 import type { LayerRect } from '@/renderer/utils/layer-layout';
 import {
   getWindowFrameCornerRadius,
@@ -153,16 +158,7 @@ function drawLayer({
 }: DrawLayerArgs) {
   ctx.save();
 
-  const shadowBlur = (shadow / 100) * 50;
-  const shadowOpacity = shadow > 0 ? 0.2 + (shadow / 100) * 0.3 : 0;
-  const shadowOffsetY = (shadow / 100) * 15;
-
-  if (shadow > 0) {
-    ctx.shadowColor = `rgba(0, 0, 0, ${shadowOpacity})`;
-    ctx.shadowBlur = shadowBlur;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = shadowOffsetY;
-  }
+  applyImageShadow(ctx, shadow);
 
   if (hasWindowFrame && frameTheme) {
     const framedStyle = frameStyle as FramedWindowStyle;
@@ -399,35 +395,15 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       ctx.scale(pixelRatio, pixelRatio);
 
       const blurRadius = (backgroundBlur / 100) * 50;
-      if (blurRadius > 0) {
-        ctx.filter = `blur(${blurRadius}px)`;
-      }
 
       if (bgImage) {
-        const blurExpand = blurRadius * 2;
-        const imgAspect = bgImage.width / bgImage.height;
-        const expandedWidth = canvasWidth + blurExpand * 2;
-        const expandedHeight = canvasHeight + blurExpand * 2;
-        const canvasAspect = expandedWidth / expandedHeight;
-
-        let drawWidth: number;
-        let drawHeight: number;
-        let drawX: number;
-        let drawY: number;
-
-        if (imgAspect > canvasAspect) {
-          drawHeight = expandedHeight;
-          drawWidth = expandedHeight * imgAspect;
-          drawX = (canvasWidth - drawWidth) / 2;
-          drawY = -blurExpand;
-        } else {
-          drawWidth = expandedWidth;
-          drawHeight = expandedWidth / imgAspect;
-          drawX = -blurExpand;
-          drawY = (canvasHeight - drawHeight) / 2;
-        }
-
-        ctx.drawImage(bgImage, drawX, drawY, drawWidth, drawHeight);
+        renderBackgroundImageToCanvas(
+          ctx,
+          bgImage,
+          canvasWidth,
+          canvasHeight,
+          blurRadius
+        );
       } else if (
         gradient &&
         Array.isArray(gradient.colors) &&
@@ -437,41 +413,14 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         canvasWidth > 0 &&
         canvasHeight > 0
       ) {
-        const blurExpand = blurRadius * 2;
-        const expandedWidth = canvasWidth + blurExpand * 2;
-        const expandedHeight = canvasHeight + blurExpand * 2;
-
-        const angle =
-          typeof gradient.angle === 'number' && Number.isFinite(gradient.angle)
-            ? gradient.angle
-            : 0;
-        const angleRad = ((angle - 90) * Math.PI) / 180;
-        const cos = Math.cos(angleRad);
-        const sin = Math.sin(angleRad);
-
-        const halfWidth = canvasWidth / 2;
-        const halfHeight = canvasHeight / 2;
-        const length =
-          Math.sqrt(
-            expandedWidth * expandedWidth + expandedHeight * expandedHeight
-          ) / 2;
-
-        const startX = halfWidth - cos * length;
-        const startY = halfHeight - sin * length;
-        const endX = halfWidth + cos * length;
-        const endY = halfHeight + sin * length;
-
-        const grad = ctx.createLinearGradient(startX, startY, endX, endY);
-        const colorCount = gradient.colors.length;
-        gradient.colors.forEach((color, index) => {
-          grad.addColorStop(index / (colorCount - 1), color);
-        });
-
-        ctx.fillStyle = grad;
-        ctx.fillRect(-blurExpand, -blurExpand, expandedWidth, expandedHeight);
+        renderGradientToCanvas(
+          ctx,
+          gradient,
+          canvasWidth,
+          canvasHeight,
+          blurRadius
+        );
       }
-
-      ctx.filter = 'none';
 
       if (noise > 0 && (bgImage || gradient)) {
         renderNoise(ctx, canvasWidth, canvasHeight, noise);

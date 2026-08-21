@@ -1,17 +1,9 @@
 import { toFileUrl } from '../utils';
+export { loadImageOrNull as loadImage } from '@/renderer/utils/image';
 
 export async function loadFileAsBlob(filePath: string): Promise<Blob> {
   const response = await fetch(toFileUrl(filePath));
   return response.blob();
-}
-
-export function loadImage(src: string): Promise<HTMLImageElement | null> {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = src;
-  });
 }
 
 export async function createOutputFile(path: string): Promise<void> {

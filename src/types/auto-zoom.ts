@@ -1,5 +1,6 @@
 import type { CursorData, CursorEvent, MouseButton } from './cursor';
 import type { ZoomSegment } from './zoom';
+import { clamp } from '@/types/geometry';
 
 const AUTO_ZOOM_ID_PREFIX = 'auto-zoom-';
 
@@ -103,10 +104,6 @@ interface TimeWindow {
 interface Shot {
   cluster: Cluster;
   window: TimeWindow;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
 }
 
 function roundTo(value: number, decimals: number): number {

@@ -1,6 +1,9 @@
-import { BrowserWindow, ipcMain, screen, shell } from 'electron';
-import path from 'path';
-import { isDev, devServerUrl } from '@/main/utils/env';
+import { BrowserWindow, ipcMain, shell } from 'electron';
+import {
+  appWebPreferences,
+  centeredPosition,
+  loadAppWindow,
+} from '@/main/utils/window-factory';
 import { getWindowData } from '@/main/capture/video/window-manager';
 import { openKeyboardShortcutPreferences } from '@/main/system/permissions';
 import { sendWindowLoad } from '@/main/utils/window-load';
@@ -26,10 +29,6 @@ export function createOnboardingWindow(): BrowserWindow {
     return onboardingWindow;
   }
 
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenWidth, height: screenHeight } =
-    primaryDisplay.workAreaSize;
-
   const windowWidth = 500;
   const windowHeight = 650;
 
@@ -48,24 +47,14 @@ export function createOnboardingWindow(): BrowserWindow {
       surface: 'background',
       trafficLightPosition: { x: 16, y: 18 },
     }),
-    x: Math.floor((screenWidth - windowWidth) / 2),
-    y: Math.floor((screenHeight - windowHeight) / 2),
+    ...centeredPosition({ width: windowWidth, height: windowHeight }),
     backgroundColor: titleBarColors('background').color,
     title: 'Set up Poratake',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      devTools: isDev,
-    },
+    webPreferences: appWebPreferences(),
   });
   onboardingWindow = window;
 
-  if (devServerUrl) {
-    window.loadURL(devServerUrl);
-  } else {
-    window.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
+  loadAppWindow(window);
 
   window.webContents.on('did-finish-load', () => {
     sendWindowLoad(window.webContents, {

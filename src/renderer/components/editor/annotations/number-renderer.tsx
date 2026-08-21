@@ -1,26 +1,13 @@
 import type { JSX } from 'react';
-import type { NumberAnnotation, NumberSize } from '@/types/editor';
+import type { NumberAnnotation } from '@/types/editor';
+import { getContrastColor } from '@/renderer/utils/color';
+import { NUMBER_SIZE_CONFIG } from '@/renderer/utils/annotation-geometry';
 import {
   type AnnotationRenderProps,
   type ExportRenderProps,
   SELECTION_STROKE,
   SELECTION_STROKE_WIDTH,
 } from './types';
-
-const SIZE_CONFIG: Record<NumberSize, { radius: number; fontSize: number }> = {
-  small: { radius: 14, fontSize: 14 },
-  medium: { radius: 18, fontSize: 18 },
-  large: { radius: 24, fontSize: 24 },
-};
-
-export const getContrastColor = (hexColor: string): string => {
-  const hex = hexColor.replace('#', '');
-  const r = parseInt(hex.substring(0, 2), 16);
-  const g = parseInt(hex.substring(2, 4), 16);
-  const b = parseInt(hex.substring(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.5 ? '#000000' : '#ffffff';
-};
 
 interface NumberRenderProps extends Omit<AnnotationRenderProps, 'annotation'> {
   annotation: NumberAnnotation;
@@ -35,7 +22,7 @@ export function renderNumber({
   onMouseDown,
 }: NumberRenderProps): JSX.Element {
   const key = isPreview ? `preview-${ann.id}` : ann.id;
-  const config = SIZE_CONFIG[ann.size] || SIZE_CONFIG.medium;
+  const config = NUMBER_SIZE_CONFIG[ann.size] || NUMBER_SIZE_CONFIG.medium;
   const cx = ann.x + offsetX;
   const cy = ann.y + offsetY;
   const textColor = getContrastColor(ann.fill);
@@ -91,7 +78,7 @@ export function exportNumber({
   offsetY,
   scale,
 }: NumberExportProps): string {
-  const config = SIZE_CONFIG[ann.size] || SIZE_CONFIG.medium;
+  const config = NUMBER_SIZE_CONFIG[ann.size] || NUMBER_SIZE_CONFIG.medium;
   const cx = (ann.x + offsetX) * scale;
   const cy = (ann.y + offsetY) * scale;
   const radius = config.radius * scale;

@@ -2,6 +2,7 @@ import {
   cancelAreaSelection,
   hideAreaSelector,
   setAreaSelectionMode,
+  setAreaSelectorToolbar,
   startAreaSelection,
   updateAreaSelectionCallbacks,
 } from '@/main/capture/area-selector';
@@ -39,7 +40,6 @@ import { isFeatureSupported } from '@/main/system/capabilities';
 import { formatClock } from '@/main/utils/clock';
 import { isDev } from '@/main/utils/env';
 import { showTransientNotification } from '@/main/utils/notification';
-import { setOverlayToolbar } from '@/main/capture/area-overlay';
 import { isScreenFrozen } from '@/main/capture/freeze-screen';
 import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
 import {
@@ -308,7 +308,7 @@ function handleCopyColorAction(color: string): void {
 function applyActiveCaptureTarget(): void {
   const target = activeCaptureTarget();
   void setAreaSelectionMode(SELECTION_MODES[target]);
-  setOverlayToolbar(toolbarState());
+  setAreaSelectorToolbar(toolbarState());
 }
 
 function handleCaptureModeSelected(mode: AllInOneCaptureMode): void {

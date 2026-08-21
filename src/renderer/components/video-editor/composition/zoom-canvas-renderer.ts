@@ -6,6 +6,7 @@ import {
 import type { CursorData } from '@/types/cursor';
 import type { VideoSegment } from '@/types/video';
 import type { ViewportState } from './types';
+import { clamp } from '@/types/geometry';
 import {
   getZoomState,
   simulateViewport,
@@ -58,10 +59,6 @@ function getOptimalCenterCached(
 export function clearOptimalCenterCache(): void {
   optimalCenterCache.clear();
   clearViewportKeyframeCache();
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
 }
 
 function resolveZoomSettings(

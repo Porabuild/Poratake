@@ -1,4 +1,4 @@
-import { ipcMain, Notification, clipboard } from 'electron';
+import { ipcMain, clipboard } from 'electron';
 import path from 'path';
 import { S3Client } from './s3-client.ts';
 import { RestClient } from './rest-client.ts';
@@ -11,6 +11,7 @@ import { getConfig } from '@/main/settings';
 import { showTransientNotification } from '@/main/utils/notification';
 import { getCapturePreviewUploadPath } from '@/main/capture/capture-preview';
 import { isExportOutputPathAllowed } from '@/main/capture/video/ipc/export-session';
+import { showNotification } from '@/main/utils/notification';
 import type {
   CloudConfig,
   RestProviderConfig,
@@ -246,14 +247,6 @@ export function isCloudConfigured(): boolean {
 }
 
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
-
-function showNotification(title: string, body: string): void {
-  const notification = new Notification({
-    title,
-    body,
-  });
-  notification.show();
-}
 
 const activeFileUploads = new Map<number, AbortController>();
 

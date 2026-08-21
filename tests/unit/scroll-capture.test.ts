@@ -67,6 +67,19 @@ vi.mock('@/main/capture/desktop-icons', () => ({
     mockCheckAccessibility(...a),
 }));
 
+vi.mock('@/main/capture/desktop-icons/preference', () => ({
+  shouldHideDesktopIconsForCapture: () => {
+    const config = mockGetConfig();
+    if (!config.screenshot?.hideDesktopIcons || !mockIsSupported())
+      return false;
+    if (mockCheckAccessibility(false)) return true;
+    mockUpdateConfig({
+      screenshot: { ...config.screenshot, hideDesktopIcons: false },
+    });
+    return false;
+  },
+}));
+
 vi.mock('@/main/history', () => ({
   addToHistory: (...a: unknown[]) => mockAddToHistory(...a),
 }));

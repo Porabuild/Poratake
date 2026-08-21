@@ -8,11 +8,11 @@ import useAreaSelection from '@/renderer/hooks/use-area-selection';
 import type {
   AreaOverlayParams,
   AreaOverlayPickTargetsMessage,
-  AreaOverlayRect,
   AreaOverlayToolbarAction,
   AreaOverlayToolbarMessage,
 } from '@/types/area-overlay';
 import { isMacPlatform } from '@/renderer/utils/platform';
+import type { Rect } from '@/types/geometry';
 
 function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
   const frozenFrame = useRef<HTMLImageElement>(null);
@@ -29,7 +29,7 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
   }, []);
 
   const send = useCallback(
-    (channel: string, rect: AreaOverlayRect, pickId?: number) => {
+    (channel: string, rect: Rect, pickId?: number) => {
       window.ipcRenderer.send(channel, {
         displayId: params.displayId,
         pickId,

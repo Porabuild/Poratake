@@ -32,11 +32,7 @@ export const DEFAULT_ZOOM_SETTINGS: ZoomSettings = {
   lookAhead: 0.12,
 };
 
-export const DEFAULT_ZOOM_SPEED = 1.2;
-
 export const DEFAULT_ZOOM_LEVEL = 1.2;
-
-export const DEFAULT_ZOOM_SEGMENT_DURATION = 3;
 
 export const BOUNDING_RATIO = 0.5;
 

@@ -21,7 +21,7 @@ import DropZoneOverlay from '@/renderer/components/editor/drop-zone-overlay';
 import CaptureEdgeOverlay from '@/renderer/components/editor/capture-edge-overlay';
 import { copyImageToClipboard } from '@/renderer/utils/clipboard';
 import { printImage } from '@/renderer/utils/print';
-import { loadImageFromBase64 } from '@/renderer/utils/image-compositing';
+import { loadImageFromBase64 } from '@/renderer/utils/image';
 import { useEditorState } from '@/renderer/hooks/useEditorState';
 import { useHistory } from '@/renderer/hooks/useHistory';
 import { useCanvasExport } from '@/renderer/hooks/useCanvasExport';

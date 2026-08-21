@@ -1,11 +1,6 @@
-export interface AreaOverlayRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+import type { Rect } from './geometry';
 
-export interface AreaOverlayPickTarget extends AreaOverlayRect {
+export interface AreaOverlayPickTarget extends Rect {
   id: number;
 }
 
@@ -37,20 +32,20 @@ export interface AreaOverlayParams {
   autoConfirm: boolean;
   repeatablePicks: boolean;
   showPrompt: boolean;
-  rect: AreaOverlayRect | null;
+  rect: Rect | null;
   aspectRatio: number | null;
   toolbar: AreaOverlayToolbar | null;
   pickTargets: AreaOverlayPickTarget[] | null;
   prompt: string | null;
 }
 
-export interface AreaOverlayResult extends AreaOverlayRect {
+export interface AreaOverlayResult extends Rect {
   displayId: number;
   pickId?: number;
 }
 
 export interface AreaOverlayRectMessage {
-  rect: AreaOverlayRect | null;
+  rect: Rect | null;
 }
 
 export interface AreaOverlayAspectRatioMessage {

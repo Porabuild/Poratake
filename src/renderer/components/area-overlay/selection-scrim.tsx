@@ -1,10 +1,6 @@
-import type { AreaOverlayRect } from '@/types/area-overlay';
+import type { Rect } from '@/types/geometry';
 
-export default function SelectionScrim({
-  rect,
-}: {
-  rect: AreaOverlayRect | null;
-}) {
+export default function SelectionScrim({ rect }: { rect: Rect | null }) {
   if (!rect) {
     return <div className="pointer-events-none absolute inset-0 bg-black/50" />;
   }

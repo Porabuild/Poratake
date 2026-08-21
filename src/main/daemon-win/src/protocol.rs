@@ -97,6 +97,27 @@ pub fn param_str<'a>(params: &'a Option<HashMap<String, Value>>, key: &str) -> O
     params.as_ref()?.get(key)?.as_str()
 }
 
+pub fn require_existing_path<'a>(
+    params: &'a Option<HashMap<String, Value>>,
+    key: &str,
+) -> Result<&'a str, (String, String)> {
+    let Some(value) = param_str(params, key) else {
+        return Err((
+            "INVALID_PARAMS".to_string(),
+            format!("Missing {key} parameter"),
+        ));
+    };
+
+    if !std::path::Path::new(value).exists() {
+        return Err((
+            "FILE_NOT_FOUND".to_string(),
+            format!("Image file not found: {value}"),
+        ));
+    }
+
+    Ok(value)
+}
+
 pub fn param_bool(params: &Option<HashMap<String, Value>>, key: &str) -> Option<bool> {
     params.as_ref()?.get(key)?.as_bool()
 }

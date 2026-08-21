@@ -16,6 +16,16 @@ import { TEXT_FONT_WEIGHT } from '@/renderer/components/editor/text/text-utils';
 import { REDACT_INTENSITY_MAP } from '@/renderer/utils/redact';
 import { scaleAnnotationToComposition } from './drawing-scale';
 import type { Context2D } from './types';
+import { getContrastColor } from '@/renderer/utils/color';
+import { pointsToCoordinates } from '@/renderer/utils/annotation-geometry';
+import { normalizeNegativeRect } from '@/renderer/utils/annotation-geometry';
+import {
+  NUMBER_SIZE_CONFIG,
+  arrowHeadPoints,
+  arrowHeadSize,
+  curvedControlPoint,
+  hasArrowBend,
+} from '@/renderer/utils/annotation-geometry';
 
 interface RenderDrawingsOptions {
   drawingSegments?: DrawingSegment[] | null;
@@ -26,20 +36,6 @@ interface RenderDrawingsOptions {
 }
 
 const DEFAULT_TEXT_FONT = 'Arial, sans-serif';
-
-const NUMBER_SIZE_CONFIG = {
-  small: { radius: 14, fontSize: 14 },
-  medium: { radius: 18, fontSize: 18 },
-  large: { radius: 24, fontSize: 24 },
-};
-
-function pointsToCoordinates(points: number[]): [number, number][] {
-  const coords: [number, number][] = [];
-  for (let i = 0; i < points.length; i += 2) {
-    coords.push([points[i], points[i + 1]]);
-  }
-  return coords;
-}
 
 function drawFreehandPath(ctx: Context2D, points: number[][]): void {
   if (points.length === 0) return;
@@ -54,32 +50,6 @@ function drawFreehandPath(ctx: Context2D, points: number[][]): void {
   }
 
   ctx.closePath();
-}
-
-function normalizeRect(
-  x: number,
-  y: number,
-  width: number,
-  height: number
-): { x: number; y: number; width: number; height: number } {
-  return {
-    x: width < 0 ? x + width : x,
-    y: height < 0 ? y + height : y,
-    width: Math.abs(width),
-    height: Math.abs(height),
-  };
-}
-
-function getContrastColor(color: string): string {
-  if (!color.startsWith('#')) return '#ffffff';
-
-  const hex = color.replace('#', '');
-  const r = parseInt(hex.substring(0, 2), 16);
-  const g = parseInt(hex.substring(2, 4), 16);
-  const b = parseInt(hex.substring(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-
-  return luminance > 0.5 ? '#000000' : '#ffffff';
 }
 
 function renderPen(ctx: Context2D, annotation: PenAnnotation): void {
@@ -158,7 +128,7 @@ function renderHighlight(
 }
 
 function renderRectangle(ctx: Context2D, annotation: RectAnnotation): void {
-  const rect = normalizeRect(
+  const rect = normalizeNegativeRect(
     annotation.x,
     annotation.y,
     annotation.width,
@@ -214,10 +184,7 @@ function getArrowControlPoint(annotation: ArrowAnnotation): {
   const [x1, y1, x2, y2] = annotation.points;
   const midX = (x1 + x2) / 2;
   const midY = (y1 + y2) / 2;
-  const hasBend =
-    annotation.bendOffset &&
-    (Math.abs(annotation.bendOffset.x) > 1 ||
-      Math.abs(annotation.bendOffset.y) > 1);
+  const hasBend = hasArrowBend(annotation.bendOffset);
 
   if (hasBend) {
     return {
@@ -232,16 +199,7 @@ function getArrowControlPoint(annotation: ArrowAnnotation): {
     return { x: midX, y: midY, hasCurve: false };
   }
 
-  const distance = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
-  const curveOffset = distance * 0.2;
-  const perpX = -(y2 - y1) / (distance || 1);
-  const perpY = (x2 - x1) / (distance || 1);
-
-  return {
-    x: midX + perpX * curveOffset,
-    y: midY + perpY * curveOffset,
-    hasCurve: true,
-  };
+  return { ...curvedControlPoint(x1, y1, x2, y2), hasCurve: true };
 }
 
 function drawArrowHead(
@@ -251,11 +209,12 @@ function drawArrowHead(
   angle: number,
   headSize: number
 ): void {
-  const headAngle = Math.PI / 6;
-  const leftX = x - headSize * Math.cos(angle - headAngle);
-  const leftY = y - headSize * Math.sin(angle - headAngle);
-  const rightX = x - headSize * Math.cos(angle + headAngle);
-  const rightY = y - headSize * Math.sin(angle + headAngle);
+  const { leftX, leftY, rightX, rightY } = arrowHeadPoints(
+    x,
+    y,
+    angle,
+    headSize
+  );
 
   ctx.beginPath();
   ctx.moveTo(x, y);
@@ -269,7 +228,7 @@ function renderArrow(ctx: Context2D, annotation: ArrowAnnotation): void {
   const [x1, y1, x2, y2] = annotation.points;
   const control = getArrowControlPoint(annotation);
   const style = annotation.arrowStyle ?? 'standard';
-  const headSize = Math.max(16, annotation.strokeWidth * 5);
+  const headSize = arrowHeadSize(annotation.strokeWidth);
 
   ctx.save();
   ctx.lineWidth = annotation.strokeWidth;
@@ -562,7 +521,7 @@ function blurRegion(
 }
 
 function renderRedact(ctx: Context2D, annotation: RedactAnnotation): void {
-  const rect = normalizeRect(
+  const rect = normalizeNegativeRect(
     annotation.x,
     annotation.y,
     annotation.width,

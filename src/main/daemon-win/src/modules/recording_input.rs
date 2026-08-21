@@ -1,5 +1,6 @@
 use super::recorder_types::{CaptureRect, RecorderError, StagedAsset, fit_rect};
 use super::window_selector::window_bounds;
+use crate::time_format::format_system_time;
 use serde::Serialize;
 use std::ffi::c_void;
 use std::fs::File;
@@ -8,7 +9,7 @@ use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime};
 use windows::Win32::Foundation::{
     CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WAIT_FAILED, WAIT_OBJECT_0,
     WPARAM,
@@ -1017,40 +1018,6 @@ fn write_json_atomically(path: &Path, value: &impl Serialize) -> Result<(), Reco
     std::fs::rename(&temporary, path).map_err(|error| {
         RecorderError::capture(format!("Failed to publish tracker asset: {error}"))
     })
-}
-
-fn format_system_time(time: SystemTime) -> String {
-    let elapsed = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let total_seconds = elapsed.as_secs() as i64;
-    let days = total_seconds.div_euclid(86_400);
-    let seconds = total_seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_date(days);
-    let hour = seconds / 3_600;
-    let minute = (seconds % 3_600) / 60;
-    let second = seconds % 60;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{:03}Z",
-        elapsed.subsec_millis()
-    )
-}
-
-fn civil_date(days_since_epoch: i64) -> (i64, i64, i64) {
-    let shifted = days_since_epoch + 719_468;
-    let era = if shifted >= 0 {
-        shifted
-    } else {
-        shifted - 146_096
-    } / 146_097;
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += i64::from(month <= 2);
-    (year, month, day)
 }
 
 #[cfg(test)]

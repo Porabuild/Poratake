@@ -1,9 +1,8 @@
 import { BrowserWindow, ipcMain } from 'electron';
-import path from 'path';
 import { getActiveOverlayWindowAtPoint } from '@/main/capture/area-overlay';
 import { daemon } from '@/main/daemon';
 import { listIOSDevices, listMediaDevices } from '@/main/devices';
-import { isDev, devServerUrl } from '@/main/utils/env';
+import { appWebPreferences, loadAppWindow } from '@/main/utils/window-factory';
 import { isWindows } from '@/main/utils/platform';
 import { sendWindowLoad } from '@/main/utils/window-load';
 import type { MediaDeviceDescriptor, MediaDeviceLists } from '@/types/devices';
@@ -292,14 +291,7 @@ function createControlWindow(): BrowserWindow {
     paintWhenInitiallyHidden: true,
     hasShadow: false,
     roundedCorners: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: !isDev,
-      devTools: isDev,
-      backgroundThrottling: false,
-    },
+    webPreferences: appWebPreferences({ backgroundThrottling: false }),
   });
 
   window.setAlwaysOnTop(true, 'screen-saver');
@@ -308,15 +300,7 @@ function createControlWindow(): BrowserWindow {
 
   void disableControlWindowTransitions(window);
 
-  if (devServerUrl) {
-    const url = new URL(devServerUrl);
-    url.searchParams.set('window', 'recording-control');
-    window.loadURL(url.toString());
-  } else {
-    window.loadFile(path.join(__dirname, '../dist/index.html'), {
-      query: { window: 'recording-control' },
-    });
-  }
+  loadAppWindow(window, { type: 'recording-control' });
 
   window.webContents.on('did-finish-load', () => {
     loaded = true;

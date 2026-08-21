@@ -1,18 +1,7 @@
 import type { JSX } from 'react';
 import type { HighlightAnnotation } from '@/types/editor';
-import {
-  type AnnotationRenderProps,
-  type ExportRenderProps,
-  SELECTION_STROKE,
-} from './types';
-
-const pointsToCoordinates = (points: number[]): [number, number][] => {
-  const coords: [number, number][] = [];
-  for (let i = 0; i < points.length; i += 2) {
-    coords.push([points[i], points[i + 1]]);
-  }
-  return coords;
-};
+import { pointsToCoordinates } from '@/renderer/utils/annotation-geometry';
+import { type AnnotationRenderProps, SELECTION_STROKE } from './types';
 
 const getHighlighterPath = (
   points: [number, number][],
@@ -114,26 +103,4 @@ export function renderHighlight({
       <path d={pathData} fill={ann.fill} opacity={ann.opacity} />
     </g>
   );
-}
-
-interface HighlightExportProps extends Omit<ExportRenderProps, 'annotation'> {
-  annotation: HighlightAnnotation;
-}
-
-export function exportHighlight({
-  annotation: ann,
-  offsetX,
-  offsetY,
-  scale,
-}: HighlightExportProps): string {
-  const coords = pointsToCoordinates(ann.points).map(
-    ([x, y]) =>
-      [(x + offsetX) * scale, (y + offsetY) * scale] as [number, number]
-  );
-
-  const pathData = getHighlighterPath(coords, ann.strokeWidth * scale);
-
-  if (!pathData) return '';
-
-  return `<path d="${pathData}" fill="${ann.fill}" opacity="${ann.opacity}" style="mix-blend-mode: multiply"/>`;
 }

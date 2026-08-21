@@ -1,19 +1,12 @@
 import type { JSX } from 'react';
 import type { PenAnnotation } from '@/types/editor';
 import { getStroke } from 'perfect-freehand';
+import { pointsToCoordinates } from '@/renderer/utils/annotation-geometry';
 import {
   type AnnotationRenderProps,
   type ExportRenderProps,
   SELECTION_STROKE,
 } from './types';
-
-export const pointsToCoordinates = (points: number[]): [number, number][] => {
-  const coords: [number, number][] = [];
-  for (let i = 0; i < points.length; i += 2) {
-    coords.push([points[i], points[i + 1]]);
-  }
-  return coords;
-};
 
 export const getSvgPathFromStroke = (stroke: number[][]): string => {
   if (!stroke.length) return '';

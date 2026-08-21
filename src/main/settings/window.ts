@@ -1,7 +1,10 @@
-import { BrowserWindow, screen, app } from 'electron';
+import { BrowserWindow, app } from 'electron';
 import type { WebContents } from 'electron';
-import path from 'path';
-import { isDev, devServerUrl } from '@/main/utils/env';
+import {
+  appWebPreferences,
+  centeredPosition,
+  loadAppWindow,
+} from '@/main/utils/window-factory';
 import { registerDockWindow } from '@/main/utils/dock';
 import { sendWindowLoad } from '@/main/utils/window-load';
 import {
@@ -27,10 +30,6 @@ export function createOrShowSettingsWindow(tab?: string) {
     return;
   }
 
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenWidth, height: screenHeight } =
-    primaryDisplay.workAreaSize;
-
   const windowWidth = 880;
   const windowHeight = 700;
   const nativeMaterial = supportsNativeWindowMaterial();
@@ -43,16 +42,12 @@ export function createOrShowSettingsWindow(tab?: string) {
     maximizable: false,
     minimizable: true,
     resizable: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      devTools: isDev,
-    },
+    webPreferences: appWebPreferences(),
     ...titleBarWindowOptions({
       surface: 'background',
       transparent: nativeMaterial,
     }),
-    x: Math.floor((screenWidth - windowWidth) / 2),
-    y: Math.floor((screenHeight - windowHeight) / 2),
+    ...centeredPosition({ width: windowWidth, height: windowHeight }),
     show: false,
     backgroundColor: nativeMaterial ? '#00000000' : '#070709',
     ...nativeWindowMaterialOptions(),
@@ -64,14 +59,7 @@ export function createOrShowSettingsWindow(tab?: string) {
     transparent: nativeMaterial,
   });
 
-  const hash = tab ? `#${tab}` : '';
-  if (devServerUrl) {
-    settingsWindow.loadURL(`${devServerUrl}${hash}`);
-  } else {
-    settingsWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
-      hash: tab,
-    });
-  }
+  loadAppWindow(settingsWindow, { hash: tab });
 
   settingsWindow.webContents.on('did-finish-load', () => {
     const win = settingsWindow;

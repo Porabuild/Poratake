@@ -1,4 +1,6 @@
 import type { GradientOption, WindowFrameStyle } from '@/types/editor';
+import type { Canvas2DContext } from '@/renderer/utils/canvas';
+import { loadImage } from '@/renderer/utils/image';
 import type { BalanceCrop } from '@/renderer/utils/color-detection';
 import { renderNoise } from '@/renderer/utils/noise';
 import {
@@ -19,8 +21,21 @@ const TRAFFIC_LIGHT_COLORS = {
   maximize: '#28C840',
 };
 
+export function applyImageShadow(
+  ctx: Canvas2DContext,
+  shadow: number,
+  scale = 1
+): void {
+  if (shadow <= 0) return;
+
+  ctx.shadowColor = `rgba(0, 0, 0, ${0.2 + (shadow / 100) * 0.3})`;
+  ctx.shadowBlur = (shadow / 100) * 50 * scale;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = (shadow / 100) * 15 * scale;
+}
+
 export const renderGradientToCanvas = (
-  ctx: CanvasRenderingContext2D,
+  ctx: Canvas2DContext,
   gradient: GradientOption,
   width: number,
   height: number,
@@ -36,7 +51,8 @@ export const renderGradientToCanvas = (
   const expandedWidth = width + blurExpand * 2;
   const expandedHeight = height + blurExpand * 2;
 
-  const angleRad = ((gradient.angle - 90) * Math.PI) / 180;
+  const angle = Number.isFinite(gradient.angle) ? gradient.angle : 0;
+  const angleRad = ((angle - 90) * Math.PI) / 180;
   const cos = Math.cos(angleRad);
   const sin = Math.sin(angleRad);
 
@@ -63,8 +79,8 @@ export const renderGradientToCanvas = (
 };
 
 export const renderBackgroundImageToCanvas = (
-  ctx: CanvasRenderingContext2D,
-  bgImage: HTMLImageElement,
+  ctx: Canvas2DContext,
+  bgImage: HTMLImageElement | ImageBitmap,
   width: number,
   height: number,
   blurRadius: number = 0
@@ -101,17 +117,6 @@ export const renderBackgroundImageToCanvas = (
 
   ctx.drawImage(bgImage, drawX, drawY, drawWidth, drawHeight);
   ctx.restore();
-};
-
-export const loadImageFromDataUrl = (
-  dataUrl: string
-): Promise<HTMLImageElement> => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Failed to load background image'));
-    img.src = dataUrl;
-  });
 };
 
 const drawTrafficLights = (
@@ -199,16 +204,7 @@ export const renderWindowFrame = (
   const frameWidth = croppedWidth + inset * 2;
   const frameHeight = croppedHeight + scaledTitleBarHeight + inset * 2;
 
-  const shadowBlur = (shadow / 100) * 50 * scale;
-  const shadowOpacity = shadow > 0 ? 0.2 + (shadow / 100) * 0.3 : 0;
-  const shadowOffsetY = (shadow / 100) * 15 * scale;
-
-  if (shadow > 0) {
-    ctx.shadowColor = `rgba(0, 0, 0, ${shadowOpacity})`;
-    ctx.shadowBlur = shadowBlur;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = shadowOffsetY;
-  }
+  applyImageShadow(ctx, shadow, scale);
 
   ctx.beginPath();
   ctx.roundRect(x, y, frameWidth, frameHeight, scaledCornerRadius);
@@ -297,16 +293,7 @@ export const renderImageToCanvas = (
 ) => {
   ctx.save();
 
-  const shadowBlur = (shadow / 100) * 50;
-  const shadowOpacity = shadow > 0 ? 0.2 + (shadow / 100) * 0.3 : 0;
-  const shadowOffsetY = (shadow / 100) * 15;
-
-  if (shadow > 0) {
-    ctx.shadowColor = `rgba(0, 0, 0, ${shadowOpacity})`;
-    ctx.shadowBlur = shadowBlur;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = shadowOffsetY;
-  }
+  applyImageShadow(ctx, shadow);
 
   ctx.beginPath();
   if (cornerRadius > 0) {
@@ -357,16 +344,7 @@ export const renderImageWithInset = (
 ) => {
   ctx.save();
 
-  const shadowBlur = (shadow / 100) * 50;
-  const shadowOpacity = shadow > 0 ? 0.2 + (shadow / 100) * 0.3 : 0;
-  const shadowOffsetY = (shadow / 100) * 15;
-
-  if (shadow > 0) {
-    ctx.shadowColor = `rgba(0, 0, 0, ${shadowOpacity})`;
-    ctx.shadowBlur = shadowBlur;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = shadowOffsetY;
-  }
+  applyImageShadow(ctx, shadow);
 
   ctx.beginPath();
   if (cornerRadius > 0) {
@@ -494,7 +472,7 @@ export const renderWallpaperComposite = async (
   const nativeBlurRadius = (backgroundBlur / 100) * 50 * nativeScale;
 
   if (backgroundImage) {
-    const bgImage = await loadImageFromDataUrl(backgroundImage);
+    const bgImage = await loadImage(backgroundImage);
     renderBackgroundImageToCanvas(
       ctx,
       bgImage,

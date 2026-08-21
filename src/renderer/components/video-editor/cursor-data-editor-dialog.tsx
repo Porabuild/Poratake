@@ -1,4 +1,5 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useCallback } from 'react';
+import { useJsonDataEditor } from './hooks/use-json-data-editor';
 import { AlertCircle, HelpCircle } from 'lucide-react';
 import {
   Dialog,
@@ -85,60 +86,28 @@ export default function CursorDataEditorDialog({
   videoHeight,
   onSave,
 }: CursorDataEditorDialogProps) {
-  const defaultValue = useMemo(() => {
-    if (initialData) {
-      return JSON.stringify(initialData, null, 2);
-    }
-    return generateTemplate(videoWidth, videoHeight, videoDuration);
-  }, [initialData, videoWidth, videoHeight, videoDuration]);
-
-  const [value, setValue] = useState(defaultValue);
-  const [error, setError] = useState<string | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-
-  const handleValueChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setValue(e.target.value);
-      setError(null);
-    },
-    []
+  const buildTemplate = useCallback(
+    () => generateTemplate(videoWidth, videoHeight, videoDuration),
+    [videoWidth, videoHeight, videoDuration]
   );
 
-  const handleSave = useCallback(async () => {
-    try {
-      const parsed = JSON.parse(value);
-      const validation = validateCursorData(parsed);
-
-      if (!validation.valid) {
-        setError(validation.error ?? 'Invalid cursor data');
-        return;
-      }
-
-      setIsSaving(true);
-      const result = await onSave(validation.data!);
-
-      if (!result.success) {
-        setError(result.error ?? 'Failed to save');
-        return;
-      }
-
-      onOpenChange(false);
-    } catch (e) {
-      setError(e instanceof SyntaxError ? 'Invalid JSON syntax' : String(e));
-    } finally {
-      setIsSaving(false);
-    }
-  }, [value, onSave, onOpenChange]);
-
-  const handleLoadExample = useCallback(() => {
-    setValue(EXAMPLE_CURSOR_DATA);
-    setError(null);
-  }, []);
-
-  const handleLoadTemplate = useCallback(() => {
-    setValue(generateTemplate(videoWidth, videoHeight, videoDuration));
-    setError(null);
-  }, [videoWidth, videoHeight, videoDuration]);
+  const {
+    value,
+    error,
+    isSaving,
+    handleValueChange,
+    handleSave,
+    handleLoadExample,
+    handleLoadTemplate,
+  } = useJsonDataEditor<CursorData>({
+    initialData,
+    buildTemplate,
+    example: EXAMPLE_CURSOR_DATA,
+    validate: validateCursorData,
+    invalidMessage: 'Invalid cursor data',
+    onSave,
+    onOpenChange,
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -126,7 +126,7 @@ describe('settings window', () => {
       await import('@/main/settings/window');
     createOrShowSettingsWindow('storage');
     expect(browserWindows[0].loadURL).toHaveBeenCalledWith(
-      'http://localhost:5173#storage'
+      'http://localhost:5173/#storage'
     );
   });
 

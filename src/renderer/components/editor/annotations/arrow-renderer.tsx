@@ -1,6 +1,12 @@
 import type { JSX } from 'react';
 import type { ArrowAnnotation, ArrowStyle } from '@/types/editor';
 import {
+  arrowHeadPoints,
+  arrowHeadSize,
+  curvedControlPoint,
+  hasArrowBend,
+} from '@/renderer/utils/annotation-geometry';
+import {
   type AnnotationRenderProps,
   type ExportRenderProps,
   type ResizeHandleRenderProps,
@@ -24,135 +30,51 @@ export const renderArrowPath = (
   style: ArrowStyle = 'standard',
   bendOffset?: { x: number; y: number }
 ): ArrowPathResult => {
-  const headSize = Math.max(16, strokeWidth * 5);
+  const headSize = arrowHeadSize(strokeWidth);
 
   const midX = (x1 + x2) / 2;
   const midY = (y1 + y2) / 2;
   const ctrlX = midX + (bendOffset?.x || 0);
   const ctrlY = midY + (bendOffset?.y || 0);
 
-  const hasBend =
-    bendOffset && (Math.abs(bendOffset.x) > 1 || Math.abs(bendOffset.y) > 1);
+  const hasBend = hasArrowBend(bendOffset);
+  const isCurved = style === 'curved' || style === 'double-curved';
+  const isDouble = style === 'double' || style === 'double-curved';
 
-  const angle = hasBend
-    ? Math.atan2(y2 - ctrlY, x2 - ctrlX)
-    : Math.atan2(y2 - y1, x2 - x1);
+  const curve =
+    isCurved && !hasBend ? curvedControlPoint(x1, y1, x2, y2) : null;
+  const curveCtrlX = curve ? curve.x : ctrlX;
+  const curveCtrlY = curve ? curve.y : ctrlY;
 
-  switch (style) {
-    case 'standard': {
-      const headAngle = Math.PI / 6;
-      const leftX = x2 - headSize * Math.cos(angle - headAngle);
-      const leftY = y2 - headSize * Math.sin(angle - headAngle);
-      const rightX = x2 - headSize * Math.cos(angle + headAngle);
-      const rightY = y2 - headSize * Math.sin(angle + headAngle);
+  const linePath =
+    isCurved || hasBend
+      ? `M ${x1} ${y1} Q ${isCurved ? curveCtrlX : ctrlX} ${isCurved ? curveCtrlY : ctrlY} ${x2} ${y2}`
+      : `M ${x1} ${y1} L ${x2} ${y2}`;
 
-      const linePath = hasBend
-        ? `M ${x1} ${y1} Q ${ctrlX} ${ctrlY} ${x2} ${y2}`
-        : `M ${x1} ${y1} L ${x2} ${y2}`;
+  if (style !== 'standard' && !isCurved && !isDouble) {
+    return { linePath, headPath: '', isPolygonHead: false };
+  }
 
-      return {
-        linePath,
-        headPath: `M ${x2} ${y2} L ${leftX} ${leftY} M ${x2} ${y2} L ${rightX} ${rightY}`,
-        isPolygonHead: false,
-      };
-    }
+  const endAngle = isCurved
+    ? Math.atan2(y2 - curveCtrlY, x2 - curveCtrlX)
+    : hasBend
+      ? Math.atan2(y2 - ctrlY, x2 - ctrlX)
+      : Math.atan2(y2 - y1, x2 - x1);
+  const end = arrowHeadPoints(x2, y2, endAngle, headSize);
 
-    case 'curved': {
-      const distance = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
-      let curveCtrlX = ctrlX;
-      let curveCtrlY = ctrlY;
+  let headPath = `M ${x2} ${y2} L ${end.leftX} ${end.leftY} M ${x2} ${y2} L ${end.rightX} ${end.rightY}`;
 
-      if (!hasBend) {
-        const curveOffset = distance * 0.2;
-        const perpX = -(y2 - y1) / (distance || 1);
-        const perpY = (x2 - x1) / (distance || 1);
-        curveCtrlX = midX + perpX * curveOffset;
-        curveCtrlY = midY + perpY * curveOffset;
-      }
-
-      const endAngle = Math.atan2(y2 - curveCtrlY, x2 - curveCtrlX);
-      const headAngle = Math.PI / 6;
-      const leftX = x2 - headSize * Math.cos(endAngle - headAngle);
-      const leftY = y2 - headSize * Math.sin(endAngle - headAngle);
-      const rightX = x2 - headSize * Math.cos(endAngle + headAngle);
-      const rightY = y2 - headSize * Math.sin(endAngle + headAngle);
-
-      return {
-        linePath: `M ${x1} ${y1} Q ${curveCtrlX} ${curveCtrlY} ${x2} ${y2}`,
-        headPath: `M ${x2} ${y2} L ${leftX} ${leftY} M ${x2} ${y2} L ${rightX} ${rightY}`,
-        isPolygonHead: false,
-      };
-    }
-
-    case 'double': {
-      const headAngle = Math.PI / 6;
-
-      const endLeftX = x2 - headSize * Math.cos(angle - headAngle);
-      const endLeftY = y2 - headSize * Math.sin(angle - headAngle);
-      const endRightX = x2 - headSize * Math.cos(angle + headAngle);
-      const endRightY = y2 - headSize * Math.sin(angle + headAngle);
-
-      const startAngle = hasBend
+  if (isDouble) {
+    const startAngle = isCurved
+      ? Math.atan2(y1 - curveCtrlY, x1 - curveCtrlX)
+      : hasBend
         ? Math.atan2(y1 - ctrlY, x1 - ctrlX)
         : Math.atan2(y1 - y2, x1 - x2);
-      const startLeftX = x1 - headSize * Math.cos(startAngle - headAngle);
-      const startLeftY = y1 - headSize * Math.sin(startAngle - headAngle);
-      const startRightX = x1 - headSize * Math.cos(startAngle + headAngle);
-      const startRightY = y1 - headSize * Math.sin(startAngle + headAngle);
-
-      const linePath = hasBend
-        ? `M ${x1} ${y1} Q ${ctrlX} ${ctrlY} ${x2} ${y2}`
-        : `M ${x1} ${y1} L ${x2} ${y2}`;
-
-      return {
-        linePath,
-        headPath: `M ${x2} ${y2} L ${endLeftX} ${endLeftY} M ${x2} ${y2} L ${endRightX} ${endRightY} M ${x1} ${y1} L ${startLeftX} ${startLeftY} M ${x1} ${y1} L ${startRightX} ${startRightY}`,
-        isPolygonHead: false,
-      };
-    }
-
-    case 'double-curved': {
-      const distance = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
-      let curveCtrlX = ctrlX;
-      let curveCtrlY = ctrlY;
-
-      if (!hasBend) {
-        const curveOffset = distance * 0.2;
-        const perpX = -(y2 - y1) / (distance || 1);
-        const perpY = (x2 - x1) / (distance || 1);
-        curveCtrlX = midX + perpX * curveOffset;
-        curveCtrlY = midY + perpY * curveOffset;
-      }
-
-      const endAngle = Math.atan2(y2 - curveCtrlY, x2 - curveCtrlX);
-      const headAngle = Math.PI / 6;
-      const endLeftX = x2 - headSize * Math.cos(endAngle - headAngle);
-      const endLeftY = y2 - headSize * Math.sin(endAngle - headAngle);
-      const endRightX = x2 - headSize * Math.cos(endAngle + headAngle);
-      const endRightY = y2 - headSize * Math.sin(endAngle + headAngle);
-
-      const startAngle = Math.atan2(y1 - curveCtrlY, x1 - curveCtrlX);
-      const startLeftX = x1 - headSize * Math.cos(startAngle - headAngle);
-      const startLeftY = y1 - headSize * Math.sin(startAngle - headAngle);
-      const startRightX = x1 - headSize * Math.cos(startAngle + headAngle);
-      const startRightY = y1 - headSize * Math.sin(startAngle + headAngle);
-
-      return {
-        linePath: `M ${x1} ${y1} Q ${curveCtrlX} ${curveCtrlY} ${x2} ${y2}`,
-        headPath: `M ${x2} ${y2} L ${endLeftX} ${endLeftY} M ${x2} ${y2} L ${endRightX} ${endRightY} M ${x1} ${y1} L ${startLeftX} ${startLeftY} M ${x1} ${y1} L ${startRightX} ${startRightY}`,
-        isPolygonHead: false,
-      };
-    }
-
-    default:
-      return {
-        linePath: hasBend
-          ? `M ${x1} ${y1} Q ${ctrlX} ${ctrlY} ${x2} ${y2}`
-          : `M ${x1} ${y1} L ${x2} ${y2}`,
-        headPath: '',
-        isPolygonHead: false,
-      };
+    const start = arrowHeadPoints(x1, y1, startAngle, headSize);
+    headPath += ` M ${x1} ${y1} L ${start.leftX} ${start.leftY} M ${x1} ${y1} L ${start.rightX} ${start.rightY}`;
   }
+
+  return { linePath, headPath, isPolygonHead: false };
 };
 
 interface ArrowRenderProps extends Omit<AnnotationRenderProps, 'annotation'> {

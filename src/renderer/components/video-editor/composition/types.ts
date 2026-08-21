@@ -52,9 +52,7 @@ export interface ViewportState {
   y: number;
 }
 
-export type Context2D =
-  | CanvasRenderingContext2D
-  | OffscreenCanvasRenderingContext2D;
+export type { Canvas2DContext as Context2D } from '@/renderer/utils/canvas';
 
 export function convertSegmentsToVideoSegments(
   segments: Segment[]

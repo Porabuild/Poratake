@@ -1,4 +1,5 @@
 import type { AreaSelection } from '@/types/area';
+import type { Rect } from '@/types/geometry';
 import type {
   AreaOverlayRenderer,
   AreaOverlayToolbar,
@@ -9,19 +10,12 @@ export type AreaSelectionCallback = (selection: AreaSelection) => void;
 
 export type AreaSelectionMode = 'manual' | 'display' | 'window';
 
-export interface PresetArea {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 export interface StartAreaSelectionOptions {
   mode?: AreaSelectionMode;
   requireDisplayPick?: boolean;
   freeze?: boolean;
   visible?: boolean;
-  preset?: PresetArea;
+  preset?: Rect;
   onUpdate?: AreaSelectionCallback;
   onSelected?: AreaSelectionCallback;
   onCancelled?: () => void;
