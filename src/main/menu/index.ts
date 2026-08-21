@@ -47,6 +47,7 @@ import { isFeatureSupported } from '@/main/system/capabilities';
 import type { FeatureId } from '@/types/capabilities';
 import { isMac, isWindows } from '@/main/utils/platform';
 import { getPublicAssetPath } from '@/main/utils/paths';
+import { createTrayIcon } from './tray-icon.ts';
 
 if (!isMac) {
   Menu.setApplicationMenu(null);
@@ -474,14 +475,6 @@ function getTrayIconPath(): string {
   return path.join(app.getAppPath(), 'src/main/menu/dev/iconTemplate.png');
 }
 
-function createTrayIcon(): NativeImage {
-  const icon = nativeImage.createFromPath(getTrayIconPath());
-  if (isWindows && !icon.isEmpty()) {
-    return icon.resize({ width: 16, height: 16 });
-  }
-  return icon;
-}
-
 export const init = async () => {
   const config = getConfig();
 
@@ -493,8 +486,9 @@ export const init = async () => {
     return;
   }
 
-  tray = new Tray(createTrayIcon());
+  tray = new Tray(createTrayIcon(getTrayIconPath()));
 
+  tray.setToolTip('Poratake');
   tray.setContextMenu(buildContextMenu());
 
   if (!isMac && !isThemeListenerAttached) {
@@ -502,6 +496,7 @@ export const init = async () => {
     nativeTheme.on('updated', () => {
       menuIcons = null;
       rebuildTrayMenu();
+      tray?.setImage(createTrayIcon(getTrayIconPath()));
     });
   }
 

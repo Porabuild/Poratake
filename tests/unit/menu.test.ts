@@ -28,6 +28,7 @@ const mockApp = {
 
 const mockTrayInstance = {
   setContextMenu: vi.fn(),
+  setToolTip: vi.fn(),
   getBounds: vi.fn(() => ({ x: 100, y: 0, width: 20, height: 22 })),
   destroy: vi.fn(),
 };
@@ -35,6 +36,7 @@ const mockTrayInstance = {
 // Create a class-based mock for Tray
 class MockTray {
   setContextMenu = mockTrayInstance.setContextMenu;
+  setToolTip = mockTrayInstance.setToolTip;
   getBounds = mockTrayInstance.getBounds;
   destroy = mockTrayInstance.destroy;
 }
@@ -489,6 +491,13 @@ describe('Tray System', () => {
       await init();
 
       expect(mockTrayInstance.setContextMenu).toHaveBeenCalled();
+    });
+
+    it('should set the app name as tray tooltip', async () => {
+      const { init } = await import('@/main/menu');
+      await init();
+
+      expect(mockTrayInstance.setToolTip).toHaveBeenCalledWith('Poratake');
     });
 
     it('should use correct menu icon path in development', async () => {
