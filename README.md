@@ -20,7 +20,7 @@
 ---
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/2b00d1c6-fff4-49db-b44d-64d07466e8ae" alt="Poratake capture and editing interface" width="960" />
+  <img src="https://porabuild.com/poratake/opengraph-image" alt="Poratake capture studio" width="960" />
 </p>
 
 ## Why Poratake?

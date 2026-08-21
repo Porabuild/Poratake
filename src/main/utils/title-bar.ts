@@ -2,6 +2,7 @@ import { nativeTheme } from 'electron';
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
 import { release } from 'node:os';
 import type { AppearanceConfig } from '@/types/settings';
+import { DEFAULT_SETTINGS } from '@/types/settings';
 import { getThemePreset } from '@/types/theme';
 import { isMac, isWindows } from './platform';
 
@@ -18,6 +19,7 @@ export interface TitleBarOptions {
 }
 
 let activeTheme = 'default';
+let activeMode: AppearanceConfig['mode'] = DEFAULT_SETTINGS.appearance.mode;
 const themeListeners = new Set<() => void>();
 
 export function supportsWindowsAcrylic(osRelease = release()): boolean {
@@ -50,15 +52,25 @@ export function nativeWindowMaterialOptions(
 
 export function applyTitleBarAppearance(appearance: AppearanceConfig): void {
   activeTheme = appearance.theme;
-  nativeTheme.themeSource = appearance.mode;
+  activeMode = appearance.mode;
+  if (isMac) {
+    nativeTheme.themeSource = appearance.mode;
+  }
   themeListeners.forEach(listener => listener());
+}
+
+function isDarkAppearance(): boolean {
+  if (activeMode === 'system') {
+    return nativeTheme.shouldUseDarkColors;
+  }
+  return activeMode === 'dark';
 }
 
 export function titleBarColors(surface: TitleBarSurface = 'card'): {
   color: string;
   symbolColor: string;
 } {
-  const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  const theme = isDarkAppearance() ? 'dark' : 'light';
   const variant = getThemePreset(activeTheme)[theme];
 
   return {

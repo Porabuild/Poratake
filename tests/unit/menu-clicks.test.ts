@@ -14,12 +14,14 @@ const mockApp = {
 
 const mockTrayInstance = {
   setContextMenu: vi.fn(),
+  setToolTip: vi.fn(),
   getBounds: vi.fn(() => ({ x: 100, y: 0, width: 20, height: 22 })),
   destroy: vi.fn(),
 };
 
 class MockTray {
   setContextMenu = mockTrayInstance.setContextMenu;
+  setToolTip = mockTrayInstance.setToolTip;
   getBounds = mockTrayInstance.getBounds;
   destroy = mockTrayInstance.destroy;
 }
