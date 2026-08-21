@@ -25,6 +25,15 @@ describe('releaseNotesToText', () => {
     expect(releaseNotesToText(html)).toBe('Tom & Jerry <3 "quotes" — …');
   });
 
+  it('preserves invalid numeric entities without throwing', () => {
+    const html =
+      '<p>Invalid: &#0; &#1114112; &#xD800; &#999999999999999999999;</p>';
+
+    expect(releaseNotesToText(html)).toBe(
+      'Invalid: &#0; &#1114112; &#xD800; &#999999999999999999999;'
+    );
+  });
+
   it('removes script and style blocks entirely', () => {
     const html =
       '<p>Notes</p><script>alert(1)</script><style>p{color:red}</style>';

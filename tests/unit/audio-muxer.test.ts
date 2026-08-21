@@ -13,10 +13,10 @@ vi.stubGlobal('window', {
     on: (channel: string, listener: ProgressListener) => {
       progressListeners.add(listener);
       mockOn(channel, listener);
-    },
-    off: (channel: string, listener: ProgressListener) => {
-      progressListeners.delete(listener);
-      mockOff(channel, listener);
+      return () => {
+        progressListeners.delete(listener);
+        mockOff(channel, listener);
+      };
     },
   },
 });

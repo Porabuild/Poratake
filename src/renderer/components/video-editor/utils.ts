@@ -83,6 +83,29 @@ export function getProjectPath(filePath: string | null | undefined): string {
   return separatorIndex > 0 ? filePath.slice(0, separatorIndex) : '';
 }
 
+export function remapProjectFileUrl(
+  fileUrl: string,
+  oldFilePath: string,
+  newFilePath: string
+): string {
+  if (!fileUrl.startsWith('file:')) return fileUrl;
+
+  const oldProjectUrl = `${toFileUrl(getProjectPath(oldFilePath)).replace(/\/$/, '')}/`;
+  const isWindowsPath =
+    /^[A-Za-z]:[\\/]/.test(oldFilePath) || oldFilePath.startsWith('\\\\');
+  const comparisonUrl = isWindowsPath ? fileUrl.toLowerCase() : fileUrl;
+  const comparisonProject = isWindowsPath
+    ? oldProjectUrl.toLowerCase()
+    : oldProjectUrl;
+  if (!comparisonUrl.startsWith(comparisonProject)) return fileUrl;
+
+  const assetName = fileUrl.slice(oldProjectUrl.length);
+  if (!assetName || assetName.includes('/')) return fileUrl;
+
+  const newProjectUrl = `${toFileUrl(getProjectPath(newFilePath)).replace(/\/$/, '')}/`;
+  return `${newProjectUrl}${assetName}`;
+}
+
 export function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);

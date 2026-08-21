@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { pathToFileURL } from 'url';
-
+import path from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
 
@@ -15,13 +15,23 @@ const mockExistsSync = vi.fn();
 const mockMkdirSync = vi.fn();
 const mockStatSync = vi.fn();
 const mockUnlinkSync = vi.fn();
+const mockReaddirSync = vi.fn(() => []);
+const mockCopyFileSync = vi.fn();
 const mockDaemonCall = vi.fn();
 const mockFromWebContents = vi.fn();
 const mockIsSettingsWindowWebContents = vi.fn();
+const mockSafeStorage = {
+  isEncryptionAvailable: vi.fn(() => true),
+  encryptString: vi.fn((value: string) => Buffer.from(`encrypted:${value}`)),
+  decryptString: vi.fn((value: Buffer) =>
+    value.toString().replace(/^encrypted:/, '')
+  ),
+};
 
 vi.mock('electron', () => ({
   app: {
     on: vi.fn(),
+    setLoginItemSettings: vi.fn(),
     isPackaged: false,
     getVersion: () => '1.0.0',
     getPath: (name: string) => {
@@ -48,6 +58,7 @@ vi.mock('electron', () => ({
   nativeTheme: {
     themeSource: 'system',
   },
+  safeStorage: mockSafeStorage,
 }));
 
 vi.mock('fs', () => ({
@@ -58,6 +69,8 @@ vi.mock('fs', () => ({
     mkdirSync: (...a: unknown[]) => mockMkdirSync(...a),
     statSync: (...a: unknown[]) => mockStatSync(...a),
     unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
+    readdirSync: (...a: unknown[]) => mockReaddirSync(...a),
+    copyFileSync: (...a: unknown[]) => mockCopyFileSync(...a),
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
@@ -65,6 +78,8 @@ vi.mock('fs', () => ({
   mkdirSync: (...a: unknown[]) => mockMkdirSync(...a),
   statSync: (...a: unknown[]) => mockStatSync(...a),
   unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
+  readdirSync: (...a: unknown[]) => mockReaddirSync(...a),
+  copyFileSync: (...a: unknown[]) => mockCopyFileSync(...a),
 }));
 
 vi.mock('@/main/daemon', () => ({
@@ -88,8 +103,10 @@ describe('settings IPC handlers', () => {
     vi.resetModules();
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
     mockReadFileSync.mockReturnValue(Buffer.from('image-bytes'));
+    mockReaddirSync.mockReturnValue([]);
     mockExistsSync.mockReturnValue(true);
     mockStatSync.mockReturnValue({ isDirectory: () => true });
+    mockSafeStorage.isEncryptionAvailable.mockReturnValue(true);
   });
 
   async function loadAndInit() {
@@ -199,6 +216,56 @@ describe('settings IPC handlers', () => {
       expect(settings.getConfig().cloud.s3.secretAccessKey).toBe('secret-key');
     });
 
+    it('rejects a new cloud secret when OS encryption is unavailable', async () => {
+      const settings = await loadAndInit();
+      const { DEFAULT_SETTINGS } = await import('@/types/settings');
+      mockSafeStorage.isEncryptionAvailable.mockReturnValue(false);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = ipcHandle['settings:update'](
+        { sender: {} },
+        {
+          cloud: {
+            ...DEFAULT_SETTINGS.cloud,
+            s3: {
+              ...DEFAULT_SETTINGS.cloud.s3,
+              secretAccessKey: 'new-secret',
+            },
+          },
+        }
+      ) as { cloud: { s3: { secretAccessKey: string } } };
+
+      expect(result.cloud.s3.secretAccessKey).toBe('');
+      expect(settings.getConfig().cloud.s3.secretAccessKey).toBe('');
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Cloud settings update rejected: OS encryption unavailable'
+      );
+      errorSpy.mockRestore();
+    });
+
+    it('does not let generic settings updates replace wallpaper data', async () => {
+      const settings = await loadAndInit();
+
+      ipcHandle['settings:update'](
+        { sender: {} },
+        {
+          wallpaper: {
+            customBackgrounds: [
+              {
+                id: 'injected',
+                type: 'image',
+                data: { imageUrl: 'data:image/png;base64,c2VjcmV0' },
+              },
+            ],
+            presets: [],
+            defaultPresetId: null,
+          },
+        }
+      );
+
+      expect(settings.getConfig().wallpaper.customBackgrounds).toEqual([]);
+    });
+
     it('normalizes invalid appearance updates', async () => {
       await loadAndInit();
 
@@ -261,6 +328,43 @@ describe('settings IPC handlers', () => {
   });
 
   describe('wallpaper handlers', () => {
+    it('resolves a project wallpaper after its folder is renamed', async () => {
+      mockExistsSync.mockReturnValue(false);
+      mockReadFileSync.mockReturnValue(
+        Buffer.from([255, 216, 255, 224, 0, 16, 74, 70, 73, 70])
+      );
+      const { localizeWallpaperImage, resolveLocalizedWallpaperImage } =
+        await import('@/main/settings/wallpaper-assets');
+      const oldDirectory = path.resolve('recordings', 'Old.poratake');
+      const newDirectory = path.resolve('recordings', 'New.poratake');
+
+      const localized = localizeWallpaperImage(
+        pathToFileURL(path.resolve('config', 'wallpaper.jpg')).href,
+        oldDirectory
+      );
+      const resolved = resolveLocalizedWallpaperImage(localized, newDirectory);
+
+      expect(localized).toMatch(/^\.wallpaper-asset-.*\.jpg$/);
+      expect(fileURLToPath(resolved)).toBe(path.join(newDirectory, localized));
+    });
+
+    it('retains prior project wallpaper assets for editor undo', async () => {
+      mockExistsSync.mockReturnValue(false);
+      mockReadFileSync.mockReturnValue(
+        Buffer.from([255, 216, 255, 224, 0, 16, 74, 70, 73, 70])
+      );
+      mockReaddirSync.mockReturnValue(['.wallpaper-asset-prior.jpg']);
+      const { localizeWallpaperImage } =
+        await import('@/main/settings/wallpaper-assets');
+
+      localizeWallpaperImage(
+        pathToFileURL(path.resolve('config', 'wallpaper.jpg')).href,
+        path.resolve('recordings', 'Take.poratake')
+      );
+
+      expect(mockUnlinkSync).not.toHaveBeenCalled();
+    });
+
     it('getSettings returns wallpaper config', async () => {
       await loadAndInit();
       const result = ipcHandle['wallpaper:getSettings']();
@@ -400,17 +504,18 @@ describe('settings IPC handlers', () => {
       expect(result).toBeNull();
     });
 
-    it('selectImage returns data URL on success', async () => {
+    it('selectImage returns the selected file URL on success', async () => {
       mockShowOpenDialog.mockResolvedValue({
         canceled: false,
         filePaths: ['/p/img.png'],
       });
       await loadAndInit();
       const result = (await ipcHandle['wallpaper:selectImage']()) as string;
-      expect(result).toMatch(/^data:image\/png;base64,/);
+      expect(result).toMatch(/^file:/);
+      expect(result).toContain('/p/img.png');
     });
 
-    it('selectImage handles SVG/JPEG/WebP MIME types', async () => {
+    it('selectImage returns SVG, JPEG, and WebP file URLs', async () => {
       for (const ext of ['.svg', '.jpg', '.webp']) {
         mockShowOpenDialog.mockResolvedValue({
           canceled: false,
@@ -418,7 +523,8 @@ describe('settings IPC handlers', () => {
         });
         await loadAndInit();
         const result = (await ipcHandle['wallpaper:selectImage']()) as string;
-        expect(result).toMatch(/^data:image\//);
+        expect(result).toMatch(/^file:/);
+        expect(result).toContain(`/p/img${ext}`);
       }
     });
 
@@ -436,13 +542,15 @@ describe('settings IPC handlers', () => {
       expect(result).toBeNull();
     });
 
-    it('getDesktopWallpaper passes through data type', async () => {
+    it('getDesktopWallpaper returns a data response', async () => {
       mockDaemonCall.mockResolvedValue({
         type: 'data',
         value: 'data:image/png;base64,abc',
       });
       await loadAndInit();
-      const result = await ipcHandle['wallpaper:getDesktopWallpaper']();
+      const result = (await ipcHandle[
+        'wallpaper:getDesktopWallpaper'
+      ]()) as string;
       expect(result).toBe('data:image/png;base64,abc');
     });
 
@@ -454,9 +562,61 @@ describe('settings IPC handlers', () => {
       });
       mockExistsSync.mockReturnValue(true);
       await loadAndInit();
-      const result = await ipcHandle['wallpaper:getDesktopWallpaper']();
-      expect(result).toBe(pathToFileURL(wallpaperPath).href);
+      const result = (await ipcHandle[
+        'wallpaper:getDesktopWallpaper'
+      ]()) as string;
+      expect(result).toMatch(/^file:/);
+      expect(result).toContain('/p/wallpaper.jpg');
       expect(mockReadFileSync).not.toHaveBeenCalledWith(wallpaperPath);
+    });
+
+    it('persists an extensionless Windows desktop wallpaper by file signature', async () => {
+      mockExistsSync.mockReturnValue(false);
+      await loadAndInit();
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(
+        Buffer.from([255, 216, 255, 224, 0, 16, 74, 70, 73, 70])
+      );
+
+      const result = ipcHandle['wallpaper:addPreset'](
+        {},
+        {
+          id: 'desktop',
+          name: 'Desktop',
+          gradient: null,
+          backgroundImage: 'file:///E:/p/TranscodedWallpaper',
+          padding: 0,
+          corners: 0,
+          shadow: 0,
+        }
+      ) as Array<{ backgroundImage?: string }>;
+
+      expect(result[0].backgroundImage).toMatch(/\/wallpapers\/.*\.jpg$/);
+    });
+
+    it('keeps a managed wallpaper asset until the next startup', async () => {
+      mockExistsSync.mockReturnValue(false);
+      await loadAndInit();
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(
+        Buffer.from([255, 216, 255, 224, 0, 16, 74, 70, 73, 70])
+      );
+      const backgrounds = ipcHandle['wallpaper:addBackground'](
+        {},
+        {
+          id: 'managed',
+          type: 'image',
+          data: { imageUrl: 'file:///E:/p/wallpaper.jpg' },
+        }
+      ) as Array<{ data: { imageUrl: string } }>;
+      const assetName = decodeURIComponent(
+        new URL(backgrounds[0].data.imageUrl).pathname.split('/').at(-1) ?? ''
+      );
+      mockReaddirSync.mockReturnValue([assetName]);
+
+      ipcHandle['wallpaper:deleteBackground']({}, 'managed');
+
+      expect(mockUnlinkSync).not.toHaveBeenCalled();
     });
 
     it('getDesktopWallpaper returns null when path file missing', async () => {

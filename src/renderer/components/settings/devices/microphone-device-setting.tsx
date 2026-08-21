@@ -30,10 +30,7 @@ export default function MicrophoneDeviceSetting({
     if (!testing) return;
 
     const handleLevel = (_event: unknown, value: number) => setLevel(value);
-    window.ipcRenderer.on('devices:mic-test:level', handleLevel);
-    return () => {
-      window.ipcRenderer.off('devices:mic-test:level', handleLevel);
-    };
+    return window.ipcRenderer.on('devices:mic-test:level', handleLevel);
   }, [testing]);
 
   const handleSelect = useCallback(

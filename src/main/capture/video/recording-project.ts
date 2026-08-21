@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs/promises';
-import { existsSync, mkdirSync, rmSync, renameSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, renameSync, unlinkSync } from 'fs';
 import { PROJECT_EXTENSION, type ProjectRenameResult } from '@/types/video';
 
 export const PROJECT_FILES = {
@@ -88,6 +88,45 @@ export function getKeysPath(projectOrVideoPath: string): string {
     return path.join(projectFolder, PROJECT_FILES.KEYS);
   }
   return projectOrVideoPath.replace(/\.[^.]+$/, '.keys.json');
+}
+
+export function deleteRecordingAssets(projectOrVideoPath: string): void {
+  const projectFolder = getProjectFolder(projectOrVideoPath);
+  if (projectFolder) {
+    if (existsSync(projectFolder)) {
+      const recordingPath = getRecordingVideoPath(projectFolder);
+      if (existsSync(recordingPath)) {
+        unlinkSync(recordingPath);
+      }
+      rmSync(projectFolder, { recursive: true, force: true });
+    }
+    return;
+  }
+
+  if (existsSync(projectOrVideoPath)) {
+    unlinkSync(projectOrVideoPath);
+  }
+
+  const sidecarPaths = new Set([
+    getSystemAudioPath(projectOrVideoPath),
+    getMicAudioPath(projectOrVideoPath),
+    getCursorPath(projectOrVideoPath),
+    projectOrVideoPath.replace(/\.[^.]+$/, '.mouse.json'),
+    getCameraMetaPath(projectOrVideoPath),
+    getCameraVideoPath(projectOrVideoPath),
+    getKeysPath(projectOrVideoPath),
+  ]);
+
+  for (const sidecarPath of sidecarPaths) {
+    if (!existsSync(sidecarPath)) {
+      continue;
+    }
+    try {
+      unlinkSync(sidecarPath);
+    } catch {
+      console.warn(`Failed to delete recording sidecar: ${sidecarPath}`);
+    }
+  }
 }
 
 export function getEditorStatePath(projectOrVideoPath: string): string | null {

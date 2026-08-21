@@ -37,10 +37,7 @@ export function useAppTheme(): void {
       setAppearance(nextAppearance);
     };
 
-    window.ipcRenderer.on('settings:appearance-updated', handleUpdate);
-    return () => {
-      window.ipcRenderer.off('settings:appearance-updated', handleUpdate);
-    };
+    return window.ipcRenderer.on('settings:appearance-updated', handleUpdate);
   }, []);
 
   useLayoutEffect(() => {

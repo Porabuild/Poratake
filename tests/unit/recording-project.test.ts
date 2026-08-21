@@ -6,6 +6,7 @@ vi.mock('fs', () => ({
   mkdirSync: vi.fn(),
   rmSync: vi.fn(),
   renameSync: vi.fn(),
+  unlinkSync: vi.fn(),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -230,6 +231,97 @@ describe('recording-project', () => {
       await deleteProjectFolder('/path/to/video.mov');
       expect(fs.rmSync).not.toHaveBeenCalled();
       expect(fsp.default.unlink).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteRecordingAssets', () => {
+    it('deletes every legacy recording asset', async () => {
+      const fs = await import('fs');
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      const { deleteRecordingAssets } =
+        await import('@/main/capture/video/recording-project');
+
+      deleteRecordingAssets('/path/to/video.mov');
+
+      expect(
+        vi.mocked(fs.unlinkSync).mock.calls.map(([filePath]) => filePath)
+      ).toEqual([
+        '/path/to/video.mov',
+        '/path/to/video.system.m4a',
+        '/path/to/video.mic.m4a',
+        '/path/to/video.cursor.json',
+        '/path/to/video.mouse.json',
+        '/path/to/video.camera.json',
+        '/path/to/video.camera.mov',
+        '/path/to/video.keys.json',
+      ]);
+    });
+
+    it('deletes a recording project as one folder', async () => {
+      const fs = await import('fs');
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      const { deleteRecordingAssets } =
+        await import('@/main/capture/video/recording-project');
+
+      deleteRecordingAssets('/path/to/My.poratake/recording.mov');
+
+      expect(fs.rmSync).toHaveBeenCalledWith('/path/to/My.poratake', {
+        recursive: true,
+        force: true,
+      });
+      expect(fs.unlinkSync).toHaveBeenCalledWith(
+        path.join('/path/to/My.poratake', 'recording.mov')
+      );
+    });
+
+    it('checks that the project recording can be deleted before its sidecars', async () => {
+      const fs = await import('fs');
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.unlinkSync).mockImplementation(() => {
+        throw new Error('locked');
+      });
+      const { deleteRecordingAssets } =
+        await import('@/main/capture/video/recording-project');
+
+      expect(() =>
+        deleteRecordingAssets('/path/to/My.poratake/recording.mov')
+      ).toThrow('locked');
+      expect(fs.rmSync).not.toHaveBeenCalled();
+    });
+
+    it('does not fail legacy deletion when a sidecar is locked', async () => {
+      const fs = await import('fs');
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.unlinkSync).mockImplementation(filePath => {
+        if (String(filePath).endsWith('.cursor.json')) {
+          throw new Error('locked');
+        }
+      });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { deleteRecordingAssets } =
+        await import('@/main/capture/video/recording-project');
+
+      expect(() => deleteRecordingAssets('/path/to/video.mov')).not.toThrow();
+      expect(fs.unlinkSync).toHaveBeenCalledWith('/path/to/video.mov');
+      expect(fs.unlinkSync).toHaveBeenCalledWith('/path/to/video.keys.json');
+
+      warnSpy.mockRestore();
+    });
+
+    it('fails legacy deletion when the primary video is locked', async () => {
+      const fs = await import('fs');
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.unlinkSync).mockImplementation(filePath => {
+        if (filePath === '/path/to/video.mov') {
+          throw new Error('locked');
+        }
+      });
+      const { deleteRecordingAssets } =
+        await import('@/main/capture/video/recording-project');
+
+      expect(() => deleteRecordingAssets('/path/to/video.mov')).toThrow(
+        'locked'
+      );
     });
   });
 

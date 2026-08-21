@@ -1,6 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron';
 import fs from 'fs/promises';
-import { existsSync, mkdirSync, unlinkSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, unlinkSync } from 'fs';
 import crypto from 'crypto';
 import type {
   HistoryItem,
@@ -16,6 +16,7 @@ import {
   getSystemAudioPath,
   getCameraVideoPath,
   getCursorPath,
+  deleteRecordingAssets,
 } from '@/main/capture/video/recording-project.ts';
 
 export {
@@ -29,6 +30,7 @@ export {
 } from './popover';
 import { isHistoryPopoverWebContents } from './popover';
 import { getConfig } from '../settings';
+import { embedWallpaperImage } from '@/main/settings/wallpaper-assets.ts';
 import {
   getThumbnail,
   deleteThumbnail,
@@ -42,6 +44,37 @@ let historyItems: HistoryItem[] = [];
 let historyLoadPromise: Promise<HistoryItem[]> | null = null;
 
 let writeQueue: Promise<void> = Promise.resolve();
+let releaseHistoryFile: (filePath: string) => Promise<void> = async () => {};
+
+export function setHistoryFileReleaseHandler(
+  handler: (filePath: string) => Promise<void>
+): void {
+  releaseHistoryFile = handler;
+}
+
+function prepareEditorState(editorState: EditorState): EditorState {
+  const wallpaper = editorState.wallpaper;
+  if (!wallpaper?.backgroundImage) {
+    return editorState;
+  }
+
+  try {
+    const embeddedImage = embedWallpaperImage(wallpaper.backgroundImage);
+    if (embeddedImage === wallpaper.backgroundImage) {
+      return editorState;
+    }
+    return {
+      ...editorState,
+      wallpaper: {
+        ...wallpaper,
+        backgroundImage: embeddedImage,
+      },
+    };
+  } catch (error) {
+    console.error('Failed to preserve history wallpaper:', error);
+    return editorState;
+  }
+}
 
 function ensureDirectories() {
   if (!existsSync(CONFIG_DIR)) {
@@ -59,12 +92,10 @@ async function readHistory(): Promise<HistoryItem[]> {
 
     const fileContent = await fs.readFile(HISTORY_FILE, 'utf-8');
     const storedItems = JSON.parse(fileContent) as HistoryItem[];
-    historyItems = storedItems
-      .filter(item => existsSync(item.originalPath))
-      .map(item => ({
-        ...item,
-        type: item.type || ('screenshot' as const),
-      }));
+    historyItems = storedItems.map(item => ({
+      ...item,
+      type: item.type || ('screenshot' as const),
+    }));
   } catch (error) {
     console.error('Failed to load history:', error);
     historyItems = [];
@@ -118,9 +149,11 @@ export async function addToHistory(
 
     while (historyItems.length > config.history.maxItems) {
       const removed = historyItems.pop();
-      if (removed) {
-        cleanupHistoryItem(removed);
-      }
+      if (!removed) break;
+      if (await cleanupHistoryItem(removed)) continue;
+
+      historyItems.push(removed);
+      break;
     }
 
     await saveHistoryToFile();
@@ -143,7 +176,7 @@ export async function updateHistoryItem(
 
   historyItems[index] = {
     ...historyItems[index],
-    editorState,
+    editorState: prepareEditorState(editorState),
   };
 
   await saveHistoryToFile();
@@ -164,7 +197,7 @@ export async function updateHistoryItemByPath(
 
   historyItems[index] = {
     ...historyItems[index],
-    editorState,
+    editorState: prepareEditorState(editorState),
   };
 
   await saveHistoryToFile();
@@ -190,49 +223,27 @@ export async function updateHistoryItemPath(
   return true;
 }
 
-function cleanupHistoryItem(item: HistoryItem): void {
+async function cleanupHistoryItem(item: HistoryItem): Promise<boolean> {
   try {
-    const projectFolder = getProjectFolder(item.originalPath);
+    deleteThumbnail(item.originalPath);
+  } catch {
+    console.warn(`Failed to clean up history thumbnail: ${item.id}`);
+  }
 
-    if (projectFolder && existsSync(projectFolder)) {
-      deleteThumbnail(item.originalPath);
-      rmSync(projectFolder, { recursive: true, force: true });
-      return;
+  try {
+    if (item.type === 'video') {
+      await releaseHistoryFile(item.originalPath);
+      deleteRecordingAssets(item.originalPath);
+      return true;
     }
 
     if (existsSync(item.originalPath)) {
       unlinkSync(item.originalPath);
     }
-    deleteThumbnail(item.originalPath);
-    if (item.type === 'video') {
-      const cursorDataPath = item.originalPath.replace(
-        /\.[^.]+$/,
-        '.cursor.json'
-      );
-      if (existsSync(cursorDataPath)) {
-        unlinkSync(cursorDataPath);
-      }
-      const mouseDataPath = item.originalPath.replace(/\.mov$/, '.mouse.json');
-      if (existsSync(mouseDataPath)) {
-        unlinkSync(mouseDataPath);
-      }
-      const cameraJsonPath = item.originalPath.replace(
-        /\.[^.]+$/,
-        '.camera.json'
-      );
-      if (existsSync(cameraJsonPath)) {
-        unlinkSync(cameraJsonPath);
-      }
-      const cameraVideoPath = item.originalPath.replace(
-        /\.[^.]+$/,
-        '.camera.mov'
-      );
-      if (existsSync(cameraVideoPath)) {
-        unlinkSync(cameraVideoPath);
-      }
-    }
+    return true;
   } catch {
     console.warn(`Failed to clean up history item: ${item.id}`);
+    return false;
   }
 }
 
@@ -243,20 +254,37 @@ export async function deleteHistoryItem(id: string): Promise<boolean> {
     return false;
   }
 
-  const removed = historyItems.splice(index, 1)[0];
-  cleanupHistoryItem(removed);
+  const item = historyItems[index];
+  if (!(await cleanupHistoryItem(item))) {
+    return false;
+  }
+
+  const currentIndex = historyItems.findIndex(
+    historyItem => historyItem.id === id
+  );
+  if (currentIndex === -1) {
+    return true;
+  }
+
+  historyItems.splice(currentIndex, 1);
   await saveHistoryToFile();
   return true;
 }
 
-export async function clearHistory(): Promise<void> {
+export async function clearHistory(): Promise<boolean> {
   await loadHistory();
+  const retainedItems: HistoryItem[] = [];
   for (const item of historyItems) {
-    cleanupHistoryItem(item);
+    if (!(await cleanupHistoryItem(item))) {
+      retainedItems.push(item);
+    }
   }
-  clearAllThumbnails();
-  historyItems = [];
+  historyItems = retainedItems;
+  if (retainedItems.length === 0) {
+    clearAllThumbnails();
+  }
   await saveHistoryToFile();
+  return retainedItems.length === 0;
 }
 
 export function getHistory(): HistoryItem[] {
@@ -347,8 +375,7 @@ export async function init(): Promise<void> {
 
     if (result.response !== 0) return false;
 
-    await clearHistory();
-    return true;
+    return await clearHistory();
   });
 
   ipcMain.handle(

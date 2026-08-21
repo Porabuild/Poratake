@@ -117,17 +117,20 @@ export default function BackgroundSelector({
         setCustomBackgrounds(updatedBackgrounds);
         setShowBackgroundEditor(false);
         setEditingBackground(null);
+        const savedBackground =
+          updatedBackgrounds.find(item => item.id === background.id) ??
+          background;
 
-        if (background.type === 'gradient') {
+        if (savedBackground.type === 'gradient') {
           onBackgroundImageChange(null);
           onGradientChange({
-            id: background.id,
-            colors: background.data.colors,
-            angle: background.data.angle,
+            id: savedBackground.id,
+            colors: savedBackground.data.colors,
+            angle: savedBackground.data.angle,
           });
-        } else if (background.type === 'image') {
+        } else if (savedBackground.type === 'image') {
           onGradientChange(null);
-          onBackgroundImageChange(background.data.imageUrl);
+          onBackgroundImageChange(savedBackground.data.imageUrl);
         }
       } catch (error) {
         console.error('Failed to save background:', error);

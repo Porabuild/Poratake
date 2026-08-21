@@ -135,20 +135,23 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
       applyPickTargets(message.pickTargets, message.repeatablePicks);
     };
 
-    window.ipcRenderer.on('area-overlay:set-rect', handleRect);
-    window.ipcRenderer.on('area-overlay:set-aspect-ratio', handleAspectRatio);
-    window.ipcRenderer.on('area-overlay:set-pick-targets', handlePickTargets);
+    const unsubscribeRect = window.ipcRenderer.on(
+      'area-overlay:set-rect',
+      handleRect
+    );
+    const unsubscribeAspectRatio = window.ipcRenderer.on(
+      'area-overlay:set-aspect-ratio',
+      handleAspectRatio
+    );
+    const unsubscribePickTargets = window.ipcRenderer.on(
+      'area-overlay:set-pick-targets',
+      handlePickTargets
+    );
 
     return () => {
-      window.ipcRenderer.off('area-overlay:set-rect', handleRect);
-      window.ipcRenderer.off(
-        'area-overlay:set-aspect-ratio',
-        handleAspectRatio
-      );
-      window.ipcRenderer.off(
-        'area-overlay:set-pick-targets',
-        handlePickTargets
-      );
+      unsubscribeRect();
+      unsubscribeAspectRatio();
+      unsubscribePickTargets();
     };
   }, [applyPickTargets, applyRect, bounds]);
 

@@ -39,8 +39,10 @@ describe('video history IPC handlers', () => {
     const { registerRecordingIpcHandlers } =
       await import('@/main/capture/video/recording-ipc');
     registerRecordingIpcHandlers();
+    registerRecordingIpcHandlers();
 
     expect(Object.keys(ipcOn)).toEqual(['history:openVideo']);
+    expect(mockIpcOn).toHaveBeenCalledOnce();
   });
 
   it('opens the video editor for a history video', async () => {

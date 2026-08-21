@@ -5,6 +5,7 @@ import type { CameraSettings } from '@/types/settings';
 
 let currentSettings: CameraSettings | null = null;
 let isContentProtected = false;
+let ipcHandlersRegistered = false;
 
 function toNativePosition(position: { x: number; y: number }): {
   x: number;
@@ -104,6 +105,10 @@ export function isCameraContentProtectionEnabled(): boolean {
 }
 
 export function registerCameraPreviewIpcHandlers(): void {
+  if (ipcHandlersRegistered) {
+    return;
+  }
+  ipcHandlersRegistered = true;
   const positionHandler = (event: string, data: unknown) => {
     if (
       event === 'camera-preview:position-changed' &&

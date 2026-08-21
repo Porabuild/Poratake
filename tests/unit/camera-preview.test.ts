@@ -6,12 +6,21 @@ const ipcHandle: Record<string, (...a: unknown[]) => unknown> = {};
 const mockDaemonCall = vi.fn();
 const mockDipToScreenPoint = vi.fn();
 const mockScreenToDipPoint = vi.fn();
+const mockIpcHandle = vi.fn(
+  (event: string, handler: (...args: unknown[]) => unknown) => {
+    ipcHandle[event] = handler;
+  }
+);
+const mockDaemonOnEvent = vi.fn(
+  (handler: (event: string, data: unknown) => void) => {
+    daemonEventHandler = handler;
+  }
+);
 
 vi.mock('electron', () => ({
   ipcMain: {
-    handle: (e: string, h: (...a: unknown[]) => unknown) => {
-      ipcHandle[e] = h;
-    },
+    handle: (event: string, handler: (...args: unknown[]) => unknown) =>
+      mockIpcHandle(event, handler),
   },
   screen: {
     dipToScreenPoint: (...a: unknown[]) => mockDipToScreenPoint(...a),
@@ -22,9 +31,8 @@ vi.mock('electron', () => ({
 vi.mock('@/main/daemon', () => ({
   daemon: {
     call: (...a: unknown[]) => mockDaemonCall(...a),
-    onEvent: (cb: (e: string, d: unknown) => void) => {
-      daemonEventHandler = cb;
-    },
+    onEvent: (handler: (event: string, data: unknown) => void) =>
+      mockDaemonOnEvent(handler),
     offEvent: vi.fn(),
   },
 }));
@@ -184,6 +192,16 @@ describe('camera-preview', () => {
   });
 
   describe('registerCameraPreviewIpcHandlers', () => {
+    it('registers handlers only once', async () => {
+      const m = await import('@/main/capture/video/camera-preview');
+
+      m.registerCameraPreviewIpcHandlers();
+      m.registerCameraPreviewIpcHandlers();
+
+      expect(mockDaemonOnEvent).toHaveBeenCalledOnce();
+      expect(mockIpcHandle).toHaveBeenCalledOnce();
+    });
+
     it('registers position-changed event handler', async () => {
       const m = await import('@/main/capture/video/camera-preview');
       m.registerCameraPreviewIpcHandlers();

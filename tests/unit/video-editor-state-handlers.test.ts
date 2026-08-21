@@ -24,6 +24,10 @@ const mockGetEditorStatePath = vi.fn(
   () => '/project/video.cap/editor-state.json'
 );
 const mockGenerateInitialEditorState = vi.fn();
+const mockLocalizeWallpaperImage = vi.fn((imageUrl: string) => imageUrl);
+const mockResolveLocalizedWallpaperImage = vi.fn(
+  (imageUrl: string) => imageUrl
+);
 
 function createState(
   overrides: Partial<VideoEditorState> = {}
@@ -79,11 +83,24 @@ vi.mock('../../src/main/capture/video/auto-zoom-generator', () => ({
   generateInitialEditorState: mockGenerateInitialEditorState,
 }));
 
+vi.mock('../../src/main/settings/wallpaper-assets', () => ({
+  localizeWallpaperImage: (...args: unknown[]) =>
+    mockLocalizeWallpaperImage(...(args as [string, string])),
+  resolveLocalizedWallpaperImage: (...args: unknown[]) =>
+    mockResolveLocalizedWallpaperImage(...(args as [string, string])),
+}));
+
 describe('video editor state handlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     Object.keys(ipcHandlers).forEach(key => delete ipcHandlers[key]);
     mockGenerateInitialEditorState.mockResolvedValue(true);
+    mockLocalizeWallpaperImage.mockImplementation(
+      (imageUrl: string) => imageUrl
+    );
+    mockResolveLocalizedWallpaperImage.mockImplementation(
+      (imageUrl: string) => imageUrl
+    );
   });
 
   it('preserves recordingType during reset', async () => {
@@ -170,6 +187,114 @@ describe('video editor state handlers', () => {
 
     expect(result).toBe(true);
     expect(mockFs.writeFileSync).toHaveBeenCalled();
+  });
+
+  it('stores managed wallpaper images inside the recording project', async () => {
+    const state = createState({
+      wallpaper: {
+        enabled: true,
+        gradient: null,
+        backgroundImage: 'file:///config/wallpapers/image.jpg',
+        padding: 10,
+        corners: 10,
+        shadow: 10,
+        aspectRatio: null,
+        deviceFrame: false,
+      },
+    });
+    mockLocalizeWallpaperImage.mockReturnValue('.wallpaper-asset-image.jpg');
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+    registerStateHandlers();
+
+    const result = await ipcHandlers['video-editor:saveState'](
+      { sender: { id: 1 } },
+      state
+    );
+
+    expect(result).toBe(true);
+    expect(mockLocalizeWallpaperImage).toHaveBeenCalledWith(
+      'file:///config/wallpapers/image.jpg',
+      expect.any(String)
+    );
+    const serialized = mockFs.writeFileSync.mock.calls.at(-1)?.[1] as string;
+    expect(JSON.parse(serialized).wallpaper.backgroundImage).toBe(
+      '.wallpaper-asset-image.jpg'
+    );
+  });
+
+  it('keeps saving edits when wallpaper localization fails', async () => {
+    const state = createState({
+      wallpaper: {
+        enabled: true,
+        gradient: null,
+        backgroundImage: 'file:///config/wallpapers/deleted.jpg',
+        padding: 10,
+        corners: 10,
+        shadow: 10,
+        aspectRatio: null,
+        deviceFrame: false,
+      },
+    });
+    mockLocalizeWallpaperImage.mockImplementation(() => {
+      throw new Error('missing wallpaper');
+    });
+    mockFs.readFileSync.mockReturnValue(
+      JSON.stringify({
+        wallpaper: { backgroundImage: '.wallpaper-asset-image.jpg' },
+      })
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+    registerStateHandlers();
+
+    const result = await ipcHandlers['video-editor:saveState'](
+      { sender: { id: 1 } },
+      state
+    );
+
+    expect(result).toBe(true);
+    const serialized = mockFs.writeFileSync.mock.calls.at(-1)?.[1] as string;
+    expect(JSON.parse(serialized).wallpaper.backgroundImage).toBe(
+      '.wallpaper-asset-image.jpg'
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('resolves project wallpaper paths when loading state', async () => {
+    const state = createState({
+      wallpaper: {
+        enabled: true,
+        gradient: null,
+        backgroundImage: '.wallpaper-asset-image.jpg',
+        padding: 10,
+        corners: 10,
+        shadow: 10,
+        aspectRatio: null,
+        deviceFrame: false,
+      },
+    });
+    mockFs.existsSync.mockReturnValue(true);
+    mockFs.promises.readFile.mockResolvedValue(JSON.stringify(state));
+    mockResolveLocalizedWallpaperImage.mockReturnValue(
+      'file:///project/video.cap/.wallpaper-asset-image.jpg'
+    );
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+    registerStateHandlers();
+
+    const loaded = (await ipcHandlers['video-editor:getState']({
+      sender: { id: 1 },
+    })) as VideoEditorState;
+
+    expect(mockResolveLocalizedWallpaperImage).toHaveBeenCalledWith(
+      '.wallpaper-asset-image.jpg',
+      expect.any(String)
+    );
+    expect(loaded.wallpaper?.backgroundImage).toBe(
+      'file:///project/video.cap/.wallpaper-asset-image.jpg'
+    );
   });
 
   it('rejects state with malformed drawing annotations', async () => {

@@ -11,14 +11,25 @@ const NAMED_ENTITIES: Record<string, string> = {
   copy: '©',
 };
 
+function decodeCodePoint(match: string, value: string, radix: number): string {
+  const codePoint = Number.parseInt(value, radix);
+  if (
+    !Number.isSafeInteger(codePoint) ||
+    codePoint === 0 ||
+    codePoint > 0x10ffff ||
+    (codePoint >= 0xd800 && codePoint <= 0xdfff)
+  ) {
+    return match;
+  }
+  return String.fromCodePoint(codePoint);
+}
+
 function decodeEntities(text: string): string {
   return text
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) =>
-      String.fromCodePoint(Number.parseInt(hex, 16))
+    .replace(/&#x([0-9a-f]+);/gi, (match, hex) =>
+      decodeCodePoint(match, hex, 16)
     )
-    .replace(/&#(\d+);/g, (_, dec) =>
-      String.fromCodePoint(Number.parseInt(dec, 10))
-    )
+    .replace(/&#(\d+);/g, (match, dec) => decodeCodePoint(match, dec, 10))
     .replace(
       /&([a-z]+);/gi,
       (match, name) => NAMED_ENTITIES[name.toLowerCase()] ?? match

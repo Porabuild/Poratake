@@ -47,6 +47,7 @@ import { isFeatureSupported } from '@/main/system/capabilities';
 import type { FeatureId } from '@/types/capabilities';
 import { isMac, isWindows } from '@/main/utils/platform';
 import { getPublicAssetPath } from '@/main/utils/paths';
+import { setRecordingTrayMenuRebuild } from './recording-tray.ts';
 
 if (!isMac) {
   Menu.setApplicationMenu(null);
@@ -483,6 +484,7 @@ function createTrayIcon(): NativeImage {
 }
 
 export const init = async () => {
+  setRecordingTrayMenuRebuild(rebuildTrayMenu);
   const config = getConfig();
 
   if (config.general.hideMenuBarIcon) {

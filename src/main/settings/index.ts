@@ -39,6 +39,18 @@ import {
 } from '@/main/utils/filename-generator';
 import { getConfigDir, getConfigFilePath } from '@/main/utils/paths.ts';
 import { getAppVersion } from '@/main/utils/env.ts';
+import {
+  hasUnprotectedCloudSecrets,
+  protectCloudSecrets,
+  revealCloudSecrets,
+  type RetainedCloudSecrets,
+} from './cloud-secrets.ts';
+import {
+  migrateWallpaperAssets,
+  persistCustomBackground,
+  persistWallpaperPreset,
+  pruneWallpaperAssets,
+} from './wallpaper-assets.ts';
 
 export { createOrShowSettingsWindow } from './window';
 
@@ -46,7 +58,11 @@ const CONFIG_DIR = getConfigDir();
 const CONFIG_FILE = getConfigFilePath();
 const CONFIG_WRITE_DEBOUNCE_MS = 150;
 
-let currentConfig: SettingsConfig = { ...DEFAULT_SETTINGS };
+function createDefaultSettings(): SettingsConfig {
+  return structuredClone(DEFAULT_SETTINGS);
+}
+
+let currentConfig: SettingsConfig = createDefaultSettings();
 let configLoaded = false;
 let configWriteTimer: NodeJS.Timeout | null = null;
 let configWritePending = false;
@@ -54,6 +70,7 @@ let configWriteInFlight = false;
 let configWriteGeneration = 0;
 let configWriteSequence = 0;
 let configWriteQueue: Promise<void> = Promise.resolve();
+let retainedCloudSecrets: RetainedCloudSecrets = { restHeaders: [] };
 const configUpdateListeners = new Set<
   (updates: Partial<SettingsConfig>) => void
 >();
@@ -166,24 +183,41 @@ function migrateWallpaperConfig(
     ...savedWallpaper,
   };
 
-  const presets = base.presets ?? [];
+  const presets = Array.isArray(base.presets)
+    ? base.presets.filter(
+        (preset): preset is WallpaperPreset =>
+          !!preset && typeof preset === 'object'
+      )
+    : [];
+  const customBackgrounds = Array.isArray(base.customBackgrounds)
+    ? base.customBackgrounds.filter(
+        (background): background is CustomBackground =>
+          !!background && typeof background === 'object'
+      )
+    : [];
   const defaultPresetId = presets.some(p => p.id === base.defaultPresetId)
     ? base.defaultPresetId
     : null;
 
-  if (base.customBackgrounds && base.customBackgrounds.length > 0) {
+  if (customBackgrounds.length > 0) {
     return {
-      customBackgrounds: base.customBackgrounds,
+      customBackgrounds,
       presets,
       defaultPresetId,
     };
   }
 
-  const legacyGradients =
-    (savedWallpaper as { customGradients?: CustomGradient[] })
-      ?.customGradients ?? [];
+  const savedGradients = (
+    savedWallpaper as { customGradients?: CustomGradient[] }
+  )?.customGradients;
+  const legacyGradients = Array.isArray(savedGradients) ? savedGradients : [];
   const migratedBackgrounds: CustomBackground[] = legacyGradients
-    .filter(g => g.colors && g.angle !== undefined)
+    .filter(
+      gradient =>
+        !!gradient &&
+        Array.isArray(gradient.colors) &&
+        gradient.angle !== undefined
+    )
     .map(g => ({
       id: g.id,
       type: 'gradient' as const,
@@ -202,7 +236,7 @@ function migrateWallpaperConfig(
 
 export function migrateCloudConfig(savedCloud: unknown): CloudConfig {
   if (!savedCloud || typeof savedCloud !== 'object') {
-    return { ...DEFAULT_CLOUD_CONFIG };
+    return structuredClone(DEFAULT_CLOUD_CONFIG);
   }
 
   const raw = savedCloud as Record<string, unknown>;
@@ -222,6 +256,15 @@ export function migrateCloudConfig(savedCloud: unknown): CloudConfig {
     raw.rest && typeof raw.rest === 'object'
       ? (raw.rest as Record<string, unknown>)
       : {};
+  const restHeaders = Array.isArray(restSource.headers)
+    ? restSource.headers.filter(
+        (header): header is { key: string; value: string } =>
+          !!header &&
+          typeof header === 'object' &&
+          typeof (header as Record<string, unknown>).key === 'string' &&
+          typeof (header as Record<string, unknown>).value === 'string'
+      )
+    : DEFAULT_REST_PROVIDER_CONFIG.headers;
   const hasConfiguredS3 = [
     s3Source.endpoint,
     s3Source.bucket,
@@ -254,10 +297,18 @@ export function migrateCloudConfig(savedCloud: unknown): CloudConfig {
   return {
     enabled,
     activeProvider,
-    s3: { ...DEFAULT_S3_PROVIDER_CONFIG, ...s3Source },
+    s3: {
+      ...DEFAULT_S3_PROVIDER_CONFIG,
+      ...s3Source,
+      secretAccessKey:
+        typeof s3Source.secretAccessKey === 'string'
+          ? s3Source.secretAccessKey
+          : DEFAULT_S3_PROVIDER_CONFIG.secretAccessKey,
+    },
     rest: {
       ...DEFAULT_REST_PROVIDER_CONFIG,
       ...restSource,
+      headers: restHeaders,
     },
   };
 }
@@ -268,78 +319,115 @@ function ensureConfigDir() {
   }
 }
 
+function preserveCorruptConfig(fileContent: string): void {
+  const parsedPath = path.parse(CONFIG_FILE);
+  const recoveryPath = path.join(
+    parsedPath.dir,
+    `${parsedPath.name}.corrupt-${Date.now()}${parsedPath.ext}`
+  );
+
+  try {
+    try {
+      const parsed = JSON.parse(fileContent) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const sanitized = { ...(parsed as Record<string, unknown>) };
+        Reflect.deleteProperty(sanitized, 'cloud');
+        fs.writeFileSync(recoveryPath, JSON.stringify(sanitized, null, 2));
+        fs.unlinkSync(CONFIG_FILE);
+        return;
+      }
+    } catch {}
+    fs.renameSync(CONFIG_FILE, recoveryPath);
+  } catch (error) {
+    console.error('Failed to preserve corrupt config:', error);
+  }
+}
+
 export function loadConfig(): SettingsConfig {
   if (configLoaded) {
     return currentConfig;
   }
 
+  let fileContent: string | null = null;
   try {
     ensureConfigDir();
     if (fs.existsSync(CONFIG_FILE)) {
-      const fileContent = fs.readFileSync(CONFIG_FILE, 'utf-8');
-      const savedConfig = JSON.parse(fileContent);
+      fileContent = fs.readFileSync(CONFIG_FILE, 'utf-8');
+      const savedConfig = JSON.parse(fileContent) as Partial<SettingsConfig>;
+      const defaults = createDefaultSettings();
+      const migratedCloud = migrateCloudConfig(savedConfig.cloud);
+      const shouldProtectCloudSecrets =
+        hasUnprotectedCloudSecrets(migratedCloud);
+      const revealedCloud = revealCloudSecrets(migratedCloud);
+      retainedCloudSecrets = revealedCloud.retained;
+      const wallpaperMigration = migrateWallpaperAssets(
+        migrateWallpaperConfig(savedConfig.wallpaper)
+      );
       currentConfig = {
         appearance: migrateAppearanceConfig(savedConfig.appearance),
-        general: { ...DEFAULT_SETTINGS.general, ...savedConfig.general },
+        general: { ...defaults.general, ...savedConfig.general },
         screenshot: {
-          ...DEFAULT_SETTINGS.screenshot,
+          ...defaults.screenshot,
           ...savedConfig.screenshot,
         },
         shortcuts: {
           screenshot: {
-            ...DEFAULT_SETTINGS.shortcuts.screenshot,
+            ...defaults.shortcuts.screenshot,
             ...savedConfig.shortcuts?.screenshot,
           },
           captureText:
             savedConfig.shortcuts?.captureText ??
-            DEFAULT_SETTINGS.shortcuts.captureText,
+            defaults.shortcuts.captureText,
           scanQRCode:
-            savedConfig.shortcuts?.scanQRCode ??
-            DEFAULT_SETTINGS.shortcuts.scanQRCode,
+            savedConfig.shortcuts?.scanQRCode ?? defaults.shortcuts.scanQRCode,
           timerCapture:
             savedConfig.shortcuts?.timerCapture ??
-            DEFAULT_SETTINGS.shortcuts.timerCapture,
+            defaults.shortcuts.timerCapture,
           scrollCapture:
             savedConfig.shortcuts?.scrollCapture ??
-            DEFAULT_SETTINGS.shortcuts.scrollCapture,
+            defaults.shortcuts.scrollCapture,
           recording: {
-            ...DEFAULT_SETTINGS.shortcuts.recording,
+            ...defaults.shortcuts.recording,
             ...savedConfig.shortcuts?.recording,
           },
-          history:
-            savedConfig.shortcuts?.history ??
-            DEFAULT_SETTINGS.shortcuts.history,
+          history: savedConfig.shortcuts?.history ?? defaults.shortcuts.history,
           allInOne:
-            savedConfig.shortcuts?.allInOne ??
-            DEFAULT_SETTINGS.shortcuts.allInOne,
+            savedConfig.shortcuts?.allInOne ?? defaults.shortcuts.allInOne,
           openInEditor:
             savedConfig.shortcuts?.openInEditor ??
-            DEFAULT_SETTINGS.shortcuts.openInEditor,
+            defaults.shortcuts.openInEditor,
           clipboardInEditor:
             savedConfig.shortcuts?.clipboardInEditor ??
-            DEFAULT_SETTINGS.shortcuts.clipboardInEditor,
+            defaults.shortcuts.clipboardInEditor,
           editor: {
-            ...DEFAULT_SETTINGS.shortcuts.editor,
+            ...defaults.shortcuts.editor,
             ...savedConfig.shortcuts?.editor,
           },
           editorActions: {
-            ...DEFAULT_SETTINGS.shortcuts.editorActions,
+            ...defaults.shortcuts.editorActions,
             ...savedConfig.shortcuts?.editorActions,
           },
           videoEditorSidebar: {
-            ...DEFAULT_SETTINGS.shortcuts.videoEditorSidebar,
+            ...defaults.shortcuts.videoEditorSidebar,
             ...savedConfig.shortcuts?.videoEditorSidebar,
           },
         },
-        editor: { ...DEFAULT_SETTINGS.editor, ...savedConfig.editor },
-        wallpaper: migrateWallpaperConfig(savedConfig.wallpaper),
-        history: { ...DEFAULT_SETTINGS.history, ...savedConfig.history },
+        editor: { ...defaults.editor, ...savedConfig.editor },
+        wallpaper: wallpaperMigration.wallpaper,
+        history: { ...defaults.history, ...savedConfig.history },
         onboarding: {
-          ...DEFAULT_SETTINGS.onboarding,
+          ...defaults.onboarding,
           ...savedConfig.onboarding,
         },
-        cloud: migrateCloudConfig(savedConfig.cloud),
-        recording: { ...DEFAULT_SETTINGS.recording, ...savedConfig.recording },
+        cloud: revealedCloud.cloud,
+        recording: {
+          ...defaults.recording,
+          ...savedConfig.recording,
+          camera: {
+            ...defaults.recording.camera,
+            ...savedConfig.recording?.camera,
+          },
+        },
         storage: migrateStorageConfig(savedConfig.storage),
         saveLocations: {
           ...DEFAULT_SAVE_LOCATIONS_CONFIG,
@@ -351,18 +439,27 @@ export function loadConfig(): SettingsConfig {
           savedConfig.recording
         ),
         scrollCapture: {
-          ...DEFAULT_SETTINGS.scrollCapture,
+          ...defaults.scrollCapture,
           ...savedConfig.scrollCapture,
         },
       };
+      if (shouldProtectCloudSecrets || wallpaperMigration.migrated) {
+        saveConfig(currentConfig);
+      }
     } else {
-      currentConfig = { ...DEFAULT_SETTINGS };
+      currentConfig = createDefaultSettings();
+      retainedCloudSecrets = { restHeaders: [] };
       saveConfig(currentConfig);
     }
+    pruneWallpaperAssets(currentConfig.wallpaper);
     configLoaded = true;
   } catch (error) {
     console.error('Failed to load config:', error);
-    currentConfig = { ...DEFAULT_SETTINGS };
+    if (fileContent !== null && fs.existsSync(CONFIG_FILE)) {
+      preserveCorruptConfig(fileContent);
+    }
+    currentConfig = createDefaultSettings();
+    retainedCloudSecrets = { restHeaders: [] };
     configLoaded = true;
   }
   return currentConfig;
@@ -371,7 +468,7 @@ export function loadConfig(): SettingsConfig {
 function writeConfigFileSync(): void {
   configWriteGeneration += 1;
   const tempFile = `${CONFIG_FILE}.flush.tmp`;
-  fs.writeFileSync(tempFile, JSON.stringify(currentConfig, null, 2), 'utf-8');
+  fs.writeFileSync(tempFile, serializeConfig(), 'utf-8');
   fs.renameSync(tempFile, CONFIG_FILE);
 }
 
@@ -384,11 +481,7 @@ async function writeConfigFile(): Promise<void> {
 
   try {
     ensureConfigDir();
-    await fs.promises.writeFile(
-      tempFile,
-      JSON.stringify(currentConfig, null, 2),
-      'utf-8'
-    );
+    await fs.promises.writeFile(tempFile, serializeConfig(), 'utf-8');
     if (generation !== configWriteGeneration) {
       await fs.promises.unlink(tempFile).catch(() => {});
       return;
@@ -397,6 +490,22 @@ async function writeConfigFile(): Promise<void> {
   } finally {
     configWriteInFlight = false;
   }
+}
+
+function serializeConfig(): string {
+  const protectedCloud = protectCloudSecrets(
+    currentConfig.cloud,
+    retainedCloudSecrets
+  );
+  retainedCloudSecrets = protectedCloud.retained;
+  return JSON.stringify(
+    {
+      ...currentConfig,
+      cloud: protectedCloud.cloud,
+    },
+    null,
+    2
+  );
 }
 
 function flushConfigFile(): void {
@@ -446,6 +555,22 @@ export function getConfig(): SettingsConfig {
     loadConfig();
   }
   return currentConfig;
+}
+
+function mergeCloudConfig(
+  cloud: SettingsConfig['cloud'],
+  updates?: SettingsConfig['cloud']
+): SettingsConfig['cloud'] {
+  return {
+    ...cloud,
+    ...updates,
+    s3: { ...cloud.s3, ...updates?.s3 },
+    rest: {
+      ...cloud.rest,
+      ...updates?.rest,
+      headers: updates?.rest?.headers ?? cloud.rest.headers,
+    },
+  };
 }
 
 export function updateConfig(updates: Partial<SettingsConfig>): SettingsConfig {
@@ -504,17 +629,7 @@ export function updateConfig(updates: Partial<SettingsConfig>): SettingsConfig {
     wallpaper: { ...currentConfig.wallpaper, ...updates.wallpaper },
     history: { ...currentConfig.history, ...updates.history },
     onboarding: { ...currentConfig.onboarding, ...updates.onboarding },
-    cloud: {
-      ...currentConfig.cloud,
-      ...updates.cloud,
-      s3: { ...currentConfig.cloud.s3, ...updates.cloud?.s3 },
-      rest: {
-        ...currentConfig.cloud.rest,
-        ...updates.cloud?.rest,
-        headers:
-          updates.cloud?.rest?.headers ?? currentConfig.cloud.rest.headers,
-      },
-    },
+    cloud: mergeCloudConfig(currentConfig.cloud, updates.cloud),
     recording: { ...currentConfig.recording, ...updates.recording },
     storage: { ...currentConfig.storage, ...updates.storage },
     saveLocations: { ...currentConfig.saveLocations, ...updates.saveLocations },
@@ -600,8 +715,23 @@ export function init() {
     (event, updates: Partial<SettingsConfig>) => {
       const isSettingsWindow = isSettingsWindowWebContents(event.sender);
       const allowedUpdates = { ...updates };
+      Reflect.deleteProperty(allowedUpdates, 'wallpaper');
       if (!isSettingsWindow) {
         Reflect.deleteProperty(allowedUpdates, 'cloud');
+      }
+      if (isSettingsWindow && allowedUpdates.cloud) {
+        const protectedCloud = protectCloudSecrets(
+          mergeCloudConfig(currentConfig.cloud, allowedUpdates.cloud),
+          retainedCloudSecrets
+        );
+        if (protectedCloud.failedToProtect) {
+          console.error(
+            'Cloud settings update rejected: OS encryption unavailable'
+          );
+          Reflect.deleteProperty(allowedUpdates, 'cloud');
+        } else {
+          retainedCloudSecrets = protectedCloud.retained;
+        }
       }
       const updatedConfig = updateConfig(allowedUpdates);
 
@@ -637,7 +767,8 @@ export function init() {
       return getSettingsUiConfig(currentConfig, false);
     }
 
-    currentConfig = { ...DEFAULT_SETTINGS };
+    currentConfig = createDefaultSettings();
+    retainedCloudSecrets = { restHeaders: [] };
     saveConfig(currentConfig);
     configUpdateListeners.forEach(listener => listener(currentConfig));
     applyTitleBarAppearance(currentConfig.appearance);
@@ -674,8 +805,14 @@ export function init() {
   ipcMain.handle(
     'wallpaper:addBackground',
     (_event, background: CustomBackground) => {
-      const wallpaper = currentConfig.wallpaper;
-      wallpaper.customBackgrounds.push(background);
+      const persistedBackground = persistCustomBackground(background);
+      const wallpaper = {
+        ...currentConfig.wallpaper,
+        customBackgrounds: [
+          ...currentConfig.wallpaper.customBackgrounds,
+          persistedBackground,
+        ],
+      };
       updateConfig({ wallpaper });
       return wallpaper.customBackgrounds;
     }
@@ -684,30 +821,43 @@ export function init() {
   ipcMain.handle(
     'wallpaper:updateBackground',
     (_event, background: CustomBackground) => {
-      const wallpaper = currentConfig.wallpaper;
-      const index = wallpaper.customBackgrounds.findIndex(
-        b => b.id === background.id
-      );
-      if (index !== -1) {
-        wallpaper.customBackgrounds[index] = background;
-        updateConfig({ wallpaper });
+      if (
+        !currentConfig.wallpaper.customBackgrounds.some(
+          item => item.id === background.id
+        )
+      ) {
+        return currentConfig.wallpaper.customBackgrounds;
       }
+
+      const persistedBackground = persistCustomBackground(background);
+      const wallpaper = {
+        ...currentConfig.wallpaper,
+        customBackgrounds: currentConfig.wallpaper.customBackgrounds.map(
+          item => (item.id === background.id ? persistedBackground : item)
+        ),
+      };
+      updateConfig({ wallpaper });
       return wallpaper.customBackgrounds;
     }
   );
 
   ipcMain.handle('wallpaper:deleteBackground', (_event, id: string) => {
-    const wallpaper = currentConfig.wallpaper;
-    wallpaper.customBackgrounds = wallpaper.customBackgrounds.filter(
-      b => b.id !== id
-    );
+    const wallpaper = {
+      ...currentConfig.wallpaper,
+      customBackgrounds: currentConfig.wallpaper.customBackgrounds.filter(
+        background => background.id !== id
+      ),
+    };
     updateConfig({ wallpaper });
     return wallpaper.customBackgrounds;
   });
 
   ipcMain.handle('wallpaper:addPreset', (_event, preset: WallpaperPreset) => {
-    const wallpaper = currentConfig.wallpaper;
-    wallpaper.presets.push(preset);
+    const persistedPreset = persistWallpaperPreset(preset);
+    const wallpaper = {
+      ...currentConfig.wallpaper,
+      presets: [...currentConfig.wallpaper.presets, persistedPreset],
+    };
     updateConfig({ wallpaper });
     return wallpaper.presets;
   });
@@ -715,30 +865,47 @@ export function init() {
   ipcMain.handle(
     'wallpaper:updatePreset',
     (_event, preset: WallpaperPreset) => {
-      const wallpaper = currentConfig.wallpaper;
-      const index = wallpaper.presets.findIndex(p => p.id === preset.id);
-      if (index !== -1) {
-        wallpaper.presets[index] = preset;
-        updateConfig({ wallpaper });
+      if (
+        !currentConfig.wallpaper.presets.some(item => item.id === preset.id)
+      ) {
+        return currentConfig.wallpaper.presets;
       }
+
+      const persistedPreset = persistWallpaperPreset(preset);
+      const wallpaper = {
+        ...currentConfig.wallpaper,
+        presets: currentConfig.wallpaper.presets.map(item =>
+          item.id === preset.id ? persistedPreset : item
+        ),
+      };
+      updateConfig({ wallpaper });
       return wallpaper.presets;
     }
   );
 
   ipcMain.handle('wallpaper:deletePreset', (_event, id: string) => {
-    const wallpaper = currentConfig.wallpaper;
-    wallpaper.presets = wallpaper.presets.filter(p => p.id !== id);
-    if (wallpaper.defaultPresetId === id) {
-      wallpaper.defaultPresetId = null;
-    }
+    const wallpaper = {
+      ...currentConfig.wallpaper,
+      presets: currentConfig.wallpaper.presets.filter(
+        preset => preset.id !== id
+      ),
+      defaultPresetId:
+        currentConfig.wallpaper.defaultPresetId === id
+          ? null
+          : currentConfig.wallpaper.defaultPresetId,
+    };
     updateConfig({ wallpaper });
     return wallpaper.presets;
   });
 
   ipcMain.handle('wallpaper:setDefaultPreset', (_event, id: string | null) => {
-    const wallpaper = currentConfig.wallpaper;
-    wallpaper.defaultPresetId =
-      id && wallpaper.presets.some(p => p.id === id) ? id : null;
+    const wallpaper = {
+      ...currentConfig.wallpaper,
+      defaultPresetId:
+        id && currentConfig.wallpaper.presets.some(preset => preset.id === id)
+          ? id
+          : null,
+    };
     updateConfig({ wallpaper });
     return wallpaper.defaultPresetId;
   });
@@ -750,7 +917,16 @@ export function init() {
         filters: [
           {
             name: 'Images',
-            extensions: ['png', 'jpg', 'jpeg', 'svg', 'webp'],
+            extensions: [
+              'png',
+              'jpg',
+              'jpeg',
+              'jfif',
+              'svg',
+              'webp',
+              'gif',
+              'bmp',
+            ],
           },
         ],
       });
@@ -759,23 +935,7 @@ export function init() {
         return null;
       }
 
-      const filePath = result.filePaths[0];
-      const imageBuffer = fs.readFileSync(filePath);
-      const ext = path.extname(filePath).toLowerCase();
-
-      const mimeType =
-        ext === '.png'
-          ? 'image/png'
-          : ext === '.jpg' || ext === '.jpeg'
-            ? 'image/jpeg'
-            : ext === '.svg'
-              ? 'image/svg+xml'
-              : ext === '.webp'
-                ? 'image/webp'
-                : 'image/png';
-
-      const base64 = imageBuffer.toString('base64');
-      return `data:${mimeType};base64,${base64}`;
+      return pathToFileURL(result.filePaths[0]).href;
     } catch (error) {
       console.error('Failed to select image:', error);
       return null;

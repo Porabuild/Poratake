@@ -10,9 +10,6 @@ const mockGetHistoryItemByPath = vi.fn();
 const mockDeleteHistoryItem = vi.fn();
 const mockGetConfig = vi.fn();
 const mockDeleteThumbnail = vi.fn();
-const mockDeleteCursorData = vi.fn();
-const mockDeleteCameraData = vi.fn();
-const mockDeleteKeyboardData = vi.fn();
 
 vi.mock('fs', () => ({
   default: {
@@ -55,18 +52,6 @@ vi.mock('@/main/settings', () => ({
 
 vi.mock('@/main/utils/thumbnails.ts', () => ({
   deleteThumbnail: (...a: unknown[]) => mockDeleteThumbnail(...a),
-}));
-
-vi.mock('@/main/capture/video/cursor-data.ts', () => ({
-  deleteCursorData: (...a: unknown[]) => mockDeleteCursorData(...a),
-}));
-
-vi.mock('@/main/capture/video/camera-data.ts', () => ({
-  deleteCameraData: (...a: unknown[]) => mockDeleteCameraData(...a),
-}));
-
-vi.mock('@/main/capture/video/keyboard-data.ts', () => ({
-  deleteKeyboardData: (...a: unknown[]) => mockDeleteKeyboardData(...a),
 }));
 
 describe('delete-video', () => {
@@ -122,6 +107,17 @@ describe('delete-video', () => {
       expect(mockNotificationShow).toHaveBeenCalled();
     });
 
+    it('reports a history-backed deletion failure', async () => {
+      mockGetHistoryItemByPath.mockReturnValue({ id: 'h1' });
+      mockDeleteHistoryItem.mockResolvedValue(false);
+      mockShowMessageBox.mockResolvedValue({ response: 0 });
+      const { deleteVideo } = await import('@/main/capture/video/delete-video');
+
+      expect(await deleteVideo('/p/video.mov')).toBe(false);
+      expect(mockShowMessageBox).toHaveBeenCalled();
+      expect(mockNotificationShow).not.toHaveBeenCalled();
+    });
+
     it('skips notification when disabled in config', async () => {
       mockGetConfig.mockReturnValue({
         general: { showDeletionNotifications: false },
@@ -156,14 +152,20 @@ describe('delete-video', () => {
 
     it('falls back to unlinking legacy video file', async () => {
       mockGetHistoryItemByPath.mockReturnValue(null);
-      mockExistsSync.mockReturnValueOnce(true).mockReturnValue(false);
+      mockExistsSync.mockReturnValue(true);
       const { deleteVideo } = await import('@/main/capture/video/delete-video');
       const result = await deleteVideo('/p/video.mov');
       expect(result).toBe(true);
-      expect(mockUnlinkSync).toHaveBeenCalledWith('/p/video.mov');
-      expect(mockDeleteCursorData).toHaveBeenCalledWith('/p/video.mov');
-      expect(mockDeleteCameraData).toHaveBeenCalledWith('/p/video.mov');
-      expect(mockDeleteKeyboardData).toHaveBeenCalledWith('/p/video.mov');
+      expect(mockUnlinkSync.mock.calls.map(([filePath]) => filePath)).toEqual([
+        '/p/video.mov',
+        '/p/video.system.m4a',
+        '/p/video.mic.m4a',
+        '/p/video.cursor.json',
+        '/p/video.mouse.json',
+        '/p/video.camera.json',
+        '/p/video.camera.mov',
+        '/p/video.keys.json',
+      ]);
     });
 
     it('returns false when legacy file does not exist', async () => {
@@ -171,6 +173,22 @@ describe('delete-video', () => {
       mockExistsSync.mockReturnValue(false);
       const { deleteVideo } = await import('@/main/capture/video/delete-video');
       expect(await deleteVideo('/p/video.mov')).toBe(false);
+    });
+
+    it('returns true when a legacy sidecar cannot be deleted', async () => {
+      mockGetHistoryItemByPath.mockReturnValue(null);
+      mockExistsSync.mockReturnValue(true);
+      mockUnlinkSync.mockImplementation(filePath => {
+        if (filePath === '/p/video.cursor.json') {
+          throw new Error('locked');
+        }
+      });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { deleteVideo } = await import('@/main/capture/video/delete-video');
+
+      expect(await deleteVideo('/p/video.mov')).toBe(true);
+
+      warnSpy.mockRestore();
     });
 
     it('shows error dialog on rm failure when enabled', async () => {

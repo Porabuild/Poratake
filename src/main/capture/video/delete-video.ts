@@ -1,15 +1,13 @@
 import { dialog, Notification, BrowserWindow } from 'electron';
-import { existsSync, unlinkSync, rmSync } from 'fs';
+import { existsSync } from 'fs';
 import {
   getHistoryItemByPath,
   deleteHistoryItem,
 } from '@/main/history/index.ts';
 import { getConfig } from '@/main/settings';
 import { deleteThumbnail } from '@/main/utils/thumbnails.ts';
-import { deleteCursorData } from './cursor-data.ts';
-import { deleteCameraData } from './camera-data.ts';
-import { deleteKeyboardData } from './keyboard-data.ts';
 import {
+  deleteRecordingAssets,
   getProjectFolder,
   getRecordingVideoPath,
 } from './recording-project.ts';
@@ -60,6 +58,11 @@ export async function deleteVideo(
       if (deleted && showNotification) {
         showDeletionNotification();
       }
+      if (!deleted && showErrorDialog) {
+        await showDeletionErrorDialog(
+          new Error('The recording file could not be deleted')
+        );
+      }
       return deleted;
     }
 
@@ -94,7 +97,7 @@ async function deleteVideoFileManually(
       const videoPath = getRecordingVideoPath(projectFolder);
       deleteThumbnail(videoPath);
 
-      rmSync(projectFolder, { recursive: true, force: true });
+      deleteRecordingAssets(filePath);
       console.log('Project folder deleted:', projectFolder);
 
       if (showNotification) {
@@ -117,21 +120,10 @@ async function deleteVideoFileManually(
   }
 
   try {
-    unlinkSync(filePath);
+    deleteRecordingAssets(filePath);
     console.log('Video deleted:', filePath);
 
     deleteThumbnail(filePath);
-
-    await deleteCursorData(filePath);
-
-    await deleteCameraData(filePath);
-
-    await deleteKeyboardData(filePath);
-
-    const mouseDataPath = filePath.replace(/\.mov$/, '.mouse.json');
-    if (existsSync(mouseDataPath)) {
-      unlinkSync(mouseDataPath);
-    }
 
     if (showNotification) {
       showDeletionNotification();

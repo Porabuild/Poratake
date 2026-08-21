@@ -1,6 +1,6 @@
 export { isRecording, quitRecorder } from './recorder.ts';
 export { killAreaSelector } from '@/main/capture/area-selector';
-export {
+import {
   stopRecordingAction,
   recordArea,
   recordScreen,
@@ -9,8 +9,21 @@ export {
 
 import { registerRecordingIpcHandlers } from './recording-ipc.ts';
 import { registerCameraPreviewIpcHandlers } from './camera-preview.ts';
+import { initVideoEditor } from './video-editor.ts';
+import { setRecordingTrayStopHandler } from '@/main/menu/recording-tray.ts';
 
-registerRecordingIpcHandlers();
-registerCameraPreviewIpcHandlers();
+let initialized = false;
 
-export { recordArea as default } from './recording-actions.ts';
+export function init(): void {
+  if (initialized) {
+    return;
+  }
+  initialized = true;
+  registerRecordingIpcHandlers();
+  registerCameraPreviewIpcHandlers();
+  initVideoEditor();
+  setRecordingTrayStopHandler(stopRecordingAction);
+}
+
+export { stopRecordingAction, recordArea, recordScreen, recordWindow };
+export { recordArea as default };

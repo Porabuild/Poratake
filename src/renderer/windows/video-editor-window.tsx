@@ -86,6 +86,7 @@ import {
   getContentPlaybackState,
   getFileNameFromPath,
   getProjectPath,
+  remapProjectFileUrl,
   timelineToVideo,
   toFileUrl,
 } from '@/renderer/components/video-editor/utils';
@@ -182,6 +183,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     setAspectRatio: setWallpaperAspectRatio,
     setDeviceFrame: setWallpaperDeviceFrame,
   } = useVideoWallpaper(history.wallpaper);
+  const setWallpaperWithoutHistory = history.wallpaper.setWithoutHistory;
 
   const videoExport = useVideoExport();
   const [uploadToCloud, setUploadToCloud] = useState(false);
@@ -491,11 +493,25 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
         return result.error ?? 'Failed to rename project';
       }
 
+      const backgroundImage = wallpaper.backgroundImage;
+      if (backgroundImage) {
+        const remappedImage = remapProjectFileUrl(
+          backgroundImage,
+          filePath,
+          result.newVideoPath
+        );
+        if (remappedImage !== backgroundImage) {
+          setWallpaperWithoutHistory(previous => ({
+            ...previous,
+            backgroundImage: remappedImage,
+          }));
+        }
+      }
       setFilePath(result.newVideoPath);
       setVideoSrc(toFileUrl(result.newVideoPath));
       return null;
     },
-    []
+    [filePath, setWallpaperWithoutHistory, wallpaper.backgroundImage]
   );
 
   const handleReset = useCallback(async () => {

@@ -16,10 +16,7 @@ export default function ScrollCaptureControlWindow() {
   useEffect(() => {
     const handleUpdate = (_event: unknown, update: ScrollCaptureOverlayState) =>
       setState(update);
-    window.ipcRenderer.on('scroll-capture:update', handleUpdate);
-    return () => {
-      window.ipcRenderer.off('scroll-capture:update', handleUpdate);
-    };
+    return window.ipcRenderer.on('scroll-capture:update', handleUpdate);
   }, []);
 
   const sendAction = useCallback((action: ScrollCaptureAction) => {

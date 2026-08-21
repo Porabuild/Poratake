@@ -52,7 +52,10 @@ async function muxAudio(
     onProgress?.(percent);
   };
 
-  window.ipcRenderer.on('video-editor:mux-audio:progress', listener);
+  const unsubscribe = window.ipcRenderer.on(
+    'video-editor:mux-audio:progress',
+    listener
+  );
 
   try {
     return (await window.ipcRenderer.invoke('video-editor:mux-audio', {
@@ -63,7 +66,7 @@ async function muxAudio(
       durationSeconds,
     })) as { success: boolean; error?: string };
   } finally {
-    window.ipcRenderer.off('video-editor:mux-audio:progress', listener);
+    unsubscribe();
   }
 }
 

@@ -3,6 +3,7 @@ import {
   getContentPlaybackState,
   getFileNameFromPath,
   getProjectPath,
+  remapProjectFileUrl,
   toFileUrl,
 } from '@/renderer/components/video-editor/utils';
 import { getKeyboardDownEventsForPlaybackInterval } from '@/renderer/components/video-editor/hooks/use-keyboard-sound';
@@ -147,5 +148,28 @@ describe('getProjectPath', () => {
     expect(getProjectPath(null)).toBe('');
     expect(getProjectPath(undefined)).toBe('');
     expect(getProjectPath('')).toBe('');
+  });
+});
+
+describe('remapProjectFileUrl', () => {
+  it('moves a project-local asset with a renamed Windows project', () => {
+    expect(
+      remapProjectFileUrl(
+        'file:///C:/Videos/Old.poratake/.wallpaper-asset-image.jpg',
+        'C:\\Videos\\Old.poratake\\recording.mov',
+        'C:\\Videos\\New.poratake\\recording.mov'
+      )
+    ).toBe('file:///C:/Videos/New.poratake/.wallpaper-asset-image.jpg');
+  });
+
+  it('does not move an external wallpaper', () => {
+    const wallpaper = 'file:///C:/Wallpapers/image.jpg';
+    expect(
+      remapProjectFileUrl(
+        wallpaper,
+        'C:\\Videos\\Old.poratake\\recording.mov',
+        'C:\\Videos\\New.poratake\\recording.mov'
+      )
+    ).toBe(wallpaper);
   });
 });

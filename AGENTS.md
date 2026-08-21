@@ -12,10 +12,10 @@ Windows native functionality is provided by the Rust daemon in `src/main/daemon-
 Write tests for new features and bug fixes according to the following configuration:
 
 - **Main**: Vitest - Use `bun run test`
-- **Renderer**: Not implemented yet
+- **Renderer**: Vitest tests live in `tests/renderer/`
 - **Coverage**: `bun run test:coverage` - reports in `coverage/` folder
 
-Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config), class-based mocks for constructors, dynamic imports (await import()) after vi.resetModules() to get fresh module instances with updated mocks, and are organized in src/main/**tests**/unit/ or src/main/**tests**/integration/ - run with bun run test
+Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config), class-based mocks for constructors, dynamic imports (await import()) after vi.resetModules() to get fresh module instances with updated mocks, and are organized in `tests/unit/`, `tests/integration/`, and `tests/renderer/` - run with bun run test
 
 ## Code Style
 

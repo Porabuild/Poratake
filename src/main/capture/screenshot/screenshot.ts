@@ -349,8 +349,8 @@ export function registerIpcHandlers(): void {
 
     const historyItem = getHistoryItemByPath(filePath);
     if (historyItem) {
-      await deleteHistoryItem(historyItem.id);
-      if (getConfig().general.showDeletionNotifications) {
+      const deleted = await deleteHistoryItem(historyItem.id);
+      if (deleted && getConfig().general.showDeletionNotifications) {
         new Notification({
           title: 'Screenshot Deleted',
           body: 'The screenshot has been permanently deleted.',

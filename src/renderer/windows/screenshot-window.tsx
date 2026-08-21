@@ -177,14 +177,10 @@ export default function ScreenshotWindow({
       setScreenshotSettings(settings);
     };
 
-    window.ipcRenderer.on('screenshot-settings:updated', handleSettingsUpdate);
-
-    return () => {
-      window.ipcRenderer.off(
-        'screenshot-settings:updated',
-        handleSettingsUpdate
-      );
-    };
+    return window.ipcRenderer.on(
+      'screenshot-settings:updated',
+      handleSettingsUpdate
+    );
   }, []);
 
   const lastCropStateRef = useRef<{
@@ -1110,9 +1106,18 @@ export default function ScreenshotWindow({
       await saveScreenshotRef.current();
     };
 
-    window.ipcRenderer.on('screenshot:saved', handleScreenshotSaved);
-    window.ipcRenderer.on('screenshot:copy', handleCopyFromMenu);
-    window.ipcRenderer.on('screenshot:save-and-close', handleSaveAndClose);
+    const unsubscribeSaved = window.ipcRenderer.on(
+      'screenshot:saved',
+      handleScreenshotSaved
+    );
+    const unsubscribeCopy = window.ipcRenderer.on(
+      'screenshot:copy',
+      handleCopyFromMenu
+    );
+    const unsubscribeSaveAndClose = window.ipcRenderer.on(
+      'screenshot:save-and-close',
+      handleSaveAndClose
+    );
 
     const handleKeyDown = async (e: KeyboardEvent) => {
       if (shouldIgnoreGlobalKeyboardShortcuts(e.target)) {
@@ -1168,9 +1173,9 @@ export default function ScreenshotWindow({
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
-      window.ipcRenderer.off('screenshot:saved', handleScreenshotSaved);
-      window.ipcRenderer.off('screenshot:copy', handleCopyFromMenu);
-      window.ipcRenderer.off('screenshot:save-and-close', handleSaveAndClose);
+      unsubscribeSaved();
+      unsubscribeCopy();
+      unsubscribeSaveAndClose();
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, []);

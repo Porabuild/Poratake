@@ -59,12 +59,18 @@ export default function AboutTab() {
       setDownloadProgress(progress);
     };
 
-    window.ipcRenderer.on('update:status-changed', handleStatusChange);
-    window.ipcRenderer.on('update:download-progress', handleProgress);
+    const unsubscribeStatus = window.ipcRenderer.on(
+      'update:status-changed',
+      handleStatusChange
+    );
+    const unsubscribeProgress = window.ipcRenderer.on(
+      'update:download-progress',
+      handleProgress
+    );
 
     return () => {
-      window.ipcRenderer.off('update:status-changed', handleStatusChange);
-      window.ipcRenderer.off('update:download-progress', handleProgress);
+      unsubscribeStatus();
+      unsubscribeProgress();
     };
   }, []);
 
