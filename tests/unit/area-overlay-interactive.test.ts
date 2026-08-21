@@ -716,6 +716,172 @@ describe('interactive area overlay', () => {
     await session;
   });
 
+  it('restores visibility only after every suspension and preserves later intent', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    fire('area-overlay:ready', windowFor(1).webContents.id);
+    await settle();
+    mockDaemonCall.mockClear();
+
+    const restoreFirst = module.suspendOverlayVisibility();
+    const restoreSecond = module.suspendOverlayVisibility();
+    await settle();
+
+    restoreFirst();
+    await settle();
+    expect(
+      mockDaemonCall.mock.calls.some(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toBe(false);
+
+    module.setOverlayVisible(false);
+    restoreSecond();
+    await settle();
+    expect(
+      mockDaemonCall.mock.calls.some(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toBe(false);
+
+    module.setOverlayVisible(true);
+    await settle();
+    expect(
+      mockDaemonCall.mock.calls.some(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toBe(true);
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('does not reveal after a pending region update is suspended', async () => {
+    let resolveRegion!: () => void;
+    mockDaemonCall.mockImplementation(
+      (_module: string, method: string, params: { windowHandle?: string }) => {
+        if (method === 'setWindowRegion') {
+          return new Promise<void>(resolve => {
+            resolveRegion = resolve;
+          });
+        }
+        if (method === 'hideWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = false;
+        }
+        return Promise.resolve({ disabled: true });
+      }
+    );
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    const restore = module.suspendOverlayVisibility();
+    resolveRegion();
+    await settle();
+
+    expect(
+      mockDaemonCall.mock.calls.some(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toBe(false);
+    expect(windowFor(0).visible).toBe(false);
+
+    restore();
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('does not focus or announce after a pending native show is suspended', async () => {
+    let resolveShow!: () => void;
+    mockDaemonCall.mockImplementation(
+      (_module: string, method: string, params: { windowHandle?: string }) => {
+        if (method === 'showWindowWithoutTransitions') {
+          return new Promise<void>(resolve => {
+            resolveShow = resolve;
+          });
+        }
+        if (method === 'hideWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = false;
+        }
+        return Promise.resolve({ disabled: true });
+      }
+    );
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    await settle();
+    const restore = module.suspendOverlayVisibility();
+    resolveShow();
+    await settle();
+
+    expect(windowFor(0).moveTop).not.toHaveBeenCalled();
+    expect(windowFor(0).focus).not.toHaveBeenCalled();
+    expect(windowFor(0).webContents.send).not.toHaveBeenCalledWith(
+      'area-overlay:revealed',
+      expect.any(Number)
+    );
+
+    restore();
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('does not show after visibility is hidden during a pending restore', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({});
+    await settle();
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    await settle();
+    module.setOverlayVisible(false);
+    await settle();
+
+    let resolveRegion!: () => void;
+    mockDaemonCall.mockImplementation(
+      (_module: string, method: string, params: { windowHandle?: string }) => {
+        if (method === 'setWindowRegion') {
+          return new Promise<void>(resolve => {
+            resolveRegion = resolve;
+          });
+        }
+        if (method === 'hideWindowWithoutTransitions') {
+          const window = overlayWindows.find(
+            item => item.webContents.id.toString() === params.windowHandle
+          );
+          if (window) window.visible = false;
+        }
+        return Promise.resolve({ disabled: true });
+      }
+    );
+    mockDaemonCall.mockClear();
+
+    module.setOverlayVisible(true);
+    module.setOverlayVisible(false);
+    resolveRegion();
+    await settle();
+
+    expect(
+      mockDaemonCall.mock.calls.some(
+        ([, method]) => method === 'showWindowWithoutTransitions'
+      )
+    ).toBe(false);
+    expect(windowFor(0).visible).toBe(false);
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
   it('schedules an event loop turn for toolbar actions', async () => {
     const module = await import('@/main/capture/area-overlay');
     const onToolbarAction = vi.fn();

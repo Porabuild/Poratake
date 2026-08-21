@@ -89,15 +89,6 @@ const mockStartPendingRecording = vi.fn();
 const mockCancelPendingRecording = vi.fn();
 const mockStopRecordingAction = vi.fn();
 const mockDeleteRecordingAction = vi.fn();
-const mockRestartRecordingAction = vi.fn();
-
-vi.mock('@/main/capture/video/recording-actions', () => ({
-  startPendingRecording: (...a: unknown[]) => mockStartPendingRecording(...a),
-  cancelPendingRecording: () => mockCancelPendingRecording(),
-  stopRecordingAction: () => mockStopRecordingAction(),
-  deleteRecordingAction: () => mockDeleteRecordingAction(),
-  restartRecordingAction: () => mockRestartRecordingAction(),
-}));
 
 const mockPauseRecording = vi.fn();
 const mockResumeRecording = vi.fn();
@@ -140,7 +131,7 @@ function lastActionHandler(): ActionHandler {
 describe('recording-control', () => {
   const originalPlatform = process.platform;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     Object.defineProperty(process, 'platform', { value: 'darwin' });
     vi.clearAllMocks();
     vi.resetModules();
@@ -150,7 +141,6 @@ describe('recording-control', () => {
     mockStartPendingRecording.mockResolvedValue(undefined);
     mockStopRecordingAction.mockResolvedValue(undefined);
     mockDeleteRecordingAction.mockResolvedValue(undefined);
-    mockRestartRecordingAction.mockResolvedValue(undefined);
     mockPauseRecording.mockResolvedValue(undefined);
     mockResumeRecording.mockResolvedValue(undefined);
     mockShowCameraPreview.mockResolvedValue(undefined);
@@ -175,16 +165,19 @@ describe('recording-control', () => {
         camera: { enabled: false },
       },
     });
+    const recordingControl =
+      await import('@/main/capture/video/recording-control');
+    recordingControl.setRecordingControlActions({
+      startPendingRecording: (...args) => mockStartPendingRecording(...args),
+      cancelPendingRecording: () => mockCancelPendingRecording(),
+      stopRecordingAction: () => mockStopRecordingAction(),
+      deleteRecordingAction: () => mockDeleteRecordingAction(),
+    });
   });
 
   afterEach(() => {
     Object.defineProperty(process, 'platform', { value: originalPlatform });
     vi.resetModules();
-  });
-
-  it('getCurrentRecordingAreaSelection returns null initially', async () => {
-    const m = await import('@/main/capture/video/recording-control');
-    expect(m.getCurrentRecordingAreaSelection()).toBeNull();
   });
 
   it('names the picked window on the control bar', async () => {
@@ -210,12 +203,6 @@ describe('recording-control', () => {
       expect.anything(),
       expect.any(Function)
     );
-    expect(m.getCurrentRecordingAreaSelection()).toEqual({
-      x: 100,
-      y: 100,
-      width: 800,
-      height: 600,
-    });
   });
 
   it('shows the Electron toolbar for the macOS pre-recording panel', async () => {

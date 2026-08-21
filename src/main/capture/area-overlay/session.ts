@@ -92,6 +92,8 @@ interface OverlaySession {
   pickTargets: OverlayPickTarget[] | null;
   prompt: string | null;
   hidden: boolean;
+  requestedVisible: boolean;
+  visibilitySuspensions: number;
   selection: AreaOverlayResult | null;
   pendingPreset: AreaOverlayResult | null;
   freezeSettled: boolean;
@@ -622,9 +624,21 @@ function revealOverlay(
   if (!entry || entry.window.isDestroyed()) return Promise.resolve();
 
   return setOverlayWindowRegion(session, entry).then(() => {
-    if (activeSession !== session || entry.window.isDestroyed()) return;
+    if (
+      activeSession !== session ||
+      session.hidden ||
+      entry.window.isDestroyed()
+    ) {
+      return;
+    }
     return showOverlayWindow(entry).then(() => {
-      if (activeSession !== session || entry.window.isDestroyed()) return;
+      if (
+        activeSession !== session ||
+        session.hidden ||
+        entry.window.isDestroyed()
+      ) {
+        return;
+      }
       entry.window.moveTop();
       focusRevealedOverlay(session, entry);
       entry.window.webContents.send('area-overlay:revealed', session.id);
@@ -1147,10 +1161,11 @@ export function setOverlayToolbar(toolbar: AreaOverlayToolbar | null): void {
   }
 }
 
-export function setOverlayVisible(visible: boolean): void {
-  const session = activeSession;
-  if (!session || session.hidden !== visible) return;
-
+function applyOverlayVisibility(
+  session: OverlaySession,
+  visible: boolean
+): void {
+  if (activeSession !== session || session.hidden !== visible) return;
   session.hidden = !visible;
 
   for (const entry of session.entries) {
@@ -1158,7 +1173,13 @@ export function setOverlayVisible(visible: boolean): void {
 
     if (visible) {
       void setOverlayWindowRegion(session, entry).then(() => {
-        if (activeSession !== session || entry.window.isDestroyed()) return;
+        if (
+          activeSession !== session ||
+          session.hidden ||
+          entry.window.isDestroyed()
+        ) {
+          return;
+        }
         void showOverlayWindow(entry);
       });
       continue;
@@ -1166,6 +1187,38 @@ export function setOverlayVisible(visible: boolean): void {
 
     void concealOverlayWindow(entry.window);
   }
+}
+
+export function setOverlayVisible(visible: boolean): void {
+  const session = activeSession;
+  if (!session) return;
+
+  session.requestedVisible = visible;
+  applyOverlayVisibility(
+    session,
+    visible && session.visibilitySuspensions === 0
+  );
+}
+
+export function suspendOverlayVisibility(): () => void {
+  const session = activeSession;
+  if (!session) return () => {};
+
+  session.visibilitySuspensions += 1;
+  applyOverlayVisibility(session, false);
+
+  let restored = false;
+  return () => {
+    if (restored) return;
+    restored = true;
+    if (activeSession !== session) return;
+
+    session.visibilitySuspensions -= 1;
+    applyOverlayVisibility(
+      session,
+      session.requestedVisible && session.visibilitySuspensions === 0
+    );
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1266,6 +1319,8 @@ export async function startOverlaySession(
       pickTargets: options?.pickTargets ?? null,
       prompt: options?.prompt ?? null,
       hidden: options?.visible === false,
+      requestedVisible: options?.visible !== false,
+      visibilitySuspensions: 0,
       selection: presetSelection(displays, options?.preset),
       pendingPreset: null,
       freezeSettled: !requestedFreeze,

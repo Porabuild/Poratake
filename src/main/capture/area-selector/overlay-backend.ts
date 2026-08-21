@@ -14,6 +14,7 @@ import {
   setOverlayPickTargets,
   setOverlayVisible,
   startInteractiveOverlay,
+  suspendOverlayVisibility,
   updateOverlaySelection,
 } from '@/main/capture/area-overlay';
 import type {
@@ -295,6 +296,10 @@ export async function hideAreaSelector(): Promise<void> {
 
 export async function showAreaSelector(): Promise<void> {
   setOverlayVisible(true);
+}
+
+export function suspendAreaSelector(): () => void {
+  return suspendOverlayVisibility();
 }
 
 export async function updateAreaSelection(

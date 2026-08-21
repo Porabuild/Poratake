@@ -19,6 +19,7 @@ export {
   hasPendingSelection,
   hideAreaSelector,
   showAreaSelector,
+  suspendAreaSelector,
   updateAreaSelection,
   setAreaSelectionMode,
   setAreaSelectorAspectRatio,

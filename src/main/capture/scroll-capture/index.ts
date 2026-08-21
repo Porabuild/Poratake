@@ -36,12 +36,6 @@ import type { AutoScrollSpeed } from '@/types/settings';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import { isWindows } from '@/main/utils/platform';
 
-interface ScrollCaptureState {
-  isCapturing: boolean;
-  frameCount: number;
-  estimatedHeight: number;
-}
-
 let activeCapture: Promise<void> | null = null;
 let cancelActiveCapture: (() => Promise<void>) | null = null;
 
@@ -413,23 +407,6 @@ export async function cancelScrollCapture(): Promise<void> {
     console.error('Failed to cancel scroll capture:', error);
   }
   await cancellation;
-}
-
-export async function getScrollCaptureStatus(): Promise<ScrollCaptureState> {
-  try {
-    const result = await daemon.call<ScrollCaptureState>(
-      'scroll-capture',
-      'status'
-    );
-    return result;
-  } catch (error) {
-    console.error('Failed to get scroll capture status:', error);
-    return {
-      isCapturing: false,
-      frameCount: 0,
-      estimatedHeight: 0,
-    };
-  }
 }
 
 export default startScrollCapture;

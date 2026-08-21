@@ -12,10 +12,7 @@ import type {
   MicrophoneStatus,
   CameraStatus,
 } from '@/types/permissions';
-import {
-  hideAreaSelector,
-  showAreaSelector,
-} from '@/main/capture/area-selector';
+import { suspendAreaSelector } from '@/main/capture/area-selector';
 import { cleanupRecordingUIForMicPermission } from '@/main/capture/video/cleanup';
 import { isMac, isWindows } from '@/main/utils/platform';
 
@@ -40,9 +37,10 @@ export function getCameraStatus(): CameraStatus {
   return systemPreferences.getMediaAccessStatus('camera');
 }
 
-export async function requestMicrophonePermission(): Promise<boolean> {
-  const status = getMicrophoneStatus();
-
+async function requestMediaPermission(
+  mediaType: 'microphone' | 'camera',
+  status: MicrophoneStatus | CameraStatus
+): Promise<boolean> {
   if (status === 'granted') {
     return true;
   }
@@ -59,43 +57,22 @@ export async function requestMicrophonePermission(): Promise<boolean> {
     return false;
   }
 
-  hideAreaSelector();
+  const restoreAreaSelector = suspendAreaSelector();
 
   try {
-    const result = await systemPreferences.askForMediaAccess('microphone');
+    const result = await systemPreferences.askForMediaAccess(mediaType);
     return result;
   } finally {
-    showAreaSelector();
+    restoreAreaSelector();
   }
 }
 
-export async function requestCameraPermission(): Promise<boolean> {
-  const status = getCameraStatus();
+export function requestMicrophonePermission(): Promise<boolean> {
+  return requestMediaPermission('microphone', getMicrophoneStatus());
+}
 
-  if (status === 'granted') {
-    return true;
-  }
-
-  if (status === 'denied' || status === 'restricted') {
-    return false;
-  }
-
-  if (isWindows) {
-    return true;
-  }
-
-  if (!isMac) {
-    return false;
-  }
-
-  hideAreaSelector();
-
-  try {
-    const result = await systemPreferences.askForMediaAccess('camera');
-    return result;
-  } finally {
-    showAreaSelector();
-  }
+export function requestCameraPermission(): Promise<boolean> {
+  return requestMediaPermission('camera', getCameraStatus());
 }
 
 export function checkAccessibility(prompt = false): boolean {

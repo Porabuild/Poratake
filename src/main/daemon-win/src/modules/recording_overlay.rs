@@ -1,7 +1,7 @@
 use super::window_selector::window_bounds;
 use crate::overlay::{
     create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class,
-    monitors, rect_height, rect_width, scale_for_dpi,
+    rect_height, rect_width, scale_for_dpi,
 };
 use crate::protocol::{Request, param_i32, param_i64, param_str, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
@@ -19,15 +19,13 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, DestroyWindow, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
     GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, LWA_ALPHA,
-    OBJID_WINDOW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
-    WDA_EXCLUDEFROMCAPTURE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_PAINT,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    OBJID_WINDOW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetLayeredWindowAttributes,
+    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
-const CLASS_NAME: &str = "PoratakeRecordingOverlay";
 const HIGHLIGHT_CLASS_NAME: &str = "PoratakeRecordingHighlight";
-const DIM_ALPHA: u8 = 128;
 const HIGHLIGHT_THICKNESS: i32 = 1;
 const HIGHLIGHT_GAP: i32 = 1;
 const HIGHLIGHT_RADIUS: i32 = 8;
@@ -46,7 +44,6 @@ struct WindowHighlight {
 }
 
 thread_local! {
-    static WINDOWS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
     static HIGHLIGHT: RefCell<Option<WindowHighlight>> = const { RefCell::new(None) };
     static HIGHLIGHT_COLOR: RefCell<COLORREF> = const { RefCell::new(HIGHLIGHT_FALLBACK) };
 }
@@ -66,20 +63,6 @@ fn parse_color(value: Option<&str>) -> COLORREF {
         (Some(red), Some(green), Some(blue)) => COLORREF((blue << 16) | (green << 8) | red),
         _ => HIGHLIGHT_FALLBACK,
     }
-}
-
-unsafe extern "system" fn wndproc(
-    window: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if message == WM_PAINT {
-        paint(window, COLORREF(0));
-        return LRESULT(0);
-    }
-
-    default_wndproc(window, message, wparam, lparam)
 }
 
 unsafe extern "system" fn highlight_wndproc(
@@ -295,97 +278,7 @@ fn show_window_highlight(
     Ok(true)
 }
 
-fn destroy_all(windows: Vec<HWND>) {
-    for window in windows {
-        unsafe {
-            let _ = DestroyWindow(window);
-        }
-    }
-}
-
-fn intersection(left: &RECT, right: &RECT) -> Option<RECT> {
-    let rect = RECT {
-        left: left.left.max(right.left),
-        top: left.top.max(right.top),
-        right: left.right.min(right.right),
-        bottom: left.bottom.min(right.bottom),
-    };
-
-    if rect_width(&rect) <= 0 || rect_height(&rect) <= 0 {
-        return None;
-    }
-
-    Some(rect)
-}
-
-fn dim_rectangles(monitor: RECT, recording: RECT) -> Vec<RECT> {
-    let Some(hole) = intersection(&monitor, &recording) else {
-        return vec![monitor];
-    };
-
-    let candidates = [
-        RECT {
-            left: monitor.left,
-            top: monitor.top,
-            right: monitor.right,
-            bottom: hole.top,
-        },
-        RECT {
-            left: monitor.left,
-            top: hole.bottom,
-            right: monitor.right,
-            bottom: monitor.bottom,
-        },
-        RECT {
-            left: monitor.left,
-            top: hole.top,
-            right: hole.left,
-            bottom: hole.bottom,
-        },
-        RECT {
-            left: hole.right,
-            top: hole.top,
-            right: monitor.right,
-            bottom: hole.bottom,
-        },
-    ];
-
-    candidates
-        .into_iter()
-        .filter(|rect| rect_width(rect) > 0 && rect_height(rect) > 0)
-        .collect()
-}
-
-fn create_dim_window(rect: &RECT) -> Result<HWND, OverlayWindowError> {
-    let styles =
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT;
-    let window = create_popup_window(CLASS_NAME, styles, rect).ok_or(OverlayWindowError::Create)?;
-
-    let _ = disable_window_transitions(window);
-    unsafe {
-        let _ = SetLayeredWindowAttributes(window, COLORREF(0), DIM_ALPHA, LWA_ALPHA);
-        if SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE).is_err() {
-            let _ = DestroyWindow(window);
-            return Err(OverlayWindowError::ContentProtection);
-        }
-        let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
-        let _ = SetWindowPos(
-            window,
-            Some(HWND_TOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
-    }
-
-    Ok(window)
-}
-
 fn teardown() {
-    destroy_all(WINDOWS.with(|windows| std::mem::take(&mut *windows.borrow_mut())));
-
     let highlight = HIGHLIGHT.with(|state| state.borrow_mut().take());
     let Some(highlight) = highlight else {
         return;
@@ -394,34 +287,6 @@ fn teardown() {
         let _ = UnhookWinEvent(highlight.hook);
         let _ = DestroyWindow(highlight.frame);
     }
-}
-
-fn show_overlay(recording: RECT) -> Result<bool, OverlayWindowError> {
-    teardown();
-    ensure_window_class(CLASS_NAME, Some(wndproc), None);
-
-    let mut windows = Vec::new();
-    for monitor in monitors() {
-        for rect in dim_rectangles(monitor.rect, recording) {
-            match create_dim_window(&rect) {
-                Ok(window) => windows.push(window),
-                Err(error) => {
-                    for window in windows {
-                        unsafe {
-                            let _ = DestroyWindow(window);
-                        }
-                    }
-                    return Err(error);
-                }
-            }
-        }
-    }
-
-    let visible = !windows.is_empty();
-    WINDOWS.with(|state| {
-        *state.borrow_mut() = windows;
-    });
-    Ok(visible)
 }
 
 pub struct RecordingOverlayModule;
@@ -440,18 +305,14 @@ impl Module for RecordingOverlayModule {
     fn handle(&mut self, request: &Request) -> Reply {
         match request.method.as_str() {
             "show" => {
-                let Some(x) = param_i32(&request.params, "x") else {
+                if param_i32(&request.params, "x").is_none()
+                    || param_i32(&request.params, "y").is_none()
+                {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
                         "show requires x, y, width, height".to_string(),
                     )));
-                };
-                let Some(y) = param_i32(&request.params, "y") else {
-                    return Reply::Now(Err((
-                        "INVALID_PARAMS".to_string(),
-                        "show requires x, y, width, height".to_string(),
-                    )));
-                };
+                }
                 let Some(width) = param_i32(&request.params, "width") else {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
@@ -474,31 +335,8 @@ impl Module for RecordingOverlayModule {
 
                 let request_id = request.id.clone();
                 run_on_ui(move || {
-                    let result = show_overlay(RECT {
-                        left: x,
-                        top: y,
-                        right: x.saturating_add(width),
-                        bottom: y.saturating_add(height),
-                    });
-                    match result {
-                        Ok(shown) => {
-                            respond_success(&request_id, json!({ "visible": shown }));
-                        }
-                        Err(OverlayWindowError::Create) => {
-                            respond_error(
-                                &request_id,
-                                "WINDOW_ERROR",
-                                "Failed to create recording overlay window",
-                            );
-                        }
-                        Err(OverlayWindowError::ContentProtection) => {
-                            respond_error(
-                                &request_id,
-                                "CONTENT_PROTECTION_ERROR",
-                                "Failed to protect recording overlay window",
-                            );
-                        }
-                    }
+                    teardown();
+                    respond_success(&request_id, json!({ "visible": false }));
                 });
                 Reply::Deferred
             }

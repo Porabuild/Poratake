@@ -43,8 +43,6 @@ class ScrollCaptureModule: Module {
             handleFinish(params: params, requestId: requestId)
         case "cancel":
             handleCancel(requestId: requestId)
-        case "status":
-            handleStatus(requestId: requestId)
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -168,16 +166,6 @@ class ScrollCaptureModule: Module {
             self.emit(event: "cancelled")
             self.respond(id: requestId, result: ["cancelled": true])
         }
-    }
-
-    private func handleStatus(requestId: String) {
-        let estimatedHeight = calculateEstimatedHeight()
-        respond(id: requestId, result: [
-            "isCapturing": isCapturing,
-            "isAutoScrolling": isAutoScrolling,
-            "frameCount": capturedFrames.count,
-            "estimatedHeight": estimatedHeight
-        ])
     }
 
     private func startAutoScroll() {

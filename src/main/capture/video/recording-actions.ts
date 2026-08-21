@@ -61,6 +61,7 @@ import { generateInitialEditorState } from './auto-zoom-generator.ts';
 import type {
   CompletedRecording,
   RecordingConfig,
+  RecordingOptions,
   RecordingType,
 } from '@/types/video.ts';
 import { isFeatureSupported } from '@/main/system/capabilities';
@@ -133,19 +134,6 @@ function clearSelectedIOSDevice(): void {
   });
 }
 
-export interface RecordingOptions {
-  systemAudio?: boolean;
-  micEnabled?: boolean;
-  micDeviceId?: string | null;
-  micDeviceName?: string | null;
-  cameraEnabled?: boolean;
-  cameraDeviceId?: string | null;
-  cameraDeviceName?: string | null;
-  keyboardEnabled?: boolean;
-  iosDeviceId?: string | null;
-  iosDeviceName?: string | null;
-}
-
 async function handleTerminalRecordingFailure(
   error: Error,
   outputPath: string | null
@@ -172,6 +160,14 @@ function stopRecordingWhenTargetClosed(): void {
   void stopRecordingAction();
 }
 
+async function teardownActiveRecordingPresentation(): Promise<void> {
+  currentRecordingType = undefined;
+  concealAreaSelectorOverlay();
+  await disableCameraContentProtection();
+  hideCameraPreview();
+  await hideRecordingControl();
+}
+
 async function stopAndFinalizeRecording(): Promise<string | null> {
   if (pendingStartAction) {
     await pendingStartAction;
@@ -186,11 +182,7 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
     disposeRecordingPreviewPreparation();
     throw error;
   } finally {
-    currentRecordingType = undefined;
-    concealAreaSelectorOverlay();
-    await disableCameraContentProtection();
-    hideCameraPreview();
-    await hideRecordingControl();
+    await teardownActiveRecordingPresentation();
   }
 
   let previewPreparation = takeRecordingPreviewPreparation();
@@ -567,11 +559,7 @@ async function deleteActiveRecording(): Promise<void> {
   } catch (error) {
     stopError = error;
   } finally {
-    currentRecordingType = undefined;
-    concealAreaSelectorOverlay();
-    await disableCameraContentProtection();
-    hideCameraPreview();
-    await hideRecordingControl();
+    await teardownActiveRecordingPresentation();
   }
 
   if (currentPath) {

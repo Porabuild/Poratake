@@ -45,6 +45,19 @@ export interface RecordingConfig {
   iosDeviceName?: string | null;
 }
 
+export interface RecordingOptions {
+  systemAudio?: boolean;
+  micEnabled?: boolean;
+  micDeviceId?: string | null;
+  micDeviceName?: string | null;
+  cameraEnabled?: boolean;
+  cameraDeviceId?: string | null;
+  cameraDeviceName?: string | null;
+  keyboardEnabled?: boolean;
+  iosDeviceId?: string | null;
+  iosDeviceName?: string | null;
+}
+
 export type RecorderState = 'idle' | 'recording' | 'paused';
 
 export type RecordingType = 'ios-device';
