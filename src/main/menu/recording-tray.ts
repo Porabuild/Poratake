@@ -1,12 +1,17 @@
-import { app, Tray, nativeImage } from 'electron';
+import { app, nativeTheme, Tray } from 'electron';
 import path from 'path';
 import { isProduction } from '@/main/utils/env.ts';
 import { getPublicAssetPath } from '@/main/utils/paths.ts';
 import { isWindows } from '@/main/utils/platform.ts';
 import { stopRecordingAction } from '@/main/capture/video';
 import { rebuildTrayMenu } from './index.ts';
+import { createTrayIcon } from './tray-icon.ts';
 
 let recordingTray: Tray | null = null;
+
+function updateRecordingTrayIcon(): void {
+  recordingTray?.setImage(createTrayIcon(getRecordingTrayIconPath()));
+}
 
 function getRecordingTrayIconPath(): string {
   if (isWindows) {
@@ -42,23 +47,18 @@ export function showRecordingTray(): void {
     return;
   }
 
-  const iconPath = getRecordingTrayIconPath();
-  const icon = nativeImage.createFromPath(iconPath);
-  const trayIcon =
-    isWindows && !icon.isEmpty()
-      ? icon.resize({ width: 16, height: 16 })
-      : icon;
-
-  recordingTray = new Tray(trayIcon);
+  recordingTray = new Tray(createTrayIcon(getRecordingTrayIconPath()));
   recordingTray.setToolTip('Click to stop recording');
   recordingTray.setIgnoreDoubleClickEvents(true);
 
   recordingTray.on('click', handleStopRecording);
   recordingTray.on('right-click', handleStopRecording);
+  nativeTheme.on('updated', updateRecordingTrayIcon);
 }
 
 export function hideRecordingTray(): void {
   if (recordingTray) {
+    nativeTheme.off('updated', updateRecordingTrayIcon);
     recordingTray.destroy();
     recordingTray = null;
   }

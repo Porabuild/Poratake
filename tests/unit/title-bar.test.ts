@@ -134,7 +134,9 @@ describe('title-bar', () => {
   });
 
   it('resolves the surface colors from the active theme', async () => {
-    const { titleBarColors } = await loadTitleBar('win32');
+    const { titleBarColors, applyTitleBarAppearance } =
+      await loadTitleBar('win32');
+    applyTitleBarAppearance({ mode: 'system', theme: 'default' });
 
     expect(titleBarColors('card')).toEqual({
       color: '#0e0e14',
@@ -153,7 +155,9 @@ describe('title-bar', () => {
   });
 
   it('reapplies the Windows overlay on show and on theme changes', async () => {
-    const { trackTitleBarTheme } = await loadTitleBar('win32');
+    const { trackTitleBarTheme, applyTitleBarAppearance } =
+      await loadTitleBar('win32');
+    applyTitleBarAppearance({ mode: 'system', theme: 'default' });
     const window = fakeWindow();
 
     trackTitleBarTheme(window as never, { surface: 'background', height: 32 });
@@ -195,11 +199,39 @@ describe('title-bar', () => {
 
     applyTitleBarAppearance({ mode: 'dark', theme: 'github' });
 
-    expect(nativeTheme.themeSource).toBe('dark');
     expect(titleBarColors('card')).toEqual({
       color: '#161b22',
       symbolColor: '#e6edf3',
     });
+  });
+
+  it('keeps the Windows native theme on system so tray surfaces follow the OS', async () => {
+    const { applyTitleBarAppearance } = await loadTitleBar('win32');
+
+    applyTitleBarAppearance({ mode: 'dark', theme: 'default' });
+
+    expect(nativeTheme.themeSource).toBe('system');
+  });
+
+  it('follows the app mode for the Windows overlay even when the system is light', async () => {
+    const { applyTitleBarAppearance, titleBarColors } =
+      await loadTitleBar('win32');
+
+    nativeTheme.shouldUseDarkColors = false;
+    applyTitleBarAppearance({ mode: 'dark', theme: 'default' });
+
+    expect(titleBarColors('card')).toEqual({
+      color: '#0e0e14',
+      symbolColor: '#fafafa',
+    });
+  });
+
+  it('syncs the macOS native theme with the app mode', async () => {
+    const { applyTitleBarAppearance } = await loadTitleBar('darwin');
+
+    applyTitleBarAppearance({ mode: 'dark', theme: 'github' });
+
+    expect(nativeTheme.themeSource).toBe('dark');
   });
 
   it('stops listening once the window is closed', async () => {

@@ -1,16 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'events';
 
-const mockResize = vi.fn(() => ({ resized: true }));
+const mockResize = vi.fn(() => ({
+  getSize: () => ({ width: 16, height: 16 }),
+  toBitmap: () => Buffer.alloc(16 * 16 * 4, 255),
+}));
 const mockNativeImageCreateFromPath = vi.fn(() => ({
   isEmpty: () => false,
   resize: (...a: unknown[]) => mockResize(...a),
 }));
 const mockStopRecordingAction = vi.fn();
 const mockRebuildTrayMenu = vi.fn();
+const nativeTheme = Object.assign(new EventEmitter(), {
+  shouldUseDarkColors: true,
+});
 
 const trayInstances: MockTray[] = [];
 
 class MockTray {
+  setImage = vi.fn();
   setToolTip = vi.fn();
   setIgnoreDoubleClickEvents = vi.fn();
   destroy = vi.fn();
@@ -29,8 +37,10 @@ class MockTray {
 vi.mock('electron', () => ({
   Tray: MockTray,
   app: { getAppPath: () => '/app' },
+  nativeTheme,
   nativeImage: {
     createFromPath: (...a: unknown[]) => mockNativeImageCreateFromPath(...a),
+    createFromBuffer: () => ({ isEmpty: () => false }),
   },
 }));
 
@@ -52,6 +62,7 @@ describe('recording-tray', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    nativeTheme.removeAllListeners();
     trayInstances.splice(0);
   });
 
@@ -73,6 +84,15 @@ describe('recording-tray', () => {
     showRecordingTray();
     showRecordingTray();
     expect(trayInstances.length).toBe(1);
+  });
+
+  it('updates the icon when the system theme changes', async () => {
+    const { showRecordingTray } = await import('@/main/menu/recording-tray');
+    showRecordingTray();
+
+    nativeTheme.emit('updated');
+
+    expect(trayInstances[0].setImage).toHaveBeenCalledTimes(1);
   });
 
   it('clicking the tray stops recording and rebuilds menu', async () => {
@@ -112,6 +132,7 @@ describe('recording-tray', () => {
     showRecordingTray();
     hideRecordingTray();
     expect(trayInstances[0].destroy).toHaveBeenCalled();
+    expect(nativeTheme.listenerCount('updated')).toBe(0);
   });
 
   it('hideRecordingTray is safe when no tray exists', async () => {
