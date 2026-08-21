@@ -10,6 +10,8 @@ const mockShell = { openExternal: vi.fn() };
 const mockDialog = { showMessageBox: vi.fn() };
 const mockDesktopCapturer = { getSources: vi.fn().mockResolvedValue([]) };
 const mockBrowserWindow = { getFocusedWindow: vi.fn(() => null) };
+const mockRestoreAreaSelector = vi.fn();
+const mockSuspendAreaSelector = vi.fn(() => mockRestoreAreaSelector);
 
 type IpcHandler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, IpcHandler> = {};
@@ -37,8 +39,7 @@ vi.mock('@/main/capture/video/cleanup', () => ({
 }));
 
 vi.mock('@/main/capture/area-selector', () => ({
-  hideAreaSelector: vi.fn(),
-  showAreaSelector: vi.fn(),
+  suspendAreaSelector: mockSuspendAreaSelector,
 }));
 
 describe('permissions camera + extras', () => {
@@ -93,6 +94,24 @@ describe('permissions camera + extras', () => {
       expect(mockSystemPreferences.askForMediaAccess).toHaveBeenCalledWith(
         'camera'
       );
+      expect(mockSuspendAreaSelector).toHaveBeenCalledOnce();
+      expect(mockRestoreAreaSelector).toHaveBeenCalledOnce();
+    });
+
+    it('restores the suspended selector when the request fails', async () => {
+      mockSystemPreferences.getMediaAccessStatus.mockReturnValue(
+        'not-determined'
+      );
+      mockSystemPreferences.askForMediaAccess.mockRejectedValue(
+        new Error('permission failed')
+      );
+      const { requestCameraPermission } =
+        await import('@/main/system/permissions');
+
+      await expect(requestCameraPermission()).rejects.toThrow(
+        'permission failed'
+      );
+      expect(mockRestoreAreaSelector).toHaveBeenCalledOnce();
     });
 
     it('allows native Windows capture to trigger first camera access', async () => {

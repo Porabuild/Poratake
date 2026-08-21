@@ -1,3 +1,4 @@
+use super::camera_devices::{enumerate_cameras, select_camera};
 use crate::com::{MtaInterface, retain_process_mta};
 use crate::overlay::{
     create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class, monitors,
@@ -18,19 +19,13 @@ use windows::Win32::Graphics::Gdi::{
     SetStretchBltMode, SetWindowRgn, StretchDIBits,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFMediaSource, IMFSample, IMFSourceReader,
-    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
-    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-    MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION, MFCreateAttributes, MFCreateMediaType,
-    MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFMediaType_Video, MFSTARTUP_FULL,
-    MFShutdown, MFStartup, MFVideoFormat_RGB32,
+    IMFMediaSource, IMFSample, IMFSourceReader, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
+    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
+    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION,
+    MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromMediaSource, MFMediaType_Video,
+    MFSTARTUP_FULL, MFShutdown, MFStartup, MFVideoFormat_RGB32,
 };
-use windows::Win32::System::Com::{
-    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
-};
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, GetClientRect, GetWindowRect, HTCAPTION, HWND_TOPMOST, LWA_ALPHA, PostMessageW,
@@ -39,7 +34,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_DPICHANGED, WM_EXITSIZEMOVE, WM_NCHITTEST, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
-use windows::core::PWSTR;
 
 const CLASS_NAME: &str = "PoratakeCameraPreview";
 const PREVIEW_SIZE: i32 = 230;
@@ -559,98 +553,6 @@ fn teardown_window(runtime: &CameraRuntime, generation: u64) -> bool {
     true
 }
 
-fn attribute_string(attributes: &IMFAttributes, key: &windows::core::GUID) -> Option<String> {
-    let mut value = PWSTR::null();
-    let mut length = 0;
-    if unsafe { attributes.GetAllocatedString(key, &mut value, &mut length) }.is_err() {
-        return None;
-    }
-    if value.is_null() {
-        return None;
-    }
-    let text =
-        unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(value.0, length as usize)) };
-    unsafe {
-        CoTaskMemFree(Some(value.0.cast()));
-    }
-    Some(text)
-}
-
-fn camera_activations() -> Result<Vec<IMFActivate>, String> {
-    let mut attributes = None;
-    unsafe { MFCreateAttributes(&mut attributes, 1) }.map_err(|error| error.to_string())?;
-    let attributes =
-        attributes.ok_or_else(|| "Media Foundation attributes unavailable".to_string())?;
-    unsafe {
-        attributes.SetGUID(
-            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
-        )
-    }
-    .map_err(|error| error.to_string())?;
-
-    let mut raw = std::ptr::null_mut();
-    let mut count = 0;
-    unsafe { MFEnumDeviceSources(&attributes, &mut raw, &mut count) }
-        .map_err(|error| error.to_string())?;
-    if raw.is_null() || count == 0 {
-        return Ok(Vec::new());
-    }
-    let entries = unsafe { std::slice::from_raw_parts_mut(raw, count as usize) };
-    let mut sources = Vec::with_capacity(count as usize);
-    for entry in entries {
-        if let Some(source) = unsafe { std::ptr::read(entry) } {
-            sources.push(source);
-        }
-    }
-    unsafe {
-        CoTaskMemFree(Some(raw.cast()));
-    }
-    Ok(sources)
-}
-
-fn select_camera(config: &CameraConfig) -> Result<IMFActivate, String> {
-    let sources = camera_activations()?;
-    if sources.is_empty() {
-        return Err("No camera found".to_string());
-    }
-
-    if let Some(device_id) = config.device_id.as_deref() {
-        if let Some(source) = sources.iter().find(|source| {
-            attribute_string(
-                source,
-                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-            )
-            .as_deref()
-                == Some(device_id)
-        }) {
-            return Ok(source.clone());
-        }
-    }
-
-    if let Some(device_name) = config.device_name.as_deref() {
-        if let Some(source) = sources.iter().find(|source| {
-            attribute_string(source, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME).as_deref()
-                == Some(device_name)
-        }) {
-            return Ok(source.clone());
-        }
-        let needle = device_name.to_lowercase();
-        if let Some(source) = sources.iter().find(|source| {
-            attribute_string(source, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
-                .map(|name| {
-                    let name = name.to_lowercase();
-                    name.contains(&needle) || needle.contains(&name)
-                })
-                .unwrap_or(false)
-        }) {
-            return Ok(source.clone());
-        }
-    }
-
-    Ok(sources[0].clone())
-}
-
 fn requested_size(resolution: &str) -> (u32, u32) {
     match resolution {
         "1080p" => (1920, 1080),
@@ -703,7 +605,13 @@ fn capture_loop(
     }
 
     let result = (|| -> Result<(IMFMediaSource, IMFSourceReader, i32, i32), String> {
-        let activate = select_camera(&config)?;
+        let selected = select_camera(
+            enumerate_cameras()?,
+            config.device_id.as_deref(),
+            config.device_name.as_deref(),
+        )
+        .map_err(|error| error.to_string())?;
+        let activate = selected.activation;
         let source: IMFMediaSource =
             unsafe { activate.ActivateObject() }.map_err(|error| error.to_string())?;
         let mut attributes = None;

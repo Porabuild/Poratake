@@ -5,6 +5,10 @@ const mockRegisterCameraPreview = vi.fn();
 const mockInitVideoEditor = vi.fn();
 const mockSetRecordingTrayStopHandler = vi.fn();
 const mockStopRecordingAction = vi.fn();
+const mockStartPendingRecording = vi.fn();
+const mockCancelPendingRecording = vi.fn();
+const mockDeleteRecordingAction = vi.fn();
+const mockSetRecordingControlActions = vi.fn();
 
 vi.mock('@/main/capture/video/recorder.ts', () => ({
   isRecording: vi.fn(),
@@ -16,10 +20,18 @@ vi.mock('@/main/capture/area-selector', () => ({
 }));
 
 vi.mock('@/main/capture/video/recording-actions.ts', () => ({
+  startPendingRecording: mockStartPendingRecording,
+  cancelPendingRecording: mockCancelPendingRecording,
   stopRecordingAction: mockStopRecordingAction,
+  deleteRecordingAction: mockDeleteRecordingAction,
   recordArea: vi.fn(),
   recordScreen: vi.fn(),
   recordWindow: vi.fn(),
+}));
+
+vi.mock('@/main/capture/video/recording-control.ts', () => ({
+  setRecordingControlActions: (...args: unknown[]) =>
+    mockSetRecordingControlActions(...args),
 }));
 
 vi.mock('@/main/capture/video/recording-ipc.ts', () => ({
@@ -56,6 +68,12 @@ describe('video index', () => {
     expect(mockRegisterRecording).toHaveBeenCalledOnce();
     expect(mockRegisterCameraPreview).toHaveBeenCalledOnce();
     expect(mockInitVideoEditor).toHaveBeenCalledOnce();
+    expect(mockSetRecordingControlActions).toHaveBeenCalledWith({
+      startPendingRecording: mockStartPendingRecording,
+      cancelPendingRecording: mockCancelPendingRecording,
+      stopRecordingAction: mockStopRecordingAction,
+      deleteRecordingAction: mockDeleteRecordingAction,
+    });
     expect(mockSetRecordingTrayStopHandler).toHaveBeenCalledWith(
       mockStopRecordingAction
     );

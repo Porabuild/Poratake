@@ -8,12 +8,6 @@ import {
   updateCameraPreviewPosition,
   enableCameraContentProtection,
 } from './camera-preview';
-import {
-  startPendingRecording,
-  cancelPendingRecording,
-  stopRecordingAction,
-  deleteRecordingAction,
-} from './recording-actions';
 import { pauseRecording, resumeRecording } from './recorder';
 import {
   checkAndRequestCameraPermission,
@@ -43,7 +37,7 @@ import {
   DEFAULT_ALL_IN_ONE_CONFIG,
   type CameraSettings,
 } from '@/types/settings';
-import type { RecordingConfig } from '@/types/video';
+import type { RecordingConfig, RecordingOptions } from '@/types/video';
 
 let timerInterval: NodeJS.Timeout | null = null;
 let recordingStartTime: number | null = null;
@@ -52,15 +46,24 @@ let isPaused: boolean = false;
 let currentMode: RecordingControlMode = 'pre-recording';
 let recordingTarget: string | null = null;
 
-let currentAreaSelection: {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-} | null = null;
+interface RecordingActions {
+  startPendingRecording: (options: RecordingOptions) => Promise<void>;
+  cancelPendingRecording: () => Promise<void>;
+  stopRecordingAction: () => Promise<string | null>;
+  deleteRecordingAction: () => Promise<void>;
+}
 
-export function getCurrentRecordingAreaSelection() {
-  return currentAreaSelection;
+let recordingActions: RecordingActions | null = null;
+
+export function setRecordingControlActions(actions: RecordingActions): void {
+  recordingActions = actions;
+}
+
+function getRecordingActions(): RecordingActions {
+  if (!recordingActions) {
+    throw new Error('Recording control actions are not initialized');
+  }
+  return recordingActions;
 }
 
 const CONTROL_TOP_MARGIN = 24;
@@ -236,7 +239,7 @@ async function handleEvent(event: string, data?: EventData): Promise<void> {
       await handleStart();
       break;
     case 'recording-control:cancel':
-      handleCancel();
+      await handleCancel();
       break;
     case 'recording-control:pause':
       await handlePause();
@@ -506,7 +509,7 @@ async function handleStart(): Promise<void> {
       isStarting: true,
       isPaused: false,
     });
-    await startPendingRecording({
+    await getRecordingActions().startPendingRecording({
       systemAudio: settings.systemAudio,
       micEnabled: settings.micEnabled,
       micDeviceId: settings.micEnabled ? settings.selectedMicId : null,
@@ -530,8 +533,8 @@ async function handleStart(): Promise<void> {
   }
 }
 
-function handleCancel(): void {
-  cancelPendingRecording();
+async function handleCancel(): Promise<void> {
+  await getRecordingActions().cancelPendingRecording();
 }
 
 async function handlePause(): Promise<void> {
@@ -545,11 +548,11 @@ async function handleResume(): Promise<void> {
 }
 
 async function handleStop(): Promise<void> {
-  await stopRecordingAction();
+  await getRecordingActions().stopRecordingAction();
 }
 
 async function handleDelete(): Promise<void> {
-  await deleteRecordingAction();
+  await getRecordingActions().deleteRecordingAction();
 }
 
 async function handleSelectIOSDevice(
@@ -738,7 +741,6 @@ export function showPreRecordingControl(
   targetName?: string,
   options?: { preferenceScope?: 'global' | 'all-in-one' }
 ): void {
-  currentAreaSelection = area || null;
   recordingTarget = targetName ?? null;
   currentMode = 'pre-recording';
 
@@ -799,8 +801,6 @@ export function updateRecordingControlPosition(area: {
   width: number;
   height: number;
 }): void {
-  currentAreaSelection = area;
-
   if (getRecordingSettings().cameraEnabled) {
     void updateCameraPreviewPosition(
       calculateCameraPreviewPosition(area)
@@ -827,7 +827,6 @@ export async function hidePreRecordingControl(
     stopActiveCountdown('cancelled');
   }
 
-  currentAreaSelection = null;
   recordingTarget = null;
   currentMode = 'pre-recording';
 
@@ -882,7 +881,6 @@ export async function hideRecordingControl(): Promise<void> {
   recordingSession = null;
   allInOneRecordingPreferences = null;
 
-  currentAreaSelection = null;
   recordingTarget = null;
   currentMode = 'pre-recording';
 

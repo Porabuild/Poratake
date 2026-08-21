@@ -77,7 +77,6 @@ export const DAEMON_METHODS = {
     'stopAutoScroll',
     'finish',
     'cancel',
-    'status',
   ],
   'timer-control': ['show', 'hide'],
   'window-selector': ['list'],

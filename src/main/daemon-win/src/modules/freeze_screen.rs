@@ -95,7 +95,11 @@ fn cursor_monitor_handle() -> Option<isize> {
     Some(monitor.0 as isize)
 }
 
-fn create_overlays() {
+fn is_frozen(captured_frames: usize) -> bool {
+    captured_frames > 0
+}
+
+fn create_overlays() -> bool {
     teardown();
 
     ensure_window_class(CLASS_NAME, Some(wndproc), None);
@@ -155,6 +159,7 @@ fn create_overlays() {
         captured_at = started.elapsed();
     }
 
+    let frozen = is_frozen(stored.len());
     store_frozen(stored);
 
     if crate::desktop_frame::capture_timing_enabled() {
@@ -166,6 +171,8 @@ fn create_overlays() {
             total
         );
     }
+
+    frozen
 }
 
 fn teardown() {
@@ -233,8 +240,8 @@ impl Module for FreezeScreenModule {
                 let request_id = request.id.clone();
 
                 run_on_ui(move || {
-                    create_overlays();
-                    if watch_space_key {
+                    let is_frozen = create_overlays();
+                    if watch_space_key && is_frozen {
                         if let Err(message) = start_space_key_watch(frozen.clone()) {
                             teardown();
                             frozen.store(false, Ordering::SeqCst);
@@ -242,8 +249,8 @@ impl Module for FreezeScreenModule {
                             return;
                         }
                     }
-                    frozen.store(true, Ordering::SeqCst);
-                    respond_success(&request_id, json!({ "frozen": true }));
+                    frozen.store(is_frozen, Ordering::SeqCst);
+                    respond_success(&request_id, json!({ "frozen": is_frozen }));
                 });
 
                 Reply::Deferred
@@ -266,5 +273,20 @@ impl Module for FreezeScreenModule {
             }
             method => method_not_found(method),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_capture_is_not_frozen() {
+        assert!(!is_frozen(0));
+    }
+
+    #[test]
+    fn captured_frame_is_frozen() {
+        assert!(is_frozen(1));
     }
 }

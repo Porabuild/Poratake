@@ -157,36 +157,6 @@ describe('scroll-capture', () => {
     });
   });
 
-  describe('getScrollCaptureStatus', () => {
-    it('returns daemon status', async () => {
-      mockDaemonCall.mockResolvedValue({
-        isCapturing: true,
-        frameCount: 5,
-        estimatedHeight: 1000,
-      });
-      const { getScrollCaptureStatus } =
-        await import('@/main/capture/scroll-capture');
-      const status = await getScrollCaptureStatus();
-      expect(status).toEqual({
-        isCapturing: true,
-        frameCount: 5,
-        estimatedHeight: 1000,
-      });
-    });
-
-    it('returns default status on daemon error', async () => {
-      mockDaemonCall.mockRejectedValue(new Error('boom'));
-      const { getScrollCaptureStatus } =
-        await import('@/main/capture/scroll-capture');
-      const status = await getScrollCaptureStatus();
-      expect(status).toEqual({
-        isCapturing: false,
-        frameCount: 0,
-        estimatedHeight: 0,
-      });
-    });
-  });
-
   describe('startScrollCapture', () => {
     it('hides desktop icons when configured', async () => {
       mockGetConfig.mockReturnValue({

@@ -32,6 +32,7 @@ export {
   setOverlayPickTargets,
   setOverlayToolbar,
   setOverlayVisible,
+  suspendOverlayVisibility,
   updateOverlaySelection,
 } from './session';
 

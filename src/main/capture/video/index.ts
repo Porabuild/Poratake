@@ -1,11 +1,15 @@
 export { isRecording, quitRecorder } from './recorder.ts';
 export { killAreaSelector } from '@/main/capture/area-selector';
 import {
+  cancelPendingRecording,
+  deleteRecordingAction,
+  startPendingRecording,
   stopRecordingAction,
   recordArea,
   recordScreen,
   recordWindow,
 } from './recording-actions.ts';
+import { setRecordingControlActions } from './recording-control.ts';
 
 import { registerRecordingIpcHandlers } from './recording-ipc.ts';
 import { registerCameraPreviewIpcHandlers } from './camera-preview.ts';
@@ -19,6 +23,12 @@ export function init(): void {
     return;
   }
   initialized = true;
+  setRecordingControlActions({
+    startPendingRecording,
+    cancelPendingRecording,
+    stopRecordingAction,
+    deleteRecordingAction,
+  });
   registerRecordingIpcHandlers();
   registerCameraPreviewIpcHandlers();
   initVideoEditor();

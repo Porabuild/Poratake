@@ -1,3 +1,4 @@
+use super::camera_devices::{enumerate_cameras, select_camera};
 use super::recorder_types::{RecorderError, StagedAsset};
 use crate::com::retain_process_mta;
 use serde::Serialize;
@@ -10,25 +11,20 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFByteStream, IMFMediaEvent, IMFMediaSource, IMFMediaType,
-    IMFSample, IMFSinkWriter, IMFSourceReader, IMFSourceReaderCallback,
-    IMFSourceReaderCallback_Impl, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_ALL_SAMPLES_INDEPENDENT,
-    MF_MT_AVG_BITRATE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
-    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO,
-    MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
-    MF_SINK_WRITER_DISABLE_THROTTLING, MF_SOURCE_READER_ASYNC_CALLBACK,
-    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION,
-    MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-    MFCreateSinkWriterFromURL, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources,
-    MFMediaType_Video, MFSTARTUP_FULL, MFShutdown, MFStartup, MFVideoFormat_H264,
-    MFVideoFormat_RGB32, MFVideoInterlace_Progressive,
+    IMFAttributes, IMFByteStream, IMFMediaEvent, IMFMediaSource, IMFMediaType, IMFSample,
+    IMFSinkWriter, IMFSourceReader, IMFSourceReaderCallback, IMFSourceReaderCallback_Impl,
+    MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE,
+    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE,
+    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_DISABLE_THROTTLING,
+    MF_SOURCE_READER_ASYNC_CALLBACK, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
+    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED,
+    MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION, MFCreateAttributes, MFCreateMediaType,
+    MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL,
+    MFCreateSourceReaderFromMediaSource, MFMediaType_Video, MFSTARTUP_FULL, MFShutdown, MFStartup,
+    MFVideoFormat_H264, MFVideoFormat_RGB32, MFVideoInterlace_Progressive,
 };
-use windows::Win32::System::Com::{
-    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
-};
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows::core::{PCWSTR, implement};
 
 const CAMERA_VIDEO_NAME: &str = "camera.mov";
@@ -659,7 +655,12 @@ impl CameraRuntime {
         config: CameraRecordingConfig,
         events: Sender<WorkerEvent>,
     ) -> Result<Self, RecorderError> {
-        let selected = select_camera(config.device_id.as_deref(), config.device_name.as_deref())?;
+        let selected = select_camera(
+            enumerate_cameras().map_err(RecorderError::configuration)?,
+            config.device_id.as_deref(),
+            config.device_name.as_deref(),
+        )
+        .map_err(|error| RecorderError::configuration(error.to_string()))?;
         let source: IMFMediaSource =
             unsafe { selected.activation.ActivateObject() }.map_err(|error| {
                 RecorderError::configuration(format!("Failed to open camera: {error}"))
@@ -1188,143 +1189,6 @@ impl Drop for PartialAssetGuard {
             let _ = std::fs::remove_file(&self.path);
         }
     }
-}
-
-struct CameraDevice {
-    activation: IMFActivate,
-    id: String,
-    name: String,
-}
-
-fn select_camera(
-    requested_id: Option<&str>,
-    requested_name: Option<&str>,
-) -> Result<CameraDevice, RecorderError> {
-    let mut devices = enumerate_cameras()?;
-    if devices.is_empty() {
-        return Err(RecorderError::configuration("No camera device found"));
-    }
-    let requested_id = requested_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let requested_name = requested_name
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    if let Some(requested_id) = requested_id {
-        if let Some(index) = devices
-            .iter()
-            .position(|device| device.id.eq_ignore_ascii_case(requested_id))
-        {
-            return Ok(devices.swap_remove(index));
-        }
-    }
-
-    if let Some(requested_name) = requested_name {
-        let exact: Vec<usize> = devices
-            .iter()
-            .enumerate()
-            .filter_map(|(index, device)| {
-                device
-                    .name
-                    .eq_ignore_ascii_case(requested_name)
-                    .then_some(index)
-            })
-            .collect();
-        if exact.len() == 1 {
-            return Ok(devices.swap_remove(exact[0]));
-        }
-        if exact.len() > 1 {
-            return Err(RecorderError::configuration(
-                "Multiple cameras have the selected name; select a device ID",
-            ));
-        }
-
-        let needle = requested_name.to_lowercase();
-        let partial: Vec<usize> = devices
-            .iter()
-            .enumerate()
-            .filter_map(|(index, device)| {
-                let name = device.name.to_lowercase();
-                (name.contains(&needle) || needle.contains(&name)).then_some(index)
-            })
-            .collect();
-        if partial.len() == 1 {
-            return Ok(devices.swap_remove(partial[0]));
-        }
-        if partial.len() > 1 {
-            return Err(RecorderError::configuration(
-                "The selected camera name matches multiple devices",
-            ));
-        }
-    }
-
-    if requested_id.is_some() || requested_name.is_some() {
-        return Err(RecorderError::configuration(
-            "The selected camera is no longer available",
-        ));
-    }
-    Ok(devices.swap_remove(0))
-}
-
-fn enumerate_cameras() -> Result<Vec<CameraDevice>, RecorderError> {
-    let attributes = create_attributes(1)?;
-    unsafe {
-        attributes
-            .SetGUID(
-                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
-            )
-            .map_err(mf_error)?;
-    }
-    let mut raw = std::ptr::null_mut();
-    let mut count = 0;
-    unsafe { MFEnumDeviceSources(&attributes, &mut raw, &mut count) }.map_err(|error| {
-        RecorderError::configuration(format!("Failed to enumerate cameras: {error}"))
-    })?;
-    if count == 0 {
-        if !raw.is_null() {
-            unsafe {
-                CoTaskMemFree(Some(raw.cast()));
-            }
-        }
-        return Ok(Vec::new());
-    }
-    if raw.is_null() {
-        return Err(RecorderError::configuration(
-            "Camera enumeration returned an invalid device list",
-        ));
-    }
-    let entries = unsafe { std::slice::from_raw_parts_mut(raw, count as usize) };
-    let mut devices = Vec::with_capacity(count as usize);
-    for entry in entries {
-        let Some(activation) = (unsafe { std::ptr::read(entry) }) else {
-            continue;
-        };
-        let name = attribute_string(&activation, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
-            .unwrap_or_else(|| "Camera".to_string());
-        let id = attribute_string(
-            &activation,
-            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-        )
-        .unwrap_or_default();
-        devices.push(CameraDevice {
-            activation,
-            id,
-            name,
-        });
-    }
-    unsafe {
-        CoTaskMemFree(Some(raw.cast()));
-    }
-    Ok(devices)
-}
-
-fn attribute_string(activate: &IMFActivate, key: &windows::core::GUID) -> Option<String> {
-    let length = unsafe { activate.GetStringLength(key) }.ok()?;
-    let mut buffer = vec![0; length as usize + 1];
-    unsafe { activate.GetString(key, &mut buffer, None) }.ok()?;
-    Some(String::from_utf16_lossy(&buffer[..length as usize]))
 }
 
 #[derive(Clone, Copy)]

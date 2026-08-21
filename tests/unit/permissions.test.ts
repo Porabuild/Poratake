@@ -54,8 +54,7 @@ vi.mock('@/main/capture/video/cleanup', () => ({
 }));
 
 vi.mock('@/main/capture/area-selector', () => ({
-  hideAreaSelector: vi.fn(),
-  showAreaSelector: vi.fn(),
+  suspendAreaSelector: vi.fn(() => vi.fn()),
 }));
 
 describe('Permissions', () => {

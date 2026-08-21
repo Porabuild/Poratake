@@ -1758,22 +1758,6 @@ impl ScrollCaptureModule {
         }
         Reply::Now(Ok(Some(json!({ "cancelled": true }))))
     }
-
-    fn status(&self) -> Reply {
-        let Ok(state) = self.state.lock() else {
-            return Reply::Now(Err((
-                "INTERNAL_ERROR".to_string(),
-                "Scroll capture state poisoned".to_string(),
-            )));
-        };
-        let estimated_height = logical_height(state.estimated_height, state.scale_factor);
-        Reply::Now(Ok(Some(json!({
-            "isCapturing": state.is_capturing,
-            "isAutoScrolling": state.is_auto_scrolling,
-            "frameCount": state.frames.len(),
-            "estimatedHeight": estimated_height,
-        }))))
-    }
 }
 
 impl Module for ScrollCaptureModule {
@@ -1788,7 +1772,6 @@ impl Module for ScrollCaptureModule {
             "stopAutoScroll" => self.stop_auto_scroll(request),
             "finish" => self.finish(request),
             "cancel" => self.cancel(),
-            "status" => self.status(),
             method => method_not_found(method),
         }
     }

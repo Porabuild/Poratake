@@ -1,4 +1,5 @@
 pub mod area_selector;
+pub mod camera_devices;
 pub mod camera_preview;
 pub mod desktop_helper;
 pub mod desktop_wallpaper;
