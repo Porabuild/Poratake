@@ -24,7 +24,6 @@ const CLEARTYPE_QUALITY: u8 = 5;
 pub struct MonitorEntry {
     pub handle: isize,
     pub rect: RECT,
-    pub work_rect: RECT,
     pub is_primary: bool,
     pub device: String,
     pub device_number: i32,
@@ -157,7 +156,6 @@ pub fn monitors() -> Vec<MonitorEntry> {
             entries.push(MonitorEntry {
                 handle: monitor.0 as isize,
                 rect: info.monitorInfo.rcMonitor,
-                work_rect: info.monitorInfo.rcWork,
                 is_primary: (info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
                 device,
                 device_number,

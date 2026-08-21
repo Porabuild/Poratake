@@ -6,6 +6,7 @@ import type {
   DaemonMessage,
   DaemonEventHandler,
   PendingRequest,
+  DaemonCallArguments,
 } from '@/types/daemon';
 import { isDaemonEvent, isDaemonResponse } from '@/types/daemon';
 import { getNativeBinaryPath } from '@/main/utils/paths';
@@ -61,12 +62,8 @@ class NativeDaemon extends EventEmitter {
     this.cleanup();
   }
 
-  async call<T = unknown>(
-    module: string,
-    method: string,
-    params?: Record<string, unknown>,
-    timeout = REQUEST_TIMEOUT
-  ): Promise<T> {
+  async call<T = unknown>(...args: DaemonCallArguments): Promise<T> {
+    const [module, method, params, timeout = REQUEST_TIMEOUT] = args;
     if (!this.isSupported) {
       throw new Error(
         `Daemon not supported on this platform: ${module}.${method}`

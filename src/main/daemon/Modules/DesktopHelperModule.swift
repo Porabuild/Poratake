@@ -12,8 +12,6 @@ class DesktopHelperModule: Module {
             handleHide(requestId: requestId)
         case "show":
             handleShow(requestId: requestId)
-        case "status":
-            handleStatus(requestId: requestId)
         default:
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
@@ -33,10 +31,6 @@ class DesktopHelperModule: Module {
             self.removeOverlays()
             self.respond(id: requestId, result: ["hidden": false])
         }
-    }
-    
-    private func handleStatus(requestId: String) {
-        respond(id: requestId, result: ["hidden": !overlayWindows.isEmpty])
     }
     
     private func captureDesktopImage(for screen: NSScreen) -> NSImage? {

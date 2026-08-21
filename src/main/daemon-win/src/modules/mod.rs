@@ -1,4 +1,3 @@
-pub mod all_in_one;
 pub mod area_selector;
 pub mod camera_preview;
 pub mod desktop_helper;

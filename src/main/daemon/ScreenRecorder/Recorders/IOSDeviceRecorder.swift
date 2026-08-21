@@ -22,7 +22,6 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var systemAudioSessionStarted = false
     private var systemAudioInputConfigured = false
     private var firstMicTime: CMTime?
-    private var micMuted = false
     private let micQueue = DispatchQueue(label: "com.porabuild.poratake.ios-recorder.mic")
 
     private let cameraRecorder = CameraRecorder()
@@ -659,14 +658,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         guard let micAudioInput = micAudioInput, micAudioInput.isReadyForMoreMediaData else { return }
         guard videoFrameCount > 0 else { return }
 
-        let sourceBuffer: CMSampleBuffer
-        if micMuted, let mutedBuffer = createMutedSampleBuffer(from: sampleBuffer) {
-            sourceBuffer = mutedBuffer
-        } else {
-            sourceBuffer = sampleBuffer
-        }
-
-        let micTime = CMSampleBufferGetPresentationTimeStamp(sourceBuffer)
+        let micTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         if firstMicTime == nil {
             firstMicTime = micTime
@@ -686,7 +678,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             adjustedTime = maxTime
         }
 
-        if let adjustedBuffer = createAdjustedSampleBuffer(sourceBuffer, newTime: adjustedTime) {
+        if let adjustedBuffer = createAdjustedSampleBuffer(sampleBuffer, newTime: adjustedTime) {
             if micAudioAssetWriter?.status == .writing {
                 micAudioInput.append(adjustedBuffer)
             }
@@ -819,91 +811,6 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         return status == noErr ? newBuffer : nil
     }
 
-    private func createMutedSampleBuffer(from originalBuffer: CMSampleBuffer) -> CMSampleBuffer? {
-        guard let formatDescription = CMSampleBufferGetFormatDescription(originalBuffer),
-              let originalBlockBuffer = CMSampleBufferGetDataBuffer(originalBuffer) else {
-            return nil
-        }
-
-        var totalLength: Int = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-
-        let getStatus = CMBlockBufferGetDataPointer(
-            originalBlockBuffer,
-            atOffset: 0,
-            lengthAtOffsetOut: nil,
-            totalLengthOut: &totalLength,
-            dataPointerOut: &dataPointer
-        )
-
-        guard getStatus == kCMBlockBufferNoErr, totalLength > 0 else {
-            return nil
-        }
-
-        var newBlockBuffer: CMBlockBuffer?
-        var status = CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault,
-            memoryBlock: nil,
-            blockLength: totalLength,
-            blockAllocator: kCFAllocatorDefault,
-            customBlockSource: nil,
-            offsetToData: 0,
-            dataLength: totalLength,
-            flags: kCMBlockBufferAssureMemoryNowFlag,
-            blockBufferOut: &newBlockBuffer
-        )
-
-        guard status == kCMBlockBufferNoErr, let silentBlock = newBlockBuffer else {
-            return nil
-        }
-
-        status = CMBlockBufferFillDataBytes(with: 0, blockBuffer: silentBlock, offsetIntoDestination: 0, dataLength: totalLength)
-        guard status == kCMBlockBufferNoErr else {
-            return nil
-        }
-
-        let numSamples = CMSampleBufferGetNumSamples(originalBuffer)
-        let duration = CMSampleBufferGetDuration(originalBuffer)
-        let presentationTime = CMSampleBufferGetPresentationTimeStamp(originalBuffer)
-
-        var timing = CMSampleTimingInfo(
-            duration: duration,
-            presentationTimeStamp: presentationTime,
-            decodeTimeStamp: .invalid
-        )
-
-        var sampleSizeArray: [Int] = []
-        for i in 0..<numSamples {
-            sampleSizeArray.append(CMSampleBufferGetSampleSize(originalBuffer, at: i))
-        }
-
-        var newSampleBuffer: CMSampleBuffer?
-        status = CMSampleBufferCreate(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: silentBlock,
-            dataReady: true,
-            makeDataReadyCallback: nil,
-            refcon: nil,
-            formatDescription: formatDescription,
-            sampleCount: numSamples,
-            sampleTimingEntryCount: 1,
-            sampleTimingArray: &timing,
-            sampleSizeEntryCount: sampleSizeArray.count,
-            sampleSizeArray: sampleSizeArray,
-            sampleBufferOut: &newSampleBuffer
-        )
-
-        guard status == noErr else {
-            return nil
-        }
-
-        return newSampleBuffer
-    }
-
-    func setMicMuted(_ muted: Bool) {
-        micMuted = muted
-    }
-
     private func waitForPendingSamples() {
         videoQueue.sync {}
         audioQueue.sync {}
@@ -930,7 +837,6 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         micAudioSessionStarted = false
         systemAudioSessionStarted = false
         systemAudioInputConfigured = false
-        micMuted = false
         cameraEnabled = false
 
         assetWriter = nil

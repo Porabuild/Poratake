@@ -264,9 +264,6 @@ impl Module for FreezeScreenModule {
 
                 Reply::Deferred
             }
-            "status" => Reply::Now(Ok(Some(
-                json!({ "frozen": self.frozen.load(Ordering::SeqCst) }),
-            ))),
             method => method_not_found(method),
         }
     }

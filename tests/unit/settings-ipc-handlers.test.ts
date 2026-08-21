@@ -20,6 +20,7 @@ const mockCopyFileSync = vi.fn();
 const mockDaemonCall = vi.fn();
 const mockFromWebContents = vi.fn();
 const mockIsSettingsWindowWebContents = vi.fn();
+const mockSetLoginItemSettings = vi.fn();
 const mockSafeStorage = {
   isEncryptionAvailable: vi.fn(() => true),
   encryptString: vi.fn((value: string) => Buffer.from(`encrypted:${value}`)),
@@ -31,7 +32,8 @@ const mockSafeStorage = {
 vi.mock('electron', () => ({
   app: {
     on: vi.fn(),
-    setLoginItemSettings: vi.fn(),
+    setLoginItemSettings: (...args: unknown[]) =>
+      mockSetLoginItemSettings(...args),
     isPackaged: false,
     getVersion: () => '1.0.0',
     getPath: (name: string) => {
@@ -148,9 +150,40 @@ describe('settings IPC handlers', () => {
     });
 
     it('resets to defaults', async () => {
-      await loadAndInit();
-      const result = ipcHandle['settings:reset']({ sender: {} });
-      expect(result).toBeDefined();
+      const settings = await loadAndInit();
+      const { DEFAULT_SETTINGS } = await import('@/types/settings');
+      settings.updateConfig({ screenshot: { format: 'jpeg' } });
+      const notified: unknown[] = [];
+      settings.onConfigUpdated(updates => notified.push(updates));
+      mockSetLoginItemSettings.mockClear();
+
+      const result = ipcHandle['settings:reset']({ sender: {} }) as Record<
+        string,
+        unknown
+      >;
+
+      expect(settings.getConfig().screenshot.format).toBe(
+        DEFAULT_SETTINGS.screenshot.format
+      );
+      expect(result.screenshot).toEqual(DEFAULT_SETTINGS.screenshot);
+      expect(notified).toHaveLength(1);
+      expect(mockSetLoginItemSettings).toHaveBeenCalledWith({
+        openAtLogin: DEFAULT_SETTINGS.general.startOnLogin,
+      });
+    });
+
+    it('does not let other renderer windows reset settings', async () => {
+      const settings = await loadAndInit();
+      settings.updateConfig({ screenshot: { format: 'jpeg' } });
+      mockIsSettingsWindowWebContents.mockReturnValue(false);
+
+      const result = ipcHandle['settings:reset']({ sender: {} }) as Record<
+        string,
+        unknown
+      >;
+
+      expect(settings.getConfig().screenshot.format).toBe('jpeg');
+      expect(result).not.toHaveProperty('wallpaper');
     });
 
     it('hides cloud credentials from other renderer windows', async () => {

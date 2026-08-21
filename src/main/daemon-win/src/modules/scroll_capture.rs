@@ -140,8 +140,8 @@ struct CapturedFrame {
 }
 
 enum CaptureOutcome {
-    Added(usize),
-    Repeated(usize),
+    Added,
+    Repeated,
     Ended,
     NoOverlap,
 }
@@ -743,23 +743,6 @@ fn teardown_ui() {
     }
 }
 
-fn set_ui_visible(visible: bool) {
-    let (boundary, panel) = UI_STATE.with(|ui| {
-        let ui = ui.borrow();
-        (ui.boundary, ui.panel)
-    });
-    let command = if visible { SW_SHOWNOACTIVATE } else { SW_HIDE };
-
-    unsafe {
-        if let Some(boundary) = boundary {
-            let _ = ShowWindow(boundary, command);
-        }
-        if let Some(panel) = panel {
-            let _ = ShowWindow(panel, command);
-        }
-    }
-}
-
 fn start_auto_scroll_ui(state: &Arc<Mutex<CaptureState>>) -> Result<(), (String, String)> {
     let running_interval = {
         let state = state.lock().map_err(|_| {
@@ -828,7 +811,7 @@ fn start_auto_scroll_ui(state: &Arc<Mutex<CaptureState>>) -> Result<(), (String,
         state.scroll_steps_per_frame = plan.wheel_detents;
 
         match capture_current_frame(&mut state) {
-            Ok(CaptureOutcome::Added(_) | CaptureOutcome::Repeated(_)) => {}
+            Ok(CaptureOutcome::Added | CaptureOutcome::Repeated) => {}
             Ok(CaptureOutcome::Ended) => {
                 state.stop_auto_scroll();
                 return Err((
@@ -918,7 +901,7 @@ fn auto_scroll_tick() {
         if state.capture_on_next_tick {
             state.capture_on_next_tick = false;
             match capture_current_frame(&mut state) {
-                Ok(CaptureOutcome::Added(_)) => {
+                Ok(CaptureOutcome::Added) => {
                     let estimated_height =
                         logical_height(state.estimated_height, state.scale_factor);
                     if estimated_height >= state.max_height {
@@ -938,7 +921,7 @@ fn auto_scroll_tick() {
                         );
                     }
                 }
-                Ok(CaptureOutcome::Repeated(_)) => {}
+                Ok(CaptureOutcome::Repeated) => {}
                 Ok(CaptureOutcome::Ended) => {
                     stop = true;
                     event = Some(json!({
@@ -1116,9 +1099,7 @@ fn capture_current_frame(state: &mut CaptureState) -> Result<CaptureOutcome, Str
         if state.duplicate_frame_count >= MAX_DUPLICATE_FRAMES {
             return Ok(CaptureOutcome::Ended);
         }
-        return Ok(CaptureOutcome::Repeated(
-            state.frames.len().saturating_sub(1),
-        ));
+        return Ok(CaptureOutcome::Repeated);
     }
 
     let width = bounds.width as usize;
@@ -1139,9 +1120,7 @@ fn capture_current_frame(state: &mut CaptureState) -> Result<CaptureOutcome, Str
         if state.duplicate_frame_count >= MAX_DUPLICATE_FRAMES {
             return Ok(CaptureOutcome::Ended);
         }
-        return Ok(CaptureOutcome::Repeated(
-            state.frames.len().saturating_sub(1),
-        ));
+        return Ok(CaptureOutcome::Repeated);
     }
     let new_content_height = height.saturating_sub(overlap);
 
@@ -1154,7 +1133,6 @@ fn capture_current_frame(state: &mut CaptureState) -> Result<CaptureOutcome, Str
         state.estimated_height = state.estimated_height.saturating_add(new_content_height);
     }
 
-    let index = state.frames.len();
     state.frames.push(CapturedFrame {
         width,
         height,
@@ -1162,7 +1140,7 @@ fn capture_current_frame(state: &mut CaptureState) -> Result<CaptureOutcome, Str
         overlap,
     });
 
-    Ok(CaptureOutcome::Added(index))
+    Ok(CaptureOutcome::Added)
 }
 
 fn capture_pixels(bounds: CaptureBounds) -> Result<Vec<u8>, String> {
@@ -1707,51 +1685,6 @@ impl ScrollCaptureModule {
         Reply::Deferred
     }
 
-    fn capture_frame(&self, request: &Request) -> Reply {
-        let is_capturing = self
-            .state
-            .lock()
-            .ok()
-            .map(|state| state.is_capturing)
-            .unwrap_or(false);
-        if !is_capturing {
-            return Reply::Now(Err((
-                "NOT_CAPTURING".to_string(),
-                "Not in capture mode".to_string(),
-            )));
-        }
-
-        let state = self.state.clone();
-        let request_id = request.id.clone();
-        run_on_ui(move || {
-            let result = state
-                .lock()
-                .map_err(|_| "Scroll capture state poisoned".to_string())
-                .and_then(|mut state| {
-                    let frame_index = match capture_current_frame(&mut state)? {
-                        CaptureOutcome::Added(index) | CaptureOutcome::Repeated(index) => {
-                            Some(index)
-                        }
-                        CaptureOutcome::Ended | CaptureOutcome::NoOverlap => None,
-                    };
-                    Ok((frame_index, state.frames.len()))
-                });
-
-            match result {
-                Ok((frame_index, frame_count)) => respond_success(
-                    &request_id,
-                    json!({
-                        "captured": true,
-                        "frameCount": frame_count,
-                        "frameIndex": frame_index.map(|index| index as i64).unwrap_or(-1),
-                    }),
-                ),
-                Err(message) => respond_error(&request_id, "CAPTURE_FAILED", &message),
-            }
-        });
-        Reply::Deferred
-    }
-
     fn finish(&self, request: &Request) -> Reply {
         let Some(output_path) = param_str(&request.params, "outputPath") else {
             return Reply::Now(Err((
@@ -1841,19 +1774,6 @@ impl ScrollCaptureModule {
             "estimatedHeight": estimated_height,
         }))))
     }
-
-    fn set_visible(&self, request: &Request, visible: bool) -> Reply {
-        let request_id = request.id.clone();
-        run_on_ui(move || {
-            set_ui_visible(visible);
-            if visible {
-                respond_success(&request_id, json!({ "visible": true }));
-            } else {
-                respond_success(&request_id, json!({ "hidden": true }));
-            }
-        });
-        Reply::Deferred
-    }
 }
 
 impl Module for ScrollCaptureModule {
@@ -1866,12 +1786,9 @@ impl Module for ScrollCaptureModule {
             "start" => self.start(request),
             "startAutoScroll" => self.start_auto_scroll(request),
             "stopAutoScroll" => self.stop_auto_scroll(request),
-            "captureFrame" => self.capture_frame(request),
             "finish" => self.finish(request),
             "cancel" => self.cancel(),
             "status" => self.status(),
-            "hide" => self.set_visible(request, false),
-            "show" => self.set_visible(request, true),
             method => method_not_found(method),
         }
     }

@@ -79,14 +79,12 @@ struct ControllerState {
     phase: ControllerPhase,
     status: RecorderStatus,
     command_sender: Option<Sender<WorkerCommand>>,
-    mic_muted: bool,
     generation: u64,
 }
 
 enum WorkerCommand {
     Pause(Sender<Result<RecorderStatus, RecorderError>>),
     Resume(Sender<Result<RecorderStatus, RecorderError>>),
-    SetMicMuted(bool),
     SetMicrophone(Option<AudioDevice>, Sender<Result<(), RecorderError>>),
     SetSystemAudio(bool, Sender<Result<(), RecorderError>>),
     SetCamera(bool, Sender<Result<(), RecorderError>>),
@@ -126,7 +124,6 @@ impl CaptureController {
                 phase: ControllerPhase::Idle,
                 status: RecorderStatus::idle(),
                 command_sender: None,
-                mic_muted: false,
                 generation: 0,
             })),
         }
@@ -153,7 +150,6 @@ impl CaptureController {
         state.phase = ControllerPhase::Starting;
         state.status = RecorderStatus::idle();
         state.command_sender = Some(command_sender);
-        let mic_muted = state.mic_muted;
         drop(state);
 
         let shared = self.state.clone();
@@ -166,7 +162,6 @@ impl CaptureController {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_worker(
                     config,
-                    mic_muted,
                     shared,
                     command_receiver,
                     start_sender,
@@ -258,20 +253,6 @@ impl CaptureController {
             .unwrap_or_else(|_| RecorderStatus::idle())
     }
 
-    pub fn set_mic_muted(&self, muted: bool) {
-        if let Ok(mut state) = self.state.lock() {
-            state.mic_muted = muted;
-            if matches!(
-                state.phase,
-                ControllerPhase::Starting | ControllerPhase::Running
-            ) {
-                if let Some(sender) = &state.command_sender {
-                    let _ = sender.send(WorkerCommand::SetMicMuted(muted));
-                }
-            }
-        }
-    }
-
     pub fn set_microphone(&self, device: Option<AudioDevice>) -> Result<(), RecorderError> {
         self.run_device_command("change the microphone", |response| {
             WorkerCommand::SetMicrophone(device, response)
@@ -357,7 +338,6 @@ impl CaptureController {
 
 fn run_worker(
     config: RecordingConfig,
-    mic_muted: bool,
     shared: Arc<Mutex<ControllerState>>,
     commands: Receiver<WorkerCommand>,
     start_sender: Sender<Result<RecorderStatus, RecorderError>>,
@@ -377,7 +357,7 @@ fn run_worker(
         }
     };
 
-    let mut runtime = match RecordingRuntime::prepare(&config, mic_muted) {
+    let mut runtime = match RecordingRuntime::prepare(&config) {
         Ok(runtime) => runtime,
         Err(error) => {
             set_idle(&shared, generation);
@@ -717,12 +697,6 @@ fn handle_command(
             let _ = response.send(Ok(status));
             false
         }
-        WorkerCommand::SetMicMuted(muted) => {
-            if let Some(audio) = runtime.audio.as_ref() {
-                audio.set_mic_muted(muted);
-            }
-            false
-        }
         WorkerCommand::SetMicrophone(device, response) => {
             let _ = response.send(runtime.set_microphone(device));
             false
@@ -795,7 +769,7 @@ struct RecordingRuntime {
 }
 
 impl RecordingRuntime {
-    fn prepare(config: &RecordingConfig, mic_muted: bool) -> Result<Self, RecorderError> {
+    fn prepare(config: &RecordingConfig) -> Result<Self, RecorderError> {
         let project_dir = recording_project_dir(&config.output_path)?.to_path_buf();
         let target = CaptureTarget::resolve(config)?;
         let tracker_source = target.tracker_source();
@@ -831,7 +805,7 @@ impl RecordingRuntime {
                 return Err(error);
             }
         };
-        let audio = match AudioCaptureSet::start(config, mic_muted) {
+        let audio = match AudioCaptureSet::start(config) {
             Ok(audio) => audio,
             Err(error) => {
                 capture.close();
@@ -2661,7 +2635,6 @@ mod tests {
             phase: ControllerPhase::Starting,
             status: RecorderStatus::idle(),
             command_sender: None,
-            mic_muted: false,
             generation: 7,
         }));
         let poisoned = shared.clone();
@@ -2700,7 +2673,6 @@ mod tests {
                 duration: 1.0,
             },
             command_sender: None,
-            mic_muted: false,
             generation: 8,
         }));
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
