@@ -1,7 +1,7 @@
 {
   "name": "poratake",
   "private": true,
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Capture, annotate, record, edit, and share on macOS and Windows.",
   "author": "Serhii Vecherenko",
   "homepage": "https://porabuild.com/poratake",
