@@ -26,6 +26,7 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
     "dev": "bun scripts/dev.mjs",
+    "dev:gpui": "bun scripts/dev-gpui.mjs",
     "build-mac": "bun run build-native-mac && bun run package-mac",
     "package-mac": "rm -rf ./dist && rm -rf ./dist-electron && tsc && bunx --bun vite build && electron-builder --mac --universal -p never",
     "build-mac:local": "bun run build-native-mac && rm -rf ./dist && rm -rf ./dist-electron && tsc && bunx --bun vite build && electron-builder --mac --universal -c.mac.identity=null -p never",

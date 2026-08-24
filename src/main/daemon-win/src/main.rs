@@ -9,6 +9,7 @@ mod protocol;
 mod router;
 mod time_format;
 mod tone_map;
+pub mod trace;
 mod ui;
 
 use modules::area_selector::AreaSelectorModule;

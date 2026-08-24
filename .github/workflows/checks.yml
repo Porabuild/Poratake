@@ -160,11 +160,17 @@ jobs:
           path: src/main/daemon-win/target
           key: ${{ runner.os }}-rust-${{ hashFiles('src/main/daemon-win/Cargo.lock') }}
 
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src/main/daemon-win/Cargo.toml -- --check
+      - name: Cache GPUI target
+        uses: actions/cache@v5
+        with:
+          path: src/main/app-gpui/target
+          key: ${{ runner.os }}-gpui-${{ hashFiles('src/main/app-gpui/Cargo.lock') }}
 
-      - name: Test Windows daemon
-        run: cargo test --manifest-path src/main/daemon-win/Cargo.toml
+      - name: Install rustfmt and clippy
+        run: rustup component add rustfmt clippy
+
+      - name: Format, Clippy, and test Windows native
+        run: bun run test:daemon-win
 
       - name: Tests
         run: bun run test:run

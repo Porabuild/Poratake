@@ -1,0 +1,746 @@
+//! The recording control bar — port of
+//! `capture/video/recording-control-window.tsx`. One frameless always-on-top
+//! surface anchored at the top centre of the recorded display, in both the
+//! pre-recording and recording modes.
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use gpui::{
+    div, prelude::*, px, size, AnyElement, App, Bounds, Context, FocusHandle, Render, SharedString,
+    Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+};
+
+use crate::capture::overlay::ScreenRect;
+use crate::theme::vars::{active_theme, ThemeVars};
+use crate::ui::button::{Button, ButtonSize, ButtonVariant};
+use crate::ui::chrome;
+use crate::ui::icon::icon_element;
+use crate::ui::menu::{MenuBuilder, MenuHandle, MenuItem, MenuPlacement};
+use crate::video::recorder::{self, RecordingConfig, RecordingTarget};
+use crate::windows::registry::{self, WindowKind as RegistryKind};
+
+const TARGET_LABEL_WIDTH: f32 = chrome::RECORDING_TARGET_LABEL_WIDTH;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    PreRecording,
+    Recording,
+}
+
+pub struct RecordingControl {
+    mode: Mode,
+    #[allow(dead_code)]
+    target: RecordingTarget,
+    target_name: Option<SharedString>,
+    rect: ScreenRect,
+    window_id: Option<i64>,
+    project: Option<PathBuf>,
+    system_audio: bool,
+    microphone: bool,
+    camera: bool,
+    selected_mic_id: Option<String>,
+    selected_camera_id: Option<String>,
+    menu: MenuHandle,
+    started_at: Option<Instant>,
+    elapsed: u64,
+    focus_handle: FocusHandle,
+}
+
+impl RecordingControl {
+    pub fn open(
+        cx: &mut App,
+        target: RecordingTarget,
+        rect: ScreenRect,
+        window_id: Option<i64>,
+        target_name: Option<String>,
+    ) {
+        if recorder::is_recording() {
+            return;
+        }
+        let config = crate::state::state(cx).config.get().recording;
+        let width = chrome::recording_control_width(false, target_name.is_some());
+        let bounds = bar_bounds(cx, rect, width);
+
+        registry::open_or_activate(RegistryKind::RecordingControl, cx, move |cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: None,
+                    focus: true,
+                    show: true,
+                    kind: WindowKind::PopUp,
+                    is_movable: false,
+                    is_resizable: false,
+                    is_minimizable: false,
+                    window_background: WindowBackgroundAppearance::Transparent,
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let view = cx.new(|cx| Self {
+                        mode: Mode::PreRecording,
+                        target,
+                        target_name: target_name.map(SharedString::from),
+                        rect,
+                        window_id,
+                        project: None,
+                        system_audio: config.system_audio,
+                        microphone: config.mic_enabled,
+                        camera: config.camera.enabled,
+                        selected_mic_id: config.selected_mic_id.clone(),
+                        selected_camera_id: config.camera.selected_device_id.clone(),
+                        menu: MenuHandle::new(),
+                        started_at: None,
+                        elapsed: 0,
+                        focus_handle: cx.focus_handle(),
+                    });
+                    window.focus(&view.read(cx).focus_handle);
+                    view
+                },
+            )
+            .ok()
+            .map(Into::into)
+        });
+    }
+
+    fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let service = crate::state::state(cx);
+        let project = match recorder::create_project(&service.config) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("[recorder] failed to create project: {error}");
+                return;
+            }
+        };
+        let recording = service.config.get().recording;
+
+        let config = RecordingConfig {
+            x: self.rect.x,
+            y: self.rect.y,
+            width: self.rect.width,
+            height: self.rect.height,
+            window_id: self.window_id,
+            include_audio: self.system_audio,
+            mic_enabled: self.microphone,
+            mic_device_id: recording.selected_mic_id.clone(),
+            camera_enabled: self.camera,
+            camera_device_id: recording.camera.selected_device_id.clone(),
+            keyboard_enabled: false,
+            frame_rate: 60,
+            output_path: project.clone(),
+        };
+
+        if let Err(error) = recorder::start(&service.daemon, &config) {
+            eprintln!("[recorder] {error}");
+            let _ = std::fs::remove_dir_all(&project);
+            crate::windows::toast::Toast::show(cx, "Recording failed", error.to_string());
+            return;
+        }
+
+        self.project = Some(project);
+        self.mode = Mode::Recording;
+        self.started_at = Some(Instant::now());
+        self.elapsed = 0;
+        let width = chrome::recording_control_width(true, self.target_name.is_some());
+        window.resize(size(px(width), px(chrome::RECORDING_WINDOW_HEIGHT)));
+        crate::intents::refresh_shell(cx);
+        self.tick(cx);
+        cx.notify();
+    }
+
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |entity, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let running = entity.update(cx, |this, cx| {
+                let Some(started_at) = this.started_at else {
+                    return false;
+                };
+                if recorder::state() == recorder::RecorderState::Recording {
+                    this.elapsed = started_at.elapsed().as_secs();
+                    cx.notify();
+                }
+                true
+            });
+            if !matches!(running, Ok(true)) {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// AGENTS documents that the microphone, system-sound and camera toggles
+    /// stay live while a recording runs, so they are applied through the
+    /// recorder's setters instead of being frozen at start.
+    fn set_system_audio(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.system_audio = enabled;
+        if self.mode == Mode::Recording {
+            recorder::set_system_audio(&crate::state::state(cx).daemon, enabled);
+        }
+        cx.notify();
+    }
+
+    fn set_microphone(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if enabled
+            && !crate::system::permissions::ensure_access(
+                crate::system::permissions::Device::Microphone,
+            )
+        {
+            return;
+        }
+        self.microphone = enabled;
+        if self.mode == Mode::Recording {
+            let service = crate::state::state(cx);
+            let device = service.config.get().recording.selected_mic_id;
+            recorder::set_microphone(&service.daemon, enabled, device.as_deref());
+        }
+        cx.notify();
+    }
+
+    fn set_camera(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if enabled
+            && !crate::system::permissions::ensure_access(
+                crate::system::permissions::Device::Camera,
+            )
+        {
+            return;
+        }
+        self.camera = enabled;
+        if self.mode == Mode::Recording {
+            recorder::set_camera(&crate::state::state(cx).daemon, enabled);
+        }
+        cx.notify();
+    }
+
+    fn input_toggles(&self, cx: &mut Context<Self>) -> [AnyElement; 3] {
+        [
+            self.device_dropdown(
+                "camera",
+                if self.camera { "video" } else { "video-off" },
+                "Select camera",
+                self.camera,
+                crate::system::devices::DeviceKind::Camera,
+                cx,
+            ),
+            self.device_dropdown(
+                "microphone",
+                if self.microphone { "mic" } else { "mic-off" },
+                "Select microphone",
+                self.microphone,
+                crate::system::devices::DeviceKind::Microphone,
+                cx,
+            ),
+            Button::new("recording-system-audio")
+                .variant(ButtonVariant::Ghost)
+                // Deliberately not `.selected()`: `ToolbarButton` is a plain
+                // ghost with `aria-pressed` and no visual pressed state, so the
+                // icon swap below is the entire signal. Marking it selected
+                // promotes the button to `Secondary` and paints a filled chip
+                // the reference never shows.
+                .size(ButtonSize::IconSm)
+                .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+                .icon(if self.system_audio {
+                    "volume-2"
+                } else {
+                    "volume-x"
+                })
+                .tooltip(if self.system_audio {
+                    "Turn system sounds off"
+                } else {
+                    "Turn system sounds on"
+                })
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    let next = !this.system_audio;
+                    this.set_system_audio(next, cx);
+                }))
+                .into_any_element(),
+        ]
+    }
+
+    fn device_dropdown(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        _tooltip: &'static str,
+        enabled: bool,
+        kind: crate::system::devices::DeviceKind,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let handle = self.menu.clone();
+        let owner = format!("recording-{id}");
+        let selected = match kind {
+            crate::system::devices::DeviceKind::Microphone => self.selected_mic_id.clone(),
+            crate::system::devices::DeviceKind::Camera => self.selected_camera_id.clone(),
+        };
+        let lists = crate::system::devices::list(&crate::state::state(cx).daemon, &[kind]);
+        let devices = match kind {
+            crate::system::devices::DeviceKind::Microphone => lists.microphones,
+            crate::system::devices::DeviceKind::Camera => lists.cameras,
+        };
+        let mut builder = MenuBuilder::new().item(
+            MenuItem::new(if enabled { "Turn off" } else { "Turn on" }).on_select({
+                let entity = cx.entity().downgrade();
+                move |_window, cx| {
+                    if let Some(entity) = entity.upgrade() {
+                        entity.update(cx, |this, cx| match kind {
+                            crate::system::devices::DeviceKind::Microphone => {
+                                let next = !this.microphone;
+                                this.set_microphone(next, cx);
+                            }
+                            crate::system::devices::DeviceKind::Camera => {
+                                let next = !this.camera;
+                                this.set_camera(next, cx);
+                            }
+                        });
+                    }
+                }
+            }),
+        );
+        for device in &devices {
+            let device_id = device.id.clone();
+            let label = if device.label.trim().is_empty() {
+                device.id.clone()
+            } else {
+                device.label.clone()
+            };
+            builder = builder.item(
+                MenuItem::new(label)
+                    .trailing_check(selected.as_deref() == Some(device_id.as_str()))
+                    .on_select({
+                        let entity = cx.entity().downgrade();
+                        move |_window, cx| {
+                            if let Some(entity) = entity.upgrade() {
+                                entity.update(cx, |this, cx| {
+                                    this.select_device(kind, &device_id, cx)
+                                });
+                            }
+                        }
+                    }),
+            );
+        }
+        let entries = builder.build();
+        let menu_id = owner.clone();
+        div()
+            .id(SharedString::from(owner.clone()))
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .gap(px(4.0))
+            .h(px(chrome::OVERLAY_BUTTON_SIZE))
+            .w(px(48.0))
+            .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
+            .hover(|style: gpui::StyleRefinement| style.bg(crate::ui::colors::white(0.15)))
+            .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
+            .child(icon_element("chevron-down", px(12.0)))
+            .child(self.menu.render_dropdown(&menu_id))
+            .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                handle.toggle(
+                    MenuPlacement::below(menu_id.clone()),
+                    entries.clone(),
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            })
+            .into_any_element()
+    }
+
+    fn select_device(
+        &mut self,
+        kind: crate::system::devices::DeviceKind,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        match kind {
+            crate::system::devices::DeviceKind::Microphone => {
+                self.selected_mic_id = Some(id.to_string());
+                self.set_microphone(true, cx);
+                crate::state::state(cx).config.update(|config| {
+                    config.recording.selected_mic_id = Some(id.to_string());
+                });
+            }
+            crate::system::devices::DeviceKind::Camera => {
+                self.selected_camera_id = Some(id.to_string());
+                self.set_camera(true, cx);
+                crate::state::state(cx).config.update(|config| {
+                    config.recording.camera.selected_device_id = Some(id.to_string());
+                });
+            }
+        }
+    }
+
+    fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        let daemon = crate::state::state(cx).daemon;
+        match recorder::state() {
+            recorder::RecorderState::Recording => recorder::pause(&daemon),
+            recorder::RecorderState::Paused => recorder::resume(&daemon),
+            recorder::RecorderState::Idle => {}
+        }
+        cx.notify();
+    }
+
+    fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let service = crate::state::state(cx);
+        let stopped = recorder::stop(&service.daemon);
+        if !stopped {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Recording not finalized",
+                "Stop failed. The recording controls remain available so you can retry.",
+            );
+            return;
+        }
+
+        let project = self.project.take();
+        self.started_at = None;
+
+        window.remove_window();
+        registry::close(RegistryKind::RecordingControl, cx);
+        crate::intents::refresh_shell(cx);
+
+        let Some(project) = project else {
+            return;
+        };
+        if discard {
+            let _ = std::fs::remove_dir_all(&project);
+            return;
+        }
+
+        let (max_items, show_preview) = {
+            let config = service.config.get();
+            (
+                config.history.max_items as usize,
+                config.recording.show_preview,
+            )
+        };
+        crate::history_store::add_item(
+            crate::history_store::HistoryItem {
+                id: format!(
+                    "{}",
+                    chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                timestamp: chrono::Local::now().timestamp_millis(),
+                original_path: project.to_string_lossy().to_string(),
+                r#type: crate::history_store::HistoryItemType::Video,
+                editor_state: None,
+                duration: Some(self.elapsed as f64),
+            },
+            max_items,
+        );
+
+        if show_preview {
+            let path = project.to_string_lossy().to_string();
+            cx.defer(move |cx| {
+                crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
+            });
+        }
+    }
+
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == Mode::Recording {
+            self.finish(true, window, cx);
+            return;
+        }
+        window.remove_window();
+        registry::close(RegistryKind::RecordingControl, cx);
+    }
+}
+
+fn bar_bounds(cx: &mut App, rect: ScreenRect, width: f32) -> Bounds<gpui::Pixels> {
+    let scale = crate::capture::overlay::app_scale_factor(cx).max(0.01);
+    let displays: Vec<(f32, f32, f32, f32)> = cx
+        .displays()
+        .into_iter()
+        .map(|display| {
+            let bounds = display.bounds();
+            (
+                f32::from(bounds.origin.x),
+                f32::from(bounds.origin.y),
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height),
+            )
+        })
+        .collect();
+    let center_x = rect.x as f32 / scale + rect.width as f32 / scale / 2.0;
+    let center_y = rect.y as f32 / scale + rect.height as f32 / scale / 2.0;
+    let (work_x, work_y, work_width, _) = chrome::display_containing(&displays, center_x, center_y)
+        .unwrap_or((0.0, 0.0, 1920.0, 1080.0));
+    let (x, y) = chrome::recording_bar_origin(work_x, work_y, work_width, width);
+    Bounds {
+        origin: gpui::point(px(x), px(y)),
+        size: size(px(width), px(chrome::RECORDING_WINDOW_HEIGHT)),
+    }
+}
+
+fn overlay_hairline(theme: &ThemeVars) -> AnyElement {
+    div()
+        .mx(px(chrome::OVERLAY_HAIRLINE_INSET))
+        .h(px(chrome::OVERLAY_HAIRLINE_HEIGHT))
+        .w(px(1.0))
+        .flex_none()
+        .bg(theme.border.opacity(0.7))
+        .into_any_element()
+}
+
+fn overlay_icon(
+    id: &'static str,
+    icon: &'static str,
+    tooltip: &'static str,
+    on_click: impl Fn(&mut RecordingControl, &mut Window, &mut Context<RecordingControl>) + 'static,
+    cx: &mut Context<RecordingControl>,
+) -> AnyElement {
+    Button::new(id)
+        .variant(ButtonVariant::Ghost)
+        .size(ButtonSize::IconSm)
+        .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+        .icon(icon)
+        .tooltip(tooltip)
+        .on_click(cx.listener(move |this, _event, window, cx| on_click(this, window, cx)))
+        .into_any_element()
+}
+
+impl Render for RecordingControl {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = active_theme(cx);
+        let paused = recorder::state() == recorder::RecorderState::Paused;
+        let toggles = self.input_toggles(cx);
+
+        let mut bar = div()
+            .id("recording-control-bar")
+            .h(px(chrome::recording_inner_bar_height()))
+            .flex()
+            .flex_row()
+            .items_center()
+            // The recording bar and the all-in-one toolbar are the same
+            // `ToolbarSurface` in Electron -- `gap-0.5 p-1 rounded-4xl border-2`
+            // -- so they take the same metrics here. Bespoke ones made this bar
+            // 12px/16px instead of 2px/4px, which pushed its contents wider than
+            // its own window and clipped the record dot and the close button.
+            .gap(px(chrome::OVERLAY_SURFACE_GAP))
+            .rounded(px(chrome::OVERLAY_SURFACE_RADIUS))
+            .border_2()
+            .border_color(theme.muted_foreground.opacity(0.35))
+            .bg(theme.muted_background.opacity(0.95))
+            .text_color(theme.foreground)
+            .shadow_2xl()
+            .p(px(chrome::OVERLAY_SURFACE_PADDING));
+
+        if let Some(name) = &self.target_name {
+            bar = bar
+                .child(
+                    div()
+                        .max_w(px(TARGET_LABEL_WIDTH))
+                        .truncate()
+                        .px(px(4.0))
+                        .text_size(px(12.0))
+                        .child(name.clone()),
+                )
+                .child(overlay_hairline(&theme));
+        }
+
+        if self.mode == Mode::PreRecording {
+            return recording_shell(
+                &self.focus_handle,
+                bar.child(
+                    Button::new("recording-start")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::IconSm)
+                        .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+                        // `<Circle className="size-3.5 fill-current" />` -- a
+                        // *filled* disc. The lucide icons here are stroke-only,
+                        // so an outline circle is the wrong shape; a filled div
+                        // is what `fill-current` draws.
+                        .child(filled_glyph(theme.accent, true))
+                        .tooltip("Start recording")
+                        .on_click(cx.listener(|this, _event, window, cx| this.start(window, cx))),
+                )
+                .child(overlay_hairline(&theme))
+                .children(toggles)
+                .child(overlay_hairline(&theme))
+                .child(overlay_icon(
+                    "recording-cancel",
+                    "x",
+                    "Close",
+                    |this, window, cx| this.cancel(window, cx),
+                    cx,
+                )),
+                &self.menu,
+            );
+        }
+
+        recording_shell(
+            &self.focus_handle,
+            bar.child(overlay_icon(
+                "recording-pause",
+                if paused { "play" } else { "pause" },
+                if paused {
+                    "Resume recording"
+                } else {
+                    "Pause recording"
+                },
+                |this, _window, cx| this.toggle_pause(cx),
+                cx,
+            ))
+            .child(
+                Button::new("recording-stop")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::IconSm)
+                    .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+                    // `<Square className="size-3.5 fill-current text-destructive" />`.
+                    .child(filled_glyph(theme.destructive, false))
+                    .tooltip("Stop recording")
+                    .on_click(
+                        cx.listener(|this, _event, window, cx| this.finish(false, window, cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .min_w(px(64.0))
+                    .px(px(4.0))
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_center()
+                    .child(recorder::format_elapsed(self.elapsed)),
+            )
+            .child(overlay_hairline(&theme))
+            .children(toggles)
+            .child(overlay_hairline(&theme))
+            .child(
+                Button::new("recording-discard")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::IconSm)
+                    .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+                    .icon("trash-2")
+                    .tooltip("Discard recording")
+                    .on_click(
+                        cx.listener(|this, _event, window, cx| this.finish(true, window, cx)),
+                    ),
+            ),
+            &self.menu,
+        )
+    }
+}
+
+fn recording_shell(
+    focus: &FocusHandle,
+    bar: impl IntoElement,
+    menu: &MenuHandle,
+) -> impl IntoElement {
+    div()
+        .id("recording-control")
+        .track_focus(focus)
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .pt(px(chrome::RECORDING_BAR_PAD_TOP))
+        .child(bar)
+        .children(menu.render())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bar_width_follows_mode_and_target_label() {
+        assert_eq!(chrome::recording_control_width(false, false), 236.0);
+        assert_eq!(chrome::recording_control_width(true, false), 400.0);
+        assert_eq!(chrome::recording_control_width(false, true), 376.0);
+        assert_eq!(chrome::recording_control_width(true, true), 540.0);
+        assert_eq!(TARGET_LABEL_WIDTH, 140.0);
+        assert_eq!(chrome::RECORDING_WINDOW_HEIGHT, 52.0);
+        assert_eq!(chrome::RECORDING_BAR_PAD_TOP, 4.0);
+        assert_eq!(
+            chrome::recording_inner_bar_height(),
+            chrome::overlay_bar_height()
+        );
+        assert_eq!(
+            chrome::recording_inner_bar_height(),
+            chrome::OVERLAY_BORDER_WIDTH * 2.0
+                + chrome::OVERLAY_SURFACE_PADDING * 2.0
+                + chrome::OVERLAY_BUTTON_SIZE
+        );
+        assert_ne!(
+            chrome::recording_inner_bar_height(),
+            chrome::RECORDING_WINDOW_HEIGHT
+        );
+        assert_eq!(chrome::RECORDING_TOP_MARGIN, 24.0);
+        let (x, y) = chrome::recording_bar_origin(0.0, 10.0, 1920.0, 236.0);
+        assert_eq!(y, 34.0);
+        assert_eq!(x, ((1920.0_f32 - 236.0) / 2.0).round());
+    }
+}
+
+/// `size-3.5 fill-current`: a solid 14px disc for the record button, a solid
+/// 14px square for stop. Rounding is the only difference between them.
+fn filled_glyph(color: gpui::Hsla, round: bool) -> gpui::AnyElement {
+    let glyph = gpui::div().size(px(RECORD_GLYPH_SIZE)).bg(color);
+    if round {
+        glyph.rounded_full().into_any_element()
+    } else {
+        // `<Square>` has lucide's own 2px corner, which at this scale reads as
+        // square; `rounded-sm` is the nearest token.
+        glyph.rounded(px(chrome::RADIUS_SM)).into_any_element()
+    }
+}
+
+/// `size-3.5`.
+const RECORD_GLYPH_SIZE: f32 = 14.0;
+
+#[cfg(test)]
+mod toolbar_tests {
+    /// The recording bar's buttons carry their state in the icon, not in a
+    /// background. `ToolbarButton` is `variant="ghost"` with only a hover
+    /// background, and the system-audio button swaps `Volume2` for `VolumeX`.
+    #[test]
+    fn the_bar_signals_state_by_icon_and_not_by_a_filled_background() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .to_path_buf();
+
+        let button = std::fs::read_to_string(
+            root.join("src/renderer/components/area-overlay/toolbar-button.tsx"),
+        )
+        .expect("read toolbar-button.tsx");
+        assert!(
+            button.contains(r#"variant="ghost""#),
+            "the toolbar button is a ghost"
+        );
+        assert!(
+            !button.contains("data-selected") && !button.contains("aria-pressed:"),
+            "the toolbar button has no pressed styling, so neither should this shell"
+        );
+
+        let window =
+            std::fs::read_to_string(root.join("src/renderer/windows/recording-control-window.tsx"))
+                .expect("read recording-control-window.tsx");
+        assert!(
+            window.contains("Volume2") && window.contains("VolumeX"),
+            "the icon swap is what shows whether system audio is on"
+        );
+
+        let here = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/windows/recording_control.rs"),
+        )
+        .expect("read recording_control.rs");
+        // A call, not a mention: this test's own assertion and the comment
+        // above the button both name the method they forbid, so match only
+        // lines that actually begin with the call.
+        let call = here
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default()
+            .lines()
+            .find(|line| line.trim_start().starts_with(".selected("));
+        assert!(
+            call.is_none(),
+            "no button in the recording bar may paint a selected background, found `{}`",
+            call.unwrap_or_default().trim()
+        );
+    }
+}

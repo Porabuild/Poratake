@@ -41,10 +41,16 @@ fn capture_area(request: &Request) -> Reply {
     let window_id = param_i64(&request.params, "windowId");
     let request_id = request.id.clone();
 
+    crate::trace::trace("capture-area entered cached={cached}");
+
     spawn_capture(request_id, path, move || {
+        crate::trace::trace("capture() entered");
         let frame = if cached { frozen_rect(bounds) } else { None };
+        crate::trace::trace("frame resolved");
         let Some(mut frame) = frame else {
+            crate::trace::trace("calling DwmFlush");
             unsafe { DwmFlush() }.map_err(|error| error.to_string())?;
+            crate::trace::trace("calling capture_rect");
             return capture_rect(bounds);
         };
         let Some(window_id) = window_id else {
@@ -83,14 +89,18 @@ fn spawn_capture(
     path: String,
     capture: impl FnOnce() -> Result<DesktopFrame, String> + Send + 'static,
 ) -> Reply {
+    crate::trace::trace("spawning worker");
     let spawned = std::thread::Builder::new().spawn(move || {
+        crate::trace::trace("worker thread started");
         let frame = match capture() {
             Ok(frame) => frame,
             Err(message) => {
+                crate::trace::trace(&format!("capture failed: {message}"));
                 respond_error(&request_id, "CAPTURE_FAILED", &message);
                 return;
             }
         };
+        crate::trace::trace("writing image");
 
         if let Err(message) = write_image(&frame, &path) {
             respond_error(&request_id, "CAPTURE_FAILED", &message);
@@ -108,11 +118,17 @@ fn spawn_capture(
     });
 
     match spawned {
-        Ok(_) => Reply::Deferred,
-        Err(error) => Reply::Now(Err((
-            "CAPTURE_FAILED".to_string(),
-            format!("Failed to start the capture: {error}"),
-        ))),
+        Ok(_) => {
+            crate::trace::trace("worker spawned ok");
+            Reply::Deferred
+        }
+        Err(error) => {
+            crate::trace::trace("worker spawn failed: {error}");
+            Reply::Now(Err((
+                "CAPTURE_FAILED".to_string(),
+                format!("Failed to start the capture: {error}"),
+            )))
+        }
     }
 }
 

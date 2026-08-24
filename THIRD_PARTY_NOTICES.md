@@ -136,3 +136,51 @@ Permission to use, copy, modify, and/or distribute this software for any purpose
 foldhash is licensed under the Zlib License (Copyright (c) 2024 Orson Peters).
 
 Build-time-only tools that do not ship in the binary (proc macros and code generation): g2gen, proc-macro2, quote, serde_derive, syn, unicode-ident, windows-implement, windows-interface — all MIT OR Apache-2.0 (unicode-ident additionally Unicode-3.0).
+
+## Poratake GPUI shell (src/main/app-gpui)
+
+The Poratake GPUI shell (`poratake-gpui`) directly depends on the following crates. Exact versions and the complete transitive dependency closure are pinned in `src/main/app-gpui/Cargo.lock`, and the license strings below are taken from each crate's Cargo manifest at that version.
+
+| Crate               | Version | License                   |
+| ------------------- | ------: | ------------------------- |
+| `anyhow`            | 1.0.104 | MIT OR Apache-2.0         |
+| `arboard`           |   3.6.1 | MIT OR Apache-2.0         |
+| `base64`            |  0.23.1 | MIT OR Apache-2.0         |
+| `chrono`            |  0.4.45 | MIT OR Apache-2.0         |
+| `dirs`              |   6.0.0 | MIT OR Apache-2.0         |
+| `fontdue`           |   0.9.4 | MIT OR Apache-2.0 OR Zlib |
+| `global-hotkey`     |   0.8.0 | Apache-2.0 OR MIT         |
+| `gpui`              |   0.2.2 | Apache-2.0                |
+| `hmac`              |  0.13.0 | MIT OR Apache-2.0         |
+| `image`             | 0.25.10 | MIT OR Apache-2.0         |
+| `lyon`              |  1.0.19 | MIT OR Apache-2.0         |
+| `md-5`              |  0.11.0 | MIT OR Apache-2.0         |
+| `muda`              |  0.19.3 | Apache-2.0 OR MIT         |
+| `parking_lot`       |  0.12.5 | MIT OR Apache-2.0         |
+| `raw-window-handle` |   0.6.2 | MIT OR Apache-2.0 OR Zlib |
+| `resvg`             |  0.45.1 | Apache-2.0 OR MIT         |
+| `rfd`               |  0.15.4 | MIT                       |
+| `sha2`              |  0.11.0 | MIT OR Apache-2.0         |
+| `smallvec`          |  1.15.2 | MIT OR Apache-2.0         |
+| `smol`              |   2.0.2 | Apache-2.0 OR MIT         |
+| `tiny-skia`         |  0.11.4 | BSD-3-Clause              |
+| `tray-icon`         |  0.24.2 | MIT OR Apache-2.0         |
+| `ureq`              |   3.4.0 | MIT OR Apache-2.0         |
+| `usvg`              |  0.45.1 | Apache-2.0 OR MIT         |
+| `windows`           |  0.61.3 | MIT OR Apache-2.0         |
+| `serde`             | 1.0.229 | MIT OR Apache-2.0         |
+| `serde_json`        | 1.0.151 | MIT OR Apache-2.0         |
+
+`muda` and `tray-icon` pull in `dpi` 0.1.2 (Apache-2.0 AND MIT).
+
+The application requests only the PNG, JPEG, and GIF codecs from `image`, but GPUI 0.2.2 also enables `image`'s default codec set. The locked Windows closure therefore includes `ravif` 0.13.0 (BSD-3-Clause), `rav1e` 0.8.1 (BSD-2-Clause), `exr` 1.74.2 (BSD-3-Clause), `image-webp` 0.2.4 (MIT OR Apache-2.0), `qoi` 0.4.1 (MIT OR Apache-2.0), and `tiff` 0.11.3 (MIT). The GIF codec pulls in `gif` 0.14.2 and `weezl` 0.1.12 (both MIT OR Apache-2.0) and `color_quant` 1.1.0 (MIT). GPUI's Windows clipboard and TLS paths also include `clipboard-win` 5.4.1 (BSL-1.0) and `ring` 0.17.14 (Apache-2.0 AND ISC).
+
+`tiny-skia` is the shell's software rasterizer. The image editor's export and the video editor's frame composition draw through it, which is what keeps a saved file identical to the on-screen preview. It pulls in `tiny-skia-path` 0.11.4 (BSD-3-Clause), `strict-num` 0.1.1 (MIT) and `arrayref` 0.3.9 (BSD-2-Clause). `usvg`/`resvg` render the recorded pointer, whose artwork is the same SVG markup the renderer draws; they pull in `svgtypes` 0.15.3, `simplecss` 0.2.2, `roxmltree` 0.20.0 and `kurbo` 0.11.3 (all Apache-2.0 OR MIT) plus `fontdb` 0.23.0, `rustybuzz` 0.20.1 and `imagesize` 0.13.0 (all MIT).
+
+`ureq` performs the cloud uploads. It is built with `--no-default-features --features rustls`, which pulls in `ureq-proto` 0.6.1 (MIT OR Apache-2.0), `rustls` 0.23.43 (Apache-2.0 OR ISC OR MIT) and the `webpki-roots` 1.0.9 trust store (CDLA-Permissive-2.0). `hmac` and `sha2` implement the AWS Signature Version 4 signing the S3-compatible provider requires; uploads go only to the user's own storage, never to Capty infrastructure.
+
+`fontdue` rasterizes the editor's text annotations, the video captions and the keyboard overlay for export. No font is bundled: it loads the platform UI font already installed on the machine (Segoe UI, Georgia, Consolas or Comic Sans MS on Windows; the San Francisco, Georgia, Menlo and Comic Sans MS equivalents on macOS; DejaVu on other systems), so the exported image matches the on-screen preview without redistributing any typeface.
+
+The GPUI shell decodes and encodes video with the operating system's own Media Foundation, reached through the `windows` crate. No FFmpeg build, codec or other media binary is bundled with it.
+
+The `gpui` crate also bundles its own resources. `scripts/generate-gpui-icons.ps1` reads `node_modules/lucide-react` v1.32.0 and compiles its Lucide icon path data into the binary under the ISC License. The shell also embeds the tray menu icons from `src/main/menu/icons/` and the tray icon from `public/tray-icon.png`, which are Poratake's own assets derived from the same Lucide icon set (ISC License).

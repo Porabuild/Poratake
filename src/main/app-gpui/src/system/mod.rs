@@ -1,0 +1,14 @@
+pub mod accelerator;
+pub mod accent;
+pub mod capabilities;
+pub mod desktop;
+pub mod device_test;
+pub mod devices;
+pub mod hotkeys;
+pub mod native;
+pub mod notification;
+pub mod permissions;
+pub mod single_instance;
+pub mod startup;
+pub mod tray;
+pub mod work_area;

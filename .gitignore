@@ -41,6 +41,10 @@ build-whisper/
 internal_release_notes.txt
 
 # Native build artifacts (see CONTRIBUTING.md)
+target/
+*.dmp
+*.profraw
+parity-window-*.png
 src/main/binaries/ffmpeg/ffmpeg
 src/main/binaries/ffmpeg/ffmpeg.exe
 src/main/binaries/ffmpeg/.ffmpeg-build

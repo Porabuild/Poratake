@@ -15,7 +15,7 @@ use windows::Graphics::Capture::{
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{GENERIC_WRITE, HMODULE, HWND, POINT, RECT, RPC_E_CHANGED_MODE};
+use windows::Win32::Foundation::{GENERIC_WRITE, HMODULE, HWND, POINT, RECT};
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0,
     D3D_FEATURE_LEVEL_11_1,
@@ -36,7 +36,7 @@ use windows::Win32::Graphics::Imaging::{
     IWICBitmapFrameEncode, IWICImagingFactory, WICBitmapEncoderNoCache,
 };
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoIncrementMTAUsage,
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoIncrementMTAUsage,
     CoInitializeEx, CoUninitialize,
 };
 use windows::Win32::System::WinRT::Direct3D11::{
@@ -142,9 +142,11 @@ pub fn capture_rect(bounds: RECT) -> Result<DesktopFrame, String> {
 }
 
 pub fn capture_display_frame(bounds: RECT) -> Result<DesktopFrame, String> {
+    crate::trace::trace("capture_display_frame enter");
     let monitor = monitor_for_rect(bounds)
         .ok_or_else(|| "The capture area is not on a connected display".to_string())?;
     let monitor_bounds = monitor.rect;
+    crate::trace::trace("monitor resolved, running WGC");
 
     let captured = run_isolated(CAPTURE_TIMEOUT, move || {
         let monitor = monitor_for_rect(monitor_bounds)
@@ -153,7 +155,20 @@ pub fn capture_display_frame(bounds: RECT) -> Result<DesktopFrame, String> {
     })
     .unwrap_or_else(|| Err("Timed out while capturing the screen".to_string()));
 
-    captured.or_else(|error| capture_with_gdi(monitor_bounds).ok_or(error))
+    crate::trace::trace("WGC finished");
+
+    // The GDI fallback gets the same isolation timeout as the primary path;
+    // without it a wedged BitBlt would leave requests unanswered forever.
+    let result = captured.or_else(|error| {
+        crate::trace::trace("GDI fallback starting");
+        match run_isolated(CAPTURE_TIMEOUT, move || capture_with_gdi(monitor_bounds)) {
+            Some(Some(frame)) => Ok(frame),
+            Some(None) => Err(format!("{error}; GDI fallback failed")),
+            None => Err(format!("{error}; GDI fallback timed out")),
+        }
+    });
+    crate::trace::trace("capture_display_frame exit");
+    result
 }
 
 pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
@@ -316,10 +331,19 @@ fn write_bmp(frame: &DesktopFrame, path: &str) -> Result<(), String> {
 }
 
 fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
-    let _apartment = ImagingApartment::initialize()?;
+    crate::trace::trace("write_png enter");
+    // WIC encodes safely on the process MTA. The previous STA-per-worker
+    // scheme deadlocked: an STA that never pumps messages blocks any WIC
+    // call that needs cross-apartment work, leaving requests unanswered.
+    crate::com::retain_process_mta()
+        .map_err(|error| format!("Failed to initialize COM: {error}"))?;
+    let _apartment = MtaApartment::initialize()?;
+    crate::trace::trace("write_png mta ok");
+
     let factory: IWICImagingFactory =
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
             .map_err(|error| format!("Failed to open the image encoder: {error}"))?;
+    crate::trace::trace("write_png factory ok");
 
     let stream = unsafe { factory.CreateStream() }
         .map_err(|error| format!("Failed to open the image stream: {error}"))?;
@@ -329,6 +353,7 @@ fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
             .InitializeFromFilename(PCWSTR(wide_path.as_ptr()), GENERIC_WRITE.0)
             .map_err(|error| format!("Failed to create '{path}': {error}"))?;
     }
+    crate::trace::trace("write_png stream ok");
 
     let encoder = unsafe { factory.CreateEncoder(&GUID_ContainerFormatPng, null()) }
         .map_err(|error| format!("Failed to create the PNG encoder: {error}"))?;
@@ -338,6 +363,7 @@ fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
             .map_err(|error| format!("Failed to initialize the PNG encoder: {error}"))?;
     }
 
+    crate::trace::trace("write_png encoder created");
     let mut encoded_frame: Option<IWICBitmapFrameEncode> = None;
     unsafe {
         encoder
@@ -345,6 +371,7 @@ fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
             .map_err(|error| format!("Failed to create the PNG frame: {error}"))?;
     }
     let encoded_frame = encoded_frame.ok_or_else(|| "The PNG frame was not created".to_string())?;
+    crate::trace::trace("write_png frame created");
 
     let mut format = GUID_WICPixelFormat32bppBGRA;
     unsafe {
@@ -357,6 +384,7 @@ fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
         encoded_frame
             .SetPixelFormat(&mut format)
             .map_err(|error| format!("Failed to configure the PNG frame: {error}"))?;
+        crate::trace::trace("write_png writing pixels");
         encoded_frame
             .WritePixels(
                 frame.height,
@@ -364,6 +392,7 @@ fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
                 &frame.pixels,
             )
             .map_err(|error| format!("Failed to write the PNG frame: {error}"))?;
+        crate::trace::trace("write_png committing");
         encoded_frame
             .Commit()
             .map_err(|error| format!("Failed to commit the PNG frame: {error}"))?;
@@ -371,8 +400,26 @@ fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
             .Commit()
             .map_err(|error| format!("Failed to save '{path}': {error}"))?;
     }
+    crate::trace::trace("write_png done");
 
     Ok(())
+}
+
+struct MtaApartment;
+
+impl MtaApartment {
+    fn initialize() -> Result<Self, String> {
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+            .ok()
+            .map_err(|error| format!("Failed to join the process MTA: {error}"))?;
+        Ok(Self)
+    }
+}
+
+impl Drop for MtaApartment {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
 }
 
 struct CaptureDevice {
@@ -445,40 +492,6 @@ fn capture_with_cached_device(
         evict_capture_device(monitor.handle);
     }
     captured
-}
-
-struct ImagingApartment {
-    owned: bool,
-}
-
-impl ImagingApartment {
-    fn initialize() -> Result<Self, String> {
-        let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-
-        if result.is_ok() {
-            return Ok(ImagingApartment { owned: true });
-        }
-
-        if result == RPC_E_CHANGED_MODE {
-            return Ok(ImagingApartment { owned: false });
-        }
-
-        Err(format!(
-            "Failed to initialize the image encoder: {result:?}"
-        ))
-    }
-}
-
-impl Drop for ImagingApartment {
-    fn drop(&mut self) {
-        if !self.owned {
-            return;
-        }
-
-        unsafe {
-            CoUninitialize();
-        }
-    }
 }
 
 fn frozen_frames() -> &'static Mutex<Vec<DesktopFrame>> {
@@ -1062,6 +1075,37 @@ fn create_d3d_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_png_from_a_fresh_worker_apartment() {
+        let path = std::env::temp_dir().join(format!(
+            "poratake-wic-worker-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let worker_path = path.clone();
+        std::thread::spawn(move || {
+            write_png(
+                &DesktopFrame {
+                    bounds: RECT::default(),
+                    width: 1,
+                    height: 1,
+                    pixels: vec![0, 0, 0, 255],
+                },
+                worker_path.to_string_lossy().as_ref(),
+            )
+        })
+        .join()
+        .expect("worker")
+        .expect("PNG write");
+
+        let bytes = std::fs::read(&path).expect("PNG file");
+        let _ = std::fs::remove_file(path);
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
 
     fn frame(width: u32, height: u32, fill: u8) -> DesktopFrame {
         DesktopFrame {

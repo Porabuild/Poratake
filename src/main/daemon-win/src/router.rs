@@ -43,6 +43,7 @@ impl Router {
     }
 
     pub fn route(&mut self, request: Request) {
+        crate::trace::trace(&format!("route {} {}", request.module, request.method));
         if request.module == "system" {
             self.handle_system(&request);
             return;

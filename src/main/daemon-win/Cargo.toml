@@ -55,6 +55,9 @@ features = [
   "Win32_UI_Controls_Dialogs",
 ]
 
+[lints.clippy]
+disallowed_methods = "deny"
+
 [profile.release]
 opt-level = "z"
 lto = true
