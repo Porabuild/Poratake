@@ -818,10 +818,10 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             _ => None,
         };
 
-        if let Some(event_type) = event_type {
-            if let Some(shared) = active_tracker() {
-                shared.record_keyboard(info.vkCode, event_type);
-            }
+        if let Some(event_type) = event_type
+            && let Some(shared) = active_tracker()
+        {
+            shared.record_keyboard(info.vkCode, event_type);
         }
     }
 
@@ -838,10 +838,10 @@ fn active_tracker() -> Option<Arc<TrackerShared>> {
 }
 
 fn clear_active_tracker() {
-    if let Some(active) = ACTIVE_TRACKER.get() {
-        if let Ok(mut current) = active.lock() {
-            *current = None;
-        }
+    if let Some(active) = ACTIVE_TRACKER.get()
+        && let Ok(mut current) = active.lock()
+    {
+        *current = None;
     }
 }
 
@@ -1129,7 +1129,7 @@ mod tests {
 
     #[test]
     fn failed_stop_signal_retains_resources_for_retry() {
-        let mut stop_event = Some(HANDLE(1_usize as *mut std::ffi::c_void));
+        let mut stop_event = Some(HANDLE(std::ptr::dangling_mut::<std::ffi::c_void>()));
         let mut thread = Some(42);
 
         let first = signal_and_take_hook_resources(&mut stop_event, &mut thread, |_| {

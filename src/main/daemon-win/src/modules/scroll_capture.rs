@@ -220,7 +220,7 @@ struct ScrollUiState {
 }
 
 thread_local! {
-    static UI_STATE: RefCell<ScrollUiState> = RefCell::new(ScrollUiState {
+    static UI_STATE: RefCell<ScrollUiState> = const { RefCell::new(ScrollUiState {
         boundary: None,
         panel: None,
         font: None,
@@ -230,7 +230,7 @@ thread_local! {
         escape_token: None,
         enter_token: None,
         capture_state: None,
-    });
+    }) };
 }
 
 unsafe extern "system" fn boundary_wndproc(
@@ -1617,14 +1617,16 @@ impl ScrollCaptureModule {
             }
         }
 
-        let mut capture_state = CaptureState::default();
-        capture_state.bounds = Some(bounds);
-        capture_state.is_capturing = true;
-        capture_state.auto_scroll_speed = speed;
-        capture_state.max_height = max_height;
-        capture_state.scale_factor = scale_factor;
-        capture_state.scroll_step_points =
-            ((height as usize * (100 - FRAME_OVERLAP_PERCENT as usize)) / 100).max(1);
+        let capture_state = CaptureState {
+            bounds: Some(bounds),
+            is_capturing: true,
+            auto_scroll_speed: speed,
+            max_height,
+            scale_factor,
+            scroll_step_points: ((height as usize * (100 - FRAME_OVERLAP_PERCENT as usize)) / 100)
+                .max(1),
+            ..CaptureState::default()
+        };
         let state = Arc::new(Mutex::new(capture_state));
         self.state = state.clone();
         let request_id = request.id.clone();

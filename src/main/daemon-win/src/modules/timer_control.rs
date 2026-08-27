@@ -38,12 +38,12 @@ struct TimerUiState {
 }
 
 thread_local! {
-    static STATE: RefCell<TimerUiState> = RefCell::new(TimerUiState {
+    static STATE: RefCell<TimerUiState> = const { RefCell::new(TimerUiState {
         window: None,
         font: None,
         remaining: 0,
         key_token: None,
-    });
+    }) };
 }
 
 unsafe extern "system" fn wndproc(

@@ -38,14 +38,9 @@ fn sender() -> Option<&'static Sender<String>> {
                     else {
                         return;
                     };
-                    loop {
-                        match rx.recv() {
-                            Ok(line) => {
-                                let _ = writeln!(file, "{line}");
-                                let _ = file.flush();
-                            }
-                            Err(_) => break,
-                        }
+                    while let Ok(line) = rx.recv() {
+                        let _ = writeln!(file, "{line}");
+                        let _ = file.flush();
                     }
                 })
                 .ok()?;

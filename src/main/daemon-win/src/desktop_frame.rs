@@ -457,10 +457,10 @@ fn capture_devices() -> &'static Mutex<HashMap<isize, Arc<Mutex<CaptureDevice>>>
 }
 
 fn cached_capture_device(monitor_handle: isize) -> Option<Arc<Mutex<CaptureDevice>>> {
-    if let Ok(devices) = capture_devices().lock() {
-        if let Some(device) = devices.get(&monitor_handle) {
-            return Some(Arc::clone(device));
-        }
+    if let Ok(devices) = capture_devices().lock()
+        && let Some(device) = devices.get(&monitor_handle)
+    {
+        return Some(Arc::clone(device));
     }
 
     let device = Arc::new(Mutex::new(CaptureDevice::create().ok()?));
@@ -605,14 +605,13 @@ fn run_isolated<T: Send + 'static>(
         })
         .ok()?;
 
-    let result = match receiver.recv_timeout(timeout) {
+    match receiver.recv_timeout(timeout) {
         Ok(result) => Some(result),
         Err(_) => {
             gate.cancel(token, &cancelled);
             None
         }
-    };
-    result
+    }
 }
 
 fn capture_interop() -> Result<IGraphicsCaptureItemInterop, String> {

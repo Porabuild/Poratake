@@ -91,12 +91,11 @@ fn recognize_text(image_path: &str) -> windows::core::Result<String> {
 }
 
 fn create_ocr_engine() -> windows::core::Result<OcrEngine> {
-    if let Ok(language_tag) = Language::CurrentInputMethodLanguageTag() {
-        if let Ok(language) = Language::CreateLanguage(&language_tag) {
-            if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&language) {
-                return Ok(engine);
-            }
-        }
+    if let Ok(language_tag) = Language::CurrentInputMethodLanguageTag()
+        && let Ok(language) = Language::CreateLanguage(&language_tag)
+        && let Ok(engine) = OcrEngine::TryCreateFromLanguage(&language)
+    {
+        return Ok(engine);
     }
 
     let profile_error = match OcrEngine::TryCreateFromUserProfileLanguages() {

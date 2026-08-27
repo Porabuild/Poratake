@@ -41,17 +41,17 @@ struct SelectorUiState {
 }
 
 thread_local! {
-    static STATE: RefCell<SelectorUiState> = RefCell::new(SelectorUiState {
+    static STATE: RefCell<SelectorUiState> = const { RefCell::new(SelectorUiState {
         entries: Vec::new(),
         key_token: None,
         pending: None,
-    });
+    }) };
 }
 
 fn take_pending_id() -> Option<String> {
     let pending = STATE.with(|state| state.borrow().pending.clone());
-    let id = pending?.lock().ok()?.take();
-    id
+
+    pending?.lock().ok()?.take()
 }
 
 unsafe extern "system" fn wndproc(

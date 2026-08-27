@@ -74,10 +74,10 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
     let grids = image.detect_grids();
 
     for grid in grids {
-        if let Ok((_meta, content)) = grid.decode() {
-            if !content.is_empty() {
-                return content;
-            }
+        if let Ok((_meta, content)) = grid.decode()
+            && !content.is_empty()
+        {
+            return content;
         }
     }
 

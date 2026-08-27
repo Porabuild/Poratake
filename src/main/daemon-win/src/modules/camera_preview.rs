@@ -374,10 +374,10 @@ fn emit_position(window: HWND) {
         return;
     }
     STATE.with(|state| {
-        if let Some(runtime) = &state.borrow().runtime {
-            if let Ok(mut position) = runtime.position.lock() {
-                *position = Some((rect.left, rect.top));
-            }
+        if let Some(runtime) = &state.borrow().runtime
+            && let Ok(mut position) = runtime.position.lock()
+        {
+            *position = Some((rect.left, rect.top));
         }
     });
     crate::protocol::send_event(
@@ -964,10 +964,11 @@ fn start_capture(
             false
         }
     };
-    if stored && !runtime.is_generation(generation) {
-        if let Some(session) = take_capture_generation(&runtime, generation) {
-            stop_capture_session_async(runtime.clone(), session);
-        }
+    if stored
+        && !runtime.is_generation(generation)
+        && let Some(session) = take_capture_generation(&runtime, generation)
+    {
+        stop_capture_session_async(runtime.clone(), session);
     }
 }
 
@@ -1247,15 +1248,15 @@ impl Module for CameraPreviewModule {
                 let enabled = self.config.content_protected;
                 let request_id = request.id.clone();
                 run_on_ui(move || {
-                    if let Some(window) = STATE.with(|state| state.borrow().window) {
-                        if !set_content_protection(window, enabled) {
-                            respond_error(
-                                &request_id,
-                                "CONTENT_PROTECTION_ERROR",
-                                "Failed to update camera preview content protection",
-                            );
-                            return;
-                        }
+                    if let Some(window) = STATE.with(|state| state.borrow().window)
+                        && !set_content_protection(window, enabled)
+                    {
+                        respond_error(
+                            &request_id,
+                            "CONTENT_PROTECTION_ERROR",
+                            "Failed to update camera preview content protection",
+                        );
+                        return;
                     }
                     STATE.with(|state| state.borrow_mut().content_protected = enabled);
                     respond_success(&request_id, json!({ "protected": enabled }));

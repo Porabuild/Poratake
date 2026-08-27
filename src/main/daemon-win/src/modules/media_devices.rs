@@ -264,10 +264,7 @@ fn list_kinds(request: &Request) -> (bool, bool) {
         return (true, true);
     }
 
-    (
-        names.iter().any(|name| *name == "microphone"),
-        names.iter().any(|name| *name == "camera"),
-    )
+    (names.contains(&"microphone"), names.contains(&"camera"))
 }
 
 fn default_microphone_id() -> Option<String> {

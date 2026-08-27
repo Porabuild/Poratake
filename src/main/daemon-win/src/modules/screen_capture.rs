@@ -451,18 +451,18 @@ fn run_worker(
 
                 match runtime.write_frame(&frame, source_time) {
                     Ok(Some(duration)) => {
-                        if start_sender.is_some() {
-                            if let Err(error) = runtime.sync_with_first_frame(source_time) {
-                                fail_worker(
-                                    error,
-                                    &mut runtime,
-                                    &shared,
-                                    &mut start_sender,
-                                    &mut failure_sender,
-                                    generation,
-                                );
-                                break;
-                            }
+                        if start_sender.is_some()
+                            && let Err(error) = runtime.sync_with_first_frame(source_time)
+                        {
+                            fail_worker(
+                                error,
+                                &mut runtime,
+                                &shared,
+                                &mut start_sender,
+                                &mut failure_sender,
+                                generation,
+                            );
+                            break;
                         }
                         update_duration(&shared, duration, generation);
                         let pending_sender = start_sender.take();
@@ -651,11 +651,11 @@ fn handle_command(
                 return false;
             }
 
-            if let Some(camera) = runtime.camera.as_ref() {
-                if let Err(error) = camera.pause() {
-                    let _ = response.send(Err(error));
-                    return false;
-                }
+            if let Some(camera) = runtime.camera.as_ref()
+                && let Err(error) = camera.pause()
+            {
+                let _ = response.send(Err(error));
+                return false;
             }
             *paused = true;
             runtime.timeline.pause();
@@ -681,11 +681,11 @@ fn handle_command(
                 return false;
             }
 
-            if let Some(camera) = runtime.camera.as_ref() {
-                if let Err(error) = camera.resume() {
-                    let _ = response.send(Err(error));
-                    return false;
-                }
+            if let Some(camera) = runtime.camera.as_ref()
+                && let Err(error) = camera.resume()
+            {
+                let _ = response.send(Err(error));
+                return false;
             }
             *paused = false;
             let status = RecorderStatus {
@@ -1137,14 +1137,14 @@ fn publish_staged_assets(assets: &[StagedAsset]) -> Result<(), RecorderError> {
 
     let mut published = Vec::new();
     for (asset, backup_path) in assets.iter().zip(backup_paths) {
-        if let Some(backup) = &backup_path {
-            if let Err(error) = std::fs::rename(&asset.output_path, &backup) {
-                rollback_published_assets(&published);
-                cleanup_staged_assets(assets);
-                return Err(RecorderError::stop(format!(
-                    "Failed to stage existing recording asset: {error}"
-                )));
-            }
+        if let Some(backup) = &backup_path
+            && let Err(error) = std::fs::rename(&asset.output_path, backup)
+        {
+            rollback_published_assets(&published);
+            cleanup_staged_assets(assets);
+            return Err(RecorderError::stop(format!(
+                "Failed to stage existing recording asset: {error}"
+            )));
         }
 
         if let Err(error) = std::fs::rename(&asset.temporary_path, &asset.output_path) {
@@ -1242,10 +1242,10 @@ impl VideoTimeline {
             .saturating_sub(first)
             .saturating_sub(self.total_pause)
             .max(0);
-        if let Some(last) = self.last_written {
-            if timestamp <= last || timestamp.saturating_sub(last) < self.frame_duration {
-                return None;
-            }
+        if let Some(last) = self.last_written
+            && (timestamp <= last || timestamp.saturating_sub(last) < self.frame_duration)
+        {
+            return None;
         }
         Some(timestamp)
     }

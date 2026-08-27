@@ -44,10 +44,10 @@ fn set_icons_visible(visible: bool) -> Result<(), (String, String)> {
 
 fn find_desktop_view() -> Option<HWND> {
     unsafe {
-        if let Ok(progman) = FindWindowW(w!("Progman"), None) {
-            if let Ok(view) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None) {
-                return Some(view);
-            }
+        if let Ok(progman) = FindWindowW(w!("Progman"), None)
+            && let Ok(view) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None)
+        {
+            return Some(view);
         }
 
         let mut worker: Option<HWND> = None;
