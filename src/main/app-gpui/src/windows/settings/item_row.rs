@@ -383,13 +383,11 @@ impl SettingsWindow {
             ),
         };
 
-        // `DeviceSelect` always renders, with `System Default` as its first
-        // option, so an empty list is a select with one entry rather than a
-        // "no devices" message.
-        let options: Vec<SelectOption> = crate::system::devices::options(&devices)
-            .into_iter()
-            .map(|(value, label)| SelectOption::new(value, label))
-            .collect();
+        let options: Vec<SelectOption> =
+            crate::system::devices::options_with_selection(&devices, selected.as_deref())
+                .into_iter()
+                .map(|(value, label)| SelectOption::new(value, label))
+                .collect();
         let labels: std::collections::HashMap<String, String> = devices
             .iter()
             .map(|d| (d.id.clone(), d.label.clone()))
@@ -402,14 +400,15 @@ impl SettingsWindow {
             .placeholder("System Default")
             .on_select(cx.listener(move |this, value: &SharedString, _window, cx| {
                 let id = value.to_string();
-                let label = labels.get(&id).cloned();
+                let selected = (!id.is_empty()).then_some(id.clone());
+                let label = selected.as_ref().and_then(|id| labels.get(id).cloned());
                 this.mutate(cx, move |config| match kind {
                     DeviceKind::Microphone => {
-                        config.recording.selected_mic_id = Some(id.clone());
+                        config.recording.selected_mic_id = selected.clone();
                         config.recording.selected_mic_name = label.clone();
                     }
                     DeviceKind::Camera => {
-                        config.recording.camera.selected_device_id = Some(id.clone());
+                        config.recording.camera.selected_device_id = selected.clone();
                         config.recording.camera.selected_device_name = label.clone();
                     }
                 });

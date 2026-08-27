@@ -11,6 +11,9 @@ pub const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "jfif", "svg", "w
 /// module. The daemon answers with either a file path or an inline data URL,
 /// both of which the rasterizer can load.
 pub fn desktop_wallpaper(daemon: &crate::daemon::DaemonHandle) -> Option<String> {
+    if !daemon.is_running() {
+        daemon.start().ok()?;
+    }
     let response = daemon.call("desktop-wallpaper", "get", None).ok()?;
     from_response(&response)
 }

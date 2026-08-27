@@ -662,10 +662,12 @@ fn downsample(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
 
     for y in 0..height {
         let y0 = (y * source_height / height).min(source_height - 1);
-        let y1 = (((y + 1) * source_height + height - 1) / height).min(source_height);
+        let y1 = ((y + 1) * source_height)
+            .div_ceil(height)
+            .min(source_height);
         for x in 0..width {
             let x0 = (x * source_width / width).min(source_width - 1);
-            let x1 = (((x + 1) * source_width + width - 1) / width).min(source_width);
+            let x1 = ((x + 1) * source_width).div_ceil(width).min(source_width);
             let mut sums = [0u32; 4];
             let mut count = 0u32;
             for sample_y in y0..y1.max(y0 + 1) {

@@ -84,6 +84,7 @@ pub enum EditorOption {
     /// The gap between the capture and the images attached to its edges.
     WallpaperSpacing(f64),
     /// Removes every attached image.
+    #[allow(dead_code)]
     ClearAttachedImages,
     /// Loads the desktop wallpaper through the daemon.
     WallpaperUseDesktop,

@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, AnyElement, App, ClickEvent,
-    ElementId, SharedString, Styled, Window,
+    div, linear_color_stop, linear_gradient, prelude::*, px, Animation, AnimationExt, AnyElement,
+    App, ClickEvent, ElementId, SharedString, Styled, Window,
 };
 
 use crate::config::schema::{CustomBackground, CustomBackgroundData};
@@ -31,7 +31,7 @@ pub fn render(
     let config = crate::state::state(cx).config.get();
     let wallpaper_config = config.wallpaper;
 
-    div()
+    let sheet = div()
         .id("wallpaper-sheet")
         .flex()
         .flex_col()
@@ -78,7 +78,7 @@ pub fn render(
                     wallpaper::PADDING_MAX,
                     false,
                     handlers,
-                    |value| EditorOption::WallpaperPadding(value),
+                    EditorOption::WallpaperPadding,
                     &theme,
                 ))
                 .child(slider_control(
@@ -89,7 +89,7 @@ pub fn render(
                     wallpaper::INSET_MAX,
                     false,
                     handlers,
-                    |value| EditorOption::WallpaperInset(value),
+                    EditorOption::WallpaperInset,
                     &theme,
                 ))
                 .child(slider_control(
@@ -100,7 +100,7 @@ pub fn render(
                     wallpaper::CORNERS_MAX,
                     false,
                     handlers,
-                    |value| EditorOption::WallpaperCorners(value),
+                    EditorOption::WallpaperCorners,
                     &theme,
                 ))
                 .child(slider_control(
@@ -111,13 +111,32 @@ pub fn render(
                     wallpaper::SHADOW_MAX,
                     false,
                     handlers,
-                    |value| EditorOption::WallpaperShadow(value),
+                    EditorOption::WallpaperShadow,
                     &theme,
                 ))
                 .child(spacing_control(wallpaper, has_layers, handlers, &theme))
                 .child(Separator::horizontal())
                 .child(window_frames(wallpaper, handlers, &theme)),
         )
+        .with_animation(
+            ElementId::Name("wallpaper-sheet-enter".into()),
+            Animation::new(std::time::Duration::from_millis(300))
+                .with_easing(crate::ui::primitives::cubic_bezier(0.42, 0.0, 0.58, 1.0)),
+            |sheet, delta| {
+                sheet
+                    .opacity(delta)
+                    .left(px(-chrome::WALLPAPER_SHEET_WIDTH * (1.0 - delta)))
+            },
+        );
+
+    div()
+        .id("wallpaper-sheet-slot")
+        .relative()
+        .flex_none()
+        .h_full()
+        .w(px(chrome::WALLPAPER_SHEET_WIDTH))
+        .overflow_hidden()
+        .child(sheet)
         .into_any_element()
 }
 
@@ -305,7 +324,7 @@ fn backgrounds_section(
         let select = handlers.option(EditorOption::WallpaperGradient(SharedString::from(*id)));
         tiles.push(gradient_tile(
             ElementId::Integer(index as u64),
-            *name,
+            name,
             colors,
             *angle,
             tile,
@@ -352,7 +371,7 @@ fn backgrounds_section(
                 wallpaper::BLUR_MAX,
                 false,
                 handlers,
-                |value| EditorOption::WallpaperBlur(value),
+                EditorOption::WallpaperBlur,
                 theme,
             ))
             .child(slider_control(
@@ -363,7 +382,7 @@ fn backgrounds_section(
                 wallpaper::NOISE_MAX,
                 false,
                 handlers,
-                |value| EditorOption::WallpaperNoise(value),
+                EditorOption::WallpaperNoise,
                 theme,
             ))
             .child({
@@ -609,7 +628,7 @@ fn spacing_control(
         wallpaper::SPACING_MAX,
         !has_layers,
         handlers,
-        |value| EditorOption::WallpaperSpacing(value),
+        EditorOption::WallpaperSpacing,
         theme,
     );
     if !has_layers {
@@ -677,7 +696,7 @@ fn window_frames(
         .map(|(value, label)| {
             let selected = current == *value;
             let select = handlers.option(EditorOption::WallpaperFrame(SharedString::from(*value)));
-            frame_preview(*value, label, selected, theme, select)
+            frame_preview(value, label, selected, theme, select)
         })
         .collect();
     div()

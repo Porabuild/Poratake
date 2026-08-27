@@ -157,7 +157,9 @@ pub fn start(daemon: &DaemonHandle, config: &RecordingConfig) -> anyhow::Result<
         )
         .map_err(|error| anyhow::anyhow!("screen-recorder start failed: {error}"))?;
     if config.camera_enabled {
-        set_camera_content_protection(daemon, true);
+        if let Err(error) = set_camera_content_protection(daemon, true) {
+            eprintln!("[recorder] camera content protection failed: {error}");
+        }
     }
     store_state(RecorderState::Recording);
     Ok(())
@@ -195,7 +197,9 @@ pub fn stop(daemon: &DaemonHandle) -> bool {
     );
     match stopped {
         Ok(_) => {
-            set_camera_content_protection(daemon, false);
+            if let Err(error) = set_camera_content_protection(daemon, false) {
+                eprintln!("[recorder] camera content protection failed: {error}");
+            }
             store_state(RecorderState::Idle);
             true
         }
@@ -206,29 +210,51 @@ pub fn stop(daemon: &DaemonHandle) -> bool {
     }
 }
 
-pub fn set_microphone(daemon: &DaemonHandle, enabled: bool, device_id: Option<&str>) {
-    let _ = daemon.call(
-        "screen-recorder",
-        "setMicrophone",
-        Some(json!({ "enabled": enabled, "deviceId": device_id })),
-    );
+pub fn set_microphone(
+    daemon: &DaemonHandle,
+    enabled: bool,
+    device_id: Option<&str>,
+) -> anyhow::Result<()> {
+    daemon
+        .call(
+            "screen-recorder",
+            "setMicrophone",
+            Some(json!({ "enabled": enabled, "deviceId": device_id })),
+        )
+        .map(|_| ())
 }
 
-pub fn set_system_audio(daemon: &DaemonHandle, enabled: bool) {
-    let _ = daemon.call(
-        "screen-recorder",
-        "setSystemAudio",
-        Some(json!({ "enabled": enabled })),
-    );
+pub fn set_system_audio(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
+    daemon
+        .call(
+            "screen-recorder",
+            "setSystemAudio",
+            Some(json!({ "enabled": enabled })),
+        )
+        .map(|_| ())
 }
 
-pub fn set_camera(daemon: &DaemonHandle, enabled: bool) {
-    let _ = daemon.call(
-        "screen-recorder",
-        "setCamera",
-        Some(json!({ "enabled": enabled })),
-    );
-    set_camera_content_protection(daemon, enabled);
+pub fn set_camera(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
+    daemon
+        .call(
+            "screen-recorder",
+            "setCamera",
+            Some(json!({ "enabled": enabled })),
+        )
+        .map(|_| ())?;
+    if let Err(error) = set_camera_content_protection(daemon, enabled) {
+        // The camera was switched but its capture exclusion could not be, so
+        // the daemon is rolled back to the state the caller still believes in.
+        if enabled {
+            let _ = daemon.call(
+                "screen-recorder",
+                "setCamera",
+                Some(json!({ "enabled": false })),
+            );
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// The daemon's `camera_preview` module defaults `content_protected` to false
@@ -236,12 +262,14 @@ pub fn set_camera(daemon: &DaemonHandle, enabled: bool) {
 /// `recording-actions.ts` — the shell must switch the capture affinity
 /// explicitly on start and toggle, and back off on stop. Without this the
 /// preview bubble is burned into the recording.
-fn set_camera_content_protection(daemon: &DaemonHandle, enabled: bool) {
-    let _ = daemon.call(
-        "camera-preview",
-        "setContentProtection",
-        Some(json!({ "enabled": enabled })),
-    );
+fn set_camera_content_protection(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
+    daemon
+        .call(
+            "camera-preview",
+            "setContentProtection",
+            Some(json!({ "enabled": enabled })),
+        )
+        .map(|_| ())
 }
 
 /// Port of `formatDuration` in the recording control bar: `M:SS`.

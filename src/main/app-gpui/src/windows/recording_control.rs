@@ -77,6 +77,7 @@ impl RecordingControl {
                     ..Default::default()
                 },
                 |window, cx| {
+                    configure_toolbar_window(window);
                     let view = cx.new(|cx| Self {
                         mode: Mode::PreRecording,
                         target,
@@ -171,44 +172,59 @@ impl RecordingControl {
     /// AGENTS documents that the microphone, system-sound and camera toggles
     /// stay live while a recording runs, so they are applied through the
     /// recorder's setters instead of being frozen at start.
-    fn set_system_audio(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.system_audio = enabled;
+    fn set_system_audio(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
         if self.mode == Mode::Recording {
-            recorder::set_system_audio(&crate::state::state(cx).daemon, enabled);
+            let result = recorder::set_system_audio(&crate::state::state(cx).daemon, enabled);
+            if let Err(error) = result {
+                report_toggle_failure(cx, &error);
+                return false;
+            }
         }
+        self.system_audio = enabled;
         cx.notify();
+        true
     }
 
-    fn set_microphone(&mut self, enabled: bool, cx: &mut Context<Self>) {
+    fn set_microphone(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
         if enabled
             && !crate::system::permissions::ensure_access(
                 crate::system::permissions::Device::Microphone,
             )
         {
-            return;
+            return false;
         }
-        self.microphone = enabled;
         if self.mode == Mode::Recording {
             let service = crate::state::state(cx);
-            let device = service.config.get().recording.selected_mic_id;
-            recorder::set_microphone(&service.daemon, enabled, device.as_deref());
+            let result =
+                recorder::set_microphone(&service.daemon, enabled, self.selected_mic_id.as_deref());
+            if let Err(error) = result {
+                report_toggle_failure(cx, &error);
+                return false;
+            }
         }
+        self.microphone = enabled;
         cx.notify();
+        true
     }
 
-    fn set_camera(&mut self, enabled: bool, cx: &mut Context<Self>) {
+    fn set_camera(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
         if enabled
             && !crate::system::permissions::ensure_access(
                 crate::system::permissions::Device::Camera,
             )
         {
-            return;
+            return false;
+        }
+        if self.mode == Mode::Recording {
+            let result = recorder::set_camera(&crate::state::state(cx).daemon, enabled);
+            if let Err(error) = result {
+                report_toggle_failure(cx, &error);
+                return false;
+            }
         }
         self.camera = enabled;
-        if self.mode == Mode::Recording {
-            recorder::set_camera(&crate::state::state(cx).daemon, enabled);
-        }
         cx.notify();
+        true
     }
 
     fn input_toggles(&self, cx: &mut Context<Self>) -> [AnyElement; 3] {
@@ -354,15 +370,25 @@ impl RecordingControl {
     ) {
         match kind {
             crate::system::devices::DeviceKind::Microphone => {
+                let previous = self.selected_mic_id.clone();
                 self.selected_mic_id = Some(id.to_string());
-                self.set_microphone(true, cx);
+                if !self.set_microphone(true, cx) {
+                    self.selected_mic_id = previous;
+                    cx.notify();
+                    return;
+                }
                 crate::state::state(cx).config.update(|config| {
                     config.recording.selected_mic_id = Some(id.to_string());
                 });
             }
             crate::system::devices::DeviceKind::Camera => {
+                let previous = self.selected_camera_id.clone();
                 self.selected_camera_id = Some(id.to_string());
-                self.set_camera(true, cx);
+                if !self.set_camera(true, cx) {
+                    self.selected_camera_id = previous;
+                    cx.notify();
+                    return;
+                }
                 crate::state::state(cx).config.update(|config| {
                     config.recording.camera.selected_device_id = Some(id.to_string());
                 });
@@ -445,6 +471,49 @@ impl RecordingControl {
         window.remove_window();
         registry::close(RegistryKind::RecordingControl, cx);
     }
+}
+
+fn report_toggle_failure(cx: &mut Context<RecordingControl>, error: &anyhow::Error) {
+    crate::windows::toast::Toast::show(cx, "Recording control failed", error.to_string());
+}
+
+fn configure_toolbar_window(window: &Window) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+            DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+        };
+
+        let Some(hwnd) = crate::windows::window_hwnd(window) else {
+            return;
+        };
+        let transitions_disabled = windows::core::BOOL(1);
+        let border_color = DWMWA_COLOR_NONE;
+        let corner_preference = DWMWCP_DONOTROUND;
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED,
+                &transitions_disabled as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&transitions_disabled) as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                &border_color as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&border_color) as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &corner_preference as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&corner_preference) as u32,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
 }
 
 fn bar_bounds(cx: &mut App, rect: ScreenRect, width: f32) -> Bounds<gpui::Pixels> {

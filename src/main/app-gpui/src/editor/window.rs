@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, px, App, Context, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Render, Styled, Subscription, Window,
+    Render, ScrollWheelEvent, Styled, Subscription, Window,
 };
 
 use crate::editor::actions;
@@ -26,7 +26,7 @@ use crate::ui::menu::MenuHandle;
 
 pub struct EditorWindow {
     pub image: Option<Arc<gpui::RenderImage>>,
-    pub base_image: Option<image::DynamicImage>,
+    pub base_image: Option<Arc<image::DynamicImage>>,
     pub is_copied: bool,
     pub image_width: f32,
     pub image_height: f32,
@@ -92,6 +92,9 @@ pub struct EditorWindow {
         u32,
         Vec<crate::editor::layers::ImageLayer>,
     )>,
+    backdrop_generation: u64,
+    backdrop_task: Option<gpui::Task<()>>,
+    inset_color: Option<String>,
     /// The stage's scroll position, which ctrl-drag pans.
     stage_scroll: gpui::ScrollHandle,
     /// Pointer position and scroll offset a pan started from.
@@ -115,7 +118,7 @@ impl EditorWindow {
 
         let mut editor = Self {
             image,
-            base_image: base,
+            base_image: base.map(Arc::new),
             layers: Vec::new(),
             capture_mode: false,
             balance_crop: None,
@@ -124,6 +127,9 @@ impl EditorWindow {
             annotation_clipboard: Vec::new(),
             backdrop: None,
             backdrop_key: None,
+            backdrop_generation: 0,
+            backdrop_task: None,
+            inset_color: None,
             stage_scroll: gpui::ScrollHandle::new(),
             pan_origin: None,
             is_copied: false,
@@ -282,13 +288,20 @@ impl EditorWindow {
 
     /// Renders the wallpaper backdrop when the settings or the image size have
     /// changed since the last one.
-    fn refresh_backdrop(&mut self) {
+    fn refresh_backdrop(&mut self, cx: &mut Context<Self>) {
         if !self
             .wallpaper
             .is_active_with_layers(!self.layers.is_empty())
         {
+            if self.backdrop.is_some()
+                || self.backdrop_key.is_some()
+                || self.backdrop_task.is_some()
+            {
+                self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+            }
             self.backdrop = None;
             self.backdrop_key = None;
+            self.backdrop_task = None;
             return;
         }
         // The frame surrounds the whole group, so the layout is computed from
@@ -309,28 +322,53 @@ impl EditorWindow {
         if self.backdrop_key.as_ref() == Some(&key) {
             return;
         }
-        let has_layers = !self.layers.is_empty();
-        let inset_color = (self.wallpaper.inset > 0.0)
-            .then(|| {
-                let base = self.base_image.as_ref()?.to_rgba8();
-                let pixmap = crate::editor::export::from_rgba(&base)?;
-                crate::render::color_detection::dominant_inset_color(
-                    pixmap.as_ref(),
-                    crate::render::color_detection::ContentBounds::default(),
-                )
-            })
-            .flatten();
-        let _ = has_layers;
-        self.backdrop = crate::editor::export::render_backdrop(
-            &self.wallpaper,
-            size.0,
-            size.1,
-            self.image_width as f64,
-            self.image_height as f64,
-            inset_color,
-            &self.layers,
-        );
         self.backdrop_key = Some(key);
+        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+        let generation = self.backdrop_generation;
+        let wallpaper = self.wallpaper.clone();
+        let image_width = self.image_width as f64;
+        let image_height = self.image_height as f64;
+        let layers = self.layers.clone();
+        let inset_color = self.inset_color.clone();
+        let base_image = self.base_image.clone();
+        let background = cx.background_executor().clone();
+        let task = cx.background_executor().spawn(async move {
+            background.timer(std::time::Duration::from_millis(16)).await;
+            let inset_color = if wallpaper.inset > 0.0 && inset_color.is_none() {
+                base_image.as_ref().and_then(|base| {
+                    let base = base.to_rgba8();
+                    let pixmap = crate::editor::export::from_rgba(&base)?;
+                    crate::render::color_detection::dominant_inset_color(
+                        pixmap.as_ref(),
+                        crate::render::color_detection::ContentBounds::default(),
+                    )
+                })
+            } else {
+                inset_color
+            };
+            let rendered = crate::editor::export::render_backdrop(
+                &wallpaper,
+                size.0,
+                size.1,
+                image_width,
+                image_height,
+                inset_color.clone(),
+                &layers,
+            );
+            (rendered, inset_color)
+        });
+        self.backdrop_task = Some(cx.spawn(async move |entity, cx| {
+            let (rendered, inset_color) = task.await;
+            let _ = entity.update(cx, |editor, cx| {
+                if editor.backdrop_generation != generation {
+                    return;
+                }
+                editor.backdrop = rendered;
+                editor.inset_color = inset_color;
+                editor.backdrop_task = None;
+                cx.notify();
+            });
+        }));
     }
 
     fn sync_snapshot(&self) {
@@ -404,7 +442,7 @@ impl EditorWindow {
             natural_height: size.1 as f64,
             edge,
         });
-        self.refresh_backdrop();
+        self.refresh_backdrop(cx);
         self.sync_snapshot();
         cx.notify();
     }
@@ -414,7 +452,7 @@ impl EditorWindow {
             return;
         }
         self.layers.clear();
-        self.refresh_backdrop();
+        self.refresh_backdrop(cx);
         self.sync_snapshot();
         cx.notify();
     }
@@ -713,7 +751,7 @@ impl EditorWindow {
 
         if let Some(base) = &self.base_image {
             let cropped = image::imageops::crop_imm(
-                base,
+                base.as_ref(),
                 left.max(0.0) as u32,
                 top.max(0.0) as u32,
                 crop_width as u32,
@@ -730,7 +768,8 @@ impl EditorWindow {
             self.image = Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
                 image::Frame::new(bgra)
             ])));
-            self.base_image = Some(image::DynamicImage::ImageRgba8(cropped));
+            self.base_image = Some(Arc::new(image::DynamicImage::ImageRgba8(cropped)));
+            self.inset_color = None;
         }
 
         let mut annotations = self.history.current().to_vec();
@@ -1104,6 +1143,7 @@ impl Render for EditorWindow {
         let theme = active_theme(cx);
         self.fit_to_window(window);
         self.sync_snapshot();
+        self.refresh_backdrop(cx);
         self.refresh_zoom_backdrop(cx);
 
         let handlers = build_handlers(&weak);
@@ -1343,6 +1383,29 @@ impl Render for EditorWindow {
                                     .ok();
                             }
                         })
+                        .on_scroll_wheel({
+                            let entity = cx.entity().downgrade();
+                            move |event: &ScrollWheelEvent, _window, cx| {
+                                if !event.modifiers.secondary() {
+                                    return;
+                                }
+                                let delta = event.delta.pixel_delta(px(36.0)).y;
+                                entity
+                                    .update(cx, |editor, cx| {
+                                        let step = if delta > Pixels::ZERO {
+                                            -ZOOM_STEP
+                                        } else if delta < Pixels::ZERO {
+                                            ZOOM_STEP
+                                        } else {
+                                            return;
+                                        };
+                                        editor.set_zoom(editor.zoom + step);
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }
+                        })
                         .child(zoom_control(
                             self.zoom,
                             self.zoom_backdrop.as_ref().map(|b| b.image()),
@@ -1368,7 +1431,7 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
             entity.update(cx, |editor, cx| {
                 editor.apply_option(option, cx);
                 editor.refresh_balance_crop();
-                editor.refresh_backdrop();
+                editor.refresh_backdrop(cx);
                 editor.sync_snapshot();
                 cx.notify();
             });
@@ -1550,16 +1613,27 @@ impl EditorWindow {
             EditorOption::WallpaperSpacing(value) => self.wallpaper.spacing = value,
             EditorOption::ClearAttachedImages => self.clear_layers(cx),
             EditorOption::WallpaperUseDesktop => {
-                let source =
-                    crate::editor::background::desktop_wallpaper(&crate::state::state(cx).daemon);
-                match source {
-                    Some(source) => self.wallpaper.set_background_image(Some(source)),
-                    None => crate::windows::toast::Toast::show(
-                        cx,
-                        "Wallpaper unavailable",
-                        "The desktop wallpaper could not be read.",
-                    ),
-                }
+                let daemon = crate::state::state(cx).daemon;
+                let background = cx.background_executor().clone();
+                cx.spawn(async move |entity, cx| {
+                    let source = background
+                        .spawn(async move { crate::editor::background::desktop_wallpaper(&daemon) })
+                        .await;
+                    let _ = entity.update(cx, |editor, cx| match source {
+                        Some(source) => {
+                            editor.wallpaper.set_background_image(Some(source));
+                            editor.refresh_backdrop(cx);
+                            editor.sync_snapshot();
+                            cx.notify();
+                        }
+                        None => crate::windows::toast::Toast::show(
+                            cx,
+                            "Wallpaper unavailable",
+                            "The desktop wallpaper could not be read.",
+                        ),
+                    });
+                })
+                .detach();
             }
             EditorOption::WallpaperPickImage => {
                 if let Some(path) = crate::editor::background::pick_image() {
@@ -1779,7 +1853,7 @@ impl EditorWindow {
     /// natural size.
     pub fn export_png(&self) -> anyhow::Result<Vec<u8>> {
         let canvas = crate::editor::export::compose_with_layers(
-            self.base_image.as_ref(),
+            self.base_image.as_deref(),
             self.image_width as u32,
             self.image_height as u32,
             self.history.current(),

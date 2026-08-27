@@ -236,6 +236,7 @@ fn ve_export() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct RecordingShortcuts {
     #[serde(default)]
     pub area: String,
@@ -243,16 +244,6 @@ pub struct RecordingShortcuts {
     pub screen: String,
     #[serde(default)]
     pub window: String,
-}
-
-impl Default for RecordingShortcuts {
-    fn default() -> Self {
-        Self {
-            area: String::new(),
-            screen: String::new(),
-            window: String::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -313,6 +304,7 @@ impl Default for ShortcutsConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct ScreenshotShortcuts {
     #[serde(default)]
     pub area: String,
@@ -320,16 +312,6 @@ pub struct ScreenshotShortcuts {
     pub window: String,
     #[serde(default)]
     pub screen: String,
-}
-
-impl Default for ScreenshotShortcuts {
-    fn default() -> Self {
-        Self {
-            area: String::new(),
-            window: String::new(),
-            screen: String::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

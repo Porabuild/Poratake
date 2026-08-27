@@ -1302,7 +1302,7 @@ fn music_groups(
         } else {
             track.group_id.as_str()
         };
-        if seen.iter().any(|item| *item == key) {
+        if seen.contains(&key) {
             continue;
         }
         seen.push(key);

@@ -487,14 +487,7 @@ impl SettingsWindow {
         };
         let (placeholder, secret, set) = (*placeholder, *secret, *set);
         let initial = get(&self.config);
-        self.text_field(
-            item.id.to_string(),
-            initial,
-            placeholder,
-            secret,
-            cx,
-            move |config, value| set(config, value),
-        )
+        self.text_field(item.id.to_string(), initial, placeholder, secret, cx, set)
     }
 
     pub(crate) fn naming_pattern_field(&mut self, cx: &mut Context<Self>) -> Entity<TextField> {
@@ -594,7 +587,7 @@ impl Render for SettingsWindow {
         } else if self.active == Category::About {
             about::render(&theme, self.update_status(), cx)
         } else {
-            category_page(self.active, self, &theme, cx)
+            category_page(self.active, self, &theme, window, cx)
         };
 
         div()
@@ -607,7 +600,7 @@ impl Render for SettingsWindow {
             .size_full()
             .bg(theme.content_background)
             .text_color(theme.foreground)
-            .child(sidebar(self, &theme, cx))
+            .child(sidebar(self, &theme, window, cx))
             .child(
                 div()
                     .id("settings-content")
@@ -660,19 +653,28 @@ impl Render for SettingsWindow {
 fn sidebar(
     window: &mut SettingsWindow,
     theme: &ThemeVars,
+    ui_window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
     let searching = !window.search_query(cx).is_empty();
     let active = window.active;
     let categories = Category::supported();
 
-    let entry = |category: Category, cx: &mut Context<SettingsWindow>| {
+    let mut entry = |category: Category, cx: &mut Context<SettingsWindow>| {
         let selected = !searching && active == category;
+        let focus = crate::ui::primitives::control_focus(
+            &format!("settings-nav-{}", category.id()),
+            false,
+            ui_window,
+            cx,
+        );
         div()
             .id(SharedString::from(format!(
                 "settings-nav-{}",
                 category.id()
             )))
+            .track_focus(&focus)
+            .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
             .flex()
             .flex_row()
             .items_center()
@@ -846,6 +848,7 @@ fn category_page(
     category: Category,
     window: &mut SettingsWindow,
     theme: &ThemeVars,
+    ui_window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
     let is_shortcuts = category == Category::Shortcuts;
@@ -916,7 +919,7 @@ fn category_page(
         stack = stack.child(block);
     }
     page = page.child(stack);
-    page = extras(page, window, category, &filter, theme, cx);
+    page = extras(page, window, category, &filter, theme, ui_window, cx);
 
     if rendered == 0 && is_shortcuts && !filter.is_empty() {
         page = page.child(
@@ -1046,6 +1049,7 @@ fn extras(
     category: Category,
     filter: &str,
     theme: &ThemeVars,
+    ui_window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> gpui::Div {
     let items = registry::items();
@@ -1070,10 +1074,10 @@ fn extras(
         .flex_col()
         .gap(px(ITEM_GAP))
         .pt(px(SECTION_GAP))
-        .child(disclosure_header(key, open, theme, cx));
+        .child(disclosure_header(key, open, theme, ui_window, cx));
     if open {
         if has_theme_cards {
-            block = block.child(theme_cards(window, theme, cx));
+            block = block.child(theme_cards(window, theme, ui_window, cx));
         }
         for index in extra {
             let item = &items[index];
@@ -1094,10 +1098,19 @@ fn disclosure_header(
     key: &'static str,
     open: bool,
     theme: &ThemeVars,
+    ui_window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
+    let focus = crate::ui::primitives::control_focus(
+        &format!("settings-extras-{key}"),
+        false,
+        ui_window,
+        cx,
+    );
     div()
         .id(SharedString::from(format!("settings-extras-{key}")))
+        .track_focus(&focus)
+        .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
         .flex()
         .flex_row()
         .items_center()
@@ -1125,12 +1138,19 @@ fn disclosure_header(
 fn theme_cards(
     window: &SettingsWindow,
     theme: &ThemeVars,
+    ui_window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
     let active_theme_id = window.config().appearance.theme.clone();
     let mut row = div().flex().flex_row().flex_wrap().gap(px(8.0)).pb(px(8.0));
     for preset in APP_THEME_PRESETS {
-        row = row.child(theme_card(preset, active_theme_id == preset.id, theme, cx));
+        row = row.child(theme_card(
+            preset,
+            active_theme_id == preset.id,
+            theme,
+            ui_window,
+            cx,
+        ));
     }
     row.into_any_element()
 }
@@ -1139,13 +1159,15 @@ fn theme_card(
     preset: &'static AppThemePreset,
     active: bool,
     theme: &ThemeVars,
+    ui_window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
+    let id = format!("appearance-theme-{}", preset.id);
+    let focus = crate::ui::primitives::control_focus(&id, false, ui_window, cx);
     div()
-        .id(SharedString::from(format!(
-            "appearance-theme-{}",
-            preset.id
-        )))
+        .id(SharedString::from(id))
+        .track_focus(&focus)
+        .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
         .flex()
         .flex_col()
         .gap(px(8.0))

@@ -33,6 +33,7 @@ pub struct DaemonHandle {
 }
 
 struct DaemonInner {
+    lifecycle: Mutex<()>,
     child: Mutex<Option<Child>>,
     stdin: Mutex<Option<std::process::ChildStdin>>,
     pending: Mutex<HashMap<String, Pending>>,
@@ -64,8 +65,6 @@ fn find_daemon_binary() -> PathBuf {
             if packaged.exists() {
                 return packaged;
             }
-            // Dev layout: <repo>/src/main/app-gpui/target/debug/poratake-gpui
-            // → <repo>/src/main/daemon/poratake-daemon(.exe)
             for ancestors in dir.ancestors().skip(1) {
                 let candidate = ancestors
                     .join("src")
@@ -90,6 +89,7 @@ impl DaemonHandle {
     pub fn with_binary(binary_path: PathBuf) -> Self {
         Self {
             inner: Arc::new(DaemonInner {
+                lifecycle: Mutex::new(()),
                 child: Mutex::new(None),
                 stdin: Mutex::new(None),
                 pending: Mutex::new(HashMap::new()),
@@ -126,7 +126,8 @@ impl DaemonHandle {
 
     /// Starts the daemon and waits for its `system:ready` event.
     pub fn start(&self) -> Result<()> {
-        if self.is_running() {
+        let _lifecycle = self.inner.lifecycle.lock();
+        if self.inner.child.lock().is_some() {
             return Ok(());
         }
 
@@ -231,6 +232,7 @@ impl DaemonHandle {
     }
 
     pub fn stop(&self) {
+        let _lifecycle = self.inner.lifecycle.lock();
         self.inner.shutting_down.store(true, Ordering::SeqCst);
         self.send_raw(&json!({
             "id": "quit",

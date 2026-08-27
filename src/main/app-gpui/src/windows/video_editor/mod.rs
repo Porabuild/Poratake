@@ -1085,7 +1085,7 @@ impl VideoEditorWindow {
                 crate::windows::toast::Toast::show(
                     cx,
                     "Subtitles imported",
-                    &format!("{} segments loaded.", data.segments.len()),
+                    format!("{} segments loaded.", data.segments.len()),
                 );
                 self.refresh_subtitle_count();
                 self.reload_preview(cx);
@@ -1250,7 +1250,7 @@ impl VideoEditorWindow {
                 self.reload_preview(cx);
             }
             Err(error) => {
-                crate::windows::toast::Toast::show(cx, "Import failed", &error.to_string());
+                crate::windows::toast::Toast::show(cx, "Import failed", error.to_string());
             }
         }
         cx.notify();
@@ -2065,18 +2065,6 @@ fn keyboard_sound_file(kind: &str, index: u32) -> Option<PathBuf> {
     None
 }
 
-#[cfg(test)]
-mod keyboard_demo_tests {
-    use super::*;
-
-    #[test]
-    fn keyboard_demo_resolves_bundled_samples() {
-        let path = keyboard_sound_file("cherry-blue", 1).expect("bundled keyboard sample");
-        assert!(path.ends_with("press-1.mp3"));
-        assert!(path.is_file());
-    }
-}
-
 fn play_keyboard_demo_loop(kind: &str, stop: Arc<AtomicBool>) {
     let started = std::time::Instant::now();
     let mut index = 1_u32;
@@ -2102,5 +2090,17 @@ fn play_keyboard_demo_loop(kind: &str, stop: Arc<AtomicBool>) {
         }
         index = if index >= 4 { 1 } else { index + 1 };
         std::thread::sleep(Duration::from_millis(160));
+    }
+}
+
+#[cfg(test)]
+mod keyboard_demo_tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_demo_resolves_bundled_samples() {
+        let path = keyboard_sound_file("cherry-blue", 1).expect("bundled keyboard sample");
+        assert!(path.ends_with("press-1.mp3"));
+        assert!(path.is_file());
     }
 }

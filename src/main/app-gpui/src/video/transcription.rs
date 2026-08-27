@@ -68,15 +68,6 @@ pub fn is_binary_available() -> bool {
     cli_path().is_file()
 }
 
-pub fn is_model_available(model: &str) -> bool {
-    model_path(model).is_file()
-}
-
-/// `isWhisperReady`.
-pub fn is_ready(model: &str) -> bool {
-    is_binary_available() && is_model_available(model)
-}
-
 /// `-dtw` takes the model name as its preset.
 fn dtw_preset(model: &str) -> &str {
     match model {
@@ -455,8 +446,7 @@ pub fn transcribe(project: &Path, options: &Options) -> Result<SubtitleData, Str
         return Err("The recording has no audio to transcribe".to_string());
     }
 
-    let folder =
-        crate::video::project::project_folder(project).unwrap_or_else(|| std::env::temp_dir());
+    let folder = crate::video::project::project_folder(project).unwrap_or_else(std::env::temp_dir);
     let wav_path = folder.join("temp_transcribe.wav");
     let json_stem = folder.join("temp_transcribe");
     let json_path = folder.join("temp_transcribe.json");
@@ -740,15 +730,5 @@ mod tests {
         let error = import_from(&std::env::temp_dir(), &source).unwrap_err();
         assert!(error.contains("no subtitle segments"), "{error}");
         let _ = std::fs::remove_file(&source);
-    }
-
-    #[test]
-    fn readiness_needs_both_the_binary_and_the_model() {
-        // Neither is present in the test environment, so this only asserts the
-        // conjunction rather than a specific installation.
-        assert_eq!(
-            is_ready("base"),
-            is_binary_available() && is_model_available("base")
-        );
     }
 }

@@ -18,6 +18,7 @@ pub enum ButtonVariant {
     Tertiary,
     Ghost,
     Outline,
+    #[allow(dead_code)]
     Danger,
     Link,
 }

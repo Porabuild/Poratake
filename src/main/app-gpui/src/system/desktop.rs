@@ -53,20 +53,6 @@ fn open_url_windows(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn external_urls_allow_only_http_and_https() {
-        assert!(super::allowed_external_url("https://example.com/a&b|c"));
-        assert!(super::allowed_external_url("HTTP://example.com"));
-        assert!(!super::allowed_external_url(
-            "file:///C:/Windows/System32/calc.exe"
-        ));
-        assert!(!super::allowed_external_url("javascript:alert(1)"));
-        assert!(!super::allowed_external_url("example.com"));
-    }
-}
-
 pub fn reveal_in_file_manager(path: &Path) {
     let target = path.to_string_lossy().to_string();
     let result = if cfg!(target_os = "windows") {
@@ -81,5 +67,19 @@ pub fn reveal_in_file_manager(path: &Path) {
     };
     if let Err(error) = result {
         eprintln!("[desktop] failed to reveal {target}: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn external_urls_allow_only_http_and_https() {
+        assert!(super::allowed_external_url("https://example.com/a&b|c"));
+        assert!(super::allowed_external_url("HTTP://example.com"));
+        assert!(!super::allowed_external_url(
+            "file:///C:/Windows/System32/calc.exe"
+        ));
+        assert!(!super::allowed_external_url("javascript:alert(1)"));
+        assert!(!super::allowed_external_url("example.com"));
     }
 }

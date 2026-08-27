@@ -216,7 +216,7 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
         255
     };
     let highlight_alpha = config.subtitle_style.opacity.clamp(0.0, 1.0);
-    let muted_alpha = (highlight_alpha * 0.35).max(0.25).min(1.0);
+    let muted_alpha = (highlight_alpha * 0.35).clamp(0.25, 1.0);
     let muted = Color::from_rgba8(channel, channel, channel, (muted_alpha * 255.0) as u8);
     let highlighted = Color::from_rgba8(channel, channel, channel, (highlight_alpha * 255.0) as u8);
 

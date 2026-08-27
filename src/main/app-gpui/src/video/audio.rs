@@ -78,8 +78,8 @@ pub fn mix(tracks: &[Track], length_frames: usize) -> Pcm {
             continue;
         }
         let count = accumulator.len().min(track.samples.len());
-        for index in 0..count {
-            accumulator[index] += track.samples[index] as f32 * volume;
+        for (accumulator, sample) in accumulator[..count].iter_mut().zip(&track.samples[..count]) {
+            *accumulator += *sample as f32 * volume;
         }
     }
     accumulator

@@ -64,7 +64,7 @@ fn parse_rgb(value: &str) -> Option<Color> {
     let open = value.find('(')?;
     let close = value.rfind(')')?;
     let parts: Vec<&str> = value[open + 1..close]
-        .split(|character| character == ',' || character == '/')
+        .split([',', '/'])
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .collect();

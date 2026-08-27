@@ -523,7 +523,7 @@ pub fn rounded_rect_path(x: f32, y: f32, width: f32, height: f32, radius: f32) -
     }
 
     // A circular arc's Bezier control offset.
-    let control = radius * (1.0 - 0.552_284_75);
+    let control = radius * (1.0 - 0.552_284_8);
     let (right, bottom) = (x + width, y + height);
     builder.move_to(x + radius, y);
     builder.line_to(right - radius, y);

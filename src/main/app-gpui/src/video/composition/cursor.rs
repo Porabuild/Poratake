@@ -145,8 +145,7 @@ pub fn apply_smoothing(
     let mut weighted = (0.0, 0.0);
     let mut total_weight = 0.0;
     let start = base_index.saturating_sub(20);
-    for index in start..events.len().min(base_index + 11) {
-        let event = &events[index];
+    for event in &events[start..events.len().min(base_index + 11)] {
         if event.timestamp < window_start {
             continue;
         }
@@ -261,7 +260,7 @@ pub fn sprite_size(size_percent: f64, video_height: f64, recording_height: f64) 
     } else {
         1.0
     };
-    let display_scale = scale.max(1.0).min(MAX_DISPLAY_SCALE);
+    let display_scale = scale.clamp(1.0, MAX_DISPLAY_SCALE);
     (size_percent / 100.0) * LIFE_SIZE_SPRITE_PX * display_scale
 }
 

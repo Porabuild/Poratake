@@ -45,9 +45,7 @@ pub fn optimal_zoom(
     // `Math.round(Math.min(zoomX, zoomY) * 100) / 100`.
     let fitted = (zoom_x.min(zoom_y) * 100.0).round() / 100.0;
 
-    fitted
-        .max(crate::editor::options::MIN_ZOOM)
-        .min(MAX_FIT_ZOOM)
+    fitted.clamp(crate::editor::options::MIN_ZOOM, MAX_FIT_ZOOM)
 }
 
 #[cfg(test)]
@@ -139,6 +137,43 @@ mod window_tests {
         assert!(
             zoom >= crate::editor::options::MIN_ZOOM,
             "and not below the floor, got {zoom}"
+        );
+    }
+
+    #[gpui::test]
+    fn secondary_scroll_zooms_the_editor(cx: &mut gpui::TestAppContext) {
+        use gpui::{point, px, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+
+        use crate::editor::window::EditorWindow;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(600, 400, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .expect("write a capture");
+        let path = path.to_string_lossy().to_string();
+        let (editor, cx) =
+            cx.add_window_view(|window, cx| EditorWindow::from_file(&path, window, cx));
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+        let initial_zoom = editor.read_with(cx, |editor, _| editor.zoom);
+
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(400.0), px(300.0)),
+            delta: ScrollDelta::Lines(point(0.0, -1.0)),
+            touch_phase: TouchPhase::Moved,
+            modifiers: Modifiers::secondary_key(),
+        });
+
+        let zoom = editor.read_with(cx, |editor, _| editor.zoom);
+        assert!(
+            zoom > initial_zoom,
+            "{initial_zoom} should increase, got {zoom}"
         );
     }
 }

@@ -168,8 +168,9 @@ fn stroke_points(points: &[Vec2], options: &Options) -> Vec<StrokePoint> {
     let mut previous = stroke[0];
     let max = pts.len() - 1;
 
-    for index in 1..pts.len() {
-        let point = lrp(previous.point, pts[index], t);
+    for (index, point_raw) in pts[1..].iter().enumerate() {
+        let index = index + 1;
+        let point = lrp(previous.point, *point_raw, t);
         if point == previous.point {
             continue;
         }

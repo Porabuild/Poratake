@@ -50,10 +50,10 @@ pub fn export_dimensions(
     let mut height = resolution_height(resolution).unwrap_or(composition_height);
     let mut width = (height as f64 * aspect).round() as u32;
 
-    if width % 2 != 0 {
+    if !width.is_multiple_of(2) {
         width += 1;
     }
-    if height % 2 != 0 {
+    if !height.is_multiple_of(2) {
         height += 1;
     }
 
@@ -66,10 +66,10 @@ pub fn export_dimensions(
             .min((MAX_H264_PIXELS as f64 / (width as f64 * height as f64)).sqrt());
         width = (width as f64 * factor).floor() as u32;
         height = (height as f64 * factor).floor() as u32;
-        if width % 2 != 0 {
+        if !width.is_multiple_of(2) {
             width -= 1;
         }
-        if height % 2 != 0 {
+        if !height.is_multiple_of(2) {
             height -= 1;
         }
     }

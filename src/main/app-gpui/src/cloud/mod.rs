@@ -88,6 +88,8 @@ pub fn test_connection(config: &CloudConfig) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::schema::RestProviderConfig;
+
     use super::*;
 
     #[test]
@@ -100,10 +102,15 @@ mod tests {
 
     #[test]
     fn provider_fields_complete_ignores_the_enabled_switch() {
-        let mut config = CloudConfig::default();
-        config.active_provider = "rest".into();
-        config.rest.url = "https://example.test/upload".into();
-        config.rest.response_is_plain_text = true;
+        let mut config = CloudConfig {
+            active_provider: "rest".into(),
+            rest: RestProviderConfig {
+                url: "https://example.test/upload".into(),
+                response_is_plain_text: true,
+                ..RestProviderConfig::default()
+            },
+            ..CloudConfig::default()
+        };
         assert!(provider_fields_complete(&config));
         assert!(!is_configured(&config), "uploads are still switched off");
         config.enabled = true;

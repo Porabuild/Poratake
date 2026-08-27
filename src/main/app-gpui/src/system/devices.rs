@@ -73,6 +73,23 @@ pub fn options(devices: &[MediaDevice]) -> Vec<(String, String)> {
         .collect()
 }
 
+pub fn options_with_selection(
+    devices: &[MediaDevice],
+    selected: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut result = vec![(String::new(), "System Default".to_string())];
+    result.extend(options(devices));
+    if let Some(selected_id) = selected {
+        if !selected_id.is_empty() && !devices.iter().any(|device| device.id == selected_id) {
+            result.push((
+                selected_id.to_string(),
+                format!("Unavailable ({selected_id})"),
+            ));
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +123,15 @@ mod tests {
         let options = options(&devices);
         assert_eq!(options[0].1, "Mic A");
         assert_eq!(options[1].1, "b");
+    }
+
+    #[test]
+    fn device_options_keep_default_and_disconnected_selection() {
+        let options = options_with_selection(&[], Some("missing"));
+        assert_eq!(options[0], (String::new(), "System Default".into()));
+        assert_eq!(
+            options[1],
+            ("missing".into(), "Unavailable (missing)".into())
+        );
     }
 }

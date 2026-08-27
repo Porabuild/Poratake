@@ -12,7 +12,6 @@ use crate::theme::vars::active_theme;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::colors::transparent;
-use crate::ui::icon::icon_element;
 use crate::ui::menu::DismissHandler;
 
 /// `HeroColorPicker.Popover className="w-64 rounded-2xl! ... p-3!"`.
@@ -272,6 +271,8 @@ impl Render for ColorPickerPopover {
             .flex_col()
             .gap(px(12.0))
             .w(px(POPOVER_WIDTH))
+            .min_w(px(POPOVER_WIDTH))
+            .flex_shrink_0()
             .rounded(px(chrome::RADIUS_2XL))
             .border_1()
             .border_color(theme.border)
@@ -454,10 +455,14 @@ pub fn trigger(
                 .rounded(px(4.0))
                 .bg(swatch),
         )
-        .child(div().text_color(theme.muted_foreground).child(icon_element(
-            "chevron-down",
-            px(chrome::TOOL_OPTION_CHEVRON),
-        )))
+        .child(
+            div()
+                .text_color(theme.muted_foreground)
+                .child(crate::ui::icon::chevron_element(
+                    px(chrome::TOOL_OPTION_CHEVRON),
+                    open,
+                )),
+        )
 }
 
 #[cfg(test)]

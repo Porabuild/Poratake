@@ -419,8 +419,10 @@ mod tests {
 
     #[test]
     fn auto_layout_is_the_image_plus_padding() {
-        let mut settings = WallpaperSettings::default();
-        settings.padding = 40.0;
+        let settings = WallpaperSettings {
+            padding: 40.0,
+            ..WallpaperSettings::default()
+        };
         let ((width, height), (x, y, w, h)) = layout(&settings, 200.0, 100.0);
         assert_eq!((width, height), (280.0, 180.0));
         assert_eq!((x, y, w, h), (40.0, 40.0, 200.0, 100.0));
@@ -428,9 +430,13 @@ mod tests {
 
     #[test]
     fn a_window_frame_adds_its_title_bar_to_the_content() {
-        let mut settings = WallpaperSettings::default();
-        settings.padding = 10.0;
-        settings.window_frame.style = "macos-light".into();
+        let settings = WallpaperSettings {
+            padding: 10.0,
+            window_frame: WindowFrameSettings {
+                style: "macos-light".into(),
+            },
+            ..WallpaperSettings::default()
+        };
         let ((width, height), (_, _, image_width, content_height)) =
             layout(&settings, 200.0, 100.0);
         assert_eq!((width, height), (220.0, 148.0));
@@ -440,9 +446,11 @@ mod tests {
 
     #[test]
     fn a_fixed_ratio_widens_the_canvas() {
-        let mut settings = WallpaperSettings::default();
-        settings.padding = 10.0;
-        settings.aspect_ratio = "16:9".into();
+        let settings = WallpaperSettings {
+            padding: 10.0,
+            aspect_ratio: "16:9".into(),
+            ..WallpaperSettings::default()
+        };
         let ((width, height), _) = layout(&settings, 100.0, 100.0);
         assert!(width > height);
         assert!((width / height - 16.0 / 9.0).abs() < 0.001);

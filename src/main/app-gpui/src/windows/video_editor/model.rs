@@ -441,8 +441,10 @@ mod duration_tests {
     /// And once it is adopted, the total follows it.
     #[test]
     fn adopting_the_decoded_duration_gives_the_timeline_its_length() {
-        let mut state = VideoEditorState::default();
-        state.source_duration = Some(3.0);
+        let state = VideoEditorState {
+            source_duration: Some(3.0),
+            ..VideoEditorState::default()
+        };
         assert_eq!(
             total_duration(&state.segments, state.source_duration.unwrap_or(0.0)),
             3.0

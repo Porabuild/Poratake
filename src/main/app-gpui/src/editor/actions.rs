@@ -113,9 +113,11 @@ mod tests {
 
     #[test]
     fn a_cleared_shortcut_binds_nothing() {
-        let mut shortcuts = EditorShortcuts::default();
-        shortcuts.pen = String::new();
-        shortcuts.crop = String::new();
+        let shortcuts = EditorShortcuts {
+            pen: String::new(),
+            crop: String::new(),
+            ..EditorShortcuts::default()
+        };
         assert_eq!(tool_bindings(&shortcuts).len(), 10);
     }
 

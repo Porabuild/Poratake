@@ -192,7 +192,6 @@ fn separator(theme: &ThemeVars) -> AnyElement {
 fn thickness_entries(state: &ToolOptionsState, handlers: &EditorHandlers) -> Vec<MenuEntry> {
     let mut builder = MenuBuilder::new();
     for (width, height) in THICKNESS_OPTIONS {
-        let height = height;
         builder = builder.item(
             MenuItem::new(format!("{width}px"))
                 .trailing_check((width - state.stroke_width).abs() < 0.01)

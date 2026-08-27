@@ -138,8 +138,6 @@ pub const TAB_HOVER_MS: u64 = 150;
 
 pub const TOOLTIP_RADIUS: f32 = RADIUS_XL;
 pub const TOOLTIP_PAD: f32 = 8.0;
-pub const TOOLTIP_PAD_X: f32 = TOOLTIP_PAD;
-pub const TOOLTIP_PAD_Y: f32 = TOOLTIP_PAD;
 pub const TOOLTIP_TEXT: f32 = 12.0;
 /// `.tooltip { max-w-xs }`.
 pub const TOOLTIP_MAX_WIDTH: f32 = 320.0;
@@ -181,8 +179,10 @@ pub const OVERLAY_TOOLBAR_TOP_MAC: f32 = 48.0;
 pub const VIDEO_SIDEBAR_MIN: f32 = 240.0;
 pub const VIDEO_SIDEBAR_MAX: f32 = 560.0;
 pub const VIDEO_SIDEBAR_RESIZE: f32 = 6.0;
+#[allow(dead_code)]
 pub const DRAWING_TOOL_GRID_COLS: u32 = 5;
 pub const DRAWING_TOOL_GRID_GAP: f32 = 4.0;
+#[allow(dead_code)]
 pub const DRAWING_TOOL_BUTTON: f32 = 32.0;
 pub const DRAWING_STROKE_MIN: f64 = 1.0;
 pub const DRAWING_STROKE_MAX: f64 = 16.0;
@@ -801,8 +801,6 @@ mod tests {
         assert_eq!(TAB_INDICATOR, 2.0);
         assert_eq!(TOOLTIP_RADIUS, RADIUS_XL);
         assert_eq!(TOOLTIP_PAD, 8.0);
-        assert_eq!(TOOLTIP_PAD_X, 8.0);
-        assert_eq!(TOOLTIP_PAD_Y, 8.0);
         assert_eq!(TOOLTIP_TEXT, 12.0);
         assert_eq!(SWITCH_RADIUS, 9999.0);
         assert_eq!(SWITCH_MD_TRACK, (40.0, 20.0));

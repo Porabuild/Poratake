@@ -150,20 +150,12 @@ fn st_naming_pattern() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct SaveLocationsConfig {
     #[serde(default)]
     pub screenshot: String,
     #[serde(default)]
     pub video: String,
-}
-
-impl Default for SaveLocationsConfig {
-    fn default() -> Self {
-        Self {
-            screenshot: String::new(),
-            video: String::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -248,20 +240,12 @@ fn h_layout() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct OnboardingConfig {
     #[serde(default)]
     pub completed: bool,
     #[serde(default)]
     pub skipped: bool,
-}
-
-impl Default for OnboardingConfig {
-    fn default() -> Self {
-        Self {
-            completed: false,
-            skipped: false,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +255,7 @@ impl Default for OnboardingConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct S3ProviderConfig {
     #[serde(default)]
     pub endpoint: String,
@@ -288,36 +273,14 @@ pub struct S3ProviderConfig {
     pub custom_domain: String,
 }
 
-impl Default for S3ProviderConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: String::new(),
-            region: String::new(),
-            bucket: String::new(),
-            access_key_id: String::new(),
-            secret_access_key: String::new(),
-            path_prefix: String::new(),
-            custom_domain: String::new(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct RestHeader {
     #[serde(default)]
     pub key: String,
     #[serde(default)]
     pub value: String,
-}
-
-impl Default for RestHeader {
-    fn default() -> Self {
-        Self {
-            key: String::new(),
-            value: String::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -706,6 +669,7 @@ pub struct CustomGradient {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct WallpaperConfig {
     #[serde(default)]
     pub custom_backgrounds: Vec<CustomBackground>,
@@ -717,23 +681,13 @@ pub struct WallpaperConfig {
     pub default_preset_id: Option<String>,
 }
 
-impl Default for WallpaperConfig {
-    fn default() -> Self {
-        Self {
-            custom_backgrounds: Vec::new(),
-            presets: Vec::new(),
-            custom_gradients: None,
-            default_preset_id: None,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Root config (settings.ts `SettingsConfig`)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
+#[derive(Default)]
 pub struct SettingsConfig {
     pub appearance: Appearance,
     pub general: GeneralConfig,
@@ -750,29 +704,6 @@ pub struct SettingsConfig {
     pub preview: PreviewConfig,
     pub all_in_one: AllInOneConfig,
     pub scroll_capture: ScrollCaptureConfig,
-}
-
-impl Default for SettingsConfig {
-    fn default() -> Self {
-        // Mirrors DEFAULT_SETTINGS in settings.ts.
-        Self {
-            appearance: Appearance::default(),
-            general: GeneralConfig::default(),
-            screenshot: ScreenshotConfig::default(),
-            shortcuts: ShortcutsConfig::default(),
-            editor: EditorPreferences::default(),
-            wallpaper: WallpaperConfig::default(),
-            history: HistoryConfig::default(),
-            onboarding: OnboardingConfig::default(),
-            cloud: CloudConfig::default(),
-            recording: RecordingSettings::default(),
-            storage: StorageConfig::default(),
-            save_locations: SaveLocationsConfig::default(),
-            preview: PreviewConfig::default(),
-            all_in_one: AllInOneConfig::default(),
-            scroll_capture: ScrollCaptureConfig::default(),
-        }
-    }
 }
 
 /// Appearance (types/settings.ts `AppearanceConfig`).

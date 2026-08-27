@@ -295,6 +295,7 @@ impl RenderOnce for TitleBar {
                 .flex_row()
                 .items_center()
                 .gap(px(chrome::TITLE_BAR_GAP))
+                .flex_shrink_0()
                 .child(options)
                 .child(separator(&theme))
                 .child(tools)
@@ -304,6 +305,7 @@ impl RenderOnce for TitleBar {
                 .flex_row()
                 .items_center()
                 .gap(px(chrome::TITLE_BAR_GAP))
+                .flex_shrink_0()
                 .child(tools)
                 .child(separator(&theme))
                 .child(options)
@@ -312,6 +314,7 @@ impl RenderOnce for TitleBar {
         let drag = div()
             .id("editor-title-drag")
             .flex_1()
+            .min_w_0()
             .h_full()
             .window_control_area(gpui::WindowControlArea::Drag);
 
