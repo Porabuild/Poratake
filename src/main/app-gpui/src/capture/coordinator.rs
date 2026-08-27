@@ -61,14 +61,7 @@ impl Coordinator {
 
         let task = cx.background_executor().spawn(async move {
             service
-                .capture_area_to_file_with_options(
-                    rect.x,
-                    rect.y,
-                    rect.width,
-                    rect.height,
-                    &path,
-                    freeze,
-                )
+                .capture_area_cached(rect.x, rect.y, rect.width, rect.height, &path, freeze)
                 .map(|_| path)
         });
 
@@ -256,14 +249,7 @@ impl Coordinator {
 
         let task = cx.background_executor().spawn(async move {
             service
-                .capture_area_to_file_with_options(
-                    rect.x,
-                    rect.y,
-                    rect.width,
-                    rect.height,
-                    &path,
-                    freeze,
-                )
+                .capture_area_cached(rect.x, rect.y, rect.width, rect.height, &path, freeze)
                 .map(|_| path)
         });
 

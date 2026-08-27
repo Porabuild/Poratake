@@ -30,10 +30,7 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
         }
     };
 
-    let service = CaptureService {
-        daemon: DaemonHandle::new(),
-        config: config.clone(),
-    };
+    let service = CaptureService::new(DaemonHandle::new(), config.clone());
 
     if let Err(error) = service.daemon.start() {
         // Capture features degrade gracefully; the editor still works for
@@ -51,10 +48,7 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
 /// touching the real configuration. Used by the headless render tests.
 #[cfg(test)]
 pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
-    let service = CaptureService {
-        daemon: DaemonHandle::new(),
-        config,
-    };
+    let service = CaptureService::new(DaemonHandle::new(), config);
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));
     cx.set_global(AppState { service });
@@ -66,6 +60,10 @@ pub fn set_native(cx: &mut gpui::App, bridge: NativeBridge) {
 
 pub fn native(cx: &gpui::App) -> Arc<NativeBridge> {
     cx.global::<NativeShell>().0.clone()
+}
+
+pub fn try_native(cx: &gpui::App) -> Option<Arc<NativeBridge>> {
+    cx.try_global::<NativeShell>().map(|shell| shell.0.clone())
 }
 
 pub fn state(cx: &gpui::App) -> CaptureService {

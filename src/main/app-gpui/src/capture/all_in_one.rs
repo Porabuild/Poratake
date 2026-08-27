@@ -107,7 +107,11 @@ pub fn restore(store: &ConfigStore) -> Choices {
     if !config.all_in_one.remember_choices {
         return Choices::default();
     }
-    let mode = Mode::parse(&config.all_in_one.last_mode);
+    let mode = match Mode::parse(&config.all_in_one.last_mode) {
+        Mode::Ocr => Mode::Screenshot,
+        Mode::Record if !is_supported(Feature::Recording) => Mode::Screenshot,
+        mode => mode,
+    };
     let target = match mode {
         Mode::Record => Target::parse(&config.all_in_one.last_targets.record),
         _ => Target::parse(&config.all_in_one.last_targets.screenshot),
@@ -116,7 +120,7 @@ pub fn restore(store: &ConfigStore) -> Choices {
 }
 
 pub fn remember(store: &ConfigStore, choices: Choices) {
-    if !store.get().all_in_one.remember_choices {
+    if choices.mode == Mode::Ocr || !store.get().all_in_one.remember_choices {
         return;
     }
     store.update(move |config| {
@@ -168,6 +172,26 @@ mod tests {
                 target: Target::Screen
             }
         );
+    }
+
+    #[test]
+    fn ocr_is_never_restored_or_remembered() {
+        let store = store();
+        store.update(|config| {
+            config.all_in_one.remember_choices = true;
+            config.all_in_one.last_mode = "ocr".into();
+        });
+
+        assert_eq!(restore(&store), Choices::default());
+
+        remember(
+            &store,
+            Choices {
+                mode: Mode::Ocr,
+                target: Target::Area,
+            },
+        );
+        assert_eq!(store.get().all_in_one.last_mode, "ocr");
     }
 
     #[test]

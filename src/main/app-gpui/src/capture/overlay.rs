@@ -36,9 +36,23 @@ pub struct ScreenRect {
     pub height: i32,
 }
 
+#[derive(Clone, Copy)]
+pub struct OverlayLaunch {
+    pub focus: bool,
+    pub deferred_show: bool,
+    pub generation: u64,
+}
+
 #[derive(Default)]
 struct OverlaySession {
-    handles: Vec<AnyWindowHandle>,
+    handles: Vec<TrackedOverlay>,
+}
+
+#[derive(Clone)]
+struct TrackedOverlay {
+    handle: AnyWindowHandle,
+    generation: u64,
+    focus: bool,
 }
 
 impl Global for OverlaySession {}
@@ -48,26 +62,49 @@ fn session(cx: &mut App) -> &mut OverlaySession {
 }
 
 pub fn close_all(cx: &mut App) {
-    let handles = std::mem::take(&mut session(cx).handles);
-    if !handles.is_empty() {
-        // The daemon holds the frozen displays until it is told otherwise, so
-        // the release is tied to the overlay going away rather than to the
-        // capture succeeding.
-        release_frozen_screen(cx);
+    if let Some(generation) = remove_all(cx) {
+        release_frozen_screen(generation, cx);
     }
+}
+
+pub fn replace_all(cx: &mut App) -> Option<u64> {
+    remove_all(cx)
+}
+
+fn remove_all(cx: &mut App) -> Option<u64> {
+    let handles = std::mem::take(&mut session(cx).handles);
+    let generation = handles.iter().map(|tracked| tracked.generation).max();
     App::defer(cx, move |cx| {
         for handle in handles {
-            let _ = handle.update(cx, |_, window, _| window.remove_window());
+            let _ = handle
+                .handle
+                .update(cx, |_, window, _| window.remove_window());
         }
     });
+    generation
+}
+
+pub fn raise_all(generation: u64, cx: &mut App) {
+    let handles = session(cx).handles.clone();
+    for tracked in handles {
+        if tracked.generation != generation {
+            continue;
+        }
+        let _ = tracked.handle.update(cx, |_, window, _| {
+            set_overlay_topmost(window);
+            if tracked.focus {
+                window.activate_window();
+            }
+        });
+    }
 }
 
 /// Drops the daemon's frozen snapshot. Cheap and idempotent when the screen was
 /// never frozen, which is why the callers do not track whether it was.
-fn release_frozen_screen(cx: &mut App) {
+fn release_frozen_screen(generation: u64, cx: &mut App) {
     let service = crate::state::state(cx);
     cx.background_executor()
-        .spawn(async move { service.release_screen() })
+        .spawn(async move { service.release_screen(generation) })
         .detach();
 }
 
@@ -97,12 +134,13 @@ fn overlay_options(
     display_bounds: Bounds<Pixels>,
     display_id: DisplayId,
     focus: bool,
+    deferred_show: bool,
 ) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(gpui::WindowBounds::Windowed(display_bounds)),
         titlebar: None,
         focus,
-        show: true,
+        show: !cfg!(windows) || !deferred_show,
         kind: WindowKind::PopUp,
         is_movable: false,
         is_resizable: false,
@@ -113,8 +151,149 @@ fn overlay_options(
     }
 }
 
-fn track_overlay(handle: AnyWindowHandle, cx: &mut App) {
-    session(cx).handles.push(handle);
+#[cfg(windows)]
+fn show_noactivate_topmost(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SW_SHOWNOACTIVATE,
+    };
+
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+fn set_overlay_topmost(window: &Window) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+        };
+
+        if let Some(hwnd) = crate::windows::window_hwnd(window) {
+            unsafe {
+                let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+            }
+            show_noactivate_topmost(hwnd);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
+#[cfg(windows)]
+fn windows_build() -> u32 {
+    use std::sync::OnceLock;
+
+    use windows::Wdk::System::SystemServices::RtlGetVersion;
+    use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+    static BUILD: OnceLock<u32> = OnceLock::new();
+    *BUILD.get_or_init(|| {
+        let mut version = OSVERSIONINFOW {
+            dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+            ..Default::default()
+        };
+        if unsafe { RtlGetVersion(&mut version) }.0 < 0 {
+            return 0;
+        }
+        version.dwBuildNumber
+    })
+}
+
+fn show_overlay_before_freeze(window: &Window) -> bool {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+        };
+
+        let build = windows_build();
+        if !can_show_before_freeze(build, true) {
+            return false;
+        }
+        let Some(hwnd) = crate::windows::window_hwnd(window) else {
+            return false;
+        };
+        let excluded = unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }.is_ok();
+        if !can_show_before_freeze(build, excluded) {
+            return false;
+        }
+        show_noactivate_topmost(hwnd);
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        true
+    }
+}
+
+fn can_show_before_freeze(windows_build: u32, capture_excluded: bool) -> bool {
+    windows_build >= 19041 && capture_excluded
+}
+
+fn track_overlay(handle: AnyWindowHandle, generation: u64, focus: bool, cx: &mut App) {
+    session(cx).handles.push(TrackedOverlay {
+        handle,
+        generation,
+        focus,
+    });
+}
+
+fn open_overlay_window(
+    display_id: DisplayId,
+    display_bounds: Bounds<Pixels>,
+    launch: OverlayLaunch,
+    build: impl FnOnce(f32, gpui::FocusHandle) -> AreaOverlay,
+    after_new: impl FnOnce(&gpui::Entity<AreaOverlay>, &mut Window, &mut App),
+    error: &'static str,
+    cx: &mut App,
+) -> Option<gpui::WindowHandle<AreaOverlay>> {
+    let opened = cx.open_window(
+        overlay_options(
+            display_bounds,
+            display_id,
+            launch.focus,
+            launch.deferred_show,
+        ),
+        |window, cx| {
+            let scale = window.scale_factor();
+            let focus_handle = cx.focus_handle();
+            let view = cx.new(|_| build(scale, focus_handle));
+            after_new(&view, window, cx);
+            let shown = if launch.deferred_show {
+                show_overlay_before_freeze(window)
+            } else {
+                set_overlay_topmost(window);
+                true
+            };
+            if launch.focus && shown {
+                window.activate_window();
+            }
+            window.focus(&view.read(cx).focus_handle);
+            view
+        },
+    );
+    match opened {
+        Ok(handle) => {
+            track_overlay(handle.into(), launch.generation, launch.focus, cx);
+            Some(handle)
+        }
+        Err(failure) => {
+            eprintln!("[overlay] failed to open {error}: {failure}");
+            None
+        }
+    }
 }
 
 fn begin_recording(
@@ -141,6 +320,7 @@ pub struct AreaOverlay {
     /// Non-empty in window-pick mode: hovering highlights a window and a
     /// click captures it, mirroring the Electron overlay's pick targets.
     windows: Vec<crate::capture::windows_list::WindowListItem>,
+    window_list_generation: u64,
     hovered_window: Option<usize>,
     /// Last pointer position in client coordinates, for `CrosshairGuides`.
     pointer: Option<Point<Pixels>>,
@@ -149,12 +329,10 @@ pub struct AreaOverlay {
     rect: Option<selection::Rect>,
     interaction: Option<Interaction>,
     cursor: gpui::CursorStyle,
-    /// `autoConfirm` in `area-overlay/session.ts`: the plain capture flows
-    /// close on release, the all-in-one flow keeps the overlay up so the box
-    /// can be adjusted.
-    auto_confirm: bool,
     /// Set in all-in-one mode: the toolbar's current mode and target.
     all_in_one: Option<crate::capture::all_in_one::Choices>,
+    all_in_one_targets: [crate::capture::all_in_one::Target; 2],
+    picking_color: bool,
     menu: crate::ui::menu::MenuHandle,
     service: CaptureService,
 }
@@ -175,11 +353,13 @@ impl AreaOverlay {
             rect: None,
             interaction: None,
             cursor: gpui::CursorStyle::Crosshair,
-            auto_confirm: true,
             intent,
             windows: Vec::new(),
+            window_list_generation: 0,
             hovered_window: None,
             all_in_one: None,
+            all_in_one_targets: [crate::capture::all_in_one::Target::Area; 2],
+            picking_color: false,
             menu: crate::ui::menu::MenuHandle::new(),
             service,
         }
@@ -194,10 +374,26 @@ impl AreaOverlay {
     }
 
     pub fn with_all_in_one(mut self, choices: crate::capture::all_in_one::Choices) -> Self {
+        use crate::capture::all_in_one::{Mode, Target};
+
+        let config = self.service.config.get();
+        if config.all_in_one.remember_choices {
+            self.all_in_one_targets = [
+                Target::parse(&config.all_in_one.last_targets.screenshot),
+                Target::parse(&config.all_in_one.last_targets.record),
+            ];
+        }
+        match choices.mode {
+            Mode::Screenshot => self.all_in_one_targets[0] = choices.target,
+            Mode::Record => self.all_in_one_targets[1] = choices.target,
+            Mode::Ocr => {}
+        }
+        self.intent = match choices.mode {
+            Mode::Screenshot => crate::capture::intent::CaptureIntent::Screenshot,
+            Mode::Record => crate::capture::intent::CaptureIntent::Recording,
+            Mode::Ocr => crate::capture::intent::CaptureIntent::Ocr,
+        };
         self.all_in_one = Some(choices);
-        // `startAreaSelection` passes `autoConfirm: false` for this flow, so a
-        // capture leaves the overlay up and the box stays adjustable.
-        self.auto_confirm = false;
         self
     }
 
@@ -260,31 +456,20 @@ impl AreaOverlay {
         display_id: DisplayId,
         display_bounds: Bounds<Pixels>,
         intent: crate::capture::intent::CaptureIntent,
-        focus: bool,
+        launch: OverlayLaunch,
         cx: &mut App,
     ) -> Option<gpui::WindowHandle<AreaOverlay>> {
-        let bounds_for_entity = display_bounds;
-        let opened = cx.open_window(
-            overlay_options(display_bounds, display_id, focus),
-            |window, cx| {
-                let scale = window.scale_factor();
-                let focus = cx.focus_handle();
-                let overlay =
-                    AreaOverlay::with_focus(bounds_for_entity, scale, service, intent, focus);
-                window.focus(&overlay.focus_handle);
-                cx.new(|_| overlay)
+        open_overlay_window(
+            display_id,
+            display_bounds,
+            launch,
+            |scale, focus_handle| {
+                AreaOverlay::with_focus(display_bounds, scale, service, intent, focus_handle)
             },
-        );
-        match opened {
-            Ok(handle) => {
-                track_overlay(handle.into(), cx);
-                Some(handle)
-            }
-            Err(error) => {
-                eprintln!("[overlay] failed to open: {error}");
-                None
-            }
-        }
+            |_, _, _| {},
+            "the area overlay",
+            cx,
+        )
     }
 
     /// All-in-one variant of `open`: the overlay carries the toolbar and
@@ -294,36 +479,27 @@ impl AreaOverlay {
         display_id: DisplayId,
         display_bounds: Bounds<Pixels>,
         choices: crate::capture::all_in_one::Choices,
-        focus: bool,
+        launch: OverlayLaunch,
         cx: &mut App,
     ) -> Option<gpui::WindowHandle<AreaOverlay>> {
-        let opened = cx.open_window(
-            overlay_options(display_bounds, display_id, focus),
-            |window, cx| {
-                let scale = window.scale_factor();
-                let focus = cx.focus_handle();
-                let overlay = AreaOverlay::with_focus(
+        open_overlay_window(
+            display_id,
+            display_bounds,
+            launch,
+            |scale, focus_handle| {
+                AreaOverlay::with_focus(
                     display_bounds,
                     scale,
                     service,
                     crate::capture::intent::CaptureIntent::Screenshot,
-                    focus,
+                    focus_handle,
                 )
-                .with_all_in_one(choices);
-                window.focus(&overlay.focus_handle);
-                cx.new(|_| overlay)
+                .with_all_in_one(choices)
             },
-        );
-        match opened {
-            Ok(handle) => {
-                track_overlay(handle.into(), cx);
-                Some(handle)
-            }
-            Err(error) => {
-                eprintln!("[overlay] failed to open all-in-one: {error}");
-                None
-            }
-        }
+            |view, _window, cx| view.update(cx, |this, cx| this.apply_all_in_one_target(cx)),
+            "the all-in-one overlay",
+            cx,
+        )
     }
 
     pub fn set_all_in_one_mode(
@@ -332,21 +508,25 @@ impl AreaOverlay {
         cx: &mut Context<Self>,
     ) {
         use crate::capture::all_in_one::Mode as AioMode;
-        use crate::capture::intent::CaptureIntent;
-
         let Some(choices) = &mut self.all_in_one else {
             return;
         };
         choices.mode = mode;
-        let choices = *choices;
-        self.intent = match mode {
-            AioMode::Ocr => CaptureIntent::Ocr,
-            AioMode::Record => CaptureIntent::Recording,
-            AioMode::Screenshot => CaptureIntent::Screenshot,
+        choices.target = match mode {
+            AioMode::Screenshot => self.all_in_one_targets[0],
+            AioMode::Record => self.all_in_one_targets[1],
+            AioMode::Ocr => crate::capture::all_in_one::Target::Area,
         };
+        let choices = *choices;
+        self.intent = capture_intent(mode);
         crate::capture::all_in_one::remember(&self.service.config, choices);
         self.apply_all_in_one_target(cx);
+        sync_all_in_one(choices, self.all_in_one_targets, cx);
         cx.notify();
+    }
+
+    pub fn close_all_in_one_menu(&self, window: &mut Window) {
+        self.menu.close(window);
     }
 
     pub fn set_all_in_one_target(
@@ -357,10 +537,19 @@ impl AreaOverlay {
         let Some(choices) = &mut self.all_in_one else {
             return;
         };
+        if choices.mode == crate::capture::all_in_one::Mode::Ocr {
+            return;
+        }
         choices.target = target;
+        match choices.mode {
+            crate::capture::all_in_one::Mode::Screenshot => self.all_in_one_targets[0] = target,
+            crate::capture::all_in_one::Mode::Record => self.all_in_one_targets[1] = target,
+            crate::capture::all_in_one::Mode::Ocr => {}
+        }
         let choices = *choices;
         crate::capture::all_in_one::remember(&self.service.config, choices);
         self.apply_all_in_one_target(cx);
+        sync_all_in_one(choices, self.all_in_one_targets, cx);
         cx.notify();
     }
 
@@ -376,8 +565,10 @@ impl AreaOverlay {
         self.interaction = None;
         self.cursor = gpui::CursorStyle::Crosshair;
         self.hovered_window = None;
+        self.window_list_generation = self.window_list_generation.wrapping_add(1);
         if choices.target == Target::Window {
             self.windows.clear();
+            let request_generation = self.window_list_generation;
             let daemon = self.service.daemon.clone();
             cx.spawn(async move |entity, cx| {
                 let windows = cx
@@ -385,6 +576,13 @@ impl AreaOverlay {
                     .spawn(async move { crate::capture::windows_list::list(&daemon) })
                     .await;
                 let _ = entity.update(cx, |this, cx| {
+                    if !accepts_window_list(
+                        this.all_in_one,
+                        this.window_list_generation,
+                        request_generation,
+                    ) {
+                        return;
+                    }
                     this.windows = windows;
                     cx.notify();
                 });
@@ -396,28 +594,28 @@ impl AreaOverlay {
         cx.notify();
     }
 
-    /// Copies the colour under the cursor, matching the overlay's eyedropper.
-    pub fn pick_color_under_cursor(&mut self, cx: &mut Context<Self>) {
-        let Some(position) = self.pointer else {
-            crate::windows::toast::Toast::show(
-                cx,
-                "Move the pointer first",
-                "Hover the pixel you want before picking a colour",
-            );
-            return;
-        };
+    pub fn start_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu.close(window);
+        self.picking_color = true;
+        self.cursor = gpui::CursorStyle::Crosshair;
+        sync_color_picker(true, cx);
+        cx.notify();
+    }
+
+    fn pick_color(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         let scale = self.scale.max(0.01);
         let x = (f32::from(self.display_bounds.left() + position.x) * scale).round() as i32;
         let y = (f32::from(self.display_bounds.top() + position.y) * scale).round() as i32;
 
         let service = self.service.clone();
+        let freeze = service.config.get().screenshot.freeze_screen;
         cx.spawn(async move |_entity, cx| {
             let sampled = cx
                 .background_executor()
                 .spawn(async move {
                     let path = std::env::temp_dir().join(format!("poratake-pick-{x}-{y}.png"));
                     let sampled = service
-                        .capture_area_to_file(x, y, 1, 1, &path)
+                        .capture_area_cached(x, y, 1, 1, &path, freeze)
                         .ok()
                         .and_then(|_| image::open(&path).ok())
                         .map(|image| image.to_rgba8());
@@ -454,28 +652,22 @@ impl AreaOverlay {
         focus: bool,
         cx: &mut App,
     ) -> Option<gpui::WindowHandle<AreaOverlay>> {
-        let opened = cx.open_window(
-            overlay_options(display_bounds, display_id, focus),
-            |window, cx| {
-                let scale = window.scale_factor();
-                let focus = cx.focus_handle();
-                let overlay =
-                    AreaOverlay::with_focus(display_bounds, scale, service, intent, focus)
-                        .with_windows(windows);
-                window.focus(&overlay.focus_handle);
-                cx.new(|_| overlay)
+        open_overlay_window(
+            display_id,
+            display_bounds,
+            OverlayLaunch {
+                focus,
+                deferred_show: false,
+                generation: 0,
             },
-        );
-        match opened {
-            Ok(handle) => {
-                track_overlay(handle.into(), cx);
-                Some(handle)
-            }
-            Err(error) => {
-                eprintln!("[overlay] failed to open window picker: {error}");
-                None
-            }
-        }
+            |scale, focus_handle| {
+                AreaOverlay::with_focus(display_bounds, scale, service, intent, focus_handle)
+                    .with_windows(windows)
+            },
+            |_, _, _| {},
+            "the window picker",
+            cx,
+        )
     }
 
     fn selection(&self) -> Option<(Point<Pixels>, gpui::Size<Pixels>)> {
@@ -588,13 +780,7 @@ impl AreaOverlay {
                 cx,
             );
         });
-        if self.auto_confirm {
-            dismiss(window, cx);
-        } else {
-            // `handleSelected` in the all-in-one flow captures and leaves the
-            // overlay up, so the box can be nudged and captured again.
-            cx.notify();
-        }
+        dismiss(window, cx);
     }
 }
 
@@ -705,6 +891,75 @@ fn size(width: Pixels, height: Pixels) -> gpui::Size<Pixels> {
     gpui::size(width, height)
 }
 
+fn accepts_window_list(
+    all_in_one: Option<crate::capture::all_in_one::Choices>,
+    current_generation: u64,
+    request_generation: u64,
+) -> bool {
+    current_generation == request_generation
+        && all_in_one.is_some_and(|choices| {
+            choices.mode != crate::capture::all_in_one::Mode::Ocr
+                && choices.target == crate::capture::all_in_one::Target::Window
+        })
+}
+
+fn capture_intent(mode: crate::capture::all_in_one::Mode) -> crate::capture::intent::CaptureIntent {
+    match mode {
+        crate::capture::all_in_one::Mode::Ocr => crate::capture::intent::CaptureIntent::Ocr,
+        crate::capture::all_in_one::Mode::Record => {
+            crate::capture::intent::CaptureIntent::Recording
+        }
+        crate::capture::all_in_one::Mode::Screenshot => {
+            crate::capture::intent::CaptureIntent::Screenshot
+        }
+    }
+}
+
+fn for_each_area_overlay(
+    cx: &mut Context<AreaOverlay>,
+    apply: impl Fn(&mut AreaOverlay, &mut Context<AreaOverlay>) + 'static,
+) {
+    let handles = session(cx).handles.clone();
+    App::defer(cx, move |cx| {
+        for tracked in handles {
+            let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
+                continue;
+            };
+            let _ = handle.update(cx, |overlay, _window, cx| apply(overlay, cx));
+        }
+    });
+}
+
+fn sync_all_in_one(
+    choices: crate::capture::all_in_one::Choices,
+    targets: [crate::capture::all_in_one::Target; 2],
+    cx: &mut Context<AreaOverlay>,
+) {
+    for_each_area_overlay(cx, move |overlay, cx| {
+        if overlay.all_in_one.is_none()
+            || (overlay.all_in_one == Some(choices) && overlay.all_in_one_targets == targets)
+        {
+            return;
+        }
+        overlay.all_in_one = Some(choices);
+        overlay.all_in_one_targets = targets;
+        overlay.intent = capture_intent(choices.mode);
+        overlay.apply_all_in_one_target(cx);
+        cx.notify();
+    });
+}
+
+fn sync_color_picker(active: bool, cx: &mut Context<AreaOverlay>) {
+    for_each_area_overlay(cx, move |overlay, cx| {
+        if overlay.all_in_one.is_none() || overlay.picking_color == active {
+            return;
+        }
+        overlay.picking_color = active;
+        overlay.cursor = gpui::CursorStyle::Crosshair;
+        cx.notify();
+    });
+}
+
 impl Render for AreaOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = crate::theme::vars::active_theme(cx);
@@ -718,25 +973,32 @@ impl Render for AreaOverlay {
             .to_hsla()
             .opacity(crate::ui::chrome::OVERLAY_DIM);
 
-        let mut root = div()
+        let root = div()
             .id("area-overlay")
             .size_full()
             .key_context("AreaOverlay")
             .track_focus(&self.focus_handle)
             .cursor(self.cursor)
-            .on_action(cx.listener(|_this, _: &Cancel, window, cx| {
+            .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+                if this.picking_color {
+                    this.picking_color = false;
+                    sync_color_picker(false, cx);
+                    cx.notify();
+                    return;
+                }
                 dismiss(window, cx);
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_move(cx.listener(Self::on_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up));
 
-        // Dim everything; punch a "hole" by drawing four bars around it.
-        if let Some(choices) = self.all_in_one {
-            root = root.child(crate::capture::all_in_one_toolbar::render(
-                choices, &self.menu, &theme, cx,
-            ));
+        if self.picking_color {
+            return root;
         }
+
+        let toolbar = self.all_in_one.map(|choices| {
+            crate::capture::all_in_one_toolbar::render(choices, &self.menu, &theme, window, cx)
+        });
 
         if self.is_picking_windows() {
             // `SelectionScrim` takes the hovered target as its rect while
@@ -750,6 +1012,9 @@ impl Render for AreaOverlay {
                 }
                 None => picking.child(div().absolute().inset_0().bg(dim)),
             };
+            if let Some(toolbar) = toolbar {
+                picking = picking.child(toolbar);
+            }
             // While picking a window the reference shows the pick-targets
             // prompt, not the drag one.
             return picking.child(prompt(
@@ -758,7 +1023,7 @@ impl Render for AreaOverlay {
             ));
         }
 
-        let element = match selection {
+        let mut element = match selection {
             None => root
                 .child(div().absolute().inset_0().bg(dim))
                 .children(
@@ -874,6 +1139,10 @@ impl Render for AreaOverlay {
             }
         };
 
+        if let Some(toolbar) = toolbar {
+            element = element.child(toolbar);
+        }
+
         element
     }
 }
@@ -882,6 +1151,11 @@ impl AreaOverlay {
     /// `startDrag`: a press on a handle resizes, inside the box moves, and
     /// anywhere else starts a new box.
     fn on_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picking_color {
+            self.pick_color(event.position, cx);
+            dismiss(window, cx);
+            return;
+        }
         if self.is_picking_windows() {
             return;
         }
@@ -948,6 +1222,13 @@ impl AreaOverlay {
                 cx.notify();
             }
         }
+        if self.picking_color {
+            if self.cursor != gpui::CursorStyle::Crosshair {
+                self.cursor = gpui::CursorStyle::Crosshair;
+                cx.notify();
+            }
+            return;
+        }
         if self.is_picking_windows() {
             let scale = self.scale.max(0.01);
             let x = f32::from(self.display_bounds.left() + event.position.x) * scale;
@@ -1013,8 +1294,11 @@ impl AreaOverlay {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{px, size};
+    use std::sync::Arc;
 
+    use gpui::{px, size, TestAppContext};
+
+    use crate::config::store::ConfigStore;
     use crate::ui::chrome;
 
     #[test]
@@ -1044,5 +1328,308 @@ mod tests {
         assert_eq!(rect.y, 75);
         assert_eq!(rect.width, 1200);
         assert_eq!(rect.height, 900);
+    }
+
+    #[test]
+    fn early_show_requires_capture_exclusion_support() {
+        assert!(!super::can_show_before_freeze(19040, true));
+        assert!(!super::can_show_before_freeze(19041, false));
+        assert!(super::can_show_before_freeze(19041, true));
+    }
+
+    #[test]
+    fn stale_window_lists_are_rejected_after_leaving_window_mode() {
+        use crate::capture::all_in_one::{Choices, Mode, Target};
+
+        assert!(super::accepts_window_list(
+            Some(Choices {
+                mode: Mode::Screenshot,
+                target: Target::Window,
+            }),
+            2,
+            2,
+        ));
+        assert!(!super::accepts_window_list(
+            Some(Choices {
+                mode: Mode::Screenshot,
+                target: Target::Window,
+            }),
+            3,
+            2,
+        ));
+        assert!(!super::accepts_window_list(
+            Some(Choices {
+                mode: Mode::Ocr,
+                target: Target::Area,
+            }),
+            2,
+            2,
+        ));
+        assert!(!super::accepts_window_list(
+            Some(Choices {
+                mode: Mode::Record,
+                target: Target::Screen,
+            }),
+            2,
+            2,
+        ));
+    }
+
+    #[gpui::test]
+    fn escape_closes_the_focused_overlay(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::init_bindings(cx);
+        });
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let window = cx.add_window(|window, cx| {
+            let focus_handle = cx.focus_handle();
+            window.focus(&focus_handle);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus_handle,
+            )
+        });
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes(window.into(), "escape");
+
+        assert!(window.update(cx, |_, _, _| ()).is_err());
+    }
+
+    #[gpui::test]
+    fn all_in_one_area_capture_closes_the_overlay(cx: &mut TestAppContext) {
+        use gpui::{point, Modifiers, MouseButton};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let (_overlay, cx) = cx.add_window_view(|window, cx| {
+            let focus_handle = cx.focus_handle();
+            window.focus(&focus_handle);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus_handle,
+            )
+            .with_all_in_one(crate::capture::all_in_one::Choices::default())
+        });
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+
+        cx.simulate_mouse_down(
+            point(px(100.0), px(100.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(300.0), px(250.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            point(px(300.0), px(250.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+
+        assert!(cx.read(|cx| {
+            cx.windows()
+                .into_iter()
+                .all(|window| window.downcast::<super::AreaOverlay>().is_none())
+        }));
+    }
+
+    #[gpui::test]
+    fn all_in_one_mode_and_intent_stay_in_sync(cx: &mut TestAppContext) {
+        use crate::capture::all_in_one::{Choices, Mode, Target};
+        use crate::capture::intent::CaptureIntent;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let (overlay, cx) = cx.add_window_view(|window, cx| {
+            let focus_handle = cx.focus_handle();
+            window.focus(&focus_handle);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                CaptureIntent::Screenshot,
+                focus_handle,
+            )
+            .with_all_in_one(Choices {
+                mode: Mode::Record,
+                target: Target::Screen,
+            })
+        });
+
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| overlay.intent),
+            CaptureIntent::Recording
+        );
+        overlay.update(cx, |overlay, cx| overlay.set_all_in_one_mode(Mode::Ocr, cx));
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| overlay.intent),
+            CaptureIntent::Ocr
+        );
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| overlay.all_in_one.expect("choices").target),
+            Target::Area
+        );
+        overlay.update(cx, |overlay, cx| {
+            overlay.set_all_in_one_mode(Mode::Record, cx)
+        });
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| overlay.intent),
+            CaptureIntent::Recording
+        );
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| overlay.all_in_one.expect("choices").target),
+            Target::Screen
+        );
+    }
+
+    #[gpui::test]
+    fn all_in_one_mode_syncs_across_overlay_windows(cx: &mut TestAppContext) {
+        use crate::capture::all_in_one::{Choices, Mode};
+        use crate::capture::intent::CaptureIntent;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let first = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service.clone(),
+                CaptureIntent::Screenshot,
+                focus,
+            )
+            .with_all_in_one(Choices::default())
+        });
+        let second = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            super::AreaOverlay::with_focus(bounds, 1.0, service, CaptureIntent::Screenshot, focus)
+                .with_all_in_one(Choices::default())
+        });
+        cx.update(|cx| {
+            super::track_overlay(first.into(), 1, true, cx);
+            super::track_overlay(second.into(), 1, false, cx);
+        });
+
+        first
+            .update(cx, |overlay, _window, cx| {
+                overlay.set_all_in_one_mode(Mode::Record, cx);
+            })
+            .expect("update first overlay");
+        cx.run_until_parked();
+
+        let (choices, intent) = second
+            .update(cx, |overlay, _window, _cx| {
+                (overlay.all_in_one.expect("choices"), overlay.intent)
+            })
+            .expect("read second overlay");
+        assert_eq!(choices.mode, Mode::Record);
+        assert_eq!(intent, CaptureIntent::Recording);
+    }
+
+    #[gpui::test]
+    fn color_picker_hides_the_toolbar_and_escape_restores_it(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::init_bindings(cx);
+        });
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let first = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service.clone(),
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus,
+            )
+            .with_all_in_one(crate::capture::all_in_one::Choices::default())
+        });
+        let second = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus,
+            )
+            .with_all_in_one(crate::capture::all_in_one::Choices::default())
+        });
+        cx.update(|cx| {
+            super::track_overlay(first.into(), 1, true, cx);
+            super::track_overlay(second.into(), 1, false, cx);
+        });
+        first
+            .update(cx, |overlay, window, cx| {
+                overlay.start_color_picker(window, cx);
+            })
+            .expect("start color picker");
+
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+        for window in [first, second] {
+            assert!(window
+                .update(cx, |overlay, _window, _cx| overlay.picking_color)
+                .expect("read picker state"));
+        }
+        cx.simulate_keystrokes(first.into(), "escape");
+        cx.run_until_parked();
+
+        for window in [first, second] {
+            assert!(!window
+                .update(cx, |overlay, _window, _cx| overlay.picking_color)
+                .expect("read restored state"));
+        }
     }
 }

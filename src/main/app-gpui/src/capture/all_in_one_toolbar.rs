@@ -1,7 +1,7 @@
 //! The all-in-one toolbar drawn on top of the area overlay — port of
 //! `renderer/components/area-overlay/all-in-one-toolbar.tsx`.
 
-use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled};
+use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window};
 
 use crate::capture::all_in_one::{Choices, Mode, Target};
 use crate::capture::overlay::AreaOverlay;
@@ -18,6 +18,7 @@ pub fn render(
     choices: Choices,
     menu: &MenuHandle,
     theme: &ThemeVars,
+    window: &mut Window,
     cx: &mut Context<AreaOverlay>,
 ) -> AnyElement {
     let recording_enabled = is_supported(Feature::Recording);
@@ -34,9 +35,13 @@ pub fn render(
             continue;
         }
         let active = choices.mode == mode;
+        let id = format!("all-in-one-mode-{}", mode.id());
+        let focus = crate::ui::primitives::control_focus(&id, false, window, cx);
         modes = modes.child(
             div()
-                .id(SharedString::from(format!("all-in-one-mode-{}", mode.id())))
+                .id(SharedString::from(id))
+                .track_focus(&focus)
+                .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
                 .size(px(chrome::OVERLAY_BUTTON_SIZE))
                 .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
                 .flex()
@@ -49,7 +54,8 @@ pub fn render(
                     theme.muted_foreground.opacity(0.6)
                 })
                 .hover(|style: gpui::StyleRefinement| style.text_color(theme.muted_foreground))
-                .on_click(cx.listener(move |this, _event, _window, cx| {
+                .on_click(cx.listener(move |this, _event, window, cx| {
+                    this.close_all_in_one_menu(window);
                     this.set_all_in_one_mode(mode, cx);
                 }))
                 .child(icon_element(mode.icon(), px(chrome::TOOL_BUTTON_ICON))),
@@ -79,22 +85,23 @@ pub fn render(
                 .text_color(theme.foreground)
                 .child(modes)
                 .when(choices.mode != Mode::Ocr, |el| {
-                    el.child(target_menu(choices, menu, cx))
+                    el.child(target_menu(choices, menu, theme, window, cx))
                 })
                 .child(hairline(theme))
                 .when(ocr_enabled, |el| {
                     el.child(
                         toolbar_button("all-in-one-ocr", "scan-text", "Capture text")
                             .selected(choices.mode == Mode::Ocr)
-                            .on_click(cx.listener(|this, _event, _window, cx| {
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                this.close_all_in_one_menu(window);
                                 this.set_all_in_one_mode(Mode::Ocr, cx);
                             })),
                     )
                 })
                 .child(
                     toolbar_button("all-in-one-pick-color", "pipette", "Pick color").on_click(
-                        cx.listener(|this, _event, _window, cx| {
-                            this.pick_color_under_cursor(cx);
+                        cx.listener(|this, _event, window, cx| {
+                            this.start_color_picker(window, cx);
                         }),
                     ),
                 )
@@ -106,8 +113,7 @@ pub fn render(
                             window.remove_window();
                         },
                     )),
-                )
-                .child(menu.render_dropdown(TARGET_MENU_ID)),
+                ),
         );
     bar = bar.on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
         cx.stop_propagation();
@@ -139,7 +145,13 @@ fn hairline(theme: &ThemeVars) -> AnyElement {
         .into_any_element()
 }
 
-fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay>) -> AnyElement {
+fn target_menu(
+    choices: Choices,
+    menu: &MenuHandle,
+    theme: &ThemeVars,
+    window: &mut Window,
+    cx: &mut Context<AreaOverlay>,
+) -> AnyElement {
     let handle = menu.clone();
     let entries = {
         let mut builder = MenuBuilder::new();
@@ -166,8 +178,13 @@ fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay
         builder.build()
     };
 
+    let focus = crate::ui::primitives::control_focus(TARGET_MENU_ID, false, window, cx);
+    let key_handle = handle.clone();
+    let key_entries = entries.clone();
     div()
         .id(TARGET_MENU_ID)
+        .track_focus(&focus)
+        .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
         .relative()
         .flex()
         .flex_row()
@@ -193,6 +210,7 @@ fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay
             "chevron-down",
             px(chrome::OVERLAY_TARGET_CHEVRON),
         ))
+        .child(menu.render_dropdown(TARGET_MENU_ID))
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
             handle.toggle(
                 MenuPlacement::below(TARGET_MENU_ID),
@@ -201,6 +219,17 @@ fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay
                 cx,
             );
             cx.stop_propagation();
+        })
+        .on_key_down(move |event, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                key_handle.toggle(
+                    MenuPlacement::below(TARGET_MENU_ID),
+                    key_entries.clone(),
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            }
         })
         .into_any_element()
 }

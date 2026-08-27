@@ -19,7 +19,7 @@ mod windows;
 
 use gpui::{prelude::*, px, size, App, Application, Bounds};
 
-use crate::system::native::{self, NativeCommand};
+use crate::system::native::{self, NativeCommand, NativeEvent};
 use crate::system::tray::{Intent, TrayMenuState};
 use crate::theme::presets::{resolve_theme_mode, ThemeMode};
 use crate::theme::watcher;
@@ -122,7 +122,14 @@ fn main() {
 
         cx.spawn(async move |cx| {
             while let Ok(event) = events.recv().await {
-                let result = cx.update(|cx| intents::dispatch(event.intent, event.tray_rect, cx));
+                let result = cx.update(|cx| match event {
+                    NativeEvent::Intent { intent, tray_rect } => {
+                        intents::dispatch(intent, tray_rect, cx)
+                    }
+                    NativeEvent::ToggleTrayMenu { tray_rect } => {
+                        windows::tray_menu::TrayMenuWindow::toggle(tray_rect, cx)
+                    }
+                });
                 if let Err(error) = result {
                     eprintln!("[intent] dispatch failed: {error}");
                     break;
@@ -198,6 +205,7 @@ fn main() {
                 Some("toast") => {
                     windows::toast::Toast::show(cx, "Capture failed", "No display available")
                 }
+                Some("tray-menu") => windows::tray_menu::TrayMenuWindow::toggle(None, cx),
                 Some("recording-control") => {
                     windows::recording_control::RecordingControl::open(
                         cx,
@@ -234,7 +242,11 @@ fn main() {
                         display.id(),
                         bounds,
                         capture::all_in_one::Choices::default(),
-                        false,
+                        capture::overlay::OverlayLaunch {
+                            focus: false,
+                            deferred_show: false,
+                            generation: 0,
+                        },
                         cx,
                     );
                 } else {
@@ -243,7 +255,11 @@ fn main() {
                         display.id(),
                         bounds,
                         capture::intent::CaptureIntent::Screenshot,
-                        false,
+                        capture::overlay::OverlayLaunch {
+                            focus: false,
+                            deferred_show: false,
+                            generation: 0,
+                        },
                         cx,
                     );
                 }

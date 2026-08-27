@@ -2,10 +2,12 @@
 //! `capture/screenshot/utils.ts`) and the daemon `screenshot capture-area`
 //! call (same contract as `native-capture.ts`).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use parking_lot::{Condvar, Mutex};
 use serde_json::json;
 
 use crate::config::store::ConfigStore;
@@ -15,9 +17,61 @@ use crate::daemon::DaemonHandle;
 pub struct CaptureService {
     pub daemon: DaemonHandle,
     pub config: Arc<ConfigStore>,
+    freeze: Arc<FreezeState>,
+}
+
+#[derive(Default)]
+struct FreezeState {
+    state: Mutex<FreezeProgress>,
+    settled: Condvar,
+    operation: Mutex<()>,
+}
+
+#[derive(Default)]
+struct FreezeProgress {
+    captures: BTreeMap<u64, usize>,
+    next_generation: u64,
+    completed_generation: u64,
+}
+
+pub(crate) struct CachedCaptureReservation {
+    freeze: Arc<FreezeState>,
+    generation: u64,
+}
+
+impl Drop for CachedCaptureReservation {
+    fn drop(&mut self) {
+        let mut state = self.freeze.state.lock();
+        let captures = state
+            .captures
+            .get_mut(&self.generation)
+            .expect("reserved capture generation");
+        *captures -= 1;
+        if *captures == 0 {
+            state.captures.remove(&self.generation);
+        }
+        self.freeze.settled.notify_all();
+    }
+}
+
+impl CachedCaptureReservation {
+    pub(crate) fn wait_for_freeze(&self) {
+        let mut state = self.freeze.state.lock();
+        while state.completed_generation < self.generation {
+            self.freeze.settled.wait(&mut state);
+        }
+    }
 }
 
 impl CaptureService {
+    pub fn new(daemon: DaemonHandle, config: Arc<ConfigStore>) -> Self {
+        Self {
+            daemon,
+            config,
+            freeze: Arc::default(),
+        }
+    }
+
     /// Port of `getScreenshotsDir`.
     pub fn screenshots_dir(&self) -> PathBuf {
         let config = self.config.get();
@@ -48,17 +102,6 @@ impl CaptureService {
 
     /// Same daemon contract as `captureRegionToFile`: screen-space rect in
     /// physical pixels plus a destination file path.
-    pub fn capture_area_to_file(
-        &self,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        path: &std::path::Path,
-    ) -> Result<()> {
-        self.capture_area_to_file_with_options(x, y, width, height, path, false)
-    }
-
     pub fn capture_area_to_file_with_options(
         &self,
         x: i32,
@@ -96,7 +139,22 @@ impl CaptureService {
     /// Without this the "Freeze screen" setting has no effect: nothing else
     /// populates the daemon's frozen frames, so `cached` finds none and falls
     /// back to a live capture.
-    pub fn freeze_screen(&self) -> Result<()> {
+    fn begin_freeze(&self) -> u64 {
+        let mut state = self.freeze.state.lock();
+        state.next_generation += 1;
+        state.next_generation
+    }
+
+    fn wait_for_freeze_turn(&self, generation: u64) {
+        let mut state = self.freeze.state.lock();
+        while state.completed_generation + 1 != generation
+            || state.captures.range(..generation).next().is_some()
+        {
+            self.freeze.settled.wait(&mut state);
+        }
+    }
+
+    fn freeze_screen_started(&self) -> Result<()> {
         if !self.daemon.is_running() {
             self.daemon.start()?;
         }
@@ -106,8 +164,65 @@ impl CaptureService {
         Ok(())
     }
 
+    fn finish_freeze(&self, generation: u64, result: Result<()>) -> Result<()> {
+        let mut state = self.freeze.state.lock();
+        state.completed_generation = generation;
+        self.freeze.settled.notify_all();
+        result
+    }
+
+    pub(crate) fn reserve_cached_capture(&self) -> CachedCaptureReservation {
+        let mut state = self.freeze.state.lock();
+        let generation = state.next_generation;
+        *state.captures.entry(generation).or_default() += 1;
+        CachedCaptureReservation {
+            freeze: self.freeze.clone(),
+            generation,
+        }
+    }
+
+    fn wait_for_release(&self, generation: u64) -> bool {
+        let mut state = self.freeze.state.lock();
+        while state.completed_generation < generation
+            || state.captures.range(..=generation).next().is_some()
+        {
+            self.freeze.settled.wait(&mut state);
+        }
+        state.next_generation <= generation
+    }
+
+    /// Captures through the frozen-frame cache when the setting asks for it:
+    /// reserves the current freeze generation so a replacement freeze cannot
+    /// release the daemon's frames mid-capture, waits for that freeze to
+    /// settle, and only then reads the pixels.
+    pub(crate) fn capture_area_cached(
+        &self,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        path: &std::path::Path,
+        freeze: bool,
+    ) -> Result<()> {
+        let reservation = freeze.then(|| self.reserve_cached_capture());
+        if let Some(reservation) = reservation.as_ref() {
+            reservation.wait_for_freeze();
+        }
+        let result = self.capture_area_to_file_with_options(x, y, width, height, path, freeze);
+        drop(reservation);
+        result
+    }
+
     /// `releaseScreen()`. Safe to call when nothing is frozen.
-    pub fn release_screen(&self) {
+    pub fn release_screen(&self, generation: u64) {
+        let _operation = self.freeze.operation.lock();
+        if generation == 0 || !self.wait_for_release(generation) {
+            return;
+        }
+        self.release_screen_started();
+    }
+
+    fn release_screen_started(&self) {
         if !self.daemon.is_running() {
             return;
         }
@@ -176,14 +291,13 @@ fn each_display(
         bool,
         &mut gpui::App,
     ) -> bool,
-) {
-    overlay::close_all(cx);
+) -> bool {
     let service = crate::state::state(cx);
     let primary = cx.primary_display().map(|display| display.id());
     let displays = cx.displays();
     if displays.is_empty() {
         crate::windows::toast::Toast::show(cx, "Capture failed", "No display available");
-        return;
+        return false;
     }
     let mut opened = false;
     for display in displays {
@@ -195,6 +309,7 @@ fn each_display(
     if !opened {
         crate::windows::toast::Toast::show(cx, "Capture failed", "Could not open the overlay");
     }
+    opened
 }
 
 /// `prewarmFreezeScreen()`: warms the daemon's capture pipeline off the main
@@ -206,40 +321,81 @@ pub fn prewarm_freeze_screen(cx: &mut gpui::App) {
         .detach();
 }
 
-/// Freezes the screen if the setting asks for it, then opens the overlay.
-///
-/// `session.ts` awaits `freezeScreen()` before showing its windows, so the
-/// still snapshot is already up when the user starts dragging; the freeze runs
-/// on the background executor because the daemon answers it from its own UI
-/// thread.
-fn with_frozen_screen(cx: &mut gpui::App, open: impl FnOnce(&mut gpui::App) + 'static) {
+fn with_frozen_screen(
+    cx: &mut gpui::App,
+    release_first: Option<u64>,
+    open: impl FnOnce(&mut gpui::App, bool, u64) -> bool + 'static,
+) {
     let service = crate::state::state(cx);
     if !service.config.get().screenshot.freeze_screen {
-        open(cx);
+        if let Some(generation) = release_first {
+            let releasing = service.clone();
+            cx.background_executor()
+                .spawn(async move { releasing.release_screen(generation) })
+                .detach();
+        }
+        let _ = open(cx, false, 0);
         return;
     }
 
+    let deferred_show = cfg!(windows);
+    let generation = service.begin_freeze();
+    let freezing = service.clone();
     cx.spawn(async move |cx| {
+        let freezer = freezing.clone();
         let frozen = cx
             .background_executor()
-            .spawn(async move { service.freeze_screen() })
+            .spawn(async move {
+                freezer.wait_for_freeze_turn(generation);
+                let _operation = freezer.freeze.operation.lock();
+                if release_first.is_some() {
+                    freezer.release_screen_started();
+                }
+                let result = freezer.freeze_screen_started();
+                freezer.finish_freeze(generation, result)
+            })
             .await;
         if let Err(error) = frozen {
             // A failed freeze must not cost the user the capture; the overlay
             // opens over the live screen instead.
             eprintln!("[freeze] {error}");
         }
-        let _ = cx.update(|cx| open(cx));
+        let opened = cx
+            .update(|cx| {
+                let opened = open(cx, deferred_show, generation);
+                #[cfg(windows)]
+                overlay::raise_all(generation, cx);
+                opened
+            })
+            .unwrap_or(false);
+        if !opened {
+            cx.background_executor()
+                .spawn(async move { freezing.release_screen(generation) })
+                .detach();
+        }
     })
     .detach();
 }
 
 /// Opens the shared area overlay for one of the selection-driven flows.
 pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
-    with_frozen_screen(cx, move |cx| {
+    let release_first = overlay::replace_all(cx);
+    with_frozen_screen(cx, release_first, move |cx, deferred_show, generation| {
         each_display(cx, |service, id, bounds, focus, cx| {
-            overlay::AreaOverlay::open(service, id, bounds, intent, focus, cx).is_some()
-        });
+            overlay::AreaOverlay::open(
+                service,
+                id,
+                bounds,
+                intent,
+                overlay::OverlayLaunch {
+                    focus,
+                    deferred_show,
+                    generation,
+                },
+                cx,
+            )
+            .is_some()
+        })
     });
 }
 
@@ -247,10 +403,23 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
 /// screenshot, recording and OCR flows over area, window or screen.
 pub fn start_all_in_one(cx: &mut gpui::App) {
     let choices = all_in_one::restore(&crate::state::state(cx).config);
-    with_frozen_screen(cx, move |cx| {
+    let release_first = overlay::replace_all(cx);
+    with_frozen_screen(cx, release_first, move |cx, deferred_show, generation| {
         each_display(cx, |service, id, bounds, focus, cx| {
-            overlay::AreaOverlay::open_all_in_one(service, id, bounds, choices, focus, cx).is_some()
-        });
+            overlay::AreaOverlay::open_all_in_one(
+                service,
+                id,
+                bounds,
+                choices,
+                overlay::OverlayLaunch {
+                    focus,
+                    deferred_show,
+                    generation,
+                },
+                cx,
+            )
+            .is_some()
+        })
     });
 }
 
@@ -275,6 +444,7 @@ pub fn start_screen_recording(cx: &mut gpui::App) {
 }
 
 fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
+    overlay::close_all(cx);
     let service = crate::state::state(cx);
     let daemon = service.daemon.clone();
     cx.spawn(async move |cx| {
@@ -330,4 +500,162 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
     coordinator.update(cx, |coord, cx| {
         coord.capture_area(rect, cx);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::CaptureService;
+    use crate::config::store::ConfigStore;
+    use crate::daemon::DaemonHandle;
+
+    #[test]
+    fn cached_capture_waits_for_pending_freeze() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let generation = service.begin_freeze();
+        let reservation = service.reserve_cached_capture();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            reservation.wait_for_freeze();
+            sender.send(()).expect("send completion");
+        });
+
+        assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
+        service
+            .finish_freeze(generation, Ok(()))
+            .expect("finish freeze");
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("capture released");
+    }
+
+    #[test]
+    fn release_waits_for_reserved_capture() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let generation = service.begin_freeze();
+        service
+            .finish_freeze(generation, Ok(()))
+            .expect("finish freeze");
+        let reservation = service.reserve_cached_capture();
+
+        let waiting = service.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(waiting.wait_for_release(generation))
+                .expect("send completion");
+        });
+
+        assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
+        drop(reservation);
+        assert!(receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("release continued"));
+    }
+
+    #[test]
+    fn replacement_freezes_run_in_request_order() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let first = service.begin_freeze();
+        let second = service.begin_freeze();
+
+        let waiting = service.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            waiting.wait_for_freeze_turn(second);
+            sender.send(()).expect("send completion");
+        });
+
+        assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
+        service.finish_freeze(first, Ok(())).expect("finish first");
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second freeze started");
+        service
+            .finish_freeze(second, Ok(()))
+            .expect("finish second");
+    }
+
+    #[test]
+    fn replacement_freeze_waits_for_prior_capture_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let first = service.begin_freeze();
+        service.finish_freeze(first, Ok(())).expect("finish first");
+        let first_capture = service.reserve_cached_capture();
+        let second = service.begin_freeze();
+
+        let (capture_sender, capture_receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            first_capture.wait_for_freeze();
+            capture_sender
+                .send(first_capture)
+                .expect("send reservation");
+        });
+        let first_capture = capture_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first capture started");
+
+        let waiting = service.clone();
+        let (freeze_sender, freeze_receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            waiting.wait_for_freeze_turn(second);
+            freeze_sender.send(()).expect("send completion");
+        });
+        let second_capture = service.reserve_cached_capture();
+
+        assert!(freeze_receiver
+            .recv_timeout(Duration::from_millis(20))
+            .is_err());
+        drop(first_capture);
+        freeze_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement freeze started");
+        drop(second_capture);
+        service
+            .finish_freeze(second, Ok(()))
+            .expect("finish second");
+    }
+
+    #[test]
+    fn stale_release_does_not_clear_replacement_freeze() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let first = service.begin_freeze();
+        service.finish_freeze(first, Ok(())).expect("finish first");
+        let first_capture = service.reserve_cached_capture();
+
+        let waiting = service.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(waiting.wait_for_release(first))
+                .expect("send release result");
+        });
+
+        let second = service.begin_freeze();
+        drop(first_capture);
+        assert!(!receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("stale release completed"));
+        service
+            .finish_freeze(second, Ok(()))
+            .expect("finish second");
+    }
 }
