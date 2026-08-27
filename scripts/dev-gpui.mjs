@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process';
-import path from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
 import { runDevSession } from './dev-session.mjs';
 
 if (process.platform !== 'win32') {
@@ -7,14 +6,22 @@ if (process.platform !== 'win32') {
   process.exit(1);
 }
 
+const baconVersion = spawnSync('bacon', ['--version'], { encoding: 'utf8' });
+if (baconVersion.error?.code === 'ENOENT') {
+  console.error(
+    '[dev:gpui] Bacon 3 is required: cargo install --locked bacon --version 3.25.0'
+  );
+  process.exit(1);
+}
+if (baconVersion.status !== 0 || !baconVersion.stdout.startsWith('bacon 3.')) {
+  console.error('[dev:gpui] Bacon 3 is required');
+  process.exit(1);
+}
+
 await runDevSession('dev:gpui', ({ root, env }) => {
   const child = spawn(
-    'cargo',
-    [
-      'run',
-      '--manifest-path',
-      path.join('src', 'main', 'app-gpui', 'Cargo.toml'),
-    ],
+    'bacon',
+    ['--headless', '--project', 'src/main', '--job', 'gpui'],
     {
       stdio: 'inherit',
       cwd: root,

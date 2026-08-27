@@ -7,7 +7,11 @@ function read(relativePath: string): string {
 }
 
 function parseNpmNotices() {
-  return read('THIRD_PARTY_NOTICES.md')
+  const npmSection =
+    read('THIRD_PARTY_NOTICES.md')
+      .split(/^## /m)
+      .find(section => section.startsWith('Bundled npm packages\n')) ?? '';
+  return npmSection
     .split(/\r?\n/)
     .filter(line => line.startsWith('| `'))
     .map(line => {

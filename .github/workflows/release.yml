@@ -203,8 +203,9 @@ jobs:
           bun-version: 1.4.0
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: '1.93.0'
           targets: ${{ matrix.arch == 'arm64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
 
       - name: Cache Bun installs
@@ -237,8 +238,8 @@ jobs:
         if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
-          path: src/main/daemon-win/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-rust-${{ hashFiles('src/main/daemon-win/Cargo.lock') }}
+          path: src/main/target
+          key: ${{ runner.os }}-${{ matrix.arch }}-rust-${{ hashFiles('src/main/Cargo.lock') }}
 
       - name: Setup MSYS2
         id: msys2
@@ -256,7 +257,7 @@ jobs:
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
             src/main/daemon/poratake-daemon.exe
-          key: ${{ runner.os }}-${{ matrix.arch }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
 
       - name: Build Windows package
         run: bun run build-win

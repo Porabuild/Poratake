@@ -2,12 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const {
-  DAEMON_WIN_MANIFEST,
-  RUST_MANIFESTS,
-  rustCheckCommands,
-  runRustChecks,
-} = await import('../../scripts/check-daemon-win.mjs');
+const { RUST_WORKSPACE_MANIFEST, rustCheckCommands, runRustChecks } =
+  await import('../../scripts/check-daemon-win.mjs');
 
 function gpuiRustSources(): string[] {
   const root = path.join(process.cwd(), 'src', 'main', 'app-gpui', 'src');
@@ -33,35 +29,23 @@ function gpuiRustSources(): string[] {
 }
 
 describe('Windows native rust check', () => {
-  it('fmt-checks and clippy-checks both Rust crates', () => {
-    expect(RUST_MANIFESTS).toEqual([
-      'src/main/daemon-win/Cargo.toml',
-      'src/main/app-gpui/Cargo.toml',
+  it('fmt-checks, clippy-checks, deny-checks and tests the Rust workspace once', () => {
+    expect(RUST_WORKSPACE_MANIFEST).toBe('src/main/Cargo.toml');
+
+    const serialized = (options: Parameters<typeof rustCheckCommands>[0]) =>
+      rustCheckCommands(options).map(
+        step => `${step.command} ${step.args.join(' ')}`
+      );
+
+    expect(serialized({ nextest: true, deny: true })).toEqual([
+      'cargo fmt --manifest-path src/main/Cargo.toml --all -- --check',
+      'cargo clippy --manifest-path src/main/Cargo.toml --workspace --all-targets -- -D warnings',
+      'cargo deny --manifest-path src/main/Cargo.toml check',
+      'cargo nextest run --manifest-path src/main/Cargo.toml --workspace --no-fail-fast',
     ]);
-    expect(DAEMON_WIN_MANIFEST).toBe('src/main/daemon-win/Cargo.toml');
-
-    const commands = rustCheckCommands();
-    const serialized = commands.map(
-      step => `${step.command} ${step.args.join(' ')}`
+    expect(serialized({ nextest: false, deny: false })[2]).toBe(
+      'cargo test --manifest-path src/main/Cargo.toml --workspace --no-fail-fast'
     );
-
-    for (const manifest of RUST_MANIFESTS) {
-      expect(serialized).toContain(
-        `cargo fmt --manifest-path ${manifest} -- --check`
-      );
-      expect(serialized).toContain(
-        `cargo clippy --manifest-path ${manifest} --all-targets -- -D clippy::disallowed_methods`
-      );
-    }
-
-    for (const manifest of RUST_MANIFESTS) {
-      expect(serialized).toContain(
-        `cargo test --manifest-path ${manifest} --no-fail-fast`
-      );
-    }
-    expect(
-      serialized.filter(command => command.startsWith('cargo test ')).length
-    ).toBe(RUST_MANIFESTS.length);
   });
 
   it('skips off Windows and when cargo is missing, and stops on fmt failure', () => {
@@ -71,7 +55,7 @@ describe('Windows native rust check', () => {
 
     spawn.mockReset();
     spawn.mockReturnValue({ status: 1 });
-    expect(runRustChecks({ platform: 'win32', spawn })).toBe(0);
+    expect(runRustChecks({ platform: 'win32', spawn, ci: false })).toBe(0);
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0][1]).toEqual(['--version']);
 
@@ -86,7 +70,7 @@ describe('Windows native rust check', () => {
       }
       return { status: 0 };
     });
-    expect(runRustChecks({ platform: 'win32', spawn })).toBe(1);
+    expect(runRustChecks({ platform: 'win32', spawn, ci: false })).toBe(1);
     const cargoChecks = spawn.mock.calls
       .filter(
         call =>
@@ -96,6 +80,47 @@ describe('Windows native rust check', () => {
       )
       .map(call => call[1][0]);
     expect(cargoChecks).toEqual(['fmt']);
+  });
+
+  it('falls back to cargo test when nextest and cargo-deny are unavailable', () => {
+    const spawn = vi.fn((command: string, args: string[]) => {
+      if (
+        command === 'cargo' &&
+        (args[0] === 'nextest' || args[0] === 'deny')
+      ) {
+        return { status: 1 };
+      }
+      return { status: 0 };
+    });
+
+    expect(runRustChecks({ platform: 'win32', spawn, ci: false })).toBe(0);
+
+    const commands = spawn.mock.calls.map(
+      call => `${call[0]} ${call[1].join(' ')}`
+    );
+    expect(commands).toContain(
+      'cargo test --manifest-path src/main/Cargo.toml --workspace --no-fail-fast'
+    );
+    expect(
+      commands.some(command => command.startsWith('cargo nextest run'))
+    ).toBe(false);
+    expect(
+      commands.some(command => command.startsWith('cargo deny --manifest-path'))
+    ).toBe(false);
+  });
+
+  it('fails in CI when cargo-deny is unavailable', () => {
+    const spawn = vi.fn((command: string, args: string[]) => {
+      if (
+        command === 'cargo' &&
+        (args[0] === 'nextest' || args[0] === 'deny')
+      ) {
+        return { status: 1 };
+      }
+      return { status: 0 };
+    });
+
+    expect(runRustChecks({ platform: 'win32', spawn, ci: 'true' })).toBe(1);
   });
 
   it('bans smol::Timer::after in Clippy config and GPUI sources', () => {

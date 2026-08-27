@@ -4,6 +4,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 $daemonDir = Join-Path $projectRoot 'src\main\daemon-win'
 $outputFile = Join-Path $projectRoot 'src\main\daemon\poratake-daemon.exe'
+$targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $projectRoot 'src\main\target' }
 $hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
 $arch = if ($env:PORATAKE_WIN_ARCH) { $env:PORATAKE_WIN_ARCH } else { $hostArch }
 
@@ -32,6 +33,6 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Copy-Item (Join-Path $daemonDir "target\$rustTarget\release\poratake-daemon.exe") $outputFile -Force
+Copy-Item (Join-Path $targetDir "$rustTarget\release\poratake-daemon.exe") $outputFile -Force
 
 Write-Host "Successfully built: $outputFile" -ForegroundColor Green

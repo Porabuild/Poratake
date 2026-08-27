@@ -118,7 +118,7 @@ describe('dev lock', () => {
     expect(
       isPoratakeDevCommand(
         root,
-        `${root}\\src\\main\\app-gpui\\target\\debug\\poratake-gpui.exe`
+        `${root}\\src\\main\\target\\debug\\poratake-gpui.exe`
       )
     ).toBe(true);
     expect(

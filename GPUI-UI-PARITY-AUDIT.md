@@ -2418,7 +2418,7 @@ Two follow-ups of my own:
   job: startup compares before writing, so a launch where the entry is already
   correct writes nothing. That restores the warning count to 10 and — unplanned
   — stops a dev build from repointing the user's real auto-start entry at
-  `target\debug\poratake-gpui.exe`, since the shared value name means an
+  `src\main\target\debug\poratake-gpui.exe`, since the shared value name means an
   unconditional write would have clobbered the installed path.
 - The `windows` crate's WinRT `Foundation` feature, added only for the toast
   `ExpirationTime` that pass 25 removed, is gone. `Win32_Foundation` and

@@ -46,7 +46,8 @@ public class PT {
 }
 '@
 
-$exe = Join-Path $PSScriptRoot '..\src\main\app-gpui\target\debug\poratake-gpui.exe'
+$targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PSScriptRoot '..\src\main\target' }
+$exe = Join-Path $targetDir 'debug\poratake-gpui.exe'
 # Always rebuild so the binary matches the sources.
 Get-Process poratake-gpui,poratake-daemon -ErrorAction SilentlyContinue | Stop-Process -Force
 Remove-Item $exe -ErrorAction SilentlyContinue

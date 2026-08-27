@@ -157,17 +157,16 @@ jobs:
       - name: Cache Rust target
         uses: actions/cache@v5
         with:
-          path: src/main/daemon-win/target
-          key: ${{ runner.os }}-rust-${{ hashFiles('src/main/daemon-win/Cargo.lock') }}
-
-      - name: Cache GPUI target
-        uses: actions/cache@v5
-        with:
-          path: src/main/app-gpui/target
-          key: ${{ runner.os }}-gpui-${{ hashFiles('src/main/app-gpui/Cargo.lock') }}
+          path: src/main/target
+          key: ${{ runner.os }}-rust-${{ hashFiles('src/main/Cargo.lock') }}
 
       - name: Install rustfmt and clippy
         run: rustup component add rustfmt clippy
+
+      - name: Install cargo-nextest and cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-deny
 
       - name: Format, Clippy, and test Windows native
         run: bun run test:daemon-win
@@ -201,8 +200,8 @@ jobs:
       - name: Cache Rust target
         uses: actions/cache@v5
         with:
-          path: src/main/daemon-win/target
-          key: ${{ runner.os }}-rust-${{ hashFiles('src/main/daemon-win/Cargo.lock') }}
+          path: src/main/target
+          key: ${{ runner.os }}-rust-${{ hashFiles('src/main/Cargo.lock') }}
 
       - name: Setup MSYS2
         id: msys2
@@ -225,7 +224,7 @@ jobs:
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
             src/main/daemon/poratake-daemon.exe
-          key: ${{ runner.os }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
+          key: ${{ runner.os }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
 
       - name: Build Windows package
         run: bun run build-win

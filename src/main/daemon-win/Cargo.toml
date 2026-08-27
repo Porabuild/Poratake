@@ -2,6 +2,8 @@
 name = "poratake-daemon"
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0-only"
+rust-version.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -55,11 +57,5 @@ features = [
   "Win32_UI_Controls_Dialogs",
 ]
 
-[lints.clippy]
-disallowed_methods = "deny"
-
-[profile.release]
-opt-level = "z"
-lto = true
-strip = true
-panic = "abort"
+[lints]
+workspace = true

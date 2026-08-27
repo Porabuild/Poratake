@@ -7,37 +7,68 @@ export const REPO_ROOT = path.resolve(
   '..'
 );
 
-export const RUST_MANIFESTS = [
-  'src/main/daemon-win/Cargo.toml',
-  'src/main/app-gpui/Cargo.toml',
-];
+export const RUST_WORKSPACE_MANIFEST = 'src/main/Cargo.toml';
 
-export const DAEMON_WIN_MANIFEST = RUST_MANIFESTS[0];
+const FMT_COMMAND = {
+  command: 'cargo',
+  args: [
+    'fmt',
+    '--manifest-path',
+    RUST_WORKSPACE_MANIFEST,
+    '--all',
+    '--',
+    '--check',
+  ],
+};
 
-export function rustCheckCommands() {
+const CLIPPY_COMMAND = {
+  command: 'cargo',
+  args: [
+    'clippy',
+    '--manifest-path',
+    RUST_WORKSPACE_MANIFEST,
+    '--workspace',
+    '--all-targets',
+    '--',
+    '-D',
+    'warnings',
+  ],
+};
+
+const DENY_COMMAND = {
+  command: 'cargo',
+  args: ['deny', '--manifest-path', RUST_WORKSPACE_MANIFEST, 'check'],
+};
+
+const NEXTEST_COMMAND = {
+  command: 'cargo',
+  args: [
+    'nextest',
+    'run',
+    '--manifest-path',
+    RUST_WORKSPACE_MANIFEST,
+    '--workspace',
+    '--no-fail-fast',
+  ],
+};
+
+const TEST_COMMAND = {
+  command: 'cargo',
+  args: [
+    'test',
+    '--manifest-path',
+    RUST_WORKSPACE_MANIFEST,
+    '--workspace',
+    '--no-fail-fast',
+  ],
+};
+
+export function rustCheckCommands({ nextest = false, deny = false } = {}) {
   return [
-    ...RUST_MANIFESTS.flatMap(manifest => [
-      {
-        command: 'cargo',
-        args: ['fmt', '--manifest-path', manifest, '--', '--check'],
-      },
-      {
-        command: 'cargo',
-        args: [
-          'clippy',
-          '--manifest-path',
-          manifest,
-          '--all-targets',
-          '--',
-          '-D',
-          'clippy::disallowed_methods',
-        ],
-      },
-    ]),
-    ...RUST_MANIFESTS.map(manifest => ({
-      command: 'cargo',
-      args: ['test', '--manifest-path', manifest, '--no-fail-fast'],
-    })),
+    FMT_COMMAND,
+    CLIPPY_COMMAND,
+    ...(deny ? [DENY_COMMAND] : []),
+    nextest ? NEXTEST_COMMAND : TEST_COMMAND,
   ];
 }
 
@@ -70,6 +101,7 @@ function ensureRustfmtAndClippy(spawn) {
 export function runRustChecks({
   platform = process.platform,
   spawn = spawnSync,
+  ci = process.env.CI,
 } = {}) {
   if (platform !== 'win32') {
     console.log('Skipping Windows native check: not running on Windows.');
@@ -77,13 +109,29 @@ export function runRustChecks({
   }
 
   if (!cargoAvailable(spawn)) {
+    if (ci) {
+      console.error('cargo is required in CI.');
+      return 1;
+    }
     console.log('Skipping Windows native check: cargo is not installed.');
     return 0;
   }
 
   ensureRustfmtAndClippy(spawn);
 
-  for (const step of rustCheckCommands()) {
+  const nextest = cargoSubcommandAvailable(spawn, 'nextest');
+  const deny = cargoSubcommandAvailable(spawn, 'deny');
+  if (!deny) {
+    if (ci) {
+      console.error(
+        'cargo-deny is required in CI: the license and advisory gate cannot be skipped.'
+      );
+      return 1;
+    }
+    console.log('Skipping cargo-deny check: cargo-deny is not installed.');
+  }
+
+  for (const step of rustCheckCommands({ nextest, deny })) {
     const result = spawn(step.command, step.args, {
       stdio: 'inherit',
       shell: true,

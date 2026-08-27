@@ -115,7 +115,7 @@ Poratake is built on Electron 43.4.0 under the MIT License. Electron's license a
 
 The macOS Swift daemon uses only Apple system frameworks and has no third-party dependencies.
 
-The Windows Rust daemon (`poratake-daemon.exe`) statically links the following crates. Exact versions are pinned in `src/main/daemon-win/Cargo.lock`, and each crate's full license text is included in its published source at that version.
+The Windows Rust daemon (`poratake-daemon.exe`) statically links the following crates. Exact versions are pinned in `src/main/Cargo.lock`, and each crate's full license text is included in its published source at that version.
 
 Licensed under the MIT License (text below), some dual-licensed with Apache-2.0 with MIT elected here: allocator-api2, base64, equivalent, g2p, g2poly, hashbrown, itoa, lru (Copyright (c) 2016 Jerome Froelich), memchr (Copyright (c) 2015 Andrew Gallant), rqrr (Copyright 2019 Moritz Wanzenböck), serde, serde_core, serde_json, zmij, and the Microsoft `windows` crates: windows, windows-collections, windows-core, windows-future, windows-link, windows-numerics, windows-result, windows-strings, windows-threading (Copyright (c) Microsoft Corporation).
 
@@ -139,7 +139,7 @@ Build-time-only tools that do not ship in the binary (proc macros and code gener
 
 ## Poratake GPUI shell (src/main/app-gpui)
 
-The Poratake GPUI shell (`poratake-gpui`) directly depends on the following crates. Exact versions and the complete transitive dependency closure are pinned in `src/main/app-gpui/Cargo.lock`, and the license strings below are taken from each crate's Cargo manifest at that version.
+The Poratake GPUI shell (`poratake-gpui`) directly depends on the following crates. Exact versions and the complete transitive dependency closure are pinned in `src/main/Cargo.lock`, and the license strings below are taken from each crate's Cargo manifest at that version.
 
 | Crate               | Version | License                   |
 | ------------------- | ------: | ------------------------- |
@@ -155,7 +155,6 @@ The Poratake GPUI shell (`poratake-gpui`) directly depends on the following crat
 | `image`             | 0.25.10 | MIT OR Apache-2.0         |
 | `lyon`              |  1.0.19 | MIT OR Apache-2.0         |
 | `md-5`              |  0.11.0 | MIT OR Apache-2.0         |
-| `muda`              |  0.19.3 | Apache-2.0 OR MIT         |
 | `parking_lot`       |  0.12.5 | MIT OR Apache-2.0         |
 | `raw-window-handle` |   0.6.2 | MIT OR Apache-2.0 OR Zlib |
 | `resvg`             |  0.45.1 | Apache-2.0 OR MIT         |
@@ -171,7 +170,7 @@ The Poratake GPUI shell (`poratake-gpui`) directly depends on the following crat
 | `serde`             | 1.0.229 | MIT OR Apache-2.0         |
 | `serde_json`        | 1.0.151 | MIT OR Apache-2.0         |
 
-`muda` and `tray-icon` pull in `dpi` 0.1.2 (Apache-2.0 AND MIT).
+`tray-icon` pulls in `dpi` 0.1.2 (Apache-2.0 AND MIT).
 
 The application requests only the PNG, JPEG, and GIF codecs from `image`, but GPUI 0.2.2 also enables `image`'s default codec set. The locked Windows closure therefore includes `ravif` 0.13.0 (BSD-3-Clause), `rav1e` 0.8.1 (BSD-2-Clause), `exr` 1.74.2 (BSD-3-Clause), `image-webp` 0.2.4 (MIT OR Apache-2.0), `qoi` 0.4.1 (MIT OR Apache-2.0), and `tiff` 0.11.3 (MIT). The GIF codec pulls in `gif` 0.14.2 and `weezl` 0.1.12 (both MIT OR Apache-2.0) and `color_quant` 1.1.0 (MIT). GPUI's Windows clipboard and TLS paths also include `clipboard-win` 5.4.1 (BSL-1.0) and `ring` 0.17.14 (Apache-2.0 AND ISC).
 
