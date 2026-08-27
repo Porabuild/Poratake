@@ -3,6 +3,7 @@
 //! the configured corner, stacks up to four deep, and reveals hover chrome.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +21,8 @@ use crate::ui::chrome::{
 use crate::ui::icon::icon_element;
 
 static STACK: Mutex<Vec<AnyWindowHandle>> = Mutex::new(Vec::new());
+static RESTACK_GENERATION: AtomicU64 = AtomicU64::new(0);
+const UPLOAD_DONE_DISPLAY_MS: u64 = 800;
 
 pub struct CapturePreviewWindow {
     path: PathBuf,
@@ -37,6 +40,8 @@ pub struct CapturePreviewWindow {
     /// frame-rate dependent.
     last_frame: Option<std::time::Instant>,
     display_menu_open: bool,
+    busy: bool,
+    dismiss_token: Arc<AtomicU64>,
 }
 
 impl CapturePreviewWindow {
@@ -55,6 +60,7 @@ impl CapturePreviewWindow {
 
         let image = load_thumbnail(&path);
         let blurred = load_blurred_thumbnail(&path);
+        let dismiss_token = Arc::new(AtomicU64::new(0));
         let bounds = preview_bounds(cx, index);
         let opened = cx.open_window(
             WindowOptions {
@@ -78,14 +84,75 @@ impl CapturePreviewWindow {
                     hover_progress: 0.0,
                     last_frame: None,
                     display_menu_open: false,
+                    busy: false,
+                    dismiss_token: dismiss_token.clone(),
                 })
             },
         );
         if let Ok(handle) = opened {
-            STACK.lock().push(handle.into());
+            let handle: AnyWindowHandle = handle.into();
+            STACK.lock().push(handle);
+            schedule_auto_dismiss(handle, cx, dismiss_token);
         }
         restack(cx);
     }
+}
+
+fn schedule_auto_dismiss(handle: AnyWindowHandle, cx: &mut App, dismiss_token: Arc<AtomicU64>) {
+    let preview = crate::state::state(cx).config.get().preview;
+    if !preview.auto_dismiss || preview.auto_dismiss_seconds <= 0.0 {
+        return;
+    }
+    let timeout = Duration::from_secs_f64(preview.auto_dismiss_seconds);
+    let generation = dismiss_token.fetch_add(1, Ordering::Relaxed) + 1;
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(timeout).await;
+        let should_close = cx
+            .update(|cx| {
+                let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
+                    return false;
+                };
+                handle
+                    .update(cx, |view, _, _| {
+                        auto_dismiss_ready(
+                            view.dismiss_token.load(Ordering::Relaxed),
+                            generation,
+                            view.hovered,
+                            view.display_menu_open,
+                            view.busy,
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if should_close {
+            let closed = cx
+                .update(|cx| {
+                    handle
+                        .downcast::<CapturePreviewWindow>()
+                        .is_some_and(|handle| {
+                            handle
+                                .update(cx, |_, window, _| window.remove_window())
+                                .is_ok()
+                        })
+                })
+                .unwrap_or(false);
+            if closed {
+                let _ = cx.update(restack);
+            }
+        }
+    })
+    .detach();
+}
+
+fn auto_dismiss_ready(
+    current_generation: u64,
+    generation: u64,
+    hovered: bool,
+    menu: bool,
+    busy: bool,
+) -> bool {
+    current_generation == generation && !hovered && !menu && !busy
 }
 
 fn prune_stack(cx: &mut App) {
@@ -183,8 +250,14 @@ fn load_blurred_thumbnail(path: &PathBuf) -> Option<Arc<gpui::RenderImage>> {
 
 fn load_thumbnail(path: &PathBuf) -> Option<Arc<gpui::RenderImage>> {
     let bytes = std::fs::read(path).ok()?;
-    let decoded = image::load_from_memory(&bytes).ok()?.to_rgba8();
-    let mut buffer = decoded;
+    let decoded = image::load_from_memory(&bytes).ok()?;
+    let mut buffer = decoded
+        .resize_to_fill(
+            PREVIEW_WIDTH as u32,
+            PREVIEW_HEIGHT as u32,
+            image::imageops::FilterType::Triangle,
+        )
+        .to_rgba8();
     for pixel in buffer.chunks_exact_mut(4) {
         pixel.swap(0, 2);
     }
@@ -208,17 +281,17 @@ fn starred_preset(cx: &mut App) -> Option<crate::config::schema::WallpaperPreset
 /// Composes the capture with the starred preset and puts the result on the
 /// clipboard -- `polish` in `use-polish-copy.ts`, which renders the capture over
 /// the preset's wallpaper and copies it rather than saving it.
-fn polish_and_copy(path: &Path, cx: &mut App) {
+fn polish_and_copy(path: &Path, cx: &mut App) -> bool {
     let Some(preset) = starred_preset(cx) else {
-        return;
+        return false;
     };
     let Ok(bytes) = std::fs::read(path) else {
-        eprintln!("[polish] could not read {}", path.display());
-        return;
+        report_copy_failure(cx, &format!("could not read {}", path.display()));
+        return false;
     };
     let Ok(decoded) = image::load_from_memory(&bytes) else {
-        eprintln!("[polish] could not decode {}", path.display());
-        return;
+        report_copy_failure(cx, "could not decode the capture");
+        return false;
     };
 
     let mut settings = crate::editor::wallpaper::WallpaperSettings::default();
@@ -237,33 +310,49 @@ fn polish_and_copy(path: &Path, cx: &mut App) {
     );
 
     let (width, height) = (canvas.width() as usize, canvas.height() as usize);
-    if let Err(error) = arboard::Clipboard::new().and_then(|mut clipboard| {
-        clipboard.set_image(arboard::ImageData {
-            width,
-            height,
-            bytes: std::borrow::Cow::Owned(canvas.into_raw()),
+    let copied = arboard::Clipboard::new()
+        .and_then(|mut clipboard| {
+            clipboard.set_image(arboard::ImageData {
+                width,
+                height,
+                bytes: std::borrow::Cow::Owned(canvas.into_raw()),
+            })
         })
-    }) {
-        eprintln!("[polish] could not copy the polished capture: {error}");
+        .is_ok();
+    if !copied {
+        report_copy_failure(cx, "could not reach the clipboard");
     }
+    copied
 }
 
-fn copy_image(path: &Path) {
+fn copy_image(path: &Path, cx: &mut App) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
-        return;
+        report_copy_failure(cx, &format!("could not read {}", path.display()));
+        return false;
     };
     let Ok(decoded) = image::load_from_memory(&bytes) else {
-        return;
+        report_copy_failure(cx, "could not decode the capture");
+        return false;
     };
     let rgba = decoded.to_rgba8();
     let (width, height) = (rgba.width() as usize, rgba.height() as usize);
-    let _ = arboard::Clipboard::new().and_then(|mut clipboard| {
-        clipboard.set_image(arboard::ImageData {
-            width,
-            height,
-            bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+    let copied = arboard::Clipboard::new()
+        .and_then(|mut clipboard| {
+            clipboard.set_image(arboard::ImageData {
+                width,
+                height,
+                bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+            })
         })
-    });
+        .is_ok();
+    if !copied {
+        report_copy_failure(cx, "could not reach the clipboard");
+    }
+    copied
+}
+
+fn report_copy_failure(cx: &mut App, message: &str) {
+    crate::windows::toast::Toast::show(cx, "Copy failed", message.to_string());
 }
 
 fn delete_capture(path: &Path) {
@@ -282,6 +371,7 @@ fn close_self(window: &mut Window, cx: &mut App) {
 }
 
 fn restack(cx: &mut App) {
+    let generation = RESTACK_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     prune_stack(cx);
     let handles: Vec<_> = STACK.lock().clone();
     for (index, handle) in handles.into_iter().enumerate() {
@@ -299,6 +389,9 @@ fn restack(cx: &mut App) {
         let step_ms = chrome::window_move_step_ms();
         cx.spawn(async move |cx| {
             for step in 1..=WINDOW_MOVE_STEPS {
+                if RESTACK_GENERATION.load(Ordering::Relaxed) != generation {
+                    break;
+                }
                 let (x, y) = chrome::window_move_position(
                     from_x,
                     from_y,
@@ -333,9 +426,8 @@ fn window_origin_device_pixels(x: f32, y: f32, scale: f32) -> (i32, i32) {
 }
 
 fn apply_preview_frame(window: &mut Window, x: f32, y: f32) {
-    let (origin_x, origin_y, width, height) = preview_frame(x, y);
+    let (origin_x, origin_y, _, _) = preview_frame(x, y);
     set_native_window_origin(window, origin_x, origin_y);
-    window.resize(size(px(width), px(height)));
 }
 
 fn set_native_window_origin(window: &Window, x: f32, y: f32) {
@@ -375,7 +467,7 @@ fn set_native_window_origin(window: &Window, x: f32, y: f32) {
 
 impl CapturePreviewWindow {
     fn show_controls(&self) -> bool {
-        self.hovered || self.display_menu_open
+        self.hovered || self.display_menu_open || self.busy
     }
 
     /// Moves `hover_progress` towards its target and asks for another frame
@@ -412,11 +504,13 @@ impl CapturePreviewWindow {
     fn circle_button(
         id: &'static str,
         icon: &'static str,
-        tooltip: &'static str,
+        busy: bool,
+        tooltip: impl Into<gpui::SharedString>,
         theme: &crate::theme::vars::ThemeVars,
         hover_bg: gpui::Hsla,
         on_click: impl Fn(&mut Window, &mut App) + 'static,
     ) -> gpui::AnyElement {
+        let tooltip = tooltip.into();
         div()
             .id(id)
             .size(px(PREVIEW_CONTROL))
@@ -426,14 +520,22 @@ impl CapturePreviewWindow {
             .items_center()
             .justify_center()
             .tooltip(move |_window, cx| {
-                cx.new(|_| crate::ui::tooltip::Tooltip::new(tooltip)).into()
+                cx.new(|_| crate::ui::tooltip::Tooltip::new(tooltip.clone()))
+                    .into()
             })
             .hover(move |style| style.bg(hover_bg))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 on_click(window, cx);
                 cx.stop_propagation();
             })
-            .child(icon_element(icon, px(14.0)))
+            .child(if busy {
+                crate::ui::icon::spinner_element(
+                    gpui::ElementId::Name(format!("{id}-spinner").into()),
+                    px(14.0),
+                )
+            } else {
+                icon_element(icon, px(14.0))
+            })
             .into_any_element()
     }
 }
@@ -441,6 +543,7 @@ impl CapturePreviewWindow {
 impl Render for CapturePreviewWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
+        let preview_entity = cx.entity().downgrade();
         let show_controls = self.show_controls();
         let progress = self.advance_hover(window);
         let polish = starred_preset(cx);
@@ -458,15 +561,29 @@ impl Render for CapturePreviewWindow {
             .overflow_hidden()
             .rounded(px(PREVIEW_RADIUS))
             .bg(theme.muted_background)
-            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
-                this.hovered = *hovered;
-                cx.notify();
-            }))
+            .on_hover({
+                let view = cx.entity().downgrade();
+                move |hovered: &bool, window, cx| {
+                    let handle = window.window_handle();
+                    let dismiss_token = view
+                        .update(cx, |this, cx| {
+                            this.hovered = *hovered;
+                            cx.notify();
+                            this.dismiss_token.clone()
+                        })
+                        .ok();
+                    if let Some(dismiss_token) = dismiss_token {
+                        schedule_auto_dismiss(handle, cx, dismiss_token);
+                    }
+                }
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
                     if event.click_count >= 2 {
-                        crate::open_editor_for(cx, &this.path.to_string_lossy());
+                        let path = this.path.to_string_lossy().into_owned();
+                        close_self(_window, cx);
+                        crate::open_editor_for(cx, &path);
                     }
                 }),
             );
@@ -523,10 +640,11 @@ impl Render for CapturePreviewWindow {
                         .child(Self::circle_button(
                             "preview-close",
                             "x",
+                            false,
                             "Close preview",
                             &theme,
                             theme.destructive,
-                            |window, cx| close_self(window, cx),
+                            close_self,
                         )),
                 )
                 .child(
@@ -537,6 +655,7 @@ impl Render for CapturePreviewWindow {
                         .child(Self::circle_button(
                             "preview-delete",
                             "trash-2",
+                            false,
                             "Delete screenshot",
                             &theme,
                             theme.destructive,
@@ -562,6 +681,7 @@ impl Render for CapturePreviewWindow {
                         .flex_col()
                         .gap(px(4.0))
                         .when_some(polish.clone(), |el, preset| {
+                            let tooltip = format!("Copy with \"{}\"", preset.name);
                             el.child(
                                 div()
                                     .id("preview-polish")
@@ -574,17 +694,16 @@ impl Render for CapturePreviewWindow {
                                     .hover(|style| style.bg(theme.primary))
                                     .tooltip(move |_window, cx| {
                                         cx.new(|_| {
-                                            crate::ui::tooltip::Tooltip::new(format!(
-                                                "Copy with \"{}\"",
-                                                preset.name
-                                            ))
+                                            crate::ui::tooltip::Tooltip::new(tooltip.clone())
                                         })
                                         .into()
                                     })
                                     .on_mouse_down(MouseButton::Left, {
                                         let path = path.clone();
-                                        move |_, _, cx| {
-                                            polish_and_copy(&path, cx);
+                                        move |_, window, cx| {
+                                            if polish_and_copy(&path, cx) {
+                                                close_self(window, cx);
+                                            }
                                             cx.stop_propagation();
                                         }
                                     })
@@ -601,10 +720,15 @@ impl Render for CapturePreviewWindow {
                                 .text_size(px(12.0))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .hover(|style| style.bg(theme.primary))
+                                .tooltip(|_window, cx| {
+                                    cx.new(|_| crate::ui::tooltip::Tooltip::new("Edit")).into()
+                                })
                                 .on_mouse_down(MouseButton::Left, {
                                     let path = path.clone();
-                                    move |_, _, cx| {
-                                        crate::open_editor_for(cx, &path.to_string_lossy());
+                                    move |_, window, cx| {
+                                        let path = path.to_string_lossy().into_owned();
+                                        close_self(window, cx);
+                                        crate::open_editor_for(cx, &path);
                                         cx.stop_propagation();
                                     }
                                 })
@@ -619,13 +743,16 @@ impl Render for CapturePreviewWindow {
                         .child(Self::circle_button(
                             "preview-copy",
                             "copy",
+                            false,
                             "Copy",
                             &theme,
                             theme.primary,
                             {
                                 let path = path.clone();
-                                move |_, cx| {
-                                    copy_image(&path);
+                                move |window, cx| {
+                                    if copy_image(&path, cx) {
+                                        close_self(window, cx);
+                                    }
                                     cx.stop_propagation();
                                 }
                             },
@@ -639,14 +766,33 @@ impl Render for CapturePreviewWindow {
                         .child(Self::circle_button(
                             "preview-upload",
                             "cloud-upload",
+                            self.busy,
                             "Upload to Cloud",
                             &theme,
                             theme.primary,
                             {
                                 let path = path.clone();
-                                move |_, cx| {
+                                let preview_entity = preview_entity.clone();
+                                move |window, cx| {
                                     let config = crate::state::state(cx).config.get().cloud;
                                     let path = path.clone();
+                                    let handle = window.window_handle();
+                                    let dismiss_token = preview_entity
+                                        .update(cx, |preview, cx| {
+                                            if preview.busy {
+                                                return None;
+                                            }
+                                            preview.busy = true;
+                                            preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+                                            cx.notify();
+                                            Some(preview.dismiss_token.clone())
+                                        })
+                                        .ok()
+                                        .flatten();
+                                    let Some(dismiss_token) = dismiss_token else {
+                                        return;
+                                    };
+                                    let task_entity = preview_entity.clone();
                                     cx.spawn(async move |cx| {
                                         let result = cx
                                             .background_executor()
@@ -654,23 +800,55 @@ impl Render for CapturePreviewWindow {
                                                 async move { crate::cloud::upload(&config, &path) },
                                             )
                                             .await;
-                                        let _ = cx.update(|cx| match result {
-                                            Ok(url) => {
-                                                let _ = arboard::Clipboard::new().and_then(
-                                                    |mut clipboard| clipboard.set_text(url.clone()),
-                                                );
-                                                crate::windows::toast::Toast::show(
+                                        let succeeded = result.is_ok();
+                                        let _ = cx.update(|cx| {
+                                            let _ = task_entity.update(cx, |preview, cx| {
+                                                if !succeeded {
+                                                    preview.busy = false;
+                                                }
+                                                cx.notify();
+                                            });
+                                            match result {
+                                                Ok(url) => {
+                                                    let _ = arboard::Clipboard::new().and_then(
+                                                        |mut clipboard| {
+                                                            clipboard.set_text(url.clone())
+                                                        },
+                                                    );
+                                                    crate::windows::toast::Toast::show(
+                                                        cx,
+                                                        "Link copied",
+                                                        url,
+                                                    );
+                                                }
+                                                Err(error) => crate::windows::toast::Toast::show(
                                                     cx,
-                                                    "Link copied",
-                                                    url,
-                                                );
+                                                    "Upload failed",
+                                                    error.to_string(),
+                                                ),
                                             }
-                                            Err(error) => crate::windows::toast::Toast::show(
-                                                cx,
-                                                "Upload failed",
-                                                error.to_string(),
-                                            ),
                                         });
+                                        if succeeded {
+                                            cx.background_executor()
+                                                .timer(Duration::from_millis(
+                                                    UPLOAD_DONE_DISPLAY_MS,
+                                                ))
+                                                .await;
+                                            let _ = cx.update(|cx| {
+                                                let Some(preview) =
+                                                    handle.downcast::<CapturePreviewWindow>()
+                                                else {
+                                                    return;
+                                                };
+                                                let _ = preview.update(cx, |_, window, cx| {
+                                                    close_self(window, cx)
+                                                });
+                                            });
+                                        } else {
+                                            let _ = cx.update(|cx| {
+                                                schedule_auto_dismiss(handle, cx, dismiss_token)
+                                            });
+                                        }
                                     })
                                     .detach();
                                     cx.stop_propagation();
@@ -688,6 +866,7 @@ impl Render for CapturePreviewWindow {
                         .child(Self::circle_button(
                             "preview-pin-display",
                             "monitor",
+                            false,
                             "Move previews to another display",
                             &theme,
                             theme.primary,
@@ -757,6 +936,15 @@ mod tests {
         assert_eq!(step_hover(0.5, 0.0, 10.0), 0.0, "a long frame clamps at 0");
         assert_eq!(step_hover(0.5, 1.0, 10.0), 1.0, "and clamps at 1");
         assert_eq!(step_hover(0.3, 0.3, 0.016), 0.3, "already there, no drift");
+    }
+
+    #[test]
+    fn auto_dismiss_is_cancelled_by_interaction() {
+        assert!(auto_dismiss_ready(4, 4, false, false, false));
+        assert!(!auto_dismiss_ready(5, 4, false, false, false));
+        assert!(!auto_dismiss_ready(4, 4, true, false, false));
+        assert!(!auto_dismiss_ready(4, 4, false, true, false));
+        assert!(!auto_dismiss_ready(4, 4, false, false, true));
     }
 
     /// `capture-preview-window.tsx` styles the two destructive controls with
