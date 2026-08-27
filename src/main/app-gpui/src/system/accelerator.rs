@@ -10,10 +10,6 @@ impl Accelerator {
     pub fn hotkey(self) -> HotKey {
         HotKey::new(Some(self.modifiers), self.code)
     }
-
-    pub fn menu(self) -> muda::accelerator::Accelerator {
-        muda::accelerator::Accelerator::new(Some(self.modifiers), self.code)
-    }
 }
 
 pub fn parse(value: &str) -> Option<Accelerator> {

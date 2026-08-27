@@ -45,6 +45,8 @@ pub struct MenuView {
     min_width: Pixels,
     max_height: Pixels,
     compact: bool,
+    neutral_highlight: bool,
+    animate_entrance: bool,
     /// When this popover opened, so `zoom-in-95` can be applied as a
     /// proportional re-layout over the entrance.
     opened_at: std::time::Instant,
@@ -66,6 +68,8 @@ impl MenuView {
             min_width: px(MENU_MIN_WIDTH),
             max_height: px(MENU_MAX_HEIGHT),
             compact: false,
+            neutral_highlight: false,
+            animate_entrance: true,
             opened_at: std::time::Instant::now(),
             focus_handle: cx.focus_handle(),
         }
@@ -81,8 +85,21 @@ impl MenuView {
         self
     }
 
+    pub fn neutral_highlight(mut self, neutral: bool) -> Self {
+        self.neutral_highlight = neutral;
+        self
+    }
+
+    pub fn animate_entrance(mut self, animate: bool) -> Self {
+        self.animate_entrance = animate;
+        self
+    }
+
     /// `zoom-in-95`, applied to every length the popover lays out with.
     fn scale(&self) -> f32 {
+        if !self.animate_entrance {
+            return 1.0;
+        }
         crate::ui::primitives::enter_scale(
             self.opened_at,
             crate::ui::primitives::OVERLAY_ENTER_ZOOM_95,
@@ -216,7 +233,13 @@ impl MenuView {
         }
         let entries = item.submenu.clone();
         let dismiss = self.on_dismiss.clone();
-        let view = cx.new(|cx| MenuView::new(entries, dismiss, cx));
+        let neutral_highlight = self.neutral_highlight;
+        let animate_entrance = self.animate_entrance;
+        let view = cx.new(|cx| {
+            MenuView::new(entries, dismiss, cx)
+                .neutral_highlight(neutral_highlight)
+                .animate_entrance(animate_entrance)
+        });
         self.submenu = Some((index, view));
         cx.notify();
     }
@@ -286,7 +309,13 @@ impl MenuView {
             .rounded(px(self.scaled(crate::ui::chrome::RADIUS_2XL)))
             .text_size(px(self.item_text()))
             .text_color(foreground)
-            .when(highlighted && interactive, |el| el.bg(theme.default))
+            .when(
+                highlighted && interactive && !self.neutral_highlight,
+                |el| el.bg(theme.accent).text_color(theme.accent_foreground),
+            )
+            .when(highlighted && interactive && self.neutral_highlight, |el| {
+                el.bg(theme.default_hover)
+            })
             .when(has_indicator, |el| el.pl(px(INDICATOR_INSET)));
 
         if has_indicator {
@@ -358,6 +387,12 @@ impl MenuView {
         row = row
             .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
                 if !*hovered {
+                    if this.highlighted == Some(index)
+                        && this.submenu.as_ref().is_none_or(|(open, _)| *open != index)
+                    {
+                        this.highlighted = None;
+                        cx.notify();
+                    }
                     return;
                 }
                 this.highlighted = Some(index);
@@ -541,12 +576,15 @@ impl Render for MenuView {
             .text_color(theme.popover_foreground)
             .shadow_md()
             .p(px(self.list_pad()))
-            .when(crate::ui::primitives::entering(self.opened_at), |el| {
-                // The scale comes from a clock, so the popover has to keep
-                // asking for frames until the entrance finishes.
-                window.request_animation_frame();
-                el
-            })
+            .when(
+                self.animate_entrance && crate::ui::primitives::entering(self.opened_at),
+                |el| {
+                    // The scale comes from a clock, so the popover has to keep
+                    // asking for frames until the entrance finishes.
+                    window.request_animation_frame();
+                    el
+                },
+            )
             .max_h(self.max_height)
             .overflow_y_scroll();
 
@@ -558,13 +596,20 @@ impl Render for MenuView {
             });
         }
 
-        div()
-            .relative()
-            .child(crate::ui::primitives::overlay_enter(
+        let entrance = if self.animate_entrance {
+            crate::ui::primitives::overlay_enter(
                 "menu-enter",
                 crate::ui::primitives::EnterFrom::Top,
                 list,
-            ))
+            )
+            .into_any_element()
+        } else {
+            list.into_any_element()
+        };
+
+        div()
+            .relative()
+            .child(entrance)
             .children(self.submenu_layer())
     }
 }

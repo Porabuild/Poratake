@@ -135,6 +135,7 @@ impl MenuItem {
 pub enum MenuEntry {
     Item(MenuItem),
     Separator,
+    #[allow(dead_code)]
     Label(SharedString),
 }
 
@@ -162,6 +163,7 @@ impl MenuBuilder {
         }
     }
 
+    #[allow(dead_code)]
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.entries.push(MenuEntry::Label(label.into()));
         self

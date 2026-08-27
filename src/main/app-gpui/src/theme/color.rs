@@ -62,34 +62,34 @@ impl Srgba {
         let lg = srgb_to_linear(self.g);
         let lb = srgb_to_linear(self.b);
 
-        let l = 0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb;
-        let m = 0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb;
-        let s = 0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb;
+        let l = 0.412_221_46 * lr + 0.536_332_55 * lg + 0.051_445_995 * lb;
+        let m = 0.211_903_5 * lr + 0.680_699_5 * lg + 0.107_396_96 * lb;
+        let s = 0.088_302_46 * lr + 0.281_718_85 * lg + 0.629_978_7 * lb;
 
         let l_ = cbrt(l);
         let m_ = cbrt(m);
         let s_ = cbrt(s);
 
         Oklab {
-            lightness: 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
-            a: 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
-            b: 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+            lightness: 0.210_454_26 * l_ + 0.793_617_8 * m_ - 0.004_072_047 * s_,
+            a: 1.977_998_5 * l_ - 2.428_592_2 * m_ + 0.450_593_7 * s_,
+            b: 0.025_904_037 * l_ + 0.782_771_77 * m_ - 0.808_675_77 * s_,
             alpha: self.a,
         }
     }
 
     fn from_oklab(oklab: Oklab) -> Self {
-        let l_ = oklab.lightness + 0.3963377774 * oklab.a + 0.2158037573 * oklab.b;
-        let m_ = oklab.lightness - 0.1055613458 * oklab.a - 0.0638541728 * oklab.b;
-        let s_ = oklab.lightness - 0.0894841775 * oklab.a - 1.2914855480 * oklab.b;
+        let l_ = oklab.lightness + 0.396_337_78 * oklab.a + 0.215_803_76 * oklab.b;
+        let m_ = oklab.lightness - 0.105_561_346 * oklab.a - 0.063_854_17 * oklab.b;
+        let s_ = oklab.lightness - 0.089_484_18 * oklab.a - 1.291_485_5 * oklab.b;
 
         let l = l_ * l_ * l_;
         let m = m_ * m_ * m_;
         let s = s_ * s_ * s_;
 
-        let lr = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
-        let lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
-        let lb = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+        let lr = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
+        let lg = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
+        let lb = -0.0041960863 * l - 0.703_418_6 * m + 1.707_614_7 * s;
 
         let clamp01 = |v: f32| v.clamp(0.0, 1.0);
         Self {
@@ -135,7 +135,7 @@ impl Srgba {
             .map(|(_, rest)| rest.trim_end_matches(')'))
             .unwrap_or_default();
         let parts: Vec<f32> = body
-            .split(|character| character == ',' || character == '/' || character == ' ')
+            .split([',', '/', ' '])
             .map(str::trim)
             .filter(|part| !part.is_empty())
             .filter_map(|part| part.parse().ok())

@@ -1,10 +1,8 @@
-use muda::{IconMenuItem, Menu, PredefinedMenuItem};
-
 use crate::config::shortcuts::ShortcutsConfig;
 use crate::system::accelerator;
 use crate::system::capabilities::{is_supported, Feature};
-use crate::system::tray::icons;
 use crate::system::tray::intent::Intent;
+use crate::ui::menu::{MenuEntry, MenuItem};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 #[allow(dead_code)]
@@ -27,13 +25,16 @@ pub struct TrayMenuState {
 
 impl TrayMenuState {
     pub fn from_config(config: &crate::config::schema::SettingsConfig) -> Self {
+        let appearance_mode = crate::theme::presets::ThemeMode::parse(&config.appearance.mode);
         Self {
             shortcuts: config.shortcuts.clone(),
             desktop_icons_hidden: crate::capture::desktop_icons::are_hidden(),
             update: UpdateStatus::Idle,
             is_recording: crate::video::recorder::is_recording(),
-            dark_mode: crate::theme::presets::ThemeMode::parse(&config.appearance.mode)
-                != crate::theme::presets::ThemeMode::Light,
+            dark_mode: matches!(
+                crate::theme::presets::resolve_theme_mode(appearance_mode),
+                crate::theme::presets::ThemeMode::Dark
+            ),
         }
     }
 }
@@ -255,11 +256,14 @@ fn specs(state: &TrayMenuState) -> Vec<Spec> {
     prune(specs)
 }
 
-pub fn build(state: &TrayMenuState) -> muda::Result<Menu> {
-    let menu = Menu::new();
-    for spec in specs(state) {
-        match spec {
-            Spec::Separator => menu.append(&PredefinedMenuItem::separator())?,
+pub fn entries(
+    state: &TrayMenuState,
+    tray_rect: Option<crate::system::native::TrayRect>,
+) -> Vec<MenuEntry> {
+    specs(state)
+        .into_iter()
+        .map(|spec| match spec {
+            Spec::Separator => MenuEntry::Separator,
             Spec::Item {
                 intent,
                 label,
@@ -267,21 +271,21 @@ pub fn build(state: &TrayMenuState) -> muda::Result<Menu> {
                 accelerator,
                 enabled,
             } => {
-                let parsed = accelerator
-                    .as_deref()
-                    .and_then(accelerator::parse)
-                    .map(|value| value.menu());
-                menu.append(&IconMenuItem::with_id(
-                    intent.id(),
-                    label,
-                    enabled,
-                    icon.and_then(|name| icons::menu_icon(name, state.dark_mode)),
-                    parsed,
-                ))?;
+                let mut item = MenuItem::new(label).disabled(!enabled);
+                if let Some(icon) = icon {
+                    item = item.icon(icon);
+                }
+                if let Some(accelerator) = accelerator {
+                    item = item.shortcut(accelerator::display(&accelerator));
+                }
+                item = item.on_select(move |window, cx| {
+                    window.remove_window();
+                    crate::intents::dispatch(intent, tray_rect, cx);
+                });
+                MenuEntry::Item(item)
             }
-        }
-    }
-    Ok(menu)
+        })
+        .collect()
 }
 
 #[cfg(test)]

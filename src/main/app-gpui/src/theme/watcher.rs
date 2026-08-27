@@ -39,6 +39,9 @@ pub fn apply_system_mode(mode: ThemeMode, cx: &mut gpui::App) {
         return;
     }
     vars::update_theme(cx, mode, &config.appearance.theme);
+    if crate::state::try_native(cx).is_some() {
+        crate::intents::refresh_shell(cx);
+    }
 }
 
 /// Starts the watcher thread and returns the channel it reports the OS theme

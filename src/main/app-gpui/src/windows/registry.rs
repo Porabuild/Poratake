@@ -9,6 +9,7 @@ pub enum WindowKind {
     VideoEditor,
     Onboarding,
     RecordingControl,
+    TrayMenu,
 }
 
 #[derive(Default)]
@@ -56,6 +57,10 @@ pub fn close(kind: WindowKind, cx: &mut App) {
         return;
     };
     let _ = handle.update(cx, |_, window, _| window.remove_window());
+}
+
+pub fn forget(kind: WindowKind, cx: &mut App) {
+    registry(cx).handles.remove(&kind);
 }
 
 pub fn is_open(kind: WindowKind, cx: &mut App) -> bool {

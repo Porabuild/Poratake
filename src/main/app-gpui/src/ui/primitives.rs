@@ -44,6 +44,7 @@ pub fn control_focus(
 /// Popovers, menus and tooltips enter with `animate-in duration-150 ease-smooth
 /// fade-in-0 zoom-in-90/95` plus a `slide-in-from-*-1`.
 pub const OVERLAY_ENTER_MS: u64 = 150;
+pub const OVERLAY_EXIT_MS: u64 = 100;
 /// `slide-in-from-top-1` and friends: one spacing step, 4px.
 pub const OVERLAY_ENTER_SLIDE: f32 = 4.0;
 
@@ -110,6 +111,28 @@ where
         gpui::Animation::new(std::time::Duration::from_millis(OVERLAY_ENTER_MS))
             .with_easing(ease_smooth()),
         move |element, delta| element.opacity(delta).mt(px(travel * (1.0 - delta))),
+    )
+}
+
+pub fn overlay_exit<E>(
+    id: impl Into<gpui::ElementId>,
+    from: EnterFrom,
+    element: E,
+) -> gpui::AnimationElement<E>
+where
+    E: gpui::IntoElement + Styled + 'static,
+{
+    use gpui::AnimationExt;
+
+    let travel = match from {
+        EnterFrom::Top => -OVERLAY_ENTER_SLIDE,
+        EnterFrom::Bottom => OVERLAY_ENTER_SLIDE,
+    };
+    element.with_animation(
+        id.into(),
+        gpui::Animation::new(std::time::Duration::from_millis(OVERLAY_EXIT_MS))
+            .with_easing(ease_out()),
+        move |element, delta| element.opacity(1.0 - delta).mt(px(travel * delta)),
     )
 }
 

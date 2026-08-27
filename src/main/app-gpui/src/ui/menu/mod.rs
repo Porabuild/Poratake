@@ -18,6 +18,8 @@ struct MenuPopup {
     position: Option<Point<Pixels>>,
     anchor: Corner,
     offset: Point<Pixels>,
+    animation_id: u64,
+    closing_at: Option<std::time::Instant>,
 }
 
 /// A shared, cheaply cloned slot for the one menu a surface can have open at a
@@ -30,6 +32,7 @@ struct MenuState {
     /// runs on mouse-down before the same press reaches the trigger, so
     /// without this the trigger would immediately reopen what it just closed.
     suppressed: Option<SharedString>,
+    next_animation_id: u64,
 }
 
 #[derive(Clone, Default)]
@@ -111,21 +114,32 @@ impl MenuHandle {
     }
 
     pub fn is_open(&self) -> bool {
-        self.0.borrow().popup.is_some()
+        self.finish_closing();
+        self.0
+            .borrow()
+            .popup
+            .as_ref()
+            .is_some_and(|popup| popup.closing_at.is_none())
     }
 
     pub fn is_open_for(&self, owner: &str) -> bool {
+        self.finish_closing();
         self.0.borrow().popup.as_ref().is_some_and(|popup| {
-            popup
-                .owner
-                .as_ref()
-                .is_some_and(|value| value.as_ref() == owner)
+            popup.closing_at.is_none()
+                && popup
+                    .owner
+                    .as_ref()
+                    .is_some_and(|value| value.as_ref() == owner)
         })
     }
 
     pub fn close(&self, window: &mut Window) {
         let mut state = self.0.borrow_mut();
-        if state.popup.take().is_some() {
+        if let Some(popup) = state.popup.as_mut() {
+            if popup.closing_at.is_some() {
+                return;
+            }
+            popup.closing_at = Some(std::time::Instant::now());
             state.suppressed = None;
             drop(state);
             window.refresh();
@@ -225,7 +239,11 @@ impl MenuHandle {
         let shared = self.0.clone();
         let dismiss: DismissHandler = Rc::new(move |window: &mut Window, _cx: &mut App| {
             let mut state = shared.borrow_mut();
-            state.suppressed = state.popup.take().and_then(|popup| popup.owner);
+            let owner = state.popup.as_ref().and_then(|popup| popup.owner.clone());
+            if let Some(popup) = state.popup.as_mut() {
+                popup.closing_at = Some(std::time::Instant::now());
+            }
+            state.suppressed = owner;
             drop(state);
             window.refresh();
         });
@@ -235,12 +253,15 @@ impl MenuHandle {
         }
         let mut state = self.0.borrow_mut();
         state.suppressed = None;
+        state.next_animation_id = state.next_animation_id.wrapping_add(1);
         state.popup = Some(MenuPopup {
             view,
             owner: placement.owner,
             position: placement.position,
             anchor: placement.anchor,
             offset: placement.offset,
+            animation_id: state.next_animation_id,
+            closing_at: None,
         });
         drop(state);
         window.refresh();
@@ -261,6 +282,7 @@ impl MenuHandle {
 
     /// Renders the layer for a window-anchored menu opened with `open_at`.
     pub fn render(&self) -> Option<AnyElement> {
+        self.finish_closing();
         self.clear_stale_suppression();
         let borrowed = self.0.borrow();
         let popup = borrowed.popup.as_ref()?;
@@ -282,6 +304,7 @@ impl MenuHandle {
     /// Renders the layer for the dropdown owned by `owner`, anchored to the
     /// trigger that calls it. The trigger must be `relative()`.
     pub fn render_dropdown(&self, owner: &str) -> AnyElement {
+        self.finish_closing();
         let borrowed = self.0.borrow();
         let Some(popup) = borrowed.popup.as_ref().filter(|popup| {
             popup
@@ -304,14 +327,44 @@ impl MenuHandle {
             .child(layer(popup))
             .into_any_element()
     }
+
+    fn finish_closing(&self) {
+        let mut state = self.0.borrow_mut();
+        let done = state
+            .popup
+            .as_ref()
+            .and_then(|popup| popup.closing_at)
+            .is_some_and(|started| {
+                started.elapsed()
+                    >= std::time::Duration::from_millis(crate::ui::primitives::OVERLAY_EXIT_MS)
+            });
+        if done {
+            state.popup = None;
+            state.suppressed = None;
+        }
+    }
 }
 
 fn layer(popup: &MenuPopup) -> AnyElement {
+    let closing = popup.closing_at.is_some_and(|closing_at| {
+        closing_at.elapsed()
+            < std::time::Duration::from_millis(crate::ui::primitives::OVERLAY_EXIT_MS)
+    });
+    let view = if closing {
+        crate::ui::primitives::overlay_exit(
+            ("menu-exit", popup.animation_id),
+            crate::ui::primitives::EnterFrom::Top,
+            div().child(popup.view.clone()),
+        )
+        .into_any_element()
+    } else {
+        div().child(popup.view.clone()).into_any_element()
+    };
     let mut anchor = anchored()
         .anchor(popup.anchor)
         .offset(popup.offset)
         .snap_to_window_with_margin(px(8.0))
-        .child(popup.view.clone());
+        .child(view);
     if let Some(position) = popup.position {
         anchor = anchor.position(position);
     }

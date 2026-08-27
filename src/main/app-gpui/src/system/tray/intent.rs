@@ -50,6 +50,7 @@ const INTENT_IDS: &[(Intent, &str)] = &[
 ];
 
 impl Intent {
+    #[cfg(test)]
     pub fn id(self) -> &'static str {
         INTENT_IDS
             .iter()

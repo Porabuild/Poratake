@@ -14,13 +14,18 @@ pub struct TrayRect {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct NativeEvent {
-    pub intent: Intent,
-    pub tray_rect: Option<TrayRect>,
+pub enum NativeEvent {
+    Intent {
+        intent: Intent,
+        tray_rect: Option<TrayRect>,
+    },
+    ToggleTrayMenu {
+        tray_rect: Option<TrayRect>,
+    },
 }
 
 pub enum NativeCommand {
-    RebuildMenu(TrayMenuState),
+    RebuildMenu(Box<TrayMenuState>),
     SetTrayVisible(bool),
     SetHotkeys(Vec<(Intent, String)>),
 }
@@ -79,8 +84,8 @@ impl Shell {
         })
     }
 
-    fn emit(&self, intent: Intent) {
-        let event = NativeEvent {
+    fn emit_intent(&self, intent: Intent) {
+        let event = NativeEvent::Intent {
             intent,
             tray_rect: self.tray_rect(),
         };
@@ -89,11 +94,32 @@ impl Shell {
         }
     }
 
+    fn emit_tray_menu(&self, rect: tray_icon::Rect) {
+        let tray_rect = Some(TrayRect {
+            x: rect.position.x as f32,
+            y: rect.position.y as f32,
+            width: rect.size.width as f32,
+            height: rect.size.height as f32,
+        });
+        if self
+            .events
+            .send_blocking(NativeEvent::ToggleTrayMenu { tray_rect })
+            .is_err()
+        {
+            eprintln!("[native] event channel closed");
+        }
+    }
+
     fn drain_native_queues(&self) {
-        while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
-            match Intent::from_id(event.id.as_ref()) {
-                Some(intent) => self.emit(intent),
-                None => eprintln!("[tray] unknown menu id {:?}", event.id),
+        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            if let tray_icon::TrayIconEvent::Click {
+                rect,
+                button: tray_icon::MouseButton::Left | tray_icon::MouseButton::Right,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                self.emit_tray_menu(rect);
             }
         }
         while let Ok(event) = global_hotkey::GlobalHotKeyEvent::receiver().try_recv() {
@@ -101,7 +127,7 @@ impl Shell {
                 continue;
             }
             match self.hotkeys.intent_for(event.id()) {
-                Some(intent) => self.emit(intent),
+                Some(intent) => self.emit_intent(intent),
                 None => eprintln!("[hotkey] unmapped id {}", event.id()),
             }
         }
@@ -116,16 +142,15 @@ impl Shell {
     }
 
     fn rebuild_menu(&mut self, state: &TrayMenuState) {
-        let menu = match tray::build(state) {
-            Ok(menu) => menu,
-            Err(error) => {
-                eprintln!("[tray] menu build failed: {error}");
-                return;
-            }
-        };
         match &self.tray {
-            Some(tray) => tray.set_menu(Some(Box::new(menu))),
-            None => self.tray = create_tray(menu),
+            Some(tray) => {
+                if let Some(icon) = tray::tray_icon(state.dark_mode) {
+                    if let Err(error) = tray.set_icon(Some(icon)) {
+                        eprintln!("[tray] icon update failed: {error}");
+                    }
+                }
+            }
+            None => self.tray = create_tray(state.dark_mode),
         }
     }
 
@@ -142,12 +167,12 @@ impl Shell {
     }
 }
 
-fn create_tray(menu: muda::Menu) -> Option<tray_icon::TrayIcon> {
+fn create_tray(dark_mode: bool) -> Option<tray_icon::TrayIcon> {
     let mut builder = tray_icon::TrayIconBuilder::new()
         .with_tooltip("Poratake")
-        .with_menu(Box::new(menu))
-        .with_menu_on_left_click(true);
-    if let Some(icon) = tray::tray_icon() {
+        .with_menu_on_left_click(false)
+        .with_menu_on_right_click(false);
+    if let Some(icon) = tray::tray_icon(dark_mode) {
         builder = builder.with_icon(icon);
     }
     match builder.build() {
@@ -172,10 +197,7 @@ fn run(
     let mut hotkeys = HotkeyRegistry::new();
     hotkeys.apply(&hotkey_bindings);
 
-    let tray = tray::build(&state)
-        .map_err(|error| eprintln!("[tray] menu build failed: {error}"))
-        .ok()
-        .and_then(create_tray);
+    let tray = create_tray(state.dark_mode);
 
     let mut shell = Shell {
         tray,

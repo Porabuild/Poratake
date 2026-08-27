@@ -108,7 +108,7 @@ pub fn refresh_shell(cx: &mut App) {
     let config = crate::state::state(cx).config.get();
     let bridge = crate::state::native(cx);
     bridge.send(crate::system::native::NativeCommand::RebuildMenu(
-        crate::system::tray::TrayMenuState::from_config(&config),
+        crate::system::tray::TrayMenuState::from_config(&config).into(),
     ));
     bridge.send(crate::system::native::NativeCommand::SetHotkeys(
         crate::system::hotkeys::bindings(&config),

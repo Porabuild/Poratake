@@ -8,12 +8,26 @@ pub mod registry;
 pub mod settings;
 mod smoke;
 pub mod toast;
+pub mod tray_menu;
 pub mod video_editor;
 
 use gpui::{
     point, px, Bounds, Pixels, Point, Size, TitlebarOptions, WindowBackgroundAppearance,
     WindowBounds, WindowOptions,
 };
+
+#[cfg(windows)]
+pub(crate) fn window_hwnd(window: &gpui::Window) -> Option<windows::Win32::Foundation::HWND> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return None;
+    };
+    Some(windows::Win32::Foundation::HWND(
+        handle.hwnd.get() as *mut core::ffi::c_void
+    ))
+}
 
 pub fn app_window_options(bounds: Bounds<Pixels>, min_size: Option<Size<Pixels>>) -> WindowOptions {
     app_window_options_with_lights(bounds, min_size, point(px(12.0), px(11.0)))
