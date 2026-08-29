@@ -51,6 +51,8 @@ pub struct HistoryWindow {
     focus_handle: FocusHandle,
     now_ms: i64,
     activation: Option<gpui::Subscription>,
+    revealing: bool,
+    closing: bool,
 }
 
 impl HistoryWindow {
@@ -71,13 +73,17 @@ impl HistoryWindow {
             focus_handle: cx.focus_handle(),
             now_ms: chrono::Local::now().timestamp_millis(),
             activation: None,
+            revealing: cfg!(windows),
+            closing: false,
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
-            if !should_close_on_blur(window.is_window_active(), this.menu.is_open()) {
+            if this.revealing
+                || this.closing
+                || !should_close_on_blur(window.is_window_active(), this.menu.is_open())
+            {
                 return;
             }
-            window.remove_window();
-            registry::close(RegistryKind::History, cx);
+            this.close(window, cx);
         }));
         view.reload(cx);
         view
@@ -86,22 +92,52 @@ impl HistoryWindow {
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
         registry::toggle(RegistryKind::History, cx, |cx| {
             let store = crate::state::state(cx).config;
-            let bounds = popover_bounds(tray_rect, cx);
+            let (bounds, display_id) = popover_placement(tray_rect, cx);
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: None,
                     focus: true,
-                    show: true,
+                    show: !cfg!(windows),
                     kind: WindowKind::PopUp,
                     is_movable: false,
                     is_resizable: false,
                     is_minimizable: false,
+                    display_id,
                     ..Default::default()
                 },
                 |window, cx| {
+                    #[cfg(windows)]
+                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                        crate::system::window_composition::disable_transitions(hwnd);
+                        crate::system::window_composition::stage_window(
+                            hwnd,
+                            bounds,
+                            window.scale_factor(),
+                            true,
+                        );
+                    }
                     let view = cx.new(|cx| Self::new(store, window, cx));
                     window.focus(&view.read(cx).focus_handle);
+                    #[cfg(windows)]
+                    {
+                        let settled = view.clone();
+                        window.on_next_frame(move |window, _cx| {
+                            window.on_next_frame(move |window, _| {
+                                if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                                    crate::system::window_composition::reveal_window(hwnd, true, 0);
+                                }
+                                window.activate_window();
+                                window.on_next_frame(move |window, cx| {
+                                    settled.update(cx, |this, _cx| this.revealing = false);
+                                    if !window.is_window_active() {
+                                        settled.update(cx, |this, cx| this.close(window, cx));
+                                    }
+                                });
+                            });
+                        });
+                        window.activate_window();
+                    }
                     view
                 },
             )
@@ -116,6 +152,15 @@ impl HistoryWindow {
         self.selected_index = 0;
         self.load_media(cx);
         cx.notify();
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
+        registry::close(RegistryKind::History, cx);
+        window.remove_window();
     }
 
     fn load_media(&mut self, cx: &mut Context<Self>) {
@@ -234,13 +279,11 @@ impl HistoryWindow {
         let kind = item.r#type;
         if kind == HistoryItemType::Screenshot {
             if crate::open_editor_for(cx, &path) {
-                window.remove_window();
-                registry::close(RegistryKind::History, cx);
+                self.close(window, cx);
             }
             return;
         }
-        window.remove_window();
-        registry::close(RegistryKind::History, cx);
+        self.close(window, cx);
         cx.defer(move |cx| match kind {
             HistoryItemType::Video => {
                 crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path))
@@ -287,8 +330,7 @@ impl HistoryWindow {
     }
 
     pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.remove_window();
-        registry::close(RegistryKind::History, cx);
+        self.close(window, cx);
         cx.defer(|cx| {
             crate::intents::dispatch(crate::system::tray::Intent::OpenSettings, None, cx)
         });
@@ -380,45 +422,56 @@ impl HistoryWindow {
             "right" | "l" => self.move_selection(1, cx),
             "enter" => self.open_index(self.selected_index, window, cx),
             "backspace" | "d" => self.delete_index(self.selected_index, cx),
-            "escape" | "q" => {
-                window.remove_window();
-                registry::close(RegistryKind::History, cx);
-            }
+            "escape" | "q" => self.close(window, cx),
             _ => {}
         }
     }
 }
 
-fn popover_bounds(tray_rect: Option<TrayRect>, cx: &mut App) -> Bounds<Pixels> {
+fn popover_placement(
+    tray_rect: Option<TrayRect>,
+    cx: &mut App,
+) -> (Bounds<Pixels>, Option<gpui::DisplayId>) {
     let popover = size(px(POPOVER_WIDTH), px(POPOVER_HEIGHT));
-    let Some(rect) = tray_rect else {
-        return Bounds::centered(None, popover, cx);
+    let Some(display) = crate::windows::tray_menu::menu_display(tray_rect, cx) else {
+        return (Bounds::centered(None, popover, cx), None);
     };
-    let work_area = cx
-        .displays()
-        .first()
-        .map(|display| display.bounds())
-        .unwrap_or(Bounds {
-            origin: gpui::point(px(0.0), px(0.0)),
-            size: popover,
-        });
-
+    let work_area = display.work_area;
+    let tray = display.tray_rect.map(|rect| {
+        (
+            rect.x - f32::from(work_area.origin.x),
+            rect.y - f32::from(work_area.origin.y),
+            rect.width,
+            rect.height,
+        )
+    });
     let (x, y) = crate::ui::chrome::history_popover_origin(
-        Some((rect.x, rect.y, rect.width, rect.height)),
+        tray,
         f32::from(work_area.size.width),
         f32::from(work_area.size.height),
     );
-    Bounds {
-        origin: gpui::point(px(x), px(y)),
-        size: popover,
-    }
+    (
+        Bounds {
+            origin: gpui::point(work_area.origin.x + px(x), work_area.origin.y + px(y)),
+            size: popover,
+        },
+        Some(display.id),
+    )
 }
 
 impl Render for HistoryWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let has_items = !self.items.is_empty();
         let visible = self.visible();
+        // Paint-read gate: gpui never reports the cursor *leaving* the window,
+        // so `hovered_id` can outlive the pointer; the rows' `on_hover` edges
+        // heal the flag, the paint reads the gated value.
+        let hovered_id = if window.is_window_hovered() {
+            self.hovered_id.as_deref()
+        } else {
+            None
+        };
 
         let mut scroller = div()
             .id("history-scroll")
@@ -458,7 +511,7 @@ impl Render for HistoryWindow {
                     item: entry,
                     index,
                     selected: self.keyboard_navigation && index == self.selected_index,
-                    hovered: self.hovered_id.as_deref() == Some(entry.id.as_str()),
+                    hovered: hovered_id == Some(entry.id.as_str()),
                     loading: !self.media.contains_key(&entry.id),
                     thumbnail: media.thumbnail,
                     features: media.features,

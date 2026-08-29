@@ -189,6 +189,13 @@ fn render_track(
         resting(!switch.checked)
     };
 
+    // A gated hover flag rather than a `.hover()` style: gpui paints that
+    // against the window's last mouse position, which survives the pointer
+    // leaving the window, so the track would stay lit.
+    let hover =
+        (!switch.disabled).then(|| crate::ui::primitives::hover_flag(&element_key, window, cx));
+    let hovering = hover.as_ref().is_some_and(|(_, over)| *over);
+
     let mut track: Stateful<Div> = div()
         .id(switch.id)
         .track_focus(&focus)
@@ -198,10 +205,12 @@ fn render_track(
         .w(track_w)
         .h(track_h)
         .rounded(px(crate::ui::chrome::SWITCH_RADIUS))
-        .bg(bg);
+        .bg(if hovering { hover_bg } else { bg });
 
-    if !switch.disabled {
-        track = track.hover(move |style: gpui::StyleRefinement| style.bg(hover_bg));
+    if let Some((hover, _)) = hover {
+        track = track.on_hover(move |over: &bool, _window, cx| {
+            crate::ui::primitives::track_hover(&hover, *over, cx);
+        });
         if let Some(handler) = switch.on_change {
             let next = !switch.checked;
             track = track.on_click(move |_event, window, cx| handler(&next, window, cx));

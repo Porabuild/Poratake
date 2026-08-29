@@ -134,13 +134,12 @@ fn overlay_options(
     display_bounds: Bounds<Pixels>,
     display_id: DisplayId,
     focus: bool,
-    deferred_show: bool,
 ) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(gpui::WindowBounds::Windowed(display_bounds)),
         titlebar: None,
         focus,
-        show: !cfg!(windows) || !deferred_show,
+        show: !cfg!(windows),
         kind: WindowKind::PopUp,
         is_movable: false,
         is_resizable: false,
@@ -260,13 +259,17 @@ fn open_overlay_window(
     cx: &mut App,
 ) -> Option<gpui::WindowHandle<AreaOverlay>> {
     let opened = cx.open_window(
-        overlay_options(
-            display_bounds,
-            display_id,
-            launch.focus,
-            launch.deferred_show,
-        ),
+        overlay_options(display_bounds, display_id, launch.focus),
         |window, cx| {
+            #[cfg(windows)]
+            if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                crate::system::window_composition::configure_transparent_surface(hwnd);
+                crate::system::window_composition::apply_window_bounds(
+                    hwnd,
+                    display_bounds,
+                    window.scale_factor(),
+                );
+            }
             let scale = window.scale_factor();
             let focus_handle = cx.focus_handle();
             let view = cx.new(|_| build(scale, focus_handle));
@@ -1006,7 +1009,15 @@ impl Render for AreaOverlay {
             // overlay draws neither a frame nor a name label in this mode.
             let viewport = window.viewport_size();
             let mut picking = root.cursor_pointer();
-            picking = match self.hovered_frame() {
+            // Paint-read gate: gpui never reports the cursor *leaving* the
+            // window, so a stale `hovered_window` would keep one screen
+            // rectangle undimmed after the pointer is gone.
+            let hovered_frame = if window.is_window_hovered() {
+                self.hovered_frame()
+            } else {
+                None
+            };
+            picking = match hovered_frame {
                 Some((origin, frame)) => {
                     picking.children(scrim_around(origin, frame, viewport, dim))
                 }

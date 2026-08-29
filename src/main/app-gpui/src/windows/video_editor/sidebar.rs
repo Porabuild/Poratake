@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled};
+use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window};
 
 use crate::config::shortcuts::VideoEditorSidebarShortcuts;
 use crate::theme::vars::ThemeVars;
@@ -109,8 +109,14 @@ impl SidebarTab {
 pub fn resize_handle(
     resizing: bool,
     theme: &ThemeVars,
+    window: &mut Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
+    // Gated hover flag instead of a `.hover()` style, which gpui paints
+    // against the window's last mouse position and so survives the pointer
+    // leaving the window.
+    let (handle_hover, handle_hovered) =
+        crate::ui::primitives::hover_flag("video-sidebar-resize", window, cx);
     div()
         .id("video-sidebar-resize")
         .w(px(chrome::VIDEO_SIDEBAR_RESIZE))
@@ -119,8 +125,16 @@ pub fn resize_handle(
         .flex()
         .justify_center()
         .cursor_ew_resize()
-        .when(resizing, |el| el.bg(theme.accent.opacity(0.4)))
-        .hover(|style: gpui::StyleRefinement| style.bg(theme.accent.opacity(0.2)))
+        .when(handle_hovered, |el| el.bg(theme.accent.opacity(0.2)))
+        .when(!handle_hovered && resizing, |el| {
+            el.bg(theme.accent.opacity(0.4))
+        })
+        .on_hover({
+            let handle_hover = handle_hover.clone();
+            move |over: &bool, _window, cx| {
+                crate::ui::primitives::track_hover(&handle_hover, *over, cx);
+            }
+        })
         .child(
             div()
                 .my_auto()

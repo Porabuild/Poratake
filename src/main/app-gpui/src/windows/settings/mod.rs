@@ -579,13 +579,13 @@ impl Render for SettingsWindow {
         // while the mic test runs the window has to keep drawing -- nothing else
         // would notify it.
         if crate::system::device_test::mic_active() {
-            window.request_animation_frame();
+            crate::ui::primitives::request_animation_frame(window);
         }
 
         let content: AnyElement = if searching {
             search_results(&query, self, &theme, cx)
         } else if self.active == Category::About {
-            about::render(&theme, self.update_status(), cx)
+            about::render(&theme, self.update_status(), window, cx)
         } else {
             category_page(self.active, self, &theme, window, cx)
         };
@@ -613,6 +613,7 @@ impl Render for SettingsWindow {
                     .child(crate::ui::window_controls::drag_strip(
                         theme.content_background,
                         window,
+                        cx,
                         &theme,
                     ))
                     .child(
@@ -662,17 +663,15 @@ fn sidebar(
 
     let mut entry = |category: Category, cx: &mut Context<SettingsWindow>| {
         let selected = !searching && active == category;
-        let focus = crate::ui::primitives::control_focus(
-            &format!("settings-nav-{}", category.id()),
-            false,
-            ui_window,
-            cx,
-        );
+        let key = format!("settings-nav-{}", category.id());
+        let focus = crate::ui::primitives::control_focus(&key, false, ui_window, cx);
+        // Gated hover flag instead of a `.hover()` style, which gpui paints
+        // against the window's last mouse position and so survives the
+        // pointer leaving the window. Hover wins over the selected tint,
+        // matching the CSS refinement order it replaces.
+        let (hover, hovered) = crate::ui::primitives::hover_flag(&key, ui_window, cx);
         div()
-            .id(SharedString::from(format!(
-                "settings-nav-{}",
-                category.id()
-            )))
+            .id(SharedString::from(key))
             .track_focus(&focus)
             .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
             .flex()
@@ -689,8 +688,14 @@ fn sidebar(
             } else {
                 theme.muted_foreground
             })
-            .when(selected, |el| el.bg(theme.row_active))
-            .hover(move |style: gpui::StyleRefinement| style.bg(theme.row_hover))
+            .when(hovered, |el| el.bg(theme.row_hover))
+            .when(!hovered && selected, |el| el.bg(theme.row_active))
+            .on_hover({
+                let hover = hover.clone();
+                move |over: &bool, _window, cx| {
+                    crate::ui::primitives::track_hover(&hover, *over, cx);
+                }
+            })
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.select_category(category, cx);
             }))
@@ -769,8 +774,13 @@ fn sidebar(
         )
         // `<label className="flex cursor-text items-center gap-2 rounded-3xl
         // px-2 py-1.5 text-muted-foreground focus-within:bg-[var(--row-active)]
-        // hover:bg-[var(--row-hover)]">` around a transparent input.
-        .child(
+        // hover:bg-[var(--row-hover)]">` around a transparent input. The hover
+        // is a gated flag rather than a `.hover()` style, which gpui paints
+        // against the window's last mouse position and so survives the pointer
+        // leaving the window.
+        .child({
+            let (search_hover, search_hovered) =
+                crate::ui::primitives::hover_flag("settings-search-shell", ui_window, cx);
             div().px(px(8.0)).pb(px(8.0)).child(
                 div()
                     .id("settings-search-shell")
@@ -781,11 +791,17 @@ fn sidebar(
                     .px(px(8.0))
                     .py(px(6.0))
                     .text_color(theme.muted_foreground)
-                    .when(searching, |el| el.bg(theme.row_active))
-                    .hover(move |style: gpui::StyleRefinement| style.bg(theme.row_hover))
+                    .when(search_hovered, |el| el.bg(theme.row_hover))
+                    .when(!search_hovered && searching, |el| el.bg(theme.row_active))
+                    .on_hover({
+                        let search_hover = search_hover.clone();
+                        move |over: &bool, _window, cx| {
+                            crate::ui::primitives::track_hover(&search_hover, *over, cx);
+                        }
+                    })
                     .child(window.search.clone()),
-            ),
-        )
+            )
+        })
         .child(nav)
         .child(
             div()
@@ -1101,14 +1117,12 @@ fn disclosure_header(
     ui_window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
-    let focus = crate::ui::primitives::control_focus(
-        &format!("settings-extras-{key}"),
-        false,
-        ui_window,
-        cx,
-    );
+    let hover_key = format!("settings-extras-{key}");
+    let focus = crate::ui::primitives::control_focus(&hover_key, false, ui_window, cx);
+    // Gated hover flag instead of a `.hover()` style; see `hover_flag`.
+    let (hover, hovered) = crate::ui::primitives::hover_flag(&hover_key, ui_window, cx);
     div()
-        .id(SharedString::from(format!("settings-extras-{key}")))
+        .id(SharedString::from(hover_key))
         .track_focus(&focus)
         .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
         .flex()
@@ -1118,8 +1132,17 @@ fn disclosure_header(
         .py(px(4.0))
         .text_size(px(chrome::TEXT_XS))
         .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(theme.muted_foreground)
-        .hover(move |style: gpui::StyleRefinement| style.text_color(theme.foreground))
+        .text_color(if hovered {
+            theme.foreground
+        } else {
+            theme.muted_foreground
+        })
+        .on_hover({
+            let hover = hover.clone();
+            move |over: &bool, _window, cx| {
+                crate::ui::primitives::track_hover(&hover, *over, cx);
+            }
+        })
         .on_click(cx.listener(move |this, _event, _window, cx| {
             if !this.extras_open.remove(key) {
                 this.extras_open.insert(key);
@@ -1164,6 +1187,8 @@ fn theme_card(
 ) -> AnyElement {
     let id = format!("appearance-theme-{}", preset.id);
     let focus = crate::ui::primitives::control_focus(&id, false, ui_window, cx);
+    // Gated hover flag instead of a `.hover()` style; see `hover_flag`.
+    let (hover, hovered) = crate::ui::primitives::hover_flag(&id, ui_window, cx);
     div()
         .id(SharedString::from(id))
         .track_focus(&focus)
@@ -1176,8 +1201,17 @@ fn theme_card(
         .rounded(px(8.0))
         .border_1()
         .border_color(if active { theme.accent } else { theme.border })
-        .bg(theme.card)
-        .hover(move |style: gpui::StyleRefinement| style.bg(theme.default_hover))
+        .bg(if hovered {
+            theme.default_hover
+        } else {
+            theme.card
+        })
+        .on_hover({
+            let hover = hover.clone();
+            move |over: &bool, _window, cx| {
+                crate::ui::primitives::track_hover(&hover, *over, cx);
+            }
+        })
         .on_click(cx.listener(move |this, _event, _window, cx| {
             this.mutate(cx, |config| {
                 config.appearance.theme = preset.id.to_string();

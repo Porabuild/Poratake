@@ -78,6 +78,18 @@ fn find_daemon_binary() -> PathBuf {
         }
     }
 
+    // Dev workspace: the compile-time manifest dir is stable even when
+    // `CARGO_TARGET_DIR` moves the built binary outside the repo tree, so the
+    // exe-relative walk above cannot see `src/main/daemon`.
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("app-gpui manifest dir has a parent (src/main)")
+        .join("daemon")
+        .join(BINARY);
+    if dev.exists() {
+        return dev;
+    }
+
     PathBuf::from(format!("src/main/daemon/{BINARY}"))
 }
 

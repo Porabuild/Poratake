@@ -52,6 +52,20 @@ pub const OVERLAY_ENTER_SLIDE: f32 = 4.0;
 pub const OVERLAY_ENTER_ZOOM_95: f32 = 0.95;
 pub const OVERLAY_ENTER_ZOOM_90: f32 = 0.90;
 
+pub fn request_animation_frame(window: &gpui::Window) {
+    window.request_animation_frame();
+    request_immediate_animation_frame(window);
+}
+
+pub fn request_immediate_animation_frame(window: &gpui::Window) {
+    #[cfg(all(windows, not(test)))]
+    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+        crate::system::window_composition::request_animation_frame(hwnd);
+    }
+    #[cfg(any(not(windows), test))]
+    let _ = window;
+}
+
 /// The entrance progress of a surface that opened at `started`, eased on
 /// `--ease-smooth`, saturating at 1.
 ///
@@ -114,6 +128,21 @@ where
     )
 }
 
+#[cfg(not(windows))]
+pub fn overlay_fade_out<E>(id: impl Into<gpui::ElementId>, element: E) -> gpui::AnimationElement<E>
+where
+    E: gpui::IntoElement + Styled + 'static,
+{
+    use gpui::AnimationExt;
+
+    element.with_animation(
+        id.into(),
+        gpui::Animation::new(std::time::Duration::from_millis(OVERLAY_EXIT_MS))
+            .with_easing(|progress| progress),
+        move |element, delta| element.opacity(1.0 - delta),
+    )
+}
+
 pub fn overlay_exit<E>(
     id: impl Into<gpui::ElementId>,
     from: EnterFrom,
@@ -165,32 +194,33 @@ pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
 }
 
 /// Per-element hover state, so a background can be interpolated instead of
-/// swapped. gpui applies `hover` styles instantly and has no per-property
-/// transition, so the CSS `transition: background-color` is reproduced by
-/// remembering the hover across frames and animating between the two resting
-/// colours.
+/// swapped. gpui applies `hover` styles instantly and no per-property
+/// transition exists, so the CSS `transition: background-color` is reproduced
+/// by remembering the hover across frames and animating between the two
+/// resting colours.
 pub struct HoverFade {
     pub hovered: bool,
-    pub painted: bool,
+    pub has_hovered: bool,
 }
 
-impl HoverFade {
-    /// The colours to animate between this frame. The first paint lands on the
-    /// resting colour rather than fading in from the other one.
-    pub fn range(&self, resting: gpui::Hsla, hovered: gpui::Hsla) -> (gpui::Hsla, gpui::Hsla) {
-        if !self.painted {
-            (resting, resting)
-        } else if self.hovered {
-            (resting, hovered)
-        } else {
-            (hovered, resting)
-        }
-    }
+/// Whether a stored hover flag should paint this frame.
+///
+/// gpui drives hover from the last mouse move it saw for the window. When the
+/// cursor exits the window the platform reports the exit
+/// (`Window::is_window_hovered` flips and gpui refreshes the window) but never
+/// delivers a final move outside the window, so the `false` edge every
+/// `on_hover` listener would have received never arrives and any flag left set
+/// paints as hovered forever. Treating "hovered" as "flagged *and* the pointer
+/// still holds the window" clears with the exit itself; the raw flag then
+/// heals on the next real move, and a pointer that re-enters over the same
+/// surface finds the flag still set and the paint comes back with it.
+pub fn hover_is_active(state_hovered: bool, window: &gpui::Window) -> bool {
+    state_hovered && window.is_window_hovered()
 }
 
-/// Reads the hover state for `key`, marking it painted, and hands back the
-/// state entity so the caller can install its own `on_hover`.
-pub fn hover_fade(
+/// Reads the window-lived hover flag for `key`, gated by
+/// [`hover_is_active`]. Shared by [`hover_fade`] and [`hover_flag`].
+fn hover_entry(
     key: &str,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
@@ -200,17 +230,65 @@ pub fn hover_fade(
         cx,
         |_, _| HoverFade {
             hovered: false,
-            painted: false,
+            has_hovered: false,
         },
     );
-    let (hovered, painted) = {
-        let read = state.read(cx);
-        (read.hovered, read.painted)
+    let (hovered, has_hovered) = {
+        let hover = state.read(cx);
+        (hover_is_active(hover.hovered, window), hover.has_hovered)
     };
-    if !painted {
-        state.update(cx, |state, _| state.painted = true);
+    (state, hovered, has_hovered)
+}
+
+/// The colours a fading surface animates between this frame.
+///
+/// `hovered` is the gated value -- what the pointer's real position says --
+/// rather than the raw stored flag, so a surface whose window lost the pointer
+/// fades back to its resting colour instead of sitting on the hover colour.
+fn fade_range(
+    hovered: bool,
+    has_hovered: bool,
+    resting: gpui::Hsla,
+    hover_color: gpui::Hsla,
+) -> (gpui::Hsla, gpui::Hsla) {
+    if hovered {
+        (resting, hover_color)
+    } else if has_hovered {
+        (hover_color, resting)
+    } else {
+        (resting, resting)
     }
-    (state, hovered, painted)
+}
+
+/// Reads the hover state for `key` and returns the state entity, whether the
+/// surface is hovered, and the colours to animate between this frame.
+pub fn hover_fade(
+    key: &str,
+    resting: gpui::Hsla,
+    hover_color: gpui::Hsla,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) -> (gpui::Entity<HoverFade>, bool, (gpui::Hsla, gpui::Hsla)) {
+    let (state, hovered, has_hovered) = hover_entry(key, window, cx);
+    let range = fade_range(hovered, has_hovered, resting, hover_color);
+    (state, hovered, range)
+}
+
+/// The instant-swap cousin of [`hover_fade`], for surfaces that change a
+/// colour with no transition.
+///
+/// This replaces gpui's `.hover(...)` style refinement, which cannot be
+/// gated: gpui evaluates it inside its own paint against the window's last
+/// mouse position, so it stays lit when the pointer exits the window without
+/// ever producing another move for it. Surfaces that use it heal with the
+/// exit, like every fading surface here.
+pub fn hover_flag(
+    key: &str,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) -> (gpui::Entity<HoverFade>, bool) {
+    let (state, hovered, _) = hover_entry(key, window, cx);
+    (state, hovered)
 }
 
 /// The `on_hover` body every fading surface installs.
@@ -218,6 +296,7 @@ pub fn track_hover(state: &gpui::Entity<HoverFade>, over: bool, cx: &mut gpui::A
     state.update(cx, |state, cx| {
         if state.hovered != over {
             state.hovered = over;
+            state.has_hovered |= over;
             cx.notify();
         }
     });
@@ -410,6 +489,25 @@ mod tests {
         assert!((ease_out_fluid()(0.5) - 0.955).abs() < 0.01);
         assert!(ease_out_fluid()(0.5) > ease_out()(0.5));
         assert!(ease_out()(0.5) > ease_smooth()(0.5));
+    }
+
+    #[test]
+    fn a_calm_surface_stays_resting_until_it_is_hovered() {
+        let resting = gpui::hsla(0.0, 0.0, 0.5, 1.0);
+        let hover_color = gpui::hsla(0.0, 0.0, 0.9, 1.0);
+        let same = |actual: gpui::Hsla, expected: gpui::Hsla| {
+            (actual.h - expected.h).abs() < 1e-6
+                && (actual.s - expected.s).abs() < 1e-6
+                && (actual.l - expected.l).abs() < 1e-6
+                && (actual.a - expected.a).abs() < 1e-6
+        };
+
+        let (from, to) = fade_range(false, false, resting, hover_color);
+        assert!(same(from, resting) && same(to, resting), "stays calm");
+        let (from, to) = fade_range(true, true, resting, hover_color);
+        assert!(same(from, resting) && same(to, hover_color), "fading in");
+        let (from, to) = fade_range(false, true, resting, hover_color);
+        assert!(same(from, hover_color) && same(to, resting), "fading out");
     }
 
     /// The entrance composes the fade and the 4px slide from the placement

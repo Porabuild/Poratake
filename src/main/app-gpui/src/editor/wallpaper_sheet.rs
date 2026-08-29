@@ -25,6 +25,7 @@ pub fn render(
     preset_id: &str,
     menu: &MenuHandle,
     handlers: &EditorHandlers,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let theme = active_theme(cx);
@@ -65,6 +66,8 @@ pub fn render(
                     &wallpaper_config.custom_backgrounds,
                     handlers,
                     &theme,
+                    window,
+                    cx,
                 ))
                 .child(Separator::horizontal())
                 .child(aspect_row(wallpaper, menu, handlers, &theme))
@@ -283,6 +286,8 @@ fn backgrounds_section(
     customs: &[CustomBackground],
     handlers: &EditorHandlers,
     theme: &ThemeVars,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     let tile =
         chrome::wallpaper_tile_size(chrome::WALLPAPER_SHEET_WIDTH, chrome::WALLPAPER_SHEET_PAD);
@@ -387,12 +392,26 @@ fn backgrounds_section(
             ))
             .child({
                 let clear = handlers.option(EditorOption::WallpaperClear);
+                // Gated hover flag instead of a `.hover()` style, which gpui
+                // paints against the window's last mouse position and so
+                // survives the pointer leaving the window.
+                let (clear_hover, clear_hovered) =
+                    crate::ui::primitives::hover_flag("wallpaper-clear", window, cx);
                 div()
                     .id("wallpaper-clear")
                     .text_size(px(chrome::TEXT_XS))
-                    .text_color(theme.muted_foreground)
+                    .text_color(if clear_hovered {
+                        theme.foreground
+                    } else {
+                        theme.muted_foreground
+                    })
                     .cursor_pointer()
-                    .hover(|el| el.text_color(theme.foreground))
+                    .on_hover({
+                        let clear_hover = clear_hover.clone();
+                        move |over: &bool, _window, cx| {
+                            crate::ui::primitives::track_hover(&clear_hover, *over, cx);
+                        }
+                    })
                     .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
                         clear(window, cx);
                     })
@@ -891,6 +910,8 @@ pub fn video_aspect_grid(
     selected: Option<(f64, f64)>,
     theme: &ThemeVars,
     on_select: impl Fn(Option<(f64, f64)>, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     let handler = Rc::new(on_select);
     let buttons: Vec<AnyElement> = wallpaper::VIDEO_ASPECT_RATIOS
@@ -913,31 +934,37 @@ pub fn video_aspect_grid(
                 - chrome::VIDEO_PANEL_PAD * 2.0
                 - chrome::VIDEO_ASPECT_GAP * (chrome::VIDEO_ASPECT_COLS as f32 - 1.0))
                 / chrome::VIDEO_ASPECT_COLS as f32;
+            // Gated hover flag instead of a `.hover()` style, which gpui
+            // paints against the window's last mouse position and so survives
+            // the pointer leaving the window.
+            let tile_key = format!("video-aspect-{label}");
+            let (tile_hover, tile_hovered) =
+                crate::ui::primitives::hover_flag(&tile_key, window, cx);
+            // Unselected tiles hover to `bg-accent text-accent-foreground`.
+            let filled = is_selected || tile_hovered;
             div()
-                .id(ElementId::Name(SharedString::from(format!(
-                    "video-aspect-{label}"
-                ))))
+                .id(SharedString::from(tile_key))
                 .w(px(inner_w))
                 .rounded(px(chrome::VIDEO_ASPECT_RADIUS))
                 .px(px(chrome::VIDEO_ASPECT_PAD_X))
                 .py(px(chrome::VIDEO_ASPECT_PAD_Y))
                 .text_size(px(chrome::TEXT_XS))
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .bg(if is_selected {
+                .bg(if filled {
                     theme.accent
                 } else {
                     theme.muted_background
                 })
-                .text_color(if is_selected {
+                .text_color(if filled {
                     theme.accent_foreground
                 } else {
                     theme.muted_foreground
                 })
-                // Unselected tiles hover to `bg-accent text-accent-foreground`.
-                .when(!is_selected, |el| {
-                    el.hover(move |style: gpui::StyleRefinement| {
-                        style.bg(theme.accent).text_color(theme.accent_foreground)
-                    })
+                .on_hover({
+                    let tile_hover = tile_hover.clone();
+                    move |over: &bool, _window, cx| {
+                        crate::ui::primitives::track_hover(&tile_hover, *over, cx);
+                    }
                 })
                 .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
                     on_click(value, window, cx);

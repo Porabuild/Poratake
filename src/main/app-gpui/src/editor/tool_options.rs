@@ -110,9 +110,11 @@ fn trigger(
     theme: &ThemeVars,
     content: AnyElement,
     entries: Vec<MenuEntry>,
+    window: &mut gpui::Window,
+    cx: &mut App,
 ) -> AnyElement {
     let open = menu.is_open_for(id);
-    trigger_base(id, menu, theme, entries)
+    trigger_base(id, menu, theme, entries, window, cx)
         .gap(px(chrome::TOOL_OPTION_GAP))
         .px(px(chrome::TOOL_OPTION_PAD_X))
         .child(content)
@@ -135,9 +137,11 @@ fn select_trigger(
     theme: &ThemeVars,
     content: AnyElement,
     entries: Vec<MenuEntry>,
+    window: &mut gpui::Window,
+    cx: &mut App,
 ) -> AnyElement {
     let open = menu.is_open_for(id);
-    trigger_base(id, menu, theme, entries)
+    trigger_base(id, menu, theme, entries, window, cx)
         .pl(px(chrome::TOOL_OPTION_PAD_X))
         .pr(px(chrome::SELECT_INDICATOR_PAD_END))
         .child(content)
@@ -161,8 +165,14 @@ fn trigger_base(
     menu: &MenuHandle,
     theme: &ThemeVars,
     entries: Vec<MenuEntry>,
+    window: &mut gpui::Window,
+    cx: &mut App,
 ) -> gpui::Stateful<gpui::Div> {
     let handle = menu.clone();
+    // Gated hover flag instead of a `.hover()` style, which gpui paints
+    // against the window's last mouse position and so survives the pointer
+    // leaving the window.
+    let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
     div()
         .id(id)
         .relative()
@@ -172,8 +182,17 @@ fn trigger_base(
         .h(px(chrome::TOOL_OPTION_HEIGHT))
         .rounded(px(chrome::TOOL_OPTION_RADIUS))
         .flex_shrink_0()
-        .bg(theme.default)
-        .hover(move |style: gpui::StyleRefinement| style.bg(theme.default_hover))
+        .bg(if hovered {
+            theme.default_hover
+        } else {
+            theme.default
+        })
+        .on_hover({
+            let hover = hover.clone();
+            move |over: &bool, _window, cx| {
+                crate::ui::primitives::track_hover(&hover, *over, cx);
+            }
+        })
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
             handle.toggle(MenuPlacement::below(id), entries.clone(), window, cx);
             cx.stop_propagation();
@@ -378,6 +397,7 @@ pub fn render(
     state: &ToolOptionsState,
     menu: &MenuHandle,
     handlers: &EditorHandlers,
+    window: &mut gpui::Window,
     cx: &mut App,
 ) -> Vec<AnyElement> {
     let theme = active_theme(cx);
@@ -395,6 +415,8 @@ pub fn render(
             &theme,
             thickness_bar(16.0, height, bar_color),
             thickness_entries(state, handlers),
+            window,
+            cx,
         ));
         children.push(separator(&theme));
     }
@@ -407,6 +429,8 @@ pub fn render(
             &theme,
             icon(path).size(px(20.0)).into_any_element(),
             arrow_entries(state, handlers),
+            window,
+            cx,
         ));
         children.push(separator(&theme));
     }
@@ -418,6 +442,8 @@ pub fn render(
             &theme,
             icon_element("highlighter", px(16.0)),
             highlight_entries(state, handlers),
+            window,
+            cx,
         ));
     }
 
@@ -429,6 +455,8 @@ pub fn render(
             &theme,
             number_badge(glyph, 20.0, &theme),
             number_entries(state, handlers),
+            window,
+            cx,
         ));
         children.push(separator(&theme));
     }
@@ -440,6 +468,8 @@ pub fn render(
             &theme,
             icon_element("type", px(16.0)),
             text_entries(state, handlers),
+            window,
+            cx,
         ));
         children.push(separator(&theme));
     }
@@ -456,6 +486,8 @@ pub fn render(
             &theme,
             icon_element(icon_name, px(16.0)),
             redact_entries(state, handlers),
+            window,
+            cx,
         ));
     }
 
@@ -468,6 +500,8 @@ pub fn render(
             &theme,
             shape_fill_preview(filled, color, 16.0),
             shape_entries(state, handlers),
+            window,
+            cx,
         ));
         children.push(separator(&theme));
     }

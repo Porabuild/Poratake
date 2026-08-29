@@ -37,6 +37,17 @@ pub fn render(
         let active = choices.mode == mode;
         let id = format!("all-in-one-mode-{}", mode.id());
         let focus = crate::ui::primitives::control_focus(&id, false, window, cx);
+        // Gated hover flag instead of a `.hover()` style, which gpui paints
+        // against the window's last mouse position and so survives the
+        // pointer leaving the window.
+        let (mode_hover, mode_hovered) = crate::ui::primitives::hover_flag(&id, window, cx);
+        let mode_text = if mode_hovered {
+            theme.muted_foreground
+        } else if active {
+            theme.foreground
+        } else {
+            theme.muted_foreground.opacity(0.6)
+        };
         modes = modes.child(
             div()
                 .id(SharedString::from(id))
@@ -48,12 +59,13 @@ pub fn render(
                 .items_center()
                 .justify_center()
                 .when(active, |el| el.bg(theme.muted_foreground.opacity(0.25)))
-                .text_color(if active {
-                    theme.foreground
-                } else {
-                    theme.muted_foreground.opacity(0.6)
+                .text_color(mode_text)
+                .on_hover({
+                    let mode_hover = mode_hover.clone();
+                    move |over: &bool, _window, cx| {
+                        crate::ui::primitives::track_hover(&mode_hover, *over, cx);
+                    }
                 })
-                .hover(|style: gpui::StyleRefinement| style.text_color(theme.muted_foreground))
                 .on_click(cx.listener(move |this, _event, window, cx| {
                     this.close_all_in_one_menu(window);
                     this.set_all_in_one_mode(mode, cx);
@@ -179,6 +191,11 @@ fn target_menu(
     };
 
     let focus = crate::ui::primitives::control_focus(TARGET_MENU_ID, false, window, cx);
+    // Gated hover flag instead of a `.hover()` style, which gpui paints
+    // against the window's last mouse position and so survives the pointer
+    // leaving the window.
+    let (trigger_hover, trigger_hovered) =
+        crate::ui::primitives::hover_flag(TARGET_MENU_ID, window, cx);
     let key_handle = handle.clone();
     let key_entries = entries.clone();
     div()
@@ -196,11 +213,17 @@ fn target_menu(
         .min_w(px(chrome::OVERLAY_TARGET_TRIGGER_WIDTH))
         .px(px(chrome::OVERLAY_TARGET_TRIGGER_PAD_X))
         .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-        .text_color(crate::ui::colors::white(0.85))
-        .hover(|style: gpui::StyleRefinement| {
-            style
-                .bg(crate::ui::colors::white(0.15))
-                .text_color(crate::ui::colors::white(1.0))
+        .text_color(if trigger_hovered {
+            crate::ui::colors::white(1.0)
+        } else {
+            crate::ui::colors::white(0.85)
+        })
+        .when(trigger_hovered, |el| el.bg(crate::ui::colors::white(0.15)))
+        .on_hover({
+            let trigger_hover = trigger_hover.clone();
+            move |over: &bool, _window, cx| {
+                crate::ui::primitives::track_hover(&trigger_hover, *over, cx);
+            }
         })
         .child(icon_element(
             choices.target.icon(),

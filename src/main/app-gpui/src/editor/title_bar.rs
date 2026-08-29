@@ -265,7 +265,7 @@ impl RenderOnce for TitleBar {
             .flex_row()
             .items_center()
             .gap(px(chrome::TITLE_BAR_GAP));
-        for control in tool_options::render(&state, &self.menu, &handlers, cx) {
+        for control in tool_options::render(&state, &self.menu, &handlers, window, cx) {
             options = options.child(control);
         }
         let is_highlight = state.tool == Tool::Highlight;
@@ -285,6 +285,7 @@ impl RenderOnce for TitleBar {
             is_highlight,
             &self.menu,
             &handlers,
+            window,
             cx,
         ));
 
@@ -338,7 +339,7 @@ impl RenderOnce for TitleBar {
             bar = bar
                 .child(cluster)
                 .child(drag)
-                .child(crate::ui::window_controls::render(window, &theme));
+                .child(crate::ui::window_controls::render(window, cx, &theme));
         }
         bar
     }
@@ -352,6 +353,7 @@ fn color_trigger(
     is_highlight: bool,
     menu: &MenuHandle,
     handlers: &EditorHandlers,
+    window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) -> AnyElement {
     let open = menu.is_open_for(COLOR_PICKER_ID);
@@ -367,7 +369,7 @@ fn color_trigger(
     let on_option = handlers.on_option.clone();
     let current = color.clone();
 
-    color_picker::trigger(COLOR_PICKER_ID, &color, opacity, open, cx)
+    color_picker::trigger(COLOR_PICKER_ID, &color, opacity, open, window, cx)
         .child(menu.render_dropdown(COLOR_PICKER_ID))
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
             let palette = palette.clone();

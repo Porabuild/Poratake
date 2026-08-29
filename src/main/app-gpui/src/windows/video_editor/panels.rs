@@ -27,6 +27,7 @@ pub fn render(
     export_progress: f32,
     menu: &MenuHandle,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     match tab {
@@ -35,7 +36,7 @@ pub fn render(
         SidebarTab::Drawing => drawing_panel(view, state, menu, theme, cx),
         SidebarTab::Camera => camera_panel(state, has_camera, theme, cx),
         SidebarTab::Audio => audio_panel(view, state, has_keyboard, menu, theme, cx),
-        SidebarTab::Wallpaper => wallpaper_panel(state, theme, cx),
+        SidebarTab::Wallpaper => wallpaper_panel(state, theme, window, cx),
         SidebarTab::Keyboard => keyboard_panel(state, has_keyboard, theme, cx),
         SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, cx),
         SidebarTab::FirstFrame => first_frame_panel(state, theme, cx),
@@ -1442,6 +1443,7 @@ fn format_music_speed(speed: f64) -> String {
 fn wallpaper_panel(
     state: &VideoEditorState,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let wallpaper = state.wallpaper.clone();
@@ -1503,6 +1505,8 @@ fn wallpaper_panel(
                     }
                 }
             },
+            window,
+            cx,
         ));
         children.push(kit::separator(theme));
         children.push(kit::slider_row(

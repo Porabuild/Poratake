@@ -28,7 +28,7 @@ impl Render for Tooltip {
         // glyphs every frame, a shimmer the real transform does not produce.
         let scale = primitives::enter_scale(self.opened_at, primitives::OVERLAY_ENTER_ZOOM_90);
         if primitives::entering(self.opened_at) {
-            window.request_animation_frame();
+            primitives::request_animation_frame(window);
         }
 
         // `.tooltip { max-w-xs bg-overlay p-2 text-xs }` with

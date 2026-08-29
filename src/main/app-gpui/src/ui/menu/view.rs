@@ -32,9 +32,29 @@ const INDICATOR_INSET: f32 = 32.0;
 
 pub type DismissHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// How the menu comes in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MenuEntrance {
+    /// `fade-in zoom-in-95 slide-in-from-*-1`, as `popover.css` does. The menu
+    /// floats inside a larger surface, so moving and re-laying itself out is
+    /// exactly what it should do.
+    #[default]
+    Overlay,
+    /// No entrance at all. For a menu whose window animates the whole surface:
+    /// gpui tracks dirtiness per view, so animating here would re-render every
+    /// row on every step, while animating the wrapper only re-paints them.
+    Instant,
+}
+
 pub struct MenuView {
     entries: Vec<MenuEntry>,
     highlighted: Option<usize>,
+    /// Whether `highlighted` came from the pointer or the keyboard. A
+    /// pointer-driven highlight must also survive the pointer *leaving* the
+    /// window without an edge -- gpui never dispatches the exit, so the row
+    /// would stay lit forever -- while a keyboard-driven one must stay lit no
+    /// matter where the mouse is. See `primitives::hover_is_active`.
+    highlighted_by_pointer: bool,
     submenu: Option<(usize, Entity<MenuView>)>,
     /// Where each row was laid out, so an open submenu can be anchored in
     /// window space from outside the scroll container. Anchoring it to the row
@@ -46,7 +66,7 @@ pub struct MenuView {
     max_height: Pixels,
     compact: bool,
     neutral_highlight: bool,
-    animate_entrance: bool,
+    entrance: MenuEntrance,
     /// When this popover opened, so `zoom-in-95` can be applied as a
     /// proportional re-layout over the entrance.
     opened_at: std::time::Instant,
@@ -62,6 +82,7 @@ impl MenuView {
         Self {
             entries,
             highlighted: None,
+            highlighted_by_pointer: false,
             submenu: None,
             row_bounds: Rc::new(RefCell::new(HashMap::new())),
             on_dismiss,
@@ -69,7 +90,7 @@ impl MenuView {
             max_height: px(MENU_MAX_HEIGHT),
             compact: false,
             neutral_highlight: false,
-            animate_entrance: true,
+            entrance: MenuEntrance::default(),
             opened_at: std::time::Instant::now(),
             focus_handle: cx.focus_handle(),
         }
@@ -90,20 +111,20 @@ impl MenuView {
         self
     }
 
-    pub fn animate_entrance(mut self, animate: bool) -> Self {
-        self.animate_entrance = animate;
+    pub fn entrance(mut self, entrance: MenuEntrance) -> Self {
+        self.entrance = entrance;
         self
     }
 
     /// `zoom-in-95`, applied to every length the popover lays out with.
     fn scale(&self) -> f32 {
-        if !self.animate_entrance {
-            return 1.0;
+        match self.entrance {
+            MenuEntrance::Instant => 1.0,
+            MenuEntrance::Overlay => crate::ui::primitives::enter_scale(
+                self.opened_at,
+                crate::ui::primitives::OVERLAY_ENTER_ZOOM_95,
+            ),
         }
-        crate::ui::primitives::enter_scale(
-            self.opened_at,
-            crate::ui::primitives::OVERLAY_ENTER_ZOOM_95,
-        )
     }
 
     fn scaled(&self, value: f32) -> f32 {
@@ -189,6 +210,7 @@ impl MenuView {
                 .is_some_and(MenuItem::is_interactive)
             {
                 self.highlighted = Some(index as usize);
+                self.highlighted_by_pointer = false;
                 self.submenu = None;
                 cx.notify();
                 return;
@@ -234,11 +256,11 @@ impl MenuView {
         let entries = item.submenu.clone();
         let dismiss = self.on_dismiss.clone();
         let neutral_highlight = self.neutral_highlight;
-        let animate_entrance = self.animate_entrance;
+        let entrance = self.entrance;
         let view = cx.new(|cx| {
             MenuView::new(entries, dismiss, cx)
                 .neutral_highlight(neutral_highlight)
-                .animate_entrance(animate_entrance)
+                .entrance(entrance)
         });
         self.submenu = Some((index, view));
         cx.notify();
@@ -276,12 +298,23 @@ impl MenuView {
         item: &MenuItem,
         theme: &ThemeVars,
         has_indicator: bool,
+        pointer_inside: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         if item.is_row() {
-            return self.settings_row(index, item, theme, cx);
+            return self.settings_row(index, item, theme, window, cx);
         }
-        let highlighted = self.highlighted == Some(index)
+        // A pointer-driven highlight is gated on the window still holding the
+        // pointer: gpui never reports the exit, so `highlighted` alone would
+        // keep the last row lit after the pointer flicks away. The row that
+        // owns the open submenu stays lit either way -- that is the design.
+        let pointer_highlight = if self.highlighted_by_pointer && !pointer_inside {
+            None
+        } else {
+            self.highlighted
+        };
+        let highlighted = pointer_highlight == Some(index)
             || self
                 .submenu
                 .as_ref()
@@ -396,6 +429,7 @@ impl MenuView {
                     return;
                 }
                 this.highlighted = Some(index);
+                this.highlighted_by_pointer = true;
                 let has_submenu = this
                     .item_at(index)
                     .is_some_and(|item| !item.submenu.is_empty());
@@ -450,6 +484,7 @@ impl MenuView {
         index: usize,
         item: &MenuItem,
         theme: &ThemeVars,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let label = item.row_label.clone().unwrap_or_default();
@@ -493,6 +528,11 @@ impl MenuView {
             .submenu
             .as_ref()
             .is_some_and(|(current, _)| *current == index);
+        // Gated hover flag instead of a `.hover()` style, which gpui paints
+        // against the window's last mouse position and so survives the
+        // pointer leaving the window.
+        let pill_key = format!("menu-row-pill-{index}");
+        let (pill_hover, pill_hovered) = crate::ui::primitives::hover_flag(&pill_key, window, cx);
         let mut pill = div()
             .id(ElementId::Name(SharedString::from(format!(
                 "menu-row-pill-{index}"
@@ -508,13 +548,18 @@ impl MenuView {
             .px(px(8.0))
             .text_size(px(crate::ui::chrome::TEXT_XS))
             .font_weight(gpui::FontWeight::MEDIUM)
-            .bg(if open {
+            .bg(if open || pill_hovered {
                 theme.default_hover
             } else {
                 theme.default
             })
             .text_color(theme.foreground)
-            .hover(move |style: gpui::StyleRefinement| style.bg(theme.default_hover))
+            .on_hover({
+                let pill_hover = pill_hover.clone();
+                move |over: &bool, _window, cx| {
+                    crate::ui::primitives::track_hover(&pill_hover, *over, cx);
+                }
+            })
             .child(
                 div()
                     .flex_1()
@@ -551,6 +596,7 @@ impl MenuView {
 impl Render for MenuView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
+        let pointer_inside = window.is_window_hovered();
         let has_indicator = self.entries.iter().any(|entry| match entry {
             MenuEntry::Item(item) => {
                 !item.is_row() && (item.toggle.is_some() || item.radio.is_some() || item.inset)
@@ -576,12 +622,17 @@ impl Render for MenuView {
             .text_color(theme.popover_foreground)
             .shadow_md()
             .p(px(self.list_pad()))
+            // Only `Overlay` needs this. Its `zoom-in-95` is a clock-driven
+            // re-layout (`scale()` above), so the view has to keep being
+            // re-rendered for it to advance -- and that clock starts at
+            // construction, ahead of the fade's own. `AnimationElement` already
+            // asks for a frame per step itself, so driving a second one here
+            // re-renders the whole menu twice a frame and the fade stutters.
             .when(
-                self.animate_entrance && crate::ui::primitives::entering(self.opened_at),
+                matches!(self.entrance, MenuEntrance::Overlay)
+                    && crate::ui::primitives::entering(self.opened_at),
                 |el| {
-                    // The scale comes from a clock, so the popover has to keep
-                    // asking for frames until the entrance finishes.
-                    window.request_animation_frame();
+                    crate::ui::primitives::request_animation_frame(window);
                     el
                 },
             )
@@ -592,19 +643,26 @@ impl Render for MenuView {
             list = list.child(match entry {
                 MenuEntry::Separator => separator(&theme),
                 MenuEntry::Label(text) => label_row(text.clone(), &theme, has_indicator),
-                MenuEntry::Item(item) => self.item_row(index, item, &theme, has_indicator, cx),
+                MenuEntry::Item(item) => self.item_row(
+                    index,
+                    item,
+                    &theme,
+                    has_indicator,
+                    pointer_inside,
+                    window,
+                    cx,
+                ),
             });
         }
 
-        let entrance = if self.animate_entrance {
-            crate::ui::primitives::overlay_enter(
+        let entrance = match self.entrance {
+            MenuEntrance::Overlay => crate::ui::primitives::overlay_enter(
                 "menu-enter",
                 crate::ui::primitives::EnterFrom::Top,
                 list,
             )
-            .into_any_element()
-        } else {
-            list.into_any_element()
+            .into_any_element(),
+            MenuEntrance::Instant => list.into_any_element(),
         };
 
         div()

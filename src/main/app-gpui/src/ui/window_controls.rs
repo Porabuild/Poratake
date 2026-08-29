@@ -1,5 +1,5 @@
 use gpui::{
-    canvas, div, point, prelude::*, px, AnyElement, Hsla, PathBuilder, Pixels, Point, Styled,
+    canvas, div, point, prelude::*, px, AnyElement, App, Hsla, PathBuilder, Pixels, Point, Styled,
     Window, WindowControlArea,
 };
 
@@ -20,11 +20,11 @@ enum Glyph {
     Close,
 }
 
-pub fn render(window: &Window, theme: &ThemeVars) -> AnyElement {
+pub fn render(window: &mut Window, cx: &mut App, theme: &ThemeVars) -> AnyElement {
     if chrome::is_macos() {
         return div().into_any_element();
     }
-    windows_captions(window, theme)
+    windows_captions(window, cx, theme)
 }
 
 pub fn leading_inset() -> AnyElement {
@@ -40,7 +40,12 @@ pub fn leading_inset() -> AnyElement {
         .into_any_element()
 }
 
-pub fn drag_strip(background: Hsla, window: &Window, theme: &ThemeVars) -> AnyElement {
+pub fn drag_strip(
+    background: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+    theme: &ThemeVars,
+) -> AnyElement {
     let mut strip = div()
         .flex()
         .flex_row()
@@ -59,11 +64,11 @@ pub fn drag_strip(background: Hsla, window: &Window, theme: &ThemeVars) -> AnyEl
                 .h_full()
                 .window_control_area(WindowControlArea::Drag),
         )
-        .child(render(window, theme))
+        .child(render(window, cx, theme))
         .into_any_element()
 }
 
-fn windows_captions(window: &Window, theme: &ThemeVars) -> AnyElement {
+fn windows_captions(window: &mut Window, cx: &mut App, theme: &ThemeVars) -> AnyElement {
     let maximized = window.is_maximized();
     let hover = theme.row_hover;
     let ink = theme.foreground;
@@ -80,6 +85,8 @@ fn windows_captions(window: &Window, theme: &ThemeVars) -> AnyElement {
             ink,
             hover,
             None,
+            window,
+            cx,
         ))
         .child(caption(
             "win-max",
@@ -92,6 +99,8 @@ fn windows_captions(window: &Window, theme: &ThemeVars) -> AnyElement {
             ink,
             hover,
             None,
+            window,
+            cx,
         ))
         .child(caption(
             "win-close",
@@ -100,6 +109,8 @@ fn windows_captions(window: &Window, theme: &ThemeVars) -> AnyElement {
             ink,
             Srgba::parse(CLOSE_HOVER).to_hsla(),
             Some(colors::white(1.0)),
+            window,
+            cx,
         ))
         .into_any_element()
 }
@@ -111,21 +122,34 @@ fn caption(
     ink: Hsla,
     hover_bg: Hsla,
     hover_fg: Option<Hsla>,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
+    // A gated hover flag rather than a `.hover()` style: gpui paints that
+    // against the window's last mouse position, which survives the pointer
+    // leaving the window, so the caption would stay lit.
+    let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
     div()
         .id(id)
         .w(px(chrome::WINDOW_CONTROL_WIDTH))
         .h_full()
         .flex()
+        .flex_row()
         .items_center()
         .justify_center()
         .flex_none()
         .window_control_area(area)
-        .hover(move |style| {
-            let style = style.bg(hover_bg);
+        .when(hovered, |caption| {
+            let caption = caption.bg(hover_bg);
             match hover_fg {
-                Some(color) => style.text_color(color),
-                None => style,
+                Some(color) => caption.text_color(color),
+                None => caption,
+            }
+        })
+        .on_hover({
+            let hover = hover.clone();
+            move |over: &bool, _window, cx| {
+                crate::ui::primitives::track_hover(&hover, *over, cx);
             }
         })
         .child(caption_glyph(glyph, ink))

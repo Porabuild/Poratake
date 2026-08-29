@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Render,
@@ -14,24 +14,51 @@ use gpui::{
 use parking_lot::Mutex;
 
 use crate::theme::vars::active_theme;
+use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome::{
     self, PreviewCorner, PREVIEW_CONTROL, PREVIEW_CONTROL_INSET, PREVIEW_HEIGHT,
-    PREVIEW_HOVER_SCALE, PREVIEW_MAX_STACK, PREVIEW_RADIUS, PREVIEW_WIDTH, WINDOW_MOVE_STEPS,
+    PREVIEW_HOVER_SCALE, PREVIEW_MAX_STACK, PREVIEW_PILL_HEIGHT, PREVIEW_RADIUS,
+    PREVIEW_SHADOW_PADDING, PREVIEW_STACK_GAP, PREVIEW_WIDTH,
 };
 use crate::ui::icon::icon_element;
+use crate::ui::primitives::{
+    OVERLAY_ENTER_MS as PREVIEW_ENTER_MS, OVERLAY_ENTER_SLIDE as PREVIEW_ENTER_OFFSET,
+    OVERLAY_EXIT_MS as PREVIEW_EXIT_MS,
+};
 
-static STACK: Mutex<Vec<AnyWindowHandle>> = Mutex::new(Vec::new());
-static RESTACK_GENERATION: AtomicU64 = AtomicU64::new(0);
+static STACK: Mutex<Option<AnyWindowHandle>> = Mutex::new(None);
+static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(1);
 const UPLOAD_DONE_DISPLAY_MS: u64 = 800;
+const PREVIEW_MOVE_MS: u64 = 120;
 
-pub struct CapturePreviewWindow {
+#[derive(Clone, Copy)]
+struct LayoutAnimation {
+    from: f32,
+    to: f32,
+    started: Instant,
+    duration_ms: u64,
+}
+
+#[derive(Clone, Copy)]
+struct DismissAnimation {
+    started: Instant,
+    from_opacity: f32,
+    controls_progress: Option<f32>,
+}
+
+#[derive(Clone, Copy)]
+enum DismissBehavior {
+    Automatic,
+    PreserveControls,
+}
+
+struct CapturePreview {
+    id: u64,
     path: PathBuf,
     image: Option<Arc<gpui::RenderImage>>,
-    /// A pre-blurred copy of the thumbnail, swapped in while the controls show.
     /// Electron's scrim is `backdrop-blur-md` over the thumbnail; gpui cannot
     /// blur a region, so the blur is baked once here instead of per frame.
     blurred: Option<Arc<gpui::RenderImage>>,
-    hovered: bool,
     /// How far through the 200ms hover transition we are, 0.0 to 1.0.
     /// `transition-transform duration-200` animates in *and* out, so this
     /// decays after the pointer leaves rather than snapping back.
@@ -39,66 +66,195 @@ pub struct CapturePreviewWindow {
     /// When the last frame was drawn, so the step is time-based rather than
     /// frame-rate dependent.
     last_frame: Option<std::time::Instant>,
-    display_menu_open: bool,
+    hovered: bool,
     busy: bool,
     dismiss_token: Arc<AtomicU64>,
+    entered_at: Instant,
+    layout_y: Option<f32>,
+    layout_animation: Option<LayoutAnimation>,
+    dismiss_animation: Option<DismissAnimation>,
+}
+
+pub struct CapturePreviewWindow {
+    previews: Vec<CapturePreview>,
+    layout_generation: u64,
 }
 
 impl CapturePreviewWindow {
-    pub fn open(cx: &mut App, path: PathBuf) {
-        prune_stack(cx);
-        let mut stack = STACK.lock();
-        while stack.len() >= PREVIEW_MAX_STACK {
-            let Some(oldest) = stack.first().copied() else {
-                break;
-            };
-            drop_handle(oldest, cx);
-            stack.remove(0);
-        }
-        let index = stack.len();
-        drop(stack);
+    fn active_preview_count(&self) -> usize {
+        self.previews
+            .iter()
+            .filter(|preview| preview.dismiss_animation.is_none())
+            .count()
+    }
 
-        let image = load_thumbnail(&path);
-        let blurred = load_blurred_thumbnail(&path);
+    pub fn open(cx: &mut App, path: PathBuf) {
+        let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
-        let bounds = preview_bounds(cx, index);
+        let mut preview = Some(CapturePreview {
+            id,
+            image: load_thumbnail(&path),
+            blurred: load_blurred_thumbnail(&path),
+            path,
+            hover_progress: 0.0,
+            last_frame: None,
+            hovered: false,
+            busy: false,
+            dismiss_token: dismiss_token.clone(),
+            entered_at: Instant::now(),
+            layout_y: None,
+            layout_animation: None,
+            dismiss_animation: None,
+        });
+
+        let existing = *STACK.lock();
+        if let Some(handle) = existing {
+            let updated = handle
+                .downcast::<CapturePreviewWindow>()
+                .is_some_and(|handle| {
+                    handle
+                        .update(cx, |view, window, cx| {
+                            let Some(preview) = preview.take() else {
+                                return;
+                            };
+                            if view.active_preview_count() >= PREVIEW_MAX_STACK {
+                                if let Some(oldest) = view
+                                    .previews
+                                    .iter()
+                                    .find(|preview| preview.dismiss_animation.is_none())
+                                    .map(|preview| preview.id)
+                                {
+                                    begin_remove_preview(
+                                        view,
+                                        oldest,
+                                        DismissBehavior::Automatic,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                            view.previews.push(preview);
+                            configure_stack_window(window, cx, view.active_preview_count());
+                            cx.notify();
+                        })
+                        .is_ok()
+                });
+            if updated {
+                schedule_auto_dismiss(handle, id, cx, dismiss_token);
+                return;
+            }
+            *STACK.lock() = None;
+        }
+
+        let Some(preview) = preview else {
+            return;
+        };
+        let (bounds, display_id) = preview_stack_placement(cx);
+        let bottom_aligned = preview_bottom_aligned(cx);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: None,
                 focus: false,
-                show: true,
+                show: !cfg!(windows),
                 kind: WindowKind::PopUp,
                 is_movable: true,
                 is_resizable: false,
                 is_minimizable: false,
-                window_background: WindowBackgroundAppearance::Opaque,
+                display_id,
+                window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            |_, cx| {
-                cx.new(|_| Self {
-                    path: path.clone(),
-                    image,
-                    blurred,
-                    hovered: false,
-                    hover_progress: 0.0,
-                    last_frame: None,
-                    display_menu_open: false,
-                    busy: false,
-                    dismiss_token: dismiss_token.clone(),
-                })
+            |window, cx| {
+                #[cfg(windows)]
+                if !cfg!(test) {
+                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                        crate::system::window_composition::configure_transparent_surface(hwnd);
+                        crate::system::window_composition::stage_window(
+                            hwnd,
+                            bounds,
+                            window.scale_factor(),
+                            false,
+                        );
+                        sync_preview_viewport(window, bounds);
+                    }
+                }
+                let view = cx.new(|_| Self {
+                    previews: vec![preview],
+                    layout_generation: 0,
+                });
+                #[cfg(windows)]
+                if !cfg!(test) {
+                    window.on_next_frame(move |window, _cx| {
+                        reveal_preview_when_ready(window, bounds, 1, bottom_aligned);
+                    });
+                }
+                view
             },
         );
         if let Ok(handle) = opened {
             let handle: AnyWindowHandle = handle.into();
-            STACK.lock().push(handle);
-            schedule_auto_dismiss(handle, cx, dismiss_token);
+            *STACK.lock() = Some(handle);
+            schedule_auto_dismiss(handle, id, cx, dismiss_token);
         }
-        restack(cx);
     }
 }
 
-fn schedule_auto_dismiss(handle: AnyWindowHandle, cx: &mut App, dismiss_token: Arc<AtomicU64>) {
+fn sync_preview_viewport(window: &mut Window, bounds: Bounds<gpui::Pixels>) {
+    window.resize(bounds.size);
+}
+
+fn preview_viewport_ready(
+    viewport: gpui::Size<gpui::Pixels>,
+    bounds: Bounds<gpui::Pixels>,
+) -> bool {
+    viewport == bounds.size
+}
+
+#[cfg(windows)]
+fn reveal_preview_when_ready(
+    window: &mut Window,
+    bounds: Bounds<gpui::Pixels>,
+    count: usize,
+    bottom_aligned: bool,
+) {
+    if !preview_viewport_ready(window.viewport_size(), bounds) {
+        sync_preview_viewport(window, bounds);
+        window.on_next_frame(move |window, _cx| {
+            reveal_preview_when_ready(window, bounds, count, bottom_aligned)
+        });
+        return;
+    }
+    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+        crate::system::window_composition::apply_window_bounds(hwnd, bounds, window.scale_factor());
+    }
+    configure_preview_stack_window(window, count, bottom_aligned);
+    window.on_next_frame(move |window, _cx| {
+        if let Some(hwnd) = crate::windows::window_hwnd(window) {
+            crate::system::window_composition::reveal_window(hwnd, false, 0);
+        }
+    });
+}
+
+/// How long a blocked dismissal waits before re-checking. The div-level
+/// `on_hover` only re-evaluates when a mouse move reaches this window, so a
+/// pointer that simply leaves never reports hover end; the retry is what
+/// notices the cursor is gone and closes the preview.
+const DISMISS_RETRY: Duration = Duration::from_millis(250);
+
+#[derive(Debug, PartialEq, Eq)]
+enum DismissVerdict {
+    Ready,
+    Blocked,
+    Gone,
+}
+
+fn schedule_auto_dismiss(
+    handle: AnyWindowHandle,
+    id: u64,
+    cx: &mut App,
+    dismiss_token: Arc<AtomicU64>,
+) {
     let preview = crate::state::state(cx).config.get().preview;
     if !preview.auto_dismiss || preview.auto_dismiss_seconds <= 0.0 {
         return;
@@ -107,87 +263,135 @@ fn schedule_auto_dismiss(handle: AnyWindowHandle, cx: &mut App, dismiss_token: A
     let generation = dismiss_token.fetch_add(1, Ordering::Relaxed) + 1;
     cx.spawn(async move |cx| {
         cx.background_executor().timer(timeout).await;
-        let should_close = cx
-            .update(|cx| {
-                let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
-                    return false;
-                };
-                handle
-                    .update(cx, |view, _, _| {
-                        auto_dismiss_ready(
-                            view.dismiss_token.load(Ordering::Relaxed),
-                            generation,
-                            view.hovered,
-                            view.display_menu_open,
-                            view.busy,
-                        )
-                    })
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if should_close {
-            let closed = cx
-                .update(|cx| {
-                    handle
-                        .downcast::<CapturePreviewWindow>()
-                        .is_some_and(|handle| {
+        loop {
+            let verdict = cx
+                .update(|cx| dismiss_verdict(handle, id, generation, cx))
+                .unwrap_or(DismissVerdict::Gone);
+            match verdict {
+                DismissVerdict::Gone => return,
+                DismissVerdict::Ready => {
+                    let _ = cx
+                        .update(|cx| {
                             handle
-                                .update(cx, |_, window, _| window.remove_window())
-                                .is_ok()
+                                .downcast::<CapturePreviewWindow>()
+                                .is_some_and(|handle| {
+                                    handle
+                                        .update(cx, |view, window, cx| {
+                                            begin_remove_preview(
+                                                view,
+                                                id,
+                                                DismissBehavior::Automatic,
+                                                window,
+                                                cx,
+                                            )
+                                        })
+                                        .is_ok()
+                                })
                         })
-                })
-                .unwrap_or(false);
-            if closed {
-                let _ = cx.update(restack);
+                        .unwrap_or(false);
+                    return;
+                }
+                DismissVerdict::Blocked => {
+                    cx.background_executor().timer(DISMISS_RETRY).await;
+                }
             }
         }
     })
     .detach();
 }
 
-fn auto_dismiss_ready(
+fn dismiss_verdict(
+    handle: AnyWindowHandle,
+    id: u64,
+    generation: u64,
+    cx: &mut App,
+) -> DismissVerdict {
+    let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
+        return DismissVerdict::Gone;
+    };
+    handle
+        .update(cx, |view, window, _| {
+            let Some(preview) = view.previews.iter().find(|preview| preview.id == id) else {
+                return DismissVerdict::Gone;
+            };
+            dismiss_state(
+                preview.dismiss_token.load(Ordering::Relaxed),
+                generation,
+                preview.hovered,
+                window.is_window_hovered(),
+                preview.busy,
+            )
+        })
+        .unwrap_or(DismissVerdict::Gone)
+}
+
+fn dismiss_state(
     current_generation: u64,
     generation: u64,
     hovered: bool,
-    menu: bool,
+    window_hovered: bool,
     busy: bool,
-) -> bool {
-    current_generation == generation && !hovered && !menu && !busy
+) -> DismissVerdict {
+    if current_generation != generation {
+        return DismissVerdict::Gone;
+    }
+    if hovered && window_hovered || busy {
+        return DismissVerdict::Blocked;
+    }
+    DismissVerdict::Ready
 }
 
-fn prune_stack(cx: &mut App) {
-    STACK
-        .lock()
-        .retain(|handle| handle.update(cx, |_, _, _| ()).is_ok());
-}
-
-fn drop_handle(handle: AnyWindowHandle, cx: &mut App) {
-    let _ = handle.update(cx, |_, window, _| window.remove_window());
-}
-
-fn selected_display_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
+fn selected_display(cx: &mut App) -> Option<(Bounds<gpui::Pixels>, gpui::DisplayId)> {
     let displays = cx.displays();
     let config = crate::state::state(cx).config.get();
-    let chosen = config
+    config
         .preview
         .display_id
         .and_then(|id| displays.get(id.max(0) as usize).cloned())
-        .or_else(|| displays.first().cloned());
-    match chosen {
-        // Electron anchors previews to `display.workArea`, so the taskbar has to
-        // come off here -- gpui's `bounds()` is the whole monitor.
-        Some(display) => crate::system::work_area::work_area(display.bounds()),
-        None => Bounds::from_corners(
-            gpui::point(px(0.0), px(0.0)),
-            gpui::point(px(1920.0), px(1080.0)),
-        ),
-    }
+        .or_else(|| displays.first().cloned())
+        .map(|display| {
+            (
+                crate::system::work_area::work_area(display.bounds()),
+                display.id(),
+            )
+        })
 }
 
-fn preview_bounds(cx: &mut App, index: usize) -> Bounds<gpui::Pixels> {
-    let display = selected_display_bounds(cx);
+fn preview_stack_height(count: usize) -> f32 {
+    count as f32 * PREVIEW_HEIGHT
+        + count.saturating_sub(1) as f32 * PREVIEW_STACK_GAP
+        + PREVIEW_SHADOW_PADDING * 2.0
+}
+
+fn preview_bottom_aligned(cx: &mut App) -> bool {
+    matches!(
+        PreviewCorner::parse(&crate::state::state(cx).config.get().preview.corner),
+        PreviewCorner::BottomLeft | PreviewCorner::BottomRight
+    )
+}
+
+fn preview_stack_placement(cx: &mut App) -> (Bounds<gpui::Pixels>, Option<gpui::DisplayId>) {
+    let (display, display_id) = selected_display(cx)
+        .map(|(bounds, id)| (bounds, Some(id)))
+        .unwrap_or_else(|| {
+            (
+                Bounds::from_corners(
+                    gpui::point(px(0.0), px(0.0)),
+                    gpui::point(px(1920.0), px(1080.0)),
+                ),
+                None,
+            )
+        });
     let config = crate::state::state(cx).config.get();
     let corner = PreviewCorner::parse(&config.preview.corner);
+    let index = if matches!(
+        corner,
+        PreviewCorner::BottomLeft | PreviewCorner::BottomRight
+    ) {
+        PREVIEW_MAX_STACK.saturating_sub(1)
+    } else {
+        0
+    };
     let (x, y) = chrome::preview_origin(
         f32::from(display.origin.x),
         f32::from(display.origin.y),
@@ -196,10 +400,60 @@ fn preview_bounds(cx: &mut App, index: usize) -> Bounds<gpui::Pixels> {
         index,
         corner,
     );
-    Bounds {
-        origin: gpui::point(px(x), px(y)),
-        size: size(px(PREVIEW_WIDTH), px(PREVIEW_HEIGHT)),
+    (
+        Bounds {
+            origin: gpui::point(
+                px(x - PREVIEW_SHADOW_PADDING),
+                px(y - PREVIEW_SHADOW_PADDING),
+            ),
+            size: size(
+                px(PREVIEW_WIDTH + PREVIEW_SHADOW_PADDING * 2.0),
+                px(preview_stack_height(PREVIEW_MAX_STACK)),
+            ),
+        },
+        display_id,
+    )
+}
+
+fn configure_stack_window(window: &mut Window, cx: &mut App, count: usize) {
+    let bounds = preview_stack_placement(cx).0;
+    #[cfg(windows)]
+    if !cfg!(test) {
+        if let Some(hwnd) = crate::windows::window_hwnd(window) {
+            crate::system::window_composition::apply_window_bounds(
+                hwnd,
+                bounds,
+                window.scale_factor(),
+            );
+            let bottom_aligned = preview_bottom_aligned(cx);
+            window.on_next_frame(move |window, _| {
+                configure_preview_stack_window(window, count, bottom_aligned)
+            });
+        }
     }
+    #[cfg(not(windows))]
+    let _ = (window, count, bounds);
+}
+
+fn configure_preview_stack_window(window: &Window, count: usize, bottom_aligned: bool) {
+    let offset = if bottom_aligned {
+        PREVIEW_MAX_STACK.saturating_sub(count) as f32 * (PREVIEW_HEIGHT + PREVIEW_STACK_GAP)
+    } else {
+        0.0
+    };
+    #[cfg(windows)]
+    if !cfg!(test) {
+        crate::system::window_composition::set_stacked_rounded_client_region(
+            window,
+            offset,
+            PREVIEW_HEIGHT + PREVIEW_SHADOW_PADDING * 2.0,
+            PREVIEW_STACK_GAP - PREVIEW_SHADOW_PADDING * 2.0,
+            count,
+            PREVIEW_RADIUS + PREVIEW_SHADOW_PADDING,
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = (window, count, bottom_aligned, offset);
 }
 
 /// One frame of the hover transition: `current` moved towards `target` by
@@ -213,6 +467,109 @@ fn step_hover(current: f32, target: f32, delta: f32) -> f32 {
         (current + step).min(target)
     } else {
         (current - step).max(target)
+    }
+}
+
+fn animation_progress(started: Instant, now: Instant, duration_ms: u64) -> f32 {
+    now.saturating_duration_since(started).as_secs_f32() / (duration_ms as f32 / 1000.0)
+}
+
+fn ease_out(progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    1.0 - (1.0 - progress) * (1.0 - progress)
+}
+
+fn preview_layout_y(index: usize, bottom_aligned: bool) -> f32 {
+    let slot = if bottom_aligned {
+        PREVIEW_MAX_STACK - 1 - index
+    } else {
+        index
+    };
+    PREVIEW_SHADOW_PADDING + slot as f32 * (PREVIEW_HEIGHT + PREVIEW_STACK_GAP)
+}
+
+fn layout_position(animation: LayoutAnimation, now: Instant) -> (f32, bool) {
+    let progress = animation_progress(animation.started, now, animation.duration_ms);
+    let position = animation.from + (animation.to - animation.from) * ease_out(progress);
+    (position, progress < 1.0)
+}
+
+fn advance_layout(
+    preview: &mut CapturePreview,
+    target: f32,
+    enter_offset: f32,
+    now: Instant,
+) -> (f32, bool) {
+    if preview.layout_y.is_none() {
+        let from = target + enter_offset;
+        preview.layout_y = Some(from);
+        preview.layout_animation = Some(LayoutAnimation {
+            from,
+            to: target,
+            started: preview.entered_at,
+            duration_ms: PREVIEW_ENTER_MS,
+        });
+    }
+
+    let target_changed = preview
+        .layout_animation
+        .map(|animation| (animation.to - target).abs() >= f32::EPSILON)
+        .unwrap_or_else(|| {
+            preview
+                .layout_y
+                .is_some_and(|position| (position - target).abs() >= f32::EPSILON)
+        });
+    if target_changed {
+        let current = preview
+            .layout_animation
+            .map(|animation| layout_position(animation, now).0)
+            .or(preview.layout_y)
+            .unwrap_or(target);
+        preview.layout_y = Some(current);
+        preview.layout_animation = Some(LayoutAnimation {
+            from: current,
+            to: target,
+            started: now,
+            duration_ms: PREVIEW_MOVE_MS,
+        });
+    }
+
+    let Some(animation) = preview.layout_animation else {
+        return (preview.layout_y.unwrap_or(target), false);
+    };
+    let (position, animating) = layout_position(animation, now);
+    preview.layout_y = Some(position);
+    if !animating {
+        preview.layout_y = Some(animation.to);
+        preview.layout_animation = None;
+    }
+    (preview.layout_y.unwrap_or(target), animating)
+}
+
+fn preview_opacity(preview: &CapturePreview, now: Instant) -> (f32, bool) {
+    if let Some(animation) = preview.dismiss_animation {
+        let progress = animation_progress(animation.started, now, PREVIEW_EXIT_MS);
+        return (
+            animation.from_opacity * (1.0 - ease_out(progress)),
+            progress < 1.0,
+        );
+    }
+    let progress = animation_progress(preview.entered_at, now, PREVIEW_ENTER_MS);
+    (ease_out(progress), progress < 1.0)
+}
+
+fn start_dismiss_animation(
+    preview: &CapturePreview,
+    behavior: DismissBehavior,
+    now: Instant,
+) -> DismissAnimation {
+    DismissAnimation {
+        started: now,
+        from_opacity: preview_opacity(preview, now).0,
+        controls_progress: match behavior {
+            DismissBehavior::Automatic => None,
+            DismissBehavior::PreserveControls => Some(preview.hover_progress),
+        },
     }
 }
 
@@ -363,146 +720,170 @@ fn delete_capture(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
-fn close_self(window: &mut Window, cx: &mut App) {
-    let handle = window.window_handle();
-    STACK.lock().retain(|item| *item != handle);
-    window.remove_window();
-    restack(cx);
-}
-
-fn restack(cx: &mut App) {
-    let generation = RESTACK_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-    prune_stack(cx);
-    let handles: Vec<_> = STACK.lock().clone();
-    for (index, handle) in handles.into_iter().enumerate() {
-        let target = preview_bounds(cx, index);
-        let Some(current) = handle.update(cx, |_, window, _| window.bounds()).ok() else {
-            continue;
-        };
-        let from_x = f32::from(current.origin.x);
-        let from_y = f32::from(current.origin.y);
-        let to_x = f32::from(target.origin.x);
-        let to_y = f32::from(target.origin.y);
-        if (from_x - to_x).abs() < f32::EPSILON && (from_y - to_y).abs() < f32::EPSILON {
-            continue;
-        }
-        let step_ms = chrome::window_move_step_ms();
-        cx.spawn(async move |cx| {
-            for step in 1..=WINDOW_MOVE_STEPS {
-                if RESTACK_GENERATION.load(Ordering::Relaxed) != generation {
-                    break;
+fn begin_remove_preview(
+    view: &mut CapturePreviewWindow,
+    id: u64,
+    behavior: DismissBehavior,
+    window: &mut Window,
+    cx: &mut Context<CapturePreviewWindow>,
+) {
+    let now = Instant::now();
+    let Some(index) = view.previews.iter().position(|preview| preview.id == id) else {
+        return;
+    };
+    if view.previews[index].dismiss_animation.is_some() {
+        return;
+    }
+    let active_index = view.previews[..index]
+        .iter()
+        .filter(|preview| preview.dismiss_animation.is_none())
+        .count();
+    let initial_y = preview_layout_y(active_index, preview_bottom_aligned(cx));
+    let preview = &mut view.previews[index];
+    if preview.layout_y.is_none() {
+        preview.layout_y = Some(initial_y);
+    }
+    preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+    preview.dismiss_animation = Some(start_dismiss_animation(preview, behavior, now));
+    let bottom_aligned = preview_bottom_aligned(cx);
+    let layout_generation = start_layout_transition(view, bottom_aligned, now);
+    cx.notify();
+    let removal_handle = window.window_handle();
+    cx.spawn(async move |_, cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(PREVIEW_EXIT_MS))
+            .await;
+        let _ = cx.update(|cx| {
+            let Some(handle) = removal_handle.downcast::<CapturePreviewWindow>() else {
+                return;
+            };
+            let _ = handle.update(cx, |view, window, cx| {
+                remove_preview_now(view, id, window, cx)
+            });
+        });
+    })
+    .detach();
+    let region_handle = window.window_handle();
+    cx.spawn(async move |_, cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(PREVIEW_MOVE_MS))
+            .await;
+        let _ = cx.update(|cx| {
+            let Some(handle) = region_handle.downcast::<CapturePreviewWindow>() else {
+                return;
+            };
+            let _ = handle.update(cx, |view, window, cx| {
+                if view.layout_generation != layout_generation {
+                    return;
                 }
-                let (x, y) = chrome::window_move_position(
-                    from_x,
-                    from_y,
-                    to_x,
-                    to_y,
-                    step,
-                    WINDOW_MOVE_STEPS,
+                configure_preview_stack_window(
+                    window,
+                    view.active_preview_count(),
+                    preview_bottom_aligned(cx),
                 );
-                let applied = cx.update(|cx| {
-                    handle.update(cx, |_, window, _| {
-                        apply_preview_frame(window, x, y);
-                    })
-                });
-                if applied.is_err() {
-                    break;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(step_ms))
-                    .await;
-            }
-        })
-        .detach();
-    }
+            });
+        });
+    })
+    .detach();
 }
 
-fn preview_frame(x: f32, y: f32) -> (f32, f32, f32, f32) {
-    (x, y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
-}
-
-fn window_origin_device_pixels(x: f32, y: f32, scale: f32) -> (i32, i32) {
-    ((x * scale).round() as i32, (y * scale).round() as i32)
-}
-
-fn apply_preview_frame(window: &mut Window, x: f32, y: f32) {
-    let (origin_x, origin_y, _, _) = preview_frame(x, y);
-    set_native_window_origin(window, origin_x, origin_y);
-}
-
-fn set_native_window_origin(window: &Window, x: f32, y: f32) {
-    #[cfg(windows)]
-    {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-        };
-
-        let Ok(handle) = HasWindowHandle::window_handle(window) else {
-            return;
-        };
-        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
-            return;
-        };
-        let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
-        let (device_x, device_y) = window_origin_device_pixels(x, y, window.scale_factor());
-        unsafe {
-            let _ = SetWindowPos(
-                hwnd,
-                None,
-                device_x,
-                device_y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+fn start_layout_transition(
+    view: &mut CapturePreviewWindow,
+    bottom_aligned: bool,
+    now: Instant,
+) -> u64 {
+    let mut active_index = 0;
+    for preview in &mut view.previews {
+        if preview.dismiss_animation.is_some() {
+            continue;
         }
+        let target = preview_layout_y(active_index, bottom_aligned);
+        active_index += 1;
+        let current = preview.layout_y.unwrap_or(target);
+        if (current - target).abs() < f32::EPSILON {
+            continue;
+        }
+        preview.layout_animation = Some(LayoutAnimation {
+            from: current,
+            to: target,
+            started: now,
+            duration_ms: PREVIEW_MOVE_MS,
+        });
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (window, x, y);
+    view.layout_generation = view.layout_generation.wrapping_add(1);
+    view.layout_generation
+}
+
+fn remove_preview_now(
+    view: &mut CapturePreviewWindow,
+    id: u64,
+    window: &mut Window,
+    cx: &mut Context<CapturePreviewWindow>,
+) {
+    view.previews.retain(|preview| preview.id != id);
+    if view.previews.is_empty() {
+        *STACK.lock() = None;
+        window.remove_window();
+        return;
     }
+    cx.notify();
 }
 
 impl CapturePreviewWindow {
-    fn show_controls(&self) -> bool {
-        self.hovered || self.display_menu_open || self.busy
+    fn show_controls(hovered: bool, busy: bool) -> bool {
+        hovered || busy
     }
 
-    /// Moves `hover_progress` towards its target and asks for another frame
-    /// while it is still moving.
-    ///
-    /// gpui has no per-property transitions, so `transition-transform
-    /// duration-200` has to be driven by hand.
-    fn advance_hover(&mut self, window: &mut Window) -> f32 {
-        let target = if self.show_controls() { 1.0 } else { 0.0 };
-        if (self.hover_progress - target).abs() < f32::EPSILON {
-            self.last_frame = None;
-            return self.hover_progress;
+    fn advance_hover(preview: &mut CapturePreview, hovered: bool, now: Instant) -> (f32, bool) {
+        let target = if Self::show_controls(hovered, preview.busy) {
+            1.0
+        } else {
+            0.0
+        };
+        if (preview.hover_progress - target).abs() < f32::EPSILON {
+            preview.last_frame = None;
+            return (preview.hover_progress, false);
         }
 
-        let now = std::time::Instant::now();
-        // The first frame of a transition has no previous frame to measure
-        // against; stepping by 0 there just defers the motion by one frame.
-        let delta = self
+        let delta = preview
             .last_frame
             .map(|previous| now.saturating_duration_since(previous).as_secs_f32())
             .unwrap_or(0.0);
-        self.last_frame = Some(now);
+        preview.last_frame = Some(now);
 
-        self.hover_progress = step_hover(self.hover_progress, target, delta);
-
-        window.request_animation_frame();
-        self.hover_progress
+        preview.hover_progress = step_hover(preview.hover_progress, target, delta);
+        let animating = (preview.hover_progress - target).abs() >= f32::EPSILON;
+        if !animating {
+            preview.last_frame = None;
+        }
+        (preview.hover_progress, animating)
     }
 
-    /// `hover_bg` is passed in rather than fixed because Electron does not use
-    /// one colour for these: close and delete are `hover:bg-destructive` while
-    /// copy, upload and the display picker are `hover:bg-primary`. Styling a
-    /// delete the same as a copy loses the only warning the control gives.
+    fn control_frame(
+        preview: &mut CapturePreview,
+        window_hovered: bool,
+        now: Instant,
+    ) -> (bool, f32, bool) {
+        if let Some(progress) = preview
+            .dismiss_animation
+            .and_then(|animation| animation.controls_progress)
+        {
+            preview.last_frame = None;
+            return (true, progress, false);
+        }
+        let hovered = preview.hovered && window_hovered;
+        let (progress, animating) = Self::advance_hover(preview, hovered, now);
+        (
+            Self::show_controls(hovered, preview.busy),
+            progress,
+            animating,
+        )
+    }
+
+    /// The corner controls: Electron's `size-6 rounded-full bg-background/80`
+    /// with a 14px glyph.
     fn circle_button(
-        id: &'static str,
+        id: impl Into<gpui::ElementId>,
         icon: &'static str,
         busy: bool,
         tooltip: impl Into<gpui::SharedString>,
@@ -510,91 +891,156 @@ impl CapturePreviewWindow {
         hover_bg: gpui::Hsla,
         on_click: impl Fn(&mut Window, &mut App) + 'static,
     ) -> gpui::AnyElement {
-        let tooltip = tooltip.into();
-        div()
-            .id(id)
-            .size(px(PREVIEW_CONTROL))
-            .rounded_full()
-            .bg(theme.background.opacity(0.8))
-            .flex()
-            .items_center()
-            .justify_center()
-            .tooltip(move |_window, cx| {
-                cx.new(|_| crate::ui::tooltip::Tooltip::new(tooltip.clone()))
-                    .into()
-            })
-            .hover(move |style| style.bg(hover_bg))
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+        Self::chip(
+            id,
+            ButtonSize::IconXs,
+            px(PREVIEW_CONTROL),
+            theme,
+            hover_bg,
+            busy,
+            tooltip,
+            on_click,
+        )
+        .icon(icon)
+        .icon_spinning(busy)
+        .into_any_element()
+    }
+
+    /// The two centre actions: `rounded-full bg-background/80 px-3 py-1 text-xs
+    /// font-medium hover:bg-primary`.
+    fn pill_button(
+        id: impl Into<gpui::ElementId>,
+        label: &'static str,
+        tooltip: impl Into<gpui::SharedString>,
+        theme: &crate::theme::vars::ThemeVars,
+        on_click: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> gpui::AnyElement {
+        Self::chip(
+            id,
+            ButtonSize::Xs,
+            px(PREVIEW_PILL_HEIGHT),
+            theme,
+            theme.primary,
+            false,
+            tooltip,
+            on_click,
+        )
+        .label(label)
+        .padding_x(px(chrome::BUTTON_SM_PAD_X))
+        .into_any_element()
+    }
+
+    fn chip(
+        id: impl Into<gpui::ElementId>,
+        size: ButtonSize,
+        height: gpui::Pixels,
+        theme: &crate::theme::vars::ThemeVars,
+        hover_bg: gpui::Hsla,
+        disabled: bool,
+        tooltip: impl Into<gpui::SharedString>,
+        on_click: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Button {
+        Button::new(id)
+            .variant(ButtonVariant::Ghost)
+            .size(size)
+            .height(height)
+            .radius(px(f32::from(height) / 2.0))
+            .surface(theme.background.opacity(0.8))
+            .surface_hover(hover_bg)
+            .foreground(theme.foreground)
+            .disabled(disabled)
+            .tooltip(tooltip)
+            .on_press(move |_event, window, cx| {
                 on_click(window, cx);
                 cx.stop_propagation();
             })
-            .child(if busy {
-                crate::ui::icon::spinner_element(
-                    gpui::ElementId::Name(format!("{id}-spinner").into()),
-                    px(14.0),
-                )
-            } else {
-                icon_element(icon, px(14.0))
-            })
-            .into_any_element()
     }
 }
 
-impl Render for CapturePreviewWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = active_theme(cx);
+impl CapturePreviewWindow {
+    fn render_preview(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+        theme: &crate::theme::vars::ThemeVars,
+        polish: Option<&crate::config::schema::WallpaperPreset>,
+        display_count: usize,
+        window_hovered: bool,
+        target_y: f32,
+        enter_offset: f32,
+        now: Instant,
+        needs_frame: &mut bool,
+    ) -> gpui::AnyElement {
         let preview_entity = cx.entity().downgrade();
-        let show_controls = self.show_controls();
-        let progress = self.advance_hover(window);
-        let polish = starred_preset(cx);
+        let preview = &mut self.previews[index];
+        let id = preview.id;
+        let path = preview.path.clone();
+        let dismiss_token = preview.dismiss_token.clone();
+        let busy = preview.busy;
+        let (show_controls, progress, animating) =
+            Self::control_frame(preview, window_hovered, now);
+        let (layout_y, layout_animating) = advance_layout(preview, target_y, enter_offset, now);
+        let (opacity, opacity_animating) = preview_opacity(preview, now);
+        *needs_frame |= animating || layout_animating || opacity_animating;
         // `scale-105` over `duration-200` rather than an instant jump.
         let scale = 1.0 + (PREVIEW_HOVER_SCALE - 1.0) * progress;
         let image_w = PREVIEW_WIDTH * scale;
         let image_h = PREVIEW_HEIGHT * scale;
-        let displays = cx.displays();
-        let has_multiple_displays = displays.len() > 1;
+        let has_multiple_displays = display_count > 1;
 
         let mut root = div()
-            .id("capture-preview")
+            .id(("capture-preview", id))
             .relative()
             .size_full()
             .overflow_hidden()
             .rounded(px(PREVIEW_RADIUS))
             .bg(theme.muted_background)
+            .border_1()
+            .border_color(theme.border)
             .on_hover({
-                let view = cx.entity().downgrade();
+                let preview_entity = preview_entity.clone();
                 move |hovered: &bool, window, cx| {
                     let handle = window.window_handle();
-                    let dismiss_token = view
-                        .update(cx, |this, cx| {
-                            this.hovered = *hovered;
-                            cx.notify();
-                            this.dismiss_token.clone()
-                        })
-                        .ok();
-                    if let Some(dismiss_token) = dismiss_token {
-                        schedule_auto_dismiss(handle, cx, dismiss_token);
-                    }
+                    let _ = preview_entity.update(cx, |view, cx| {
+                        let Some(preview) =
+                            view.previews.iter_mut().find(|preview| preview.id == id)
+                        else {
+                            return;
+                        };
+                        preview.hovered = *hovered;
+                        cx.notify();
+                    });
+                    schedule_auto_dismiss(handle, id, cx, dismiss_token.clone());
                 }
             })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                    if event.click_count >= 2 {
-                        let path = this.path.to_string_lossy().into_owned();
-                        close_self(_window, cx);
-                        crate::open_editor_for(cx, &path);
+            .on_mouse_down(MouseButton::Left, {
+                let preview_entity = preview_entity.clone();
+                let path = path.clone();
+                move |event: &gpui::MouseDownEvent, window, cx| {
+                    if event.click_count < 2 {
+                        return;
                     }
-                }),
-            );
+                    let path = path.to_string_lossy().into_owned();
+                    let _ = preview_entity.update(cx, |view, cx| {
+                        begin_remove_preview(
+                            view,
+                            id,
+                            DismissBehavior::PreserveControls,
+                            window,
+                            cx,
+                        )
+                    });
+                    crate::open_editor_for(cx, &path);
+                }
+            });
 
         // `capture-preview-window.tsx` lays a `bg-black/25 backdrop-blur-md`
         // scrim over the thumbnail while the controls show. The tint is drawn
         // below; this is the blur half of it.
         let thumbnail = if show_controls {
-            self.blurred.as_ref().or(self.image.as_ref())
+            preview.blurred.as_ref().or(preview.image.as_ref())
         } else {
-            self.image.as_ref()
+            preview.image.as_ref()
         };
         root = root.child(match thumbnail {
             Some(render_image) => div()
@@ -618,12 +1064,12 @@ impl Render for CapturePreviewWindow {
                 .items_center()
                 .justify_center()
                 .bg(theme.muted_background)
+                .text_color(theme.muted_foreground)
                 .child(icon_element("image", px(48.0)))
                 .into_any_element(),
         });
 
         if show_controls {
-            let path = self.path.clone();
             root = root
                 .child(
                     div()
@@ -635,35 +1081,28 @@ impl Render for CapturePreviewWindow {
                 .child(
                     div()
                         .absolute()
+                        .opacity(progress)
                         .top(px(PREVIEW_CONTROL_INSET))
                         .left(px(PREVIEW_CONTROL_INSET))
                         .child(Self::circle_button(
-                            "preview-close",
+                            ("preview-close", id),
                             "x",
                             false,
                             "Close preview",
-                            &theme,
-                            theme.destructive,
-                            close_self,
-                        )),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(PREVIEW_CONTROL_INSET))
-                        .right(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
-                            "preview-delete",
-                            "trash-2",
-                            false,
-                            "Delete screenshot",
-                            &theme,
+                            theme,
                             theme.destructive,
                             {
-                                let path = path.clone();
+                                let preview_entity = preview_entity.clone();
                                 move |window, cx| {
-                                    delete_capture(&path);
-                                    close_self(window, cx);
+                                    let _ = preview_entity.update(cx, |view, cx| {
+                                        begin_remove_preview(
+                                            view,
+                                            id,
+                                            DismissBehavior::PreserveControls,
+                                            window,
+                                            cx,
+                                        )
+                                    });
                                 }
                             },
                         )),
@@ -671,6 +1110,38 @@ impl Render for CapturePreviewWindow {
                 .child(
                     div()
                         .absolute()
+                        .opacity(progress)
+                        .top(px(PREVIEW_CONTROL_INSET))
+                        .right(px(PREVIEW_CONTROL_INSET))
+                        .child(Self::circle_button(
+                            ("preview-delete", id),
+                            "trash-2",
+                            false,
+                            "Delete screenshot",
+                            theme,
+                            theme.destructive,
+                            {
+                                let path = path.clone();
+                                let preview_entity = preview_entity.clone();
+                                move |window, cx| {
+                                    delete_capture(&path);
+                                    let _ = preview_entity.update(cx, |view, cx| {
+                                        begin_remove_preview(
+                                            view,
+                                            id,
+                                            DismissBehavior::PreserveControls,
+                                            window,
+                                            cx,
+                                        )
+                                    });
+                                }
+                            },
+                        )),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .opacity(progress)
                         .inset_0()
                         .flex()
                         .items_center()
@@ -680,78 +1151,83 @@ impl Render for CapturePreviewWindow {
                         // also what Electron renders with no starred preset.
                         .flex_col()
                         .gap(px(4.0))
-                        .when_some(polish.clone(), |el, preset| {
+                        .when_some(polish, |el, preset| {
                             let tooltip = format!("Copy with \"{}\"", preset.name);
-                            el.child(
-                                div()
-                                    .id("preview-polish")
-                                    .rounded_full()
-                                    .bg(theme.background.opacity(0.8))
-                                    .px(px(12.0))
-                                    .py(px(4.0))
-                                    .text_size(px(12.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .hover(|style| style.bg(theme.primary))
-                                    .tooltip(move |_window, cx| {
-                                        cx.new(|_| {
-                                            crate::ui::tooltip::Tooltip::new(tooltip.clone())
-                                        })
-                                        .into()
-                                    })
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let path = path.clone();
-                                        move |_, window, cx| {
-                                            if polish_and_copy(&path, cx) {
-                                                close_self(window, cx);
-                                            }
-                                            cx.stop_propagation();
-                                        }
-                                    })
-                                    .child("Polish"),
-                            )
-                        })
-                        .child(
-                            div()
-                                .id("preview-edit")
-                                .rounded_full()
-                                .bg(theme.background.opacity(0.8))
-                                .px(px(12.0))
-                                .py(px(4.0))
-                                .text_size(px(12.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .hover(|style| style.bg(theme.primary))
-                                .tooltip(|_window, cx| {
-                                    cx.new(|_| crate::ui::tooltip::Tooltip::new("Edit")).into()
-                                })
-                                .on_mouse_down(MouseButton::Left, {
+                            el.child(Self::pill_button(
+                                ("preview-polish", id),
+                                "Polish",
+                                tooltip,
+                                theme,
+                                {
                                     let path = path.clone();
-                                    move |_, window, cx| {
-                                        let path = path.to_string_lossy().into_owned();
-                                        close_self(window, cx);
-                                        crate::open_editor_for(cx, &path);
-                                        cx.stop_propagation();
+                                    let preview_entity = preview_entity.clone();
+                                    move |window, cx| {
+                                        if polish_and_copy(&path, cx) {
+                                            let _ = preview_entity.update(cx, |view, cx| {
+                                                begin_remove_preview(
+                                                    view,
+                                                    id,
+                                                    DismissBehavior::PreserveControls,
+                                                    window,
+                                                    cx,
+                                                )
+                                            });
+                                        }
                                     }
-                                })
-                                .child("Edit"),
-                        ),
+                                },
+                            ))
+                        })
+                        .child(Self::pill_button(
+                            ("preview-edit", id),
+                            "Edit",
+                            "Edit",
+                            theme,
+                            {
+                                let path = path.clone();
+                                let preview_entity = preview_entity.clone();
+                                move |window, cx| {
+                                    let path = path.to_string_lossy().into_owned();
+                                    let _ = preview_entity.update(cx, |view, cx| {
+                                        begin_remove_preview(
+                                            view,
+                                            id,
+                                            DismissBehavior::PreserveControls,
+                                            window,
+                                            cx,
+                                        )
+                                    });
+                                    crate::open_editor_for(cx, &path);
+                                }
+                            },
+                        )),
                 )
                 .child(
                     div()
                         .absolute()
+                        .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET))
                         .left(px(PREVIEW_CONTROL_INSET))
                         .child(Self::circle_button(
-                            "preview-copy",
+                            ("preview-copy", id),
                             "copy",
                             false,
                             "Copy",
-                            &theme,
+                            theme,
                             theme.primary,
                             {
                                 let path = path.clone();
+                                let preview_entity = preview_entity.clone();
                                 move |window, cx| {
                                     if copy_image(&path, cx) {
-                                        close_self(window, cx);
+                                        let _ = preview_entity.update(cx, |view, cx| {
+                                            begin_remove_preview(
+                                                view,
+                                                id,
+                                                DismissBehavior::PreserveControls,
+                                                window,
+                                                cx,
+                                            )
+                                        });
                                     }
                                     cx.stop_propagation();
                                 }
@@ -761,14 +1237,15 @@ impl Render for CapturePreviewWindow {
                 .child(
                     div()
                         .absolute()
+                        .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET))
                         .right(px(PREVIEW_CONTROL_INSET))
                         .child(Self::circle_button(
-                            "preview-upload",
+                            ("preview-upload", id),
                             "cloud-upload",
-                            self.busy,
+                            busy,
                             "Upload to Cloud",
-                            &theme,
+                            theme,
                             theme.primary,
                             {
                                 let path = path.clone();
@@ -778,7 +1255,11 @@ impl Render for CapturePreviewWindow {
                                     let path = path.clone();
                                     let handle = window.window_handle();
                                     let dismiss_token = preview_entity
-                                        .update(cx, |preview, cx| {
+                                        .update(cx, |view, cx| {
+                                            let preview = view
+                                                .previews
+                                                .iter_mut()
+                                                .find(|preview| preview.id == id)?;
                                             if preview.busy {
                                                 return None;
                                             }
@@ -802,9 +1283,15 @@ impl Render for CapturePreviewWindow {
                                             .await;
                                         let succeeded = result.is_ok();
                                         let _ = cx.update(|cx| {
-                                            let _ = task_entity.update(cx, |preview, cx| {
+                                            let _ = task_entity.update(cx, |view, cx| {
                                                 if !succeeded {
-                                                    preview.busy = false;
+                                                    if let Some(preview) = view
+                                                        .previews
+                                                        .iter_mut()
+                                                        .find(|preview| preview.id == id)
+                                                    {
+                                                        preview.busy = false;
+                                                    }
                                                 }
                                                 cx.notify();
                                             });
@@ -840,13 +1327,19 @@ impl Render for CapturePreviewWindow {
                                                 else {
                                                     return;
                                                 };
-                                                let _ = preview.update(cx, |_, window, cx| {
-                                                    close_self(window, cx)
+                                                let _ = preview.update(cx, |view, window, cx| {
+                                                    begin_remove_preview(
+                                                        view,
+                                                        id,
+                                                        DismissBehavior::PreserveControls,
+                                                        window,
+                                                        cx,
+                                                    )
                                                 });
                                             });
                                         } else {
                                             let _ = cx.update(|cx| {
-                                                schedule_auto_dismiss(handle, cx, dismiss_token)
+                                                schedule_auto_dismiss(handle, id, cx, dismiss_token)
                                             });
                                         }
                                     })
@@ -861,17 +1354,18 @@ impl Render for CapturePreviewWindow {
                 root = root.child(
                     div()
                         .absolute()
+                        .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET + PREVIEW_CONTROL + 4.0))
                         .right(px(PREVIEW_CONTROL_INSET))
                         .child(Self::circle_button(
-                            "preview-pin-display",
+                            ("preview-pin-display", id),
                             "monitor",
                             false,
                             "Move previews to another display",
-                            &theme,
+                            theme,
                             theme.primary,
                             {
-                                let count = displays.len();
+                                let count = display_count;
                                 move |_, cx| {
                                     let config = crate::state::state(cx).config.clone();
                                     config.update(|settings| {
@@ -887,6 +1381,66 @@ impl Render for CapturePreviewWindow {
             }
         }
 
+        div()
+            .absolute()
+            .top(px(layout_y))
+            .left(px(PREVIEW_SHADOW_PADDING))
+            .w(px(PREVIEW_WIDTH))
+            .h(px(PREVIEW_HEIGHT))
+            .opacity(opacity)
+            .rounded(px(PREVIEW_RADIUS))
+            .shadow_sm()
+            .child(root)
+            .into_any_element()
+    }
+}
+
+impl Render for CapturePreviewWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let corner = PreviewCorner::parse(&crate::state::state(cx).config.get().preview.corner);
+        let theme = active_theme(cx);
+        let polish = starred_preset(cx);
+        let display_count = cx.displays().len();
+        let window_hovered = window.is_window_hovered();
+        let bottom_aligned = matches!(
+            corner,
+            PreviewCorner::BottomLeft | PreviewCorner::BottomRight
+        );
+        let enter_offset = if bottom_aligned {
+            -PREVIEW_ENTER_OFFSET
+        } else {
+            PREVIEW_ENTER_OFFSET
+        };
+        let now = Instant::now();
+        let mut needs_frame = false;
+        let mut root = div().relative().size_full();
+        let mut active_index = 0;
+        for index in 0..self.previews.len() {
+            let target_y = if self.previews[index].dismiss_animation.is_some() {
+                self.previews[index]
+                    .layout_y
+                    .unwrap_or_else(|| preview_layout_y(active_index, bottom_aligned))
+            } else {
+                let target = preview_layout_y(active_index, bottom_aligned);
+                active_index += 1;
+                target
+            };
+            root = root.child(self.render_preview(
+                index,
+                cx,
+                &theme,
+                polish.as_ref(),
+                display_count,
+                window_hovered,
+                target_y,
+                enter_offset,
+                now,
+                &mut needs_frame,
+            ));
+        }
+        if needs_frame {
+            crate::ui::primitives::request_animation_frame(window);
+        }
         root
     }
 }
@@ -896,23 +1450,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn restack_drives_electron_window_move() {
-        assert_eq!(WINDOW_MOVE_STEPS, 8);
-        assert_eq!(chrome::WINDOW_MOVE_DURATION_MS, 120);
-        assert_eq!(chrome::window_move_step_ms(), 15);
+    fn stack_height_preserves_card_size_and_shadow_gutters() {
         assert_eq!(
-            chrome::window_move_position(10.0, 20.0, 10.0, 20.0, 8, WINDOW_MOVE_STEPS),
-            (10.0, 20.0)
+            preview_stack_height(1),
+            PREVIEW_HEIGHT + PREVIEW_SHADOW_PADDING * 2.0
         );
         assert_eq!(
-            chrome::window_move_position(0.0, 0.0, 80.0, 40.0, 8, WINDOW_MOVE_STEPS),
-            (80.0, 40.0)
+            preview_stack_height(2),
+            PREVIEW_HEIGHT * 2.0 + PREVIEW_STACK_GAP + PREVIEW_SHADOW_PADDING * 2.0
         );
-        let (x, y) = chrome::window_move_position(0.0, 0.0, 80.0, 40.0, 4, WINDOW_MOVE_STEPS);
-        assert_eq!(preview_frame(x, y), (x, y, PREVIEW_WIDTH, PREVIEW_HEIGHT));
-        assert_eq!((x, y), (60.0, 30.0));
-        assert_eq!(window_origin_device_pixels(x, y, 1.0), (60, 30));
-        assert_eq!(window_origin_device_pixels(80.0, 40.0, 1.5), (120, 60));
+        assert_eq!(
+            preview_stack_height(3),
+            PREVIEW_HEIGHT * 3.0 + PREVIEW_STACK_GAP * 2.0 + PREVIEW_SHADOW_PADDING * 2.0
+        );
+    }
+
+    #[test]
+    fn fixed_stack_slots_anchor_to_the_selected_edge() {
+        let step = PREVIEW_HEIGHT + PREVIEW_STACK_GAP;
+        assert_eq!(preview_layout_y(0, false), PREVIEW_SHADOW_PADDING);
+        assert_eq!(
+            preview_layout_y(2, false),
+            PREVIEW_SHADOW_PADDING + step * 2.0
+        );
+        assert_eq!(
+            preview_layout_y(0, true),
+            PREVIEW_SHADOW_PADDING + step * 3.0
+        );
+        assert_eq!(preview_layout_y(2, true), PREVIEW_SHADOW_PADDING + step);
+    }
+
+    #[test]
+    fn layout_motion_is_time_based() {
+        let now = Instant::now();
+        let animation = LayoutAnimation {
+            from: 0.0,
+            to: 100.0,
+            started: now - Duration::from_millis(PREVIEW_MOVE_MS / 2),
+            duration_ms: PREVIEW_MOVE_MS,
+        };
+        let (position, animating) = layout_position(animation, now);
+        assert!((position - 75.0).abs() < 0.01);
+        assert!(animating);
+    }
+
+    #[test]
+    fn newer_layout_invalidates_an_older_region_completion() {
+        let mut view = CapturePreviewWindow {
+            previews: Vec::new(),
+            layout_generation: 0,
+        };
+        let first = start_layout_transition(&mut view, true, Instant::now());
+        let second = start_layout_transition(&mut view, true, Instant::now());
+        assert_ne!(first, second);
+        assert_eq!(view.layout_generation, second);
+    }
+
+    #[test]
+    fn interactive_dismissal_preserves_controls_after_window_hover_ends() {
+        let now = Instant::now();
+        let mut preview = CapturePreview {
+            id: 1,
+            path: PathBuf::new(),
+            image: None,
+            blurred: None,
+            hover_progress: 0.75,
+            last_frame: Some(now),
+            hovered: true,
+            busy: false,
+            dismiss_token: Arc::new(AtomicU64::new(0)),
+            entered_at: now,
+            layout_y: None,
+            layout_animation: None,
+            dismiss_animation: None,
+        };
+        preview.dismiss_animation = Some(start_dismiss_animation(
+            &preview,
+            DismissBehavior::PreserveControls,
+            now,
+        ));
+
+        assert_eq!(
+            CapturePreviewWindow::control_frame(&mut preview, false, now),
+            (true, 0.75, false)
+        );
     }
 
     /// The whole point of the transition is that it takes 200ms, so a full
@@ -938,13 +1559,148 @@ mod tests {
         assert_eq!(step_hover(0.3, 0.3, 0.016), 0.3, "already there, no drift");
     }
 
+    #[gpui::test]
+    fn the_preview_closes_itself_when_the_dismiss_timer_elapses(cx: &mut gpui::TestAppContext) {
+        use crate::config::store::ConfigStore;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = std::sync::Arc::new(
+            ConfigStore::load_at(dir.path().join("config.json")).expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(60, 40, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .expect("write capture");
+
+        for _ in 0..PREVIEW_MAX_STACK {
+            cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
+            cx.run_until_parked();
+        }
+        let handle = STACK
+            .lock()
+            .expect("the preview opened the shared stack window");
+        handle
+            .downcast::<CapturePreviewWindow>()
+            .expect("preview stack")
+            .update(cx, |view, _, _| {
+                view.previews.first_mut().expect("oldest preview").hovered = true;
+            })
+            .expect("hover oldest preview");
+        cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
+        cx.run_until_parked();
+        let (
+            total,
+            active,
+            oldest_id,
+            oldest_hovered,
+            survivor_id,
+            survivor_started,
+            layout_generation,
+        ) = handle
+            .downcast::<CapturePreviewWindow>()
+            .expect("preview stack")
+            .update(cx, |view, _, _| {
+                let oldest = view.previews.first().expect("oldest preview");
+                let survivor = view
+                    .previews
+                    .iter()
+                    .find(|preview| {
+                        preview.dismiss_animation.is_none() && preview.layout_animation.is_some()
+                    })
+                    .expect("moving survivor");
+                (
+                    view.previews.len(),
+                    view.active_preview_count(),
+                    oldest.id,
+                    oldest.hovered,
+                    survivor.id,
+                    survivor.layout_animation.expect("layout animation").started,
+                    view.layout_generation,
+                )
+            })
+            .expect("read preview stack");
+        assert_eq!(total, PREVIEW_MAX_STACK + 1);
+        assert_eq!(active, PREVIEW_MAX_STACK);
+        assert!(oldest_hovered);
+        let (started_after_removal, generation_after_removal) = handle
+            .downcast::<CapturePreviewWindow>()
+            .expect("preview stack")
+            .update(cx, |view, window, cx| {
+                remove_preview_now(view, oldest_id, window, cx);
+                let survivor = view
+                    .previews
+                    .iter()
+                    .find(|preview| preview.id == survivor_id)
+                    .expect("survivor remains");
+                (
+                    survivor.layout_animation.expect("layout animation").started,
+                    view.layout_generation,
+                )
+            })
+            .expect("remove oldest preview");
+        assert_eq!(started_after_removal, survivor_started);
+        assert_eq!(generation_after_removal, layout_generation);
+
+        cx.executor().advance_clock(Duration::from_secs(11));
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(Duration::from_millis(PREVIEW_EXIT_MS));
+        cx.run_until_parked();
+        assert!(
+            handle.update(cx, |_, _, _| ()).is_err(),
+            "the preview must dismiss after the configured delay"
+        );
+    }
+
     #[test]
-    fn auto_dismiss_is_cancelled_by_interaction() {
-        assert!(auto_dismiss_ready(4, 4, false, false, false));
-        assert!(!auto_dismiss_ready(5, 4, false, false, false));
-        assert!(!auto_dismiss_ready(4, 4, true, false, false));
-        assert!(!auto_dismiss_ready(4, 4, false, true, false));
-        assert!(!auto_dismiss_ready(4, 4, false, false, true));
+    fn auto_dismiss_is_blocked_by_interaction() {
+        assert_eq!(
+            [
+                dismiss_state(4, 4, true, true, false),
+                dismiss_state(4, 4, false, false, true),
+            ],
+            [DismissVerdict::Blocked, DismissVerdict::Blocked]
+        );
+    }
+
+    #[test]
+    fn stale_auto_dismiss_generation_is_gone() {
+        assert_eq!(
+            dismiss_state(5, 4, false, false, false),
+            DismissVerdict::Gone
+        );
+    }
+
+    #[test]
+    fn leaving_the_stack_unblocks_auto_dismiss() {
+        assert_eq!(
+            dismiss_state(4, 4, true, false, false),
+            DismissVerdict::Ready
+        );
+    }
+
+    #[test]
+    fn window_exit_and_reentry_gate_the_stored_hover() {
+        let stored_hover = true;
+        let visible = [false, true].map(|window_hovered| {
+            CapturePreviewWindow::show_controls(stored_hover && window_hovered, false)
+        });
+        assert_eq!(visible, [false, true]);
+    }
+
+    #[test]
+    fn stale_preview_viewport_cannot_reveal() {
+        let bounds = Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(
+                px(PREVIEW_WIDTH + PREVIEW_SHADOW_PADDING * 2.0),
+                px(preview_stack_height(PREVIEW_MAX_STACK)),
+            ),
+        };
+        assert!(!preview_viewport_ready(size(px(400.0), px(300.0)), bounds));
+        assert!(preview_viewport_ready(bounds.size, bounds));
     }
 
     /// `capture-preview-window.tsx` styles the two destructive controls with

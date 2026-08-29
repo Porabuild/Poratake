@@ -10,7 +10,7 @@ use gpui::{
 };
 
 pub use model::{MenuBuilder, MenuEntry, MenuItem};
-pub use view::{DismissHandler, MenuView};
+pub use view::{DismissHandler, MenuEntrance, MenuView};
 
 struct MenuPopup {
     view: AnyView,

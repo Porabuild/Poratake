@@ -165,6 +165,8 @@ pub struct Button {
     radius: Option<gpui::Pixels>,
     tooltip: Option<gpui::SharedString>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>>,
+    on_press:
+        Option<Box<dyn Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static>>,
 }
 
 impl Button {
@@ -194,6 +196,7 @@ impl Button {
             radius: None,
             tooltip: None,
             on_click: None,
+            on_press: None,
         }
     }
 
@@ -335,6 +338,14 @@ impl Button {
         self.on_click = Some(Box::new(handler));
         self
     }
+
+    pub fn on_press(
+        mut self,
+        handler: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.on_press = Some(Box::new(handler));
+        self
+    }
 }
 
 impl RenderOnce for Button {
@@ -447,6 +458,12 @@ impl RenderOnce for Button {
         }
 
         if !self.disabled {
+            if let Some(handler) = self.on_press {
+                element =
+                    element.on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
+                        handler(event, window, cx);
+                    });
+            }
             if let Some(handler) = self.on_click {
                 element = element.on_click(move |event, window, cx| handler(event, window, cx));
             }
@@ -456,9 +473,12 @@ impl RenderOnce for Button {
             return element.into_any_element();
         }
 
+        // The disabled path above never reaches this, so its hover state is
+        // dropped with the frame (gpui discards an element's state when it
+        // skips one) and re-enabled buttons always mount resting.
         // `.button { transition: background-color 100ms var(--ease-out) }`.
-        let (hover, hovered, _) = crate::ui::primitives::hover_fade(&element_key, window, cx);
-        let (from, to) = hover.read(cx).range(bg, bg_hover);
+        let (hover, hovered, (from, to)) =
+            crate::ui::primitives::hover_fade(&element_key, bg, bg_hover, window, cx);
 
         element = element.on_hover({
             let hover = hover.clone();

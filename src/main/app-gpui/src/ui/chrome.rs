@@ -147,19 +147,21 @@ pub const DIALOG_FADE_MS: u64 = 200;
 #[allow(dead_code)]
 pub const DIALOG_ZOOM: f32 = 0.95;
 
-pub const WINDOW_MOVE_STEPS: u32 = 8;
-pub const WINDOW_MOVE_DURATION_MS: u64 = 120;
-
 pub const PREVIEW_WIDTH: f32 = 200.0;
 pub const PREVIEW_HEIGHT: f32 = 140.0;
-pub const PREVIEW_RADIUS: f32 = RADIUS_LG;
+pub const PREVIEW_RADIUS: f32 = 8.0;
 pub const PREVIEW_MARGIN: f32 = 24.0;
 pub const PREVIEW_STACK_GAP: f32 = 12.0;
+pub const PREVIEW_SHADOW_PADDING: f32 = 4.0;
 pub const PREVIEW_MAX_STACK: usize = 4;
 pub const PREVIEW_HOVER_SCALE: f32 = 1.05;
 pub const PREVIEW_HOVER_MS: u64 = 200;
 pub const PREVIEW_CONTROL: f32 = 24.0;
 pub const PREVIEW_CONTROL_INSET: f32 = 8.0;
+/// The centre actions' `rounded-full bg-background/80 px-3 py-1 text-xs`: the
+/// 16px `text-xs` line box plus 4px of padding on each side. `rounded-full` on
+/// that box is a radius of half its height.
+pub const PREVIEW_PILL_HEIGHT: f32 = 24.0;
 
 pub const OVERLAY_SURFACE_PADDING: f32 = 4.0;
 pub const OVERLAY_SURFACE_GAP: f32 = 2.0;
@@ -464,32 +466,6 @@ pub fn pin_window_origin(window_width: f32, work_width: f32, existing: usize) ->
     (x, PIN_ORIGIN_Y + offset)
 }
 
-pub fn ease_out(progress: f32) -> f32 {
-    1.0 - (1.0 - progress).powi(2)
-}
-
-pub fn window_move_step_ms() -> u64 {
-    WINDOW_MOVE_DURATION_MS / u64::from(WINDOW_MOVE_STEPS.max(1))
-}
-
-pub fn window_move_position(
-    current_x: f32,
-    current_y: f32,
-    target_x: f32,
-    target_y: f32,
-    step: u32,
-    steps: u32,
-) -> (f32, f32) {
-    if steps == 0 {
-        return (target_x, target_y);
-    }
-    let progress = ease_out(step as f32 / steps as f32);
-    (
-        (current_x + (target_x - current_x) * progress).round(),
-        (current_y + (target_y - current_y) * progress).round(),
-    )
-}
-
 pub fn history_popover_origin(
     tray: Option<(f32, f32, f32, f32)>,
     screen_width: f32,
@@ -639,12 +615,13 @@ mod tests {
     }
 
     #[test]
-    fn capture_preview_matches_electron() {
+    fn capture_preview_geometry_matches_design() {
         assert_eq!(PREVIEW_WIDTH, 200.0);
         assert_eq!(PREVIEW_HEIGHT, 140.0);
-        assert_eq!(PREVIEW_RADIUS, RADIUS_LG);
+        assert_eq!(PREVIEW_RADIUS, 8.0);
         assert_eq!(PREVIEW_MARGIN, 24.0);
         assert_eq!(PREVIEW_STACK_GAP, 12.0);
+        assert_eq!(PREVIEW_SHADOW_PADDING, 4.0);
         assert_eq!(PREVIEW_MAX_STACK, 4);
         assert_eq!(PREVIEW_HOVER_SCALE, 1.05);
         assert_eq!(PREVIEW_HOVER_MS, 200);
@@ -890,22 +867,8 @@ mod tests {
     fn animation_constants_match_electron() {
         assert_eq!(PREVIEW_HOVER_SCALE, 1.05);
         assert_eq!(PREVIEW_HOVER_MS, 200);
-        assert_eq!(WINDOW_MOVE_STEPS, 8);
-        assert_eq!(WINDOW_MOVE_DURATION_MS, 120);
-        assert_eq!(window_move_step_ms(), 15);
         assert_eq!(SWITCH_TRAVEL_MS, 200);
         assert_eq!(DIALOG_FADE_MS, 200);
         assert_eq!(DIALOG_ZOOM, 0.95);
-        assert_eq!(ease_out(0.0), 0.0);
-        assert_eq!(ease_out(1.0), 1.0);
-        assert!((ease_out(0.5) - 0.75).abs() < f32::EPSILON);
-        assert_eq!(
-            window_move_position(0.0, 0.0, 100.0, 100.0, 8, 8),
-            (100.0, 100.0)
-        );
-        assert_eq!(
-            window_move_position(0.0, 0.0, 100.0, 40.0, 4, 8),
-            (75.0, 30.0)
-        );
     }
 }

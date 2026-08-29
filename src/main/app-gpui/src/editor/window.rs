@@ -1280,6 +1280,7 @@ impl Render for EditorWindow {
                         &self.wallpaper_preset_id,
                         &self.menu,
                         &handlers,
+                        window,
                         cx,
                     ))
                 })

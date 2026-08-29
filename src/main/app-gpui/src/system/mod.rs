@@ -11,4 +11,5 @@ pub mod permissions;
 pub mod single_instance;
 pub mod startup;
 pub mod tray;
+pub mod window_composition;
 pub mod work_area;

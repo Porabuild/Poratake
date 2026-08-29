@@ -443,6 +443,7 @@ impl Render for OnboardingWindow {
             .child(crate::ui::window_controls::drag_strip(
                 theme.background,
                 window,
+                cx,
                 &theme,
             ))
             .child(

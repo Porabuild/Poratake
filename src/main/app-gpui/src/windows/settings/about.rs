@@ -3,7 +3,7 @@
 //! with a working link, the no-warranty statement, a link to this exact
 //! version's source, and the third-party notices link.
 
-use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled};
+use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window};
 
 use crate::product;
 use crate::system::desktop;
@@ -26,9 +26,14 @@ fn link_row(
     label: &'static str,
     url: String,
     theme: &ThemeVars,
+    window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
     let _ = cx;
+    // Gated hover flag instead of a `.hover()` style, which gpui paints
+    // against the window's last mouse position and so survives the pointer
+    // leaving the window.
+    let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
     div()
         .id(id)
         .flex()
@@ -37,8 +42,17 @@ fn link_row(
         .gap(px(12.0))
         .py(px(4.0))
         .text_size(px(13.0))
-        .text_color(theme.muted_foreground)
-        .hover(|style: gpui::StyleRefinement| style.text_color(theme.foreground))
+        .text_color(if hovered {
+            theme.foreground
+        } else {
+            theme.muted_foreground
+        })
+        .on_hover({
+            let hover = hover.clone();
+            move |over: &bool, _window, cx| {
+                crate::ui::primitives::track_hover(&hover, *over, cx);
+            }
+        })
         .on_click(move |_event, _window, _cx| desktop::open_url(&url))
         .child(icon_element(icon, px(14.0)))
         .child(label)
@@ -209,6 +223,7 @@ pub fn render(
     // Passed in rather than read back out of the context: `Entity::read` panics
     // while the entity is mid-render.
     update: crate::update::Status,
+    window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
     let version = product::VERSION;
@@ -309,6 +324,7 @@ pub fn render(
                     "Porabuild website",
                     product::PORABUILD_URL.to_string(),
                     theme,
+                    window,
                     cx,
                 ))
                 .child(link_row(
@@ -317,6 +333,7 @@ pub fn render(
                     "Poratake website",
                     product::PRODUCT_HOMEPAGE.to_string(),
                     theme,
+                    window,
                     cx,
                 ))
                 .child(link_row(
@@ -325,6 +342,7 @@ pub fn render(
                     "This version's source",
                     source_url.clone(),
                     theme,
+                    window,
                     cx,
                 ))
                 .child(link_row(
@@ -333,6 +351,7 @@ pub fn render(
                     "Original Capty project",
                     product::UPSTREAM_URL.to_string(),
                     theme,
+                    window,
                     cx,
                 ))
                 .child(

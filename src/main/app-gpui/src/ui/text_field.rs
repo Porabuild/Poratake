@@ -3,6 +3,7 @@
 //! so the layout engine positions the caret exactly where the glyphs end.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{
     div, prelude::*, px, AnimationExt, App, Context, FocusHandle, KeyDownEvent, Render,
@@ -16,6 +17,16 @@ pub type ChangeHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
 /// The `size-4` leading glyph the search fields carry.
 const ICON: f32 = 16.0;
+
+static HOVER_KEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn next_hover_key() -> SharedString {
+    format!(
+        "text-field-{}",
+        HOVER_KEY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+    .into()
+}
 
 pub struct TextField {
     value: String,
@@ -38,6 +49,10 @@ pub struct TextField {
     on_submit: Option<ChangeHandler>,
     on_cancel: Option<ChangeHandler>,
     focus_handle: FocusHandle,
+    /// Identifies this field's hover fade. Keyed per instance because the
+    /// fade's state lives in the window: a shared key would let one field's
+    /// hover tint every other field in the window.
+    hover_key: SharedString,
 }
 
 impl TextField {
@@ -59,6 +74,7 @@ impl TextField {
             on_submit: None,
             on_cancel: None,
             focus_handle: cx.focus_handle(),
+            hover_key: next_hover_key(),
         }
     }
 
@@ -422,23 +438,29 @@ impl Render for TextField {
             );
         }
 
+        // The bare and focused paths below never reach the fade, so a field
+        // that gains focus while hovered drops the hover state with the frame
+        // (gpui discards an element's state when it skips one) and blurs back
+        // to resting. `.input:hover:not(:focus) { bg-field-hover }` over
+        // `background-color 150ms var(--ease-smooth)`.
         if self.bare || focused {
             return field.child(content).into_any_element();
         }
 
-        // `.input:hover:not(:focus) { bg-field-hover }` over
-        // `background-color 150ms var(--ease-smooth)`.
-        let (hover, hovered, _) = crate::ui::primitives::hover_fade("text-field", window, cx);
-        let (from, to) = hover
-            .read(cx)
-            .range(theme.field_background, theme.field_hover);
+        let (hover, hovered, (from, to)) = crate::ui::primitives::hover_fade(
+            &self.hover_key,
+            theme.field_background,
+            theme.field_hover,
+            window,
+            cx,
+        );
         field
             .child(content)
             .on_hover(cx.listener(move |_, over: &bool, _window, cx| {
                 crate::ui::primitives::track_hover(&hover, *over, cx);
             }))
             .with_animation(
-                gpui::ElementId::Name(format!("text-field-hover-{hovered}").into()),
+                gpui::ElementId::Name(format!("{}-hover-{hovered}", self.hover_key).into()),
                 gpui::Animation::new(std::time::Duration::from_millis(chrome::FIELD_HOVER_MS))
                     .with_easing(crate::ui::primitives::ease_smooth()),
                 move |field, delta| field.bg(crate::theme::color::lerp_srgb(from, to, delta)),

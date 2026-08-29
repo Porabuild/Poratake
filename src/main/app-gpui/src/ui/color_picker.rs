@@ -191,7 +191,7 @@ impl ColorPickerPopover {
 }
 
 impl Render for ColorPickerPopover {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let current = self.hsv;
         let hue_color = Hsv {
@@ -212,6 +212,12 @@ impl Render for ColorPickerPopover {
             let color = Srgba::parse(entry).to_hsla();
             let value = entry.clone();
             let active = entry.eq_ignore_ascii_case(&selected_hex);
+            // Gated hover flag instead of a `.hover()` style, which gpui
+            // paints against the window's last mouse position and so survives
+            // the pointer leaving the window.
+            let swatch_key = format!("color-swatch-fill-{index}");
+            let (swatch_hover, swatch_hovered) =
+                crate::ui::primitives::hover_flag(&swatch_key, window, cx);
             swatches = swatches.child(
                 // A selected item borders itself in its own colour and shrinks
                 // the swatch inside it, which reads as a ring with a gap.
@@ -227,10 +233,17 @@ impl Render for ColorPickerPopover {
                     .when(active, |el| el.p(px(SWATCH_SELECTED_INSET)))
                     .child(
                         div()
+                            .id(SharedString::from(swatch_key))
                             .size_full()
                             .rounded(px(chrome::RADIUS_LG))
                             .bg(color)
-                            .hover(|style: gpui::StyleRefinement| style.opacity(0.85)),
+                            .when(swatch_hovered, |el| el.opacity(0.85))
+                            .on_hover({
+                                let swatch_hover = swatch_hover.clone();
+                                move |over: &bool, _window, cx| {
+                                    crate::ui::primitives::track_hover(&swatch_hover, *over, cx);
+                                }
+                            }),
                     )
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.hsv = hsv_from_hex(&value);
@@ -428,10 +441,15 @@ pub fn trigger(
     color: &str,
     opacity: f32,
     open: bool,
+    window: &mut Window,
     cx: &mut App,
 ) -> gpui::Stateful<gpui::Div> {
     let theme = active_theme(cx);
     let swatch = Srgba::parse(color).to_hsla().opacity(opacity);
+    // Gated hover flag instead of a `.hover()` style, which gpui paints
+    // against the window's last mouse position and so survives the pointer
+    // leaving the window.
+    let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
     div()
         .id(id)
         .relative()
@@ -443,12 +461,17 @@ pub fn trigger(
         .rounded(px(chrome::TOOL_OPTION_RADIUS))
         .px(px(chrome::TOOL_OPTION_PAD_X))
         .flex_shrink_0()
-        .bg(if open {
+        .bg(if open || hovered {
             theme.default_hover
         } else {
             theme.default
         })
-        .hover(move |style: gpui::StyleRefinement| style.bg(theme.default_hover))
+        .on_hover({
+            let hover = hover.clone();
+            move |over: &bool, _window, cx| {
+                crate::ui::primitives::track_hover(&hover, *over, cx);
+            }
+        })
         .child(
             div()
                 .size(px(chrome::COLOR_SWATCH_XS))

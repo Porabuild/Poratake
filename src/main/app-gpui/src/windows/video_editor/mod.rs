@@ -1950,6 +1950,7 @@ impl Render for VideoEditorWindow {
                     .child(sidebar::resize_handle(
                         self.sidebar_resize.is_some(),
                         &theme,
+                        window,
                         cx,
                     ))
                     .child(
@@ -1972,6 +1973,7 @@ impl Render for VideoEditorWindow {
                                 self.export_progress,
                                 &self.menu,
                                 &theme,
+                                window,
                                 cx,
                             )),
                     ),

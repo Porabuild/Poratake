@@ -119,15 +119,14 @@ impl RenderOnce for Tabs {
                 // `.tabs__tab { transition: opacity 150ms var(--ease-smooth) }`
                 // fading to `opacity-70` while hovered.
                 let key = format!("{base_id}-tab-{}", item.id);
-                let (hover, hovered, _) = crate::ui::primitives::hover_fade(&key, window, cx);
-                let (from, to) = {
-                    let state = hover.read(cx);
-                    let (a, b) = state.range(
-                        gpui::hsla(0.0, 0.0, 0.0, 1.0),
-                        gpui::hsla(0.0, 0.0, 0.0, chrome::TAB_HOVER_OPACITY),
-                    );
-                    (a.a, b.a)
-                };
+                let (hover, hovered, (from, to)) = crate::ui::primitives::hover_fade(
+                    &key,
+                    gpui::hsla(0.0, 0.0, 0.0, 1.0),
+                    gpui::hsla(0.0, 0.0, 0.0, chrome::TAB_HOVER_OPACITY),
+                    window,
+                    cx,
+                );
+                let (from, to) = (from.a, to.a);
                 let travel = to - from;
                 tab = tab.text_color(theme.muted_foreground).on_hover({
                     let hover = hover.clone();

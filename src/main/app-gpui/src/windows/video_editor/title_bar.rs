@@ -24,7 +24,7 @@ pub struct TitleBarState {
 pub fn render(
     state: &TitleBarState,
     theme: &ThemeVars,
-    window: &Window,
+    window: &mut Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let mut actions = div()
@@ -174,7 +174,7 @@ pub fn render(
         )
         .child(actions);
     if !chrome::is_macos() {
-        bar = bar.child(crate::ui::window_controls::render(window, theme));
+        bar = bar.child(crate::ui::window_controls::render(window, cx, theme));
     }
     bar.into_any_element()
 }

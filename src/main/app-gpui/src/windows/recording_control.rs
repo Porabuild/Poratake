@@ -68,7 +68,7 @@ impl RecordingControl {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: None,
                     focus: true,
-                    show: true,
+                    show: !cfg!(windows),
                     kind: WindowKind::PopUp,
                     is_movable: false,
                     is_resizable: false,
@@ -78,6 +78,15 @@ impl RecordingControl {
                 },
                 |window, cx| {
                     configure_toolbar_window(window);
+                    #[cfg(windows)]
+                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                        crate::system::window_composition::stage_window(
+                            hwnd,
+                            bounds,
+                            window.scale_factor(),
+                            false,
+                        );
+                    }
                     let view = cx.new(|cx| Self {
                         mode: Mode::PreRecording,
                         target,
@@ -96,6 +105,18 @@ impl RecordingControl {
                         focus_handle: cx.focus_handle(),
                     });
                     window.focus(&view.read(cx).focus_handle);
+                    #[cfg(windows)]
+                    window.on_next_frame(move |window, _cx| {
+                        window.on_next_frame(move |window, _cx| {
+                            window.on_next_frame(move |window, _cx| {
+                                if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                                    crate::system::window_composition::reveal_window(
+                                        hwnd, false, 0,
+                                    );
+                                }
+                            });
+                        });
+                    });
                     view
                 },
             )
@@ -227,7 +248,7 @@ impl RecordingControl {
         true
     }
 
-    fn input_toggles(&self, cx: &mut Context<Self>) -> [AnyElement; 3] {
+    fn input_toggles(&self, window: &mut Window, cx: &mut Context<Self>) -> [AnyElement; 3] {
         [
             self.device_dropdown(
                 "camera",
@@ -235,6 +256,7 @@ impl RecordingControl {
                 "Select camera",
                 self.camera,
                 crate::system::devices::DeviceKind::Camera,
+                window,
                 cx,
             ),
             self.device_dropdown(
@@ -243,6 +265,7 @@ impl RecordingControl {
                 "Select microphone",
                 self.microphone,
                 crate::system::devices::DeviceKind::Microphone,
+                window,
                 cx,
             ),
             Button::new("recording-system-audio")
@@ -279,6 +302,7 @@ impl RecordingControl {
         _tooltip: &'static str,
         enabled: bool,
         kind: crate::system::devices::DeviceKind,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let handle = self.menu.clone();
@@ -335,6 +359,11 @@ impl RecordingControl {
         }
         let entries = builder.build();
         let menu_id = owner.clone();
+        // Gated hover flag instead of a `.hover()` style, which gpui paints
+        // against the window's last mouse position and so survives the
+        // pointer leaving the window.
+        let (trigger_hover, trigger_hovered) =
+            crate::ui::primitives::hover_flag(&owner, window, cx);
         div()
             .id(SharedString::from(owner.clone()))
             .relative()
@@ -346,7 +375,13 @@ impl RecordingControl {
             .h(px(chrome::OVERLAY_BUTTON_SIZE))
             .w(px(48.0))
             .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-            .hover(|style: gpui::StyleRefinement| style.bg(crate::ui::colors::white(0.15)))
+            .when(trigger_hovered, |el| el.bg(crate::ui::colors::white(0.15)))
+            .on_hover({
+                let trigger_hover = trigger_hover.clone();
+                move |over: &bool, _window, cx| {
+                    crate::ui::primitives::track_hover(&trigger_hover, *over, cx);
+                }
+            })
             .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
             .child(icon_element("chevron-down", px(12.0)))
             .child(self.menu.render_dropdown(&menu_id))
@@ -480,37 +515,10 @@ fn report_toggle_failure(cx: &mut Context<RecordingControl>, error: &anyhow::Err
 fn configure_toolbar_window(window: &Window) {
     #[cfg(windows)]
     {
-        use windows::Win32::Graphics::Dwm::{
-            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
-            DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
-        };
-
         let Some(hwnd) = crate::windows::window_hwnd(window) else {
             return;
         };
-        let transitions_disabled = windows::core::BOOL(1);
-        let border_color = DWMWA_COLOR_NONE;
-        let corner_preference = DWMWCP_DONOTROUND;
-        unsafe {
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_TRANSITIONS_FORCEDISABLED,
-                &transitions_disabled as *const _ as *const core::ffi::c_void,
-                std::mem::size_of_val(&transitions_disabled) as u32,
-            );
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_BORDER_COLOR,
-                &border_color as *const _ as *const core::ffi::c_void,
-                std::mem::size_of_val(&border_color) as u32,
-            );
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
-                &corner_preference as *const _ as *const core::ffi::c_void,
-                std::mem::size_of_val(&corner_preference) as u32,
-            );
-        }
+        crate::system::window_composition::configure_transparent_surface(hwnd);
     }
     #[cfg(not(windows))]
     let _ = window;
@@ -570,10 +578,10 @@ fn overlay_icon(
 }
 
 impl Render for RecordingControl {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let paused = recorder::state() == recorder::RecorderState::Paused;
-        let toggles = self.input_toggles(cx);
+        let toggles = self.input_toggles(window, cx);
 
         let mut bar = div()
             .id("recording-control-bar")

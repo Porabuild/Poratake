@@ -245,8 +245,13 @@ impl RenderOnce for Select {
         });
 
         // `.select__trigger { transition: background-color 150ms }`.
-        let (hover, hovered, _) = crate::ui::primitives::hover_fade(&owner_key, window, cx);
-        let (from, to) = hover.read(cx).range(theme.default, theme.default_hover);
+        let (hover, hovered, (from, to)) = crate::ui::primitives::hover_fade(
+            &owner_key,
+            theme.default,
+            theme.default_hover,
+            window,
+            cx,
+        );
         trigger
             .on_hover({
                 let hover = hover.clone();
