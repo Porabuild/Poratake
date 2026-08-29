@@ -1,5 +1,4 @@
 pub mod accelerator;
-pub mod accent;
 pub mod capabilities;
 pub mod desktop;
 pub mod device_test;

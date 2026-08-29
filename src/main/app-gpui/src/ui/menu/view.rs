@@ -63,6 +63,7 @@ pub struct MenuView {
     row_bounds: Rc<RefCell<HashMap<usize, gpui::Bounds<Pixels>>>>,
     on_dismiss: DismissHandler,
     min_width: Pixels,
+    max_width: Option<Pixels>,
     max_height: Pixels,
     compact: bool,
     neutral_highlight: bool,
@@ -87,6 +88,7 @@ impl MenuView {
             row_bounds: Rc::new(RefCell::new(HashMap::new())),
             on_dismiss,
             min_width: px(MENU_MIN_WIDTH),
+            max_width: None,
             max_height: px(MENU_MAX_HEIGHT),
             compact: false,
             neutral_highlight: false,
@@ -98,6 +100,11 @@ impl MenuView {
 
     pub fn min_width(mut self, width: Pixels) -> Self {
         self.min_width = width;
+        self
+    }
+
+    pub fn max_width(mut self, width: Pixels) -> Self {
+        self.max_width = Some(width);
         self
     }
 
@@ -632,6 +639,7 @@ impl Render for MenuView {
             .flex()
             .flex_col()
             .min_w(self.min_width)
+            .when_some(self.max_width, |el, width| el.max_w(width))
             .rounded(px(self.scaled(crate::ui::chrome::RADIUS_3XL)))
             .bg(theme.popover)
             .text_color(theme.popover_foreground)

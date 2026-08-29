@@ -170,11 +170,7 @@ impl ThemeVars {
             card_foreground: Srgba::parse(variant.fg).to_hsla(),
             popover: Srgba::parse(variant.surface).to_hsla(),
             popover_foreground: Srgba::parse(variant.fg).to_hsla(),
-            // `useAccentColor` sets `--primary` to the operating system's
-            // accent on every window, so `--primary` is *not* the theme accent
-            // -- it is whatever colour the user picked in Windows. Only the
-            // foreground stays with the theme, as Electron never overrides it.
-            primary: Srgba::parse(&crate::system::accent::system_accent()).to_hsla(),
+            primary: Srgba::parse(variant.accent).to_hsla(),
             primary_foreground: Srgba::parse(variant.accent_fg).to_hsla(),
             secondary: default_surface,
             secondary_foreground: Srgba::parse(variant.fg).to_hsla(),
@@ -425,13 +421,10 @@ mod tests {
             Srgba::parse(variant.fg).to_hsla(),
             "{preset_id} popover-foreground"
         );
-        // `--primary` deliberately does not follow the preset: `useAccentColor`
-        // overwrites it with the operating system's accent, so it is the same
-        // colour under every theme.
         assert_eq!(
             vars.primary,
-            Srgba::parse(&crate::system::accent::system_accent()).to_hsla(),
-            "{preset_id} primary follows the system accent, not the preset"
+            Srgba::parse(variant.accent).to_hsla(),
+            "{preset_id} primary"
         );
         assert_eq!(
             vars.primary_foreground,

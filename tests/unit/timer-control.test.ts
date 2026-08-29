@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockDaemonCall = vi.fn();
 const mockDipToScreenPoint = vi.fn((point: { x: number; y: number }) => point);
+const mockGetAccentColor = vi.fn(() => '#8892ef');
+const mockGetAccentForegroundColor = vi.fn(() => '#0a0a12');
 
 vi.mock('electron', () => ({
   screen: {
@@ -14,6 +16,11 @@ vi.mock('@/main/daemon', () => ({
   daemon: {
     call: (...a: unknown[]) => mockDaemonCall(...a),
   },
+}));
+
+vi.mock('@/main/settings/accent', () => ({
+  getAccentColor: () => mockGetAccentColor(),
+  getAccentForegroundColor: () => mockGetAccentForegroundColor(),
 }));
 
 describe('timer-control', () => {
@@ -50,6 +57,8 @@ describe('timer-control', () => {
       x: 30,
       y: 328,
       duration: 5,
+      color: '#8892ef',
+      foregroundColor: '#0a0a12',
     });
   });
 

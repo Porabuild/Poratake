@@ -49,7 +49,7 @@ const HistoryListItem = forwardRef<HTMLDivElement, HistoryItemProps>(
         ref={setRefs}
         className={`group flex cursor-default items-center gap-3 rounded-lg bg-secondary p-2 transition-all hover:bg-muted ${
           isSelected
-            ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-transparent'
+            ? 'ring-2 ring-primary ring-offset-1 ring-offset-transparent'
             : ''
         }`}
         onMouseEnter={() => setIsHovered(true)}

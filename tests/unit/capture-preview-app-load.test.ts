@@ -4,10 +4,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CapturePreviewParams } from '@/types/capture-preview';
 
-vi.mock('@/renderer/hooks/useAccentColor', () => ({
-  useAccentColor: () => '#007AFF',
-}));
-
 vi.mock('@/renderer/hooks/use-app-theme', () => ({
   useAppTheme: () => {},
 }));

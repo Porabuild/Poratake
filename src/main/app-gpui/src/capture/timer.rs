@@ -1,10 +1,12 @@
 //! Timer capture — port of `capture/timer-capture.ts`: pick an area, run the
 //! daemon's countdown panel above it, then capture when it finishes.
 
+use gpui::Hsla;
 use serde_json::json;
 
 use crate::capture::overlay::ScreenRect;
 use crate::daemon::DaemonHandle;
+use crate::theme::color::Srgba;
 
 pub const TIMER_DURATION: u32 = 5;
 const WINDOW_WIDTH: i32 = 140;
@@ -18,7 +20,23 @@ pub fn timer_position(area: ScreenRect) -> (i32, i32) {
     (x, y.max(TIMER_TOP_MARGIN))
 }
 
-pub fn show(daemon: &DaemonHandle, area: ScreenRect, duration: u32) -> bool {
+fn color_hex(color: Hsla) -> String {
+    let color = Srgba::from_hsla(color);
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (color.r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (color.g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (color.b * 255.0).round().clamp(0.0, 255.0) as u8
+    )
+}
+
+pub fn show(
+    daemon: &DaemonHandle,
+    area: ScreenRect,
+    duration: u32,
+    accent: Hsla,
+    accent_foreground: Hsla,
+) -> bool {
     let (x, y) = timer_position(area);
     if !daemon.is_running() && daemon.start().is_err() {
         return false;
@@ -26,7 +44,13 @@ pub fn show(daemon: &DaemonHandle, area: ScreenRect, duration: u32) -> bool {
     match daemon.call(
         "timer-control",
         "show",
-        Some(json!({ "x": x, "y": y, "duration": duration })),
+        Some(json!({
+            "x": x,
+            "y": y,
+            "duration": duration,
+            "color": color_hex(accent),
+            "foregroundColor": color_hex(accent_foreground),
+        })),
     ) {
         Ok(_) => true,
         Err(error) => {
@@ -66,5 +90,11 @@ mod tests {
     #[test]
     fn clamps_the_countdown_to_the_top_margin() {
         assert_eq!(timer_position(rect(0, 10, 100, 100)).1, TIMER_TOP_MARGIN);
+    }
+
+    #[test]
+    fn serializes_theme_colors_for_the_daemon() {
+        assert_eq!(color_hex(Srgba::parse("#8892ef").to_hsla()), "#8892ef");
+        assert_eq!(color_hex(Srgba::parse("#0a0a12").to_hsla()), "#0a0a12");
     }
 }

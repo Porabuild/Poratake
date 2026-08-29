@@ -143,6 +143,7 @@ describe('application theme contrast', () => {
     expect(
       contrast(colors.get('--accent')!, colors.get('--accent-foreground')!)
     ).toBeGreaterThanOrEqual(4.5);
+    expect(colors.get('--primary')).toBe(colors.get('--accent'));
     expect(
       contrast(
         colors.get('--accent-hover')!,

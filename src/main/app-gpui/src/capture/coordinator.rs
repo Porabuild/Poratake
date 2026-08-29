@@ -223,7 +223,14 @@ impl Coordinator {
     /// normal screenshot when the countdown finishes.
     fn run_countdown(&mut self, rect: ScreenRect, cx: &mut Context<Self>) {
         let daemon = self.service.daemon.clone();
-        if !crate::capture::timer::show(&daemon, rect, crate::capture::timer::TIMER_DURATION) {
+        let theme = crate::theme::vars::active_theme(cx);
+        if !crate::capture::timer::show(
+            &daemon,
+            rect,
+            crate::capture::timer::TIMER_DURATION,
+            theme.accent,
+            theme.accent_foreground,
+        ) {
             self.capture_area_for(rect, CaptureIntent::Screenshot, cx);
             return;
         }

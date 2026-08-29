@@ -44,6 +44,8 @@ pub struct MenuPlacement {
     anchor: Corner,
     offset: Point<Pixels>,
     min_width: Option<Pixels>,
+    max_width: Option<Pixels>,
+    max_height: Option<Pixels>,
     compact: bool,
     neutral_highlight: bool,
 }
@@ -57,6 +59,8 @@ impl MenuPlacement {
             anchor: Corner::TopLeft,
             offset: point(px(0.0), px(0.0)),
             min_width: None,
+            max_width: None,
+            max_height: None,
             compact: false,
             neutral_highlight: false,
         }
@@ -70,6 +74,8 @@ impl MenuPlacement {
             anchor: Corner::TopLeft,
             offset: point(px(0.0), px(8.0)),
             min_width: None,
+            max_width: None,
+            max_height: None,
             compact: false,
             neutral_highlight: true,
         }
@@ -84,6 +90,8 @@ impl MenuPlacement {
             anchor: Corner::BottomLeft,
             offset: point(px(0.0), px(-8.0)),
             min_width: None,
+            max_width: None,
+            max_height: None,
             compact: false,
             neutral_highlight: true,
         }
@@ -101,6 +109,21 @@ impl MenuPlacement {
 
     pub fn min_width(mut self, width: Pixels) -> Self {
         self.min_width = Some(width);
+        self
+    }
+
+    pub fn max_width(mut self, width: Pixels) -> Self {
+        self.max_width = Some(width);
+        self
+    }
+
+    pub fn max_height(mut self, height: Pixels) -> Self {
+        self.max_height = Some(height);
+        self
+    }
+
+    pub fn offset(mut self, offset: Point<Pixels>) -> Self {
+        self.offset = offset;
         self
     }
 
@@ -211,6 +234,8 @@ impl MenuHandle {
             return;
         }
         let min_width = placement.min_width;
+        let max_width = placement.max_width;
+        let max_height = placement.max_height;
         let compact = placement.compact;
         let neutral_highlight = placement.neutral_highlight;
         self.open_with(
@@ -220,8 +245,16 @@ impl MenuHandle {
                     let menu = MenuView::new(entries, dismiss, cx)
                         .compact(compact)
                         .neutral_highlight(neutral_highlight);
-                    match min_width {
+                    let menu = match min_width {
                         Some(width) => menu.min_width(width),
+                        None => menu,
+                    };
+                    let menu = match max_width {
+                        Some(width) => menu.max_width(width),
+                        None => menu,
+                    };
+                    match max_height {
+                        Some(height) => menu.max_height(height),
                         None => menu,
                     }
                 });
@@ -297,6 +330,11 @@ impl MenuHandle {
             return None;
         }
         Some(layer(popup))
+    }
+
+    pub fn is_present(&self) -> bool {
+        self.finish_closing();
+        self.0.borrow().popup.is_some()
     }
 
     /// A dismissal only guards the press that caused it; once a frame has been

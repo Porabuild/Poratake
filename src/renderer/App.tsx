@@ -1,7 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { CapturePreviewParams } from '@/types/capture-preview';
 import type { WindowLoadPayload } from '@/types/window-load';
-import { useAccentColor } from '@/renderer/hooks/useAccentColor';
 import { useAppTheme } from '@/renderer/hooks/use-app-theme';
 import { usesTransparentWindowFallback } from '@/renderer/utils/window-fallback';
 
@@ -107,7 +106,6 @@ function WindowFallback({ data }: { data: WindowLoadPayload }) {
 }
 
 function App() {
-  useAccentColor();
   useAppTheme();
 
   const [windowData, setWindowData] = useState<WindowLoadPayload | null>(null);

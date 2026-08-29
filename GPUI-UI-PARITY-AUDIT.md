@@ -1506,13 +1506,10 @@ in the browser, compare.
    consecutive runs, which moved `Remember All-in-One choices` above the rest of
    the `Preview` section and put a section-sized gap inside a section. The
    General page rendered in a visibly different order.
-2. **`--primary` is not the theme accent.** `useAccentColor` overwrites it with
-   `systemPreferences.getAccentColor()` on every window, so in Electron the
-   area-overlay frame, handles and crosshairs, and the Polish-default star,
-   follow the colour picked in Windows. GPUI had no system-accent support at all.
-   `system::accent` now reads the same DWM key Chromium does, and `--primary` is
-   bound to it -- deliberately not to the preset, which the theme test now
-   asserts.
+2. **`--primary` follows the active theme accent.** Electron resolves it from
+   the selected preset, and GPUI binds `primary` to the same preset accent. The
+   area-overlay frame, handles and crosshairs, and the Polish-default star all
+   update with the Poracode theme instead of the operating-system accent.
 3. **Shortcut row labels were too heavy.** `shortcut-input.tsx` passes
    `className="text-sm font-normal"`, overriding `Label`'s own `font-medium`.
    Every shortcut row was a weight too bold.

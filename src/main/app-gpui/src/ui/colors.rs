@@ -100,8 +100,6 @@ pub const VIDEO_DRAWING_TOOLS: [Tool; 10] = [
     Tool::Redact,
 ];
 
-pub const SELECTION_RING_HEX: &str = "#3b82f6";
-
 /// Tailwind's `font-mono` stack resolves to Consolas on Windows; the renderer
 /// uses it for the selection readout and the JSON editors.
 pub const MONO_FONT: &str = "Consolas";
@@ -137,10 +135,6 @@ pub fn white(alpha: f32) -> gpui::Hsla {
 
 pub fn transparent() -> gpui::Hsla {
     gpui::hsla(0.0, 0.0, 0.0, 0.0)
-}
-
-pub fn selection_ring() -> gpui::Hsla {
-    crate::theme::color::Srgba::parse(SELECTION_RING_HEX).to_hsla()
 }
 
 #[cfg(test)]

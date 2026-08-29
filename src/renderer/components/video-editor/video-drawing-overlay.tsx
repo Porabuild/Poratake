@@ -123,8 +123,8 @@ function renderPreview(
           y={rectY}
           width={Math.abs(annotation.width)}
           height={Math.abs(annotation.height)}
-          fill="rgba(59, 130, 246, 0.15)"
-          stroke="#3b82f6"
+          fill="color-mix(in srgb, var(--primary) 15%, transparent)"
+          stroke="var(--primary)"
           strokeWidth={strokeWidth}
           strokeDasharray={`${strokeWidth * 3} ${strokeWidth * 1.5}`}
           rx={2}

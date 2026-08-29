@@ -1,5 +1,9 @@
 import { screen } from 'electron';
 import { daemon } from '@/main/daemon';
+import {
+  getAccentColor,
+  getAccentForegroundColor,
+} from '@/main/settings/accent';
 import { isMac } from '@/main/utils/platform';
 
 const WINDOW_WIDTH = 140;
@@ -41,6 +45,8 @@ export async function showTimerControl(
       x: screenPosition.x,
       y: screenPosition.y,
       duration,
+      color: getAccentColor(),
+      foregroundColor: getAccentForegroundColor(),
     });
     return true;
   } catch (error) {

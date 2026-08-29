@@ -35,14 +35,14 @@ export default function DropZoneOverlay({
 
   return (
     <div className="pointer-events-none absolute inset-0 z-50">
-      <div className="absolute inset-0 rounded-lg border-2 border-dashed border-blue-400/50 bg-blue-500/5" />
+      <div className="absolute inset-0 rounded-lg border-2 border-dashed border-primary/50 bg-primary/5" />
       {dropEdge && (
         <>
           <div
-            className={`absolute ${EDGE_STYLES[dropEdge].zone} bg-blue-500/15 transition-all duration-150`}
+            className={`absolute ${EDGE_STYLES[dropEdge].zone} bg-primary/15 transition-all duration-150`}
           />
           <div
-            className={`absolute ${EDGE_STYLES[dropEdge].indicator} bg-blue-500 transition-all duration-150`}
+            className={`absolute ${EDGE_STYLES[dropEdge].indicator} bg-primary transition-all duration-150`}
           />
         </>
       )}

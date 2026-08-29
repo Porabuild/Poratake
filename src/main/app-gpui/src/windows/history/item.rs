@@ -8,7 +8,7 @@ use crate::history_store::{HistoryItem, HistoryItemType};
 use crate::theme::vars::ThemeVars;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
-use crate::ui::colors::{black, selection_ring, transparent, white};
+use crate::ui::colors::{black, transparent, white};
 use crate::ui::icon::icon_element;
 use crate::video::project::RecordingFeatures;
 use crate::windows::history::model::format_relative_time;
@@ -113,9 +113,9 @@ impl ItemView<'_> {
     }
 }
 
-/// `ring-2 ring-blue-500 ring-offset-1 ring-offset-transparent`: a 1px
+/// `ring-2 ring-primary ring-offset-1 ring-offset-transparent`: a 1px
 /// transparent gap, then a 2px ring, both drawn outside the box.
-fn selection_shadow() -> Vec<gpui::BoxShadow> {
+fn selection_shadow(color: gpui::Hsla) -> Vec<gpui::BoxShadow> {
     let ring = |color: gpui::Hsla, spread: f32| gpui::BoxShadow {
         color,
         offset: gpui::point(px(0.0), px(0.0)),
@@ -124,7 +124,7 @@ fn selection_shadow() -> Vec<gpui::BoxShadow> {
     };
     vec![
         ring(transparent(), RING_OFFSET),
-        ring(selection_ring(), RING_OFFSET + RING_WIDTH),
+        ring(color, RING_OFFSET + RING_WIDTH),
     ]
 }
 
@@ -219,7 +219,9 @@ pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement
     let card = div()
         .id(view.element_id("history-card"))
         .relative()
-        .when(view.selected, |el| el.shadow(selection_shadow()))
+        .when(view.selected, |el| {
+            el.shadow(selection_shadow(theme.primary))
+        })
         .w(px(GRID_CARD_WIDTH))
         .flex()
         .flex_col()
@@ -349,7 +351,9 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
 
     let mut row = div()
         .id(view.element_id("history-row"))
-        .when(view.selected, |el| el.shadow(selection_shadow()))
+        .when(view.selected, |el| {
+            el.shadow(selection_shadow(theme.primary))
+        })
         .flex()
         .flex_row()
         .items_center()

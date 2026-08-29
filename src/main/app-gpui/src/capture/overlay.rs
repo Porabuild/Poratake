@@ -47,6 +47,7 @@ pub struct OverlayLaunch {
 struct OverlaySession {
     handles: Vec<TrackedOverlay>,
     pooled: Vec<PooledOverlay>,
+    outlined_window_id: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -91,6 +92,10 @@ pub fn release_frozen_for_recording(cx: &mut App) -> bool {
 }
 
 pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
+    if session(cx).outlined_window_id.is_some() {
+        return true;
+    }
+
     #[cfg(target_os = "macos")]
     {
         let daemon = crate::state::state(cx).daemon;
@@ -135,12 +140,83 @@ pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
 }
 
 pub fn end_recording_handoff(cx: &mut App) {
-    #[cfg(target_os = "macos")]
+    session(cx).outlined_window_id = None;
+    #[cfg(not(test))]
     {
         let daemon = crate::state::state(cx).daemon;
         let _ = daemon.call("recording-overlay", "hide", None);
     }
     close_all(cx);
+}
+
+pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> bool {
+    if session(cx).outlined_window_id == Some(window_id) {
+        return true;
+    }
+
+    #[cfg(test)]
+    let visible = true;
+    #[cfg(not(test))]
+    let visible = {
+        let service = crate::state::state(cx);
+        let appearance = service.config.get().appearance;
+        let preset = crate::theme::presets::get_theme_preset(&appearance.theme);
+        let color = match crate::theme::vars::active_mode(cx) {
+            crate::theme::presets::ThemeMode::Light => preset.light.accent,
+            _ => preset.dark.accent,
+        };
+        let params = window_outline_params(window_id, color, recording_control_window_id(cx));
+        service
+            .daemon
+            .call("recording-overlay", "showWindow", Some(params))
+            .is_ok_and(|result| result["visible"].as_bool() == Some(true))
+    };
+
+    if visible {
+        session(cx).outlined_window_id = Some(window_id);
+    }
+    visible
+}
+
+fn window_outline_params(
+    window_id: i64,
+    color: &str,
+    below_window_id: Option<i64>,
+) -> serde_json::Value {
+    let mut params = serde_json::json!({
+        "windowId": window_id,
+        "color": color,
+    });
+    if let Some(below_window_id) = below_window_id {
+        params["belowWindowId"] = below_window_id.into();
+    }
+    params
+}
+
+#[cfg(all(windows, not(test)))]
+fn recording_control_window_id(cx: &mut App) -> Option<i64> {
+    for window_handle in cx.windows() {
+        let Some(handle) =
+            window_handle.downcast::<crate::windows::recording_control::RecordingControl>()
+        else {
+            continue;
+        };
+        let window_id = handle
+            .update(cx, |_, window, _| {
+                crate::windows::window_hwnd(window).map(|hwnd| hwnd.0 as isize as i64)
+            })
+            .ok()
+            .flatten();
+        if window_id.is_some() {
+            return window_id;
+        }
+    }
+    None
+}
+
+#[cfg(all(not(windows), not(test)))]
+fn recording_control_window_id(_cx: &mut App) -> Option<i64> {
+    None
 }
 
 pub fn replace_all(cx: &mut App) -> Option<u64> {
@@ -767,6 +843,10 @@ impl AreaOverlay {
             .is_some_and(|choices| choices.target == crate::capture::all_in_one::Target::Screen)
     }
 
+    fn screen_picker_dimmed(&self, window_hovered: bool) -> Option<bool> {
+        self.is_picking_screen().then_some(!window_hovered)
+    }
+
     /// The hovered window's frame, converted from physical screen pixels into
     /// this overlay's logical client coordinates.
     fn hovered_frame(&self) -> Option<(Point<Pixels>, gpui::Size<Pixels>)> {
@@ -806,7 +886,18 @@ impl AreaOverlay {
                 Some(window_id),
                 Some(label),
             );
-            dismiss(window, cx);
+            if !show_window_recording_outline(window_id, cx) {
+                eprintln!("[recording-overlay] failed to outline window {window_id}");
+            }
+            self.all_in_one = None;
+            self.picking_windows = false;
+            self.hovered_window = None;
+            self.interaction = None;
+            self.pointer = None;
+            self.handed_off = true;
+            conceal_recording_selector(window);
+            sync_window_recording_handoff(cx);
+            cx.notify();
             return;
         }
         let coordinator = crate::state::coordinator(cx);
@@ -1412,6 +1503,40 @@ fn sync_recording_handoff(cx: &mut Context<AreaOverlay>) {
     });
 }
 
+fn sync_window_recording_handoff(cx: &mut Context<AreaOverlay>) {
+    let handles = session(cx).handles.clone();
+    App::defer(cx, move |cx| {
+        for tracked in handles {
+            let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
+                continue;
+            };
+            let _ = handle.update(cx, |overlay, window, cx| {
+                if overlay.intent != crate::capture::intent::CaptureIntent::Recording {
+                    return;
+                }
+                overlay.all_in_one = None;
+                overlay.picking_windows = false;
+                overlay.hovered_window = None;
+                overlay.interaction = None;
+                overlay.pointer = None;
+                overlay.handed_off = true;
+                conceal_recording_selector(window);
+                cx.notify();
+            });
+        }
+    });
+}
+
+#[cfg(windows)]
+fn conceal_recording_selector(window: &Window) {
+    park_overlay(window);
+}
+
+#[cfg(not(windows))]
+fn conceal_recording_selector(window: &mut Window) {
+    window.remove_window();
+}
+
 impl Render for AreaOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = crate::theme::vars::active_theme(cx);
@@ -1521,11 +1646,11 @@ impl Render for AreaOverlay {
             ));
         }
 
-        if self.is_picking_screen() {
-            let mut picking = if window.is_window_hovered() {
-                root
-            } else {
+        if let Some(dimmed) = self.screen_picker_dimmed(window.is_window_hovered()) {
+            let mut picking = if dimmed {
                 root.child(div().absolute().inset_0().bg(dim))
+            } else {
+                root
             };
             if let Some(toolbar) = toolbar {
                 picking = picking.child(toolbar);
@@ -1855,6 +1980,18 @@ mod tests {
             CaptureIntent::Screenshot
         ));
         assert!(!super::retains_overlay_after_selection(CaptureIntent::Ocr));
+    }
+
+    #[test]
+    fn window_outline_uses_the_electron_daemon_contract() {
+        assert_eq!(
+            super::window_outline_params(42, "#8892ef", Some(84)),
+            serde_json::json!({
+                "windowId": 42,
+                "color": "#8892ef",
+                "belowWindowId": 84,
+            })
+        );
     }
 
     #[test]
@@ -2298,6 +2435,75 @@ mod tests {
     }
 
     #[gpui::test]
+    fn video_window_selection_keeps_the_handoff_session(cx: &mut TestAppContext) {
+        use crate::capture::all_in_one::{Choices, Mode, Target};
+        use crate::capture::windows_list::{Rect, WindowListItem};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let overlay = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Recording,
+                focus,
+            )
+            .with_all_in_one(Choices {
+                mode: Mode::Record,
+                target: Target::Window,
+            })
+            .with_windows(vec![WindowListItem {
+                window_id: 42,
+                title: "Video".into(),
+                owner_name: "Player".into(),
+                owner_pid: 7,
+                bounds: Rect {
+                    x: 100.0,
+                    y: 100.0,
+                    width: 640.0,
+                    height: 360.0,
+                },
+            }])
+        });
+        cx.update(|cx| {
+            let display_id = cx.primary_display().expect("primary display").id();
+            super::track_overlay(overlay.into(), display_id, 7, true, cx);
+        });
+
+        overlay
+            .update(cx, |overlay, window, cx| {
+                overlay.hovered_window = Some(0);
+                overlay.confirm_window(window, cx);
+            })
+            .expect("confirm window");
+        cx.run_until_parked();
+
+        assert!(overlay
+            .read_with(cx, |overlay, _| {
+                overlay.handed_off && overlay.all_in_one.is_none() && !overlay.picking_windows
+            })
+            .expect("read handoff state"));
+        cx.update(|cx| {
+            assert_eq!(super::session(cx).handles.len(), 1);
+            assert_eq!(super::session(cx).handles[0].generation, 7);
+            assert_eq!(super::session(cx).outlined_window_id, Some(42));
+            assert!(cx.windows().into_iter().any(|window| window
+                .downcast::<crate::windows::recording_control::RecordingControl>()
+                .is_some()));
+        });
+    }
+
+    #[gpui::test]
     fn all_in_one_mode_and_intent_stay_in_sync(cx: &mut TestAppContext) {
         use crate::capture::all_in_one::{Choices, Mode, Target};
         use crate::capture::intent::CaptureIntent;
@@ -2336,6 +2542,13 @@ mod tests {
         assert_eq!(
             overlay.read_with(cx, |overlay, _| overlay.cursor),
             gpui::CursorStyle::default()
+        );
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| (
+                overlay.screen_picker_dimmed(false),
+                overlay.screen_picker_dimmed(true),
+            )),
+            (Some(true), Some(false))
         );
         overlay.update(cx, |overlay, cx| overlay.set_all_in_one_mode(Mode::Ocr, cx));
         assert_eq!(

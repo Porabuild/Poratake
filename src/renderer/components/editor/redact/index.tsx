@@ -92,8 +92,8 @@ export function renderRedactHandles({
   const rectH = Math.abs(h);
 
   const handleStyle = {
-    fill: 'white',
-    stroke: '#007AFF',
+    fill: 'var(--primary-foreground)',
+    stroke: 'var(--primary)',
     strokeWidth: 2,
     cursor: 'default',
     pointerEvents: 'auto' as const,

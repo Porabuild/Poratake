@@ -3,6 +3,7 @@ use crate::overlay::{
     create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class,
     rect_height, rect_width, scale_for_dpi,
 };
+use crate::panel::parse_color;
 use crate::protocol::{Request, param_i32, param_i64, param_str, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
@@ -46,23 +47,6 @@ struct WindowHighlight {
 thread_local! {
     static HIGHLIGHT: RefCell<Option<WindowHighlight>> = const { RefCell::new(None) };
     static HIGHLIGHT_COLOR: RefCell<COLORREF> = const { RefCell::new(HIGHLIGHT_FALLBACK) };
-}
-
-/// The app hands over its live theme accent as `#rrggbb`; COLORREF orders the
-/// channels the other way round.
-fn parse_color(value: Option<&str>) -> COLORREF {
-    let Some(hex) = value.map(|value| value.trim_start_matches('#')) else {
-        return HIGHLIGHT_FALLBACK;
-    };
-    if hex.len() != 6 {
-        return HIGHLIGHT_FALLBACK;
-    }
-
-    let channel = |range: std::ops::Range<usize>| u32::from_str_radix(&hex[range], 16).ok();
-    match (channel(0..2), channel(2..4), channel(4..6)) {
-        (Some(red), Some(green), Some(blue)) => COLORREF((blue << 16) | (green << 8) | red),
-        _ => HIGHLIGHT_FALLBACK,
-    }
 }
 
 unsafe extern "system" fn highlight_wndproc(
@@ -348,7 +332,8 @@ impl Module for RecordingOverlayModule {
                     )));
                 };
 
-                let color = parse_color(param_str(&request.params, "color"));
+                let color =
+                    parse_color(param_str(&request.params, "color")).unwrap_or(HIGHLIGHT_FALLBACK);
                 let insert_after_handle = param_i64(&request.params, "belowWindowId");
                 let request_id = request.id.clone();
                 run_on_ui(move || {
@@ -396,15 +381,30 @@ mod tests {
 
     #[test]
     fn reads_the_theme_accent_into_a_colorref() {
-        assert_eq!(parse_color(Some("#8892ef")).0, 0x00EF_9288);
-        assert_eq!(parse_color(Some("5F6CD9")).0, 0x00D9_6C5F);
+        assert_eq!(
+            parse_color(Some("#8892ef")).map(|color| color.0),
+            Some(0x00EF_9288)
+        );
+        assert_eq!(
+            parse_color(Some("5F6CD9")).map(|color| color.0),
+            Some(0x00D9_6C5F)
+        );
     }
 
     #[test]
     fn falls_back_when_the_accent_is_unusable() {
-        assert_eq!(parse_color(None), HIGHLIGHT_FALLBACK);
-        assert_eq!(parse_color(Some("#fff")), HIGHLIGHT_FALLBACK);
-        assert_eq!(parse_color(Some("#zzzzzz")), HIGHLIGHT_FALLBACK);
+        assert_eq!(
+            parse_color(None).unwrap_or(HIGHLIGHT_FALLBACK),
+            HIGHLIGHT_FALLBACK
+        );
+        assert_eq!(
+            parse_color(Some("#fff")).unwrap_or(HIGHLIGHT_FALLBACK),
+            HIGHLIGHT_FALLBACK
+        );
+        assert_eq!(
+            parse_color(Some("#zzzzzz")).unwrap_or(HIGHLIGHT_FALLBACK),
+            HIGHLIGHT_FALLBACK
+        );
     }
 
     #[test]

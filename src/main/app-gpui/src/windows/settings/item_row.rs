@@ -777,7 +777,7 @@ fn device_block(item: &Item, theme: &ThemeVars) -> gpui::Div {
 }
 
 /// `level-meter.tsx`: 32 segments, `h-5 flex-1 gap-0.5`, each `rounded-sm` and
-/// either `bg-primary` or `bg-muted`. `--primary` is the system accent.
+/// either `bg-primary` or `bg-muted`.
 pub(crate) const LEVEL_METER_SEGMENTS: usize = 32;
 
 pub(crate) fn filled_segments(level: f32, active: bool) -> usize {

@@ -40,7 +40,6 @@ fn can_add_to(kind: TrackKind) -> bool {
 }
 
 const PLAYHEAD_COLOR: &str = "#ef4444";
-const SELECTED_GRADIENT: (&str, &str) = ("#3b82f6", "#1d4ed8");
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TrackKind {
@@ -165,10 +164,14 @@ fn clip_element(
     let pixels_per_second = context.pixels_per_second;
     let total_duration = context.total_duration;
     let is_cut_tool_active = context.is_cut_tool_active;
-    let (from, to) = if clip.selected {
-        SELECTED_GRADIENT
+    let background = if clip.selected {
+        linear_gradient(
+            180.0,
+            linear_color_stop(theme.primary, 0.0),
+            linear_color_stop(theme.accent_hover, 1.0),
+        )
     } else {
-        clip.gradient
+        gradient_fill(clip.gradient.0, clip.gradient.1)
     };
     let id = clip.id.clone();
     div()
@@ -180,7 +183,7 @@ fn clip_element(
         .h(px(TRACK_HEIGHT - 4.0))
         .rounded(px(4.0))
         .overflow_hidden()
-        .bg(gradient_fill(from, to))
+        .bg(background)
         .when(clip.selected, |el| {
             el.border_1().border_color(theme.foreground)
         })

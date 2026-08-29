@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, size, AnyElement, App, Bounds, Context, FocusHandle, Render, SharedString,
-    Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    div, point, prelude::*, px, size, AnyElement, App, Bounds, Context, FocusHandle, Render,
+    SharedString, Styled, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
+    WindowOptions,
 };
 
 use crate::capture::overlay::ScreenRect;
@@ -16,11 +17,16 @@ use crate::theme::vars::{active_theme, ThemeVars};
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
-use crate::ui::menu::{MenuBuilder, MenuHandle, MenuItem, MenuPlacement};
+use crate::ui::menu::{MenuBuilder, MenuEntry, MenuHandle, MenuItem, MenuPlacement};
 use crate::video::recorder::{self, RecordingConfig, RecordingTarget};
 use crate::windows::registry::{self, WindowKind as RegistryKind};
 
 const TARGET_LABEL_WIDTH: f32 = chrome::RECORDING_TARGET_LABEL_WIDTH;
+const DEVICE_MENU_WINDOW_WIDTH: f32 = 300.0;
+const DEVICE_MENU_WINDOW_HEIGHT: f32 = 300.0;
+const CONTROL_WINDOW_HORIZONTAL_GUTTER: f32 = 16.0;
+const DEVICE_DROPDOWN_WIDTH: f32 = 256.0;
+const DEVICE_DROPDOWN_HEIGHT: f32 = 224.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -28,8 +34,8 @@ enum Mode {
     Recording,
 }
 
-fn can_cancel_with_escape(mode: Mode) -> bool {
-    mode == Mode::PreRecording
+fn can_cancel_with_escape(mode: Mode, menu_present: bool) -> bool {
+    mode == Mode::PreRecording && !menu_present
 }
 
 pub struct RecordingControl {
@@ -45,6 +51,8 @@ pub struct RecordingControl {
     camera: bool,
     selected_mic_id: Option<String>,
     selected_camera_id: Option<String>,
+    devices: crate::system::devices::MediaDeviceLists,
+    device_request: u64,
     menu: MenuHandle,
     started_at: Option<Instant>,
     elapsed: u64,
@@ -67,7 +75,7 @@ impl RecordingControl {
         }
         let config = crate::state::state(cx).config.get().recording;
         let width = chrome::recording_control_width(false, target_name.is_some());
-        let bounds = bar_bounds(cx, rect, width);
+        let bounds = bar_bounds(cx, rect, width, false);
 
         registry::open_or_activate(RegistryKind::RecordingControl, cx, move |cx| {
             cx.open_window(
@@ -97,6 +105,8 @@ impl RecordingControl {
                         camera: config.camera.enabled,
                         selected_mic_id: config.selected_mic_id.clone(),
                         selected_camera_id: config.camera.selected_device_id.clone(),
+                        devices: crate::system::devices::MediaDeviceLists::default(),
+                        device_request: 0,
                         menu: MenuHandle::new(),
                         started_at: None,
                         elapsed: 0,
@@ -118,7 +128,7 @@ impl RecordingControl {
             };
             let cancelled = handle
                 .update(cx, |this, window, _cx| {
-                    if !can_cancel_with_escape(this.mode) {
+                    if !can_cancel_with_escape(this.mode, false) {
                         return false;
                     }
                     window.remove_window();
@@ -141,7 +151,7 @@ impl RecordingControl {
         target_name: Option<&str>,
     ) -> bool {
         let width = chrome::recording_control_width(false, target_name.is_some());
-        let bounds = bar_bounds(cx, rect, width);
+        let bounds = bar_bounds(cx, rect, width, false);
         let target_name = target_name.map(str::to_owned);
         for window_handle in cx.windows() {
             let Some(handle) = window_handle.downcast::<Self>() else {
@@ -244,8 +254,7 @@ impl RecordingControl {
         self.mode = Mode::Recording;
         self.started_at = Some(Instant::now());
         self.elapsed = 0;
-        let width = chrome::recording_control_width(true, self.target_name.is_some());
-        window.resize(size(px(width), px(chrome::RECORDING_WINDOW_HEIGHT)));
+        self.sync_window_bounds(window, cx);
         crate::intents::refresh_shell(cx);
         self.tick(cx);
         cx.notify();
@@ -381,64 +390,15 @@ impl RecordingControl {
         id: &'static str,
         icon: &'static str,
         _tooltip: &'static str,
-        enabled: bool,
+        _enabled: bool,
         kind: crate::system::devices::DeviceKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let handle = self.menu.clone();
         let owner = format!("recording-{id}");
-        let selected = match kind {
-            crate::system::devices::DeviceKind::Microphone => self.selected_mic_id.clone(),
-            crate::system::devices::DeviceKind::Camera => self.selected_camera_id.clone(),
-        };
-        let lists = crate::system::devices::list(&crate::state::state(cx).daemon, &[kind]);
-        let devices = match kind {
-            crate::system::devices::DeviceKind::Microphone => lists.microphones,
-            crate::system::devices::DeviceKind::Camera => lists.cameras,
-        };
-        let mut builder = MenuBuilder::new().item(
-            MenuItem::new(if enabled { "Turn off" } else { "Turn on" }).on_select({
-                let entity = cx.entity().downgrade();
-                move |_window, cx| {
-                    if let Some(entity) = entity.upgrade() {
-                        entity.update(cx, |this, cx| match kind {
-                            crate::system::devices::DeviceKind::Microphone => {
-                                let next = !this.microphone;
-                                this.set_microphone(next, cx);
-                            }
-                            crate::system::devices::DeviceKind::Camera => {
-                                let next = !this.camera;
-                                this.set_camera(next, cx);
-                            }
-                        });
-                    }
-                }
-            }),
-        );
-        for device in &devices {
-            let device_id = device.id.clone();
-            let label = if device.label.trim().is_empty() {
-                device.id.clone()
-            } else {
-                device.label.clone()
-            };
-            builder = builder.item(
-                MenuItem::new(label)
-                    .trailing_check(selected.as_deref() == Some(device_id.as_str()))
-                    .on_select({
-                        let entity = cx.entity().downgrade();
-                        move |_window, cx| {
-                            if let Some(entity) = entity.upgrade() {
-                                entity.update(cx, |this, cx| {
-                                    this.select_device(kind, &device_id, cx)
-                                });
-                            }
-                        }
-                    }),
-            );
-        }
-        let entries = builder.build();
+        let entries = self.device_menu_entries(kind, cx.entity().downgrade());
+        let refresh_entity = cx.entity().downgrade();
         let menu_id = owner.clone();
         // Gated hover flag instead of a `.hover()` style, which gpui paints
         // against the window's last mouse position and so survives the
@@ -467,46 +427,184 @@ impl RecordingControl {
             .child(icon_element("chevron-down", px(12.0)))
             .child(self.menu.render_dropdown(&menu_id))
             .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                let opening = !handle.is_open_for(&menu_id);
                 handle.toggle(
-                    MenuPlacement::below(menu_id.clone()),
+                    device_menu_placement(menu_id.clone()),
                     entries.clone(),
                     window,
                     cx,
                 );
+                if opening {
+                    if let Some(entity) = refresh_entity.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            this.refresh_devices(kind, menu_id.clone().into(), window, cx);
+                        });
+                    }
+                }
                 cx.stop_propagation();
             })
             .into_any_element()
     }
 
+    fn device_menu_entries(
+        &self,
+        kind: crate::system::devices::DeviceKind,
+        entity: WeakEntity<Self>,
+    ) -> Vec<MenuEntry> {
+        use crate::system::devices::DeviceKind;
+
+        let (label, enabled, selected, devices, default_id) = match kind {
+            DeviceKind::Microphone => (
+                "Microphone",
+                self.microphone,
+                self.selected_mic_id.as_deref(),
+                &self.devices.microphones,
+                self.devices.default_microphone_id.as_deref(),
+            ),
+            DeviceKind::Camera => (
+                "Camera",
+                self.camera,
+                self.selected_camera_id.as_deref(),
+                &self.devices.cameras,
+                self.devices.default_camera_id.as_deref(),
+            ),
+        };
+        let options = crate::system::devices::options(devices);
+        let default_label = default_id
+            .and_then(|id| {
+                options
+                    .iter()
+                    .find(|(device_id, _)| device_id == id)
+                    .map(|(_, label)| format!("System Default ({label})"))
+            })
+            .unwrap_or_else(|| "System Default".to_string());
+        let device_locked = kind == DeviceKind::Camera && self.mode == Mode::Recording;
+        let locked_device_id = selected.or(default_id);
+        let default_locked = device_locked && selected.is_some() && selected != default_id;
+        let toggle_entity = entity.clone();
+        let default_entity = entity.clone();
+        let mut builder = MenuBuilder::new()
+            .item(
+                MenuItem::new(label)
+                    .trailing_check(enabled)
+                    .on_select(move |_window, cx| {
+                        if let Some(entity) = toggle_entity.upgrade() {
+                            entity.update(cx, |this, cx| match kind {
+                                DeviceKind::Microphone => {
+                                    this.set_microphone(!this.microphone, cx);
+                                }
+                                DeviceKind::Camera => {
+                                    this.set_camera(!this.camera, cx);
+                                }
+                            });
+                        }
+                    }),
+            )
+            .separator()
+            .item(
+                MenuItem::new(default_label)
+                    .trailing_check(selected.is_none())
+                    .disabled(default_locked)
+                    .on_select(move |_window, cx| {
+                        if let Some(entity) = default_entity.upgrade() {
+                            entity.update(cx, |this, cx| this.select_device(kind, None, cx));
+                        }
+                    }),
+            );
+
+        for (device_id, label) in options {
+            let disabled = device_locked && locked_device_id != Some(device_id.as_str());
+            let selected = selected == Some(device_id.as_str());
+            let device_entity = entity.clone();
+            builder = builder.item(
+                MenuItem::new(label.clone())
+                    .trailing_check(selected)
+                    .disabled(disabled)
+                    .on_select(move |_window, cx| {
+                        if let Some(entity) = device_entity.upgrade() {
+                            entity.update(cx, |this, cx| {
+                                this.select_device(
+                                    kind,
+                                    Some((device_id.clone(), label.clone())),
+                                    cx,
+                                );
+                            });
+                        }
+                    }),
+            );
+        }
+        builder.build()
+    }
+
+    fn refresh_devices(
+        &mut self,
+        kind: crate::system::devices::DeviceKind,
+        owner: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.device_request = self.device_request.wrapping_add(1);
+        let request = self.device_request;
+        let daemon = crate::state::state(cx).daemon;
+        cx.spawn_in(window, async move |entity, cx| {
+            let listed = cx
+                .background_executor()
+                .spawn(async move { crate::system::devices::list(&daemon, &[kind]) })
+                .await;
+            let _ = entity.update_in(cx, |this, window, cx| {
+                if !merge_device_refresh(
+                    &mut this.devices,
+                    this.device_request,
+                    request,
+                    kind,
+                    listed,
+                ) {
+                    return;
+                }
+                if this.menu.is_open_for(owner.as_ref()) {
+                    let entries = this.device_menu_entries(kind, cx.entity().downgrade());
+                    this.menu
+                        .open(device_menu_placement(owner.clone()), entries, window, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn select_device(
         &mut self,
         kind: crate::system::devices::DeviceKind,
-        id: &str,
+        selection: Option<(String, String)>,
         cx: &mut Context<Self>,
     ) {
+        let id = selection.as_ref().map(|(id, _)| id.clone());
+        let name = selection.as_ref().map(|(_, name)| name.clone());
         match kind {
             crate::system::devices::DeviceKind::Microphone => {
                 let previous = self.selected_mic_id.clone();
-                self.selected_mic_id = Some(id.to_string());
+                self.selected_mic_id = id.clone();
                 if !self.set_microphone(true, cx) {
                     self.selected_mic_id = previous;
                     cx.notify();
                     return;
                 }
-                crate::state::state(cx).config.update(|config| {
-                    config.recording.selected_mic_id = Some(id.to_string());
+                crate::state::state(cx).config.update(move |config| {
+                    config.recording.selected_mic_id = id;
+                    config.recording.selected_mic_name = name;
                 });
             }
             crate::system::devices::DeviceKind::Camera => {
                 let previous = self.selected_camera_id.clone();
-                self.selected_camera_id = Some(id.to_string());
+                self.selected_camera_id = id.clone();
                 if !self.set_camera(true, cx) {
                     self.selected_camera_id = previous;
                     cx.notify();
                     return;
                 }
-                crate::state::state(cx).config.update(|config| {
-                    config.recording.camera.selected_device_id = Some(id.to_string());
+                crate::state::state(cx).config.update(move |config| {
+                    config.recording.camera.selected_device_id = id;
+                    config.recording.camera.selected_device_name = name;
                 });
             }
         }
@@ -589,6 +687,60 @@ impl RecordingControl {
         registry::close(RegistryKind::RecordingControl, cx);
         crate::capture::overlay::end_recording_handoff(cx);
     }
+
+    fn sync_window_bounds(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let width = chrome::recording_control_width(
+            self.mode == Mode::Recording,
+            self.target_name.is_some(),
+        );
+        let bounds = bar_bounds(cx, self.rect, width, self.menu.is_present());
+        if window.bounds() == bounds {
+            return;
+        }
+        window.resize(bounds.size);
+        #[cfg(windows)]
+        if let Some(hwnd) = crate::windows::window_hwnd(window) {
+            crate::system::window_composition::apply_window_bounds(
+                hwnd,
+                bounds,
+                window.scale_factor(),
+            );
+        }
+    }
+}
+
+fn device_menu_placement(owner: impl Into<SharedString>) -> MenuPlacement {
+    MenuPlacement::below(owner)
+        .min_width(px(DEVICE_DROPDOWN_WIDTH))
+        .max_width(px(DEVICE_DROPDOWN_WIDTH))
+        .max_height(px(DEVICE_DROPDOWN_HEIGHT))
+        .offset(point(
+            px((chrome::OVERLAY_TARGET_TRIGGER_WIDTH - DEVICE_DROPDOWN_WIDTH) / 2.0),
+            px(8.0),
+        ))
+}
+
+fn merge_device_refresh(
+    devices: &mut crate::system::devices::MediaDeviceLists,
+    current_request: u64,
+    request: u64,
+    kind: crate::system::devices::DeviceKind,
+    listed: crate::system::devices::MediaDeviceLists,
+) -> bool {
+    if current_request != request {
+        return false;
+    }
+    match kind {
+        crate::system::devices::DeviceKind::Microphone => {
+            devices.microphones = listed.microphones;
+            devices.default_microphone_id = listed.default_microphone_id;
+        }
+        crate::system::devices::DeviceKind::Camera => {
+            devices.cameras = listed.cameras;
+            devices.default_camera_id = listed.default_camera_id;
+        }
+    }
+    true
 }
 
 fn report_toggle_failure(cx: &mut Context<RecordingControl>, error: &anyhow::Error) {
@@ -621,7 +773,12 @@ fn configure_toolbar_window(window: &Window) {
     let _ = window;
 }
 
-fn bar_bounds(cx: &mut App, rect: ScreenRect, width: f32) -> Bounds<gpui::Pixels> {
+fn bar_bounds(
+    cx: &mut App,
+    rect: ScreenRect,
+    width: f32,
+    device_menu_open: bool,
+) -> Bounds<gpui::Pixels> {
     let scale = crate::capture::overlay::app_scale_factor(cx).max(0.01);
     let displays: Vec<(f32, f32, f32, f32)> = cx
         .displays()
@@ -640,11 +797,25 @@ fn bar_bounds(cx: &mut App, rect: ScreenRect, width: f32) -> Bounds<gpui::Pixels
     let center_y = rect.y as f32 / scale + rect.height as f32 / scale / 2.0;
     let (work_x, work_y, work_width, _) = chrome::display_containing(&displays, center_x, center_y)
         .unwrap_or((0.0, 0.0, 1920.0, 1080.0));
-    let (x, y) = chrome::recording_bar_origin(work_x, work_y, work_width, width);
+    let (bar_x, y) = chrome::recording_bar_origin(work_x, work_y, work_width, width);
+    let (window_width, bar_offset, height) = control_window_metrics(width, device_menu_open);
+    let x = bar_x - bar_offset;
     Bounds {
         origin: gpui::point(px(x), px(y)),
-        size: size(px(width), px(chrome::RECORDING_WINDOW_HEIGHT)),
+        size: size(px(window_width), px(height)),
     }
+}
+
+fn control_window_metrics(width: f32, device_menu_open: bool) -> (f32, f32, f32) {
+    let content_width = width.max(DEVICE_MENU_WINDOW_WIDTH);
+    let window_width = content_width + CONTROL_WINDOW_HORIZONTAL_GUTTER * 2.0;
+    let bar_offset = ((window_width - width) / 2.0).round();
+    let height = if device_menu_open {
+        DEVICE_MENU_WINDOW_HEIGHT
+    } else {
+        chrome::RECORDING_WINDOW_HEIGHT
+    };
+    (window_width, bar_offset, height)
 }
 
 fn overlay_hairline(theme: &ThemeVars) -> AnyElement {
@@ -676,6 +847,7 @@ fn overlay_icon(
 
 impl Render for RecordingControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_window_bounds(window, cx);
         let theme = active_theme(cx);
         let paused = recorder::state() == recorder::RecorderState::Paused;
         let toggles = self.input_toggles(window, cx);
@@ -804,6 +976,7 @@ fn recording_shell(
     menu: &MenuHandle,
     cx: &mut Context<RecordingControl>,
 ) -> impl IntoElement {
+    let menu_for_keys = menu.clone();
     div()
         .id("recording-control")
         .track_focus(focus)
@@ -811,11 +984,15 @@ fn recording_shell(
         .flex()
         .flex_col()
         .items_center()
-        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-            if event.keystroke.key == "escape" && can_cancel_with_escape(this.mode) {
-                this.cancel(window, cx);
-            }
-        }))
+        .on_key_down(
+            cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && can_cancel_with_escape(this.mode, menu_for_keys.is_present())
+                {
+                    this.cancel(window, cx);
+                }
+            }),
+        )
         .pt(px(chrome::RECORDING_BAR_PAD_TOP))
         .child(bar)
         .children(menu.render())
@@ -856,8 +1033,132 @@ mod tests {
 
     #[test]
     fn escape_only_cancels_before_recording_starts() {
-        assert!(can_cancel_with_escape(Mode::PreRecording));
-        assert!(!can_cancel_with_escape(Mode::Recording));
+        assert!(can_cancel_with_escape(Mode::PreRecording, false));
+        assert!(!can_cancel_with_escape(Mode::PreRecording, true));
+        assert!(!can_cancel_with_escape(Mode::Recording, false));
+    }
+
+    #[test]
+    fn device_menu_window_matches_electron_bounds() {
+        assert_eq!(control_window_metrics(236.0, false), (332.0, 48.0, 52.0));
+        assert_eq!(control_window_metrics(236.0, true), (332.0, 48.0, 300.0));
+        assert_eq!(control_window_metrics(400.0, true), (432.0, 16.0, 300.0));
+        assert_eq!(
+            (chrome::OVERLAY_TARGET_TRIGGER_WIDTH - DEVICE_DROPDOWN_WIDTH) / 2.0,
+            -104.0
+        );
+    }
+
+    #[gpui::test]
+    fn microphone_menu_matches_electron_rows(cx: &mut gpui::TestAppContext) {
+        let control = cx.update(|cx| {
+            cx.new(|cx| RecordingControl {
+                mode: Mode::PreRecording,
+                target: RecordingTarget::Area,
+                target_name: None,
+                rect: ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 100,
+                    height: 100,
+                },
+                window_id: None,
+                project: None,
+                system_audio: true,
+                microphone: true,
+                camera: false,
+                selected_mic_id: Some("mic-1".into()),
+                selected_camera_id: None,
+                devices: crate::system::devices::MediaDeviceLists {
+                    microphones: vec![crate::system::devices::MediaDevice {
+                        id: "mic-1".into(),
+                        label: "Built-in microphone".into(),
+                    }],
+                    cameras: Vec::new(),
+                    default_microphone_id: Some("mic-1".into()),
+                    default_camera_id: None,
+                },
+                device_request: 0,
+                menu: MenuHandle::new(),
+                started_at: None,
+                elapsed: 0,
+                focus_handle: cx.focus_handle(),
+            })
+        });
+        let weak = control.downgrade();
+        let entries = control.read_with(cx, |control, _| {
+            control.device_menu_entries(crate::system::devices::DeviceKind::Microphone, weak)
+        });
+        let [MenuEntry::Item(toggle), MenuEntry::Separator, MenuEntry::Item(default), MenuEntry::Item(device)] =
+            entries.as_slice()
+        else {
+            panic!("unexpected microphone menu layout");
+        };
+
+        assert_eq!(toggle.label.as_ref(), "Microphone");
+        assert!(toggle.trailing_check);
+        assert_eq!(
+            default.label.as_ref(),
+            "System Default (Built-in microphone)"
+        );
+        assert!(!default.trailing_check);
+        assert_eq!(device.label.as_ref(), "Built-in microphone");
+        assert!(device.trailing_check);
+    }
+
+    #[test]
+    fn device_refresh_updates_only_the_requested_kind() {
+        let mut devices = crate::system::devices::MediaDeviceLists {
+            microphones: Vec::new(),
+            cameras: vec![crate::system::devices::MediaDevice {
+                id: "camera-1".into(),
+                label: "Camera".into(),
+            }],
+            default_microphone_id: None,
+            default_camera_id: Some("camera-1".into()),
+        };
+        let listed = crate::system::devices::MediaDeviceLists {
+            microphones: vec![crate::system::devices::MediaDevice {
+                id: "mic-1".into(),
+                label: "Microphone".into(),
+            }],
+            cameras: Vec::new(),
+            default_microphone_id: Some("mic-1".into()),
+            default_camera_id: None,
+        };
+
+        assert!(merge_device_refresh(
+            &mut devices,
+            3,
+            3,
+            crate::system::devices::DeviceKind::Microphone,
+            listed,
+        ));
+        assert_eq!(devices.microphones[0].id, "mic-1");
+        assert_eq!(devices.cameras[0].id, "camera-1");
+        assert_eq!(devices.default_microphone_id.as_deref(), Some("mic-1"));
+        assert_eq!(devices.default_camera_id.as_deref(), Some("camera-1"));
+    }
+
+    #[test]
+    fn stale_device_refresh_is_ignored() {
+        let mut devices = crate::system::devices::MediaDeviceLists::default();
+        let listed = crate::system::devices::MediaDeviceLists {
+            microphones: vec![crate::system::devices::MediaDevice {
+                id: "stale".into(),
+                label: "Stale".into(),
+            }],
+            ..Default::default()
+        };
+
+        assert!(!merge_device_refresh(
+            &mut devices,
+            4,
+            3,
+            crate::system::devices::DeviceKind::Microphone,
+            listed,
+        ));
+        assert!(devices.microphones.is_empty());
     }
 }
 

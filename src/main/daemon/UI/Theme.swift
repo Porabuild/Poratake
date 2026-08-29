@@ -1,46 +1,18 @@
 import Cocoa
 
-struct Theme {
-    let cardBackground: NSColor
-    let foreground: NSColor
-    let foregroundMuted: NSColor
-    let separatorColor: NSColor
-    let tooltipBackground: NSColor
-    let tooltipForeground: NSColor
-    let accentColor: NSColor
-    let destructiveColor: NSColor
-    
-    static var current: Theme {
-        isDarkMode ? dark : light
+func themeColor(_ value: String?) -> NSColor? {
+    guard let hex = value?.trimmingCharacters(in: CharacterSet(charactersIn: "#")),
+          hex.count == 6,
+          let packed = UInt32(hex, radix: 16)
+    else {
+        return nil
     }
-    
-    static var isDarkMode: Bool {
-        if let appearance = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
-            return appearance == .darkAqua
-        }
-        return false
-    }
-    
-    static let dark = Theme(
-        cardBackground: NSColor(red: 0.24, green: 0.24, blue: 0.24, alpha: 1.0),
-        foreground: NSColor(white: 0.98, alpha: 1.0),
-        foregroundMuted: NSColor(white: 0.98, alpha: 0.5),
-        separatorColor: NSColor(white: 1.0, alpha: 0.15),
-        tooltipBackground: NSColor(white: 0.15, alpha: 0.95),
-        tooltipForeground: NSColor(white: 0.95, alpha: 1.0),
-        accentColor: NSColor.systemBlue,
-        destructiveColor: NSColor.systemRed
-    )
-    
-    static let light = Theme(
-        cardBackground: NSColor(white: 1.0, alpha: 1.0),
-        foreground: NSColor(white: 0.0, alpha: 1.0),
-        foregroundMuted: NSColor(white: 0.0, alpha: 0.5),
-        separatorColor: NSColor(white: 0.0, alpha: 0.12),
-        tooltipBackground: NSColor(white: 0.97, alpha: 0.95),
-        tooltipForeground: NSColor(white: 0.2, alpha: 1.0),
-        accentColor: NSColor.systemBlue,
-        destructiveColor: NSColor.systemRed
+
+    return NSColor(
+        red: CGFloat((packed >> 16) & 0xff) / 255,
+        green: CGFloat((packed >> 8) & 0xff) / 255,
+        blue: CGFloat(packed & 0xff) / 255,
+        alpha: 1.0
     )
 }
 

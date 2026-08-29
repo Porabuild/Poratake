@@ -68,8 +68,8 @@ export interface ExportRenderProps {
 export const HANDLE_SIZE = 12;
 
 export const getHandleStyle = () => ({
-  fill: 'white',
-  stroke: '#007AFF',
+  fill: 'var(--primary-foreground)',
+  stroke: 'var(--primary)',
   strokeWidth: 2,
   cursor: 'default',
 });

@@ -34,7 +34,8 @@ export const TEXT_BG_COLOR = 'rgba(0, 0, 0, 0.75)';
 export const TEXT_BG_PADDING_X = 8;
 export const TEXT_BG_PADDING_Y = 4;
 export const TEXT_BG_BORDER_RADIUS = 4;
-export const SELECTION_BORDER_COLOR = 'rgba(0, 122, 255, 0.8)';
+export const SELECTION_BORDER_COLOR =
+  'color-mix(in srgb, var(--primary) 80%, transparent)';
 export const SELECTION_BORDER_WIDTH = 2;
 
 let measureCanvas: HTMLCanvasElement | null = null;

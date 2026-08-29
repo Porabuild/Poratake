@@ -5,13 +5,12 @@
 // `Page.addScriptToEvaluateOnNewDocument`) before loading
 // `http://localhost:5599/index.html?window=<type>#<tab>`.
 //
-// Set APPEARANCE, ACCENT and SHORTCUTS to whatever the GPUI app is reading from
+// Set APPEARANCE and SHORTCUTS to whatever the GPUI app is reading from
 // its dev config -- otherwise a colour or an accelerator will differ for a
 // reason that has nothing to do with the shells.
 window.appPlatform = 'win32';
 
 const APPEARANCE = { mode: 'dark', theme: 'default' };
-const ACCENT = '#007AFF';
 const SHORTCUTS = undefined; // undefined => the renderer's own defaults
 
 const query = new URLSearchParams(location.search);
@@ -56,7 +55,6 @@ window.ipcRenderer = {
         : { appearance: APPEARANCE };
     }
     if (channel === 'settings:get-appearance') return APPEARANCE;
-    if (channel === 'system:preferences:get-accent-color') return ACCENT;
     // A handful of channels are read as arrays or strings rather than merged
     // over a default, so an empty object would throw.
     // The image editor loads its capture as base64 over IPC, so serve the

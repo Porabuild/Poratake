@@ -36,7 +36,7 @@ class RecordingOverlayModule: Module {
             return
         }
 
-        let color = Self.parseColor(params?["color"]?.string())
+        let color = themeColor(params?["color"]?.string()) ?? Self.highlightFallback
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -46,23 +46,6 @@ class RecordingOverlayModule: Module {
             )
             self.respond(id: requestId, result: ["visible": visible])
         }
-    }
-
-    /// The app hands over its live theme accent as `#rrggbb`.
-    private static func parseColor(_ value: String?) -> NSColor {
-        guard let hex = value?.trimmingCharacters(in: CharacterSet(charactersIn: "#")),
-              hex.count == 6,
-              let packed = UInt32(hex, radix: 16)
-        else {
-            return highlightFallback
-        }
-
-        return NSColor(
-            red: CGFloat((packed >> 16) & 0xff) / 255,
-            green: CGFloat((packed >> 8) & 0xff) / 255,
-            blue: CGFloat(packed & 0xff) / 255,
-            alpha: 1.0
-        )
     }
 
     private func handleShow(params: [String: AnyCodable]?, requestId: String) {
@@ -255,13 +238,9 @@ private class RecordingHighlightView: NSView {
         layer?.backgroundColor = NSColor.clear.cgColor
     }
 
+    @available(*, unavailable)
     required init?(coder: NSCoder) {
-        thickness = 1
-        radius = 8
-        color = .systemBlue
-        super.init(coder: coder)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
+        fatalError()
     }
 
     override func draw(_ dirtyRect: NSRect) {

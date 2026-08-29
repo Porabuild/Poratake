@@ -1711,24 +1711,31 @@ mod tests {
     #[test]
     fn destructive_controls_hover_destructive_and_the_rest_hover_primary() {
         let source = include_str!("capture_preview.rs");
-        // `theme.accent` is the theme's own accent; `theme.primary` is the OS
-        // accent, which is what Electron's `--primary` resolves to.
-        for line in source.lines() {
-            let trimmed = line.trim();
-            assert!(
-                !trimmed.starts_with(".hover(|style| style.bg(theme.accent))"),
-                "a preview control still hovers to the theme accent instead of                  the OS accent: {trimmed}"
-            );
+        let control_call = |id: &str| {
+            let marker = format!("(\"{id}\", id),");
+            source
+                .split_once(&marker)
+                .unwrap_or_else(|| panic!("missing {id}"))
+                .1
+                .split_once("cx.listener")
+                .unwrap_or_else(|| panic!("missing {id} listener"))
+                .0
+        };
+
+        for id in ["preview-close", "preview-delete"] {
+            assert!(control_call(id).contains("theme.destructive,"), "{id}");
         }
-        // Counted as whole lines: the call sites each sit on their own line, so
-        // this cannot match the string literal in this very test.
-        let destructive = source
-            .lines()
-            .filter(|line| line.trim() == "theme.destructive,")
-            .count();
-        assert_eq!(
-            destructive, 2,
-            "close and delete are the two destructive controls"
-        );
+        for id in ["preview-copy", "preview-upload", "preview-pin-display"] {
+            assert!(control_call(id).contains("theme.primary,"), "{id}");
+        }
+
+        let pill_button = source
+            .split_once("fn pill_button")
+            .expect("pill button")
+            .1
+            .split_once("fn chip")
+            .expect("pill button body")
+            .0;
+        assert!(pill_button.contains("theme.primary,"));
     }
 }

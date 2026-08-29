@@ -242,8 +242,7 @@ fn preset_manager(
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::IconXs)
                     .icon("star")
-                    // `text-primary` when this preset is the Polish default,
-                    // and `--primary` is the operating system's accent.
+                    // `text-primary` when this preset is the Polish default.
                     .foreground(if is_default {
                         theme.primary
                     } else {

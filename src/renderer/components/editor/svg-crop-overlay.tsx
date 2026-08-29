@@ -268,8 +268,8 @@ const SvgCropOverlay = ({
   }, [dragState, offsetX, offsetY, imageWidth, imageHeight, onCropRectChange]);
 
   const handleStyle = {
-    fill: 'white',
-    stroke: '#007AFF',
+    fill: 'var(--primary-foreground)',
+    stroke: 'var(--primary)',
     strokeWidth: 2,
     cursor: 'default',
   };
@@ -355,7 +355,7 @@ const SvgCropOverlay = ({
         width={normalizedRect.width}
         height={normalizedRect.height}
         fill="transparent"
-        stroke="#007AFF"
+        stroke="var(--primary)"
         strokeWidth={2}
         rx={1}
         style={{ cursor: 'move', pointerEvents: 'auto' }}
@@ -380,7 +380,7 @@ const SvgCropOverlay = ({
         x={textX}
         y={textY}
         textAnchor="middle"
-        fill="#007AFF"
+        fill="var(--primary)"
         fontSize={14}
         fontFamily="system-ui, -apple-system, sans-serif"
         style={{ pointerEvents: 'none', userSelect: 'none' }}

@@ -782,7 +782,7 @@ fn selection_outline(
             .h(px((bottom - top) as f32 * zoom + PADDING * 2.0))
             .rounded(px(3.0))
             .border_1()
-            .border_color(crate::ui::colors::selection_ring())
+            .border_color(theme.primary)
             .into_any_element(),
     )
 }

@@ -2,7 +2,8 @@ use crate::overlay::{
     add_key_handler, create_popup_window, default_wndproc, ensure_window_class, remove_key_handler,
     scale_for_dpi, to_wide,
 };
-use crate::protocol::{Request, param_i32, respond_error, respond_success, send_event};
+use crate::panel::parse_color;
+use crate::protocol::{Request, param_i32, param_str, respond_error, respond_success, send_event};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
 use serde_json::json;
@@ -34,6 +35,8 @@ struct TimerUiState {
     window: Option<HWND>,
     font: Option<HFONT>,
     remaining: i32,
+    background: COLORREF,
+    foreground: COLORREF,
     key_token: Option<usize>,
 }
 
@@ -42,6 +45,8 @@ thread_local! {
         window: None,
         font: None,
         remaining: 0,
+        background: COLORREF(0),
+        foreground: COLORREF(0),
         key_token: None,
     }) };
 }
@@ -70,18 +75,26 @@ unsafe extern "system" fn wndproc(
 }
 
 fn paint(window: HWND) {
-    let (font, remaining) = STATE.with(|state| (state.borrow().font, state.borrow().remaining));
+    let (font, remaining, background, foreground) = STATE.with(|state| {
+        let state = state.borrow();
+        (
+            state.font,
+            state.remaining,
+            state.background,
+            state.foreground,
+        )
+    });
 
     unsafe {
         let mut paint_struct = PAINTSTRUCT::default();
         let dc = BeginPaint(window, &mut paint_struct);
 
-        let background = CreateSolidBrush(COLORREF(0x001E1E1E));
-        FillRect(dc, &paint_struct.rcPaint, background);
-        let _ = DeleteObject(background.into());
+        let background_brush = CreateSolidBrush(background);
+        FillRect(dc, &paint_struct.rcPaint, background_brush);
+        let _ = DeleteObject(background_brush.into());
 
         SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, COLORREF(0x00FFFFFF));
+        SetTextColor(dc, foreground);
 
         let previous_font = font.map(|font| SelectObject(dc, font.into()));
 
@@ -134,9 +147,18 @@ fn cancel() {
     send_event("timer-control:cancel", None);
 }
 
-fn show_panel(x: i32, y: i32, duration: i32) -> Result<(), String> {
+fn show_panel(
+    x: i32,
+    y: i32,
+    duration: i32,
+    background: COLORREF,
+    foreground: COLORREF,
+) -> Result<(), String> {
     STATE.with(|state| {
-        state.borrow_mut().remaining = duration;
+        let mut state = state.borrow_mut();
+        state.remaining = duration;
+        state.background = background;
+        state.foreground = foreground;
     });
 
     let existing = STATE.with(|state| state.borrow().window);
@@ -285,11 +307,22 @@ impl Module for TimerControlModule {
                 let x = param_i32(&request.params, "x").unwrap_or(100);
                 let y = param_i32(&request.params, "y").unwrap_or(100);
                 let duration = param_i32(&request.params, "duration").unwrap_or(5);
+                let (Some(background), Some(foreground)) = (
+                    parse_color(param_str(&request.params, "color")),
+                    parse_color(param_str(&request.params, "foregroundColor")),
+                ) else {
+                    return Reply::Now(Err((
+                        "INVALID_PARAMS".to_string(),
+                        "show requires theme colors".to_string(),
+                    )));
+                };
                 let request_id = request.id.clone();
 
-                run_on_ui(move || match show_panel(x, y, duration.max(1)) {
-                    Ok(()) => respond_success(&request_id, json!({ "visible": true })),
-                    Err(message) => respond_error(&request_id, "UI_ERROR", &message),
+                run_on_ui(move || {
+                    match show_panel(x, y, duration.max(1), background, foreground) {
+                        Ok(()) => respond_success(&request_id, json!({ "visible": true })),
+                        Err(message) => respond_error(&request_id, "UI_ERROR", &message),
+                    }
                 });
 
                 Reply::Deferred
@@ -305,6 +338,51 @@ impl Module for TimerControlModule {
                 Reply::Deferred
             }
             method => method_not_found(method),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn show_request(params: Option<HashMap<String, serde_json::Value>>) -> Request {
+        Request {
+            id: "timer-theme".to_string(),
+            module: "timer-control".to_string(),
+            method: "show".to_string(),
+            params,
+        }
+    }
+
+    #[test]
+    fn show_rejects_missing_or_invalid_theme_colors() {
+        let cases = [
+            None,
+            Some(HashMap::from([
+                ("color".to_string(), json!("invalid")),
+                ("foregroundColor".to_string(), json!("#ffffff")),
+            ])),
+            Some(HashMap::from([
+                ("color".to_string(), json!("#000000")),
+                ("foregroundColor".to_string(), json!("invalid")),
+            ])),
+        ];
+
+        for params in cases {
+            let mut module = TimerControlModule;
+            let Reply::Now(result) = module.handle(&show_request(params)) else {
+                panic!("invalid theme colors should respond immediately");
+            };
+            assert_eq!(
+                result,
+                Err((
+                    "INVALID_PARAMS".to_string(),
+                    "show requires theme colors".to_string(),
+                ))
+            );
         }
     }
 }

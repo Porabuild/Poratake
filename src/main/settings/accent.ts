@@ -2,7 +2,7 @@ import { nativeTheme } from 'electron';
 import { getThemePreset } from '@/types/theme';
 import { getConfig } from './index';
 
-export function getAccentColor(): string {
+function getAccentVariant() {
   const appearance = getConfig().appearance;
   const preset = getThemePreset(appearance.theme);
   const isDark =
@@ -10,5 +10,13 @@ export function getAccentColor(): string {
       ? nativeTheme.shouldUseDarkColors
       : appearance.mode === 'dark';
 
-  return isDark ? preset.dark.accent : preset.light.accent;
+  return isDark ? preset.dark : preset.light;
+}
+
+export function getAccentColor(): string {
+  return getAccentVariant().accent;
+}
+
+export function getAccentForegroundColor(): string {
+  return getAccentVariant().accentFg;
 }
