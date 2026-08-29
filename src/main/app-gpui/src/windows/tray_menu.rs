@@ -3,10 +3,12 @@ use std::rc::Rc;
 
 #[cfg(not(windows))]
 use gpui::AnyWindowHandle;
+#[cfg(windows)]
+use gpui::Global;
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Render,
-    Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
-    WindowOptions,
+    Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
+    WindowKind, WindowOptions,
 };
 
 use crate::system::native::TrayRect;
@@ -15,6 +17,7 @@ use crate::ui::menu::{DismissHandler, MenuEntrance, MenuEntry, MenuView};
 #[cfg(not(windows))]
 use crate::ui::primitives::overlay_fade_out;
 use crate::ui::primitives::OVERLAY_EXIT_MS;
+#[cfg(not(windows))]
 use crate::windows::registry::{self, WindowKind as RegistryKind};
 
 const MENU_WIDTH: f32 = 304.0;
@@ -38,45 +41,108 @@ fn recently_closed_on_deactivation() -> bool {
     })
 }
 
-/// Destroys the window without any exit animation. Only for the path where the
-/// window never managed to activate, so there is nothing on screen to fade.
-fn discard_tray_menu(window: &mut Window, cx: &mut App) {
-    window.remove_window();
-    registry::forget(RegistryKind::TrayMenu, cx);
-}
-
 struct MenuGeometry {
     bounds: Bounds<Pixels>,
     display_id: Option<DisplayId>,
+    scale_factor: Option<f32>,
 }
 
 pub(crate) struct MenuDisplay {
     pub(crate) work_area: Bounds<Pixels>,
     pub(crate) tray_rect: Option<TrayRect>,
     pub(crate) id: DisplayId,
+    pub(crate) scale_factor: Option<f32>,
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+struct TrayMenuCache {
+    handle: Option<WindowHandle<TrayMenuWindow>>,
+}
+
+#[cfg(windows)]
+impl Global for TrayMenuCache {}
+
+#[cfg(windows)]
+fn tray_menu_cache(cx: &mut App) -> &mut TrayMenuCache {
+    if cx.try_global::<TrayMenuCache>().is_none() {
+        cx.set_global(TrayMenuCache::default());
+    }
+    cx.global_mut::<TrayMenuCache>()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayMenuVisibility {
+    Hidden,
+    Revealing,
+    Visible,
+    Closing,
+}
+
+#[cfg(any(windows, test))]
+fn reveal_is_current(
+    visibility: TrayMenuVisibility,
+    current_generation: u64,
+    candidate_generation: u64,
+) -> bool {
+    visibility == TrayMenuVisibility::Revealing && current_generation == candidate_generation
+}
+
+impl TrayMenuVisibility {
+    fn new(visible: bool) -> Self {
+        if visible && cfg!(windows) {
+            return Self::Revealing;
+        }
+        if visible {
+            return Self::Visible;
+        }
+        Self::Hidden
+    }
+
+    fn is_shown(self) -> bool {
+        matches!(self, Self::Revealing | Self::Visible)
+    }
+
+    fn begin_close(&mut self) -> bool {
+        if !self.is_shown() {
+            return false;
+        }
+        *self = Self::Closing;
+        true
+    }
 }
 
 pub struct TrayMenuWindow {
     menu: Entity<MenuView>,
+    dismiss: DismissHandler,
     activation: Option<Subscription>,
-    revealing: bool,
+    visibility: TrayMenuVisibility,
+    #[cfg(windows)]
+    reveal_generation: u64,
     #[cfg(not(windows))]
     window_handle: AnyWindowHandle,
-    closing_at: Option<std::time::Instant>,
 }
 
 impl TrayMenuWindow {
-    fn new(menu: Entity<MenuView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        menu: Entity<MenuView>,
+        dismiss: DismissHandler,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut view = Self {
             menu,
+            dismiss,
             activation: None,
-            revealing: cfg!(windows),
+            visibility: TrayMenuVisibility::new(visible),
+            #[cfg(windows)]
+            reveal_generation: u64::from(visible),
             #[cfg(not(windows))]
             window_handle: window.window_handle(),
-            closing_at: None,
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
-            if !window.is_window_active() && !this.revealing && this.closing_at.is_none() {
+            if !window.is_window_active() && this.visibility == TrayMenuVisibility::Visible {
                 *CLOSED_ON_DEACTIVATION.lock() = Some(std::time::Instant::now());
                 this.begin_close(window, cx);
             }
@@ -85,129 +151,233 @@ impl TrayMenuWindow {
     }
 
     fn begin_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.closing_at.is_some() {
+        if !self.visibility.begin_close() {
             return;
         }
-        self.closing_at = Some(std::time::Instant::now());
-
         #[cfg(windows)]
         {
-            registry::forget(RegistryKind::TrayMenu, cx);
-            hide_tray_menu_window(window);
-            window.remove_window();
+            self.reveal_generation = self.reveal_generation.wrapping_add(1);
         }
+        self.finish_close(window, cx);
+    }
 
-        #[cfg(not(windows))]
-        {
-            let handle = self.window_handle;
-            cx.spawn(async move |_this, cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(OVERLAY_EXIT_MS))
-                    .await;
-                let _ = cx.update(|cx| {
-                    let _ = handle.update(cx, |_, window, _| window.remove_window());
-                    registry::forget(RegistryKind::TrayMenu, cx);
-                });
-            })
-            .detach();
-            cx.notify();
+    #[cfg(windows)]
+    fn finish_close(&mut self, window: &mut Window, _: &mut Context<Self>) {
+        hide_tray_menu_window(window);
+        self.visibility = TrayMenuVisibility::Hidden;
+    }
+
+    #[cfg(not(windows))]
+    fn finish_close(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.window_handle;
+        cx.spawn(async move |_this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(OVERLAY_EXIT_MS))
+                .await;
+            let _ = cx.update(|cx| {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                registry::forget(RegistryKind::TrayMenu, cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    #[cfg(windows)]
+    pub fn prewarm(cx: &mut App) {
+        if let Some(handle) = tray_menu_cache(cx).handle {
+            if handle.update(cx, |_, _, _| ()).is_ok() {
+                return;
+            }
         }
+        let opened = Self::open(None, false, cx);
+        tray_menu_cache(cx).handle = opened;
     }
 
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
         if recently_closed_on_deactivation() {
             return;
         }
+
+        #[cfg(windows)]
+        {
+            if let Some(handle) = tray_menu_cache(cx).handle {
+                let updated = handle.update(cx, |this, window, cx| {
+                    if this.visibility.is_shown() {
+                        this.begin_close(window, cx);
+                        return;
+                    }
+                    this.show(tray_rect, window, cx);
+                });
+                if updated.is_ok() {
+                    return;
+                }
+                tray_menu_cache(cx).handle = None;
+            }
+            let opened = Self::open(tray_rect, true, cx);
+            tray_menu_cache(cx).handle = opened;
+        }
+
+        #[cfg(not(windows))]
         registry::toggle(RegistryKind::TrayMenu, cx, |cx| {
-            let config = crate::state::state(cx).config.get();
-            let state = TrayMenuState::from_config(&config);
-            let entries = crate::system::tray::entries(&state, tray_rect);
-            let geometry = menu_geometry(tray_rect, &entries, cx);
-            let max_height = geometry.bounds.size.height;
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(geometry.bounds)),
-                    titlebar: None,
-                    focus: true,
-                    show: !cfg!(windows),
-                    kind: WindowKind::PopUp,
-                    is_movable: false,
-                    is_resizable: false,
-                    is_minimizable: false,
-                    display_id: geometry.display_id,
-                    window_background: WindowBackgroundAppearance::Transparent,
-                    ..Default::default()
-                },
-                |window, cx| {
-                    configure_tray_menu_window(window);
-                    #[cfg(windows)]
-                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                        crate::system::window_composition::stage_window(
-                            hwnd,
-                            geometry.bounds,
-                            window.scale_factor(),
-                            true,
-                        );
-                    }
-                    // The menu has to be built before the view that owns it, so
-                    // the dismiss handler reaches that view through this slot,
-                    // which is filled a few lines below.
-                    let owner: Rc<RefCell<Option<WeakEntity<TrayMenuWindow>>>> =
-                        Rc::new(RefCell::new(None));
-                    let dismiss: DismissHandler = {
-                        let owner = owner.clone();
-                        Rc::new(move |window, cx| {
-                            let _ = owner.borrow().clone().map(|owner| {
-                                owner.update(cx, |this, cx| this.begin_close(window, cx))
-                            });
-                        })
-                    };
-                    let menu = cx.new(|cx| {
-                        MenuView::new(entries, dismiss, cx)
-                            .compact(true)
-                            .neutral_highlight(true)
-                            .entrance(MenuEntrance::Instant)
-                            .min_width(px(MENU_WIDTH))
-                            .max_height(max_height)
-                    });
-                    window.focus(&menu.read(cx).focus_handle());
-                    let view = cx.new(|cx| Self::new(menu, window, cx));
-                    *owner.borrow_mut() = Some(view.downgrade());
-                    #[cfg(windows)]
-                    {
-                        // The window is created inactive, so the activation
-                        // observer would otherwise read that initial state as a
-                        // deactivation and close the menu before it had ever been
-                        // seen.
-                        let settled = view.clone();
-                        window.on_next_frame(move |window, _cx| {
-                            configure_tray_menu_window(window);
-                            window.on_next_frame(move |window, _cx| {
-                                if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                                    crate::system::window_composition::reveal_window(
-                                        hwnd,
-                                        true,
-                                        MENU_FADE_MS,
-                                    );
-                                }
-                                window.activate_window();
-                                window.on_next_frame(move |window, cx| {
-                                    settled.update(cx, |this, _cx| this.revealing = false);
-                                    if !window.is_window_active() {
-                                        discard_tray_menu(window, cx);
-                                    }
-                                });
-                            });
-                        });
-                        window.activate_window();
-                    }
-                    view
-                },
-            )
-            .ok()
-            .map(Into::into)
+            Self::open(tray_rect, true, cx).map(Into::into)
         });
     }
+
+    fn open(
+        tray_rect: Option<TrayRect>,
+        visible: bool,
+        cx: &mut App,
+    ) -> Option<WindowHandle<Self>> {
+        let config = crate::state::state(cx).config.get();
+        let state = TrayMenuState::from_config(&config);
+        let entries = crate::system::tray::entries(&state, tray_rect);
+        let geometry = menu_geometry(tray_rect, &entries, cx);
+        let max_height = geometry.bounds.size.height;
+        let initial_bounds = if cfg!(windows) && !visible {
+            Bounds {
+                origin: gpui::point(px(-32000.0), px(-32000.0)),
+                size: geometry.bounds.size,
+            }
+        } else {
+            geometry.bounds
+        };
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(initial_bounds)),
+                titlebar: None,
+                focus: visible,
+                show: !cfg!(windows) || !visible,
+                kind: WindowKind::PopUp,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                display_id: geometry.display_id,
+                window_background: WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |window, cx| {
+                configure_tray_menu_window(window);
+                #[cfg(windows)]
+                if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                    crate::system::window_composition::stage_window(
+                        hwnd,
+                        initial_bounds,
+                        window.scale_factor(),
+                        false,
+                    );
+                }
+                let owner: Rc<RefCell<Option<WeakEntity<TrayMenuWindow>>>> =
+                    Rc::new(RefCell::new(None));
+                let dismiss: DismissHandler = {
+                    let owner = owner.clone();
+                    Rc::new(move |window, cx| {
+                        let _ = owner
+                            .borrow()
+                            .clone()
+                            .map(|owner| owner.update(cx, |this, cx| this.begin_close(window, cx)));
+                    })
+                };
+                let menu = cx.new(|cx| build_menu(entries, dismiss.clone(), max_height, cx));
+                if visible {
+                    window.focus(&menu.read(cx).focus_handle());
+                }
+                let view = cx.new(|cx| Self::new(menu, dismiss, visible, window, cx));
+                *owner.borrow_mut() = Some(view.downgrade());
+                #[cfg(windows)]
+                if visible {
+                    let generation = view.read(cx).reveal_generation;
+                    Self::schedule_reveal(view.clone(), window, generation);
+                    window.activate_window();
+                }
+                view
+            },
+        )
+        .ok()
+    }
+
+    #[cfg(windows)]
+    fn show(&mut self, tray_rect: Option<TrayRect>, window: &mut Window, cx: &mut Context<Self>) {
+        let config = crate::state::state(cx).config.get();
+        let state = TrayMenuState::from_config(&config);
+        let entries = crate::system::tray::entries(&state, tray_rect);
+        let geometry = menu_geometry(tray_rect, &entries, cx);
+        let max_height = geometry.bounds.size.height;
+        if let Some(hwnd) = crate::windows::window_hwnd(window) {
+            crate::system::window_composition::stage_window(
+                hwnd,
+                geometry.bounds,
+                geometry
+                    .scale_factor
+                    .unwrap_or_else(|| window.scale_factor()),
+                false,
+            );
+        }
+        self.menu = cx.new(|cx| build_menu(entries, self.dismiss.clone(), max_height, cx));
+        self.visibility = TrayMenuVisibility::Revealing;
+        self.reveal_generation = self.reveal_generation.wrapping_add(1);
+        let generation = self.reveal_generation;
+        window.focus(&self.menu.read(cx).focus_handle());
+        cx.notify();
+        Self::schedule_reveal(cx.entity(), window, generation);
+        window.activate_window();
+    }
+
+    #[cfg(windows)]
+    fn schedule_reveal(view: Entity<Self>, window: &mut Window, generation: u64) {
+        window.on_next_frame(move |window, cx| {
+            if !view.read(cx).is_current_reveal(generation) {
+                return;
+            }
+            configure_tray_menu_window(window);
+            let reveal_view = view.clone();
+            window.on_next_frame(move |window, cx| {
+                if !reveal_view.read(cx).is_current_reveal(generation) {
+                    return;
+                }
+                if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                    crate::system::window_composition::reveal_window(hwnd, true, MENU_FADE_MS);
+                }
+                window.activate_window();
+                let settle_view = reveal_view.clone();
+                window.on_next_frame(move |window, cx| {
+                    let active = window.is_window_active();
+                    settle_view.update(cx, |this, cx| {
+                        if !this.is_current_reveal(generation) {
+                            return;
+                        }
+                        this.visibility = TrayMenuVisibility::Visible;
+                        if !active {
+                            this.begin_close(window, cx);
+                        }
+                    });
+                });
+            });
+        });
+    }
+
+    #[cfg(windows)]
+    fn is_current_reveal(&self, generation: u64) -> bool {
+        reveal_is_current(self.visibility, self.reveal_generation, generation)
+    }
+}
+
+fn build_menu(
+    entries: Vec<MenuEntry>,
+    dismiss: DismissHandler,
+    max_height: Pixels,
+    cx: &mut Context<MenuView>,
+) -> MenuView {
+    MenuView::new(entries, dismiss, cx)
+        .compact(true)
+        .neutral_highlight(true)
+        .entrance(if cfg!(windows) {
+            MenuEntrance::Instant
+        } else {
+            MenuEntrance::Overlay
+        })
+        .min_width(px(MENU_WIDTH))
+        .max_height(max_height)
 }
 
 impl Render for TrayMenuWindow {
@@ -218,9 +388,11 @@ impl Render for TrayMenuWindow {
         return surface.into_any_element();
 
         #[cfg(not(windows))]
-        match self.closing_at {
-            Some(_) => overlay_fade_out("tray-menu-exit", surface).into_any_element(),
-            None => surface.into_any_element(),
+        match self.visibility {
+            TrayMenuVisibility::Closing => {
+                overlay_fade_out("tray-menu-exit", surface).into_any_element()
+            }
+            _ => surface.into_any_element(),
         }
     }
 }
@@ -253,18 +425,13 @@ fn configure_tray_menu_window(window: &Window) {
     let _ = window;
 }
 
-/// The window is exactly the menu surface. It used to carry a 12px margin on
-/// every side to give `shadow_md` room, but the transparent margin of a
-/// borderless window is DWM's to fill, and it filled it -- the menu sat inside a
-/// visible rounded box of its own, with a border and a shadow. The drop shadow
-/// now comes from DWM around the surface itself, which is what the recording bar
-/// does.
 fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut App) -> MenuGeometry {
     let Some(display) = menu_display(tray_rect, cx) else {
         let window_size = size(px(MENU_WIDTH), px(menu_height(entries)));
         return MenuGeometry {
             bounds: Bounds::centered(None, window_size, cx),
             display_id: None,
+            scale_factor: None,
         };
     };
     let max_content_height = f32::from(display.work_area.size.height) - SCREEN_GAP * 2.0;
@@ -276,6 +443,7 @@ fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut Ap
         return MenuGeometry {
             bounds: Bounds::centered(Some(display.id), window_size, cx),
             display_id: Some(display.id),
+            scale_factor: display.scale_factor,
         };
     };
     let min_x = f32::from(display.work_area.left()) + SCREEN_GAP;
@@ -297,6 +465,7 @@ fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut Ap
             size: window_size,
         },
         display_id: Some(display.id),
+        scale_factor: display.scale_factor,
     }
 }
 
@@ -315,6 +484,7 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
             work_area: crate::system::work_area::work_area(display.bounds()),
             tray_rect: None,
             id: display.id(),
+            scale_factor: None,
         });
     };
     let point = POINT {
@@ -382,6 +552,7 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
         },
         tray_rect: Some(tray_rect),
         id: display.id(),
+        scale_factor: Some(dpi_x as f32 / 96.0),
     })
 }
 
@@ -392,6 +563,7 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
         work_area: crate::system::work_area::work_area(display.bounds()),
         tray_rect,
         id: display.id(),
+        scale_factor: None,
     })
 }
 
@@ -426,6 +598,27 @@ fn physical_to_logical_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shown_menu_enters_closing_state() {
+        let mut visibility = TrayMenuVisibility::Visible;
+        let started = visibility.begin_close();
+        assert_eq!((started, visibility), (true, TrayMenuVisibility::Closing));
+    }
+
+    #[test]
+    fn hidden_menu_ignores_duplicate_close() {
+        let mut visibility = TrayMenuVisibility::Hidden;
+        let started = visibility.begin_close();
+        assert_eq!((started, visibility), (false, TrayMenuVisibility::Hidden));
+    }
+
+    #[test]
+    fn stale_reveal_generation_is_rejected() {
+        assert!(!reveal_is_current(TrayMenuVisibility::Revealing, 2, 1));
+        assert!(!reveal_is_current(TrayMenuVisibility::Hidden, 2, 2));
+        assert!(reveal_is_current(TrayMenuVisibility::Revealing, 2, 2));
+    }
 
     #[test]
     fn menu_height_counts_items_and_separators() {

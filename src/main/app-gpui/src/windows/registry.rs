@@ -9,6 +9,7 @@ pub enum WindowKind {
     VideoEditor,
     Onboarding,
     RecordingControl,
+    #[cfg(not(windows))]
     TrayMenu,
 }
 

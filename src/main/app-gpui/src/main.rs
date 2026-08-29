@@ -140,6 +140,10 @@ fn main() {
 
         windows::keepalive::KeepAlive::open(cx);
         #[cfg(windows)]
+        if !settings.general.hide_menu_bar_icon {
+            windows::tray_menu::TrayMenuWindow::prewarm(cx);
+        }
+        #[cfg(windows)]
         capture::overlay::prewarm(cx);
 
         if windows::onboarding::OnboardingWindow::should_show(&config) {

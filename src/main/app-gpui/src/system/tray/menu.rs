@@ -278,8 +278,7 @@ pub fn entries(
                 if let Some(accelerator) = accelerator {
                     item = item.shortcut(accelerator::display(&accelerator));
                 }
-                item = item.on_select(move |window, cx| {
-                    window.remove_window();
+                item = item.on_select(move |_window, cx| {
                     crate::intents::dispatch(intent, tray_rect, cx);
                 });
                 MenuEntry::Item(item)
