@@ -45,6 +45,7 @@ pub struct MenuPlacement {
     offset: Point<Pixels>,
     min_width: Option<Pixels>,
     compact: bool,
+    neutral_highlight: bool,
 }
 
 impl MenuPlacement {
@@ -57,6 +58,7 @@ impl MenuPlacement {
             offset: point(px(0.0), px(0.0)),
             min_width: None,
             compact: false,
+            neutral_highlight: false,
         }
     }
 
@@ -66,9 +68,10 @@ impl MenuPlacement {
             owner: Some(owner.into()),
             position: None,
             anchor: Corner::TopLeft,
-            offset: point(px(0.0), px(4.0)),
+            offset: point(px(0.0), px(8.0)),
             min_width: None,
             compact: false,
+            neutral_highlight: true,
         }
     }
 
@@ -79,9 +82,10 @@ impl MenuPlacement {
             owner: Some(owner.into()),
             position: None,
             anchor: Corner::BottomLeft,
-            offset: point(px(0.0), px(-4.0)),
+            offset: point(px(0.0), px(-8.0)),
             min_width: None,
             compact: false,
+            neutral_highlight: true,
         }
     }
 
@@ -208,11 +212,14 @@ impl MenuHandle {
         }
         let min_width = placement.min_width;
         let compact = placement.compact;
+        let neutral_highlight = placement.neutral_highlight;
         self.open_with(
             placement,
             move |dismiss, cx| {
                 let view = cx.new(|cx| {
-                    let menu = MenuView::new(entries, dismiss, cx).compact(compact);
+                    let menu = MenuView::new(entries, dismiss, cx)
+                        .compact(compact)
+                        .neutral_highlight(neutral_highlight);
                     match min_width {
                         Some(width) => menu.min_width(width),
                         None => menu,
@@ -369,4 +376,27 @@ fn layer(popup: &MenuPopup) -> AnyElement {
         anchor = anchor.position(position);
     }
     deferred(anchor).with_priority(1).into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropdown_placements_use_neutral_highlights_and_eight_pixel_gaps() {
+        let below = MenuPlacement::below("below");
+        assert_eq!(f32::from(below.offset.y), 8.0);
+        assert!(below.neutral_highlight);
+
+        let above = MenuPlacement::above("above");
+        assert_eq!(f32::from(above.offset.y), -8.0);
+        assert!(above.neutral_highlight);
+    }
+
+    #[test]
+    fn context_menu_placement_keeps_its_existing_highlight_policy() {
+        let context = MenuPlacement::at(point(px(10.0), px(20.0)));
+        assert_eq!(f32::from(context.offset.y), 0.0);
+        assert!(!context.neutral_highlight);
+    }
 }

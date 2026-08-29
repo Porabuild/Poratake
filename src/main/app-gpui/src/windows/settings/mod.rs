@@ -18,7 +18,7 @@ use gpui::{
 use crate::config::schema::SettingsConfig;
 use crate::config::store::ConfigStore;
 use crate::theme::presets::{resolve_theme_mode, AppThemePreset, ThemeMode, APP_THEME_PRESETS};
-use crate::theme::vars::{active_theme, update_theme, ThemeVars};
+use crate::theme::vars::{active_mode, active_theme, update_theme, ThemeVars};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::MenuHandle;
@@ -58,6 +58,8 @@ pub struct SettingsWindow {
     devices: Option<crate::system::devices::MediaDeviceLists>,
     menu: MenuHandle,
     focus_handle: FocusHandle,
+    #[cfg(windows)]
+    acrylic_dark: Option<bool>,
     /// The update check's state, shared with the thread that performs it.
     update: crate::update::Shared,
     /// Which "beyond Electron" disclosures the user has opened this session.
@@ -102,6 +104,8 @@ impl SettingsWindow {
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::Status::Idle)),
             extras_open: std::collections::HashSet::new(),
             focus_handle: cx.focus_handle(),
+            #[cfg(windows)]
+            acrylic_dark: None,
         }
     }
 
@@ -572,6 +576,16 @@ impl SettingsWindow {
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
+        #[cfg(windows)]
+        {
+            let dark = active_mode(cx) == ThemeMode::Dark;
+            if self.acrylic_dark != Some(dark) {
+                if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                    crate::system::window_composition::configure_acrylic_surface(hwnd, dark);
+                    self.acrylic_dark = Some(dark);
+                }
+            }
+        }
         let query = self.search_query(cx);
         let searching = !query.is_empty();
 
@@ -598,7 +612,6 @@ impl Render for SettingsWindow {
             .flex()
             .flex_row()
             .size_full()
-            .bg(theme.content_background)
             .text_color(theme.foreground)
             .child(sidebar(self, &theme, window, cx))
             .child(
@@ -660,6 +673,17 @@ fn sidebar(
     let searching = !window.search_query(cx).is_empty();
     let active = window.active;
     let categories = Category::supported();
+    let sidebar_percentage = if active_mode(cx) == ThemeMode::Dark {
+        if cfg!(windows) {
+            85.0
+        } else {
+            65.0
+        }
+    } else if cfg!(windows) {
+        65.0
+    } else {
+        35.0
+    };
 
     let mut entry = |category: Category, cx: &mut Context<SettingsWindow>| {
         let selected = !searching && active == category;
@@ -732,33 +756,15 @@ fn sidebar(
         .w(px(SIDEBAR_WIDTH))
         .flex_shrink_0()
         .h_full()
-        // `.poratake-settings-sidebar` is a vertical wash from 88% to 72% of
-        // `--sidebar-background` with a right hairline. Its `backdrop-filter`
-        // has no gpui equivalent, so the wash sits on the content background
-        // the blur would have sampled.
-        .bg(gpui::linear_gradient(
-            180.0,
-            gpui::linear_color_stop(
-                crate::theme::color::mix_hsla(
-                    theme.sidebar_background,
-                    88.0,
-                    theme.content_background,
-                ),
-                0.0,
-            ),
-            gpui::linear_color_stop(
-                crate::theme::color::mix_hsla(
-                    theme.sidebar_background,
-                    72.0,
-                    theme.content_background,
-                ),
-                1.0,
-            ),
+        .bg(crate::theme::color::mix_hsla(
+            theme.content_background,
+            sidebar_percentage,
+            theme.content_background.opacity(0.0),
         ))
         .border_r_1()
         .border_color(theme.hairline)
         .child(
-            div()
+            crate::ui::window_controls::drag_area("settings-title-drag")
                 .flex()
                 .items_center()
                 .h(px(40.0))

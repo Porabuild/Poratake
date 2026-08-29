@@ -118,6 +118,7 @@ fn render_track(
             px(chrome::SLIDER_KNOB_HEIGHT),
         )
     };
+    let knob_border = if slider.small { Pixels::ZERO } else { px(2.0) };
     let bounds_cell = Rc::new(RefCell::new(None::<gpui::Bounds<Pixels>>));
     let recorder = bounds_cell.clone();
     let element_key = format!("{}", slider.id);
@@ -182,17 +183,29 @@ fn render_track(
                     // track's own left edge.
                     div()
                         .absolute()
-                        .top((track_height - knob_h) / 2.0)
+                        .top((track_height - knob_h - knob_border * 2.0) / 2.0)
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .rounded_full()
-                        .w(knob_w)
-                        .h(knob_h)
-                        .ml(-inset)
+                        .w(knob_w + knob_border * 2.0)
+                        .h(knob_h + knob_border * 2.0)
+                        .ml(-inset - knob_border)
                         .bg(if slider.small {
                             theme.foreground
                         } else {
-                            theme.accent_foreground
+                            theme.accent
                         })
-                        .left(gpui::relative(fraction)),
+                        .left(gpui::relative(fraction))
+                        .when(!slider.small, |el| {
+                            el.child(
+                                div()
+                                    .rounded_full()
+                                    .w(knob_w)
+                                    .h(knob_h)
+                                    .bg(theme.accent_foreground),
+                            )
+                        }),
                 )
                 .child(
                     canvas(

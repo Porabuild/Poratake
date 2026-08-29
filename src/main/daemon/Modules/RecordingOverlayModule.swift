@@ -210,7 +210,7 @@ class RecordingOverlayModule: Module {
             if screen.frame.intersects(globalRecordingRect) {
                 overlayView.updateRecordingRect(localRect)
             } else {
-                overlayView.updateRecordingRect(.zero)
+                overlayView.dimEntireScreen()
             }
             
             window.contentView = overlayView
@@ -283,6 +283,7 @@ private class RecordingHighlightView: NSView {
 
 private class RecordingOverlayView: NSView {
     var recordingRect: NSRect = .zero
+    private var dimsEntireScreen = false
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -297,12 +298,25 @@ private class RecordingOverlayView: NSView {
     }
     
     func updateRecordingRect(_ rect: NSRect) {
+        dimsEntireScreen = false
         recordingRect = rect
+        needsDisplay = true
+    }
+
+    func dimEntireScreen() {
+        dimsEntireScreen = true
+        recordingRect = .zero
         needsDisplay = true
     }
     
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+
+        if dimsEntireScreen {
+            NSColor.black.withAlphaComponent(0.5).setFill()
+            bounds.fill()
+            return
+        }
         
         guard recordingRect.width > 0 && recordingRect.height > 0 else { return }
         

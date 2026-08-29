@@ -1,6 +1,6 @@
 use gpui::{
-    canvas, div, point, prelude::*, px, AnyElement, App, Hsla, PathBuilder, Pixels, Point, Styled,
-    Window, WindowControlArea,
+    canvas, div, point, prelude::*, px, AnyElement, App, Div, ElementId, Hsla, PathBuilder, Pixels,
+    Point, Stateful, Styled, Window, WindowControlArea,
 };
 
 use crate::theme::color::Srgba;
@@ -36,8 +36,45 @@ pub fn leading_inset() -> AnyElement {
         .w(px(chrome::TRAFFIC_LIGHT_INSET))
         .h_full()
         .flex_none()
-        .window_control_area(WindowControlArea::Drag)
         .into_any_element()
+}
+
+pub fn drag_area(id: impl Into<ElementId>) -> Stateful<Div> {
+    let area = div().id(id).window_control_area(WindowControlArea::Drag);
+
+    #[cfg(windows)]
+    return area
+        .mx(px(1.0))
+        .on_mouse_down(gpui::MouseButton::Left, |event, window, cx| {
+            if event.click_count != 1 {
+                return;
+            }
+            start_window_drag(window);
+            cx.stop_propagation();
+        });
+
+    #[cfg(not(windows))]
+    area
+}
+
+#[cfg(windows)]
+fn start_window_drag(window: &Window) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        PostMessageW, HTCAPTION, SC_MOVE, WM_SYSCOMMAND,
+    };
+
+    let Some(hwnd) = crate::windows::window_hwnd(window) else {
+        return;
+    };
+    unsafe {
+        let _ = PostMessageW(
+            Some(hwnd),
+            WM_SYSCOMMAND,
+            WPARAM((SC_MOVE | HTCAPTION) as usize),
+            LPARAM(0),
+        );
+    }
 }
 
 pub fn drag_strip(
@@ -57,13 +94,7 @@ pub fn drag_strip(
         strip = strip.child(leading_inset());
     }
     strip
-        .child(
-            div()
-                .id("title-drag")
-                .flex_1()
-                .h_full()
-                .window_control_area(WindowControlArea::Drag),
-        )
+        .child(drag_area("title-drag").flex_1().h_full())
         .child(render(window, cx, theme))
         .into_any_element()
 }
@@ -138,6 +169,7 @@ fn caption(
         .items_center()
         .justify_center()
         .flex_none()
+        .occlude()
         .window_control_area(area)
         .when(hovered, |caption| {
             let caption = caption.bg(hover_bg);

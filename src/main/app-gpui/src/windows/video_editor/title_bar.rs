@@ -1,6 +1,4 @@
-use gpui::{
-    div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window, WindowControlArea,
-};
+use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window};
 
 use crate::system::accelerator;
 use crate::theme::vars::ThemeVars;
@@ -143,13 +141,12 @@ pub fn render(
                 .on_click(cx.listener(|this, _event, _window, cx| this.toggle_sidebar(cx))),
         );
 
-    let mut name = div()
+    let mut name = crate::ui::window_controls::drag_area("video-title-drag")
         .flex()
         .flex_row()
         .items_center()
         .flex_1()
         .min_w_0()
-        .window_control_area(WindowControlArea::Drag)
         .text_color(theme.muted_foreground);
     if chrome::is_macos() {
         name = name.pl(px(chrome::VIDEO_TRAFFIC_LIGHT_PAD));

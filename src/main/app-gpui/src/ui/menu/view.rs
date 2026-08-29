@@ -131,6 +131,19 @@ impl MenuView {
         value * self.scale()
     }
 
+    fn entrance_frame(&self) -> (f32, f32) {
+        match self.entrance {
+            MenuEntrance::Instant => (1.0, 0.0),
+            MenuEntrance::Overlay => {
+                let progress = crate::ui::primitives::enter_progress(self.opened_at);
+                (
+                    progress,
+                    -crate::ui::primitives::OVERLAY_ENTER_SLIDE * (1.0 - progress),
+                )
+            }
+        }
+    }
+
     fn item_height(&self) -> f32 {
         self.scaled(if self.compact {
             ITEM_HEIGHT_COMPACT
@@ -597,6 +610,8 @@ impl Render for MenuView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let pointer_inside = window.is_window_hovered();
+        let overlay = matches!(self.entrance, MenuEntrance::Overlay);
+        let (enter_opacity, enter_offset) = self.entrance_frame();
         let has_indicator = self.entries.iter().any(|entry| match entry {
             MenuEntry::Item(item) => {
                 !item.is_row() && (item.toggle.is_some() || item.radio.is_some() || item.inset)
@@ -622,20 +637,11 @@ impl Render for MenuView {
             .text_color(theme.popover_foreground)
             .shadow_md()
             .p(px(self.list_pad()))
-            // Only `Overlay` needs this. Its `zoom-in-95` is a clock-driven
-            // re-layout (`scale()` above), so the view has to keep being
-            // re-rendered for it to advance -- and that clock starts at
-            // construction, ahead of the fade's own. `AnimationElement` already
-            // asks for a frame per step itself, so driving a second one here
-            // re-renders the whole menu twice a frame and the fade stutters.
-            .when(
-                matches!(self.entrance, MenuEntrance::Overlay)
-                    && crate::ui::primitives::entering(self.opened_at),
-                |el| {
-                    crate::ui::primitives::request_animation_frame(window);
-                    el
-                },
-            )
+            .when(overlay && enter_opacity < 1.0, |el| {
+                crate::ui::primitives::request_animation_frame(window);
+                el
+            })
+            .when(overlay, |el| el.opacity(enter_opacity).mt(px(enter_offset)))
             .max_h(self.max_height)
             .overflow_y_scroll();
 
@@ -655,20 +661,7 @@ impl Render for MenuView {
             });
         }
 
-        let entrance = match self.entrance {
-            MenuEntrance::Overlay => crate::ui::primitives::overlay_enter(
-                "menu-enter",
-                crate::ui::primitives::EnterFrom::Top,
-                list,
-            )
-            .into_any_element(),
-            MenuEntrance::Instant => list.into_any_element(),
-        };
-
-        div()
-            .relative()
-            .child(entrance)
-            .children(self.submenu_layer())
+        div().relative().child(list).children(self.submenu_layer())
     }
 }
 
@@ -691,4 +684,33 @@ fn label_row(text: SharedString, theme: &ThemeVars, has_indicator: bool) -> gpui
         .text_color(theme.muted_foreground)
         .child(text)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn completed_menu_entrance_stays_settled_across_pointer_highlight_updates(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let menu = cx.update(|cx| {
+            cx.new(|cx| {
+                let mut menu = MenuView::new(Vec::new(), Rc::new(|_, _| {}), cx);
+                menu.opened_at = std::time::Instant::now()
+                    - std::time::Duration::from_millis(crate::ui::primitives::OVERLAY_ENTER_MS * 2);
+                menu
+            })
+        });
+        let before = menu.read_with(cx, |menu, _| menu.entrance_frame());
+
+        menu.update(cx, |menu, cx| {
+            menu.highlighted = Some(0);
+            menu.highlighted_by_pointer = true;
+            cx.notify();
+        });
+        let after = menu.read_with(cx, |menu, _| menu.entrance_frame());
+
+        assert_eq!((before, after), ((1.0, 0.0), (1.0, 0.0)));
+    }
 }

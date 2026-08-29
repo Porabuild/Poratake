@@ -28,6 +28,10 @@ enum Mode {
     Recording,
 }
 
+fn can_cancel_with_escape(mode: Mode) -> bool {
+    mode == Mode::PreRecording
+}
+
 pub struct RecordingControl {
     mode: Mode,
     #[allow(dead_code)]
@@ -58,6 +62,9 @@ impl RecordingControl {
         if recorder::is_recording() {
             return;
         }
+        if Self::update_pre_recording(cx, target, rect, window_id, target_name.as_deref()) {
+            return;
+        }
         let config = crate::state::state(cx).config.get().recording;
         let width = chrome::recording_control_width(false, target_name.is_some());
         let bounds = bar_bounds(cx, rect, width);
@@ -78,7 +85,7 @@ impl RecordingControl {
                 },
                 |window, cx| {
                     configure_toolbar_window(window);
-                    #[cfg(windows)]
+                    #[cfg(all(windows, not(test)))]
                     if let Some(hwnd) = crate::windows::window_hwnd(window) {
                         crate::system::window_composition::stage_window(
                             hwnd,
@@ -105,7 +112,7 @@ impl RecordingControl {
                         focus_handle: cx.focus_handle(),
                     });
                     window.focus(&view.read(cx).focus_handle);
-                    #[cfg(windows)]
+                    #[cfg(all(windows, not(test)))]
                     window.on_next_frame(move |window, _cx| {
                         window.on_next_frame(move |window, _cx| {
                             window.on_next_frame(move |window, _cx| {
@@ -115,14 +122,90 @@ impl RecordingControl {
                                     );
                                 }
                             });
+                            crate::ui::primitives::request_animation_frame(window);
                         });
+                        crate::ui::primitives::request_animation_frame(window);
                     });
+                    #[cfg(all(windows, not(test)))]
+                    crate::ui::primitives::request_animation_frame(window);
                     view
                 },
             )
             .ok()
             .map(Into::into)
         });
+    }
+
+    pub fn cancel_pre_recording(cx: &mut App) -> bool {
+        for window_handle in cx.windows() {
+            let Some(handle) = window_handle.downcast::<Self>() else {
+                continue;
+            };
+            let cancelled = handle
+                .update(cx, |this, window, _cx| {
+                    if !can_cancel_with_escape(this.mode) {
+                        return false;
+                    }
+                    window.remove_window();
+                    true
+                })
+                .unwrap_or(false);
+            if cancelled {
+                registry::forget(RegistryKind::RecordingControl, cx);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn update_pre_recording(
+        cx: &mut App,
+        target: RecordingTarget,
+        rect: ScreenRect,
+        window_id: Option<i64>,
+        target_name: Option<&str>,
+    ) -> bool {
+        let width = chrome::recording_control_width(false, target_name.is_some());
+        let bounds = bar_bounds(cx, rect, width);
+        let target_name = target_name.map(str::to_owned);
+        for window_handle in cx.windows() {
+            let Some(handle) = window_handle.downcast::<Self>() else {
+                continue;
+            };
+            let updated = handle
+                .update(cx, |this, window, cx| {
+                    if this.mode != Mode::PreRecording {
+                        return false;
+                    }
+                    #[cfg(not(windows))]
+                    if window.bounds().origin != bounds.origin {
+                        window.remove_window();
+                        return false;
+                    }
+                    this.target = target;
+                    this.rect = rect;
+                    this.window_id = window_id;
+                    this.target_name = target_name.clone().map(SharedString::from);
+                    window.resize(bounds.size);
+                    #[cfg(windows)]
+                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                        crate::system::window_composition::apply_window_bounds(
+                            hwnd,
+                            bounds,
+                            window.scale_factor(),
+                        );
+                    }
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if updated {
+                return true;
+            }
+            registry::forget(RegistryKind::RecordingControl, cx);
+            return false;
+        }
+        false
     }
 
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -152,12 +235,35 @@ impl RecordingControl {
             output_path: project.clone(),
         };
 
+        if !crate::capture::overlay::release_frozen_for_recording(cx) {
+            let _ = std::fs::remove_dir_all(&project);
+            crate::windows::toast::Toast::show(
+                cx,
+                "Recording failed",
+                "Could not release the frozen screen",
+            );
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        if !crate::capture::overlay::begin_recording_handoff(self.rect, cx) {
+            let _ = std::fs::remove_dir_all(&project);
+            crate::windows::toast::Toast::show(
+                cx,
+                "Recording failed",
+                "Could not show the recording overlay",
+            );
+            return;
+        }
         if let Err(error) = recorder::start(&service.daemon, &config) {
             eprintln!("[recorder] {error}");
             let _ = std::fs::remove_dir_all(&project);
+            #[cfg(target_os = "macos")]
+            crate::capture::overlay::end_recording_handoff(cx);
             crate::windows::toast::Toast::show(cx, "Recording failed", error.to_string());
             return;
         }
+        #[cfg(not(target_os = "macos"))]
+        let _ = crate::capture::overlay::begin_recording_handoff(self.rect, cx);
 
         self.project = Some(project);
         self.mode = Mode::Recording;
@@ -458,6 +564,7 @@ impl RecordingControl {
 
         window.remove_window();
         registry::close(RegistryKind::RecordingControl, cx);
+        crate::capture::overlay::end_recording_handoff(cx);
         crate::intents::refresh_shell(cx);
 
         let Some(project) = project else {
@@ -505,6 +612,7 @@ impl RecordingControl {
         }
         window.remove_window();
         registry::close(RegistryKind::RecordingControl, cx);
+        crate::capture::overlay::end_recording_handoff(cx);
     }
 }
 
@@ -513,14 +621,28 @@ fn report_toggle_failure(cx: &mut Context<RecordingControl>, error: &anyhow::Err
 }
 
 fn configure_toolbar_window(window: &Window) {
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     {
         let Some(hwnd) = crate::windows::window_hwnd(window) else {
             return;
         };
         crate::system::window_composition::configure_transparent_surface(hwnd);
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            };
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+            );
+        }
     }
-    #[cfg(not(windows))]
+    #[cfg(any(not(windows), test))]
     let _ = window;
 }
 
@@ -643,6 +765,7 @@ impl Render for RecordingControl {
                     cx,
                 )),
                 &self.menu,
+                cx,
             );
         }
 
@@ -695,6 +818,7 @@ impl Render for RecordingControl {
                     ),
             ),
             &self.menu,
+            cx,
         )
     }
 }
@@ -703,6 +827,7 @@ fn recording_shell(
     focus: &FocusHandle,
     bar: impl IntoElement,
     menu: &MenuHandle,
+    cx: &mut Context<RecordingControl>,
 ) -> impl IntoElement {
     div()
         .id("recording-control")
@@ -711,6 +836,11 @@ fn recording_shell(
         .flex()
         .flex_col()
         .items_center()
+        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+            if event.keystroke.key == "escape" && can_cancel_with_escape(this.mode) {
+                this.cancel(window, cx);
+            }
+        }))
         .pt(px(chrome::RECORDING_BAR_PAD_TOP))
         .child(bar)
         .children(menu.render())
@@ -747,6 +877,12 @@ mod tests {
         let (x, y) = chrome::recording_bar_origin(0.0, 10.0, 1920.0, 236.0);
         assert_eq!(y, 34.0);
         assert_eq!(x, ((1920.0_f32 - 236.0) / 2.0).round());
+    }
+
+    #[test]
+    fn escape_only_cancels_before_recording_starts() {
+        assert!(can_cancel_with_escape(Mode::PreRecording));
+        assert!(!can_cancel_with_escape(Mode::Recording));
     }
 }
 

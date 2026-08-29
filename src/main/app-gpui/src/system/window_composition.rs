@@ -171,6 +171,34 @@ pub fn configure_transparent_surface(window: HWND) {
     disable_accent(window);
 }
 
+pub fn configure_acrylic_surface(window: HWND, dark: bool) -> bool {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
+        DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+
+    let dark = BOOL::from(dark);
+    let applied = unsafe {
+        let _ = DwmSetWindowAttribute(
+            window,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&dark) as u32,
+        );
+        DwmSetWindowAttribute(
+            window,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            &DWMSBT_TRANSIENTWINDOW as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&DWMSBT_TRANSIENTWINDOW) as u32,
+        )
+        .is_ok()
+    };
+    if applied {
+        disable_accent(window);
+    }
+    applied
+}
+
 pub fn disable_transitions(window: HWND) {
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
 

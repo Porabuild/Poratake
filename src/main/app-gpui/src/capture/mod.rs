@@ -214,24 +214,26 @@ impl CaptureService {
     }
 
     /// `releaseScreen()`. Safe to call when nothing is frozen.
-    pub fn release_screen(&self, generation: u64) {
+    pub fn release_screen(&self, generation: u64) -> bool {
         let _operation = self.freeze.operation.lock();
         if generation == 0 || !self.wait_for_release(generation) {
-            return;
+            return true;
         }
-        self.release_screen_started();
+        self.release_screen_started()
     }
 
-    fn release_screen_started(&self) {
+    fn release_screen_started(&self) -> bool {
         if !self.daemon.is_running() {
-            return;
+            return true;
         }
         if let Err(error) = self
             .daemon
             .call("freeze-screen", "release", Some(json!({})))
         {
             eprintln!("[freeze] failed to release the frozen displays: {error}");
+            return false;
         }
+        true
     }
 
     /// `prewarm` warms the capture pipeline so the freeze itself is not the
@@ -269,6 +271,7 @@ impl CaptureService {
 pub mod all_in_one;
 pub mod all_in_one_toolbar;
 pub mod analysis;
+pub mod color_picker;
 pub mod coordinator;
 pub mod desktop_icons;
 pub mod intent;

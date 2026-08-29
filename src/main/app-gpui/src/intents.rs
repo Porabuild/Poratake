@@ -1,4 +1,4 @@
-use gpui::{prelude::*, px, size, App, Bounds};
+use gpui::{prelude::*, px, size, App, Bounds, WindowBackgroundAppearance};
 
 use crate::capture::intent::CaptureIntent;
 use crate::product;
@@ -118,6 +118,7 @@ pub fn refresh_shell(cx: &mut App) {
 pub fn open_settings(category: Category, cx: &mut App) {
     registry::open_or_activate(WindowKind::Settings, cx, |cx| {
         let store = crate::state::state(cx).config;
+        let dark = crate::theme::vars::active_mode(cx) == crate::theme::presets::ThemeMode::Dark;
         let bounds = Bounds::centered(
             None,
             size(
@@ -126,16 +127,21 @@ pub fn open_settings(category: Category, cx: &mut App) {
             ),
             cx,
         );
-        cx.open_window(
-            crate::windows::app_window_options(
-                bounds,
-                Some(size(
-                    px(crate::ui::chrome::SETTINGS_WINDOW_WIDTH),
-                    px(crate::ui::chrome::SETTINGS_WINDOW_HEIGHT),
-                )),
-            ),
-            |_, cx| cx.new(|cx| SettingsWindow::new(store, category, cx)),
-        )
+        let mut options = crate::windows::app_window_options(
+            bounds,
+            Some(size(
+                px(crate::ui::chrome::SETTINGS_WINDOW_WIDTH),
+                px(crate::ui::chrome::SETTINGS_WINDOW_HEIGHT),
+            )),
+        );
+        options.window_background = WindowBackgroundAppearance::Blurred;
+        cx.open_window(options, |window, cx| {
+            #[cfg(windows)]
+            if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                crate::system::window_composition::configure_acrylic_surface(hwnd, dark);
+            }
+            cx.new(|cx| SettingsWindow::new(store, category, cx))
+        })
         .ok()
         .map(|handle| handle.into())
     });

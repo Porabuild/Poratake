@@ -312,12 +312,10 @@ impl RenderOnce for TitleBar {
                 .child(options)
         };
 
-        let drag = div()
-            .id("editor-title-drag")
+        let drag = crate::ui::window_controls::drag_area("editor-title-drag")
             .flex_1()
             .min_w_0()
-            .h_full()
-            .window_control_area(gpui::WindowControlArea::Drag);
+            .h_full();
 
         let mut bar = div()
             .id("editor-title-bar")

@@ -13,9 +13,13 @@ use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuBuilder, MenuHandle, MenuItem, MenuPlacement};
 
 const TARGET_MENU_ID: &str = "all-in-one-target";
+const TARGET_ICON_GAP: f32 = 4.0;
+const TARGET_ICON_GROUP_WIDTH: f32 =
+    chrome::TOOL_BUTTON_ICON + TARGET_ICON_GAP + chrome::OVERLAY_TARGET_CHEVRON;
 
 pub fn render(
     choices: Choices,
+    picking_color: bool,
     menu: &MenuHandle,
     theme: &ThemeVars,
     window: &mut Window,
@@ -34,7 +38,7 @@ pub fn render(
         if mode == Mode::Record && !recording_enabled {
             continue;
         }
-        let active = choices.mode == mode;
+        let active = mode_selected(choices, picking_color, mode);
         let id = format!("all-in-one-mode-{}", mode.id());
         let focus = crate::ui::primitives::control_focus(&id, false, window, cx);
         // Gated hover flag instead of a `.hover()` style, which gpui paints
@@ -96,35 +100,45 @@ pub fn render(
                 .p(px(chrome::OVERLAY_SURFACE_PADDING))
                 .text_color(theme.foreground)
                 .child(modes)
-                .when(choices.mode != Mode::Ocr, |el| {
-                    el.child(target_menu(choices, menu, theme, window, cx))
-                })
+                .child(target_menu(choices, menu, theme, window, cx))
                 .child(hairline(theme))
                 .when(ocr_enabled, |el| {
                     el.child(
-                        toolbar_button("all-in-one-ocr", "scan-text", "Capture text")
-                            .selected(choices.mode == Mode::Ocr)
-                            .on_click(cx.listener(|this, _event, window, cx| {
+                        toolbar_button(
+                            "all-in-one-ocr",
+                            "scan-text",
+                            "Capture text",
+                            mode_selected(choices, picking_color, Mode::Ocr),
+                            theme,
+                        )
+                        .on_click(cx.listener(
+                            |this, _event, window, cx| {
                                 this.close_all_in_one_menu(window);
                                 this.set_all_in_one_mode(Mode::Ocr, cx);
-                            })),
+                            },
+                        )),
                     )
                 })
                 .child(
-                    toolbar_button("all-in-one-pick-color", "pipette", "Pick color").on_click(
-                        cx.listener(|this, _event, window, cx| {
-                            this.start_color_picker(window, cx);
-                        }),
-                    ),
+                    toolbar_button(
+                        "all-in-one-pick-color",
+                        "pipette",
+                        "Pick color",
+                        picking_color,
+                        theme,
+                    )
+                    .on_click(cx.listener(|this, _event, window, cx| {
+                        this.start_color_picker(window, cx);
+                    })),
                 )
                 .child(hairline(theme))
                 .child(
-                    toolbar_button("all-in-one-close", "x", "Close").on_click(cx.listener(
-                        |_this, _event, window, cx| {
+                    toolbar_button("all-in-one-close", "x", "Close", false, theme).on_click(
+                        cx.listener(|_this, _event, window, cx| {
                             crate::capture::overlay::close_all(cx);
                             window.remove_window();
-                        },
-                    )),
+                        }),
+                    ),
                 ),
         );
     bar = bar.on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
@@ -136,15 +150,43 @@ pub fn render(
 /// `toolbar-button.tsx`: `size-8 rounded-3xl hover:bg-white/15` with
 /// `--button-fg: rgb(255 255 255 / 0.85)`. The overlay floats over the frozen
 /// desktop, so its chrome is white on every theme rather than themed.
-fn toolbar_button(id: &'static str, icon: &'static str, tooltip: &'static str) -> Button {
-    Button::new(id)
+fn toolbar_button(
+    id: &'static str,
+    icon: &'static str,
+    tooltip: &'static str,
+    selected: bool,
+    theme: &ThemeVars,
+) -> Button {
+    let (surface, surface_hover) =
+        toolbar_button_surfaces(selected, theme.default, theme.default_hover);
+    let button = Button::new(id)
         .variant(ButtonVariant::Ghost)
         .size(ButtonSize::IconSm)
         .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
         .foreground(crate::ui::colors::white(0.85))
-        .surface_hover(crate::ui::colors::white(0.15))
+        .surface_hover(surface_hover)
+        .selected(selected)
         .icon(icon)
-        .tooltip(tooltip)
+        .tooltip(tooltip);
+    match surface {
+        Some(surface) => button.surface(surface),
+        None => button,
+    }
+}
+
+fn toolbar_button_surfaces(
+    selected: bool,
+    selected_surface: gpui::Hsla,
+    selected_hover: gpui::Hsla,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
+    if selected {
+        return (Some(selected_surface), selected_hover);
+    }
+    (None, crate::ui::colors::white(0.15))
+}
+
+fn mode_selected(choices: Choices, picking_color: bool, mode: Mode) -> bool {
+    !picking_color && choices.mode == mode
 }
 
 fn hairline(theme: &ThemeVars) -> AnyElement {
@@ -207,7 +249,6 @@ fn target_menu(
         .flex_row()
         .items_center()
         .justify_center()
-        .gap(px(4.0))
         .h(px(chrome::OVERLAY_BUTTON_SIZE))
         .w(px(chrome::OVERLAY_TARGET_TRIGGER_WIDTH))
         .min_w(px(chrome::OVERLAY_TARGET_TRIGGER_WIDTH))
@@ -225,14 +266,22 @@ fn target_menu(
                 crate::ui::primitives::track_hover(&trigger_hover, *over, cx);
             }
         })
-        .child(icon_element(
-            choices.target.icon(),
-            px(chrome::TOOL_BUTTON_ICON),
-        ))
-        .child(icon_element(
-            "chevron-down",
-            px(chrome::OVERLAY_TARGET_CHEVRON),
-        ))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .w(px(TARGET_ICON_GROUP_WIDTH))
+                .gap(px(TARGET_ICON_GAP))
+                .child(icon_element(
+                    choices.target.icon(),
+                    px(chrome::TOOL_BUTTON_ICON),
+                ))
+                .child(icon_element(
+                    "chevron-down",
+                    px(chrome::OVERLAY_TARGET_CHEVRON),
+                )),
+        )
         .child(menu.render_dropdown(TARGET_MENU_ID))
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
             handle.toggle(
@@ -255,4 +304,37 @@ fn target_menu(
             }
         })
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_icon_group_has_a_fixed_centered_footprint() {
+        assert_eq!(TARGET_ICON_GROUP_WIDTH, 32.0);
+        assert_eq!(
+            chrome::OVERLAY_TARGET_TRIGGER_WIDTH
+                - chrome::OVERLAY_TARGET_TRIGGER_PAD_X * 2.0
+                - TARGET_ICON_GROUP_WIDTH,
+            4.0
+        );
+    }
+
+    #[test]
+    fn selected_toolbar_buttons_use_the_active_hover_surface() {
+        let selected_surface = gpui::hsla(0.0, 0.0, 0.2, 1.0);
+        let selected_hover = gpui::hsla(0.0, 0.0, 0.3, 1.0);
+        assert_eq!(
+            toolbar_button_surfaces(true, selected_surface, selected_hover),
+            (Some(selected_surface), selected_hover)
+        );
+    }
+
+    #[test]
+    fn color_picker_replaces_the_selected_mode() {
+        let choices = Choices::default();
+        assert!(mode_selected(choices, false, Mode::Screenshot));
+        assert!(!mode_selected(choices, true, Mode::Screenshot));
+    }
 }
