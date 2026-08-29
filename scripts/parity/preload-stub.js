@@ -5,9 +5,6 @@
 // `Page.addScriptToEvaluateOnNewDocument`) before loading
 // `http://localhost:5599/index.html?window=<type>#<tab>`.
 //
-// Set APPEARANCE and SHORTCUTS to whatever the GPUI app is reading from
-// its dev config -- otherwise a colour or an accelerator will differ for a
-// reason that has nothing to do with the shells.
 window.appPlatform = 'win32';
 
 const APPEARANCE = { mode: 'dark', theme: 'default' };

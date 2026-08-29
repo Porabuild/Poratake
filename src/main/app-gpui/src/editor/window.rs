@@ -50,6 +50,9 @@ pub struct EditorWindow {
     pub history: AnnotationHistory,
     pub draft: Option<Annotation>,
     pub drag_start: Option<Point>,
+    pending_pointer_update: Option<Point>,
+    pending_stroke_points: Vec<Point>,
+    pointer_update_scheduled: bool,
     pub menu: MenuHandle,
     /// The inline field shown while a text annotation is being typed.
     text_editor: Option<(String, gpui::Entity<crate::ui::text_field::TextField>)>,
@@ -155,6 +158,9 @@ impl EditorWindow {
             history: AnnotationHistory::new(Vec::new()),
             draft: None,
             drag_start: None,
+            pending_pointer_update: None,
+            pending_stroke_points: Vec::new(),
+            pointer_update_scheduled: false,
             menu: MenuHandle::new(),
             text_editor: None,
             crop: None,
@@ -686,7 +692,7 @@ impl EditorWindow {
 
         match (&mut self.draft, tool) {
             (Some(draft @ (Annotation::Pen { .. } | Annotation::Highlight { .. })), _) => {
-                draft.push_point(point)
+                draft.push_point(point);
             }
             (
                 Some(Annotation::Redact {
@@ -730,6 +736,64 @@ impl EditorWindow {
             _ => {}
         }
         self.sync_snapshot();
+    }
+
+    fn queue_pointer_update(
+        &mut self,
+        point: Point,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(
+            self.draft,
+            Some(Annotation::Pen { .. } | Annotation::Highlight { .. })
+        ) {
+            self.pending_stroke_points.push(point);
+        } else {
+            self.pending_pointer_update = Some(point);
+        }
+        if self.pointer_update_scheduled {
+            return;
+        }
+        self.pointer_update_scheduled = true;
+        let editor = cx.entity().downgrade();
+        window.on_next_frame(move |_window, cx| {
+            let _ = editor.update(cx, |editor, cx| {
+                editor.apply_pending_pointer_update();
+                cx.notify();
+            });
+        });
+        window.request_animation_frame();
+    }
+
+    fn apply_pending_pointer_update(&mut self) {
+        self.pointer_update_scheduled = false;
+        if let Some(point) = self.pending_pointer_update.take() {
+            if self.move_origin.is_some() {
+                self.move_selected(point);
+                self.sync_snapshot();
+                return;
+            }
+            if self.drag_start.is_some() {
+                self.extend_stroke(point);
+            }
+        }
+        if self.drag_start.is_none() || self.pending_stroke_points.is_empty() {
+            self.pending_stroke_points.clear();
+            return;
+        }
+        let points = std::mem::take(&mut self.pending_stroke_points);
+        let Some(draft @ (Annotation::Pen { .. } | Annotation::Highlight { .. })) = &mut self.draft
+        else {
+            return;
+        };
+        let mut changed = false;
+        for point in points {
+            changed |= draft.push_point(point);
+        }
+        if changed {
+            self.sync_snapshot();
+        }
     }
 
     /// Port of `applyCrop`: crops the base image and shifts every annotation
@@ -1335,38 +1399,25 @@ impl Render for EditorWindow {
                         })
                         .on_mouse_move({
                             let entity = move_entity;
-                            move |event: &MouseMoveEvent, _window, cx| {
+                            move |event: &MouseMoveEvent, window, cx| {
+                                let position = event.position;
                                 entity
                                     .update(cx, |editor, cx| {
                                         if let Some((pointer, offset)) = editor.pan_origin {
                                             editor.stage_scroll.set_offset(gpui::point(
-                                                offset.x + (event.position.x - pointer.x),
-                                                offset.y + (event.position.y - pointer.y),
+                                                offset.x + (position.x - pointer.x),
+                                                offset.y + (position.y - pointer.y),
                                             ));
                                             cx.notify();
                                             return;
                                         }
-                                        if editor.move_origin.is_some() {
+                                        if editor.move_origin.is_some()
+                                            || editor.drag_start.is_some()
+                                        {
                                             let bounds = *editor.bounds.borrow();
-                                            let point = to_canvas_point(
-                                                event.position,
-                                                bounds,
-                                                editor.zoom,
-                                            );
-                                            editor.move_selected(point);
-                                            editor.sync_snapshot();
-                                            cx.notify();
-                                            return;
-                                        }
-                                        if editor.drag_start.is_some() {
-                                            let bounds = *editor.bounds.borrow();
-                                            let point = to_canvas_point(
-                                                event.position,
-                                                bounds,
-                                                editor.zoom,
-                                            );
-                                            editor.extend_stroke(point);
-                                            cx.notify();
+                                            let point =
+                                                to_canvas_point(position, bounds, editor.zoom);
+                                            editor.queue_pointer_update(point, window, cx);
                                         }
                                     })
                                     .ok();
@@ -1378,6 +1429,7 @@ impl Render for EditorWindow {
                                 entity
                                     .update(cx, |editor, cx| {
                                         editor.pan_origin = None;
+                                        editor.apply_pending_pointer_update();
                                         editor.finish_stroke();
                                         cx.notify();
                                     })

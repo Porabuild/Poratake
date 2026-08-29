@@ -22,6 +22,8 @@ pub struct Source {
     video: Option<VideoDecoder>,
     camera: Option<VideoDecoder>,
     video_segments: Vec<VideoSegment>,
+    video_frame: Option<(f64, Arc<Pixmap>)>,
+    camera_frame: Option<(f64, Arc<Pixmap>)>,
 }
 
 impl Source {
@@ -40,8 +42,9 @@ impl Source {
             .then(|| VideoDecoder::open(&camera_path))
             .flatten();
 
+        let preview_fps = crate::video::export::frame_rate(&state).max(1) as f64;
         let mut config = Config::new(info.width as f64, info.height as f64, state);
-        config.fps = info.frame_rate();
+        config.fps = preview_fps;
         config.cursor_data = sidecars::load_cursor(path);
         config.keyboard_data = sidecars::load_keyboard(path);
         config.subtitle_data = sidecars::load_subtitle(path);
@@ -64,6 +67,8 @@ impl Source {
             video,
             camera,
             video_segments,
+            video_frame: None,
+            camera_frame: None,
         })
     }
 
@@ -87,9 +92,11 @@ impl Source {
         let previous_first_frame = self.engine.config().state.first_frame.image_data.clone();
         let next_background = state.wallpaper.background_image.clone();
         let next_first_frame = state.first_frame.image_data.clone();
+        let frame_rate = crate::video::export::frame_rate(&state).max(1) as f64;
 
         self.video_segments = segments::to_video_segments(&state.segments);
         self.engine.set_state(state);
+        self.engine.set_frame_rate(frame_rate);
 
         if previous_background != next_background {
             self.engine.set_background_image(
@@ -108,36 +115,52 @@ impl Source {
     }
 
     /// Composes the frame at `timeline_time`.
-    pub fn compose(&mut self, timeline_time: f64) -> Option<Pixmap> {
+    pub fn compose(
+        &mut self,
+        timeline_time: f64,
+        max_dimensions: Option<(u32, u32)>,
+    ) -> Option<Pixmap> {
         let first_frame_duration = self.engine.first_frame_duration();
         let adjusted = (timeline_time - first_frame_duration).max(0.0);
         let video_time = segments::map_timeline_to_video_time(adjusted, &self.video_segments)
             .or_else(|| self.video_segments.last().map(|segment| segment.end_time))
             .unwrap_or(adjusted);
 
-        let video = self
-            .video
-            .as_ref()
-            .and_then(|decoder| decoder.frame_at(video_time))
-            .map(|frame| to_pixmap(&frame));
-        let camera = self
-            .camera
-            .as_ref()
-            .and_then(|decoder| decoder.frame_at(video_time))
-            .map(|frame| to_pixmap(&frame));
+        let video = cached_frame(self.video.as_ref(), &mut self.video_frame, video_time);
+        let camera = cached_frame(self.camera.as_ref(), &mut self.camera_frame, video_time);
 
-        self.engine.render_frame(
-            timeline_time,
-            Frames {
-                video: video
-                    .as_ref()
-                    .and_then(|pixmap| pixmap.as_ref().map(|p| p.as_ref())),
-                camera: camera
-                    .as_ref()
-                    .and_then(|pixmap| pixmap.as_ref().map(|p| p.as_ref())),
-            },
-        )
+        let frames = Frames {
+            video: video.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
+            camera: camera.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
+        };
+        match max_dimensions {
+            Some((width, height)) => {
+                self.engine
+                    .render_frame_scaled(timeline_time, frames, width, height)
+            }
+            None => self.engine.render_frame(timeline_time, frames),
+        }
     }
+}
+
+fn cached_frame(
+    decoder: Option<&VideoDecoder>,
+    cached: &mut Option<(f64, Arc<Pixmap>)>,
+    time: f64,
+) -> Option<Arc<Pixmap>> {
+    if let Some(frame) = cached
+        .as_ref()
+        .filter(|(cached_time, _)| (*cached_time - time).abs() < f64::EPSILON)
+        .map(|(_, frame)| frame.clone())
+    {
+        return Some(frame);
+    }
+    let frame = decoder
+        .and_then(|decoder| decoder.frame_at(time))
+        .and_then(|frame| to_pixmap(&frame))
+        .map(Arc::new);
+    *cached = frame.clone().map(|frame| (time, frame));
+    frame
 }
 
 /// A decoded BGRA frame as a tiny-skia RGBA pixmap. Decoded frames are opaque,
@@ -200,7 +223,7 @@ mod tests {
         let frame = DecodedFrame {
             width: 1,
             height: 1,
-            bgra: vec![10, 20, 30, 255],
+            bgra: vec![10, 20, 30, 255].into(),
         };
         let pixmap = to_pixmap(&frame).expect("pixmap");
         assert_eq!(pixmap.data(), &[30, 20, 10, 255]);
@@ -211,7 +234,7 @@ mod tests {
         let frame = DecodedFrame {
             width: 4,
             height: 4,
-            bgra: vec![0; 8],
+            bgra: vec![0; 8].into(),
         };
         assert!(to_pixmap(&frame).is_none());
     }
@@ -228,5 +251,13 @@ mod tests {
     fn opening_a_missing_project_yields_no_source() {
         let missing = std::env::temp_dir().join("poratake-missing.poratake");
         assert!(Source::open(&missing, VideoEditorState::default()).is_none());
+    }
+
+    #[test]
+    fn unchanged_times_reuse_the_composed_source_frame() {
+        let frame = Arc::new(Pixmap::new(1, 1).expect("pixmap"));
+        let mut cached = Some((2.0, frame.clone()));
+        let reused = cached_frame(None, &mut cached, 2.0).expect("cached frame");
+        assert!(Arc::ptr_eq(&frame, &reused));
     }
 }

@@ -242,7 +242,6 @@ fn preset_manager(
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::IconXs)
                     .icon("star")
-                    // `text-primary` when this preset is the Polish default.
                     .foreground(if is_default {
                         theme.primary
                     } else {
@@ -391,9 +390,6 @@ fn backgrounds_section(
             ))
             .child({
                 let clear = handlers.option(EditorOption::WallpaperClear);
-                // Gated hover flag instead of a `.hover()` style, which gpui
-                // paints against the window's last mouse position and so
-                // survives the pointer leaving the window.
                 let (clear_hover, clear_hovered) =
                     crate::ui::primitives::hover_flag("wallpaper-clear", window, cx);
                 div()
@@ -964,13 +960,9 @@ pub fn video_aspect_grid(
                 - chrome::VIDEO_PANEL_PAD * 2.0
                 - chrome::VIDEO_ASPECT_GAP * (chrome::VIDEO_ASPECT_COLS as f32 - 1.0))
                 / chrome::VIDEO_ASPECT_COLS as f32;
-            // Gated hover flag instead of a `.hover()` style, which gpui
-            // paints against the window's last mouse position and so survives
-            // the pointer leaving the window.
             let tile_key = format!("video-aspect-{label}");
             let (tile_hover, tile_hovered) =
                 crate::ui::primitives::hover_flag(&tile_key, window, cx);
-            // Unselected tiles hover to `bg-accent text-accent-foreground`.
             let filled = is_selected || tile_hovered;
             div()
                 .id(SharedString::from(tile_key))

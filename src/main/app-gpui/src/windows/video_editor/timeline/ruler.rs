@@ -89,6 +89,7 @@ pub fn render(
                     cx.listener({
                         let scroll = scroll.clone();
                         move |this, event: &MouseDownEvent, _window, cx| {
+                            this.begin_scrub();
                             let time = time_at_position(
                                 event.position.x,
                                 &scroll,

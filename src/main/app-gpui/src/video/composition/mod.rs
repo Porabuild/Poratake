@@ -23,6 +23,30 @@ use crate::windows::video_editor::styles::CursorStyle;
 use self::segments::VideoSegment;
 use self::zoom::{Transform, ZoomCache};
 
+fn composition_dimensions(config: &Config) -> (u32, u32) {
+    let wallpaper = &config.state.wallpaper;
+    let enabled = wallpaper.enabled;
+    let padding = if enabled { wallpaper.padding } else { 0.0 };
+    let ratio = if enabled {
+        wallpaper::aspect_ratio(wallpaper)
+    } else {
+        None
+    };
+
+    let (mut width, mut height) = (config.video_width, config.video_height);
+    if enabled && wallpaper.device_frame {
+        let layout = device_frame::calculate_layout(width, height);
+        width = layout.frame_width;
+        height = layout.frame_height;
+    }
+
+    let dimensions = wallpaper::calculate_dimensions(width, height, padding, ratio);
+    (
+        dimensions.width.round().max(1.0) as u32,
+        dimensions.height.round().max(1.0) as u32,
+    )
+}
+
 /// Everything the engine needs beyond the editor state: the source size and the
 /// sidecars a project carries.
 pub struct Config {
@@ -64,15 +88,18 @@ pub struct Engine {
     config: Config,
     zoom_cache: ZoomCache,
     video_segments: Vec<VideoSegment>,
+    cached_dimensions: (u32, u32),
 }
 
 impl Engine {
     pub fn new(config: Config) -> Self {
         let video_segments = segments::to_video_segments(&config.state.segments);
+        let cached_dimensions = composition_dimensions(&config);
         Self {
             config,
             zoom_cache: ZoomCache::default(),
             video_segments,
+            cached_dimensions,
         }
     }
 
@@ -86,6 +113,7 @@ impl Engine {
         self.video_segments = segments::to_video_segments(&state.segments);
         self.config.state = state;
         self.zoom_cache.clear();
+        self.cached_dimensions = composition_dimensions(&self.config);
     }
 
     pub fn set_background_image(&mut self, image: Option<Pixmap>) {
@@ -94,6 +122,10 @@ impl Engine {
 
     pub fn set_first_frame_image(&mut self, image: Option<Pixmap>) {
         self.config.first_frame_image = image;
+    }
+
+    pub fn set_frame_rate(&mut self, frame_rate: f64) {
+        self.config.fps = frame_rate.max(1.0);
     }
 
     fn device_frame_enabled(&self) -> bool {
@@ -112,27 +144,7 @@ impl Engine {
 
     /// `getCompositionDimensions`.
     pub fn dimensions(&self) -> (u32, u32) {
-        let wallpaper = &self.config.state.wallpaper;
-        let enabled = wallpaper.enabled;
-        let padding = if enabled { wallpaper.padding } else { 0.0 };
-        let ratio = if enabled {
-            wallpaper::aspect_ratio(wallpaper)
-        } else {
-            None
-        };
-
-        let (mut width, mut height) = (self.config.video_width, self.config.video_height);
-        if self.device_frame_enabled() {
-            let layout = device_frame::calculate_layout(width, height);
-            width = layout.frame_width;
-            height = layout.frame_height;
-        }
-
-        let dimensions = wallpaper::calculate_dimensions(width, height, padding, ratio);
-        (
-            dimensions.width.round().max(1.0) as u32,
-            dimensions.height.round().max(1.0) as u32,
-        )
+        self.cached_dimensions
     }
 
     /// The total timeline duration, including the first-frame still.
@@ -148,6 +160,30 @@ impl Engine {
     pub fn render_frame(&mut self, timeline_time: f64, frames: Frames<'_>) -> Option<Pixmap> {
         let (width, height) = self.dimensions();
         let mut canvas = Canvas::new(width, height)?;
+        self.render_into(&mut canvas, timeline_time, frames);
+        Some(canvas.into_pixmap())
+    }
+
+    pub fn render_frame_scaled(
+        &mut self,
+        timeline_time: f64,
+        frames: Frames<'_>,
+        max_width: u32,
+        max_height: u32,
+    ) -> Option<Pixmap> {
+        let (width, height) = self.dimensions();
+        let scale = (max_width as f32 / width as f32)
+            .min(max_height as f32 / height as f32)
+            .min(1.0);
+        if scale >= 1.0 {
+            return self.render_frame(timeline_time, frames);
+        }
+        let mut canvas = Canvas::new(
+            (width as f32 * scale).round().max(1.0) as u32,
+            (height as f32 * scale).round().max(1.0) as u32,
+        )?;
+        canvas.set_shadow_scale(scale);
+        canvas.scale(scale, scale);
         self.render_into(&mut canvas, timeline_time, frames);
         Some(canvas.into_pixmap())
     }
@@ -703,6 +739,24 @@ mod tests {
     }
 
     #[test]
+    fn scaled_frames_keep_the_composition_aspect_ratio() {
+        let mut engine = Engine::new(Config::new(1920.0, 1080.0, state()));
+        let video = source(1920, 1080, Color::from_rgba8(255, 0, 0, 255));
+        let composed = engine
+            .render_frame_scaled(
+                0.0,
+                Frames {
+                    video: Some(video.as_ref()),
+                    camera: None,
+                },
+                640,
+                360,
+            )
+            .expect("frame");
+        assert_eq!((composed.width(), composed.height()), (640, 360));
+    }
+
+    #[test]
     fn the_first_frame_still_holds_for_one_frame() {
         let mut config = Config::new(40.0, 40.0, state());
         config.state.first_frame.enabled = true;
@@ -718,6 +772,16 @@ mod tests {
         let engine = Engine::new(Config::new(40.0, 40.0, state()));
         assert_eq!(engine.first_frame_duration(), 0.0);
         assert_eq!(engine.total_duration(), 4.0);
+    }
+
+    #[test]
+    fn changing_frame_rate_updates_the_first_frame_duration() {
+        let mut state = state();
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some("data:,".into());
+        let mut engine = Engine::new(Config::new(40.0, 40.0, state));
+        engine.set_frame_rate(24.0);
+        assert_eq!(engine.first_frame_duration(), 1.0 / 24.0);
     }
 
     #[test]

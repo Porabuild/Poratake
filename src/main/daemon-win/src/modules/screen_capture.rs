@@ -427,7 +427,13 @@ fn run_worker(
             break;
         }
 
-        let frame_message = runtime.frames.recv_timeout(FRAME_WAIT);
+        let frame_message = match runtime.capture_controls.try_recv() {
+            Ok(message) => Ok(message),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+            | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                runtime.frames.recv_timeout(FRAME_WAIT)
+            }
+        };
         match frame_message {
             Ok(FrameMessage::Frame(frame)) => {
                 let source_time = match frame_time(&frame) {
@@ -762,6 +768,7 @@ struct RecordingRuntime {
     camera_config: CameraRecordingConfig,
     camera_clock: Option<CameraSyncClock>,
     frames: Receiver<FrameMessage>,
+    capture_controls: Receiver<FrameMessage>,
     timeline: VideoTimeline,
     follows_target: bool,
     output_path: PathBuf,
@@ -774,7 +781,8 @@ impl RecordingRuntime {
         let frame_rate = effective_frame_rate(config.frame_rate, target.monitor.refresh_rate);
         let tracker_source = target.tracker_source();
         let (device, context, winrt_device) = create_d3d_device()?;
-        let (capture, frames, layout) = WindowsCapture::prepare(winrt_device, target)?;
+        let (capture, frames, capture_controls, layout) =
+            WindowsCapture::prepare(winrt_device, target)?;
         let follows_target = layout.fitted;
         let encoder = match MediaFoundationEncoder::new(
             &config.output_path,
@@ -844,6 +852,7 @@ impl RecordingRuntime {
             camera_config,
             camera_clock: None,
             frames,
+            capture_controls,
             timeline: VideoTimeline::new(frame_rate),
             follows_target,
             output_path: config.output_path.clone(),
@@ -1609,7 +1618,15 @@ impl WindowsCapture {
     fn prepare(
         device: IDirect3DDevice,
         target: CaptureTarget,
-    ) -> Result<(Self, Receiver<FrameMessage>, CaptureLayout), RecorderError> {
+    ) -> Result<
+        (
+            Self,
+            Receiver<FrameMessage>,
+            Receiver<FrameMessage>,
+            CaptureLayout,
+        ),
+        RecorderError,
+    > {
         if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
             return Err(RecorderError::configuration(
                 "Windows Graphics Capture is not supported on this system",
@@ -1653,8 +1670,9 @@ impl WindowsCapture {
         })?;
         let _ = session.SetIsBorderRequired(false);
 
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        let frame_sender = sender.clone();
+        let (frame_sender, frame_receiver) = std::sync::mpsc::sync_channel(1);
+        let (control_sender, control_receiver) = std::sync::mpsc::channel();
+        let error_sender = control_sender.clone();
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |source, _| {
                 let Some(source) = source.as_ref() else {
@@ -1665,7 +1683,7 @@ impl WindowsCapture {
                         let _ = frame_sender.try_send(FrameMessage::Frame(frame));
                     }
                     Err(error) => {
-                        let _ = frame_sender.send(FrameMessage::Error(RecorderError::capture(
+                        let _ = error_sender.send(FrameMessage::Error(RecorderError::capture(
                             format!("Failed to receive captured frame: {error}"),
                         )));
                     }
@@ -1679,7 +1697,7 @@ impl WindowsCapture {
         let records_window = target.window.is_some();
         let closed_handler =
             TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
-                let _ = sender.send(FrameMessage::Closed(records_window));
+                let _ = control_sender.send(FrameMessage::Closed(records_window));
                 Ok(())
             });
         let closed_token = item.Closed(&closed_handler).map_err(|error| {
@@ -1700,7 +1718,8 @@ impl WindowsCapture {
                 frame_token,
                 closed_token,
             },
-            receiver,
+            frame_receiver,
+            control_receiver,
             layout,
         ))
     }
@@ -2469,6 +2488,17 @@ mod tests {
         let _ = sender.try_send(2);
 
         assert_eq!(receiver.try_iter().collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn capture_control_messages_do_not_wait_for_the_frame_queue() {
+        let (frame_sender, _frame_receiver) = std::sync::mpsc::sync_channel(1);
+        let (control_sender, control_receiver) = std::sync::mpsc::channel();
+
+        frame_sender.try_send(1).expect("queue frame");
+        control_sender.send(2).expect("queue control");
+
+        assert_eq!(control_receiver.try_recv(), Ok(2));
     }
 
     #[test]

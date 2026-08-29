@@ -343,11 +343,18 @@ impl Annotation {
     }
 
     /// Appends a sampled point to a freehand annotation.
-    pub fn push_point(&mut self, point: Point) {
-        if let Self::Pen { points, .. } | Self::Highlight { points, .. } = self {
-            points.push(point.x as f64);
-            points.push(point.y as f64);
+    pub fn push_point(&mut self, point: Point) -> bool {
+        let (Self::Pen { points, .. } | Self::Highlight { points, .. }) = self else {
+            return false;
+        };
+        if let (Some(last_x), Some(last_y)) = (points.iter().nth_back(1), points.last()) {
+            if *last_x == f64::from(point.x) && *last_y == f64::from(point.y) {
+                return false;
+            }
         }
+        points.push(f64::from(point.x));
+        points.push(f64::from(point.y));
+        true
     }
 }
 
@@ -542,5 +549,21 @@ mod tests {
             panic!("expected pen");
         };
         assert_eq!(points, &vec![2.0, -3.0, 12.0, 17.0]);
+    }
+
+    #[test]
+    fn push_point_drops_an_identical_consecutive_sample() {
+        let mut pen = Annotation::Pen {
+            id: "p".into(),
+            points: vec![0.0, 0.0],
+            stroke: "#000".into(),
+            stroke_width: 2.0,
+        };
+        assert!(pen.push_point(Point { x: 1.0, y: 2.0 }));
+        assert!(!pen.push_point(Point { x: 1.0, y: 2.0 }));
+        let Annotation::Pen { points, .. } = &pen else {
+            panic!("expected pen");
+        };
+        assert_eq!(points, &vec![0.0, 0.0, 1.0, 2.0]);
     }
 }

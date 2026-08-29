@@ -45,6 +45,7 @@ pub struct Canvas {
     pixmap: Pixmap,
     state: State,
     stack: Vec<State>,
+    shadow_scale: f32,
 }
 
 impl Canvas {
@@ -57,6 +58,7 @@ impl Canvas {
             pixmap,
             state: State::root(),
             stack: Vec::new(),
+            shadow_scale: 1.0,
         }
     }
 
@@ -90,6 +92,10 @@ impl Canvas {
 
     pub fn set_shadow(&mut self, shadow: Option<Shadow>) {
         self.state.shadow = shadow;
+    }
+
+    pub fn set_shadow_scale(&mut self, scale: f32) {
+        self.shadow_scale = scale.max(f32::EPSILON);
     }
 
     pub fn save(&mut self) {
@@ -406,7 +412,7 @@ impl Canvas {
         if shadow.color.alpha() <= 0.0 {
             return;
         }
-        let sigma = blur::sigma_for_shadow_blur(shadow.blur);
+        let sigma = blur::sigma_for_shadow_blur(shadow.blur * self.shadow_scale);
         let pad = (blur::box_radius(sigma) as f32 * 3.0).ceil() + 2.0;
         let left = (bounds.left() - pad).floor();
         let top = (bounds.top() - pad).floor();
@@ -436,7 +442,10 @@ impl Canvas {
             0,
             mask.as_ref(),
             &paint,
-            Transform::from_translate(left + shadow.offset_x, top + shadow.offset_y),
+            Transform::from_translate(
+                left + shadow.offset_x * self.shadow_scale,
+                top + shadow.offset_y * self.shadow_scale,
+            ),
             self.state.clip.as_deref(),
         );
     }

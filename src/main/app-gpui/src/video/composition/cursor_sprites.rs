@@ -3,7 +3,7 @@
 //! here and rendered with `resvg`, so the drawn pointer is identical.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tiny_skia::Pixmap;
 
@@ -145,8 +145,8 @@ fn escape(value: &str) -> String {
 
 /// Rasterizes a cursor sprite at `size` pixels square, caching by type, colour
 /// pair and size the way the renderer caches its `Image` objects.
-pub fn sprite(cursor_type: &str, fill: &str, stroke: &str, size: u32) -> Option<Pixmap> {
-    static CACHE: Mutex<Option<HashMap<String, Option<Pixmap>>>> = Mutex::new(None);
+pub fn sprite(cursor_type: &str, fill: &str, stroke: &str, size: u32) -> Option<Arc<Pixmap>> {
+    static CACHE: Mutex<Option<HashMap<String, Option<Arc<Pixmap>>>>> = Mutex::new(None);
 
     let size = size.clamp(1, 1024);
     let key = format!("{cursor_type}:{fill}:{stroke}:{size}");
@@ -155,9 +155,23 @@ pub fn sprite(cursor_type: &str, fill: &str, stroke: &str, size: u32) -> Option<
     if let Some(cached) = cache.get(&key) {
         return cached.clone();
     }
-    let rendered = rasterize(&svg(cursor_type, fill, stroke), size);
+    let rendered = rasterize(&svg(cursor_type, fill, stroke), size).map(Arc::new);
     cache.insert(key, rendered.clone());
     rendered
+}
+
+pub fn decoded_image(source: &str) -> Option<Arc<Pixmap>> {
+    static CACHE: Mutex<Option<(String, Arc<Pixmap>)>> = Mutex::new(None);
+    let mut guard = CACHE.lock().ok()?;
+    if let Some((_, image)) = guard
+        .as_ref()
+        .filter(|(cached_source, _)| cached_source == source)
+    {
+        return Some(Arc::clone(image));
+    }
+    let image = Arc::new(crate::render::gradient::load_image(source)?);
+    *guard = Some((source.to_string(), Arc::clone(&image)));
+    Some(image)
 }
 
 fn rasterize(markup: &str, size: u32) -> Option<Pixmap> {

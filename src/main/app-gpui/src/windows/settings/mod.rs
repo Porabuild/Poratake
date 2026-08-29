@@ -689,10 +689,6 @@ fn sidebar(
         let selected = !searching && active == category;
         let key = format!("settings-nav-{}", category.id());
         let focus = crate::ui::primitives::control_focus(&key, false, ui_window, cx);
-        // Gated hover flag instead of a `.hover()` style, which gpui paints
-        // against the window's last mouse position and so survives the
-        // pointer leaving the window. Hover wins over the selected tint,
-        // matching the CSS refinement order it replaces.
         let (hover, hovered) = crate::ui::primitives::hover_flag(&key, ui_window, cx);
         div()
             .id(SharedString::from(key))
@@ -778,12 +774,6 @@ fn sidebar(
                     px(chrome::SETTINGS_TITLE_TRACKING),
                 )),
         )
-        // `<label className="flex cursor-text items-center gap-2 rounded-3xl
-        // px-2 py-1.5 text-muted-foreground focus-within:bg-[var(--row-active)]
-        // hover:bg-[var(--row-hover)]">` around a transparent input. The hover
-        // is a gated flag rather than a `.hover()` style, which gpui paints
-        // against the window's last mouse position and so survives the pointer
-        // leaving the window.
         .child({
             let (search_hover, search_hovered) =
                 crate::ui::primitives::hover_flag("settings-search-shell", ui_window, cx);
@@ -1125,7 +1115,6 @@ fn disclosure_header(
 ) -> AnyElement {
     let hover_key = format!("settings-extras-{key}");
     let focus = crate::ui::primitives::control_focus(&hover_key, false, ui_window, cx);
-    // Gated hover flag instead of a `.hover()` style; see `hover_flag`.
     let (hover, hovered) = crate::ui::primitives::hover_flag(&hover_key, ui_window, cx);
     div()
         .id(SharedString::from(hover_key))
@@ -1193,7 +1182,6 @@ fn theme_card(
 ) -> AnyElement {
     let id = format!("appearance-theme-{}", preset.id);
     let focus = crate::ui::primitives::control_focus(&id, false, ui_window, cx);
-    // Gated hover flag instead of a `.hover()` style; see `hover_flag`.
     let (hover, hovered) = crate::ui::primitives::hover_flag(&id, ui_window, cx);
     div()
         .id(SharedString::from(id))

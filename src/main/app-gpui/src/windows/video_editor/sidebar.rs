@@ -109,9 +109,10 @@ impl SidebarTab {
 pub fn resize_handle(
     resizing: bool,
     theme: &ThemeVars,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
+    let (hover, hovered) = crate::ui::primitives::hover_flag("video-sidebar-resize", window, cx);
     div()
         .id("video-sidebar-resize")
         .w(px(chrome::VIDEO_SIDEBAR_RESIZE))
@@ -122,9 +123,14 @@ pub fn resize_handle(
         .cursor_ew_resize()
         .child(div().my_auto().h_full().w(px(1.0)).bg(if resizing {
             theme.accent
+        } else if hovered {
+            theme.accent.opacity(0.65)
         } else {
             theme.border
         }))
+        .on_hover(move |over: &bool, _window, cx| {
+            crate::ui::primitives::track_hover(&hover, *over, cx);
+        })
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {

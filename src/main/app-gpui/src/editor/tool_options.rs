@@ -169,9 +169,6 @@ fn trigger_base(
     cx: &mut App,
 ) -> gpui::Stateful<gpui::Div> {
     let handle = menu.clone();
-    // Gated hover flag instead of a `.hover()` style, which gpui paints
-    // against the window's last mouse position and so survives the pointer
-    // leaving the window.
     let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
     div()
         .id(id)

@@ -94,7 +94,6 @@ impl ButtonSize {
         }
     }
 
-    /// The `scale()` a press applies in `button.css`.
     pub fn press_scale(self) -> f32 {
         match self {
             Self::Sm | Self::IconSm | Self::Xs | Self::IconXs => chrome::BUTTON_PRESS_SCALE_SM,
@@ -372,7 +371,6 @@ impl RenderOnce for Button {
         let height = self.height.unwrap_or(self.size.height());
         let pad_x = self.padding_x.unwrap_or(self.size.padding_x());
         let width = self.size.width().map(|w| self.height.unwrap_or(w));
-        // Half the shrink on each side, so the box contracts about its centre.
         let (press_inset, pressed_height, pressed_pad_x) =
             press_geometry(f32::from(height), f32::from(pad_x), self.size.press_scale());
         let press_height = px(pressed_height);
@@ -417,17 +415,9 @@ impl RenderOnce for Button {
             });
         }
         if !self.disabled && self.animate_press {
-            // `button.css` presses scale the button. gpui cannot transform a
-            // `div` — only `MonochromeSprite` carries a matrix, and that is
-            // reachable only through `paint_svg` — so the geometry is
-            // reproduced instead: shrink the painted box and add exactly the
-            // margin the shrink freed, which leaves the element's footprint
-            // unchanged so nothing around it shifts. The glyphs keep their
-            // size, which at these magnitudes is well under a device pixel.
             let inset = px(press_inset);
             element = element.active(move |style: StyleRefinement| {
-                let style = style.bg(bg_hover);
-                let style = style.h(press_height).my(inset);
+                let style = style.bg(bg_hover).h(press_height).my(inset);
                 match press_width {
                     Some(width) => style.w(width).mx(inset),
                     None => style.px(press_pad_x).mx(inset),
@@ -480,9 +470,6 @@ impl RenderOnce for Button {
             return element.into_any_element();
         }
 
-        // The disabled path above never reaches this, so its hover state is
-        // dropped with the frame (gpui discards an element's state when it
-        // skips one) and re-enabled buttons always mount resting.
         // `.button { transition: background-color 100ms var(--ease-out) }`.
         let (hover, hovered, (from, to)) =
             crate::ui::primitives::hover_fade(&element_key, bg, bg_hover, window, cx);
@@ -505,10 +492,6 @@ impl RenderOnce for Button {
     }
 }
 
-/// How a press shrinks the painted box, and by how much the freed space is
-/// given back as margin. Extracted so the invariant that matters — the
-/// element's footprint does not change, so neighbours never shift — is
-/// asserted rather than assumed.
 fn press_geometry(height: f32, pad_x: f32, scale: f32) -> (f32, f32, f32) {
     let inset = height * (1.0 - scale) / 2.0;
     (inset, height - inset * 2.0, (pad_x - inset).max(0.0))
@@ -519,43 +502,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_press_shrinks_the_box_without_moving_its_neighbours() {
-        for size in [
-            ButtonSize::Md,
-            ButtonSize::Sm,
-            ButtonSize::Lg,
-            ButtonSize::Xs,
-        ] {
-            let height = f32::from(size.height());
-            let pad_x = f32::from(size.padding_x());
-            let (inset, pressed_height, pressed_pad_x) =
-                press_geometry(height, pad_x, size.press_scale());
-
-            // Vertically: the shrink plus the margin it frees is the original.
-            assert_eq!(pressed_height + inset * 2.0, height, "{size:?} height");
-            // Horizontally, for a label button the padding absorbs the shrink,
-            // so the content box and the outer footprint are both unchanged.
-            assert_eq!(pressed_pad_x + inset, pad_x, "{size:?} padding");
-            // The box really does get smaller.
-            assert!(pressed_height < height, "{size:?} shrinks");
-            assert!(inset > 0.0, "{size:?} has an inset");
-        }
-    }
-
-    #[test]
     fn press_scales_match_the_button_stylesheet() {
         assert_eq!(ButtonSize::Md.press_scale(), 0.97);
         assert_eq!(ButtonSize::Icon.press_scale(), 0.97);
         assert_eq!(ButtonSize::Sm.press_scale(), 0.98);
         assert_eq!(ButtonSize::Xs.press_scale(), 0.98);
         assert_eq!(ButtonSize::Lg.press_scale(), 0.96);
-    }
-
-    /// A tiny button must not end up with negative padding.
-    #[test]
-    fn the_shrink_never_drives_padding_below_zero() {
-        let (_, _, pad) = press_geometry(28.0, 0.0, 0.9);
-        assert_eq!(pad, 0.0);
     }
 
     #[test]

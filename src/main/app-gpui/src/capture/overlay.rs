@@ -1634,9 +1634,6 @@ impl Render for AreaOverlay {
             // overlay draws neither a frame nor a name label in this mode.
             let viewport = window.viewport_size();
             let mut picking = root.cursor_pointer();
-            // Paint-read gate: gpui never reports the cursor *leaving* the
-            // window, so a stale `hovered_window` would keep one screen
-            // rectangle undimmed after the pointer is gone.
             let hovered_frame = if window.is_window_hovered() {
                 self.hovered_frame()
             } else {

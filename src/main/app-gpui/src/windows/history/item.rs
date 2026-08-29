@@ -113,8 +113,6 @@ impl ItemView<'_> {
     }
 }
 
-/// `ring-2 ring-primary ring-offset-1 ring-offset-transparent`: a 1px
-/// transparent gap, then a 2px ring, both drawn outside the box.
 fn selection_shadow(color: gpui::Hsla) -> Vec<gpui::BoxShadow> {
     let ring = |color: gpui::Hsla, spread: f32| gpui::BoxShadow {
         color,

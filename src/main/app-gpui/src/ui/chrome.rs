@@ -83,11 +83,11 @@ pub const BUTTON_XS_ICON: f32 = 14.0;
 pub const BUTTON_GAP: f32 = 8.0;
 /// `.button { transition: background-color 100ms var(--ease-out) }`.
 pub const BUTTON_HOVER_MS: u64 = 100;
-/// `button.css` presses scale the button: `0.97` at `md`, `0.98` at `sm`,
-/// `0.96` at `lg`.
 pub const BUTTON_PRESS_SCALE_MD: f32 = 0.97;
 pub const BUTTON_PRESS_SCALE_SM: f32 = 0.98;
 pub const BUTTON_PRESS_SCALE_LG: f32 = 0.96;
+/// `button.css` presses scale the button: `0.97` at `md`, `0.98` at `sm`,
+/// `0.96` at `lg`.
 /// `shortcut-input.tsx`: `gap-1` compact, `min-w-36` / `min-w-16` for the
 /// record button.
 pub const SHORTCUT_GAP: f32 = 4.0;
@@ -158,9 +158,6 @@ pub const PREVIEW_HOVER_SCALE: f32 = 1.05;
 pub const PREVIEW_HOVER_MS: u64 = 200;
 pub const PREVIEW_CONTROL: f32 = 24.0;
 pub const PREVIEW_CONTROL_INSET: f32 = 8.0;
-/// The centre actions' `rounded-full bg-background/80 px-3 py-1 text-xs`: the
-/// 16px `text-xs` line box plus 4px of padding on each side. `rounded-full` on
-/// that box is a radius of half its height.
 pub const PREVIEW_PILL_HEIGHT: f32 = 24.0;
 
 pub const OVERLAY_SURFACE_PADDING: f32 = 4.0;

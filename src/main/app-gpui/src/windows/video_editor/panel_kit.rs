@@ -23,7 +23,11 @@ pub fn panel(children: Vec<AnyElement>) -> AnyElement {
         .min_w_0()
         .overflow_y_scroll()
         .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
-        .children(children)
+        .children(
+            children
+                .into_iter()
+                .map(|child| div().w_full().flex_shrink_0().child(child)),
+        )
         .into_any_element()
 }
 
@@ -233,6 +237,8 @@ pub fn slider_row(
     cx: &mut Context<VideoEditorWindow>,
     on_change: impl Fn(&mut VideoEditorWindow, f64, &mut Context<VideoEditorWindow>) + 'static,
 ) -> AnyElement {
+    let drag_view = cx.entity().downgrade();
+    let drop_view = drag_view.clone();
     div()
         .flex()
         .flex_col()
@@ -254,6 +260,12 @@ pub fn slider_row(
         .child(
             Slider::new(id, value as f32, min as f32, max as f32)
                 .small()
+                .on_drag_start(move |_window, cx| {
+                    let _ = drag_view.update(cx, |this, _cx| this.begin_slider_gesture());
+                })
+                .on_drag_end(move |_window, cx| {
+                    let _ = drop_view.update(cx, |this, cx| this.end_slider_gesture(cx));
+                })
                 .on_change(cx.listener(move |this, value: &f32, _window, cx| {
                     on_change(this, *value as f64, cx);
                 })),

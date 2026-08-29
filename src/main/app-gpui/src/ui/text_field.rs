@@ -49,9 +49,6 @@ pub struct TextField {
     on_submit: Option<ChangeHandler>,
     on_cancel: Option<ChangeHandler>,
     focus_handle: FocusHandle,
-    /// Identifies this field's hover fade. Keyed per instance because the
-    /// fade's state lives in the window: a shared key would let one field's
-    /// hover tint every other field in the window.
     hover_key: SharedString,
 }
 
@@ -438,11 +435,6 @@ impl Render for TextField {
             );
         }
 
-        // The bare and focused paths below never reach the fade, so a field
-        // that gains focus while hovered drops the hover state with the frame
-        // (gpui discards an element's state when it skips one) and blurs back
-        // to resting. `.input:hover:not(:focus) { bg-field-hover }` over
-        // `background-color 150ms var(--ease-smooth)`.
         if self.bare || focused {
             return field.child(content).into_any_element();
         }

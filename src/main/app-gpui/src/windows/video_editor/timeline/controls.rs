@@ -223,6 +223,7 @@ pub fn render(
 const MIN_SPEED: f64 = 0.25;
 const NORMAL_SPEED: f64 = 1.0;
 const MAX_SPEED: f64 = 4.0;
+const SPEED_PRESETS: [f64; 9] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
 fn speed_position(speed: f64) -> f32 {
     let speed = speed.clamp(MIN_SPEED, MAX_SPEED);
@@ -249,26 +250,20 @@ fn speed_selector(
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
-    let mut selector = div()
-        .id("timeline-speed-selector")
-        .relative()
-        .when(open, |selector| {
-            selector.on_mouse_down_out(
-                cx.listener(|this, _event, _window, cx| this.close_speed_selector(cx)),
-            )
-        })
-        .child(
-            Button::new("timeline-speed")
-                .variant(ButtonVariant::Ghost)
-                .selected(open)
-                .size(ButtonSize::Xs)
-                .radius(px(6.0))
-                .label(format!("{}x", (speed * 20.0).round() / 20.0))
-                .trailing_icon("chevron-down")
-                .foreground(theme.muted_foreground)
-                .tooltip("Playback Speed")
-                .on_click(cx.listener(|this, _event, _window, cx| this.toggle_speed_selector(cx))),
-        );
+    let drag_view = cx.entity().downgrade();
+    let drop_view = drag_view.clone();
+    let mut selector = div().id("timeline-speed-selector").relative().child(
+        Button::new("timeline-speed")
+            .variant(ButtonVariant::Ghost)
+            .selected(open)
+            .size(ButtonSize::Xs)
+            .radius(px(6.0))
+            .label(format!("{}x", (speed * 20.0).round() / 20.0))
+            .trailing_icon("chevron-down")
+            .foreground(theme.muted_foreground)
+            .tooltip("Playback Speed")
+            .on_press(cx.listener(|this, _event, _window, cx| this.press_speed_selector(cx))),
+    );
     if open {
         selector = selector.child(
             div()
@@ -285,6 +280,10 @@ fn speed_selector(
                 .bg(theme.card)
                 .shadow_lg()
                 .p(px(12.0))
+                .occlude()
+                .on_mouse_down_out(
+                    cx.listener(|this, _event, _window, cx| this.dismiss_speed_selector(cx)),
+                )
                 .child(
                     div()
                         .flex()
@@ -300,6 +299,13 @@ fn speed_selector(
                 .child(
                     Slider::new("timeline-speed-slider", speed_position(speed), 0.0, 1.0)
                         .small()
+                        .steps(SPEED_PRESETS.map(speed_position))
+                        .on_drag_start(move |_window, cx| {
+                            let _ = drag_view.update(cx, |this, _cx| this.begin_slider_gesture());
+                        })
+                        .on_drag_end(move |_window, cx| {
+                            let _ = drop_view.update(cx, |this, cx| this.end_slider_gesture(cx));
+                        })
                         .on_change(cx.listener(|this, value: &f32, _window, cx| {
                             this.set_selected_segment_speed(speed_at_position(*value), cx)
                         })),
@@ -319,5 +325,12 @@ mod tests {
         assert_eq!(speed_at_position(0.5), 1.0);
         assert_eq!(speed_at_position(0.0), 0.25);
         assert_eq!(speed_at_position(1.0), 4.0);
+    }
+
+    #[test]
+    fn speed_presets_keep_normal_speed_in_the_middle() {
+        let positions = SPEED_PRESETS.map(speed_position);
+        assert_eq!(positions[3], 0.5);
+        assert!(positions.windows(2).all(|steps| steps[0] < steps[1]));
     }
 }

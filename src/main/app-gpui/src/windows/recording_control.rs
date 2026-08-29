@@ -181,6 +181,7 @@ impl RecordingControl {
             return false;
         }
         self.menu.close(window);
+        self.sync_window_bounds(window, cx, false);
         true
     }
 
@@ -443,9 +444,6 @@ impl RecordingControl {
         let key_menu_id = menu_id.clone();
         let theme = active_theme(cx);
         let focus = crate::ui::primitives::control_focus(&owner, false, window, cx);
-        // Gated hover flag instead of a `.hover()` style, which gpui paints
-        // against the window's last mouse position and so survives the
-        // pointer leaving the window.
         let (trigger_hover, trigger_hovered) =
             crate::ui::primitives::hover_flag(&owner, window, cx);
         div()
@@ -507,6 +505,7 @@ impl RecordingControl {
         if !opening {
             self.pending_device_menu = None;
             self.menu.close(window);
+            self.sync_window_bounds(window, cx, false);
             return;
         }
 
@@ -922,8 +921,11 @@ fn bar_bounds(
 }
 
 fn control_window_metrics(width: f32, device_menu_open: bool) -> (f32, f32, f32) {
-    let content_width = width.max(DEVICE_MENU_WINDOW_WIDTH);
-    let window_width = content_width + CONTROL_WINDOW_HORIZONTAL_GUTTER * 2.0;
+    let window_width = if device_menu_open {
+        width.max(DEVICE_MENU_WINDOW_WIDTH) + CONTROL_WINDOW_HORIZONTAL_GUTTER * 2.0
+    } else {
+        width
+    };
     let bar_offset = ((window_width - width) / 2.0).round();
     let height = if device_menu_open {
         DEVICE_MENU_WINDOW_HEIGHT
@@ -963,11 +965,12 @@ fn overlay_icon(
 
 impl Render for RecordingControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_window_bounds(
-            window,
-            cx,
-            self.pending_device_menu.is_some() || self.menu.is_present(),
-        );
+        if self.pending_device_menu.is_none()
+            && !self.menu.is_present()
+            && window.bounds().size.height > px(chrome::RECORDING_WINDOW_HEIGHT)
+        {
+            self.sync_window_bounds(window, cx, false);
+        }
         let theme = active_theme(cx);
         let paused = recorder::state() == recorder::RecorderState::Paused;
         let toggles = self.input_toggles(window, cx);
@@ -1151,7 +1154,7 @@ mod tests {
 
     #[test]
     fn device_menu_window_matches_electron_bounds() {
-        assert_eq!(control_window_metrics(236.0, false), (332.0, 48.0, 52.0));
+        assert_eq!(control_window_metrics(236.0, false), (236.0, 0.0, 52.0));
         assert_eq!(control_window_metrics(236.0, true), (332.0, 48.0, 300.0));
         assert_eq!(control_window_metrics(400.0, true), (432.0, 16.0, 300.0));
         assert_eq!(

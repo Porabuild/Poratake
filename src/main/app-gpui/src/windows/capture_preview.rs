@@ -236,10 +236,6 @@ fn reveal_preview_when_ready(
     });
 }
 
-/// How long a blocked dismissal waits before re-checking. The div-level
-/// `on_hover` only re-evaluates when a mouse move reaches this window, so a
-/// pointer that simply leaves never reports hover end; the retry is what
-/// notices the cursor is gone and closes the preview.
 const DISMISS_RETRY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -880,8 +876,6 @@ impl CapturePreviewWindow {
         )
     }
 
-    /// The corner controls: Electron's `size-6 rounded-full bg-background/80`
-    /// with a 14px glyph.
     fn circle_button(
         id: impl Into<gpui::ElementId>,
         icon: &'static str,
@@ -906,8 +900,6 @@ impl CapturePreviewWindow {
         .into_any_element()
     }
 
-    /// The two centre actions: `rounded-full bg-background/80 px-3 py-1 text-xs
-    /// font-medium hover:bg-primary`.
     fn pill_button(
         id: impl Into<gpui::ElementId>,
         label: &'static str,

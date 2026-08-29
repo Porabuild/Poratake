@@ -464,9 +464,6 @@ impl Render for HistoryWindow {
         let theme = active_theme(cx);
         let has_items = !self.items.is_empty();
         let visible = self.visible();
-        // Paint-read gate: gpui never reports the cursor *leaving* the window,
-        // so `hovered_id` can outlive the pointer; the rows' `on_hover` edges
-        // heal the flag, the paint reads the gated value.
         let hovered_id = if window.is_window_hovered() {
             self.hovered_id.as_deref()
         } else {

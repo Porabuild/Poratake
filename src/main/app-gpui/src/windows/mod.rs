@@ -16,7 +16,7 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 pub(crate) fn window_hwnd(window: &gpui::Window) -> Option<windows::Win32::Foundation::HWND> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -27,6 +27,11 @@ pub(crate) fn window_hwnd(window: &gpui::Window) -> Option<windows::Win32::Found
     Some(windows::Win32::Foundation::HWND(
         handle.hwnd.get() as *mut core::ffi::c_void
     ))
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn window_hwnd(_window: &gpui::Window) -> Option<windows::Win32::Foundation::HWND> {
+    None
 }
 
 pub fn app_window_options(bounds: Bounds<Pixels>, min_size: Option<Size<Pixels>>) -> WindowOptions {

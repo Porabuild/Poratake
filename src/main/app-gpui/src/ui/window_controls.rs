@@ -156,9 +156,6 @@ fn caption(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    // A gated hover flag rather than a `.hover()` style: gpui paints that
-    // against the window's last mouse position, which survives the pointer
-    // leaving the window, so the caption would stay lit.
     let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
     div()
         .id(id)

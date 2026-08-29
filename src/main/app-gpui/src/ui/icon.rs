@@ -23,12 +23,6 @@ const VIEWBOX: f32 = 24.0;
 const STROKE_WIDTH: f32 = 2.0;
 
 fn icon_data(name: &str) -> Option<&'static str> {
-    // Call sites pass the exact kebab-case name, which compares without
-    // allocating. Trying that first matters: the tolerant lookup below builds a
-    // normalised `String` for every entry it compares against, so on a 104-entry
-    // table a menu with two dozen icons would spend over a thousand allocations
-    // per frame re-finding the paths it found last frame — and a fade re-renders
-    // the whole menu once per step.
     if let Some((_, path)) = data::ICONS.iter().find(|(id, _)| *id == name) {
         return Some(path);
     }
@@ -336,9 +330,6 @@ mod tests {
         assert!(missing.is_empty(), "unknown icons: {missing:?}");
     }
 
-    /// The allocation-free lookup is tried first for speed, so the tolerant one
-    /// has to remain reachable behind it — otherwise a name that is not spelled
-    /// exactly like the table entry silently renders as an empty box.
     #[test]
     fn the_fast_lookup_still_falls_back_to_the_tolerant_one() {
         let exact = icon_data("trash-2");

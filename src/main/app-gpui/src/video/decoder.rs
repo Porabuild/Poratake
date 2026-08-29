@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VideoInfo {
@@ -27,10 +28,11 @@ impl VideoInfo {
 }
 
 /// A decoded frame in BGRA, the layout GPUI composites in.
+#[derive(Clone)]
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
-    pub bgra: Vec<u8>,
+    pub bgra: Arc<[u8]>,
 }
 
 enum Command {
@@ -131,10 +133,11 @@ mod backend {
                 return;
             }
 
+            let mut cursor = DecodeCursor::default();
             while let Ok(command) = commands.recv() {
                 match command {
                     Command::Seek { time, reply } => {
-                        let frame = read_frame(&reader, time, info);
+                        let frame = read_frame(&reader, time, info, &mut cursor);
                         let _ = reply.send(frame);
                     }
                 }
@@ -210,22 +213,80 @@ mod backend {
         info
     }
 
+    struct TimedFrame {
+        timestamp: i64,
+        frame: DecodedFrame,
+    }
+
+    #[derive(Default)]
+    struct DecodeCursor {
+        current: Option<TimedFrame>,
+        next: Option<TimedFrame>,
+    }
+
+    impl DecodeCursor {
+        fn needs_seek(&self, position: i64) -> bool {
+            self.current.as_ref().is_none_or(|current| {
+                position < current.timestamp
+                    || position.saturating_sub(current.timestamp) > UNITS_PER_SECOND as i64 / 2
+            })
+        }
+
+        fn frame(&self) -> Option<DecodedFrame> {
+            self.current
+                .as_ref()
+                .or(self.next.as_ref())
+                .map(|frame| frame.frame.clone())
+        }
+    }
+
+    fn bounded_time(time: f64, info: VideoInfo) -> f64 {
+        if info.duration <= 0.0 {
+            return time.max(0.0);
+        }
+        let last_frame_time = (info.duration - 1.0 / info.frame_rate()).max(0.0);
+        time.clamp(0.0, last_frame_time)
+    }
+
     unsafe fn read_frame(
         reader: &IMFSourceReader,
         time: f64,
         info: VideoInfo,
+        cursor: &mut DecodeCursor,
     ) -> Option<DecodedFrame> {
-        let position = (time * UNITS_PER_SECOND) as i64;
-        let mut variant = PROPVARIANT::default();
-        {
-            let inner = &mut *variant.Anonymous.Anonymous;
-            inner.vt = VT_I8;
-            inner.Anonymous.hVal = position;
+        let position = (bounded_time(time, info) * UNITS_PER_SECOND) as i64;
+        if cursor.needs_seek(position) {
+            let mut variant = PROPVARIANT::default();
+            {
+                let inner = &mut *variant.Anonymous.Anonymous;
+                inner.vt = VT_I8;
+                inner.Anonymous.hVal = position;
+            }
+            reader.SetCurrentPosition(&GUID::zeroed(), &variant).ok()?;
+            *cursor = DecodeCursor::default();
         }
-        let _ = reader.SetCurrentPosition(&GUID::zeroed(), &variant);
 
-        // Decoders emit until they land on or past the requested time.
-        for _ in 0..64 {
+        if cursor
+            .next
+            .as_ref()
+            .is_some_and(|next| next.timestamp <= position)
+        {
+            cursor.current = cursor.next.take();
+        }
+        if cursor
+            .next
+            .as_ref()
+            .is_some_and(|next| next.timestamp > position)
+            || cursor
+                .current
+                .as_ref()
+                .is_some_and(|current| current.timestamp == position)
+        {
+            return cursor.frame();
+        }
+
+        let mut candidate = None;
+        loop {
             let mut stream_flags = 0u32;
             let mut timestamp = 0i64;
             let mut sample: Option<IMFSample> = None;
@@ -241,17 +302,41 @@ mod backend {
                 .ok()?;
 
             if stream_flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
-                return None;
+                if let Some((timestamp, sample)) = candidate {
+                    cursor.current = Some(TimedFrame {
+                        timestamp,
+                        frame: copy_sample(&sample, info)?,
+                    });
+                    cursor.next = None;
+                }
+                return cursor.frame();
             }
             let Some(sample) = sample else {
                 continue;
             };
-            if (timestamp as f64) + 1.0 < position as f64 {
-                continue;
+            if timestamp > position {
+                if let Some((timestamp, sample)) = candidate {
+                    cursor.current = Some(TimedFrame {
+                        timestamp,
+                        frame: copy_sample(&sample, info)?,
+                    });
+                }
+                cursor.next = Some(TimedFrame {
+                    timestamp,
+                    frame: copy_sample(&sample, info)?,
+                });
+                return cursor.frame();
             }
-            return copy_sample(&sample, info);
+            if timestamp == position {
+                cursor.current = Some(TimedFrame {
+                    timestamp,
+                    frame: copy_sample(&sample, info)?,
+                });
+                cursor.next = None;
+                return cursor.frame();
+            }
+            candidate = Some((timestamp, sample));
         }
-        None
     }
 
     unsafe fn copy_sample(sample: &IMFSample, info: VideoInfo) -> Option<DecodedFrame> {
@@ -311,8 +396,54 @@ mod backend {
         Some(DecodedFrame {
             width: info.width,
             height: info.height,
-            bgra,
+            bgra: bgra.into(),
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn timed_frame(timestamp: i64, value: u8) -> TimedFrame {
+            TimedFrame {
+                timestamp,
+                frame: DecodedFrame {
+                    width: 1,
+                    height: 1,
+                    bgra: vec![value; 4].into(),
+                },
+            }
+        }
+
+        #[test]
+        fn forward_playback_keeps_the_frame_before_the_next_timestamp() {
+            let cursor = DecodeCursor {
+                current: Some(timed_frame(28_000_000, 1)),
+                next: Some(timed_frame(30_000_000, 2)),
+            };
+            assert!(!cursor.needs_seek(29_000_000));
+            assert_eq!(cursor.frame().expect("frame").bgra[0], 1);
+        }
+
+        #[test]
+        fn backward_and_large_forward_jumps_seek() {
+            let cursor = DecodeCursor {
+                current: Some(timed_frame(10_000_000, 1)),
+                next: None,
+            };
+            assert!(cursor.needs_seek(9_000_000));
+            assert!(cursor.needs_seek(16_000_000));
+        }
+
+        #[test]
+        fn unknown_duration_does_not_clamp_playback_to_zero() {
+            let info = VideoInfo {
+                duration: 0.0,
+                frame_rate: 60.0,
+                ..Default::default()
+            };
+            assert_eq!(bounded_time(2.9, info), 2.9);
+        }
     }
 }
 

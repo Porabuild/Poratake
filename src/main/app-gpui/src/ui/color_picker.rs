@@ -212,9 +212,6 @@ impl Render for ColorPickerPopover {
             let color = Srgba::parse(entry).to_hsla();
             let value = entry.clone();
             let active = entry.eq_ignore_ascii_case(&selected_hex);
-            // Gated hover flag instead of a `.hover()` style, which gpui
-            // paints against the window's last mouse position and so survives
-            // the pointer leaving the window.
             let swatch_key = format!("color-swatch-fill-{index}");
             let (swatch_hover, swatch_hovered) =
                 crate::ui::primitives::hover_flag(&swatch_key, window, cx);
@@ -446,9 +443,6 @@ pub fn trigger(
 ) -> gpui::Stateful<gpui::Div> {
     let theme = active_theme(cx);
     let swatch = Srgba::parse(color).to_hsla().opacity(opacity);
-    // Gated hover flag instead of a `.hover()` style, which gpui paints
-    // against the window's last mouse position and so survives the pointer
-    // leaving the window.
     let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
     div()
         .id(id)

@@ -189,9 +189,6 @@ fn render_track(
         resting(!switch.checked)
     };
 
-    // A gated hover flag rather than a `.hover()` style: gpui paints that
-    // against the window's last mouse position, which survives the pointer
-    // leaving the window, so the track would stay lit.
     let hover =
         (!switch.disabled).then(|| crate::ui::primitives::hover_flag(&element_key, window, cx));
     let hovering = hover.as_ref().is_some_and(|(_, over)| *over);

@@ -45,11 +45,11 @@ impl Transform {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ZoomState {
+#[derive(Clone, Copy, Debug)]
+pub struct ZoomState<'a> {
     pub scale: f64,
     pub is_zooming: bool,
-    pub segment: Option<ZoomSegment>,
+    pub segment: Option<&'a ZoomSegment>,
     pub transition_progress: f64,
     pub effective_transition_in: f64,
     pub effective_transition_out: f64,
@@ -58,7 +58,7 @@ pub struct ZoomState {
     pub zoom_out_progress: f64,
 }
 
-impl ZoomState {
+impl ZoomState<'_> {
     fn idle() -> Self {
         Self {
             scale: 1.0,
@@ -88,11 +88,11 @@ fn apply_easing(t: f64) -> f64 {
 }
 
 /// Port of `getZoomState`.
-pub fn zoom_state(
+pub fn zoom_state<'a>(
     timeline_time: f64,
-    zoom_segments: &[ZoomSegment],
+    zoom_segments: &'a [ZoomSegment],
     settings: &ZoomSettings,
-) -> ZoomState {
+) -> ZoomState<'a> {
     for segment in zoom_segments {
         let duration = segment.end_time - segment.start_time;
         let transition_in = segment
@@ -116,7 +116,7 @@ pub fn zoom_state(
             return ZoomState {
                 scale: 1.0 + (segment.zoom_level - 1.0) * apply_easing(progress),
                 is_zooming: true,
-                segment: Some(segment.clone()),
+                segment: Some(segment),
                 transition_progress: progress,
                 effective_transition_in,
                 effective_transition_out,
@@ -131,7 +131,7 @@ pub fn zoom_state(
             return ZoomState {
                 scale: 1.0 + (segment.zoom_level - 1.0) * apply_easing(progress),
                 is_zooming: true,
-                segment: Some(segment.clone()),
+                segment: Some(segment),
                 transition_progress: 1.0,
                 effective_transition_in,
                 effective_transition_out,
@@ -144,7 +144,7 @@ pub fn zoom_state(
         return ZoomState {
             scale: segment.zoom_level,
             is_zooming: true,
-            segment: Some(segment.clone()),
+            segment: Some(segment),
             transition_progress: 1.0,
             effective_transition_in,
             effective_transition_out,
@@ -177,21 +177,7 @@ pub fn optimal_center(
 ) -> Position {
     let duration = segment.end_time - segment.start_time;
     let interval = 1.0 / CURSOR_SAMPLE_RATE;
-    let mut positions = Vec::new();
-    let mut offset = 0.0;
-    while offset <= duration {
-        if let Some(position) =
-            cursor_at_time(cursor_data, video_segments, segment.start_time + offset)
-        {
-            positions.push(position);
-        }
-        offset += interval;
-    }
-
-    if positions.is_empty() {
-        return Position { x: 0.5, y: 0.5 };
-    }
-
+    let mut first: Option<Position> = None;
     let mut min = Position {
         x: f64::MAX,
         y: f64::MAX,
@@ -200,12 +186,25 @@ pub fn optimal_center(
         x: f64::MIN,
         y: f64::MIN,
     };
-    for position in &positions {
-        min.x = min.x.min(position.x);
-        min.y = min.y.min(position.y);
-        max.x = max.x.max(position.x);
-        max.y = max.y.max(position.y);
+    let mut offset = 0.0;
+    while offset <= duration {
+        if let Some(position) =
+            cursor_at_time(cursor_data, video_segments, segment.start_time + offset)
+        {
+            if first.is_none() {
+                first = Some(position);
+            }
+            min.x = min.x.min(position.x);
+            min.y = min.y.min(position.y);
+            max.x = max.x.max(position.x);
+            max.y = max.y.max(position.y);
+        }
+        offset += interval;
     }
+
+    let Some(first) = first else {
+        return Position { x: 0.5, y: 0.5 };
+    };
 
     let bounding_size = viewport_size * BOUNDING_RATIO;
     let transition_end = segment.start_time + transition_in_duration;
@@ -214,12 +213,12 @@ pub fn optimal_center(
     let center_x = if max.x - min.x <= bounding_size {
         (min.x + max.x) / 2.0
     } else {
-        at_transition_end.map_or(positions[0].x, |position| position.x)
+        at_transition_end.map_or(first.x, |position| position.x)
     };
     let center_y = if max.y - min.y <= bounding_size {
         (min.y + max.y) / 2.0
     } else {
-        at_transition_end.map_or(positions[0].y, |position| position.y)
+        at_transition_end.map_or(first.y, |position| position.y)
     };
 
     let max_viewport = 1.0 - viewport_size;
@@ -461,13 +460,27 @@ fn interpolate_keyframes(keyframes: &[Keyframe], time: f64) -> Position {
     }
 }
 
+struct CachedCenter {
+    viewport_size: f64,
+    transition_in_duration: f64,
+    position: Position,
+}
+
+struct CachedViewport {
+    viewport_size: f64,
+    follow_smoothness: f64,
+    look_ahead: f64,
+    start_viewport: Position,
+    keyframes: Vec<Keyframe>,
+}
+
 /// The per-segment keyframe and optimal-centre caches the renderer keeps in
 /// module scope. Simulating a segment walks its whole duration, so this is what
 /// keeps scrubbing cheap.
 #[derive(Default)]
 pub struct ZoomCache {
-    keyframes: HashMap<String, Vec<Keyframe>>,
-    centers: HashMap<String, Position>,
+    keyframes: HashMap<String, CachedViewport>,
+    centers: HashMap<String, CachedCenter>,
 }
 
 impl ZoomCache {
@@ -484,22 +497,28 @@ impl ZoomCache {
         viewport_size: f64,
         transition_in_duration: f64,
     ) -> Position {
-        let key = format!(
-            "{}-{viewport_size:.4}-{transition_in_duration:.2}",
-            segment.id
-        );
-        if let Some(cached) = self.centers.get(&key) {
-            return *cached;
+        if let Some(cached) = self.centers.get(&segment.id).filter(|cached| {
+            cached.viewport_size == viewport_size
+                && cached.transition_in_duration == transition_in_duration
+        }) {
+            return cached.position;
         }
-        let center = optimal_center(
+        let position = optimal_center(
             cursor_data,
             video_segments,
             segment,
             viewport_size,
             transition_in_duration,
         );
-        self.centers.insert(key, center);
-        center
+        self.centers.insert(
+            segment.id.clone(),
+            CachedCenter {
+                viewport_size,
+                transition_in_duration,
+                position,
+            },
+        );
+        position
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -514,11 +533,13 @@ impl ZoomCache {
         follow_smoothness: f64,
         look_ahead: f64,
     ) -> Position {
-        let key = format!(
-            "{}-{viewport_size:.4}-{follow_smoothness:.2}-{look_ahead:.2}",
-            segment.id
-        );
-        if !self.keyframes.contains_key(&key) {
+        let hit = self.keyframes.get(&segment.id).is_some_and(|cached| {
+            cached.viewport_size == viewport_size
+                && cached.follow_smoothness == follow_smoothness
+                && cached.look_ahead == look_ahead
+                && cached.start_viewport == start_viewport
+        });
+        if !hit {
             let keyframes = generate_keyframes(
                 cursor_data,
                 video_segments,
@@ -528,9 +549,18 @@ impl ZoomCache {
                 follow_smoothness,
                 look_ahead,
             );
-            self.keyframes.insert(key.clone(), keyframes);
+            self.keyframes.insert(
+                segment.id.clone(),
+                CachedViewport {
+                    viewport_size,
+                    follow_smoothness,
+                    look_ahead,
+                    start_viewport,
+                    keyframes,
+                },
+            );
         }
-        let keyframes = &self.keyframes[&key];
+        let keyframes = &self.keyframes[&segment.id].keyframes;
         let interpolated = interpolate_keyframes(keyframes, current_time);
         let max_viewport = 1.0 - viewport_size;
         Position {
@@ -541,7 +571,7 @@ impl ZoomCache {
 }
 
 /// `calculateManualFocusViewport`.
-fn manual_focus_viewport(state: &ZoomState, viewport_size: f64, max_viewport: f64) -> Position {
+fn manual_focus_viewport(state: &ZoomState<'_>, viewport_size: f64, max_viewport: f64) -> Position {
     let Some(segment) = state.segment.as_ref() else {
         return Position::default();
     };
@@ -575,7 +605,7 @@ fn manual_focus_viewport(state: &ZoomState, viewport_size: f64, max_viewport: f6
 /// by how far the zoom has come, and while zooming out its centre eases back to
 /// the middle of the frame.
 fn transition_viewport(
-    state: &ZoomState,
+    state: &ZoomState<'_>,
     target: Position,
     full_viewport_size: f64,
     viewport_size: f64,
@@ -610,7 +640,7 @@ fn transition_viewport(
 #[allow(clippy::too_many_arguments)]
 fn cursor_follow_viewport(
     cache: &mut ZoomCache,
-    state: &ZoomState,
+    state: &ZoomState<'_>,
     cursor_data: Option<&CursorData>,
     video_segments: &[VideoSegment],
     timeline_time: f64,
@@ -789,7 +819,8 @@ mod tests {
             transition_out_duration: Some(10.0),
             ..segment(2.0)
         };
-        let state = zoom_state(0.25, &[short], &settings);
+        let segments = [short];
+        let state = zoom_state(0.25, &segments, &settings);
         assert_eq!(state.effective_transition_in, 0.5);
         assert_eq!(state.effective_transition_out, 0.5);
     }
@@ -848,6 +879,103 @@ mod tests {
             velocity = next_velocity;
         }
         assert!((value - 1.0).abs() < 1e-6, "{value}");
+    }
+
+    #[test]
+    fn a_cached_follow_viewport_matches_a_cold_cache() {
+        use crate::video::sidecars::{CursorData, CursorEvent, Size};
+
+        let following = ZoomSegment {
+            target_mode: Some("cursor".into()),
+            ..segment(2.0)
+        };
+        let cursor_data = CursorData {
+            recording_area: Size {
+                width: 1000.0,
+                height: 1000.0,
+            },
+            events: (0..40)
+                .map(|index| CursorEvent {
+                    timestamp: index as f64 * 0.1,
+                    x: 0.2 + index as f64 * 0.01,
+                    y: 0.3,
+                    kind: "move".into(),
+                    ..CursorEvent::default()
+                })
+                .collect(),
+            ..CursorData::default()
+        };
+        let settings = ZoomSettings::default();
+        let mut cold = ZoomCache::default();
+        let first = calculate_transform(
+            &mut cold,
+            std::slice::from_ref(&following),
+            Some(&settings),
+            Some(&cursor_data),
+            &[],
+            3.0,
+            1000.0,
+            1000.0,
+        );
+        let second = calculate_transform(
+            &mut cold,
+            std::slice::from_ref(&following),
+            Some(&settings),
+            Some(&cursor_data),
+            &[],
+            3.0,
+            1000.0,
+            1000.0,
+        );
+        assert_eq!(first, second);
+
+        let mut fresh = ZoomCache::default();
+        let rebuilt = calculate_transform(
+            &mut fresh,
+            &[following],
+            Some(&settings),
+            Some(&cursor_data),
+            &[],
+            3.0,
+            1000.0,
+            1000.0,
+        );
+        assert_eq!(first, rebuilt);
+    }
+
+    #[test]
+    fn optimal_center_matches_with_and_without_a_stored_sample_list() {
+        use crate::video::sidecars::{CursorData, CursorEvent, Size};
+
+        let zoom = segment(2.0);
+        let cursor_data = CursorData {
+            recording_area: Size {
+                width: 100.0,
+                height: 100.0,
+            },
+            events: vec![
+                CursorEvent {
+                    timestamp: 0.0,
+                    x: 0.1,
+                    y: 0.2,
+                    kind: "move".into(),
+                    ..CursorEvent::default()
+                },
+                CursorEvent {
+                    timestamp: 2.0,
+                    x: 0.8,
+                    y: 0.9,
+                    kind: "move".into(),
+                    ..CursorEvent::default()
+                },
+            ],
+            ..CursorData::default()
+        };
+        let first = optimal_center(&cursor_data, &[], &zoom, 0.5, 1.0);
+        let second = optimal_center(&cursor_data, &[], &zoom, 0.5, 1.0);
+        assert_eq!(first, second);
+        assert!(first.x >= 0.0 && first.x <= 0.5);
+        assert!(first.y >= 0.0 && first.y <= 0.5);
     }
 
     #[test]

@@ -30,8 +30,8 @@ pub fn aspect_ratio(settings: &VideoWallpaperSettings) -> Option<AspectRatio> {
 }
 
 pub fn gradient_option(settings: &VideoWallpaperSettings) -> Option<GradientOption> {
-    let value = settings.gradient.as_ref()?;
-    serde_json::from_value(value.clone()).ok()
+    use serde::Deserialize;
+    GradientOption::deserialize(settings.gradient.as_ref()?).ok()
 }
 
 /// Port of `calculateWallpaperDimensions`.

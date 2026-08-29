@@ -32,28 +32,16 @@ const INDICATOR_INSET: f32 = 32.0;
 
 pub type DismissHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// How the menu comes in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum MenuEntrance {
-    /// `fade-in zoom-in-95 slide-in-from-*-1`, as `popover.css` does. The menu
-    /// floats inside a larger surface, so moving and re-laying itself out is
-    /// exactly what it should do.
     #[default]
     Overlay,
-    /// No entrance at all. For a menu whose window animates the whole surface:
-    /// gpui tracks dirtiness per view, so animating here would re-render every
-    /// row on every step, while animating the wrapper only re-paints them.
     Instant,
 }
 
 pub struct MenuView {
     entries: Vec<MenuEntry>,
     highlighted: Option<usize>,
-    /// Whether `highlighted` came from the pointer or the keyboard. A
-    /// pointer-driven highlight must also survive the pointer *leaving* the
-    /// window without an edge -- gpui never dispatches the exit, so the row
-    /// would stay lit forever -- while a keyboard-driven one must stay lit no
-    /// matter where the mouse is. See `primitives::hover_is_active`.
     highlighted_by_pointer: bool,
     submenu: Option<(usize, Entity<MenuView>)>,
     /// Where each row was laid out, so an open submenu can be anchored in
@@ -325,10 +313,6 @@ impl MenuView {
         if item.is_row() {
             return self.settings_row(index, item, theme, window, cx);
         }
-        // A pointer-driven highlight is gated on the window still holding the
-        // pointer: gpui never reports the exit, so `highlighted` alone would
-        // keep the last row lit after the pointer flicks away. The row that
-        // owns the open submenu stays lit either way -- that is the design.
         let pointer_highlight = if self.highlighted_by_pointer && !pointer_inside {
             None
         } else {
@@ -548,9 +532,6 @@ impl MenuView {
             .submenu
             .as_ref()
             .is_some_and(|(current, _)| *current == index);
-        // Gated hover flag instead of a `.hover()` style, which gpui paints
-        // against the window's last mouse position and so survives the
-        // pointer leaving the window.
         let pill_key = format!("menu-row-pill-{index}");
         let (pill_hover, pill_hovered) = crate::ui::primitives::hover_flag(&pill_key, window, cx);
         let mut pill = div()

@@ -209,33 +209,15 @@ pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
     }
 }
 
-/// Per-element hover state, so a background can be interpolated instead of
-/// swapped. gpui applies `hover` styles instantly and no per-property
-/// transition exists, so the CSS `transition: background-color` is reproduced
-/// by remembering the hover across frames and animating between the two
-/// resting colours.
 pub struct HoverFade {
     pub hovered: bool,
     pub has_hovered: bool,
 }
 
-/// Whether a stored hover flag should paint this frame.
-///
-/// gpui drives hover from the last mouse move it saw for the window. When the
-/// cursor exits the window the platform reports the exit
-/// (`Window::is_window_hovered` flips and gpui refreshes the window) but never
-/// delivers a final move outside the window, so the `false` edge every
-/// `on_hover` listener would have received never arrives and any flag left set
-/// paints as hovered forever. Treating "hovered" as "flagged *and* the pointer
-/// still holds the window" clears with the exit itself; the raw flag then
-/// heals on the next real move, and a pointer that re-enters over the same
-/// surface finds the flag still set and the paint comes back with it.
 pub fn hover_is_active(state_hovered: bool, window: &gpui::Window) -> bool {
     state_hovered && window.is_window_hovered()
 }
 
-/// Reads the window-lived hover flag for `key`, gated by
-/// [`hover_is_active`]. Shared by [`hover_fade`] and [`hover_flag`].
 fn hover_entry(
     key: &str,
     window: &mut gpui::Window,
@@ -256,11 +238,6 @@ fn hover_entry(
     (state, hovered, has_hovered)
 }
 
-/// The colours a fading surface animates between this frame.
-///
-/// `hovered` is the gated value -- what the pointer's real position says --
-/// rather than the raw stored flag, so a surface whose window lost the pointer
-/// fades back to its resting colour instead of sitting on the hover colour.
 fn fade_range(
     hovered: bool,
     has_hovered: bool,
@@ -276,8 +253,6 @@ fn fade_range(
     }
 }
 
-/// Reads the hover state for `key` and returns the state entity, whether the
-/// surface is hovered, and the colours to animate between this frame.
 pub fn hover_fade(
     key: &str,
     resting: gpui::Hsla,
@@ -290,14 +265,6 @@ pub fn hover_fade(
     (state, hovered, range)
 }
 
-/// The instant-swap cousin of [`hover_fade`], for surfaces that change a
-/// colour with no transition.
-///
-/// This replaces gpui's `.hover(...)` style refinement, which cannot be
-/// gated: gpui evaluates it inside its own paint against the window's last
-/// mouse position, so it stays lit when the pointer exits the window without
-/// ever producing another move for it. Surfaces that use it heal with the
-/// exit, like every fading surface here.
 pub fn hover_flag(
     key: &str,
     window: &mut gpui::Window,

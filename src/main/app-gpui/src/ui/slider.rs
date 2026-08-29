@@ -1,18 +1,44 @@
 //! Slider — HeroUI `slider.css` horizontal track plus the app's compact
 //! `slider--sm` variant used by the editor panels (6px track, 12px knob).
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    canvas, div, prelude::*, px, App, ElementId, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, Pixels, Stateful, Styled, Window,
+    canvas, div, prelude::*, px, App, DispatchPhase, ElementId, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Stateful, Styled, Window,
 };
 
 use crate::theme::vars::{active_theme, ThemeVars};
 use crate::ui::chrome;
 
 type ChangeHandler = Rc<dyn Fn(&f32, &mut Window, &mut App)>;
+type DragHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
+fn snap_to_step(value: f32, steps: &[f32]) -> f32 {
+    steps
+        .iter()
+        .copied()
+        .min_by(|left, right| (left - value).abs().total_cmp(&(right - value).abs()))
+        .unwrap_or(value)
+}
+
+fn adjacent_step(current: f32, steps: &[f32], offset: isize) -> f32 {
+    let Some(last) = steps.len().checked_sub(1) else {
+        return current;
+    };
+    let index = steps
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            (**left - current)
+                .abs()
+                .total_cmp(&(**right - current).abs())
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let next = index.saturating_add_signed(offset).min(last);
+    steps[next]
+}
 
 /// How far the fill and knob are inset from each end of the track.
 ///
@@ -43,6 +69,15 @@ fn knob_offset_from_layout(track_width: f32, knob_width: f32, fraction: f32) -> 
     inset + inner_width * fraction.clamp(0.0, 1.0) - inset
 }
 
+fn fraction_at_position(track_width: f32, knob_width: f32, position: f32) -> f32 {
+    let inset = content_inset(knob_width);
+    let inner_width = (track_width - inset * 2.0).max(0.0);
+    if inner_width == 0.0 {
+        return 0.0;
+    }
+    ((position - inset) / inner_width).clamp(0.0, 1.0)
+}
+
 #[derive(IntoElement)]
 pub struct Slider {
     id: ElementId,
@@ -52,7 +87,10 @@ pub struct Slider {
     disabled: bool,
     /// Compact variant from `base.css` `.slider--sm`.
     small: bool,
+    steps: Vec<f32>,
     on_change: Option<ChangeHandler>,
+    on_drag_start: Option<DragHandler>,
+    on_drag_end: Option<DragHandler>,
 }
 
 impl Slider {
@@ -64,7 +102,10 @@ impl Slider {
             max,
             disabled: false,
             small: false,
+            steps: Vec::new(),
             on_change: None,
+            on_drag_start: None,
+            on_drag_end: None,
         }
     }
 
@@ -81,6 +122,21 @@ impl Slider {
 
     pub fn on_change(mut self, handler: impl Fn(&f32, &mut Window, &mut App) + 'static) -> Self {
         self.on_change = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn steps(mut self, steps: impl IntoIterator<Item = f32>) -> Self {
+        self.steps = steps.into_iter().collect();
+        self
+    }
+
+    pub fn on_drag_start(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_drag_start = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn on_drag_end(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_drag_end = Some(Rc::new(handler));
         self
     }
 }
@@ -119,8 +175,6 @@ fn render_track(
         )
     };
     let knob_border = if slider.small { Pixels::ZERO } else { px(2.0) };
-    let bounds_cell = Rc::new(RefCell::new(None::<gpui::Bounds<Pixels>>));
-    let recorder = bounds_cell.clone();
     let element_key = format!("{}", slider.id);
     let focus = crate::ui::primitives::control_focus(
         &element_key,
@@ -206,16 +260,6 @@ fn render_track(
                                     .bg(theme.accent_foreground),
                             )
                         }),
-                )
-                .child(
-                    canvas(
-                        move |bounds, _window, _cx| {
-                            *recorder.borrow_mut() = Some(bounds);
-                        },
-                        |_bounds, (), _window, _cx| {},
-                    )
-                    .absolute()
-                    .inset_0(),
                 ),
         );
 
@@ -230,54 +274,107 @@ fn render_track(
     let current = slider.value;
     let key_handler = handler.clone();
     let max = slider.max;
-    let apply = {
-        let bounds_cell = bounds_cell.clone();
+    let steps = Rc::<[f32]>::from(slider.steps);
+    let apply = Rc::new({
         let handler = handler.clone();
-        move |position: gpui::Point<Pixels>, window: &mut Window, cx: &mut App| {
-            let Some(bounds) = *bounds_cell.borrow() else {
-                return;
-            };
+        let steps = steps.clone();
+        move |bounds: gpui::Bounds<Pixels>,
+              position: gpui::Point<Pixels>,
+              window: &mut Window,
+              cx: &mut App| {
             let width = bounds.size.width;
             if width <= Pixels::ZERO {
                 return;
             }
-            let fraction = ((position.x - bounds.left()) / width).clamp(0.0, 1.0);
-            handler(&(min + fraction * span), window, cx);
+            let fraction = fraction_at_position(
+                f32::from(width),
+                f32::from(knob_w),
+                f32::from(position.x - bounds.left()),
+            );
+            let value = snap_to_step(min + fraction * span, &steps);
+            handler(&value, window, cx);
         }
-    };
+    });
 
-    let on_down = apply.clone();
-    let on_move = apply;
-    track
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            let step = span / 100.0;
-            let next = match event.keystroke.key.as_str() {
-                "left" | "down" => Some(current - step),
-                "right" | "up" => Some(current + step),
-                "pageup" => Some(current + step * 10.0),
-                "pagedown" => Some(current - step * 10.0),
-                "home" => Some(min),
-                "end" => Some(max),
-                _ => None,
-            };
-            if let Some(next) = next {
-                key_handler(&next.clamp(min, max), window, cx);
-                cx.stop_propagation();
-            }
-        })
-        .on_mouse_down(
-            MouseButton::Left,
-            move |event: &MouseDownEvent, window, cx| {
-                on_down(event.position, window, cx);
-                cx.stop_propagation();
+    let drag_start = slider.on_drag_start;
+    let drag_end = slider.on_drag_end;
+    let key_steps = steps.clone();
+    let track = track.on_key_down(move |event: &KeyDownEvent, window, cx| {
+        let step = span / 100.0;
+        let next = match (event.keystroke.key.as_str(), key_steps.is_empty()) {
+            ("left" | "down", false) => Some(adjacent_step(current, &key_steps, -1)),
+            ("right" | "up", false) => Some(adjacent_step(current, &key_steps, 1)),
+            ("pageup", false) => Some(adjacent_step(current, &key_steps, 2)),
+            ("pagedown", false) => Some(adjacent_step(current, &key_steps, -2)),
+            ("home", false) => key_steps.first().copied(),
+            ("end", false) => key_steps.last().copied(),
+            ("left" | "down", true) => Some(current - step),
+            ("right" | "up", true) => Some(current + step),
+            ("pageup", true) => Some(current + step * 10.0),
+            ("pagedown", true) => Some(current - step * 10.0),
+            ("home", true) => Some(min),
+            ("end", true) => Some(max),
+            _ => None,
+        };
+        if let Some(next) = next {
+            key_handler(&next.clamp(min, max), window, cx);
+            cx.stop_propagation();
+        }
+    });
+    let drag_state_key = ElementId::Name(format!("{element_key}-drag").into());
+    track.child(
+        canvas(
+            |bounds, _window, _cx| bounds,
+            move |_bounds, bounds, window, cx| {
+                let dragging = window.use_keyed_state(drag_state_key, cx, |_window, _cx| false);
+
+                let down_state = dragging.clone();
+                let down_apply = apply.clone();
+                let down_start = drag_start.clone();
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble
+                        || event.button != MouseButton::Left
+                        || !bounds.contains(&event.position)
+                    {
+                        return;
+                    }
+                    down_state.update(cx, |active, _cx| *active = true);
+                    if let Some(handler) = &down_start {
+                        handler(window, cx);
+                    }
+                    down_apply(bounds, event.position, window, cx);
+                    cx.stop_propagation();
+                });
+
+                let move_state = dragging.clone();
+                let move_apply = apply.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble
+                        || event.pressed_button != Some(MouseButton::Left)
+                        || !*move_state.read(cx)
+                    {
+                        return;
+                    }
+                    move_apply(bounds, event.position, window, cx);
+                });
+
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble
+                        || event.button != MouseButton::Left
+                        || !*dragging.read(cx)
+                    {
+                        return;
+                    }
+                    dragging.update(cx, |active, _cx| *active = false);
+                    if let Some(handler) = &drag_end {
+                        handler(window, cx);
+                    }
+                });
             },
         )
-        .on_mouse_move(move |event: &MouseMoveEvent, window, cx| {
-            if event.pressed_button != Some(MouseButton::Left) {
-                return;
-            }
-            on_move(event.position, window, cx);
-        })
+        .absolute()
+        .inset_0(),
+    )
 }
 
 #[cfg(test)]
@@ -324,6 +421,16 @@ mod tests {
     }
 
     #[test]
+    fn pointer_mapping_is_the_inverse_of_the_rendered_knob_position() {
+        let track = 200.0;
+        let knob = chrome::SLIDER_KNOB_WIDTH;
+        for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let knob_center = knob_offset_from_layout(track, knob, fraction) + knob / 2.0;
+            assert_eq!(fraction_at_position(track, knob, knob_center), fraction);
+        }
+    }
+
+    #[test]
     fn the_compact_variant_reserves_half_of_its_smaller_knob() {
         // `base.css` gives `.slider--sm` a 0.5rem inset for its 12px knob.
         assert_eq!(content_inset(chrome::SLIDER_SM_KNOB), 6.0);
@@ -332,5 +439,13 @@ mod tests {
             knob_offset(100.0, chrome::SLIDER_SM_KNOB, 1.0),
             100.0 - chrome::SLIDER_SM_KNOB
         );
+    }
+
+    #[test]
+    fn stepped_values_snap_and_move_to_adjacent_steps() {
+        let steps = [0.0, 0.25, 0.5, 1.0];
+        assert_eq!(snap_to_step(0.4, &steps), 0.5);
+        assert_eq!(adjacent_step(0.5, &steps, -1), 0.25);
+        assert_eq!(adjacent_step(0.5, &steps, 1), 1.0);
     }
 }

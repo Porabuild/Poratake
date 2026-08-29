@@ -41,9 +41,6 @@ pub fn render(
         let active = mode_selected(choices, picking_color, mode);
         let id = format!("all-in-one-mode-{}", mode.id());
         let focus = crate::ui::primitives::control_focus(&id, false, window, cx);
-        // Gated hover flag instead of a `.hover()` style, which gpui paints
-        // against the window's last mouse position and so survives the
-        // pointer leaving the window.
         let (mode_hover, mode_hovered) = crate::ui::primitives::hover_flag(&id, window, cx);
         let mode_text = if mode_hovered {
             theme.muted_foreground
@@ -220,9 +217,6 @@ fn target_menu(
     };
 
     let focus = crate::ui::primitives::control_focus(TARGET_MENU_ID, false, window, cx);
-    // Gated hover flag instead of a `.hover()` style, which gpui paints
-    // against the window's last mouse position and so survives the pointer
-    // leaving the window.
     let (trigger_hover, trigger_hovered) =
         crate::ui::primitives::hover_flag(TARGET_MENU_ID, window, cx);
     let key_handle = handle.clone();

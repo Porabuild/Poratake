@@ -10,6 +10,18 @@ pub mod title_bar;
 
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 const UNDO_HISTORY_LIMIT: usize = 100;
+const ACTIVE_PREVIEW_SIZES: [(u32, u32); 7] = [
+    (384, 216),
+    (432, 243),
+    (480, 270),
+    (640, 360),
+    (854, 480),
+    (960, 540),
+    (1280, 720),
+];
+const INITIAL_PREVIEW_QUALITY: usize = 3;
+const PREVIEW_QUALITY_RAISE_FRAMES: u16 = 120;
+const SIDEBAR_ANIMATION_DURATION: Duration = Duration::from_millis(180);
 /// Playback pulls one composed frame per tick; the composition is software
 /// rasterized, so this is a preview rate rather than the export frame rate.
 use std::path::PathBuf;
@@ -18,8 +30,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, img, prelude::*, px, size, App, Bounds, Context, Entity, FocusHandle, KeyDownEvent,
-    Render, ScrollHandle, SharedString, Styled, Window,
+    canvas, div, img, prelude::*, px, size, App, Bounds, Context, DispatchPhase, Entity,
+    FocusHandle, KeyDownEvent, Render, ScrollHandle, SharedString, Styled, Window,
 };
 
 use crate::system::desktop;
@@ -71,6 +83,7 @@ pub struct VideoEditorWindow {
     pixels_per_second: f32,
     playhead: f64,
     is_playing: bool,
+    is_scrubbing: bool,
     is_cut_tool_active: bool,
     is_exporting: bool,
     export_progress: f32,
@@ -88,6 +101,10 @@ pub struct VideoEditorWindow {
     /// flight replaces the queued position rather than piling up.
     compose_in_flight: bool,
     queued_frame: Option<f64>,
+    preview_quality: usize,
+    preview_fast_frames: u16,
+    preview_state_in_flight: bool,
+    preview_state_queued: bool,
     playback_generation: u64,
     /// The export runs on the background executor; progress is published in
     /// permille and cancellation is a flag the render loop checks per frame.
@@ -108,7 +125,10 @@ pub struct VideoEditorWindow {
     drawing_tools: styles::DrawingToolSettings,
     sidebar_width: f32,
     sidebar_resize: Option<(f32, f32)>,
+    sidebar_animation_generation: u64,
+    sidebar_closing: bool,
     speed_selector_open: bool,
+    speed_selector_suppressed: bool,
     desktop_wallpaper_source: Option<String>,
     desktop_wallpaper_preview: Option<Arc<gpui::RenderImage>>,
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
@@ -171,6 +191,7 @@ impl VideoEditorWindow {
             pixels_per_second,
             playhead: 0.0,
             is_playing: false,
+            is_scrubbing: false,
             is_cut_tool_active: false,
             is_exporting: false,
             export_progress: 0.0,
@@ -186,6 +207,10 @@ impl VideoEditorWindow {
             preview_image: None,
             compose_in_flight: false,
             queued_frame: None,
+            preview_quality: INITIAL_PREVIEW_QUALITY,
+            preview_fast_frames: 0,
+            preview_state_in_flight: false,
+            preview_state_queued: false,
             playback_generation: 0,
             export_progress_permille: Arc::new(AtomicU32::new(0)),
             export_cancelled: Arc::new(AtomicBool::new(false)),
@@ -207,7 +232,10 @@ impl VideoEditorWindow {
             drawing_tools: styles::DrawingToolSettings::default(),
             sidebar_width: crate::ui::chrome::VIDEO_SIDEBAR_WIDTH,
             sidebar_resize: None,
+            sidebar_animation_generation: 0,
+            sidebar_closing: false,
             speed_selector_open: false,
+            speed_selector_suppressed: false,
             desktop_wallpaper_source: None,
             desktop_wallpaper_preview: None,
             keyboard_demo: None,
@@ -427,6 +455,9 @@ impl VideoEditorWindow {
             return;
         };
         let time = self.playhead;
+        let max_dimensions =
+            (self.is_playing || self.is_scrubbing || self.gesture_snapshot.is_some())
+                .then_some(ACTIVE_PREVIEW_SIZES[self.preview_quality]);
         if self.compose_in_flight {
             self.queued_frame = Some(time);
             return;
@@ -434,19 +465,29 @@ impl VideoEditorWindow {
         self.compose_in_flight = true;
 
         cx.spawn(async move |entity, cx| {
-            let composed = cx
+            let (composed, elapsed) = cx
                 .background_executor()
                 .spawn(async move {
+                    let started = std::time::Instant::now();
                     let mut guard = source.lock();
-                    guard
-                        .compose(time)
+                    let image = guard
+                        .compose(time, max_dimensions)
                         .as_ref()
-                        .and_then(preview::to_render_image)
+                        .and_then(preview::to_render_image);
+                    (image, started.elapsed())
                 })
                 .await;
 
             let _ = entity.update(cx, |this, cx| {
                 this.compose_in_flight = false;
+                if max_dimensions.is_some() {
+                    (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(
+                        this.preview_quality,
+                        this.preview_fast_frames,
+                        elapsed,
+                        active_preview_budget(this.source_frame_rate),
+                    );
+                }
                 if let Some(image) = composed {
                     // Every composed frame is a new texture, so the previous
                     // one has to leave the sprite atlas with it.
@@ -470,12 +511,24 @@ impl VideoEditorWindow {
         let Some(source) = self.source.clone() else {
             return;
         };
+        if self.preview_state_in_flight {
+            self.preview_state_queued = true;
+            return;
+        }
+        self.preview_state_in_flight = true;
         let state = self.state.clone();
         cx.spawn(async move |entity, cx| {
             cx.background_executor()
                 .spawn(async move { source.lock().set_state(state) })
                 .await;
-            let _ = entity.update(cx, |this, cx| this.request_frame(cx));
+            let _ = entity.update(cx, |this, cx| {
+                this.preview_state_in_flight = false;
+                if std::mem::take(&mut this.preview_state_queued) {
+                    this.sync_preview_state(cx);
+                    return;
+                }
+                this.request_frame(cx);
+            });
         })
         .detach();
     }
@@ -537,10 +590,11 @@ impl VideoEditorWindow {
     }
 
     fn total_duration(&self) -> f64 {
-        model::total_duration(
-            &self.state.segments,
-            self.state.source_duration.unwrap_or(0.0),
-        )
+        first_frame_duration(&self.state)
+            + model::total_duration(
+                &self.state.segments,
+                self.state.source_duration.unwrap_or(0.0),
+            )
     }
 
     fn active_tab(&self) -> SidebarTab {
@@ -554,6 +608,11 @@ impl VideoEditorWindow {
         let before = self.state.clone();
         mutate(&mut self.state);
         if self.state == before {
+            return;
+        }
+        if self.gesture_snapshot.is_some() {
+            self.sync_preview_state(cx);
+            cx.notify();
             return;
         }
         if self.history.len() >= UNDO_HISTORY_LIMIT {
@@ -574,12 +633,21 @@ impl VideoEditorWindow {
         }
     }
 
+    pub fn begin_slider_gesture(&mut self) {
+        self.begin_gesture();
+    }
+
+    pub fn end_slider_gesture(&mut self, cx: &mut Context<Self>) {
+        self.end_gesture(cx);
+    }
+
     /// Closes a gesture, pushing one history entry for everything it changed.
     fn end_gesture(&mut self, cx: &mut Context<Self>) {
         let Some(before) = self.gesture_snapshot.take() else {
             return;
         };
         if before == self.state {
+            self.request_frame(cx);
             return;
         }
         if self.history.len() >= UNDO_HISTORY_LIMIT {
@@ -685,11 +753,15 @@ impl VideoEditorWindow {
     }
 
     pub fn select_tab(&mut self, tab: SidebarTab, cx: &mut Context<Self>) {
+        let was_open = self.state.ui.sidebar_open;
         if self.state.ui.sidebar_open && self.active_tab() == tab {
             self.state.ui.sidebar_open = false;
         } else {
             self.state.ui.sidebar_open = true;
             self.state.ui.sidebar_tab = tab.id().to_string();
+        }
+        if was_open != self.state.ui.sidebar_open {
+            self.animate_sidebar(cx);
         }
         self.persist(cx);
         cx.notify();
@@ -697,6 +769,7 @@ impl VideoEditorWindow {
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.state.ui.sidebar_open = !self.state.ui.sidebar_open;
+        self.animate_sidebar(cx);
         self.persist(cx);
         cx.notify();
     }
@@ -708,25 +781,61 @@ impl VideoEditorWindow {
                 self.playhead = 0.0;
             }
             self.drive_playback(cx);
+        } else {
+            self.request_frame(cx);
         }
         cx.notify();
     }
 
     fn activate_tab(&mut self, tab: SidebarTab, cx: &mut Context<Self>) {
-        self.state.ui.sidebar_open = true;
+        if !self.state.ui.sidebar_open {
+            self.state.ui.sidebar_open = true;
+            self.animate_sidebar(cx);
+        }
         self.state.ui.sidebar_tab = tab.id().to_string();
         self.persist(cx);
         cx.notify();
     }
 
-    pub fn toggle_speed_selector(&mut self, cx: &mut Context<Self>) {
+    fn animate_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_animation_generation += 1;
+        self.sidebar_closing = !self.state.ui.sidebar_open;
+        if !self.sidebar_closing {
+            return;
+        }
+        let generation = self.sidebar_animation_generation;
+        cx.spawn(async move |entity, cx| {
+            cx.background_executor()
+                .timer(SIDEBAR_ANIMATION_DURATION)
+                .await;
+            let _ = entity.update(cx, |this, cx| {
+                if this.sidebar_animation_generation != generation || this.state.ui.sidebar_open {
+                    return;
+                }
+                this.sidebar_closing = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub fn press_speed_selector(&mut self, cx: &mut Context<Self>) {
+        if self.speed_selector_suppressed {
+            self.speed_selector_suppressed = false;
+            return;
+        }
         self.speed_selector_open = !self.speed_selector_open;
         cx.notify();
     }
 
-    pub fn close_speed_selector(&mut self, cx: &mut Context<Self>) {
+    pub fn dismiss_speed_selector(&mut self, cx: &mut Context<Self>) {
         self.speed_selector_open = false;
+        self.speed_selector_suppressed = true;
         cx.notify();
+    }
+
+    fn release_speed_selector_suppression(&mut self) {
+        self.speed_selector_suppressed = false;
     }
 
     /// Moves the playhead to an absolute position — the timeline click and
@@ -735,7 +844,21 @@ impl VideoEditorWindow {
         let total = self.total_duration();
         self.playhead = time.clamp(0.0, total);
         self.request_frame(cx);
+        if self.is_playing {
+            self.drive_playback(cx);
+        }
         cx.notify();
+    }
+
+    pub fn begin_scrub(&mut self) {
+        self.is_scrubbing = true;
+    }
+
+    fn end_scrub(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.is_scrubbing) {
+            return;
+        }
+        self.request_frame(cx);
     }
 
     pub fn toggle_cut_tool(&mut self, cx: &mut Context<Self>) {
@@ -1530,6 +1653,7 @@ impl VideoEditorWindow {
             // by dragging, because their extents are video time.
             TrackKind::Video => {}
         }
+        self.sync_preview_state(cx);
         cx.notify();
     }
 
@@ -1804,6 +1928,10 @@ impl VideoEditorWindow {
         let key = event.keystroke.key.as_str();
 
         if key == "escape" {
+            if self.menu.is_present() {
+                cx.stop_propagation();
+                return;
+            }
             self.speed_selector_open = false;
             self.selected_clip = None;
             cx.stop_propagation();
@@ -2018,14 +2146,12 @@ impl Render for VideoEditorWindow {
         let stage_content = match (&self.preview_image, self.preview_status, &poster) {
             // The composed frame is what the export writes, so it wins.
             (Some(image), _, _) => img(image.clone())
-                .max_w_full()
-                .max_h_full()
+                .size_full()
                 .object_fit(gpui::ObjectFit::Contain)
                 .into_any_element(),
             // Until the first frame lands, the cached poster stands in.
             (None, PreviewStatus::Loading, Some(path)) => img(path.clone())
-                .max_w_full()
-                .max_h_full()
+                .size_full()
                 .object_fit(gpui::ObjectFit::Contain)
                 .into_any_element(),
             (None, PreviewStatus::Loading, None) => {
@@ -2037,8 +2163,7 @@ impl Render for VideoEditorWindow {
                 &theme,
             ),
             (None, _, Some(path)) => img(path.clone())
-                .max_w_full()
-                .max_h_full()
+                .size_full()
                 .object_fit(gpui::ObjectFit::Contain)
                 .into_any_element(),
             (None, _, None) => empty_preview(
@@ -2129,56 +2254,66 @@ impl Render for VideoEditorWindow {
                 ),
         );
 
-        if self.state.ui.sidebar_open {
-            use gpui::AnimationExt as _;
+        use gpui::AnimationExt as _;
 
-            let sidebar_width = self.sidebar_width;
-            let panel_width = (sidebar_width - crate::ui::chrome::VIDEO_SIDEBAR_RESIZE).max(0.0);
-            stage = stage.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_shrink_0()
-                    .h_full()
-                    .w(px(sidebar_width))
-                    .justify_end()
-                    .overflow_hidden()
-                    .child(sidebar::resize_handle(
-                        self.sidebar_resize.is_some(),
-                        &theme,
-                        window,
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .w(px(panel_width))
-                            .flex_shrink_0()
-                            .h_full()
-                            .bg(theme.card)
-                            .child(panels::render(
-                                self.active_tab(),
-                                self,
-                                &self.state,
-                                has_cursor_data,
-                                has_camera,
-                                has_keyboard,
-                                has_mic,
-                                self.is_exporting,
-                                self.export_progress,
-                                &self.menu,
-                                &theme,
-                                window,
-                                cx,
-                            )),
-                    )
-                    .with_animation(
-                        "video-sidebar-open",
-                        gpui::Animation::new(Duration::from_millis(180))
-                            .with_easing(crate::ui::primitives::ease_out()),
-                        move |sidebar, delta| sidebar.w(px(sidebar_width * delta)).opacity(delta),
-                    ),
-            );
+        let sidebar_open = self.state.ui.sidebar_open;
+        let sidebar_width = self.sidebar_width;
+        let panel_width = (sidebar_width - crate::ui::chrome::VIDEO_SIDEBAR_RESIZE).max(0.0);
+        let mut sidebar_panel = div()
+            .w(px(panel_width))
+            .flex_shrink_0()
+            .h_full()
+            .bg(theme.card);
+        if sidebar_open || self.sidebar_closing {
+            sidebar_panel = sidebar_panel.child(panels::render(
+                self.active_tab(),
+                self,
+                &self.state,
+                has_cursor_data,
+                has_camera,
+                has_keyboard,
+                has_mic,
+                self.is_exporting,
+                self.export_progress,
+                &self.menu,
+                &theme,
+                window,
+                cx,
+            ));
         }
+        let sidebar = div()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .h_full()
+            .justify_end()
+            .overflow_hidden()
+            .child(sidebar::resize_handle(
+                self.sidebar_resize.is_some(),
+                &theme,
+                window,
+                cx,
+            ))
+            .child(sidebar_panel);
+        let sidebar = if self.sidebar_animation_generation == 0 {
+            sidebar
+                .w(px(if sidebar_open { sidebar_width } else { 0.0 }))
+                .opacity(if sidebar_open { 1.0 } else { 0.0 })
+                .into_any_element()
+        } else {
+            sidebar
+                .with_animation(
+                    ("video-sidebar", self.sidebar_animation_generation),
+                    gpui::Animation::new(SIDEBAR_ANIMATION_DURATION)
+                        .with_easing(crate::ui::primitives::ease_out()),
+                    move |sidebar, delta| {
+                        let visible = sidebar_animation_visibility(sidebar_open, delta);
+                        sidebar.w(px(sidebar_width * visible)).opacity(visible)
+                    },
+                )
+                .into_any_element()
+        };
+        stage = stage.child(sidebar);
 
         stage = stage.child(sidebar::tab_rail(
             self.state.ui.sidebar_open.then(|| self.active_tab()),
@@ -2186,6 +2321,26 @@ impl Render for VideoEditorWindow {
             &theme,
             cx,
         ));
+
+        let release_view = cx.entity().downgrade();
+        let release_handler = canvas(
+            |_bounds, _window, _cx| (),
+            move |_bounds, (), window, _cx| {
+                window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _window, cx| {
+                    if phase != DispatchPhase::Bubble || event.button != gpui::MouseButton::Left {
+                        return;
+                    }
+                    let _ = release_view.update(cx, |this, cx| {
+                        this.end_clip_drag(cx);
+                        this.end_sidebar_resize(cx);
+                        this.end_scrub(cx);
+                        this.release_speed_selector_suppression();
+                    });
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
 
         div()
             .id("video-editor-window")
@@ -2198,6 +2353,12 @@ impl Render for VideoEditorWindow {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _event: &gpui::MouseDownEvent, window, _cx| {
+                    window.focus(&this.focus_handle);
+                }),
+            )
             .on_mouse_move(
                 cx.listener(|this, event: &gpui::MouseMoveEvent, _window, cx| {
                     if this.sidebar_resize.is_some() {
@@ -2205,13 +2366,7 @@ impl Render for VideoEditorWindow {
                     }
                 }),
             )
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event: &gpui::MouseUpEvent, _window, cx| {
-                    this.end_clip_drag(cx);
-                    this.end_sidebar_resize(cx);
-                }),
-            )
+            .child(release_handler)
             .child(title)
             .child(stage)
             .children(self.menu.render())
@@ -2244,6 +2399,36 @@ fn frame_step(frame_rate: f64) -> f64 {
     1.0 / frame_rate.max(1.0)
 }
 
+fn first_frame_duration(state: &VideoEditorState) -> f64 {
+    if !state.first_frame.enabled || state.first_frame.image_data.is_none() {
+        return 0.0;
+    }
+    1.0 / crate::video::export::frame_rate(state).max(1) as f64
+}
+
+fn adjust_preview_quality(
+    index: usize,
+    fast_frames: u16,
+    elapsed: Duration,
+    budget: Duration,
+) -> (usize, u16) {
+    if elapsed > budget && index > 0 {
+        return (index - 1, 0);
+    }
+    if elapsed >= budget.mul_f32(0.65) {
+        return (index, 0);
+    }
+    let fast_frames = fast_frames.saturating_add(1);
+    if fast_frames < PREVIEW_QUALITY_RAISE_FRAMES || index + 1 >= ACTIVE_PREVIEW_SIZES.len() {
+        return (index, fast_frames);
+    }
+    (index + 1, 0)
+}
+
+fn active_preview_budget(frame_rate: f64) -> Duration {
+    playback_tick(frame_rate).mul_f32(0.5)
+}
+
 fn playback_tick(frame_rate: f64) -> Duration {
     let frame_rate = if frame_rate.is_finite() && frame_rate > 0.0 {
         frame_rate.min(240.0)
@@ -2251,6 +2436,13 @@ fn playback_tick(frame_rate: f64) -> Duration {
         60.0
     };
     Duration::from_secs_f64(1.0 / frame_rate)
+}
+
+fn sidebar_animation_visibility(open: bool, delta: f32) -> f32 {
+    if open {
+        return delta;
+    }
+    1.0 - delta
 }
 
 fn keyboard_sound_file(kind: &str, index: u32) -> Option<PathBuf> {
@@ -2339,6 +2531,66 @@ mod keyboard_demo_tests {
             .unwrap());
     }
 
+    #[gpui::test]
+    fn mouse_release_outside_the_window_ends_scrubbing(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let editor = VideoEditorWindow::new_for_test(None, cx);
+            window.focus(&editor.focus_handle);
+            editor
+        });
+        cx.update(|_window, cx| {
+            editor.update(cx, |editor, _cx| {
+                editor.begin_scrub();
+                editor.speed_selector_suppressed = true;
+            });
+        });
+        cx.refresh().expect("draw editor");
+        cx.run_until_parked();
+
+        cx.simulate_mouse_up(
+            gpui::point(px(-10.0), px(-10.0)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+
+        cx.read(|cx| {
+            let editor = editor.read(cx);
+            assert!(!editor.is_scrubbing);
+            assert!(!editor.speed_selector_suppressed);
+        });
+    }
+
+    #[gpui::test]
+    fn sidebar_content_is_retained_until_collapse_finishes(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let window = cx.add_window(|_window, cx| VideoEditorWindow::new_for_test(None, cx));
+        window
+            .update(cx, |editor, _window, cx| {
+                editor.state.ui.sidebar_open = true;
+                editor.toggle_sidebar(cx);
+                assert!(editor.sidebar_closing);
+            })
+            .unwrap();
+
+        cx.executor().advance_clock(SIDEBAR_ANIMATION_DURATION);
+        cx.run_until_parked();
+
+        assert!(!window
+            .update(cx, |editor, _, _| editor.sidebar_closing)
+            .unwrap());
+    }
+
     #[test]
     fn playback_uses_the_source_frame_rate() {
         assert_eq!(playback_tick(30.0), Duration::from_secs_f64(1.0 / 30.0));
@@ -2352,6 +2604,49 @@ mod keyboard_demo_tests {
         assert_eq!(frame_step(30.0), 1.0 / 30.0);
         assert_eq!(frame_step(60.0), 1.0 / 60.0);
         assert_eq!(frame_step(120.0), 1.0 / 120.0);
+    }
+
+    #[test]
+    fn first_frame_uses_the_export_frame_rate() {
+        let mut state = VideoEditorState::default();
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some("data:,".into());
+        state.export_settings.frame_rate = "24".into();
+        assert_eq!(first_frame_duration(&state), 1.0 / 24.0);
+        state.first_frame.enabled = false;
+        assert_eq!(first_frame_duration(&state), 0.0);
+    }
+
+    #[test]
+    fn active_preview_quality_tracks_the_frame_budget() {
+        let budget = active_preview_budget(60.0);
+        assert_eq!(
+            adjust_preview_quality(3, 0, budget + Duration::from_millis(1), budget),
+            (2, 0)
+        );
+        assert_eq!(
+            adjust_preview_quality(
+                2,
+                PREVIEW_QUALITY_RAISE_FRAMES - 1,
+                Duration::from_millis(1),
+                budget
+            ),
+            (3, 0)
+        );
+        assert_eq!(
+            adjust_preview_quality(0, 0, budget + Duration::from_millis(1), budget),
+            (0, 0)
+        );
+        assert!(
+            active_preview_budget(30.0).abs_diff(Duration::from_secs_f64(1.0 / 60.0))
+                <= Duration::from_nanos(1)
+        );
+    }
+
+    #[test]
+    fn sidebar_animation_runs_in_both_directions() {
+        assert_eq!(sidebar_animation_visibility(true, 0.25), 0.25);
+        assert_eq!(sidebar_animation_visibility(false, 0.25), 0.75);
     }
 
     #[test]

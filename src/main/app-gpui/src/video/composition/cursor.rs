@@ -1,6 +1,8 @@
 //! Port of `composition/cursor-logic.ts` and `cursor-canvas-renderer.ts` — the
 //! recorded pointer, its click bounce, idle fade and motion blur.
 
+use std::sync::Arc;
+
 use tiny_skia::Pixmap;
 
 use crate::render::canvas::Canvas;
@@ -22,23 +24,21 @@ const CLICK_ANIMATION_DURATION: f64 = 0.35;
 
 /// `findSurroundingEvents`.
 fn surrounding_events(events: &[CursorEvent], timestamp: f64) -> Option<(usize, usize)> {
-    let mut before: Option<usize> = None;
-    let mut after: Option<usize> = None;
-    for (index, event) in events.iter().enumerate() {
-        if event.timestamp <= timestamp {
-            before = Some(index);
-        }
-        if event.timestamp >= timestamp && after.is_none() {
-            after = Some(index);
-            break;
-        }
+    if events.is_empty() {
+        return None;
     }
-    match (before, after) {
-        (None, None) => None,
-        (Some(before), None) => Some((before, before)),
-        (None, Some(after)) => Some((after, after)),
-        (Some(before), Some(after)) => Some((before, after)),
+    let after = events.partition_point(|event| event.timestamp < timestamp);
+    if after == events.len() {
+        let last = events.len() - 1;
+        return Some((last, last));
     }
+    if events[after].timestamp > timestamp {
+        if after == 0 {
+            return Some((0, 0));
+        }
+        return Some((after - 1, after));
+    }
+    Some((after, after))
 }
 
 fn lerp_between(events: &[CursorEvent], indices: (usize, usize), timestamp: f64) -> (f64, f64) {
@@ -76,18 +76,25 @@ pub fn mouse_state(events: &[CursorEvent], timestamp: f64) -> MouseState {
     let mut is_down = false;
     let mut button: Option<String> = None;
     let mut cursor_type = "arrow".to_string();
-    let mut click_times: Vec<f64> = Vec::new();
+    let mut last_click: Option<f64> = None;
+    let mut sequence_start = 0.0;
 
     for event in events {
         if event.timestamp > timestamp {
             break;
         }
         if let Some(cursor) = &event.cursor {
-            cursor_type = cursor.clone();
+            cursor_type.clone_from(cursor);
         }
         if event.kind == "down" {
             is_down = true;
-            click_times.push(event.timestamp);
+            sequence_start = match last_click {
+                Some(previous) if event.timestamp - previous < CLICK_MERGE_THRESHOLD => {
+                    sequence_start
+                }
+                _ => event.timestamp,
+            };
+            last_click = Some(event.timestamp);
             button = event.button.clone();
         } else if event.kind == "up" {
             is_down = false;
@@ -95,23 +102,13 @@ pub fn mouse_state(events: &[CursorEvent], timestamp: f64) -> MouseState {
         }
     }
 
-    if click_times.is_empty() {
+    if last_click.is_none() {
         return MouseState {
             is_down,
             click_progress: 0.0,
             button,
             cursor_type,
         };
-    }
-
-    // Clicks closer together than the merge threshold animate as one bounce.
-    let mut sequence_start = click_times[click_times.len() - 1];
-    for index in (0..click_times.len().saturating_sub(1)).rev() {
-        if sequence_start - click_times[index] < CLICK_MERGE_THRESHOLD {
-            sequence_start = click_times[index];
-        } else {
-            break;
-        }
     }
 
     let elapsed = timestamp - sequence_start;
@@ -336,7 +333,7 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
     // anchored on their hotspot.
     let (sprite, hotspot) = match config.cursor_style.custom_cursor_image.as_deref() {
         Some(source) => (
-            crate::render::gradient::load_image(source),
+            cursor_sprites::decoded_image(source),
             cursor_sprites::Hotspot { x: 0.0, y: 0.0 },
         ),
         None => (
@@ -395,7 +392,7 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
 #[allow(clippy::too_many_arguments)]
 fn draw_sprite(
     canvas: &mut Canvas,
-    sprite: &Pixmap,
+    sprite: &Arc<Pixmap>,
     x: f64,
     y: f64,
     size: f64,
@@ -408,7 +405,7 @@ fn draw_sprite(
     canvas.translate(x as f32, y as f32);
     canvas.scale(click_scale as f32, click_scale as f32);
     canvas.translate(-(size * hotspot.x) as f32, -(size * hotspot.y) as f32);
-    canvas.draw_pixmap(sprite.as_ref(), 0.0, 0.0, size as f32, size as f32);
+    canvas.draw_pixmap(sprite.as_ref().as_ref(), 0.0, 0.0, size as f32, size as f32);
     canvas.restore();
 }
 
@@ -430,6 +427,12 @@ mod tests {
     fn a_position_between_samples_is_interpolated() {
         let events = [event(0.0, 0.0, 0.0, "move"), event(1.0, 1.0, 0.5, "move")];
         assert_eq!(interpolate_position(&events, 0.5), Some((0.5, 0.25)));
+    }
+
+    #[test]
+    fn an_exact_duplicate_timestamp_uses_the_first_sample() {
+        let events = [event(1.0, 0.2, 0.3, "move"), event(1.0, 0.8, 0.9, "down")];
+        assert_eq!(interpolate_position(&events, 1.0), Some((0.2, 0.3)));
     }
 
     #[test]
