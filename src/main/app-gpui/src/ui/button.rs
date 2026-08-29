@@ -167,6 +167,7 @@ pub struct Button {
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>>,
     on_press:
         Option<Box<dyn Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static>>,
+    animate_press: bool,
 }
 
 impl Button {
@@ -197,6 +198,7 @@ impl Button {
             tooltip: None,
             on_click: None,
             on_press: None,
+            animate_press: true,
         }
     }
 
@@ -346,6 +348,11 @@ impl Button {
         self.on_press = Some(Box::new(handler));
         self
     }
+
+    pub fn animate_press(mut self, animate: bool) -> Self {
+        self.animate_press = animate;
+        self
+    }
 }
 
 impl RenderOnce for Button {
@@ -409,7 +416,7 @@ impl RenderOnce for Button {
                     .into()
             });
         }
-        if !self.disabled {
+        if !self.disabled && self.animate_press {
             // `button.css` presses scale the button. gpui cannot transform a
             // `div` — only `MonochromeSprite` carries a matrix, and that is
             // reachable only through `paint_svg` — so the geometry is
@@ -549,5 +556,10 @@ mod tests {
     fn the_shrink_never_drives_padding_below_zero() {
         let (_, _, pad) = press_geometry(28.0, 0.0, 0.9);
         assert_eq!(pad, 0.0);
+    }
+
+    #[test]
+    fn press_animation_can_be_disabled() {
+        assert!(!Button::new("stationary").animate_press(false).animate_press);
     }
 }

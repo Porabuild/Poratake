@@ -21,10 +21,6 @@ impl Rect {
     pub fn contains(&self, x: f64, y: f64) -> bool {
         x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
     }
-
-    pub fn area(&self) -> f64 {
-        (self.width * self.height).max(0.0)
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -68,18 +64,8 @@ pub fn list(daemon: &DaemonHandle) -> Vec<WindowListItem> {
     .unwrap_or_default()
 }
 
-/// The topmost window under the cursor. The daemon returns windows front to
-/// back, so the smallest match wins ties from overlapping frames.
 pub fn hit_test(windows: &[WindowListItem], x: f64, y: f64) -> Option<&WindowListItem> {
-    windows
-        .iter()
-        .filter(|window| window.bounds.contains(x, y))
-        .min_by(|a, b| {
-            a.bounds
-                .area()
-                .partial_cmp(&b.bounds.area())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+    windows.iter().find(|window| window.bounds.contains(x, y))
 }
 
 #[cfg(test)]
@@ -102,14 +88,14 @@ mod tests {
     }
 
     #[test]
-    fn picks_the_smallest_window_under_the_cursor() {
+    fn picks_the_frontmost_window_under_the_cursor() {
         let windows = vec![
             window(1, 0.0, 0.0, 800.0, 600.0),
             window(2, 100.0, 100.0, 200.0, 200.0),
         ];
         assert_eq!(
             hit_test(&windows, 150.0, 150.0).map(|w| w.window_id),
-            Some(2)
+            Some(1)
         );
         assert_eq!(
             hit_test(&windows, 700.0, 500.0).map(|w| w.window_id),

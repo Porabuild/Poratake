@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     div, point, prelude::*, px, size, AnyElement, App, Bounds, Context, FocusHandle, Render,
-    SharedString, Styled, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
-    WindowOptions,
+    SharedString, Styled, Subscription, WeakEntity, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowKind, WindowOptions,
 };
 
 use crate::capture::overlay::ScreenRect;
@@ -34,8 +34,17 @@ enum Mode {
     Recording,
 }
 
-fn can_cancel_with_escape(mode: Mode, menu_present: bool) -> bool {
-    mode == Mode::PreRecording && !menu_present
+fn can_cancel_with_escape(mode: Mode) -> bool {
+    mode == Mode::PreRecording
+}
+
+fn set_pre_recording_escape(enabled: bool, cx: &App) {
+    let Some(native) = crate::state::try_native(cx) else {
+        return;
+    };
+    native.send(crate::system::native::NativeCommand::SetPreRecordingEscape(
+        enabled,
+    ));
 }
 
 pub struct RecordingControl {
@@ -53,7 +62,9 @@ pub struct RecordingControl {
     selected_camera_id: Option<String>,
     devices: crate::system::devices::MediaDeviceLists,
     device_request: u64,
+    pending_device_menu: Option<(crate::system::devices::DeviceKind, SharedString)>,
     menu: MenuHandle,
+    bounds_subscription: Option<Subscription>,
     started_at: Option<Instant>,
     elapsed: u64,
     focus_handle: FocusHandle,
@@ -71,6 +82,7 @@ impl RecordingControl {
             return;
         }
         if Self::update_pre_recording(cx, target, rect, window_id, target_name.as_deref()) {
+            set_pre_recording_escape(true, cx);
             return;
         }
         let config = crate::state::state(cx).config.get().recording;
@@ -107,10 +119,18 @@ impl RecordingControl {
                         selected_camera_id: config.camera.selected_device_id.clone(),
                         devices: crate::system::devices::MediaDeviceLists::default(),
                         device_request: 0,
+                        pending_device_menu: None,
                         menu: MenuHandle::new(),
+                        bounds_subscription: None,
                         started_at: None,
                         elapsed: 0,
                         focus_handle: cx.focus_handle(),
+                    });
+                    view.update(cx, |this, cx| {
+                        this.bounds_subscription =
+                            Some(cx.observe_window_bounds(window, |this, window, cx| {
+                                this.open_pending_device_menu(window, cx);
+                            }));
                     });
                     window.focus(&view.read(cx).focus_handle);
                     view
@@ -119,6 +139,9 @@ impl RecordingControl {
             .ok()
             .map(Into::into)
         });
+        if registry::is_open(RegistryKind::RecordingControl, cx) {
+            set_pre_recording_escape(true, cx);
+        }
     }
 
     pub fn cancel_pre_recording(cx: &mut App) -> bool {
@@ -127,8 +150,11 @@ impl RecordingControl {
                 continue;
             };
             let cancelled = handle
-                .update(cx, |this, window, _cx| {
-                    if !can_cancel_with_escape(this.mode, false) {
+                .update(cx, |this, window, cx| {
+                    if this.dismiss_device_menu(window, cx) {
+                        return false;
+                    }
+                    if !can_cancel_with_escape(this.mode) {
                         return false;
                     }
                     window.remove_window();
@@ -136,11 +162,26 @@ impl RecordingControl {
                 })
                 .unwrap_or(false);
             if cancelled {
+                set_pre_recording_escape(false, cx);
                 registry::forget(RegistryKind::RecordingControl, cx);
+                crate::capture::overlay::end_recording_handoff(cx);
                 return true;
             }
         }
         false
+    }
+
+    fn dismiss_device_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.pending_device_menu.take().is_some() {
+            self.sync_window_bounds(window, cx, false);
+            cx.notify();
+            return true;
+        }
+        if !self.menu.is_present() {
+            return false;
+        }
+        self.menu.close(window);
+        true
     }
 
     fn update_pre_recording(
@@ -150,8 +191,13 @@ impl RecordingControl {
         window_id: Option<i64>,
         target_name: Option<&str>,
     ) -> bool {
-        let width = chrome::recording_control_width(false, target_name.is_some());
-        let bounds = bar_bounds(cx, rect, width, false);
+        #[cfg(not(windows))]
+        let bounds = bar_bounds(
+            cx,
+            rect,
+            chrome::recording_control_width(false, target_name.is_some()),
+            false,
+        );
         let target_name = target_name.map(str::to_owned);
         for window_handle in cx.windows() {
             let Some(handle) = window_handle.downcast::<Self>() else {
@@ -171,15 +217,7 @@ impl RecordingControl {
                     this.rect = rect;
                     this.window_id = window_id;
                     this.target_name = target_name.clone().map(SharedString::from);
-                    window.resize(bounds.size);
-                    #[cfg(windows)]
-                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                        crate::system::window_composition::apply_window_bounds(
-                            hwnd,
-                            bounds,
-                            window.scale_factor(),
-                        );
-                    }
+                    this.sync_window_bounds(window, cx, false);
                     cx.notify();
                     true
                 })
@@ -247,6 +285,7 @@ impl RecordingControl {
             crate::windows::toast::Toast::show(cx, "Recording failed", error.to_string());
             return;
         }
+        set_pre_recording_escape(false, cx);
         #[cfg(not(target_os = "macos"))]
         let _ = crate::capture::overlay::begin_recording_handoff(self.rect, cx);
 
@@ -254,7 +293,11 @@ impl RecordingControl {
         self.mode = Mode::Recording;
         self.started_at = Some(Instant::now());
         self.elapsed = 0;
-        self.sync_window_bounds(window, cx);
+        self.sync_window_bounds(
+            window,
+            cx,
+            self.pending_device_menu.is_some() || self.menu.is_present(),
+        );
         crate::intents::refresh_shell(cx);
         self.tick(cx);
         cx.notify();
@@ -344,7 +387,6 @@ impl RecordingControl {
                 "camera",
                 if self.camera { "video" } else { "video-off" },
                 "Select camera",
-                self.camera,
                 crate::system::devices::DeviceKind::Camera,
                 window,
                 cx,
@@ -353,7 +395,6 @@ impl RecordingControl {
                 "microphone",
                 if self.microphone { "mic" } else { "mic-off" },
                 "Select microphone",
-                self.microphone,
                 crate::system::devices::DeviceKind::Microphone,
                 window,
                 cx,
@@ -367,6 +408,7 @@ impl RecordingControl {
                 // the reference never shows.
                 .size(ButtonSize::IconSm)
                 .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+                .animate_press(false)
                 .icon(if self.system_audio {
                     "volume-2"
                 } else {
@@ -389,17 +431,18 @@ impl RecordingControl {
         &self,
         id: &'static str,
         icon: &'static str,
-        _tooltip: &'static str,
-        _enabled: bool,
+        tooltip: &'static str,
         kind: crate::system::devices::DeviceKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let handle = self.menu.clone();
         let owner = format!("recording-{id}");
-        let entries = self.device_menu_entries(kind, cx.entity().downgrade());
-        let refresh_entity = cx.entity().downgrade();
+        let entity = cx.entity().downgrade();
+        let key_entity = entity.clone();
         let menu_id = owner.clone();
+        let key_menu_id = menu_id.clone();
+        let theme = active_theme(cx);
+        let focus = crate::ui::primitives::control_focus(&owner, false, window, cx);
         // Gated hover flag instead of a `.hover()` style, which gpui paints
         // against the window's last mouse position and so survives the
         // pointer leaving the window.
@@ -407,6 +450,8 @@ impl RecordingControl {
             crate::ui::primitives::hover_flag(&owner, window, cx);
         div()
             .id(SharedString::from(owner.clone()))
+            .track_focus(&focus)
+            .focus(move |style| style.shadow(crate::ui::primitives::focus_ring(&theme, 2.0)))
             .relative()
             .flex()
             .flex_row()
@@ -426,24 +471,66 @@ impl RecordingControl {
             .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
             .child(icon_element("chevron-down", px(12.0)))
             .child(self.menu.render_dropdown(&menu_id))
+            .tooltip(move |_window, cx| {
+                cx.new(|_| crate::ui::tooltip::Tooltip::new(tooltip)).into()
+            })
             .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-                let opening = !handle.is_open_for(&menu_id);
-                handle.toggle(
-                    device_menu_placement(menu_id.clone()),
-                    entries.clone(),
-                    window,
-                    cx,
-                );
-                if opening {
-                    if let Some(entity) = refresh_entity.upgrade() {
-                        entity.update(cx, |this, cx| {
-                            this.refresh_devices(kind, menu_id.clone().into(), window, cx);
-                        });
-                    }
+                if let Some(entity) = entity.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        this.toggle_device_menu(kind, menu_id.clone().into(), window, cx);
+                    });
+                }
+                cx.stop_propagation();
+            })
+            .on_key_down(move |event, window, cx| {
+                if !activates_device_menu(event.keystroke.key.as_str()) {
+                    return;
+                }
+                if let Some(entity) = key_entity.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        this.toggle_device_menu(kind, key_menu_id.clone().into(), window, cx);
+                    });
                 }
                 cx.stop_propagation();
             })
             .into_any_element()
+    }
+
+    fn toggle_device_menu(
+        &mut self,
+        kind: crate::system::devices::DeviceKind,
+        owner: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let opening = !self.menu.is_open_for(owner.as_ref());
+        if !opening {
+            self.pending_device_menu = None;
+            self.menu.close(window);
+            return;
+        }
+
+        let expanded = window.bounds().size.height >= px(DEVICE_MENU_WINDOW_HEIGHT);
+        self.pending_device_menu = Some((kind, owner));
+        self.sync_window_bounds(window, cx, true);
+        if expanded {
+            self.open_pending_device_menu(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn open_pending_device_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((kind, owner)) =
+            take_ready_device_menu(&mut self.pending_device_menu, window.bounds().size.height)
+        else {
+            return;
+        };
+        let entries = self.device_menu_entries(kind, cx.entity().downgrade());
+        self.menu
+            .toggle(device_menu_placement(owner.clone()), entries, window, cx);
+        if self.menu.is_open_for(owner.as_ref()) {
+            self.refresh_devices(kind, owner, window, cx);
+        }
     }
 
     fn device_menu_entries(
@@ -683,28 +770,42 @@ impl RecordingControl {
             self.finish(true, window, cx);
             return;
         }
+        set_pre_recording_escape(false, cx);
         window.remove_window();
         registry::close(RegistryKind::RecordingControl, cx);
         crate::capture::overlay::end_recording_handoff(cx);
     }
 
-    fn sync_window_bounds(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_window_bounds(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        device_menu_open: bool,
+    ) {
         let width = chrome::recording_control_width(
             self.mode == Mode::Recording,
             self.target_name.is_some(),
         );
-        let bounds = bar_bounds(cx, self.rect, width, self.menu.is_present());
+        let bounds = bar_bounds(cx, self.rect, width, device_menu_open);
         if window.bounds() == bounds {
             return;
         }
+        #[cfg(all(windows, not(test)))]
+        let reposition = window.bounds().origin != bounds.origin;
         window.resize(bounds.size);
-        #[cfg(windows)]
-        if let Some(hwnd) = crate::windows::window_hwnd(window) {
-            crate::system::window_composition::apply_window_bounds(
-                hwnd,
-                bounds,
-                window.scale_factor(),
-            );
+        #[cfg(all(windows, not(test)))]
+        if reposition {
+            if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                let scale = window.scale_factor();
+                cx.spawn(async move |_, _| {
+                    crate::system::window_composition::apply_window_origin(
+                        hwnd,
+                        bounds.origin,
+                        scale,
+                    );
+                })
+                .detach();
+            }
         }
     }
 }
@@ -741,6 +842,20 @@ fn merge_device_refresh(
         }
     }
     true
+}
+
+fn take_ready_device_menu(
+    pending: &mut Option<(crate::system::devices::DeviceKind, SharedString)>,
+    window_height: gpui::Pixels,
+) -> Option<(crate::system::devices::DeviceKind, SharedString)> {
+    if window_height < px(DEVICE_MENU_WINDOW_HEIGHT) {
+        return None;
+    }
+    pending.take()
+}
+
+fn activates_device_menu(key: &str) -> bool {
+    matches!(key, "enter" | "space")
 }
 
 fn report_toggle_failure(cx: &mut Context<RecordingControl>, error: &anyhow::Error) {
@@ -839,6 +954,7 @@ fn overlay_icon(
         .variant(ButtonVariant::Ghost)
         .size(ButtonSize::IconSm)
         .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+        .animate_press(false)
         .icon(icon)
         .tooltip(tooltip)
         .on_click(cx.listener(move |this, _event, window, cx| on_click(this, window, cx)))
@@ -847,30 +963,18 @@ fn overlay_icon(
 
 impl Render for RecordingControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_window_bounds(window, cx);
+        self.sync_window_bounds(
+            window,
+            cx,
+            self.pending_device_menu.is_some() || self.menu.is_present(),
+        );
         let theme = active_theme(cx);
         let paused = recorder::state() == recorder::RecorderState::Paused;
         let toggles = self.input_toggles(window, cx);
 
-        let mut bar = div()
+        let mut bar = crate::ui::primitives::toolbar_surface(&theme)
             .id("recording-control-bar")
-            .h(px(chrome::recording_inner_bar_height()))
-            .flex()
-            .flex_row()
-            .items_center()
-            // The recording bar and the all-in-one toolbar are the same
-            // `ToolbarSurface` in Electron -- `gap-0.5 p-1 rounded-4xl border-2`
-            // -- so they take the same metrics here. Bespoke ones made this bar
-            // 12px/16px instead of 2px/4px, which pushed its contents wider than
-            // its own window and clipped the record dot and the close button.
-            .gap(px(chrome::OVERLAY_SURFACE_GAP))
-            .rounded(px(chrome::OVERLAY_SURFACE_RADIUS))
-            .border_2()
-            .border_color(theme.muted_foreground.opacity(0.35))
-            .bg(theme.muted_background.opacity(0.95))
-            .text_color(theme.foreground)
-            .shadow_2xl()
-            .p(px(chrome::OVERLAY_SURFACE_PADDING));
+            .h(px(chrome::recording_inner_bar_height()));
 
         if let Some(name) = &self.target_name {
             bar = bar
@@ -893,6 +997,7 @@ impl Render for RecordingControl {
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::IconSm)
                         .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+                        .animate_press(false)
                         // `<Circle className="size-3.5 fill-current" />` -- a
                         // *filled* disc. The lucide icons here are stroke-only,
                         // so an outline circle is the wrong shape; a filled div
@@ -934,6 +1039,7 @@ impl Render for RecordingControl {
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::IconSm)
                     .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+                    .animate_press(false)
                     // `<Square className="size-3.5 fill-current text-destructive" />`.
                     .child(filled_glyph(theme.destructive, false))
                     .tooltip("Stop recording")
@@ -958,6 +1064,7 @@ impl Render for RecordingControl {
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::IconSm)
                     .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
+                    .animate_press(false)
                     .icon("trash-2")
                     .tooltip("Discard recording")
                     .on_click(
@@ -976,7 +1083,6 @@ fn recording_shell(
     menu: &MenuHandle,
     cx: &mut Context<RecordingControl>,
 ) -> impl IntoElement {
-    let menu_for_keys = menu.clone();
     div()
         .id("recording-control")
         .track_focus(focus)
@@ -986,9 +1092,13 @@ fn recording_shell(
         .items_center()
         .on_key_down(
             cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape"
-                    && can_cancel_with_escape(this.mode, menu_for_keys.is_present())
-                {
+                if event.keystroke.key != "escape" {
+                    return;
+                }
+                if this.dismiss_device_menu(window, cx) {
+                    return;
+                }
+                if can_cancel_with_escape(this.mode) {
                     this.cancel(window, cx);
                 }
             }),
@@ -1025,17 +1135,18 @@ mod tests {
             chrome::recording_inner_bar_height(),
             chrome::RECORDING_WINDOW_HEIGHT
         );
-        assert_eq!(chrome::RECORDING_TOP_MARGIN, 24.0);
         let (x, y) = chrome::recording_bar_origin(0.0, 10.0, 1920.0, 236.0);
-        assert_eq!(y, 34.0);
+        assert_eq!(
+            y + chrome::RECORDING_BAR_PAD_TOP,
+            10.0 + chrome::overlay_toolbar_top()
+        );
         assert_eq!(x, ((1920.0_f32 - 236.0) / 2.0).round());
     }
 
     #[test]
     fn escape_only_cancels_before_recording_starts() {
-        assert!(can_cancel_with_escape(Mode::PreRecording, false));
-        assert!(!can_cancel_with_escape(Mode::PreRecording, true));
-        assert!(!can_cancel_with_escape(Mode::Recording, false));
+        assert!(can_cancel_with_escape(Mode::PreRecording));
+        assert!(!can_cancel_with_escape(Mode::Recording));
     }
 
     #[test]
@@ -1079,7 +1190,9 @@ mod tests {
                     default_camera_id: None,
                 },
                 device_request: 0,
+                pending_device_menu: None,
                 menu: MenuHandle::new(),
+                bounds_subscription: None,
                 started_at: None,
                 elapsed: 0,
                 focus_handle: cx.focus_handle(),
@@ -1160,6 +1273,112 @@ mod tests {
         ));
         assert!(devices.microphones.is_empty());
     }
+
+    #[test]
+    fn device_menu_waits_for_the_expanded_gpui_viewport() {
+        let mut pending = Some((
+            crate::system::devices::DeviceKind::Camera,
+            SharedString::from("recording-camera"),
+        ));
+
+        assert!(take_ready_device_menu(&mut pending, px(52.0)).is_none());
+        assert!(pending.is_some());
+        assert!(take_ready_device_menu(&mut pending, px(300.0)).is_some());
+        assert!(pending.is_none());
+    }
+
+    #[gpui::test]
+    fn bounds_notification_opens_the_pending_device_menu(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (control, cx) = cx.add_window_view(|window, cx| -> RecordingControl {
+            let mut control = RecordingControl {
+                mode: Mode::PreRecording,
+                target: RecordingTarget::Area,
+                target_name: None,
+                rect: ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                window_id: None,
+                project: None,
+                system_audio: true,
+                microphone: true,
+                camera: false,
+                selected_mic_id: None,
+                selected_camera_id: None,
+                devices: crate::system::devices::MediaDeviceLists::default(),
+                device_request: 0,
+                pending_device_menu: None,
+                menu: MenuHandle::new(),
+                bounds_subscription: None,
+                started_at: None,
+                elapsed: 0,
+                focus_handle: cx.focus_handle(),
+            };
+            control.bounds_subscription = Some(cx.observe_window_bounds(
+                window,
+                |this: &mut RecordingControl, window, cx| {
+                    this.open_pending_device_menu(window, cx);
+                },
+            ));
+            control
+        });
+        cx.simulate_resize(size(px(332.0), px(52.0)));
+
+        cx.update(|window, cx| {
+            control.update(cx, |control, cx| {
+                control.toggle_device_menu(
+                    crate::system::devices::DeviceKind::Camera,
+                    "recording-camera".into(),
+                    window,
+                    cx,
+                );
+            });
+        });
+        assert!(control.read_with(cx, |control, _| {
+            control.pending_device_menu.is_some() && !control.menu.is_open()
+        }));
+
+        cx.update(|window, cx| {
+            control.update(cx, |control, cx| {
+                assert!(control.dismiss_device_menu(window, cx));
+            });
+        });
+        cx.simulate_resize(size(px(332.0), px(300.0)));
+        assert!(control.read_with(cx, |control, _| {
+            control.pending_device_menu.is_none() && !control.menu.is_open()
+        }));
+
+        cx.simulate_resize(size(px(332.0), px(52.0)));
+        cx.update(|window, cx| {
+            control.update(cx, |control, cx| {
+                control.toggle_device_menu(
+                    crate::system::devices::DeviceKind::Camera,
+                    "recording-camera".into(),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.simulate_resize(size(px(332.0), px(300.0)));
+        assert!(control.read_with(cx, |control, _| {
+            control.pending_device_menu.is_none() && control.menu.is_open_for("recording-camera")
+        }));
+    }
+
+    #[test]
+    fn device_menu_supports_keyboard_activation() {
+        assert!(activates_device_menu("enter"));
+        assert!(activates_device_menu("space"));
+        assert!(!activates_device_menu("escape"));
+    }
 }
 
 /// `size-3.5 fill-current`: a solid 14px disc for the record button, a solid
@@ -1231,5 +1450,17 @@ mod toolbar_tests {
             "no button in the recording bar may paint a selected background, found `{}`",
             call.unwrap_or_default().trim()
         );
+    }
+
+    #[test]
+    fn the_bar_keeps_button_glyphs_stationary_while_pressed() {
+        let here = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/windows/recording_control.rs"),
+        )
+        .expect("read recording_control.rs");
+        let production = here.split("#[cfg(test)]").next().unwrap_or_default();
+
+        assert_eq!(production.matches(".animate_press(false)").count(), 5);
     }
 }

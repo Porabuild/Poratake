@@ -22,12 +22,14 @@ pub enum NativeEvent {
     ToggleTrayMenu {
         tray_rect: Option<TrayRect>,
     },
+    CancelPreRecording,
 }
 
 pub enum NativeCommand {
     RebuildMenu(Box<TrayMenuState>),
     SetTrayVisible(bool),
     SetHotkeys(Vec<(Intent, String)>),
+    SetPreRecordingEscape(bool),
 }
 
 pub struct NativeBridge {
@@ -126,6 +128,16 @@ impl Shell {
             if event.state() != global_hotkey::HotKeyState::Pressed {
                 continue;
             }
+            if self.hotkeys.is_pre_recording_escape(event.id()) {
+                if self
+                    .events
+                    .send_blocking(NativeEvent::CancelPreRecording)
+                    .is_err()
+                {
+                    eprintln!("[native] event channel closed");
+                }
+                continue;
+            }
             match self.hotkeys.intent_for(event.id()) {
                 Some(intent) => self.emit_intent(intent),
                 None => eprintln!("[hotkey] unmapped id {}", event.id()),
@@ -138,6 +150,9 @@ impl Shell {
             NativeCommand::RebuildMenu(state) => self.rebuild_menu(&state),
             NativeCommand::SetTrayVisible(visible) => self.set_tray_visible(visible),
             NativeCommand::SetHotkeys(bindings) => self.hotkeys.apply(&bindings),
+            NativeCommand::SetPreRecordingEscape(enabled) => {
+                self.hotkeys.set_pre_recording_escape(enabled)
+            }
         }
     }
 

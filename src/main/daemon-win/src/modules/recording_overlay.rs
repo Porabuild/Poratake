@@ -19,11 +19,11 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, DestroyWindow, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
-    GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, LWA_ALPHA,
-    OBJID_WINDOW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetLayeredWindowAttributes,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    GetWindowThreadProcessId, HTTRANSPARENT, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible,
+    LWA_ALPHA, OBJID_WINDOW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
+    WDA_EXCLUDEFROMCAPTURE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_NCHITTEST, WM_PAINT,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const HIGHLIGHT_CLASS_NAME: &str = "PoratakeRecordingHighlight";
@@ -55,6 +55,10 @@ unsafe extern "system" fn highlight_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_NCHITTEST {
+        return LRESULT(HTTRANSPARENT as isize);
+    }
+
     if message == WM_PAINT {
         paint(window, HIGHLIGHT_COLOR.with(|color| *color.borrow()));
         return LRESULT(0);
@@ -435,5 +439,19 @@ mod tests {
 
         assert_eq!(rect_width(&frame), rect_width(&bounds) + 6);
         assert_eq!(rect_height(&frame), rect_height(&bounds) + 6);
+    }
+
+    #[test]
+    fn highlight_never_owns_pointer_input() {
+        let result = unsafe {
+            highlight_wndproc(
+                HWND::default(),
+                WM_NCHITTEST,
+                WPARAM::default(),
+                LPARAM::default(),
+            )
+        };
+
+        assert_eq!(result, LRESULT(HTTRANSPARENT as isize));
     }
 }

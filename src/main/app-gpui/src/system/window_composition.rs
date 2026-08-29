@@ -21,6 +21,8 @@ use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::LazyLock;
 use std::time::Duration;
 
+#[cfg(not(test))]
+use gpui::Point;
 use gpui::{Bounds, Pixels};
 use smallvec::SmallVec;
 use windows::core::BOOL;
@@ -376,6 +378,41 @@ pub fn apply_window_bounds(window: HWND, bounds: Bounds<Pixels>, scale: f32) {
             width,
             height,
             SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+    }
+}
+
+#[cfg(not(test))]
+pub fn apply_window_origin(window: HWND, origin: Point<Pixels>, scale: f32) {
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    let mut client_rect = RECT::default();
+    let mut window_rect = RECT::default();
+    let mut client_origin = POINT::default();
+    unsafe {
+        if GetClientRect(window, &mut client_rect).is_err()
+            || GetWindowRect(window, &mut window_rect).is_err()
+            || !ClientToScreen(window, &mut client_origin).as_bool()
+        {
+            return;
+        }
+        let bounds = Bounds {
+            origin,
+            size: gpui::Size::default(),
+        };
+        let (x, y, _, _) =
+            outer_window_bounds(bounds, scale, window_rect, client_origin, client_rect);
+        let _ = SetWindowPos(
+            window,
+            None,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER,
         );
     }
 }

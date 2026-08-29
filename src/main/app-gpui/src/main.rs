@@ -129,6 +129,9 @@ fn main() {
                     NativeEvent::ToggleTrayMenu { tray_rect } => {
                         windows::tray_menu::TrayMenuWindow::toggle(tray_rect, cx)
                     }
+                    NativeEvent::CancelPreRecording => {
+                        windows::recording_control::RecordingControl::cancel_pre_recording(cx);
+                    }
                 });
                 if let Err(error) = result {
                     eprintln!("[intent] dispatch failed: {error}");

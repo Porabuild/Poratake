@@ -290,7 +290,6 @@ pub const RECORDING_WIDTH: f32 = 400.0;
 pub const RECORDING_TARGET_LABEL_WIDTH: f32 = 140.0;
 pub const RECORDING_WINDOW_HEIGHT: f32 = 52.0;
 pub const RECORDING_BAR_PAD_TOP: f32 = 4.0;
-pub const RECORDING_TOP_MARGIN: f32 = 24.0;
 
 pub const PIN_PAD: f32 = 0.0;
 pub const PIN_OFFSET: f32 = 30.0;
@@ -368,7 +367,7 @@ pub fn recording_bar_origin(
     bar_width: f32,
 ) -> (f32, f32) {
     let x = (work_x + (work_width - bar_width) / 2.0).round();
-    let y = work_y + RECORDING_TOP_MARGIN;
+    let y = work_y + overlay_toolbar_top() - RECORDING_BAR_PAD_TOP;
     (x, y)
 }
 
@@ -715,7 +714,6 @@ mod tests {
         assert_eq!(RECORDING_TARGET_LABEL_WIDTH, 140.0);
         assert_eq!(RECORDING_WINDOW_HEIGHT, 52.0);
         assert_eq!(RECORDING_BAR_PAD_TOP, 4.0);
-        assert_eq!(RECORDING_TOP_MARGIN, 24.0);
         assert_eq!(overlay_bar_height(), 44.0);
         assert_eq!(recording_inner_bar_height(), overlay_bar_height());
         assert_ne!(RECORDING_WINDOW_HEIGHT, recording_inner_bar_height());
@@ -726,7 +724,10 @@ mod tests {
         assert_eq!(recording_control_width(true, true), 540.0);
         assert_eq!(
             recording_bar_origin(0.0, 10.0, 1920.0, 236.0),
-            (((1920.0_f32 - 236.0) / 2.0).round(), 34.0)
+            (
+                ((1920.0_f32 - 236.0) / 2.0).round(),
+                10.0 + overlay_toolbar_top() - RECORDING_BAR_PAD_TOP
+            )
         );
         assert_eq!(
             display_containing(
@@ -842,7 +843,7 @@ mod tests {
             RECORDING_WIDTH + RECORDING_TARGET_LABEL_WIDTH
         );
         let (x, y) = recording_bar_origin(100.0, 40.0, 800.0, 236.0);
-        assert_eq!(y, 40.0 + RECORDING_TOP_MARGIN);
+        assert_eq!(y + RECORDING_BAR_PAD_TOP, 40.0 + overlay_toolbar_top());
         assert_eq!(x, (100.0_f32 + (800.0 - 236.0) / 2.0).round());
     }
 

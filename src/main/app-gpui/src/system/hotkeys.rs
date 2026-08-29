@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use global_hotkey::hotkey::HotKey;
+use global_hotkey::hotkey::{Code, HotKey};
 use global_hotkey::GlobalHotKeyManager;
 
 use crate::config::schema::SettingsConfig;
@@ -37,6 +37,7 @@ pub struct HotkeyRegistry {
     manager: Option<GlobalHotKeyManager>,
     registered: Vec<HotKey>,
     intents: HashMap<u32, Intent>,
+    pre_recording_escape: Option<HotKey>,
 }
 
 impl HotkeyRegistry {
@@ -52,11 +53,42 @@ impl HotkeyRegistry {
             manager,
             registered: Vec::new(),
             intents: HashMap::new(),
+            pre_recording_escape: None,
         }
     }
 
     pub fn intent_for(&self, id: u32) -> Option<Intent> {
         self.intents.get(&id).copied()
+    }
+
+    pub fn is_pre_recording_escape(&self, id: u32) -> bool {
+        self.pre_recording_escape
+            .is_some_and(|hotkey| hotkey.id() == id)
+    }
+
+    pub fn set_pre_recording_escape(&mut self, enabled: bool) {
+        let Some(manager) = &self.manager else {
+            return;
+        };
+        if enabled {
+            if self.pre_recording_escape.is_some() {
+                return;
+            }
+            let hotkey = HotKey::new(None, Code::Escape);
+            match manager.register(hotkey) {
+                Ok(()) => self.pre_recording_escape = Some(hotkey),
+                Err(error) => eprintln!("[hotkey] register pre-recording Escape failed: {error}"),
+            }
+            return;
+        }
+        let Some(hotkey) = self.pre_recording_escape else {
+            return;
+        };
+        if let Err(error) = manager.unregister(hotkey) {
+            eprintln!("[hotkey] unregister pre-recording Escape failed: {error}");
+            return;
+        }
+        self.pre_recording_escape = None;
     }
 
     pub fn apply(&mut self, bindings: &[(Intent, String)]) {

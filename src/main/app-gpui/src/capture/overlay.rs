@@ -490,7 +490,7 @@ fn show_overlay_before_freeze(window: &Window) -> bool {
         #[cfg(test)]
         {
             let _ = window;
-            return true;
+            true
         }
         #[cfg(not(test))]
         {
@@ -879,6 +879,14 @@ impl AreaOverlay {
             };
             let label = picked.label();
             let window_id = picked.window_id;
+            if !release_frozen_for_recording(cx) {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Recording failed",
+                    "Could not release the frozen screen",
+                );
+                return;
+            }
             begin_recording(
                 cx,
                 crate::video::recorder::RecordingTarget::Window,
@@ -1524,16 +1532,21 @@ fn sync_window_recording_handoff(cx: &mut Context<AreaOverlay>) {
                 cx.notify();
             });
         }
+        for window_handle in cx.windows() {
+            let Some(handle) =
+                window_handle.downcast::<crate::windows::recording_control::RecordingControl>()
+            else {
+                continue;
+            };
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
+            break;
+        }
     });
 }
 
-#[cfg(windows)]
-fn conceal_recording_selector(window: &Window) {
-    park_overlay(window);
-}
-
-#[cfg(not(windows))]
 fn conceal_recording_selector(window: &mut Window) {
+    #[cfg(windows)]
+    park_overlay(window);
     window.remove_window();
 }
 
@@ -2435,7 +2448,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn video_window_selection_keeps_the_handoff_session(cx: &mut TestAppContext) {
+    fn video_window_selection_releases_the_freeze_and_removes_the_selector(
+        cx: &mut TestAppContext,
+    ) {
         use crate::capture::all_in_one::{Choices, Mode, Target};
         use crate::capture::windows_list::{Rect, WindowListItem};
 
@@ -2444,6 +2459,10 @@ mod tests {
             Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
         cx.update(|cx| crate::state::set_test_state(cx, config));
         let service = cx.read(crate::state::state);
+        let generation = service.begin_freeze();
+        service
+            .finish_freeze(generation, Ok(()))
+            .expect("finish freeze");
         let bounds = gpui::Bounds {
             origin: gpui::point(px(0.0), px(0.0)),
             size: size(px(800.0), px(600.0)),
@@ -2477,7 +2496,7 @@ mod tests {
         });
         cx.update(|cx| {
             let display_id = cx.primary_display().expect("primary display").id();
-            super::track_overlay(overlay.into(), display_id, 7, true, cx);
+            super::track_overlay(overlay.into(), display_id, generation, true, cx);
         });
 
         overlay
@@ -2488,14 +2507,10 @@ mod tests {
             .expect("confirm window");
         cx.run_until_parked();
 
-        assert!(overlay
-            .read_with(cx, |overlay, _| {
-                overlay.handed_off && overlay.all_in_one.is_none() && !overlay.picking_windows
-            })
-            .expect("read handoff state"));
+        assert!(overlay.update(cx, |_, _, _| ()).is_err());
         cx.update(|cx| {
             assert_eq!(super::session(cx).handles.len(), 1);
-            assert_eq!(super::session(cx).handles[0].generation, 7);
+            assert_eq!(super::session(cx).handles[0].generation, 0);
             assert_eq!(super::session(cx).outlined_window_id, Some(42));
             assert!(cx.windows().into_iter().any(|window| window
                 .downcast::<crate::windows::recording_control::RecordingControl>()

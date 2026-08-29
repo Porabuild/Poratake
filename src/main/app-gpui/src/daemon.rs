@@ -122,20 +122,6 @@ impl DaemonHandle {
         self.inner.child.lock().is_some()
     }
 
-    /// Kills stale daemons from previous runs pointing at this exact binary.
-    fn kill_stale_processes(binary_path: &Path) {
-        if !cfg!(windows) {
-            return;
-        }
-        let script = "$target = [IO.Path]::GetFullPath($env:PORATAKE_DAEMON_PATH); Get-Process -Name 'poratake-daemon' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and [string]::Equals([IO.Path]::GetFullPath($_.Path), $target, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } | Stop-Process -Force";
-        let _ = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("PORATAKE_DAEMON_PATH", binary_path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-
     /// Starts the daemon and waits for its `system:ready` event.
     pub fn start(&self) -> Result<()> {
         let _lifecycle = self.inner.lifecycle.lock();
@@ -144,7 +130,6 @@ impl DaemonHandle {
         }
 
         self.inner.shutting_down.store(false, Ordering::SeqCst);
-        Self::kill_stale_processes(&self.inner.binary_path);
 
         let mut child = Command::new(&self.inner.binary_path)
             .stdin(Stdio::piped())
