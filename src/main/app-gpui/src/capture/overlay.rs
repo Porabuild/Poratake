@@ -762,6 +762,11 @@ impl AreaOverlay {
         self.picking_windows
     }
 
+    fn is_picking_screen(&self) -> bool {
+        self.all_in_one
+            .is_some_and(|choices| choices.target == crate::capture::all_in_one::Target::Screen)
+    }
+
     /// The hovered window's frame, converted from physical screen pixels into
     /// this overlay's logical client coordinates.
     fn hovered_frame(&self) -> Option<(Point<Pixels>, gpui::Size<Pixels>)> {
@@ -918,8 +923,6 @@ impl AreaOverlay {
         cx.notify();
     }
 
-    /// A window target turns the overlay into the window picker; area and
-    /// screen keep the drag selection.
     fn apply_all_in_one_target(&mut self, cx: &mut Context<Self>) {
         use crate::capture::all_in_one::Target;
 
@@ -928,7 +931,11 @@ impl AreaOverlay {
         };
         self.rect = None;
         self.interaction = None;
-        self.cursor = gpui::CursorStyle::Crosshair;
+        self.cursor = if choices.target == Target::Screen {
+            gpui::CursorStyle::default()
+        } else {
+            gpui::CursorStyle::Crosshair
+        };
         self.hovered_window = None;
         self.window_list_generation = self.window_list_generation.wrapping_add(1);
         self.picking_windows = choices.target == Target::Window;
@@ -1514,6 +1521,21 @@ impl Render for AreaOverlay {
             ));
         }
 
+        if self.is_picking_screen() {
+            let mut picking = if window.is_window_hovered() {
+                root
+            } else {
+                root.child(div().absolute().inset_0().bg(dim))
+            };
+            if let Some(toolbar) = toolbar {
+                picking = picking.child(toolbar);
+            }
+            return picking.child(prompt(
+                crate::capture::intent::DISPLAY_PICK_PROMPT,
+                self.all_in_one.is_some(),
+            ));
+        }
+
         let mut element = match selection {
             None => root
                 .child(div().absolute().inset_0().bg(dim))
@@ -1651,10 +1673,7 @@ impl AreaOverlay {
         if self.is_picking_windows() {
             return;
         }
-        if self
-            .all_in_one
-            .is_some_and(|choices| choices.target == crate::capture::all_in_one::Target::Screen)
-        {
+        if self.is_picking_screen() {
             self.confirm_screen(window, cx);
             return;
         }
@@ -1718,7 +1737,8 @@ impl AreaOverlay {
     fn on_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.pointer != Some(event.position) {
             self.pointer = Some(event.position);
-            if !self.is_picking_windows() && self.selection().is_none() {
+            if !self.is_picking_windows() && !self.is_picking_screen() && self.selection().is_none()
+            {
                 cx.notify();
             }
         }
@@ -1727,6 +1747,9 @@ impl AreaOverlay {
                 self.cursor = gpui::CursorStyle::Crosshair;
                 cx.notify();
             }
+            return;
+        }
+        if self.is_picking_screen() {
             return;
         }
         if self.is_picking_windows() {
@@ -2303,10 +2326,16 @@ mod tests {
                 target: Target::Screen,
             })
         });
+        overlay.update(cx, |overlay, cx| overlay.apply_all_in_one_target(cx));
 
         assert_eq!(
             overlay.read_with(cx, |overlay, _| overlay.intent),
             CaptureIntent::Recording
+        );
+        assert!(overlay.read_with(cx, |overlay, _| overlay.is_picking_screen()));
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| overlay.cursor),
+            gpui::CursorStyle::default()
         );
         overlay.update(cx, |overlay, cx| overlay.set_all_in_one_mode(Mode::Ocr, cx));
         assert_eq!(

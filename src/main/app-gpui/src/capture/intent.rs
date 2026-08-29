@@ -19,6 +19,8 @@ pub const DRAG_PROMPT: &str = "Drag to select an area \u{b7} Esc to cancel";
 /// `window-pick-targets.ts`.
 pub const WINDOW_PICK_PROMPT: &str = "Click a window to select it \u{b7} Esc to cancel";
 
+pub const DISPLAY_PICK_PROMPT: &str = "Click a display to select it \u{b7} Esc to cancel";
+
 impl CaptureIntent {
     /// `area-overlay-window.tsx` hard-codes one line for dragging, whatever the
     /// capture is for -- there is no per-intent wording in Electron, and the
@@ -99,7 +101,11 @@ mod prompt_tests {
             reference.push_str(&std::fs::read_to_string(root.join(relative)).expect(relative));
         }
 
-        for prompt in [super::DRAG_PROMPT, super::WINDOW_PICK_PROMPT] {
+        for prompt in [
+            super::DRAG_PROMPT,
+            super::WINDOW_PICK_PROMPT,
+            super::DISPLAY_PICK_PROMPT,
+        ] {
             assert!(
                 reference.contains(prompt),
                 "`{prompt}` does not appear in the reference overlay sources"
