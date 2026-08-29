@@ -26,6 +26,11 @@ func fitRect(source: CGSize, target: CGSize) -> CGRect {
     )
 }
 
+func effectiveFrameRate(configured: Int, maximum: Int?) -> Int {
+    let selected = min(max(1, configured), 240)
+    return min(selected, max(1, maximum ?? selected))
+}
+
 struct RecordingConfig {
     var x: Int?
     var y: Int?

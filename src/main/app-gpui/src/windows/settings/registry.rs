@@ -228,6 +228,16 @@ const ATTACH_EDGES: Options = &[
     ("top", "Top"),
 ];
 
+const RECORDING_FRAME_RATES: Options = &[
+    ("30", "30 FPS"),
+    ("60", "60 FPS"),
+    ("90", "90 FPS"),
+    ("120", "120 FPS"),
+    ("144", "144 FPS"),
+    ("165", "165 FPS"),
+    ("240", "240 FPS"),
+];
+
 const CLOUD_PROVIDERS: Options = &[
     ("rest", "Self-hosted cloud"),
     ("s3", "S3-compatible storage"),
@@ -555,6 +565,21 @@ fn screenshot_items() -> Vec<Item> {
 
 fn recording_items() -> Vec<Item> {
     vec![
+        select!(
+            "recording.frameRate",
+            Category::Recording,
+            "Quality",
+            "Frame rate",
+            "Record up to the selected display refresh rate",
+            "fps frame rate refresh smooth recording",
+            OptionSource::Static(RECORDING_FRAME_RATES),
+            |config| config.recording.frame_rate.to_string(),
+            |config, value| {
+                if let Ok(value) = value.parse() {
+                    config.recording.frame_rate = value;
+                }
+            }
+        ),
         switch!(
             "recording.showPreview",
             Category::Recording,

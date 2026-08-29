@@ -31,7 +31,8 @@ pub fn render(
         .flex_shrink_0()
         .items_center()
         .justify_end()
-        .gap(px(chrome::TITLE_BAR_GAP));
+        .gap(px(chrome::TITLE_BAR_GAP))
+        .mr(px(chrome::TITLE_BAR_PADDING_X));
 
     if let Some(path) = &state.project_path {
         actions = actions.child(
@@ -147,9 +148,12 @@ pub fn render(
         .items_center()
         .flex_1()
         .min_w_0()
+        .pl(px(chrome::TITLE_BAR_PADDING_X))
         .text_color(theme.muted_foreground);
     if chrome::is_macos() {
-        name = name.pl(px(chrome::VIDEO_TRAFFIC_LIGHT_PAD));
+        name = name.pl(px(
+            chrome::VIDEO_TRAFFIC_LIGHT_PAD + chrome::TITLE_BAR_PADDING_X
+        ));
     }
 
     let mut bar = div()
@@ -160,7 +164,6 @@ pub fn render(
         .w_full()
         .flex_none()
         .bg(theme.card)
-        .px(px(chrome::TITLE_BAR_PADDING_X))
         .child(
             name.child(
                 div()

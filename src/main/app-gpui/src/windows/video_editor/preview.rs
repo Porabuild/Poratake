@@ -41,6 +41,7 @@ impl Source {
             .flatten();
 
         let mut config = Config::new(info.width as f64, info.height as f64, state);
+        config.fps = info.frame_rate();
         config.cursor_data = sidecars::load_cursor(path);
         config.keyboard_data = sidecars::load_keyboard(path);
         config.subtitle_data = sidecars::load_subtitle(path);

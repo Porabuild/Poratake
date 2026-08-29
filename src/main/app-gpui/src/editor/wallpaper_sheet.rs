@@ -542,6 +542,37 @@ pub fn icon_tile(
         .into_any_element()
 }
 
+pub fn image_tile(
+    id: impl Into<ElementId>,
+    image: std::sync::Arc<gpui::RenderImage>,
+    size: f32,
+    selected: bool,
+    theme: &ThemeVars,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let handler = Rc::new(on_click);
+    div()
+        .id(id)
+        .w(px(size))
+        .h(px(size))
+        .overflow_hidden()
+        .rounded(px(chrome::WALLPAPER_TILE_RADIUS))
+        .when(selected, |el| el.border_2().border_color(theme.ring))
+        .when(!selected, |el| {
+            el.border_2().border_color(theme.muted_background)
+        })
+        .cursor_pointer()
+        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+            handler(window, cx);
+        })
+        .child(
+            gpui::img(image)
+                .size_full()
+                .object_fit(gpui::ObjectFit::Cover),
+        )
+        .into_any_element()
+}
+
 pub fn gradient_tile(
     id: impl Into<ElementId>,
     _name: &str,

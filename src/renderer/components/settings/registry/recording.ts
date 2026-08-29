@@ -2,6 +2,23 @@ import type { SettingsItem } from '../settings-registry';
 
 export const RECORDING_ITEMS: SettingsItem[] = [
   {
+    id: 'recording.frameRate',
+    category: 'recording',
+    section: 'Quality',
+    type: 'select',
+    label: 'Frame rate',
+    description: 'Record up to the selected display refresh rate',
+    keywords: ['fps', 'frame', 'rate', 'refresh', 'smooth', 'recording'],
+    options: [30, 60, 90, 120, 144, 165, 240].map(value => ({
+      value: String(value),
+      label: `${value} FPS`,
+    })),
+    getValue: s => String(s.recording.frameRate),
+    setValue: (s, v) => ({
+      recording: { ...s.recording, frameRate: Number(v) },
+    }),
+  },
+  {
     id: 'recording.showPreview',
     category: 'recording',
     section: 'Behavior',

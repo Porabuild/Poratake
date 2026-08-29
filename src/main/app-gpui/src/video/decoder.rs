@@ -10,11 +10,19 @@ pub struct VideoInfo {
     pub width: u32,
     pub height: u32,
     pub duration: f64,
+    pub frame_rate: f64,
 }
 
 impl VideoInfo {
     pub fn is_valid(self) -> bool {
         self.width > 0 && self.height > 0
+    }
+
+    pub fn frame_rate(self) -> f64 {
+        if self.frame_rate.is_finite() && self.frame_rate > 0.0 {
+            return self.frame_rate;
+        }
+        60.0
     }
 }
 
@@ -183,6 +191,13 @@ mod backend {
                 info.width = (packed >> 32) as u32;
                 info.height = (packed & 0xFFFF_FFFF) as u32;
             }
+            if let Ok(packed) = media_type.GetUINT64(&MF_MT_FRAME_RATE) {
+                let numerator = (packed >> 32) as u32;
+                let denominator = (packed & 0xFFFF_FFFF) as u32;
+                if denominator > 0 {
+                    info.frame_rate = numerator as f64 / denominator as f64;
+                }
+            }
         }
 
         if let Ok(value) =
@@ -326,14 +341,29 @@ mod tests {
         assert!(VideoInfo {
             width: 1920,
             height: 1080,
-            duration: 3.0
+            duration: 3.0,
+            frame_rate: 60.0,
         }
         .is_valid());
         assert!(!VideoInfo {
             width: 1920,
             height: 0,
-            duration: 3.0
+            duration: 3.0,
+            frame_rate: 60.0,
         }
         .is_valid());
+    }
+
+    #[test]
+    fn missing_frame_rate_defaults_to_sixty() {
+        assert_eq!(VideoInfo::default().frame_rate(), 60.0);
+        assert_eq!(
+            VideoInfo {
+                frame_rate: 120.0,
+                ..Default::default()
+            }
+            .frame_rate(),
+            120.0
+        );
     }
 }

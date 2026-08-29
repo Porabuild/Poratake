@@ -38,8 +38,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MONITORINFOEXW, MonitorFromWindow,
+    DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
+    HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
 };
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFAttributes,
@@ -771,6 +771,7 @@ impl RecordingRuntime {
     fn prepare(config: &RecordingConfig) -> Result<Self, RecorderError> {
         let project_dir = recording_project_dir(&config.output_path)?.to_path_buf();
         let target = CaptureTarget::resolve(config)?;
+        let frame_rate = effective_frame_rate(config.frame_rate, target.monitor.refresh_rate);
         let tracker_source = target.tracker_source();
         let (device, context, winrt_device) = create_d3d_device()?;
         let (capture, frames, layout) = WindowsCapture::prepare(winrt_device, target)?;
@@ -779,7 +780,7 @@ impl RecordingRuntime {
             &config.output_path,
             layout.width,
             layout.height,
-            config.frame_rate,
+            frame_rate,
             device,
             context,
             layout.crop,
@@ -817,7 +818,7 @@ impl RecordingRuntime {
             project_dir,
             device_id: config.camera_device_id.clone(),
             device_name: config.camera_device_name.clone(),
-            frame_rate: config.frame_rate,
+            frame_rate,
             enabled: config.camera_enabled,
         };
         let camera = if config.camera_enabled {
@@ -843,7 +844,7 @@ impl RecordingRuntime {
             camera_config,
             camera_clock: None,
             frames,
-            timeline: VideoTimeline::new(config.frame_rate),
+            timeline: VideoTimeline::new(frame_rate),
             follows_target,
             output_path: config.output_path.clone(),
         })
@@ -1300,6 +1301,7 @@ struct MonitorTarget {
     device: String,
     device_number: i32,
     primary: bool,
+    refresh_rate: u32,
 }
 
 struct CaptureTarget {
@@ -1551,6 +1553,7 @@ fn enumerate_monitors() -> Result<Vec<MonitorTarget>, RecorderError> {
                 device: name,
                 device_number,
                 primary: (info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
+                refresh_rate: display_refresh_rate(&info.szDevice),
             });
         }
         BOOL(1)
@@ -1568,6 +1571,24 @@ fn enumerate_monitors() -> Result<Vec<MonitorTarget>, RecorderError> {
         return Err(RecorderError::configuration("Failed to list displays"));
     }
     Ok(monitors)
+}
+
+fn display_refresh_rate(device: &[u16]) -> u32 {
+    let mut mode = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    let available =
+        unsafe { EnumDisplaySettingsW(PCWSTR(device.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode) };
+    if available.as_bool() && mode.dmDisplayFrequency > 1 {
+        mode.dmDisplayFrequency
+    } else {
+        60
+    }
+}
+
+fn effective_frame_rate(requested: u32, refresh_rate: u32) -> u32 {
+    requested.min(refresh_rate.max(1))
 }
 
 struct WindowsCapture {
@@ -1632,7 +1653,7 @@ impl WindowsCapture {
         })?;
         let _ = session.SetIsBorderRequired(false);
 
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         let frame_sender = sender.clone();
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |source, _| {
@@ -1641,7 +1662,7 @@ impl WindowsCapture {
                 };
                 match source.TryGetNextFrame() {
                     Ok(frame) => {
-                        let _ = frame_sender.send(FrameMessage::Frame(frame));
+                        let _ = frame_sender.try_send(FrameMessage::Frame(frame));
                     }
                     Err(error) => {
                         let _ = frame_sender.send(FrameMessage::Error(RecorderError::capture(
@@ -2439,6 +2460,22 @@ fn temporary_video_path(output_path: &Path) -> Result<PathBuf, RecorderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_handoff_bounds_pending_frames_when_encoding_is_busy() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        let _ = sender.try_send(1);
+        let _ = sender.try_send(2);
+
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn requested_frame_rate_is_capped_by_the_recorded_display() {
+        assert_eq!(effective_frame_rate(60, 165), 60);
+        assert_eq!(effective_frame_rate(240, 165), 165);
+    }
 
     #[test]
     fn captures_float_pixels_only_on_hdr_displays() {

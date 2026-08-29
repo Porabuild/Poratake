@@ -36,7 +36,7 @@ pub fn render(
         SidebarTab::Drawing => drawing_panel(view, state, menu, theme, cx),
         SidebarTab::Camera => camera_panel(state, has_camera, theme, cx),
         SidebarTab::Audio => audio_panel(view, state, has_keyboard, menu, theme, cx),
-        SidebarTab::Wallpaper => wallpaper_panel(state, theme, window, cx),
+        SidebarTab::Wallpaper => wallpaper_panel(view, state, theme, window, cx),
         SidebarTab::Keyboard => keyboard_panel(state, has_keyboard, theme, cx),
         SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, cx),
         SidebarTab::FirstFrame => first_frame_panel(state, theme, cx),
@@ -1441,6 +1441,7 @@ fn format_music_speed(speed: f64) -> String {
 }
 
 fn wallpaper_panel(
+    view: &VideoEditorWindow,
     state: &VideoEditorState,
     theme: &ThemeVars,
     window: &mut gpui::Window,
@@ -1458,7 +1459,7 @@ fn wallpaper_panel(
             cx,
             |_, _, _| {},
         ),
-        video_backgrounds(&wallpaper, theme, cx),
+        video_backgrounds(view, &wallpaper, theme, cx),
     ];
 
     if is_ios && enabled {
@@ -1556,13 +1557,14 @@ fn wallpaper_panel(
 }
 
 fn video_backgrounds(
+    view: &VideoEditorWindow,
     wallpaper: &crate::windows::video_editor::styles::VideoWallpaperSettings,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     use crate::config::schema::CustomBackgroundData;
     use crate::editor::wallpaper;
-    use crate::editor::wallpaper_sheet::{gradient_tile, icon_tile};
+    use crate::editor::wallpaper_sheet::{gradient_tile, icon_tile, image_tile};
     use crate::ui::button::{Button, ButtonSize, ButtonVariant};
     use crate::ui::chrome;
 
@@ -1604,33 +1606,47 @@ fn video_backgrounds(
             }
             CustomBackgroundData::Gradient { .. } => false,
         });
-    tiles.push(icon_tile(
-        "video-wallpaper-desktop",
-        "Use Desktop Wallpaper",
-        "monitor",
-        tile,
-        is_desktop,
-        theme,
-        move |_, cx| {
-            if let Some(entity) = desktop.upgrade() {
-                entity.update(cx, |this, cx| {
-                    let source = crate::editor::background::desktop_wallpaper(
-                        &crate::state::state(cx).daemon,
-                    );
-                    this.update_wallpaper(cx, |wallpaper| {
-                        if let Some(source) = source.clone() {
-                            wallpaper.enabled = true;
-                            wallpaper.background_image = Some(source);
-                            wallpaper.gradient = None;
-                            if wallpaper.padding == 0.0 {
-                                wallpaper.padding = 50.0;
-                            }
-                        }
-                    });
+    let select_desktop = move |_: &mut gpui::Window, cx: &mut gpui::App| {
+        if let Some(entity) = desktop.upgrade() {
+            entity.update(cx, |this, cx| {
+                let source = this.desktop_wallpaper_source.clone().or_else(|| {
+                    crate::editor::background::desktop_wallpaper(&crate::state::state(cx).daemon)
                 });
-            }
-        },
-    ));
+                if this.desktop_wallpaper_source.is_none() {
+                    this.desktop_wallpaper_source = source.clone();
+                }
+                this.update_wallpaper(cx, |wallpaper| {
+                    if let Some(source) = source.clone() {
+                        wallpaper.enabled = true;
+                        wallpaper.background_image = Some(source);
+                        wallpaper.gradient = None;
+                        if wallpaper.padding == 0.0 {
+                            wallpaper.padding = 50.0;
+                        }
+                    }
+                });
+            });
+        }
+    };
+    tiles.push(match view.desktop_wallpaper_preview.clone() {
+        Some(image) => image_tile(
+            "video-wallpaper-desktop",
+            image,
+            tile,
+            is_desktop,
+            theme,
+            select_desktop,
+        ),
+        None => icon_tile(
+            "video-wallpaper-desktop",
+            "Use Desktop Wallpaper",
+            "monitor",
+            tile,
+            is_desktop,
+            theme,
+            select_desktop,
+        ),
+    });
 
     for (index, (id, name, colors, angle)) in wallpaper::SVG_PRESETS.iter().enumerate() {
         let selected = wallpaper.enabled && current_gradient_id.as_deref() == Some(*id);

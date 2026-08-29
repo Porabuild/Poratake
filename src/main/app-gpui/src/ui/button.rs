@@ -55,11 +55,11 @@ impl ButtonSize {
 
     fn padding_x(self) -> gpui::Pixels {
         match self {
-            Self::Md | Self::Icon => px(chrome::BUTTON_MD_PAD_X),
+            Self::Md => px(chrome::BUTTON_MD_PAD_X),
             Self::Sm => px(chrome::BUTTON_SM_PAD_X),
             Self::Lg => px(chrome::BUTTON_MD_PAD_X),
             Self::Xs => px(chrome::BUTTON_XS_PAD_X),
-            Self::IconXs | Self::IconSm | Self::IconLg => px(0.0),
+            Self::Icon | Self::IconXs | Self::IconSm | Self::IconLg => px(0.0),
         }
     }
 
@@ -561,5 +561,17 @@ mod tests {
     #[test]
     fn press_animation_can_be_disabled() {
         assert!(!Button::new("stationary").animate_press(false).animate_press);
+    }
+
+    #[test]
+    fn icon_buttons_have_no_horizontal_padding() {
+        for size in [
+            ButtonSize::Icon,
+            ButtonSize::IconXs,
+            ButtonSize::IconSm,
+            ButtonSize::IconLg,
+        ] {
+            assert_eq!(size.padding_x(), px(0.0));
+        }
     }
 }

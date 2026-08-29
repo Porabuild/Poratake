@@ -144,6 +144,10 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         let streamConfig = SCStreamConfiguration()
+        let frameRate = effectiveFrameRate(
+            configured: config.frameRate,
+            maximum: targetScreen?.maximumFramesPerSecond
+        )
 
         if let window = capturedWindow {
             videoWidth = Int(window.frame.width * scaleFactor)
@@ -181,7 +185,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         streamConfig.width = videoWidth
         streamConfig.height = videoHeight
-        streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(config.frameRate))
+        streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA
         streamConfig.showsCursor = false
         streamConfig.queueDepth = 8
@@ -206,7 +210,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         let pixelCount = videoWidth * videoHeight
         let bitsPerPixel = 12.0
-        let rawBitrate = Int(Double(pixelCount) * bitsPerPixel * Double(config.frameRate))
+        let rawBitrate = Int(Double(pixelCount) * bitsPerPixel * Double(frameRate))
         let bitrate = min(max(rawBitrate, 50_000_000), 200_000_000)
 
         let videoSettings: [String: Any] = [
@@ -216,7 +220,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                AVVideoMaxKeyFrameIntervalKey: config.frameRate,
+                AVVideoMaxKeyFrameIntervalKey: frameRate,
                 AVVideoAllowFrameReorderingKey: false,
             ],
         ]

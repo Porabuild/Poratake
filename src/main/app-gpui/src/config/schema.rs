@@ -419,6 +419,8 @@ pub struct RecordingSettings {
     pub show_preview: bool,
     #[serde(default = "rec_start_delay")]
     pub start_delay: f64,
+    #[serde(default = "rec_frame_rate")]
+    pub frame_rate: u32,
     #[serde(default = "default_true")]
     pub system_audio: bool,
     #[serde(default)]
@@ -439,6 +441,7 @@ impl Default for RecordingSettings {
             auto_zoom: false,
             show_preview: true,
             start_delay: 3.0,
+            frame_rate: 60,
             system_audio: true,
             mic_enabled: false,
             selected_mic_id: None,
@@ -451,6 +454,10 @@ impl Default for RecordingSettings {
 
 fn rec_start_delay() -> f64 {
     3.0
+}
+
+fn rec_frame_rate() -> u32 {
+    60
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +805,7 @@ mod tests {
         ] {
             assert!(json.get(key).is_some(), "missing {key}");
         }
+        assert_eq!(json["recording"]["frameRate"], 60);
     }
 
     #[test]

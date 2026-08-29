@@ -109,14 +109,9 @@ impl SidebarTab {
 pub fn resize_handle(
     resizing: bool,
     theme: &ThemeVars,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
-    // Gated hover flag instead of a `.hover()` style, which gpui paints
-    // against the window's last mouse position and so survives the pointer
-    // leaving the window.
-    let (handle_hover, handle_hovered) =
-        crate::ui::primitives::hover_flag("video-sidebar-resize", window, cx);
     div()
         .id("video-sidebar-resize")
         .w(px(chrome::VIDEO_SIDEBAR_RESIZE))
@@ -125,28 +120,11 @@ pub fn resize_handle(
         .flex()
         .justify_center()
         .cursor_ew_resize()
-        .when(handle_hovered, |el| el.bg(theme.accent.opacity(0.2)))
-        .when(!handle_hovered && resizing, |el| {
-            el.bg(theme.accent.opacity(0.4))
-        })
-        .on_hover({
-            let handle_hover = handle_hover.clone();
-            move |over: &bool, _window, cx| {
-                crate::ui::primitives::track_hover(&handle_hover, *over, cx);
-            }
-        })
-        .child(
-            div()
-                .my_auto()
-                .h(px(32.0))
-                .w(px(2.0))
-                .rounded_full()
-                .bg(if resizing {
-                    theme.accent
-                } else {
-                    theme.muted_foreground.opacity(0.3)
-                }),
-        )
+        .child(div().my_auto().h_full().w(px(1.0)).bg(if resizing {
+            theme.accent
+        } else {
+            theme.border
+        }))
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {

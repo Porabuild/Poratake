@@ -20,6 +20,7 @@ pub fn panel(children: Vec<AnyElement>) -> AnyElement {
         .flex_col()
         .gap(px(crate::ui::chrome::VIDEO_PANEL_GAP))
         .size_full()
+        .min_w_0()
         .overflow_y_scroll()
         .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
         .children(children)
@@ -44,6 +45,8 @@ pub fn header(
             div()
                 .flex()
                 .flex_col()
+                .flex_1()
+                .min_w_0()
                 .gap(px(2.0))
                 .child(
                     div()
@@ -54,6 +57,7 @@ pub fn header(
                 )
                 .child(
                     div()
+                        .w_full()
                         .text_size(px(crate::ui::chrome::SETTINGS_HEADER_DESC))
                         .text_color(theme.muted_foreground)
                         .child(description),
@@ -75,6 +79,8 @@ pub fn header(
 
 pub fn note(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
     div()
+        .w_full()
+        .min_w_0()
         .text_size(px(crate::ui::chrome::TEXT_SM))
         .text_color(theme.muted_foreground)
         .child(text.into())
@@ -83,6 +89,8 @@ pub fn note(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
 
 pub fn hint(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
     div()
+        .w_full()
+        .min_w_0()
         .text_size(px(crate::ui::chrome::TEXT_XS))
         .text_color(theme.muted_foreground)
         .child(text.into())
@@ -98,6 +106,8 @@ pub fn empty_state(message: impl Into<SharedString>, theme: &ThemeVars) -> AnyEl
         .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
         .child(
             div()
+                .w_full()
+                .min_w_0()
                 .text_center()
                 .text_size(px(crate::ui::chrome::TEXT_SM))
                 .text_color(theme.muted_foreground)
@@ -171,6 +181,7 @@ pub fn select_row(
                     .map(|(value, label)| SelectOption::new(*value, *label))
                     .collect(),
             )
+            .small()
             .full_width()
             .on_select(cx.listener(move |this, value: &SharedString, _window, cx| {
                 on_change(this, value.to_string(), cx);

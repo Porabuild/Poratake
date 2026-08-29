@@ -12,8 +12,6 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 const UNDO_HISTORY_LIMIT: usize = 100;
 /// Playback pulls one composed frame per tick; the composition is software
 /// rasterized, so this is a preview rate rather than the export frame rate.
-const PLAYBACK_TICK: Duration = Duration::from_millis(40);
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -83,6 +81,7 @@ pub struct VideoEditorWindow {
     tracks_scroll: ScrollHandle,
     focus_handle: FocusHandle,
     source: Option<preview::Handle>,
+    source_frame_rate: f64,
     preview_status: PreviewStatus,
     preview_image: Option<Arc<gpui::RenderImage>>,
     /// One compose runs at a time; a request that arrives while one is in
@@ -109,6 +108,9 @@ pub struct VideoEditorWindow {
     drawing_tools: styles::DrawingToolSettings,
     sidebar_width: f32,
     sidebar_resize: Option<(f32, f32)>,
+    speed_selector_open: bool,
+    desktop_wallpaper_source: Option<String>,
+    desktop_wallpaper_preview: Option<Arc<gpui::RenderImage>>,
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
     /// The state a drag started from, pushed onto the undo stack when it ends.
     gesture_snapshot: Option<VideoEditorState>,
@@ -124,6 +126,7 @@ impl VideoEditorWindow {
                     let view = cx.new(|cx| {
                         let mut editor = Self::new(path.map(PathBuf::from), cx);
                         editor.load_preview(cx);
+                        editor.load_desktop_wallpaper(cx);
                         editor
                     });
                     window.focus(&view.read(cx).focus_handle);
@@ -178,6 +181,7 @@ impl VideoEditorWindow {
             tracks_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             source: None,
+            source_frame_rate: 60.0,
             preview_status: PreviewStatus::Idle,
             preview_image: None,
             compose_in_flight: false,
@@ -203,6 +207,9 @@ impl VideoEditorWindow {
             drawing_tools: styles::DrawingToolSettings::default(),
             sidebar_width: crate::ui::chrome::VIDEO_SIDEBAR_WIDTH,
             sidebar_resize: None,
+            speed_selector_open: false,
+            desktop_wallpaper_source: None,
+            desktop_wallpaper_preview: None,
             keyboard_demo: None,
         }
     }
@@ -374,7 +381,9 @@ impl VideoEditorWindow {
                         // here, so a recording with no saved project sat at a
                         // total duration of zero: the player read `0:00 / 0:00`
                         // and the timeline had nothing to lay out.
-                        let duration = source.info().duration;
+                        let info = source.info();
+                        let duration = info.duration;
+                        this.source_frame_rate = info.frame_rate();
                         this.source = Some(Arc::new(parking_lot::Mutex::new(source)));
                         this.adopt_source_duration(duration, cx);
                         this.preview_status = PreviewStatus::Ready;
@@ -383,6 +392,30 @@ impl VideoEditorWindow {
                     None => this.preview_status = PreviewStatus::Unavailable,
                 }
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn load_desktop_wallpaper(&mut self, cx: &mut Context<Self>) {
+        let daemon = crate::state::state(cx).daemon.clone();
+        cx.spawn(async move |entity, cx| {
+            let wallpaper = cx
+                .background_executor()
+                .spawn(async move {
+                    let source = crate::editor::background::desktop_wallpaper(&daemon)?;
+                    let image = crate::render::gradient::load_image(&source)
+                        .as_ref()
+                        .and_then(preview::to_render_image)?;
+                    Some((source, image))
+                })
+                .await;
+            let _ = entity.update(cx, |this, cx| {
+                if let Some((source, image)) = wallpaper {
+                    this.desktop_wallpaper_source = Some(source);
+                    this.desktop_wallpaper_preview = Some(image);
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -452,15 +485,18 @@ impl VideoEditorWindow {
     fn drive_playback(&mut self, cx: &mut Context<Self>) {
         self.playback_generation += 1;
         let generation = self.playback_generation;
+        let tick = playback_tick(self.source_frame_rate);
+        let started = std::time::Instant::now();
+        let initial_playhead = self.playhead;
 
         cx.spawn(async move |entity, cx| loop {
-            cx.background_executor().timer(PLAYBACK_TICK).await;
+            cx.background_executor().timer(tick).await;
             let advanced = entity.update(cx, |this, cx| {
                 if !this.is_playing || this.playback_generation != generation {
                     return false;
                 }
                 let total = this.total_duration();
-                let next = this.playhead + PLAYBACK_TICK.as_secs_f64();
+                let next = initial_playhead + started.elapsed().as_secs_f64();
                 if next >= total {
                     this.playhead = total;
                     this.is_playing = false;
@@ -676,6 +712,23 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
+    fn activate_tab(&mut self, tab: SidebarTab, cx: &mut Context<Self>) {
+        self.state.ui.sidebar_open = true;
+        self.state.ui.sidebar_tab = tab.id().to_string();
+        self.persist(cx);
+        cx.notify();
+    }
+
+    pub fn toggle_speed_selector(&mut self, cx: &mut Context<Self>) {
+        self.speed_selector_open = !self.speed_selector_open;
+        cx.notify();
+    }
+
+    pub fn close_speed_selector(&mut self, cx: &mut Context<Self>) {
+        self.speed_selector_open = false;
+        cx.notify();
+    }
+
     /// Moves the playhead to an absolute position — the timeline click and
     /// scrub path.
     pub fn set_playhead(&mut self, time: f64, cx: &mut Context<Self>) {
@@ -697,6 +750,7 @@ impl VideoEditorWindow {
     }
 
     pub fn select_clip(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        self.speed_selector_open = false;
         self.selected_clip = if self.selected_clip.as_ref() == Some(&id) {
             None
         } else {
@@ -713,6 +767,66 @@ impl VideoEditorWindow {
             .position(|segment| segment.id.as_str() == id.as_ref())
     }
 
+    fn selected_clip_kind(&self) -> Option<TrackKind> {
+        let id: &str = self.selected_clip.as_ref()?.as_ref();
+        if self.state.segments.iter().any(|segment| segment.id == id) {
+            return Some(TrackKind::Video);
+        }
+        if self
+            .state
+            .zoom_segments
+            .iter()
+            .any(|segment| segment.id == id)
+        {
+            return Some(TrackKind::Zoom);
+        }
+        if self
+            .state
+            .camera_segments
+            .iter()
+            .any(|segment| segment.id == id)
+        {
+            return Some(TrackKind::Camera);
+        }
+        if self
+            .state
+            .drawing_segments
+            .iter()
+            .any(|segment| segment.id == id)
+        {
+            return Some(TrackKind::Drawing);
+        }
+        self.state
+            .music_tracks
+            .iter()
+            .any(|segment| segment.id == id)
+            .then_some(TrackKind::Music)
+    }
+
+    fn delete_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(kind) = self.selected_clip_kind() else {
+            return;
+        };
+        let Some(id) = self.selected_clip.clone() else {
+            return;
+        };
+        self.delete_clip(kind, id, cx);
+    }
+
+    fn reorder_selected_segment(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(index) = self.selected_segment_index() else {
+            return;
+        };
+        let next = index as isize + delta;
+        if next < 0 || next >= self.state.segments.len() as isize {
+            return;
+        }
+        self.commit(cx, move |state| {
+            let segment = state.segments.remove(index);
+            state.segments.insert(next as usize, segment);
+        });
+    }
+
     pub fn delete_selected_segment(&mut self, cx: &mut Context<Self>) {
         let Some(index) = self.selected_segment_index() else {
             return;
@@ -721,6 +835,7 @@ impl VideoEditorWindow {
             return;
         }
         self.selected_clip = None;
+        self.speed_selector_open = false;
         self.commit(cx, move |state| {
             state.segments.remove(index);
         });
@@ -1682,29 +1797,102 @@ impl VideoEditorWindow {
         self.set_playhead(self.playhead + delta, cx);
     }
 
-    fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let shift = event.keystroke.modifiers.shift;
+    fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let modifiers = event.keystroke.modifiers;
+        let primary = modifiers.control || modifiers.platform;
         let shortcuts = crate::state::state(cx).config.get().shortcuts;
         let key = event.keystroke.key.as_str();
 
-        match key {
-            "space" => self.toggle_playback(cx),
-            "c" => self.toggle_cut_tool(cx),
-            "f" => self.fit_timeline_to_view(cx),
-            "left" => self.seek(if shift { -5.0 } else { -1.0 }, cx),
-            "right" => self.seek(if shift { 5.0 } else { 1.0 }, cx),
-            "home" => self.set_playhead(0.0, cx),
-            "end" => self.set_playhead(self.total_duration(), cx),
-            "backspace" => self.delete_selected_segment(cx),
-            "e" if event.keystroke.modifiers.secondary() => self.start_export(cx),
-            _ => {
-                if let Some(tab) = SidebarTab::ALL.into_iter().find(|tab| {
-                    let shortcut = tab.shortcut(&shortcuts.video_editor_sidebar);
-                    !shortcut.is_empty() && shortcut.eq_ignore_ascii_case(key)
-                }) {
-                    self.select_tab(tab, cx);
-                }
+        if key == "escape" {
+            self.speed_selector_open = false;
+            self.selected_clip = None;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
+        if primary {
+            match key {
+                "backspace" => self.delete_recording(window, cx),
+                "s" => self.activate_tab(SidebarTab::Export, cx),
+                "z" if modifiers.shift => self.redo(cx),
+                "z" => self.undo(cx),
+                "=" | "+" => self.zoom_timeline_in(cx),
+                "-" => self.zoom_timeline_out(cx),
+                "0" => self.set_timeline_zoom(timeline::DEFAULT_PIXELS_PER_SECOND, cx),
+                _ => return,
             }
+            cx.stop_propagation();
+            return;
+        }
+
+        if modifiers.alt {
+            match key {
+                "left" => self.reorder_selected_segment(-1, cx),
+                "right" => self.reorder_selected_segment(1, cx),
+                _ => return,
+            }
+            cx.stop_propagation();
+            return;
+        }
+
+        let handled = match key {
+            "space" => {
+                self.toggle_playback(cx);
+                true
+            }
+            "c" => {
+                self.toggle_cut_tool(cx);
+                true
+            }
+            "f" => {
+                self.fit_timeline_to_view(cx);
+                true
+            }
+            "left" => {
+                self.seek(if modifiers.shift { -5.0 } else { -1.0 }, cx);
+                true
+            }
+            "right" => {
+                self.seek(if modifiers.shift { 5.0 } else { 1.0 }, cx);
+                true
+            }
+            "home" => {
+                self.set_playhead(0.0, cx);
+                true
+            }
+            "end" => {
+                self.set_playhead(self.total_duration(), cx);
+                true
+            }
+            "backspace" | "delete" => {
+                self.delete_selection(cx);
+                true
+            }
+            "," => {
+                self.seek(-frame_step(self.source_frame_rate), cx);
+                true
+            }
+            "." => {
+                self.seek(frame_step(self.source_frame_rate), cx);
+                true
+            }
+            _ => false,
+        };
+
+        let tab = if modifiers.shift {
+            None
+        } else {
+            SidebarTab::ALL.into_iter().find(|tab| {
+                let shortcut = tab.shortcut(&shortcuts.video_editor_sidebar);
+                !shortcut.is_empty() && shortcut.eq_ignore_ascii_case(key)
+            })
+        };
+        if let Some(tab) = tab {
+            self.activate_tab(tab, cx);
+        }
+        if handled || tab.is_some() {
+            cx.stop_propagation();
         }
     }
 
@@ -1884,6 +2072,7 @@ impl Render for VideoEditorWindow {
                     .and_then(|index| self.state.segments.get(index))
                     .and_then(|segment| segment.speed)
                     .unwrap_or(1.0),
+                speed_selector_open: self.speed_selector_open,
                 pixels_per_second: self.pixels_per_second,
                 scrub_audio_enabled: self.state.ui.scrub_audio_enabled,
                 is_scrub_audio_available: has_project,
@@ -1941,12 +2130,19 @@ impl Render for VideoEditorWindow {
         );
 
         if self.state.ui.sidebar_open {
+            use gpui::AnimationExt as _;
+
+            let sidebar_width = self.sidebar_width;
+            let panel_width = (sidebar_width - crate::ui::chrome::VIDEO_SIDEBAR_RESIZE).max(0.0);
             stage = stage.child(
                 div()
                     .flex()
                     .flex_row()
                     .flex_shrink_0()
                     .h_full()
+                    .w(px(sidebar_width))
+                    .justify_end()
+                    .overflow_hidden()
                     .child(sidebar::resize_handle(
                         self.sidebar_resize.is_some(),
                         &theme,
@@ -1955,11 +2151,9 @@ impl Render for VideoEditorWindow {
                     ))
                     .child(
                         div()
-                            .w(px(self.sidebar_width))
+                            .w(px(panel_width))
                             .flex_shrink_0()
                             .h_full()
-                            .border_l_1()
-                            .border_color(theme.border)
                             .bg(theme.card)
                             .child(panels::render(
                                 self.active_tab(),
@@ -1976,6 +2170,12 @@ impl Render for VideoEditorWindow {
                                 window,
                                 cx,
                             )),
+                    )
+                    .with_animation(
+                        "video-sidebar-open",
+                        gpui::Animation::new(Duration::from_millis(180))
+                            .with_easing(crate::ui::primitives::ease_out()),
+                        move |sidebar, delta| sidebar.w(px(sidebar_width * delta)).opacity(delta),
                     ),
             );
         }
@@ -2040,6 +2240,19 @@ fn empty_preview(
         .into_any_element()
 }
 
+fn frame_step(frame_rate: f64) -> f64 {
+    1.0 / frame_rate.max(1.0)
+}
+
+fn playback_tick(frame_rate: f64) -> Duration {
+    let frame_rate = if frame_rate.is_finite() && frame_rate > 0.0 {
+        frame_rate.min(240.0)
+    } else {
+        60.0
+    };
+    Duration::from_secs_f64(1.0 / frame_rate)
+}
+
 fn keyboard_sound_file(kind: &str, index: u32) -> Option<PathBuf> {
     let relative = PathBuf::from("public")
         .join("sounds")
@@ -2098,6 +2311,48 @@ fn play_keyboard_demo_loop(kind: &str, stop: Arc<AtomicBool>) {
 #[cfg(test)]
 mod keyboard_demo_tests {
     use super::*;
+
+    #[gpui::test]
+    fn editor_hotkeys_reach_the_focused_window(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let window = cx.add_window(|window, cx| {
+            let editor = VideoEditorWindow::new_for_test(None, cx);
+            window.focus(&editor.focus_handle);
+            editor
+        });
+        cx.refresh().expect("draw editor");
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes(window.into(), "space");
+        assert!(window.update(cx, |editor, _, _| editor.is_playing).unwrap());
+
+        cx.simulate_keystrokes(window.into(), "ctrl-s");
+        assert!(window
+            .update(cx, |editor, _, _| {
+                editor.state.ui.sidebar_open && editor.active_tab() == SidebarTab::Export
+            })
+            .unwrap());
+    }
+
+    #[test]
+    fn playback_uses_the_source_frame_rate() {
+        assert_eq!(playback_tick(30.0), Duration::from_secs_f64(1.0 / 30.0));
+        assert_eq!(playback_tick(60.0), Duration::from_secs_f64(1.0 / 60.0));
+        assert_eq!(playback_tick(120.0), Duration::from_secs_f64(1.0 / 120.0));
+        assert_eq!(playback_tick(f64::NAN), playback_tick(60.0));
+    }
+
+    #[test]
+    fn frame_step_uses_the_source_frame_rate() {
+        assert_eq!(frame_step(30.0), 1.0 / 30.0);
+        assert_eq!(frame_step(60.0), 1.0 / 60.0);
+        assert_eq!(frame_step(120.0), 1.0 / 120.0);
+    }
 
     #[test]
     fn keyboard_demo_resolves_bundled_samples() {

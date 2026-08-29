@@ -254,7 +254,7 @@ impl RecordingControl {
             camera_enabled: self.camera,
             camera_device_id: recording.camera.selected_device_id.clone(),
             keyboard_enabled: false,
-            frame_rate: 60,
+            frame_rate: recording.frame_rate,
             output_path: project.clone(),
         };
 
