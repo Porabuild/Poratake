@@ -135,8 +135,7 @@ pub fn render(
                 .child(
                     toolbar_button("all-in-one-close", "x", "Close", false, theme).on_click(
                         cx.listener(|_this, _event, window, cx| {
-                            crate::capture::overlay::close_all(cx);
-                            window.remove_window();
+                            crate::capture::overlay::dismiss(window, cx);
                         }),
                     ),
                 ),

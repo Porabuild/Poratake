@@ -58,10 +58,11 @@ impl Coordinator {
         let service = self.service.clone();
         let path = service.generate_screenshot_path();
         let freeze = service.config.get().screenshot.freeze_screen;
+        let reservation = freeze.then(|| service.reserve_cached_capture());
 
         let task = cx.background_executor().spawn(async move {
             service
-                .capture_area_cached(rect.x, rect.y, rect.width, rect.height, &path, freeze)
+                .capture_area_cached(rect.x, rect.y, rect.width, rect.height, &path, reservation)
                 .map(|_| path)
         });
 
@@ -246,10 +247,11 @@ impl Coordinator {
         let freeze = service.config.get().screenshot.freeze_screen;
         let path =
             std::env::temp_dir().join(format!("{}-{}.png", intent.temp_prefix(), uuid_simple()));
+        let reservation = freeze.then(|| service.reserve_cached_capture());
 
         let task = cx.background_executor().spawn(async move {
             service
-                .capture_area_cached(rect.x, rect.y, rect.width, rect.height, &path, freeze)
+                .capture_area_cached(rect.x, rect.y, rect.width, rect.height, &path, reservation)
                 .map(|_| path)
         });
 

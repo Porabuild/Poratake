@@ -75,7 +75,7 @@ impl RecordingControl {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: None,
                     focus: true,
-                    show: !cfg!(windows),
+                    show: true,
                     kind: WindowKind::PopUp,
                     is_movable: false,
                     is_resizable: false,
@@ -85,15 +85,6 @@ impl RecordingControl {
                 },
                 |window, cx| {
                     configure_toolbar_window(window);
-                    #[cfg(all(windows, not(test)))]
-                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                        crate::system::window_composition::stage_window(
-                            hwnd,
-                            bounds,
-                            window.scale_factor(),
-                            false,
-                        );
-                    }
                     let view = cx.new(|cx| Self {
                         mode: Mode::PreRecording,
                         target,
@@ -112,22 +103,6 @@ impl RecordingControl {
                         focus_handle: cx.focus_handle(),
                     });
                     window.focus(&view.read(cx).focus_handle);
-                    #[cfg(all(windows, not(test)))]
-                    window.on_next_frame(move |window, _cx| {
-                        window.on_next_frame(move |window, _cx| {
-                            window.on_next_frame(move |window, _cx| {
-                                if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                                    crate::system::window_composition::reveal_window(
-                                        hwnd, false, 0,
-                                    );
-                                }
-                            });
-                            crate::ui::primitives::request_animation_frame(window);
-                        });
-                        crate::ui::primitives::request_animation_frame(window);
-                    });
-                    #[cfg(all(windows, not(test)))]
-                    crate::ui::primitives::request_animation_frame(window);
                     view
                 },
             )

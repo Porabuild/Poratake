@@ -202,13 +202,13 @@ impl CaptureService {
         width: i32,
         height: i32,
         path: &std::path::Path,
-        freeze: bool,
+        reservation: Option<CachedCaptureReservation>,
     ) -> Result<()> {
-        let reservation = freeze.then(|| self.reserve_cached_capture());
+        let cached = reservation.is_some();
         if let Some(reservation) = reservation.as_ref() {
             reservation.wait_for_freeze();
         }
-        let result = self.capture_area_to_file_with_options(x, y, width, height, path, freeze);
+        let result = self.capture_area_to_file_with_options(x, y, width, height, path, cached);
         drop(reservation);
         result
     }
@@ -343,6 +343,8 @@ fn with_frozen_screen(
 
     let deferred_show = cfg!(windows);
     let generation = service.begin_freeze();
+    #[cfg(windows)]
+    let opened = open(cx, deferred_show, generation);
     let freezing = service.clone();
     cx.spawn(async move |cx| {
         let freezer = freezing.clone();
@@ -363,13 +365,14 @@ fn with_frozen_screen(
             // opens over the live screen instead.
             eprintln!("[freeze] {error}");
         }
+        #[cfg(windows)]
+        let opened = {
+            let _ = cx.update(|cx| overlay::raise_all(generation, cx));
+            opened
+        };
+        #[cfg(not(windows))]
         let opened = cx
-            .update(|cx| {
-                let opened = open(cx, deferred_show, generation);
-                #[cfg(windows)]
-                overlay::raise_all(generation, cx);
-                opened
-            })
+            .update(|cx| open(cx, deferred_show, generation))
             .unwrap_or(false);
         if !opened {
             cx.background_executor()
@@ -447,8 +450,35 @@ pub fn start_screen_recording(cx: &mut gpui::App) {
 }
 
 fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
-    overlay::close_all(cx);
     let service = crate::state::state(cx);
+    if let Some(generation) = overlay::replace_all(cx) {
+        let releasing = service.clone();
+        cx.background_executor()
+            .spawn(async move { releasing.release_screen(generation) })
+            .detach();
+    }
+    let mut pending = Vec::new();
+    each_display(cx, |service, id, bounds, focus, cx| {
+        let Some(handle) = overlay::AreaOverlay::open_with_windows(
+            service,
+            id,
+            bounds,
+            intent,
+            Vec::new(),
+            focus,
+            cx,
+        ) else {
+            return false;
+        };
+        let request_generation = handle
+            .update(cx, |overlay, _, _| overlay.window_list_generation())
+            .unwrap_or(0);
+        pending.push((handle, request_generation));
+        true
+    });
+    if pending.is_empty() {
+        return;
+    }
     let daemon = service.daemon.clone();
     cx.spawn(async move |cx| {
         let windows = cx
@@ -456,26 +486,23 @@ fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
             .spawn(async move { windows_list::list(&daemon) })
             .await;
         let _ = cx.update(|cx| {
-            if windows.is_empty() {
+            let mut applied = false;
+            for (handle, request_generation) in pending {
+                let window_list = windows.clone();
+                applied |= handle
+                    .update(cx, |overlay, _, cx| {
+                        overlay.apply_window_list(request_generation, window_list, cx)
+                    })
+                    .unwrap_or(false);
+            }
+            if applied && windows.is_empty() {
+                overlay::close_all(cx);
                 crate::windows::toast::Toast::show(
                     cx,
                     "No windows found",
                     "The daemon did not report any capturable windows",
                 );
-                return;
             }
-            each_display(cx, |service, id, bounds, focus, cx| {
-                overlay::AreaOverlay::open_with_windows(
-                    service,
-                    id,
-                    bounds,
-                    intent,
-                    windows.clone(),
-                    focus,
-                    cx,
-                )
-                .is_some()
-            });
         });
     })
     .detach();
@@ -513,6 +540,31 @@ mod tests {
     use super::CaptureService;
     use crate::config::store::ConfigStore;
     use crate::daemon::DaemonHandle;
+
+    #[cfg(windows)]
+    #[gpui::test]
+    fn frozen_overlay_opens_before_the_freeze_task_runs(cx: &mut gpui::TestAppContext) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        config.update(|config| config.screenshot.freeze_screen = true);
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let opened = Arc::new(AtomicBool::new(false));
+        let observed = opened.clone();
+
+        cx.update(|cx| {
+            super::with_frozen_screen(cx, None, move |_, deferred_show, generation| {
+                assert!(deferred_show);
+                assert_eq!(generation, 1);
+                observed.store(true, Ordering::SeqCst);
+                true
+            });
+        });
+
+        assert!(opened.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn cached_capture_waits_for_pending_freeze() {

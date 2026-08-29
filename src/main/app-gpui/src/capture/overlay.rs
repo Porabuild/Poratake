@@ -46,13 +46,20 @@ pub struct OverlayLaunch {
 #[derive(Default)]
 struct OverlaySession {
     handles: Vec<TrackedOverlay>,
+    pooled: Vec<PooledOverlay>,
 }
 
 #[derive(Clone)]
 struct TrackedOverlay {
     handle: AnyWindowHandle,
+    display_id: DisplayId,
     generation: u64,
     focus: bool,
+}
+
+struct PooledOverlay {
+    handle: gpui::WindowHandle<AreaOverlay>,
+    display_id: DisplayId,
 }
 
 impl Global for OverlaySession {}
@@ -62,7 +69,7 @@ fn session(cx: &mut App) -> &mut OverlaySession {
 }
 
 pub fn close_all(cx: &mut App) {
-    if let Some(generation) = remove_all(cx) {
+    if let Some(generation) = remove_all(cx, true) {
         release_frozen_screen(generation, cx);
     }
 }
@@ -137,20 +144,46 @@ pub fn end_recording_handoff(cx: &mut App) {
 }
 
 pub fn replace_all(cx: &mut App) -> Option<u64> {
-    remove_all(cx)
+    remove_all(cx, false)
 }
 
-fn remove_all(cx: &mut App) -> Option<u64> {
+fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
     let handles = std::mem::take(&mut session(cx).handles);
     let generation = handles.iter().map(|tracked| tracked.generation).max();
-    App::defer(cx, move |cx| {
-        for handle in handles {
-            let _ = handle
-                .handle
-                .update(cx, |_, window, _| window.remove_window());
-        }
-    });
+    if deferred {
+        App::defer(cx, move |cx| dispose_overlays(handles, cx));
+    } else {
+        dispose_overlays(handles, cx);
+    }
     generation
+}
+
+fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
+    for tracked in handles {
+        #[cfg(windows)]
+        if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
+            if handle
+                .update(cx, |overlay, window, _| {
+                    overlay.window_list_generation = overlay.window_list_generation.wrapping_add(1);
+                    overlay.picking_windows = false;
+                    overlay.color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
+                    overlay.picking_color = false;
+                    overlay.color_frame = None;
+                    park_overlay(window);
+                })
+                .is_ok()
+            {
+                session(cx).pooled.push(PooledOverlay {
+                    handle,
+                    display_id: tracked.display_id,
+                });
+                continue;
+            }
+        }
+        let _ = tracked
+            .handle
+            .update(cx, |_, window, _| window.remove_window());
+    }
 }
 
 pub fn raise_all(generation: u64, cx: &mut App) {
@@ -177,9 +210,12 @@ fn release_frozen_screen(generation: u64, cx: &mut App) {
         .detach();
 }
 
-fn dismiss(window: &mut Window, cx: &mut App) {
+pub(crate) fn dismiss(window: &mut Window, cx: &mut App) {
+    let tracked = !session(cx).handles.is_empty();
     close_all(cx);
-    window.remove_window();
+    if !cfg!(windows) || !tracked {
+        window.remove_window();
+    }
 }
 
 fn local_recording_rect(
@@ -319,6 +355,21 @@ fn show_noactivate_topmost(hwnd: windows::Win32::Foundation::HWND) {
     }
 }
 
+#[cfg(all(windows, not(test)))]
+fn park_overlay(window: &Window) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+
+    set_overlay_hole(window, None);
+    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
+
+#[cfg(all(windows, test))]
+fn park_overlay(_window: &Window) {}
+
 fn set_overlay_topmost(window: &Window) {
     #[cfg(windows)]
     {
@@ -337,7 +388,7 @@ fn set_overlay_topmost(window: &Window) {
     let _ = window;
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn windows_build() -> u32 {
     use std::sync::OnceLock;
 
@@ -360,23 +411,32 @@ fn windows_build() -> u32 {
 fn show_overlay_before_freeze(window: &Window) -> bool {
     #[cfg(windows)]
     {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
-        };
+        #[cfg(test)]
+        {
+            let _ = window;
+            return true;
+        }
+        #[cfg(not(test))]
+        {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+            };
 
-        let build = windows_build();
-        if !can_show_before_freeze(build, true) {
-            return false;
+            let build = windows_build();
+            if !can_show_before_freeze(build, true) {
+                return false;
+            }
+            let Some(hwnd) = crate::windows::window_hwnd(window) else {
+                return false;
+            };
+            let excluded =
+                unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }.is_ok();
+            if !can_show_before_freeze(build, excluded) {
+                return false;
+            }
+            show_noactivate_topmost(hwnd);
+            true
         }
-        let Some(hwnd) = crate::windows::window_hwnd(window) else {
-            return false;
-        };
-        let excluded = unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }.is_ok();
-        if !can_show_before_freeze(build, excluded) {
-            return false;
-        }
-        show_noactivate_topmost(hwnd);
-        true
     }
     #[cfg(not(windows))]
     {
@@ -389,12 +449,56 @@ fn can_show_before_freeze(windows_build: u32, capture_excluded: bool) -> bool {
     windows_build >= 19041 && capture_excluded
 }
 
-fn track_overlay(handle: AnyWindowHandle, generation: u64, focus: bool, cx: &mut App) {
+fn track_overlay(
+    handle: AnyWindowHandle,
+    display_id: DisplayId,
+    generation: u64,
+    focus: bool,
+    cx: &mut App,
+) {
     session(cx).handles.push(TrackedOverlay {
         handle,
+        display_id,
         generation,
         focus,
     });
+}
+
+#[cfg(windows)]
+fn take_pooled_overlay(
+    display_id: DisplayId,
+    cx: &mut App,
+) -> Option<gpui::WindowHandle<AreaOverlay>> {
+    let pooled = &mut session(cx).pooled;
+    let index = pooled
+        .iter()
+        .position(|overlay| overlay.display_id == display_id)?;
+    Some(pooled.swap_remove(index).handle)
+}
+
+fn prepare_overlay_window(window: &Window, display_bounds: Bounds<Pixels>) {
+    #[cfg(all(windows, not(test)))]
+    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+        crate::system::window_composition::configure_transparent_surface(hwnd);
+        crate::system::window_composition::apply_window_bounds(
+            hwnd,
+            display_bounds,
+            window.scale_factor(),
+        );
+    }
+    #[cfg(any(not(windows), test))]
+    let _ = (window, display_bounds);
+}
+
+fn reveal_overlay_window(window: &Window, launch: OverlayLaunch, active: bool) -> bool {
+    if !active {
+        return false;
+    }
+    if launch.deferred_show {
+        return show_overlay_before_freeze(window);
+    }
+    set_overlay_topmost(window);
+    true
 }
 
 fn open_overlay_window(
@@ -402,32 +506,56 @@ fn open_overlay_window(
     display_bounds: Bounds<Pixels>,
     launch: OverlayLaunch,
     build: impl FnOnce(f32, gpui::FocusHandle) -> AreaOverlay,
-    after_new: impl FnOnce(&gpui::Entity<AreaOverlay>, &mut Window, &mut App),
+    after_new: impl FnOnce(&mut AreaOverlay, &mut Context<AreaOverlay>),
+    active: bool,
     error: &'static str,
     cx: &mut App,
 ) -> Option<gpui::WindowHandle<AreaOverlay>> {
+    #[cfg(windows)]
+    if active {
+        if let Some(handle) = take_pooled_overlay(display_id, cx) {
+            let updated = handle.update(cx, |overlay, window, cx| {
+                prepare_overlay_window(window, display_bounds);
+                let scale = window.scale_factor();
+                let focus_handle = cx.focus_handle();
+                let window_list_generation = overlay.window_list_generation.wrapping_add(1);
+                let color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
+                let mut replacement = build(scale, focus_handle);
+                replacement.window_list_generation = window_list_generation;
+                replacement.color_frame_generation = color_frame_generation;
+                *overlay = replacement;
+                after_new(overlay, cx);
+                cx.notify();
+                let shown = reveal_overlay_window(window, launch, active);
+                if launch.focus && shown {
+                    window.activate_window();
+                }
+                window.focus(&overlay.focus_handle);
+            });
+            if let Err(failure) = updated {
+                eprintln!("[overlay] failed to reuse {error}: {failure}");
+                return None;
+            }
+            track_overlay(
+                handle.into(),
+                display_id,
+                launch.generation,
+                launch.focus,
+                cx,
+            );
+            return Some(handle);
+        }
+    }
+
     let opened = cx.open_window(
         overlay_options(display_bounds, display_id, launch.focus),
         |window, cx| {
-            #[cfg(windows)]
-            if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                crate::system::window_composition::configure_transparent_surface(hwnd);
-                crate::system::window_composition::apply_window_bounds(
-                    hwnd,
-                    display_bounds,
-                    window.scale_factor(),
-                );
-            }
+            prepare_overlay_window(window, display_bounds);
             let scale = window.scale_factor();
             let focus_handle = cx.focus_handle();
             let view = cx.new(|_| build(scale, focus_handle));
-            after_new(&view, window, cx);
-            let shown = if launch.deferred_show {
-                show_overlay_before_freeze(window)
-            } else {
-                set_overlay_topmost(window);
-                true
-            };
+            view.update(cx, after_new);
+            let shown = reveal_overlay_window(window, launch, active);
             if launch.focus && shown {
                 window.activate_window();
             }
@@ -437,13 +565,60 @@ fn open_overlay_window(
     );
     match opened {
         Ok(handle) => {
-            track_overlay(handle.into(), launch.generation, launch.focus, cx);
+            if active {
+                track_overlay(
+                    handle.into(),
+                    display_id,
+                    launch.generation,
+                    launch.focus,
+                    cx,
+                );
+            }
             Some(handle)
         }
         Err(failure) => {
             eprintln!("[overlay] failed to open {error}: {failure}");
             None
         }
+    }
+}
+
+#[cfg(windows)]
+pub fn prewarm(cx: &mut App) {
+    let service = crate::state::state(cx);
+    for display in cx.displays() {
+        let display_id = display.id();
+        let display_bounds = display.bounds();
+        let Some(handle) = open_overlay_window(
+            display_id,
+            display_bounds,
+            OverlayLaunch {
+                focus: false,
+                deferred_show: true,
+                generation: 0,
+            },
+            {
+                let service = service.clone();
+                move |scale, focus_handle| {
+                    AreaOverlay::with_focus(
+                        display_bounds,
+                        scale,
+                        service,
+                        crate::capture::intent::CaptureIntent::Screenshot,
+                        focus_handle,
+                    )
+                }
+            },
+            |_, _| {},
+            false,
+            "the prewarmed area overlay",
+            cx,
+        ) else {
+            continue;
+        };
+        session(cx)
+            .pooled
+            .push(PooledOverlay { handle, display_id });
     }
 }
 
@@ -471,6 +646,7 @@ pub struct AreaOverlay {
     /// Non-empty in window-pick mode: hovering highlights a window and a
     /// click captures it, mirroring the Electron overlay's pick targets.
     windows: Vec<crate::capture::windows_list::WindowListItem>,
+    picking_windows: bool,
     window_list_generation: u64,
     hovered_window: Option<usize>,
     /// Last pointer position in client coordinates, for `CrosshairGuides`.
@@ -509,6 +685,7 @@ impl AreaOverlay {
             cursor: gpui::CursorStyle::Crosshair,
             intent,
             windows: Vec::new(),
+            picking_windows: false,
             window_list_generation: 0,
             hovered_window: None,
             all_in_one: None,
@@ -527,7 +704,34 @@ impl AreaOverlay {
         windows: Vec<crate::capture::windows_list::WindowListItem>,
     ) -> Self {
         self.windows = windows;
+        self.picking_windows = true;
         self
+    }
+
+    pub(crate) fn apply_window_list(
+        &mut self,
+        request_generation: u64,
+        windows: Vec<crate::capture::windows_list::WindowListItem>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.window_list_generation != request_generation
+            || !self.picking_windows
+            || self.all_in_one.is_some()
+        {
+            return false;
+        }
+        self.windows = windows;
+        self.hovered_window = None;
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn window_list_generation(&self) -> u64 {
+        self.window_list_generation
+    }
+
+    fn accepts_color_frame(&self, generation: u64) -> bool {
+        self.picking_color && self.color_frame_generation == generation
     }
 
     pub fn with_all_in_one(mut self, choices: crate::capture::all_in_one::Choices) -> Self {
@@ -555,7 +759,7 @@ impl AreaOverlay {
     }
 
     fn is_picking_windows(&self) -> bool {
-        !self.windows.is_empty()
+        self.picking_windows
     }
 
     /// The hovered window's frame, converted from physical screen pixels into
@@ -623,7 +827,8 @@ impl AreaOverlay {
             |scale, focus_handle| {
                 AreaOverlay::with_focus(display_bounds, scale, service, intent, focus_handle)
             },
-            |_, _, _| {},
+            |_, _| {},
+            true,
             "the area overlay",
             cx,
         )
@@ -653,7 +858,8 @@ impl AreaOverlay {
                 )
                 .with_all_in_one(choices)
             },
-            |view, _window, cx| view.update(cx, |this, cx| this.apply_all_in_one_target(cx)),
+            |this, cx| this.apply_all_in_one_target(cx),
+            true,
             "the all-in-one overlay",
             cx,
         )
@@ -725,6 +931,7 @@ impl AreaOverlay {
         self.cursor = gpui::CursorStyle::Crosshair;
         self.hovered_window = None;
         self.window_list_generation = self.window_list_generation.wrapping_add(1);
+        self.picking_windows = choices.target == Target::Window;
         if choices.target == Target::Window {
             self.windows.clear();
             let request_generation = self.window_list_generation;
@@ -813,7 +1020,7 @@ impl AreaOverlay {
                     })
                     .await;
                 let _ = entity.update(cx, |this, cx| {
-                    if !this.picking_color || this.color_frame_generation != generation {
+                    if !this.accepts_color_frame(generation) {
                         return;
                     }
                     let Some(frame) = frame else {
@@ -869,7 +1076,8 @@ impl AreaOverlay {
                 AreaOverlay::with_focus(display_bounds, scale, service, intent, focus_handle)
                     .with_windows(windows)
             },
-            |_, _, _| {},
+            |_, _| {},
+            true,
             "the window picker",
             cx,
         )
@@ -1750,6 +1958,148 @@ mod tests {
         assert!(super::can_show_before_freeze(19041, true));
     }
 
+    #[cfg(windows)]
+    #[gpui::test]
+    fn prewarmed_overlay_window_is_reused(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        let display_id = cx.read(|cx| cx.primary_display().expect("primary display").id());
+        let display_bounds = cx.read(|cx| cx.primary_display().expect("primary display").bounds());
+        cx.update(super::prewarm);
+        let window_count = cx.read(|cx| cx.windows().len());
+
+        cx.update(|cx| {
+            let service = crate::state::state(cx);
+            let opened = super::AreaOverlay::open(
+                service,
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: true,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open pooled overlay");
+            assert_eq!(
+                opened
+                    .update(cx, |overlay, _, _| (
+                        overlay.window_list_generation,
+                        overlay.color_frame_generation,
+                    ))
+                    .expect("read pooled generations"),
+                (1, 1)
+            );
+            assert_eq!(cx.windows().len(), window_count);
+            assert!(super::session(cx)
+                .pooled
+                .iter()
+                .all(|overlay| overlay.display_id != display_id));
+            assert_eq!(super::session(cx).handles.len(), 1);
+            let (window_list_generation, color_frame_generation) = opened
+                .update(cx, |overlay, _, _| {
+                    overlay.picking_windows = true;
+                    overlay.picking_color = true;
+                    (
+                        overlay.window_list_generation,
+                        overlay.color_frame_generation,
+                    )
+                })
+                .expect("prepare pending work");
+            assert_eq!(super::replace_all(cx), Some(0));
+            assert!(super::session(cx)
+                .pooled
+                .iter()
+                .any(|overlay| overlay.display_id == display_id));
+            assert!(!opened
+                .update(cx, |overlay, _, cx| {
+                    overlay.apply_window_list(window_list_generation, Vec::new(), cx)
+                })
+                .expect("reject stale window list"));
+            assert!(!opened
+                .update(cx, |overlay, _, _| {
+                    overlay.accepts_color_frame(color_frame_generation)
+                })
+                .expect("reject stale color frame"));
+            let reopened = super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: true,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("reopen pooled overlay");
+            assert_eq!(
+                reopened
+                    .update(cx, |overlay, _, _| (
+                        overlay.window_list_generation,
+                        overlay.color_frame_generation,
+                    ))
+                    .expect("read reopened generations"),
+                (3, 3)
+            );
+            assert_eq!(cx.windows().len(), window_count);
+            super::close_all(cx);
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert!(super::session(cx)
+                .pooled
+                .iter()
+                .any(|overlay| overlay.display_id == display_id));
+        });
+    }
+
+    #[gpui::test]
+    fn pending_window_list_does_not_start_an_area_selection(cx: &mut TestAppContext) {
+        use gpui::{point, Modifiers, MouseButton};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let (overlay, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus,
+            )
+            .with_windows(Vec::new())
+        });
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+
+        cx.simulate_mouse_down(
+            point(px(100.0), px(100.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+
+        assert!(overlay.read_with(cx, |overlay, _| {
+            overlay.is_picking_windows() && overlay.interaction.is_none() && overlay.rect.is_none()
+        }));
+    }
+
     #[test]
     fn stale_window_lists_are_rejected_after_leaving_window_mode() {
         use crate::capture::all_in_one::{Choices, Mode, Target};
@@ -2013,8 +2363,9 @@ mod tests {
                 .with_all_in_one(Choices::default())
         });
         cx.update(|cx| {
-            super::track_overlay(first.into(), 1, true, cx);
-            super::track_overlay(second.into(), 1, false, cx);
+            let display_id = cx.primary_display().expect("primary display").id();
+            super::track_overlay(first.into(), display_id, 1, true, cx);
+            super::track_overlay(second.into(), display_id, 1, false, cx);
         });
 
         first

@@ -311,20 +311,18 @@ pub const ONBOARDING_CARD_GAP: f32 = 12.0;
 pub const ONBOARDING_DOT: f32 = 8.0;
 
 pub const OVERLAY_DIM: f32 = 0.5;
-/// `top-8` / `top-24` on Windows, `top-12` / `top-28` on macOS, where the
-/// prompt clears the traffic lights and the taller toolbar inset.
 pub const OVERLAY_PROMPT_TOP: f32 = 32.0;
-pub const OVERLAY_PROMPT_TOP_TOOLBAR: f32 = 96.0;
 pub const OVERLAY_PROMPT_TOP_MAC: f32 = 48.0;
-pub const OVERLAY_PROMPT_TOP_TOOLBAR_MAC: f32 = 112.0;
+pub const OVERLAY_PROMPT_TOOLBAR_GAP: f32 = 40.0;
 
 pub fn overlay_prompt_top(toolbar: bool) -> f32 {
-    match (toolbar, is_macos()) {
-        (true, true) => OVERLAY_PROMPT_TOP_TOOLBAR_MAC,
-        (true, false) => OVERLAY_PROMPT_TOP_TOOLBAR,
-        (false, true) => OVERLAY_PROMPT_TOP_MAC,
-        (false, false) => OVERLAY_PROMPT_TOP,
+    if toolbar {
+        return overlay_toolbar_top() + overlay_bar_height() + OVERLAY_PROMPT_TOOLBAR_GAP;
     }
+    if is_macos() {
+        return OVERLAY_PROMPT_TOP_MAC;
+    }
+    OVERLAY_PROMPT_TOP
 }
 pub const OVERLAY_PROMPT_PX: f32 = 16.0;
 pub const OVERLAY_PROMPT_PY: f32 = 8.0;
@@ -651,6 +649,10 @@ mod tests {
         } else {
             assert_eq!(overlay_toolbar_top(), OVERLAY_TOOLBAR_TOP);
         }
+        assert_eq!(
+            overlay_prompt_top(true),
+            overlay_toolbar_top() + overlay_bar_height() + OVERLAY_PROMPT_TOOLBAR_GAP
+        );
         let handles = overlay_handle_rects(200.0, 100.0);
         assert_eq!(handles.len(), 12);
         assert_eq!(handles[0], (0.0, 0.0, 20.0, 4.0));

@@ -139,6 +139,8 @@ fn main() {
         .detach();
 
         windows::keepalive::KeepAlive::open(cx);
+        #[cfg(windows)]
+        capture::overlay::prewarm(cx);
 
         if windows::onboarding::OnboardingWindow::should_show(&config) {
             windows::onboarding::OnboardingWindow::open(cx, config.clone());

@@ -14,8 +14,6 @@ use crate::system::tray::TrayMenuState;
 use crate::ui::menu::{DismissHandler, MenuEntrance, MenuEntry, MenuView};
 #[cfg(not(windows))]
 use crate::ui::primitives::overlay_fade_out;
-#[cfg(windows)]
-use crate::ui::primitives::OVERLAY_ENTER_MS;
 use crate::ui::primitives::OVERLAY_EXIT_MS;
 use crate::windows::registry::{self, WindowKind as RegistryKind};
 
@@ -25,7 +23,7 @@ const SEPARATOR_HEIGHT: f32 = 9.0;
 const MENU_PADDING: f32 = 8.0;
 const SCREEN_GAP: f32 = 8.0;
 #[cfg(windows)]
-const MENU_FADE_MS: u32 = OVERLAY_ENTER_MS as u32;
+const MENU_FADE_MS: u32 = 80;
 /// Clicking the tray icon while the menu is open first deactivates the window
 /// (closing it) and only then delivers the tray click; a toggle arriving this
 /// soon after such a close is the same physical click and must not reopen.
