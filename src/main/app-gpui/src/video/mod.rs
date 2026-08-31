@@ -165,14 +165,13 @@ pub fn ffmpeg_path() -> std::path::PathBuf {
         }
     }
     #[cfg(target_os = "macos")]
-    {
-        return std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("app-gpui manifest directory")
-            .join("binaries/ffmpeg/ffmpeg");
-    }
+    let fallback = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("app-gpui manifest directory")
+        .join("binaries/ffmpeg/ffmpeg");
     #[cfg(target_os = "linux")]
-    std::path::PathBuf::from("ffmpeg")
+    let fallback = std::path::PathBuf::from("ffmpeg");
+    fallback
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]

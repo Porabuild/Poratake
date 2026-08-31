@@ -104,7 +104,7 @@ pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
             return false;
         }
         close_all(cx);
-        return true;
+        true
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -276,6 +276,7 @@ pub(crate) fn dismiss(window: &mut Window, cx: &mut App) {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn local_recording_rect(
     rect: ScreenRect,
     display_bounds: Bounds<Pixels>,
@@ -303,6 +304,7 @@ fn local_recording_rect(
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn set_overlay_hole(window: &Window, hole: Option<selection::Rect>) {
     #[cfg(windows)]
     {

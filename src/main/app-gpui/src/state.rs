@@ -57,6 +57,9 @@ pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
 }
 
 pub fn set_native(cx: &mut gpui::App, bridge: NativeBridge) {
+    // The bridge lives only on the main thread (gpui globals are never touched
+    // from other threads), but macOS native objects keep it !Send.
+    #[allow(clippy::arc_with_non_send_sync)]
     cx.set_global(NativeShell(Arc::new(bridge)));
 }
 

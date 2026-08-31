@@ -120,6 +120,7 @@ pub fn spawn(state: TrayMenuState, hotkey_bindings: Vec<(Intent, String)>) -> Na
 struct Shell {
     tray: Option<tray_icon::TrayIcon>,
     hotkeys: HotkeyRegistry,
+    #[cfg(not(target_os = "macos"))]
     events: smol::channel::Sender<NativeEvent>,
 }
 
@@ -145,6 +146,7 @@ impl Shell {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn emit_tray_menu(&self, tray_rect: TrayRect) {
         if self
             .events
@@ -169,6 +171,7 @@ impl Shell {
             })
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn emit_hotkey(&self, id: u32) {
         let Some(event) = self.hotkey_event(id) else {
             eprintln!("[hotkey] unmapped id {id}");

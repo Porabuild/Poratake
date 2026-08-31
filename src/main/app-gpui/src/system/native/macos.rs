@@ -12,7 +12,7 @@ impl Driver {
         hotkey_bindings: Vec<(Intent, String)>,
         events: smol::channel::Sender<NativeEvent>,
     ) -> Self {
-        install_event_handlers(events.clone());
+        install_event_handlers(events);
 
         let mut hotkeys = HotkeyRegistry::new();
         hotkeys.apply(&hotkey_bindings);
@@ -21,7 +21,6 @@ impl Driver {
             shell: parking_lot::Mutex::new(Shell {
                 tray: super::create_tray(state.dark_mode),
                 hotkeys,
-                events,
             }),
         }
     }

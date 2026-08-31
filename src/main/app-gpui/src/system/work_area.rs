@@ -18,10 +18,10 @@ pub fn display_bounds(display: &dyn gpui::PlatformDisplay) -> Bounds<Pixels> {
     #[cfg(target_os = "macos")]
     unsafe {
         let bounds = CGDisplayBounds(u32::from(display.id()));
-        return Bounds {
+        Bounds {
             origin: gpui::point(px(bounds.origin.x as f32), px(bounds.origin.y as f32)),
             size: gpui::size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
-        };
+        }
     }
     #[cfg(not(target_os = "macos"))]
     display.bounds()
@@ -81,6 +81,7 @@ fn x11_scale_for_width(
     scale_from_widths(logical_width, (right - left) as f32)
 }
 
+#[cfg(any(windows, target_os = "linux", test))]
 fn scale_from_widths(logical: f32, physical: f32) -> Option<f32> {
     (logical > 0.0 && physical > 0.0).then_some(physical / logical)
 }
@@ -126,13 +127,13 @@ pub fn local_window_bounds(
     #[cfg(target_os = "macos")]
     {
         let display = display_bounds(display);
-        return Bounds {
+        Bounds {
             origin: gpui::point(
                 px(f32::from(bounds.origin.x - display.origin.x)),
                 px(f32::from(bounds.origin.y - display.origin.y)),
             ),
             size: bounds.size,
-        };
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {

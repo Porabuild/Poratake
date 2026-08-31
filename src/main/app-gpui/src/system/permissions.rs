@@ -20,7 +20,7 @@ pub fn ensure_access(device: Device) -> bool {
 pub fn screen_recording_granted() -> bool {
     #[cfg(target_os = "macos")]
     unsafe {
-        return CGPreflightScreenCaptureAccess();
+        CGPreflightScreenCaptureAccess()
     }
     #[cfg(not(target_os = "macos"))]
     true
@@ -29,7 +29,7 @@ pub fn screen_recording_granted() -> bool {
 pub fn accessibility_granted() -> bool {
     #[cfg(target_os = "macos")]
     unsafe {
-        return AXIsProcessTrusted() != 0;
+        AXIsProcessTrusted() != 0
     }
     #[cfg(not(target_os = "macos"))]
     true

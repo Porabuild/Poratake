@@ -425,12 +425,22 @@ mod backend {
         let mut failure = None;
         while let Ok(command) = commands.recv() {
             match command {
-                Command::Audio { pcm, time, .. } => {
+                Command::Audio {
+                    pcm,
+                    time,
+                    duration,
+                } => {
+                    let _ = duration;
                     if failure.is_none() {
                         failure = write_audio(&audio_path, &pcm, time).err();
                     }
                 }
-                Command::Video { bgra, .. } => {
+                Command::Video {
+                    bgra,
+                    time,
+                    duration,
+                } => {
+                    let _ = (time, duration);
                     if failure.is_some() {
                         continue;
                     }
