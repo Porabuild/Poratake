@@ -32,6 +32,15 @@ ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but only reachable transitively via gpui 0.2; no safe upgrade exists" },
   { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained but only reachable transitively via gpui 0.2 build-time macros; no safe upgrade exists" },
   { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained but only reachable transitively via gpui 0.2; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0413", reason = "atk is unmaintained but only reachable through tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0416", reason = "atk-sys is unmaintained but only reachable through tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0412", reason = "gdk is unmaintained but only reachable through tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0418", reason = "gdk-sys is unmaintained but only reachable through tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0415", reason = "gtk is unmaintained but required by tray-icon's Linux AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0420", reason = "gtk-sys is unmaintained but required by tray-icon's Linux AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0419", reason = "gtk3-macros is unmaintained but only used to build tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained but only used by the Linux GTK3 build-time macros; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0429", reason = "glib VariantStrIter is unsound but that API is not referenced by Poratake or the tray-icon GTK3 closure; tray-icon cannot yet use fixed glib 0.20" },
 ]
 
 [bans]

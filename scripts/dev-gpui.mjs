@@ -1,9 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { runDevSession } from './dev-session.mjs';
 
-if (process.platform !== 'win32') {
-  console.error('[dev:gpui] the GPUI shell currently builds on Windows only');
-  process.exit(1);
+const contract = spawnSync(
+  process.execPath,
+  ['scripts/generate-daemon-contract.mjs', '--check'],
+  { stdio: 'inherit' }
+);
+if (contract.status !== 0) {
+  process.exit(contract.status ?? 1);
 }
 
 const baconVersion = spawnSync('bacon', ['--version'], { encoding: 'utf8' });
@@ -19,16 +23,16 @@ if (baconVersion.status !== 0 || !baconVersion.stdout.startsWith('bacon 3.')) {
 }
 
 await runDevSession('dev:gpui', ({ root, env }) => {
-  const child = spawn(
-    'bacon',
-    ['--headless', '--project', 'src/main', '--job', 'gpui'],
-    {
-      stdio: 'inherit',
-      cwd: root,
-      env,
-      detached: process.platform !== 'win32',
-    }
-  );
+  const args = ['--headless', '--project', 'src/main', '--job', 'gpui'];
+  if (process.platform !== 'win32') {
+    args.push('--config-toml', '[jobs.gpui]\nkill = ["kill", "-TERM"]');
+  }
+  const child = spawn('bacon', args, {
+    stdio: 'inherit',
+    cwd: root,
+    env,
+    detached: process.platform !== 'win32',
+  });
 
   child.on('error', error => {
     console.error(`[dev:gpui] ${error.message}`);

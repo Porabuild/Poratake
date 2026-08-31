@@ -45,6 +45,11 @@ export async function runDevSession(label, start) {
       );
       process.exit(1);
     }
+  } else if (process.platform === 'linux') {
+    execSync(
+      'cargo build --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux',
+      { stdio: 'inherit', cwd: root, env }
+    );
   }
 
   const child = start({ root, env });

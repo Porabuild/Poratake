@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["daemon-win", "app-gpui"]
+members = ["daemon-common", "daemon-linux", "daemon-win", "app-gpui"]
 
 [workspace.package]
 rust-version = "1.93"

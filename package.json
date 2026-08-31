@@ -27,6 +27,8 @@
     "prepare": "git config core.hooksPath .githooks",
     "dev": "bun scripts/dev.mjs",
     "dev:gpui": "bun scripts/dev-gpui.mjs",
+    "build:gpui:mac": "bun run build-native-mac && bash scripts/build-gpui-mac.sh",
+    "build:gpui:linux": "bun run check:daemon-contract && cargo build --release --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --package poratake-gpui",
     "build-mac": "bun run build-native-mac && bun run package-mac",
     "package-mac": "rm -rf ./dist && rm -rf ./dist-electron && tsc && bunx --bun vite build && electron-builder --mac --universal -p never",
     "build-mac:local": "bun run build-native-mac && rm -rf ./dist && rm -rf ./dist-electron && tsc && bunx --bun vite build && electron-builder --mac --universal -c.mac.identity=null -p never",
@@ -37,6 +39,8 @@
     "build-whisper-win": "powershell -ExecutionPolicy Bypass -File scripts/build-whisper-win.ps1",
     "build-native-win": "bun run build-daemon-win && bun run build-ffmpeg-win && bun run build-whisper-win",
     "build-native-mac": "./scripts/build-daemon.sh && ./scripts/build-ffmpeg.sh && ./scripts/build-whisper.sh",
+    "generate:daemon-contract": "bun scripts/generate-daemon-contract.mjs",
+    "check:daemon-contract": "bun scripts/generate-daemon-contract.mjs --check",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint . --report-unused-disable-directives --deny-warnings",
     "preview": "bunx --bun vite preview",
@@ -49,7 +53,7 @@
     "test:react-compiler": "bun scripts/check-react-compiler.mjs",
     "test:coverage": "vitest run --coverage",
     "test:daemon-win": "bun scripts/check-daemon-win.mjs",
-    "checks": "bun run typecheck && bun run lint && bun run format:check && bun run test:react-compiler && bun run test:run && bun run test:daemon-win"
+    "checks": "bun run check:daemon-contract && bun run typecheck && bun run lint && bun run format:check && bun run test:react-compiler && bun run test:run && bun run test:daemon-win"
   },
   "dependencies": {
     "@heroui/react": "^3.2.4",

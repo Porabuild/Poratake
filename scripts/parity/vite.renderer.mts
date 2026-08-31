@@ -5,8 +5,7 @@
 //   open http://localhost:5599/index.html?window=settings#general
 //
 // The renderer needs the preload bridge, which a plain browser has not got;
-// `preload-stub.js` in this directory stands in for it. Inject it as an
-// on-new-document script before loading the page.
+// `preload-stub.js` in this directory stands in for it.
 //
 // Nothing in the app build references this file.
 import { defineConfig } from 'vite';
@@ -25,6 +24,18 @@ export default defineConfig({
   root: path.resolve(import.meta.dirname, '../..'),
   base: './',
   plugins: [
+    {
+      name: 'parity-preload',
+      transformIndexHtml() {
+        return [
+          {
+            tag: 'script',
+            attrs: { src: '/scripts/parity/preload-stub.js' },
+            injectTo: 'head-prepend',
+          },
+        ];
+      },
+    },
     react(),
     babel({ presets: [reactCompilerPreset()] }),
     tailwindcss(),

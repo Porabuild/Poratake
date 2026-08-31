@@ -1,9 +1,7 @@
 // Stands in for `src/preload/preload.ts` so the Electron renderer can be drawn
 // in an ordinary browser and compared against the GPUI shell, pixel for pixel.
 //
-// Inject as an on-new-document script (Chrome DevTools
-// `Page.addScriptToEvaluateOnNewDocument`) before loading
-// `http://localhost:5599/index.html?window=<type>#<tab>`.
+// Loaded by `vite.renderer.mts` before the renderer entrypoint.
 //
 window.appPlatform = 'win32';
 
@@ -14,7 +12,67 @@ const query = new URLSearchParams(location.search);
 const TYPE = query.get('window') || 'settings';
 /// `?image=/@fs/C:/path/to/capture.png` for the windows that show one.
 const IMAGE = query.get('image');
+const FILE = query.get('file') || 'C:\\parity.mp4';
 const isList = channel => /list$|:list/.test(channel);
+
+const windowParams = async () => {
+  switch (TYPE) {
+    case 'screenshot':
+      return {
+        filePath: FILE,
+        imageUrl: IMAGE,
+        initialPreferences: {},
+        screenshotSettings: {
+          closeOnCopy: false,
+          closeOnSave: false,
+          format: 'png',
+        },
+        editorShortcuts: {},
+        editorActionShortcuts: {},
+      };
+    case 'video-editor':
+      return { filePath: FILE };
+    case 'capture-preview':
+      return {
+        filePath: FILE,
+        contentType: 'screenshot',
+        imageUrl: IMAGE,
+      };
+    case 'recording-control':
+      return {
+        mode: 'pre-recording',
+        targetName: null,
+        systemAudio: true,
+        micEnabled: false,
+        selectedMicId: null,
+        cameraEnabled: false,
+        selectedCameraId: null,
+        cameraLocked: false,
+        selectedIOSDeviceId: null,
+        selectedIOSDeviceName: null,
+        isPaused: false,
+        isStarting: false,
+        elapsedSeconds: 0,
+      };
+    case 'area-overlay':
+      return {
+        sessionId: 1,
+        displayId: 1,
+        imageUrl: IMAGE,
+        interactive: true,
+        autoConfirm: false,
+        repeatablePicks: false,
+        showPrompt: true,
+        rect: null,
+        aspectRatio: null,
+        toolbar: null,
+        pickTargets: null,
+        prompt: null,
+      };
+    default:
+      return {};
+  }
+};
 
 // A few windows wait for a push from the main process before they render
 // anything: the history window sends `history:ready` and then sits on
@@ -45,7 +103,9 @@ window.ipcRenderer = {
   invoke: async channel => {
     // `App.tsx` renders nothing until this resolves, and it is what decides
     // which window is shown.
-    if (channel === 'window:get-load-data') return { type: TYPE, params: {} };
+    if (channel === 'window:get-load-data') {
+      return { type: TYPE, params: await windowParams() };
+    }
     if (channel === 'settings:get-ui') {
       return SHORTCUTS
         ? { appearance: APPEARANCE, shortcuts: SHORTCUTS }

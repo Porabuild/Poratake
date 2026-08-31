@@ -115,9 +115,9 @@ Poratake is built on Electron 43.4.0 under the MIT License. Electron's license a
 
 The macOS Swift daemon uses only Apple system frameworks and has no third-party dependencies.
 
-The Windows Rust daemon (`poratake-daemon.exe`) statically links the following crates. Exact versions are pinned in `src/main/Cargo.lock`, and each crate's full license text is included in its published source at that version.
+The Windows and Linux Rust daemons share the protocol and QR-decoding crates listed below. The Windows daemon additionally links the Microsoft `windows` crates. Exact versions are pinned in `src/main/Cargo.lock`, and each crate's full license text is included in its published source at that version.
 
-Licensed under the MIT License (text below), some dual-licensed with Apache-2.0 with MIT elected here: allocator-api2, base64, equivalent, g2p, g2poly, hashbrown, itoa, lru (Copyright (c) 2016 Jerome Froelich), memchr (Copyright (c) 2015 Andrew Gallant), rqrr (Copyright 2019 Moritz Wanzenböck), serde, serde_core, serde_json, zmij, and the Microsoft `windows` crates: windows, windows-collections, windows-core, windows-future, windows-link, windows-numerics, windows-result, windows-strings, windows-threading (Copyright (c) Microsoft Corporation).
+Licensed under the MIT License (text below), some dual-licensed with Apache-2.0 with MIT elected here: allocator-api2, base64, equivalent, g2p, g2poly, hashbrown, itoa, lru (Copyright (c) 2016 Jerome Froelich), memchr (Copyright (c) 2015 Andrew Gallant), rqrr (Copyright 2019 Moritz Wanzenböck), serde, serde_core, serde_json, zmij, and the Microsoft `windows` crates used by the Windows daemon: windows, windows-collections, windows-core, windows-future, windows-link, windows-numerics, windows-result, windows-strings, windows-threading (Copyright (c) Microsoft Corporation).
 
 MIT License
 
@@ -137,42 +137,57 @@ foldhash is licensed under the Zlib License (Copyright (c) 2024 Orson Peters).
 
 Build-time-only tools that do not ship in the binary (proc macros and code generation): g2gen, proc-macro2, quote, serde_derive, syn, unicode-ident, windows-implement, windows-interface — all MIT OR Apache-2.0 (unicode-ident additionally Unicode-3.0).
 
-## Poratake GPUI shell (src/main/app-gpui)
+## Poratake GPUI shell and Rust daemon crates (src/main/app-gpui, src/main/daemon-common, src/main/daemon-linux)
 
-The Poratake GPUI shell (`poratake-gpui`) directly depends on the following crates. Exact versions and the complete transitive dependency closure are pinned in `src/main/Cargo.lock`, and the license strings below are taken from each crate's Cargo manifest at that version.
+The Poratake GPUI shell and Rust daemon crates directly depend on the following crates. Exact versions and the complete transitive dependency closure are pinned in `src/main/Cargo.lock`, and the license strings below are taken from each crate's Cargo manifest at that version.
 
-| Crate               | Version | License                   |
-| ------------------- | ------: | ------------------------- |
-| `anyhow`            | 1.0.104 | MIT OR Apache-2.0         |
-| `arboard`           |   3.6.1 | MIT OR Apache-2.0         |
-| `base64`            |  0.23.1 | MIT OR Apache-2.0         |
-| `chrono`            |  0.4.45 | MIT OR Apache-2.0         |
-| `dirs`              |   6.0.0 | MIT OR Apache-2.0         |
-| `fontdue`           |   0.9.4 | MIT OR Apache-2.0 OR Zlib |
-| `global-hotkey`     |   0.8.0 | Apache-2.0 OR MIT         |
-| `gpui`              |   0.2.2 | Apache-2.0                |
-| `hmac`              |  0.13.0 | MIT OR Apache-2.0         |
-| `image`             | 0.25.10 | MIT OR Apache-2.0         |
-| `lyon`              |  1.0.19 | MIT OR Apache-2.0         |
-| `md-5`              |  0.11.0 | MIT OR Apache-2.0         |
-| `parking_lot`       |  0.12.5 | MIT OR Apache-2.0         |
-| `raw-window-handle` |   0.6.2 | MIT OR Apache-2.0 OR Zlib |
-| `resvg`             |  0.45.1 | Apache-2.0 OR MIT         |
-| `rfd`               |  0.15.4 | MIT                       |
-| `sha2`              |  0.11.0 | MIT OR Apache-2.0         |
-| `smallvec`          |  1.15.2 | MIT OR Apache-2.0         |
-| `smol`              |   2.0.2 | Apache-2.0 OR MIT         |
-| `tiny-skia`         |  0.11.4 | BSD-3-Clause              |
-| `tray-icon`         |  0.24.2 | MIT OR Apache-2.0         |
-| `ureq`              |   3.4.0 | MIT OR Apache-2.0         |
-| `usvg`              |  0.45.1 | Apache-2.0 OR MIT         |
-| `windows`           |  0.61.3 | MIT OR Apache-2.0         |
-| `serde`             | 1.0.229 | MIT OR Apache-2.0         |
-| `serde_json`        | 1.0.151 | MIT OR Apache-2.0         |
+| Crate                      |   Version | License                   |
+| -------------------------- | --------: | ------------------------- |
+| `anyhow`                   |   1.0.104 | MIT OR Apache-2.0         |
+| `base64`                   |    0.23.1 | MIT OR Apache-2.0         |
+| `chrono`                   |    0.4.45 | MIT OR Apache-2.0         |
+| `cocoa`                    |    0.26.0 | MIT OR Apache-2.0         |
+| `block2`                   |     0.6.2 | MIT                       |
+| `dbus`                     |    0.9.12 | Apache-2.0 OR MIT         |
+| `dirs`                     |     6.0.0 | MIT OR Apache-2.0         |
+| `fontdue`                  |     0.9.4 | MIT OR Apache-2.0 OR Zlib |
+| `glib`                     |    0.18.5 | MIT                       |
+| `global-hotkey`            |     0.8.0 | Apache-2.0 OR MIT         |
+| `gpui`                     |     0.2.2 | Apache-2.0                |
+| `gtk`                      |    0.18.2 | MIT                       |
+| `hmac`                     |    0.13.0 | MIT OR Apache-2.0         |
+| `image`                    |   0.25.10 | MIT OR Apache-2.0         |
+| `lyon`                     |    1.0.19 | MIT OR Apache-2.0         |
+| `md-5`                     |    0.11.0 | MIT OR Apache-2.0         |
+| `objc`                     |     0.2.7 | MIT                       |
+| `objc2`                    |     0.6.4 | MIT                       |
+| `objc2-foundation`         |     0.3.2 | MIT                       |
+| `objc2-user-notifications` |     0.3.2 | Zlib OR Apache-2.0 OR MIT |
+| `parking_lot`              |    0.12.5 | MIT OR Apache-2.0         |
+| `raw-window-handle`        |     0.6.2 | MIT OR Apache-2.0 OR Zlib |
+| `resvg`                    |    0.45.1 | Apache-2.0 OR MIT         |
+| `rfd`                      |    0.15.4 | MIT                       |
+| `rqrr`                     |    0.10.1 | MIT                       |
+| `sha2`                     |    0.11.0 | MIT OR Apache-2.0         |
+| `smallvec`                 |    1.15.2 | MIT OR Apache-2.0         |
+| `smol`                     |     2.0.2 | Apache-2.0 OR MIT         |
+| `tiny-skia`                |    0.11.4 | BSD-3-Clause              |
+| `tray-icon`                |    0.24.2 | MIT OR Apache-2.0         |
+| `ureq`                     |     3.4.0 | MIT OR Apache-2.0         |
+| `usvg`                     |    0.45.1 | Apache-2.0 OR MIT         |
+| `windows`                  |    0.61.3 | MIT OR Apache-2.0         |
+| `xcb`                      |     1.7.1 | MIT                       |
+| `zed-scap`                 | 0.0.8-zed | MIT                       |
+| `serde`                    |   1.0.229 | MIT OR Apache-2.0         |
+| `serde_json`               |   1.0.151 | MIT OR Apache-2.0         |
 
 `tray-icon` pulls in `dpi` 0.1.2 (Apache-2.0 AND MIT).
 
-The application requests only the PNG, JPEG, and GIF codecs from `image`, but GPUI 0.2.2 also enables `image`'s default codec set. The locked Windows closure therefore includes `ravif` 0.13.0 (BSD-3-Clause), `rav1e` 0.8.1 (BSD-2-Clause), `exr` 1.74.2 (BSD-3-Clause), `image-webp` 0.2.4 (MIT OR Apache-2.0), `qoi` 0.4.1 (MIT OR Apache-2.0), and `tiff` 0.11.3 (MIT). The GIF codec pulls in `gif` 0.14.2 and `weezl` 0.1.12 (both MIT OR Apache-2.0) and `color_quant` 1.1.0 (MIT). GPUI's Windows clipboard and TLS paths also include `clipboard-win` 5.4.1 (BSL-1.0) and `ring` 0.17.14 (Apache-2.0 AND ISC).
+On Linux, `tray-icon` uses its GTK/AppIndicator backend. The locked runtime closure adds `atk`/`atk-sys` 0.18.2, `cairo-rs` 0.18.5/`cairo-sys-rs` 0.18.2, `gdk`/`gdk-sys` 0.18.2, `gdk-pixbuf` 0.18.5/`gdk-pixbuf-sys` 0.18.0, `gio` 0.18.4/`gio-sys` 0.18.1, `glib` 0.18.5/`glib-sys` 0.18.1, `gobject-sys` 0.18.0, `gtk`/`gtk-sys` 0.18.2, and `pango` 0.18.3/`pango-sys` 0.18.0 (all MIT); `libappindicator`/`libappindicator-sys` 0.9.0 (Apache-2.0 OR MIT); and `libloading` 0.7.4 (ISC). Its build-only closure adds `cfg-expr` 0.15.8, `field-offset` 0.3.6, `proc-macro-crate` 1.3.1 and 2.0.0, `proc-macro-error`/`proc-macro-error-attr` 1.0.4, `system-deps` 6.2.2, and `toml_edit` 0.19.15 and 0.20.7 (MIT OR Apache-2.0); `gtk3-macros` 0.18.2 and `glib-macros` 0.18.5 (MIT); `target-lexicon` 0.12.16 (Apache-2.0 WITH LLVM-exception); and `version-compare` 0.2.1 and `winnow` 0.5.40 (MIT).
+
+On Linux, `poratake-daemon-linux` captures and presents exact physical X11 frames through `xcb`, captures Wayland through `zed-scap`, the desktop portal and PipeWire, and uses an event-driven GTK runtime for timer control and printing. The Wayland runtime closure adds `dbus` 0.9.12 and `libdbus-sys` 0.2.7 (Apache-2.0 OR MIT), `pipewire`/`pipewire-sys`/`libspa`/`libspa-sys` 0.8.0 (MIT), `cookie-factory` 0.3.3 (MIT), and `nix` 0.27.1 (MIT). Its build closure adds `annotate-snippets` 0.9.2 (Apache-2.0 OR MIT), `bindgen` 0.69.5 (BSD-3-Clause), `convert_case` 0.6.0 (MIT), `itertools` 0.12.1 (MIT OR Apache-2.0), `lazycell` 1.3.0 (MIT OR Apache-2.0), `unicode-width` 0.1.14 (MIT OR Apache-2.0), and `yansi-term` 0.1.2 (MIT).
+
+The application requests only the PNG, JPEG, and GIF codecs from `image`, but GPUI 0.2.2 also enables `image`'s default codec set. The locked Windows closure therefore includes `ravif` 0.13.0 (BSD-3-Clause), `rav1e` 0.8.1 (BSD-2-Clause), `exr` 1.74.2 (BSD-3-Clause), `image-webp` 0.2.4 (MIT OR Apache-2.0), `qoi` 0.4.1 (MIT OR Apache-2.0), and `tiff` 0.11.3 (MIT). The GIF codec pulls in `gif` 0.14.2 and `weezl` 0.1.12 (both MIT OR Apache-2.0) and `color_quant` 1.1.0 (MIT). GPUI's Windows TLS path also includes `ring` 0.17.14 (Apache-2.0 AND ISC).
 
 `tiny-skia` is the shell's software rasterizer. The image editor's export and the video editor's frame composition draw through it, which is what keeps a saved file identical to the on-screen preview. It pulls in `tiny-skia-path` 0.11.4 (BSD-3-Clause), `strict-num` 0.1.1 (MIT) and `arrayref` 0.3.9 (BSD-2-Clause). `usvg`/`resvg` render the recorded pointer, whose artwork is the same SVG markup the renderer draws; they pull in `svgtypes` 0.15.3, `simplecss` 0.2.2, `roxmltree` 0.20.0 and `kurbo` 0.11.3 (all Apache-2.0 OR MIT) plus `fontdb` 0.23.0, `rustybuzz` 0.20.1 and `imagesize` 0.13.0 (all MIT).
 
@@ -180,6 +195,6 @@ The application requests only the PNG, JPEG, and GIF codecs from `image`, but GP
 
 `fontdue` rasterizes the editor's text annotations, the video captions and the keyboard overlay for export. No font is bundled: it loads the platform UI font already installed on the machine (Segoe UI, Georgia, Consolas or Comic Sans MS on Windows; the San Francisco, Georgia, Menlo and Comic Sans MS equivalents on macOS; DejaVu on other systems), so the exported image matches the on-screen preview without redistributing any typeface.
 
-The GPUI shell decodes and encodes video with the operating system's own Media Foundation, reached through the `windows` crate. No FFmpeg build, codec or other media binary is bundled with it.
+On Windows, the GPUI shell decodes and encodes video with the operating system's own Media Foundation, reached through the `windows` crate. On macOS, the GPUI shell uses the LGPL-configured FFmpeg binary described above. Linux video editing and recording are not currently exposed as supported capabilities.
 
 The `gpui` crate also bundles its own resources. `scripts/generate-gpui-icons.ps1` reads `node_modules/lucide-react` v1.32.0 and compiles its Lucide icon path data into the binary under the ISC License. The shell also embeds the tray menu icons from `src/main/menu/icons/` and the tray icon from `public/tray-icon.png`, which are Poratake's own assets derived from the same Lucide icon set (ISC License).
