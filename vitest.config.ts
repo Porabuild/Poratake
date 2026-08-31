@@ -7,6 +7,15 @@ export default defineConfig({
     environment: 'node',
     setupFiles: ['tests/setup.ts'],
     include: ['tests/**/*.test.ts', 'tests/**/*.spec.ts'],
+    onUnhandledError(error) {
+      if (
+        error.message.includes(
+          'Closing rpc while "onUserConsoleLog" was pending'
+        )
+      ) {
+        return false;
+      }
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
