@@ -67,6 +67,7 @@ src/main/daemon/poratake-daemon.exe
 .claude/
 .commandcode/
 .poracode/
+.qwen/
 skills-lock.json
 
 .envrc
