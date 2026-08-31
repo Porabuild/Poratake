@@ -94,7 +94,6 @@ fn scale_for_display_id(display_id: u32, scales: &[(u32, f32)]) -> Option<f32> {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unexpected_cfgs)]
 fn macos_display_scale_factor(display_id: u32) -> Option<f32> {
     use cocoa::appkit::NSScreen;
     use cocoa::base::nil;
@@ -104,8 +103,8 @@ fn macos_display_scale_factor(display_id: u32) -> Option<f32> {
     unsafe {
         let screens = NSScreen::screens(nil);
         let key = NSString::alloc(nil).init_str("NSScreenNumber");
-        let count = NSArray::count(screens) as usize;
-        let mut scales = Vec::with_capacity(count);
+        let count = NSArray::count(screens);
+        let mut scales = Vec::with_capacity(count as usize);
         for index in 0..count {
             let screen = screens.objectAtIndex(index);
             let number = screen.deviceDescription().objectForKey_(key);
@@ -269,7 +268,6 @@ fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unexpected_cfgs)]
 fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
     use cocoa::appkit::NSScreen;
     use cocoa::base::nil;
