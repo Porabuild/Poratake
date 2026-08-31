@@ -8,6 +8,12 @@ const daemonDir = path.join(root, 'src', 'main', 'daemon');
 const output = path.join(daemonDir, 'poratake-daemon');
 const plist = path.join(daemonDir, 'Info.plist');
 
+execFileSync(
+  process.execPath,
+  [path.join(root, 'scripts', 'generate-daemon-contract.mjs'), '--check'],
+  { stdio: 'inherit', cwd: root }
+);
+
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[1;33m';

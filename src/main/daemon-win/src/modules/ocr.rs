@@ -1,6 +1,7 @@
 use crate::com::retain_process_mta;
-use crate::protocol::{Request, require_existing_path, respond_error, respond_success};
+use crate::protocol::{Request, params as parse_params, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
+use poratake_daemon_common::contract::{OCR_MODULE, OcrMethod, OcrRecognizeRequest};
 use serde_json::json;
 use windows::Globalization::Language;
 use windows::Graphics::Imaging::{
@@ -18,26 +19,32 @@ pub struct OcrModule;
 
 impl Module for OcrModule {
     fn name(&self) -> &'static str {
-        "ocr"
+        OCR_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "recognize" => self.recognize(request),
-            method => method_not_found(method),
+        match OcrMethod::parse(&request.method) {
+            Some(OcrMethod::Recognize) => self.recognize(request),
+            None => method_not_found(&request.method),
         }
     }
 }
 
 impl OcrModule {
     fn recognize(&self, request: &Request) -> Reply {
-        let image_path = match require_existing_path(&request.params, "imagePath") {
-            Ok(path) => path,
+        let params: OcrRecognizeRequest = match parse_params(request) {
+            Ok(params) => params,
             Err(error) => return Reply::Now(Err(error)),
         };
+        if !params.image_path.is_file() {
+            return Reply::Now(Err((
+                "FILE_NOT_FOUND".to_string(),
+                format!("Image file not found: {}", params.image_path.display()),
+            )));
+        }
 
         let request_id = request.id.clone();
-        let image_path = image_path.to_string();
+        let image_path = params.image_path.to_string_lossy().into_owned();
         let worker = std::thread::Builder::new()
             .name("ocr-recognition".to_string())
             .spawn(move || match recognize_text(&image_path) {

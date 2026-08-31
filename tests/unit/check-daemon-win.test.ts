@@ -148,6 +148,9 @@ describe('Windows native rust check', () => {
       .split('[dev-dependencies]')[0]
       .split('\n')
       .flatMap(line => {
+        if (line.includes('path =')) {
+          return [];
+        }
         const match = line.match(/^([a-z0-9_-]+)\s*=/);
         return match ? [match[1]] : [];
       });

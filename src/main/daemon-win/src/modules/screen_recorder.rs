@@ -1,8 +1,14 @@
 use super::recorder_types::{RecorderError, RecordingConfig, RecordingResult};
 use super::recording_audio::AudioDevice;
 use super::screen_capture::CaptureController;
-use crate::protocol::{Request, param_bool, param_str, respond_error, respond_success, send_event};
+use crate::protocol::{
+    Request, params as parse_params, respond_error, respond_success, send_event,
+};
 use crate::router::{Module, Reply, method_not_found};
+use poratake_daemon_common::contract::{
+    SCREEN_RECORDER_MODULE, ScreenRecorderMethod, ScreenRecorderMicrophoneRequest,
+    ScreenRecorderToggleRequest,
+};
 use serde_json::json;
 use std::sync::mpsc::Receiver;
 
@@ -109,22 +115,34 @@ impl ScreenRecorderModule {
     }
 
     fn set_microphone(&self, request: &Request) -> Reply {
-        let enabled = param_bool(&request.params, "enabled").unwrap_or(false);
-        let device = enabled.then(|| AudioDevice {
-            id: param_str(&request.params, "deviceId").map(str::to_owned),
-            name: param_str(&request.params, "deviceName").map(str::to_owned),
+        let params: ScreenRecorderMicrophoneRequest = match parse_params(request) {
+            Ok(params) => params,
+            Err(error) => return Reply::Now(Err(error)),
+        };
+        let device = params.enabled.then_some(AudioDevice {
+            id: params.device_id,
+            name: params.device_name,
         });
-        device_reply(self.recorder.set_microphone(device), enabled)
+        device_reply(self.recorder.set_microphone(device), params.enabled)
     }
 
     fn set_system_audio(&self, request: &Request) -> Reply {
-        let enabled = param_bool(&request.params, "enabled").unwrap_or(false);
-        device_reply(self.recorder.set_system_audio(enabled), enabled)
+        let params: ScreenRecorderToggleRequest = match parse_params(request) {
+            Ok(params) => params,
+            Err(error) => return Reply::Now(Err(error)),
+        };
+        device_reply(
+            self.recorder.set_system_audio(params.enabled),
+            params.enabled,
+        )
     }
 
     fn set_camera(&self, request: &Request) -> Reply {
-        let enabled = param_bool(&request.params, "enabled").unwrap_or(false);
-        device_reply(self.recorder.set_camera(enabled), enabled)
+        let params: ScreenRecorderToggleRequest = match parse_params(request) {
+            Ok(params) => params,
+            Err(error) => return Reply::Now(Err(error)),
+        };
+        device_reply(self.recorder.set_camera(params.enabled), params.enabled)
     }
 
     fn stop(&self, request: &Request) -> Reply {
@@ -140,26 +158,26 @@ impl ScreenRecorderModule {
 
 impl Module for ScreenRecorderModule {
     fn name(&self) -> &'static str {
-        "screen-recorder"
+        SCREEN_RECORDER_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "start" => self.start(request),
-            "pause" => self.pause(request),
-            "resume" => self.resume(request),
-            "stop" => self.stop(request),
-            "status" => {
+        match ScreenRecorderMethod::parse(&request.method) {
+            Some(ScreenRecorderMethod::Start) => self.start(request),
+            Some(ScreenRecorderMethod::Pause) => self.pause(request),
+            Some(ScreenRecorderMethod::Resume) => self.resume(request),
+            Some(ScreenRecorderMethod::Stop) => self.stop(request),
+            Some(ScreenRecorderMethod::Status) => {
                 let status = self.recorder.status();
                 Reply::Now(Ok(Some(json!({
                     "state": status.state.as_str(),
                     "duration": status.duration,
                 }))))
             }
-            "setMicrophone" => self.set_microphone(request),
-            "setSystemAudio" => self.set_system_audio(request),
-            "setCamera" => self.set_camera(request),
-            method => method_not_found(method),
+            Some(ScreenRecorderMethod::SetMicrophone) => self.set_microphone(request),
+            Some(ScreenRecorderMethod::SetSystemAudio) => self.set_system_audio(request),
+            Some(ScreenRecorderMethod::SetCamera) => self.set_camera(request),
+            None => method_not_found(&request.method),
         }
     }
 }

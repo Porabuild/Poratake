@@ -1,0 +1,450 @@
+{
+  "version": 1,
+  "geometry": {
+    "timerControl": { "width": 140, "height": 52, "topMargin": 20 }
+  },
+  "records": {
+    "displayCaptureContext": {
+      "fields": [
+        "x",
+        "y",
+        "width",
+        "height",
+        "scaleFactor",
+        "displayOriginX",
+        "displayOriginY",
+        "displayId"
+      ],
+      "required": ["x", "y", "width", "height"],
+      "types": {
+        "x": "integer",
+        "y": "integer",
+        "width": "positive-integer",
+        "height": "positive-integer",
+        "scaleFactor": "number-0.25-through-8",
+        "displayOriginX": "integer",
+        "displayOriginY": "integer",
+        "displayId": "optional-unsigned-integer"
+      },
+      "defaults": {
+        "scaleFactor": 1.0,
+        "displayOriginX": 0,
+        "displayOriginY": 0
+      }
+    }
+  },
+  "modules": {
+    "area-selector": {
+      "platforms": ["macos", "windows"],
+      "shared": [
+        "disableWindowTransitions",
+        "hideWindowWithoutTransitions",
+        "showWindowWithoutTransitions",
+        "setWindowRegion",
+        "getForegroundWindow",
+        "setForegroundWindow"
+      ],
+      "linux": []
+    },
+    "camera-preview": {
+      "platforms": ["macos", "windows"],
+      "shared": ["show", "hide", "update", "setContentProtection"],
+      "linux": [],
+      "methodRequests": {
+        "show": "preview",
+        "update": "update",
+        "setContentProtection": "contentProtection"
+      },
+      "requestSchemas": {
+        "preview": {
+          "fields": [
+            "deviceId",
+            "deviceName",
+            "resolution",
+            "flipped",
+            "x",
+            "y"
+          ],
+          "required": [],
+          "types": {
+            "deviceId": "optional-string",
+            "deviceName": "optional-string",
+            "resolution": "optional-string",
+            "flipped": "optional-boolean",
+            "x": "optional-integer",
+            "y": "optional-integer"
+          }
+        },
+        "update": {
+          "fields": [
+            "deviceId",
+            "deviceName",
+            "resolution",
+            "flipped",
+            "x",
+            "y"
+          ],
+          "required": [],
+          "semantics": {
+            "missingDevice": "preserve",
+            "nullDevice": "clear"
+          },
+          "types": {
+            "deviceId": "nullable-string",
+            "deviceName": "nullable-string",
+            "resolution": "optional-string",
+            "flipped": "optional-boolean",
+            "x": "optional-integer",
+            "y": "optional-integer"
+          }
+        },
+        "contentProtection": {
+          "fields": ["enabled"],
+          "required": ["enabled"],
+          "types": { "enabled": "boolean" }
+        }
+      }
+    },
+    "desktop-helper": {
+      "platforms": ["macos", "windows"],
+      "shared": ["hide", "show"],
+      "linux": []
+    },
+    "desktop-wallpaper": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": ["get"],
+      "linux": [],
+      "errors": ["BUSY", "UNSUPPORTED_SESSION", "WALLPAPER_UNAVAILABLE"],
+      "result": { "type": ["path", "data"], "value": "string" }
+    },
+    "display-selector": {
+      "platforms": ["macos", "windows"],
+      "shared": ["select", "cancel"],
+      "linux": []
+    },
+    "freeze-screen": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": ["freeze", "release", "prewarm"],
+      "linux": [],
+      "errors": ["CAPTURE_FAILED", "UI_ERROR"]
+    },
+    "media-devices": {
+      "platforms": ["macos", "windows"],
+      "shared": ["list", "startMicTest", "stopMicTest"],
+      "linux": [],
+      "listRequest": {
+        "fields": ["kinds"],
+        "required": [],
+        "types": { "kinds": "microphone-or-camera-array" }
+      },
+      "micTestRequest": {
+        "fields": ["deviceId", "deviceName"],
+        "required": [],
+        "types": {
+          "deviceId": "optional-string",
+          "deviceName": "optional-string"
+        }
+      }
+    },
+    "ocr": {
+      "platforms": ["macos", "windows"],
+      "shared": ["recognize"],
+      "linux": [],
+      "methodRequests": { "recognize": "recognize" },
+      "requestSchemas": {
+        "recognize": {
+          "fields": ["imagePath"],
+          "required": ["imagePath"],
+          "types": { "imagePath": "path" }
+        }
+      },
+      "result": {
+        "fields": ["text"],
+        "required": ["text"],
+        "types": { "text": "string" }
+      },
+      "errors": ["INVALID_PARAMS", "FILE_NOT_FOUND", "OCR_FAILED"]
+    },
+    "print": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": ["image"],
+      "linux": [],
+      "imageRequest": {
+        "fields": ["imageBase64"],
+        "required": ["imageBase64"],
+        "types": { "imageBase64": "base64-png" }
+      },
+      "errors": [
+        "INVALID_PARAMS",
+        "INVALID_IMAGE",
+        "PRINT_IN_PROGRESS",
+        "PRINT_FAILED",
+        "UI_ERROR"
+      ]
+    },
+    "qrcode": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": ["detect"],
+      "linux": []
+    },
+    "recording-control": {
+      "platforms": ["macos", "windows"],
+      "shared": ["listIOSDevices"],
+      "linux": []
+    },
+    "recording-overlay": {
+      "platforms": ["macos", "windows"],
+      "shared": ["show", "showWindow", "hide"],
+      "linux": [],
+      "methodRequests": {
+        "show": "show",
+        "showWindow": "showWindow"
+      },
+      "requestSchemas": {
+        "show": {
+          "fields": ["x", "y", "width", "height"],
+          "required": ["x", "y", "width", "height"],
+          "types": {
+            "x": "integer",
+            "y": "integer",
+            "width": "positive-integer",
+            "height": "positive-integer"
+          }
+        },
+        "showWindow": {
+          "fields": ["windowId", "color", "belowWindowId"],
+          "required": ["windowId"],
+          "types": {
+            "windowId": "integer",
+            "color": "optional-six-digit-hex",
+            "belowWindowId": "optional-integer"
+          }
+        }
+      },
+      "result": {
+        "fields": ["visible"],
+        "required": ["visible"],
+        "types": { "visible": "boolean" }
+      }
+    },
+    "screenshot": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": ["capture-area", "capture-window"],
+      "linux": ["list-displays"],
+      "methodRequests": {
+        "capture-area": "captureArea",
+        "capture-window": "captureWindow"
+      },
+      "requestSchemas": {
+        "captureArea": {
+          "captureContext": "displayCaptureContext",
+          "fields": ["path", "cached", "windowId"],
+          "required": ["path"],
+          "types": {
+            "path": "path",
+            "cached": "boolean",
+            "windowId": "optional-integer"
+          },
+          "defaults": { "cached": false }
+        },
+        "captureWindow": {
+          "fields": ["windowId", "path"],
+          "required": ["windowId", "path"],
+          "types": { "windowId": "integer", "path": "path" }
+        }
+      }
+    },
+    "screen-recorder": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": [
+        "start",
+        "pause",
+        "resume",
+        "stop",
+        "status",
+        "setMicrophone",
+        "setSystemAudio",
+        "setCamera"
+      ],
+      "linux": [],
+      "methodRequests": {
+        "start": "start",
+        "setMicrophone": "microphone",
+        "setSystemAudio": "toggle",
+        "setCamera": "toggle"
+      },
+      "requestSchemas": {
+        "start": {
+          "invariants": [
+            "x-y-width-height-all-or-none",
+            "width-height-positive-when-present"
+          ],
+          "fields": [
+            "x",
+            "y",
+            "width",
+            "height",
+            "displayId",
+            "windowId",
+            "includeAudio",
+            "micEnabled",
+            "micDeviceId",
+            "micDeviceName",
+            "cameraEnabled",
+            "cameraDeviceId",
+            "cameraDeviceName",
+            "keyboardEnabled",
+            "frameRate",
+            "outputPath",
+            "iosDeviceId",
+            "iosDeviceName"
+          ],
+          "required": ["outputPath"],
+          "types": {
+            "x": "optional-integer",
+            "y": "optional-integer",
+            "width": "optional-positive-integer",
+            "height": "optional-positive-integer",
+            "displayId": "optional-unsigned-integer",
+            "windowId": "optional-integer",
+            "includeAudio": "optional-boolean",
+            "micEnabled": "optional-boolean",
+            "micDeviceId": "optional-string",
+            "micDeviceName": "optional-string",
+            "cameraEnabled": "optional-boolean",
+            "cameraDeviceId": "optional-string",
+            "cameraDeviceName": "optional-string",
+            "keyboardEnabled": "optional-boolean",
+            "frameRate": "optional-integer-1-through-240",
+            "outputPath": "path",
+            "iosDeviceId": "optional-string",
+            "iosDeviceName": "optional-string"
+          },
+          "defaults": {
+            "includeAudio": true,
+            "micEnabled": false,
+            "cameraEnabled": false,
+            "keyboardEnabled": false,
+            "frameRate": 60
+          }
+        },
+        "microphone": {
+          "fields": ["enabled", "deviceId", "deviceName"],
+          "required": ["enabled"],
+          "types": {
+            "enabled": "boolean",
+            "deviceId": "nullable-string",
+            "deviceName": "nullable-string"
+          }
+        },
+        "toggle": {
+          "fields": ["enabled"],
+          "required": ["enabled"],
+          "types": { "enabled": "boolean" }
+        }
+      }
+    },
+    "scroll-capture": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": [
+        "start",
+        "startAutoScroll",
+        "stopAutoScroll",
+        "finish",
+        "cancel"
+      ],
+      "linux": [],
+      "methodRequests": {
+        "start": "start",
+        "startAutoScroll": "autoScroll",
+        "finish": "finish"
+      },
+      "requestSchemas": {
+        "start": {
+          "captureContext": "displayCaptureContext",
+          "fields": ["autoScrollSpeed", "maxHeight", "nativeControls"],
+          "required": [],
+          "types": {
+            "autoScrollSpeed": "slow-or-medium-or-fast",
+            "maxHeight": "integer-clamped-min-1",
+            "nativeControls": "optional-boolean"
+          },
+          "defaults": {
+            "autoScrollSpeed": "medium",
+            "maxHeight": 20000
+          },
+          "platformDefaults": {
+            "macos": { "nativeControls": false },
+            "windows": { "nativeControls": true },
+            "linux": { "nativeControls": false }
+          }
+        },
+        "autoScroll": {
+          "fields": ["speed"],
+          "required": [],
+          "types": { "speed": "optional-slow-or-medium-or-fast" }
+        },
+        "finish": {
+          "fields": ["outputPath"],
+          "required": ["outputPath"],
+          "types": { "outputPath": "path" }
+        }
+      },
+      "events": {
+        "shared": ["scroll-capture:done", "scroll-capture:cancelled"],
+        "macos": [
+          "scroll-capture:started",
+          "scroll-capture:frame",
+          "scroll-capture:auto-scroll",
+          "scroll-capture:cursor",
+          "scroll-capture:scroll-ended"
+        ],
+        "windows": [
+          "scroll-capture:frame-captured",
+          "scroll-capture:scroll-ended"
+        ],
+        "linux": [
+          "scroll-capture:frame-captured",
+          "scroll-capture:scroll-ended"
+        ]
+      },
+      "errors": [
+        "INVALID_PARAMS",
+        "ALREADY_CAPTURING",
+        "NOT_CAPTURING",
+        "UNSUPPORTED_SESSION",
+        "CAPTURE_FAILED",
+        "SCROLL_ENDED",
+        "NO_OVERLAP",
+        "STITCH_ERROR",
+        "UI_ERROR",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "timer-control": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": ["show", "hide"],
+      "linux": [],
+      "showRequest": {
+        "fields": ["x", "y", "duration", "color", "foregroundColor"],
+        "required": ["x", "y", "duration", "color", "foregroundColor"],
+        "types": {
+          "x": "integer",
+          "y": "integer",
+          "duration": "integer-clamped-min-1",
+          "color": "string",
+          "foregroundColor": "string"
+        },
+        "coordinateSpace": "platform-screen",
+        "colors": "six-digit-hex"
+      },
+      "events": ["timer-control:completed", "timer-control:cancel"],
+      "errors": ["INVALID_PARAMS", "UI_ERROR"]
+    },
+    "window-selector": {
+      "platforms": ["macos", "windows", "linux"],
+      "shared": ["list"],
+      "linux": []
+    }
+  }
+}

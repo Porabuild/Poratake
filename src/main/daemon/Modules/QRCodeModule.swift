@@ -3,14 +3,17 @@ import Foundation
 import ImageIO
 
 class QRCodeModule: Module {
-    let name = "qrcode"
+    let name = DaemonContract.QRCode.module
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "detect":
-            handleDetect(params: params, requestId: requestId)
-        default:
+        guard let method = DaemonContract.QRCode.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .detect:
+            handleDetect(params: params, requestId: requestId)
         }
     }
     

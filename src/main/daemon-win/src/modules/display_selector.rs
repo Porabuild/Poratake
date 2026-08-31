@@ -5,6 +5,7 @@ use crate::overlay::{
 use crate::protocol::{Request, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
+use poratake_daemon_common::contract::{DISPLAY_SELECTOR_MODULE, DisplaySelectorMethod};
 use serde_json::json;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -262,12 +263,12 @@ impl DisplaySelectorModule {
 
 impl Module for DisplaySelectorModule {
     fn name(&self) -> &'static str {
-        "display-selector"
+        DISPLAY_SELECTOR_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "select" => {
+        match DisplaySelectorMethod::parse(&request.method) {
+            Some(DisplaySelectorMethod::Select) => {
                 {
                     let Ok(mut pending) = self.pending.lock() else {
                         respond_error(&request.id, "INTERNAL_ERROR", "Selector state poisoned");
@@ -289,14 +290,14 @@ impl Module for DisplaySelectorModule {
 
                 Reply::Deferred
             }
-            "cancel" => {
+            Some(DisplaySelectorMethod::Cancel) => {
                 if let Ok(mut pending) = self.pending.lock() {
                     pending.take();
                 }
                 run_on_ui(teardown);
                 Reply::Now(Ok(Some(json!({ "cancelled": true }))))
             }
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }

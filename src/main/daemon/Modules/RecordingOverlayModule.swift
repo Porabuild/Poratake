@@ -2,7 +2,7 @@ import Cocoa
 import Foundation
 
 class RecordingOverlayModule: Module {
-    let name = "recording-overlay"
+    let name = DaemonContract.RecordingOverlay.module
     private var windows: [RecordingOverlayWindow] = []
     private var overlayViews: [NSScreen: RecordingOverlayView] = [:]
     private var highlightWindow: RecordingOverlayWindow?
@@ -18,15 +18,18 @@ class RecordingOverlayModule: Module {
     )
 
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "show":
-            handleShow(params: params, requestId: requestId)
-        case "showWindow":
-            handleShowWindow(params: params, requestId: requestId)
-        case "hide":
-            handleHide(requestId: requestId)
-        default:
+        guard let method = DaemonContract.RecordingOverlay.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .show:
+            handleShow(params: params, requestId: requestId)
+        case .showWindow:
+            handleShowWindow(params: params, requestId: requestId)
+        case .hide:
+            handleHide(requestId: requestId)
         }
     }
 

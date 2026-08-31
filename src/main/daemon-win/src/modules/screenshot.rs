@@ -1,10 +1,10 @@
 use crate::desktop_frame::{
     DesktopFrame, apply_alpha_mask, capture_rect, capture_window, frozen_rect, write_image,
 };
-use crate::protocol::{
-    Request, param_bool, param_i32, param_i64, param_str, respond_error, respond_success,
-};
+use crate::protocol::{Request, params, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
+use poratake_daemon_common::contract::{SCREENSHOT_MODULE, ScreenshotMethod};
+use poratake_daemon_common::geometry::{CaptureAreaRequest, CaptureRect, CaptureWindowRequest};
 use serde_json::json;
 use std::ffi::c_void;
 use windows::Win32::Foundation::{HWND, RECT};
@@ -14,32 +14,37 @@ pub struct ScreenshotModule;
 
 impl Module for ScreenshotModule {
     fn name(&self) -> &'static str {
-        "screenshot"
+        SCREENSHOT_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "capture-area" => capture_area(request),
-            "capture-window" => capture_target_window(request),
-            method => method_not_found(method),
+        match ScreenshotMethod::parse(&request.method) {
+            Some(ScreenshotMethod::CaptureArea) => capture_area(request),
+            Some(ScreenshotMethod::CaptureWindow) => capture_target_window(request),
+            None => method_not_found(&request.method),
         }
     }
 }
 
 fn capture_area(request: &Request) -> Reply {
-    let Some(path) = param_str(&request.params, "path").map(str::to_string) else {
-        return missing_path();
+    let request_id = request.id.clone();
+    let wire: CaptureAreaRequest = match params(request) {
+        Ok(wire) => wire,
+        Err(error) => return Reply::Now(Err(error)),
     };
-    let Some(bounds) = area_bounds(request) else {
+    if wire.path.as_os_str().is_empty() {
+        return missing_path();
+    }
+    let Some(bounds) = area_bounds(wire.capture.rect) else {
         return Reply::Now(Err((
             "INVALID_PARAMS".to_string(),
             "A capture area with a positive width and height is required".to_string(),
         )));
     };
 
-    let cached = param_bool(&request.params, "cached").unwrap_or(false);
-    let window_id = param_i64(&request.params, "windowId");
-    let request_id = request.id.clone();
+    let cached = wire.cached;
+    let window_id = wire.window_id;
+    let path = wire.path.to_string_lossy().into_owned();
 
     crate::trace::trace("capture-area entered cached={cached}");
 
@@ -67,17 +72,17 @@ fn capture_area(request: &Request) -> Reply {
 }
 
 fn capture_target_window(request: &Request) -> Reply {
-    let Some(path) = param_str(&request.params, "path").map(str::to_string) else {
-        return missing_path();
-    };
-    let Some(window_id) = param_i64(&request.params, "windowId") else {
-        return Reply::Now(Err((
-            "INVALID_PARAMS".to_string(),
-            "A window id is required".to_string(),
-        )));
-    };
-
     let request_id = request.id.clone();
+    let wire: CaptureWindowRequest = match params(request) {
+        Ok(wire) => wire,
+        Err(error) => return Reply::Now(Err(error)),
+    };
+    if wire.path.as_os_str().is_empty() {
+        return missing_path();
+    }
+
+    let path = wire.path.to_string_lossy().into_owned();
+    let window_id = wire.window_id;
 
     spawn_capture(request_id, path, move || {
         capture_window(HWND(window_id as isize as *mut c_void))
@@ -132,21 +137,16 @@ fn spawn_capture(
     }
 }
 
-fn area_bounds(request: &Request) -> Option<RECT> {
-    let x = param_i32(&request.params, "x")?;
-    let y = param_i32(&request.params, "y")?;
-    let width = param_i32(&request.params, "width")?;
-    let height = param_i32(&request.params, "height")?;
-
-    if width <= 0 || height <= 0 {
+fn area_bounds(rect: CaptureRect) -> Option<RECT> {
+    if rect.width <= 0 || rect.height <= 0 {
         return None;
     }
 
     Some(RECT {
-        left: x,
-        top: y,
-        right: x + width,
-        bottom: y + height,
+        left: rect.x,
+        top: rect.y,
+        right: rect.x + rect.width,
+        bottom: rect.y + rect.height,
     })
 }
 

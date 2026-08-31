@@ -3,23 +3,26 @@ import Foundation
 import QuartzCore
 
 class FreezeScreenModule: Module {
-    let name = "freeze-screen"
+    let name = DaemonContract.FreezeScreen.module
     private var overlayWindows: [NSWindow] = []
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var retainedSelf: Unmanaged<FreezeScreenModule>?
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
+        guard let method = DaemonContract.FreezeScreen.Method(rawValue: method) else {
+            respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
         switch method {
-        case "freeze":
+        case .freeze:
             let watchSpaceKey = (params?["watchSpaceKey"]?.value as? Bool) ?? false
             handleFreeze(watchSpaceKey: watchSpaceKey, requestId: requestId)
-        case "release":
+        case .release:
             handleRelease(requestId: requestId)
-        case "prewarm":
+        case .prewarm:
             handlePrewarm(requestId: requestId)
-        default:
-            respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
     }
     

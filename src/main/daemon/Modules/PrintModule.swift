@@ -46,14 +46,17 @@ class PrintableImageView: NSView {
 }
 
 class PrintModule: Module {
-    let name = "print"
+    let name = DaemonContract.Print.module
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "image":
-            handlePrintImage(params: params, requestId: requestId)
-        default:
+        guard let method = DaemonContract.Print.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .image:
+            handlePrintImage(params: params, requestId: requestId)
         }
     }
     

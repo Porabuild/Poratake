@@ -4,8 +4,12 @@ use super::recording_audio::{
     select_device,
 };
 use crate::com::retain_process_mta;
-use crate::protocol::{Request, param_str, send_event};
+use crate::protocol::{Request, params, send_event};
 use crate::router::{Module, Reply, method_not_found};
+use poratake_daemon_common::contract::{
+    MEDIA_DEVICES_MODULE, MediaDevice, MediaDeviceKind, MediaDeviceListRequest, MediaDevicesMethod,
+    MicrophoneTestRequest,
+};
 use serde_json::{Value, json};
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -33,12 +37,6 @@ const MIC_LEVEL_EVENT: &str = "media-devices:mic-level";
 const MIC_LEVEL_INTERVAL: Duration = Duration::from_millis(50);
 const MIC_LEVEL_WAIT_MS: u32 = 100;
 const MIC_LEVEL_FLOOR_DB: f32 = 60.0;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MediaDevice {
-    pub id: String,
-    pub label: String,
-}
 
 struct ComApartment;
 
@@ -197,17 +195,21 @@ impl MediaDevicesModule {
 
 impl Module for MediaDevicesModule {
     fn name(&self) -> &'static str {
-        "media-devices"
+        MEDIA_DEVICES_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "list" => {
-                let (wants_microphones, wants_cameras) = list_kinds(request);
+        match MediaDevicesMethod::parse(&request.method) {
+            Some(MediaDevicesMethod::List) => {
+                let request: MediaDeviceListRequest = match params(request) {
+                    Ok(request) => request,
+                    Err(error) => return Reply::Now(Err(error)),
+                };
+                let (wants_microphones, wants_cameras) = list_kinds(&request.kinds);
                 let mut result = serde_json::Map::new();
                 if wants_microphones {
                     let microphones = enumerate_microphones().unwrap_or_default();
-                    result.insert("microphones".to_string(), json!(devices_json(&microphones)));
+                    result.insert("microphones".to_string(), json!(microphones));
                     if let Some(default_microphone_id) = default_microphone_id() {
                         result.insert(
                             "defaultMicrophoneId".to_string(),
@@ -217,7 +219,7 @@ impl Module for MediaDevicesModule {
                 }
                 if wants_cameras {
                     let cameras = enumerate_cameras().unwrap_or_default();
-                    result.insert("cameras".to_string(), json!(devices_json(&cameras)));
+                    result.insert("cameras".to_string(), json!(cameras));
                     if let Some(default_camera_id) = cameras.first().map(|device| device.id.clone())
                     {
                         result.insert("defaultCameraId".to_string(), json!(default_camera_id));
@@ -225,46 +227,33 @@ impl Module for MediaDevicesModule {
                 }
                 Reply::Now(Ok(Some(Value::Object(result))))
             }
-            "startMicTest" => {
-                let device_id = param_str(&request.params, "deviceId").map(str::to_owned);
-                let device_name = param_str(&request.params, "deviceName").map(str::to_owned);
-                match self.start_mic_test(device_id, device_name) {
+            Some(MediaDevicesMethod::StartMicTest) => {
+                let request: MicrophoneTestRequest = match params(request) {
+                    Ok(request) => request,
+                    Err(error) => return Reply::Now(Err(error)),
+                };
+                match self.start_mic_test(request.device_id, request.device_name) {
                     Ok(()) => Reply::Now(Ok(Some(json!({ "running": true })))),
                     Err(message) => Reply::Now(Err(("MIC_TEST_ERROR".to_string(), message))),
                 }
             }
-            "stopMicTest" => {
+            Some(MediaDevicesMethod::StopMicTest) => {
                 self.stop_mic_test();
                 Reply::Now(Ok(Some(json!({ "running": false }))))
             }
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }
 
-fn devices_json(devices: &[MediaDevice]) -> Vec<serde_json::Value> {
-    devices
-        .iter()
-        .map(|device| json!({ "id": device.id, "label": device.label }))
-        .collect()
-}
-
-fn list_kinds(request: &Request) -> (bool, bool) {
-    let Some(values) = request
-        .params
-        .as_ref()
-        .and_then(|params| params.get("kinds"))
-        .and_then(|value| value.as_array())
-    else {
-        return (true, true);
-    };
-
-    let names: Vec<&str> = values.iter().filter_map(|value| value.as_str()).collect();
-    if names.is_empty() {
+fn list_kinds(kinds: &[MediaDeviceKind]) -> (bool, bool) {
+    if kinds.is_empty() {
         return (true, true);
     }
-
-    (names.contains(&"microphone"), names.contains(&"camera"))
+    (
+        kinds.contains(&MediaDeviceKind::Microphone),
+        kinds.contains(&MediaDeviceKind::Camera),
+    )
 }
 
 fn default_microphone_id() -> Option<String> {
@@ -480,5 +469,21 @@ impl LevelWindow {
         self.sum = 0.0;
         self.count = 0;
         self.last_emit = Instant::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_device_kinds_request_both_lists() {
+        assert_eq!(list_kinds(&[]), (true, true));
+    }
+
+    #[test]
+    fn device_kinds_request_only_selected_lists() {
+        assert_eq!(list_kinds(&[MediaDeviceKind::Microphone]), (true, false));
+        assert_eq!(list_kinds(&[MediaDeviceKind::Camera]), (false, true));
     }
 }

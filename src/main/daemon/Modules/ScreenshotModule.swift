@@ -4,16 +4,19 @@ import ImageIO
 import UniformTypeIdentifiers
 
 class ScreenshotModule: Module {
-    let name = "screenshot"
+    let name = DaemonContract.Screenshot.module
 
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "capture-area":
-            handleCaptureArea(params: params, requestId: requestId)
-        case "capture-window":
-            handleCaptureWindow(params: params, requestId: requestId)
-        default:
+        guard let method = DaemonContract.Screenshot.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .captureArea:
+            handleCaptureArea(params: params, requestId: requestId)
+        case .captureWindow:
+            handleCaptureWindow(params: params, requestId: requestId)
         }
     }
 

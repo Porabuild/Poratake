@@ -1,7 +1,11 @@
 use crate::com::retain_process_mta;
-use crate::protocol::{Request, require_existing_path, respond_error, respond_success};
+use crate::protocol::Request;
 use crate::router::{Module, Reply, method_not_found};
-use serde_json::json;
+use poratake_daemon_common::contract::{QRCODE_MODULE, QrCodeMethod};
+use poratake_daemon_common::qrcode::{
+    QrDetectionGate, detect_payload_from_greyscale, image_buffer_size as qr_image_buffer_size,
+    request_path, spawn_detection,
+};
 use std::ptr::null;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat8bppGray, IWICImagingFactory, IWICPalette,
@@ -12,79 +16,47 @@ use windows::Win32::System::Com::{
 };
 use windows::core::PCWSTR;
 
-pub struct QrCodeModule;
+pub struct QrCodeModule {
+    gate: QrDetectionGate,
+}
 
-const MAX_QR_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
+impl QrCodeModule {
+    pub fn new() -> Self {
+        Self {
+            gate: QrDetectionGate::default(),
+        }
+    }
+}
 
 impl Module for QrCodeModule {
     fn name(&self) -> &'static str {
-        "qrcode"
+        QRCODE_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "detect" => self.detect(request),
-            method => method_not_found(method),
+        match QrCodeMethod::parse(&request.method) {
+            Some(QrCodeMethod::Detect) => self.detect(request),
+            None => method_not_found(&request.method),
         }
     }
 }
 
 impl QrCodeModule {
     fn detect(&self, request: &Request) -> Reply {
-        let image_path = match require_existing_path(&request.params, "imagePath") {
+        let image_path = match request_path(request) {
             Ok(path) => path,
             Err(error) => return Reply::Now(Err(error)),
         };
-
-        let request_id = request.id.clone();
-        let image_path = image_path.to_string();
-        let worker = std::thread::Builder::new()
-            .name("qr-detection".to_string())
-            .spawn(move || match detect_qr_code(&image_path) {
-                Ok(payload) => respond_success(&request_id, json!({ "payload": payload })),
-                Err(error) => respond_error(
-                    &request_id,
-                    "QR_DETECTION_FAILED",
-                    &format!("QR code detection failed: {error}"),
-                ),
-            });
-
-        match worker {
-            Ok(_) => Reply::Deferred,
-            Err(error) => Reply::Now(Err((
-                "QR_DETECTION_FAILED".to_string(),
-                format!("Failed to start QR code detection: {error}"),
-            ))),
-        }
+        spawn_detection(&self.gate, request.id.clone(), image_path, detect_qr_code)
     }
 }
 
-fn detect_qr_code(image_path: &str) -> Result<String, String> {
+fn detect_qr_code(image_path: &std::path::Path) -> Result<String, String> {
     let (pixels, width, height) = load_greyscale(image_path)?;
     Ok(detect_payload_from_greyscale(&pixels, width, height))
 }
 
-pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize) -> String {
-    if width == 0 || height == 0 || pixels.len() < width.saturating_mul(height) {
-        return String::new();
-    }
-
-    let mut image =
-        rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| pixels[y * width + x]);
-    let grids = image.detect_grids();
-
-    for grid in grids {
-        if let Ok((_meta, content)) = grid.decode()
-            && !content.is_empty()
-        {
-            return content;
-        }
-    }
-
-    String::new()
-}
-
-fn load_greyscale(image_path: &str) -> Result<(Vec<u8>, usize, usize), String> {
+fn load_greyscale(image_path: &std::path::Path) -> Result<(Vec<u8>, usize, usize), String> {
     let _apartment = QrApartment::initialize()?;
 
     load_greyscale_inner(image_path)
@@ -111,13 +83,14 @@ impl Drop for QrApartment {
     }
 }
 
-fn load_greyscale_inner(image_path: &str) -> Result<(Vec<u8>, usize, usize), String> {
+fn load_greyscale_inner(image_path: &std::path::Path) -> Result<(Vec<u8>, usize, usize), String> {
     let factory: IWICImagingFactory = unsafe {
         CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
             .map_err(|_| "Failed to create WIC factory".to_string())?
     };
 
     let wide_path: Vec<u16> = image_path
+        .to_string_lossy()
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
@@ -185,18 +158,10 @@ fn load_greyscale_inner(image_path: &str) -> Result<(Vec<u8>, usize, usize), Str
     Ok((pixels, width as usize, height as usize))
 }
 
-fn qr_image_buffer_size(width: u32, height: u32) -> Result<usize, String> {
-    let pixel_count = u64::from(width) * u64::from(height);
-    if pixel_count > MAX_QR_IMAGE_PIXELS {
-        return Err("Image dimensions exceed the QR detection limit".to_string());
-    }
-
-    usize::try_from(pixel_count).map_err(|_| "Failed to decode image data".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
@@ -233,20 +198,20 @@ mod tests {
         assert_eq!(qr_image_buffer_size(8192, 8192), Ok(64 * 1024 * 1024));
         assert_eq!(
             qr_image_buffer_size(8193, 8192),
-            Err("Image dimensions exceed the QR detection limit".to_string())
+            Err("Image dimensions exceed the QR detection limit")
         );
     }
 
     #[test]
     fn detect_rejects_missing_image_path() {
-        let module = QrCodeModule;
+        let mut module = QrCodeModule::new();
         let request = Request {
             id: "missing-path".to_string(),
             module: "qrcode".to_string(),
             method: "detect".to_string(),
             params: None,
         };
-        let Reply::Now(result) = module.detect(&request) else {
+        let Reply::Now(result) = module.handle(&request) else {
             panic!("missing path should respond immediately");
         };
         let err = result.expect_err("missing path");
@@ -255,7 +220,7 @@ mod tests {
 
     #[test]
     fn detect_rejects_missing_file() {
-        let module = QrCodeModule;
+        let mut module = QrCodeModule::new();
         let mut params = HashMap::new();
         params.insert(
             "imagePath".to_string(),
@@ -267,7 +232,7 @@ mod tests {
             method: "detect".to_string(),
             params: Some(params),
         };
-        let Reply::Now(result) = module.detect(&request) else {
+        let Reply::Now(result) = module.handle(&request) else {
             panic!("missing file should respond immediately");
         };
         let err = result.expect_err("missing file should error");
@@ -276,10 +241,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unknown_methods() {
+        let mut module = QrCodeModule::new();
+        let request = Request {
+            id: "unknown".into(),
+            module: QRCODE_MODULE.into(),
+            method: "unknown".into(),
+            params: None,
+        };
+        let Reply::Now(result) = module.handle(&request) else {
+            panic!("unknown method should respond immediately");
+        };
+        assert_eq!(result.expect_err("unknown method").0, "METHOD_NOT_FOUND");
+    }
+
+    #[test]
     fn detect_returns_empty_payload_for_non_qr_image_bytes() {
         let path = std::env::temp_dir().join("poratake-qrcode-blank.png");
         write_minimal_png(&path, 32, 32, 255);
-        let payload = detect_qr_code(&path.to_string_lossy()).expect("decode image");
+        let payload = detect_qr_code(&path).expect("decode image");
         assert_eq!(payload, "");
         let _ = std::fs::remove_file(path);
     }
@@ -288,7 +268,7 @@ mod tests {
     fn detect_reports_invalid_image_data() {
         let path = std::env::temp_dir().join("poratake-qrcode-invalid.png");
         std::fs::write(&path, b"invalid image").expect("write invalid image");
-        let result = detect_qr_code(&path.to_string_lossy());
+        let result = detect_qr_code(&path);
         assert!(result.is_err());
         let _ = std::fs::remove_file(path);
     }

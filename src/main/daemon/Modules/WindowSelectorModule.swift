@@ -2,11 +2,16 @@ import Cocoa
 import Foundation
 
 class WindowSelectorModule: Module {
-    let name = "window-selector"
+    let name = DaemonContract.WindowSelector.module
 
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
+        guard let method = DaemonContract.WindowSelector.Method(rawValue: method) else {
+            respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
         switch method {
-        case "list":
+        case .list:
             let windows = collectVisibleWindows().map { info -> [String: Any] in
                 [
                     "windowId": info.windowId,
@@ -22,8 +27,6 @@ class WindowSelectorModule: Module {
                 ]
             }
             respond(id: requestId, result: ["windows": windows])
-        default:
-            respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
         }
     }
 }

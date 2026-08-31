@@ -4,9 +4,13 @@ use crate::overlay::{
     create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class,
     monitors, scale_for_dpi,
 };
-use crate::protocol::{Request, param_bool, param_i32, param_str, respond_error, respond_success};
+use crate::protocol::{Request, params, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
+use poratake_daemon_common::contract::{
+    CAMERA_PREVIEW_MODULE, CameraPreviewMethod, CameraPreviewRequest, CameraPreviewUpdateRequest,
+    ContentProtectionRequest, UpdateField,
+};
 use serde_json::json;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -988,25 +992,26 @@ impl CameraPreviewModule {
 
 impl Module for CameraPreviewModule {
     fn name(&self) -> &'static str {
-        "camera-preview"
+        CAMERA_PREVIEW_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "show" => {
+        match CameraPreviewMethod::parse(&request.method) {
+            Some(CameraPreviewMethod::Show) => {
+                let request_params: CameraPreviewRequest = match params(request) {
+                    Ok(params) => params,
+                    Err(error) => return Reply::Now(Err(error)),
+                };
                 let previous = self.config.clone();
-                self.config.device_id = param_str(&request.params, "deviceId").map(str::to_string);
-                self.config.device_name =
-                    param_str(&request.params, "deviceName").map(str::to_string);
-                self.config.resolution = param_str(&request.params, "resolution")
-                    .unwrap_or("720p")
-                    .to_string();
-                self.config.flipped = param_bool(&request.params, "flipped").unwrap_or(false);
+                self.config.device_id = request_params.device_id;
+                self.config.device_name = request_params.device_name;
+                self.config.resolution = request_params.resolution.unwrap_or_else(|| "720p".into());
+                self.config.flipped = request_params.flipped.unwrap_or(false);
                 let changed = previous.device_id != self.config.device_id
                     || previous.device_name != self.config.device_name
                     || previous.resolution != self.config.resolution;
-                let x = param_i32(&request.params, "x");
-                let y = param_i32(&request.params, "y");
+                let x = request_params.x;
+                let y = request_params.y;
                 let request_id = request.id.clone();
                 let config = self.config.clone();
                 let runtime = self.runtime.clone();
@@ -1108,7 +1113,7 @@ impl Module for CameraPreviewModule {
                 });
                 Reply::Deferred
             }
-            "hide" => {
+            Some(CameraPreviewMethod::Hide) => {
                 let generation = self.runtime.advance_generation();
                 let request_id = request.id.clone();
                 let runtime = self.runtime.clone();
@@ -1152,35 +1157,29 @@ impl Module for CameraPreviewModule {
                 });
                 Reply::Deferred
             }
-            "update" => {
+            Some(CameraPreviewMethod::Update) => {
+                let request_params: CameraPreviewUpdateRequest = match params(request) {
+                    Ok(params) => params,
+                    Err(error) => return Reply::Now(Err(error)),
+                };
                 let mut changed = false;
-                if let Some(device_id) = request
-                    .params
-                    .as_ref()
-                    .and_then(|params| params.get("deviceId"))
-                {
-                    let value = device_id.as_str().map(str::to_string);
+                if let UpdateField::Value(value) = request_params.device_id {
                     changed |= value != self.config.device_id;
                     self.config.device_id = value;
                 }
-                if let Some(device_name) = request
-                    .params
-                    .as_ref()
-                    .and_then(|params| params.get("deviceName"))
-                {
-                    let value = device_name.as_str().map(str::to_string);
+                if let UpdateField::Value(value) = request_params.device_name {
                     changed |= value != self.config.device_name;
                     self.config.device_name = value;
                 }
-                if let Some(resolution) = param_str(&request.params, "resolution") {
+                if let Some(resolution) = request_params.resolution {
                     changed |= resolution != self.config.resolution;
-                    self.config.resolution = resolution.to_string();
+                    self.config.resolution = resolution;
                 }
-                if let Some(flipped) = param_bool(&request.params, "flipped") {
+                if let Some(flipped) = request_params.flipped {
                     self.config.flipped = flipped;
                 }
-                let x = param_i32(&request.params, "x");
-                let y = param_i32(&request.params, "y");
+                let x = request_params.x;
+                let y = request_params.y;
                 let config = self.config.clone();
                 let runtime = self.runtime.clone();
                 let generation = if changed {
@@ -1242,9 +1241,12 @@ impl Module for CameraPreviewModule {
                 });
                 Reply::Now(Ok(Some(json!({ "updated": true }))))
             }
-            "setContentProtection" => {
-                self.config.content_protected =
-                    param_bool(&request.params, "enabled").unwrap_or(false);
+            Some(CameraPreviewMethod::SetContentProtection) => {
+                let content_protection: ContentProtectionRequest = match params(request) {
+                    Ok(params) => params,
+                    Err(error) => return Reply::Now(Err(error)),
+                };
+                self.config.content_protected = content_protection.enabled;
                 let enabled = self.config.content_protected;
                 let request_id = request.id.clone();
                 run_on_ui(move || {
@@ -1263,7 +1265,7 @@ impl Module for CameraPreviewModule {
                 });
                 Reply::Deferred
             }
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }

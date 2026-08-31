@@ -8,6 +8,11 @@ $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Pa
 $hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
 $arch = if ($env:PORATAKE_WIN_ARCH) { $env:PORATAKE_WIN_ARCH } else { $hostArch }
 
+& bun (Join-Path $projectRoot 'scripts\generate-daemon-contract.mjs') --check
+if ($LASTEXITCODE -ne 0) {
+    throw 'Generated daemon contract is stale'
+}
+
 if ($arch -ne 'x64' -and $arch -ne 'arm64') {
     throw "Unsupported PORATAKE_WIN_ARCH: $arch"
 }

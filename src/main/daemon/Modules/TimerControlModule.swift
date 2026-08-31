@@ -2,7 +2,7 @@ import Cocoa
 import Foundation
 
 class TimerControlModule: Module {
-    let name = "timer-control"
+    let name = DaemonContract.TimerControl.module
     
     private var panel: FloatingPanel?
     private var timerButton: TimerButton?
@@ -10,28 +10,31 @@ class TimerControlModule: Module {
     private var remainingSeconds: Int = 5
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "show":
-            handleShow(params: params, requestId: requestId)
-        case "hide":
-            handleHide(requestId: requestId)
-        default:
+        guard let method = DaemonContract.TimerControl.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .show:
+            handleShow(params: params, requestId: requestId)
+        case .hide:
+            handleHide(requestId: requestId)
         }
     }
     
     private func handleShow(params: [String: AnyCodable]?, requestId: String) {
-        let x = params?["x"]?.int() ?? 100
-        let y = params?["y"]?.int() ?? 100
-        let duration = params?["duration"]?.int() ?? 5
-        guard let accentColor = themeColor(params?["color"]?.string()),
+        guard let x = params?["x"]?.int(),
+              let y = params?["y"]?.int(),
+              let duration = params?["duration"]?.int(),
+              let accentColor = themeColor(params?["color"]?.string()),
               let foregroundColor = themeColor(params?["foregroundColor"]?.string())
         else {
-            respondError(id: requestId, code: "INVALID_PARAMS", message: "show requires theme colors")
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "show requires position, duration, and theme colors")
             return
         }
         
-        remainingSeconds = duration
+        remainingSeconds = max(duration, 1)
         
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -72,8 +75,8 @@ class TimerControlModule: Module {
             return
         }
         
-        let width: CGFloat = 120
-        let height: CGFloat = 44
+        let width: CGFloat = 140
+        let height: CGFloat = 52
         
         let mainScreenHeight = NSScreen.main?.frame.height ?? 0
         let cocoaY = mainScreenHeight - CGFloat(y) - height
@@ -118,6 +121,7 @@ class TimerControlModule: Module {
     }
     
     private func startCountdown() {
+        stopCountdown()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
 

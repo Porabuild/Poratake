@@ -6,10 +6,12 @@ license = "AGPL-3.0-only"
 rust-version.workspace = true
 
 [dependencies]
+poratake-daemon-common = { path = "../daemon-common", features = [
+  "qrcode-decode",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
-rqrr = { version = "0.10.1", default-features = false }
 windows-core = "0.62"
 
 [dependencies.windows]

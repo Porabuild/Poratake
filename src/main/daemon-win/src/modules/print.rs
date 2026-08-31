@@ -1,11 +1,13 @@
 use crate::com::retain_process_mta;
 use crate::overlay::bitmap_info;
-use crate::protocol::{Request, param_str, respond_error, respond_success};
+use crate::protocol::{Request, params, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use base64::engine::general_purpose::STANDARD;
 use base64::{Engine, decoded_len_estimate};
+use poratake_daemon_common::contract::{
+    PNG_SIGNATURE, PRINT_MODULE, PrintImageRequest, PrintMethod,
+};
 use serde_json::json;
-use std::collections::HashMap;
 use std::mem::size_of;
 use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +33,6 @@ use windows::Win32::UI::Controls::Dialogs::{
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::core::PCWSTR;
 
-const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const DEFAULT_IMAGE_DPI: f64 = 96.0;
 const MIN_IMAGE_DPI: f64 = 1.0;
 const MAX_IMAGE_DPI: f64 = 1200.0;
@@ -58,31 +59,31 @@ pub struct PrintModule;
 
 impl Module for PrintModule {
     fn name(&self) -> &'static str {
-        "print"
+        PRINT_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "image" => self.print_image(&request.params, &request.id),
-            method => method_not_found(method),
+        match PrintMethod::parse(&request.method) {
+            Some(PrintMethod::Image) => self.print_image(request),
+            None => method_not_found(&request.method),
         }
     }
 }
 
 impl PrintModule {
-    fn print_image(&self, params: &Option<HashMap<String, serde_json::Value>>, id: &str) -> Reply {
-        let Some(image_base64) = param_str(params, "imageBase64") else {
-            return Reply::Now(Err((
-                "INVALID_PARAMS".to_string(),
-                "Missing imageBase64 parameter".to_string(),
-            )));
+    fn print_image(&self, request: &Request) -> Reply {
+        let params: PrintImageRequest = match params(request) {
+            Ok(params) => params,
+            Err(error) => return Reply::Now(Err(error)),
         };
 
         let mut image_data = Vec::new();
         if image_data
-            .try_reserve_exact(decoded_len_estimate(image_base64.len()))
+            .try_reserve_exact(decoded_len_estimate(params.image_base64.len()))
             .is_err()
-            || STANDARD.decode_vec(image_base64, &mut image_data).is_err()
+            || STANDARD
+                .decode_vec(params.image_base64, &mut image_data)
+                .is_err()
         {
             return Reply::Now(Err((
                 "INVALID_IMAGE".to_string(),
@@ -103,7 +104,7 @@ impl PrintModule {
                 "Another print dialog is already open".to_string(),
             )));
         };
-        let request_id = id.to_string();
+        let request_id = request.id.clone();
         let worker = std::thread::Builder::new()
             .name("poratake-print".to_string())
             .spawn(move || {

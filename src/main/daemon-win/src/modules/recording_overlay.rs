@@ -4,9 +4,13 @@ use crate::overlay::{
     rect_height, rect_width, scale_for_dpi,
 };
 use crate::panel::parse_color;
-use crate::protocol::{Request, param_i32, param_i64, param_str, respond_error, respond_success};
+use crate::protocol::{Request, params as parse_params, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
+use poratake_daemon_common::contract::{
+    RECORDING_OVERLAY_MODULE, RecordingOverlayMethod, RecordingOverlayShowWindowRequest,
+};
+use poratake_daemon_common::geometry::CaptureRect;
 use serde_json::json;
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -287,34 +291,20 @@ impl RecordingOverlayModule {
 
 impl Module for RecordingOverlayModule {
     fn name(&self) -> &'static str {
-        "recording-overlay"
+        RECORDING_OVERLAY_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "show" => {
-                if param_i32(&request.params, "x").is_none()
-                    || param_i32(&request.params, "y").is_none()
-                {
-                    return Reply::Now(Err((
-                        "INVALID_PARAMS".to_string(),
-                        "show requires x, y, width, height".to_string(),
-                    )));
-                }
-                let Some(width) = param_i32(&request.params, "width") else {
-                    return Reply::Now(Err((
-                        "INVALID_PARAMS".to_string(),
-                        "show requires x, y, width, height".to_string(),
-                    )));
-                };
-                let Some(height) = param_i32(&request.params, "height") else {
+        match RecordingOverlayMethod::parse(&request.method) {
+            Some(RecordingOverlayMethod::Show) => {
+                let Ok(rect): Result<CaptureRect, _> = parse_params(request) else {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
                         "show requires x, y, width, height".to_string(),
                     )));
                 };
 
-                if width <= 0 || height <= 0 {
+                if !rect.has_positive_size() {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
                         "show requires positive width and height".to_string(),
@@ -328,22 +318,23 @@ impl Module for RecordingOverlayModule {
                 });
                 Reply::Deferred
             }
-            "showWindow" => {
-                let Some(handle) = param_i64(&request.params, "windowId") else {
+            Some(RecordingOverlayMethod::ShowWindow) => {
+                let Ok(params): Result<RecordingOverlayShowWindowRequest, _> =
+                    parse_params(request)
+                else {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
                         "showWindow requires windowId".to_string(),
                     )));
                 };
 
-                let color =
-                    parse_color(param_str(&request.params, "color")).unwrap_or(HIGHLIGHT_FALLBACK);
-                let insert_after_handle = param_i64(&request.params, "belowWindowId");
+                let color = parse_color(params.color.as_deref()).unwrap_or(HIGHLIGHT_FALLBACK);
                 let request_id = request.id.clone();
                 run_on_ui(move || {
-                    let target = HWND(handle as isize as *mut c_void);
-                    let insert_after =
-                        insert_after_handle.map(|handle| HWND(handle as isize as *mut c_void));
+                    let target = HWND(params.window_id as isize as *mut c_void);
+                    let insert_after = params
+                        .below_window_id
+                        .map(|handle| HWND(handle as isize as *mut c_void));
                     match show_window_highlight(target, color, insert_after) {
                         Ok(shown) => {
                             respond_success(&request_id, json!({ "visible": shown }));
@@ -366,7 +357,7 @@ impl Module for RecordingOverlayModule {
                 });
                 Reply::Deferred
             }
-            "hide" => {
+            Some(RecordingOverlayMethod::Hide) => {
                 let request_id = request.id.clone();
                 run_on_ui(move || {
                     teardown();
@@ -374,7 +365,7 @@ impl Module for RecordingOverlayModule {
                 });
                 Reply::Deferred
             }
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }
