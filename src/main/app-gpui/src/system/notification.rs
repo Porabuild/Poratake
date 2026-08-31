@@ -15,7 +15,7 @@ use block2::RcBlock;
 #[cfg(target_os = "macos")]
 use objc2::runtime::Bool;
 #[cfg(target_os = "macos")]
-use objc2_foundation::{NSError, NSString};
+use objc2_foundation::{NSBundle, NSError, NSString};
 #[cfg(target_os = "macos")]
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
@@ -90,6 +90,12 @@ fn show_linux_notification(title: &str, body: &str) -> Result<(), dbus::Error> {
 
 #[cfg(target_os = "macos")]
 fn show_macos_notification(title: &str, body: &str) {
+    // `currentNotificationCenter` throws an Objective-C exception when the
+    // process has no bundle identifier (a bare binary, as in `cargo test`),
+    // and Rust cannot catch Objective-C exceptions — the process aborts.
+    if NSBundle::mainBundle().bundleIdentifier().is_none() {
+        return;
+    }
     let center = UNUserNotificationCenter::currentNotificationCenter();
     let title = title.to_owned();
     let body = body.to_owned();
@@ -189,6 +195,12 @@ mod tests {
     use super::escape;
     #[cfg(windows)]
     use super::toast_xml;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn show_does_not_abort_without_a_bundle_identifier() {
+        super::show("title", "body");
+    }
 
     #[test]
     fn escape_handles_the_xml_metacharacters() {

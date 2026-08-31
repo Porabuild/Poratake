@@ -16,6 +16,7 @@ const CANDIDATES: &[(&str, &[&str])] = &[
             r"C:\Windows\Fonts\segoeui.ttf",
             r"C:\Windows\Fonts\arial.ttf",
             "/System/Library/Fonts/SFNS.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
             "/System/Library/Fonts/Helvetica.ttc",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ],
@@ -61,6 +62,12 @@ fn fonts() -> &'static Vec<Loaded> {
                 paths.iter().find_map(|path| {
                     let bytes = std::fs::read(path).ok()?;
                     let font = Font::from_bytes(bytes, FontSettings::default()).ok()?;
+                    // SFNS.ttf parses but carries CFF2 outlines fontdue cannot
+                    // rasterize, yielding empty bitmaps; probe before accepting.
+                    let (_, bitmap) = font.rasterize('A', 32.0);
+                    if !bitmap.iter().any(|coverage| *coverage > 0) {
+                        return None;
+                    }
                     Some(Loaded { family, font })
                 })
             })
