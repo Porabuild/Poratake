@@ -277,9 +277,9 @@ struct KeyHandlerEntry {
 }
 
 thread_local! {
-    static KEY_HANDLERS: RefCell<Vec<KeyHandlerEntry>> = RefCell::new(Vec::new());
-    static KEYBOARD_HOOK: RefCell<Option<HHOOK>> = RefCell::new(None);
-    static NEXT_TOKEN: RefCell<usize> = RefCell::new(1);
+    static KEY_HANDLERS: RefCell<Vec<KeyHandlerEntry>> = const { RefCell::new(Vec::new()) };
+    static KEYBOARD_HOOK: RefCell<Option<HHOOK>> = const { RefCell::new(None) };
+    static NEXT_TOKEN: RefCell<usize> = const { RefCell::new(1) };
 }
 
 unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

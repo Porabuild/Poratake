@@ -1,5 +1,6 @@
 use crate::protocol::Request;
 use crate::router::{Module, Reply, method_not_found};
+use poratake_daemon_common::contract::{RECORDING_CONTROL_MODULE, RecordingControlMethod};
 use serde_json::json;
 
 pub struct RecordingControlModule;
@@ -12,13 +13,15 @@ impl RecordingControlModule {
 
 impl Module for RecordingControlModule {
     fn name(&self) -> &'static str {
-        "recording-control"
+        RECORDING_CONTROL_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "listIOSDevices" => Reply::Now(Ok(Some(json!({ "devices": [] })))),
-            method => method_not_found(method),
+        match RecordingControlMethod::parse(&request.method) {
+            Some(RecordingControlMethod::ListIosDevices) => {
+                Reply::Now(Ok(Some(json!({ "devices": [] }))))
+            }
+            None => method_not_found(&request.method),
         }
     }
 }

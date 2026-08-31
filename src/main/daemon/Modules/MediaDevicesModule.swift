@@ -2,21 +2,24 @@ import AVFoundation
 import Foundation
 
 class MediaDevicesModule: Module {
-    let name = "media-devices"
+    let name = DaemonContract.MediaDevices.module
 
     private let audioLevelMonitor = AudioLevelMonitor()
     private var lastLevelEmit = Date.distantPast
 
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "list":
-            handleList(params: params, requestId: requestId)
-        case "startMicTest":
-            handleStartMicTest(params: params, requestId: requestId)
-        case "stopMicTest":
-            handleStopMicTest(requestId: requestId)
-        default:
+        guard let method = DaemonContract.MediaDevices.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .list:
+            handleList(params: params, requestId: requestId)
+        case .startMicTest:
+            handleStartMicTest(params: params, requestId: requestId)
+        case .stopMicTest:
+            handleStopMicTest(requestId: requestId)
         }
     }
 

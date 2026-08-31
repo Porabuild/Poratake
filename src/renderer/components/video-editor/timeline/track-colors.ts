@@ -9,27 +9,30 @@ export const TRACK_COLORS: Record<string, TrackColors> = {
   orange: {
     border: 'border-amber-600',
     gradient: ['#d97706', '#b45309'],
-    selectedGradient: ['#3b82f6', '#1d4ed8'],
+    selectedGradient: ['var(--primary)', 'var(--accent-hover)'],
     cutMarker: 'bg-amber-500',
   },
   indigo: {
     border: 'border-indigo-600',
     gradient: ['#818cf8', '#4f46e5'],
-    selectedGradient: ['#3b82f6', '#1d4ed8'],
+    selectedGradient: ['var(--primary)', 'var(--accent-hover)'],
   },
   purple: {
     border: 'border-purple-600',
     gradient: ['#c084fc', '#7e22ce'],
-    selectedGradient: ['#3b82f6', '#1d4ed8'],
+    selectedGradient: ['var(--primary)', 'var(--accent-hover)'],
   },
   pink: {
     border: 'border-pink-600',
     gradient: ['#f472b6', '#be185d'],
-    selectedGradient: ['#3b82f6', '#1d4ed8'],
+    selectedGradient: ['var(--primary)', 'var(--accent-hover)'],
   },
 };
 
-const SELECTED_GRADIENT: [string, string] = ['#3b82f6', '#1d4ed8'];
+const SELECTED_GRADIENT: [string, string] = [
+  'var(--primary)',
+  'var(--accent-hover)',
+];
 
 export const DRAWING_TRACK_COLORS: Record<string, TrackColors> = {
   pen: {

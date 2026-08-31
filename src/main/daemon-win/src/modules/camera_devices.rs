@@ -118,13 +118,12 @@ fn select_camera_index(
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    if let Some(requested_id) = requested_id {
-        if let Some(index) = devices
+    if let Some(requested_id) = requested_id
+        && let Some(index) = devices
             .iter()
             .position(|(id, _)| id.eq_ignore_ascii_case(requested_id))
-        {
-            return Ok(index);
-        }
+    {
+        return Ok(index);
     }
 
     if let Some(requested_name) = requested_name {

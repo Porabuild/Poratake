@@ -494,10 +494,10 @@ fn handle_command(
             let result = terminal_error
                 .clone()
                 .map_or_else(|| runtime.sync(clock), Err);
-            if let Err(error) = &result {
-                if error.code != "INVALID_STATE" {
-                    *terminal_error = Some(error.clone());
-                }
+            if let Err(error) = &result
+                && error.code != "INVALID_STATE"
+            {
+                *terminal_error = Some(error.clone());
             }
             let _ = response.send(result);
             false
@@ -967,10 +967,10 @@ impl CameraRuntime {
                 add_pause_duration(self.total_pause, pause_started, frame.source_time);
         }
         let timestamp = adjusted_camera_timestamp(frame.source_time, origin, self.total_pause);
-        if let Some(last_written) = self.last_written {
-            if timestamp <= last_written {
-                return Ok(());
-            }
+        if let Some(last_written) = self.last_written
+            && timestamp <= last_written
+        {
+            return Ok(());
         }
         self.visible_start.get_or_insert(timestamp);
         let minimum_size = self.width.saturating_mul(self.height).saturating_mul(4) as usize;
@@ -1125,17 +1125,17 @@ impl CameraRuntime {
             return;
         }
         self.capture_stopped = true;
-        if let Some(reader) = self.reader.as_ref() {
-            if unsafe { reader.Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32) }.is_ok() {
-                let deadline = std::time::Instant::now() + FLUSH_TIMEOUT;
-                while std::time::Instant::now() < deadline {
-                    match events
-                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                    {
-                        Ok(WorkerEvent::Flushed) => break,
-                        Ok(_) => continue,
-                        Err(_) => break,
-                    }
+        if let Some(reader) = self.reader.as_ref()
+            && unsafe { reader.Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32) }.is_ok()
+        {
+            let deadline = std::time::Instant::now() + FLUSH_TIMEOUT;
+            while std::time::Instant::now() < deadline {
+                match events
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                {
+                    Ok(WorkerEvent::Flushed) => break,
+                    Ok(_) => continue,
+                    Err(_) => break,
                 }
             }
         }
@@ -1238,8 +1238,8 @@ fn media_type_format(media_type: &IMFMediaType) -> Result<CameraFormat, Recorder
     };
     if format.width == 0
         || format.height == 0
-        || format.width % 2 != 0
-        || format.height % 2 != 0
+        || !format.width.is_multiple_of(2)
+        || !format.height.is_multiple_of(2)
         || format.frame_rate_numerator == 0
         || format.frame_rate_denominator == 0
     {

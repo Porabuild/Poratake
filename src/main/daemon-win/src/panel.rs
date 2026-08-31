@@ -36,6 +36,19 @@ pub const ACTIVE_BUTTON: [COLORREF; 3] = [
     COLORREF(0x002832E0),
 ];
 
+pub fn parse_color(value: Option<&str>) -> Option<COLORREF> {
+    let hex = value?.trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let channel = |range: std::ops::Range<usize>| u32::from_str_radix(&hex[range], 16).ok();
+    match (channel(0..2), channel(2..4), channel(4..6)) {
+        (Some(red), Some(green), Some(blue)) => Some(COLORREF((blue << 16) | (green << 8) | red)),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonState {
     Idle,
@@ -238,5 +251,19 @@ mod tests {
             button_fill(NEUTRAL_BUTTON, button_state(true, true)).0,
             NEUTRAL_BUTTON[2].0
         );
+    }
+
+    #[test]
+    fn parses_theme_colors_into_colorrefs() {
+        assert_eq!(
+            parse_color(Some("#8892ef")).map(|color| color.0),
+            Some(0x00EF_9288)
+        );
+        assert_eq!(
+            parse_color(Some("5f6cd9")).map(|color| color.0),
+            Some(0x00D9_6C5F)
+        );
+        assert_eq!(parse_color(Some("#fff")), None);
+        assert_eq!(parse_color(Some("#zzzzzz")), None);
     }
 }

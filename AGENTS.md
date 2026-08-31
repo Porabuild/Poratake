@@ -22,9 +22,9 @@ Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config),
 - **Formatting**: Oxfmt (Rust) - use `bun run format` to fix, `bun run format:check` to verify; config lives in `.oxfmtrc.json` (includes Tailwind class sorting via `sortTailwindcss`)
 - **Linting**: Oxlint (Rust) - use `bun run lint` (zero warnings enforced via `--deny-warnings`); config lives in `.oxlintrc.json`
 - **Typecheck**: TypeScript 7 native - use `bun run typecheck`
-- **All checks**: `bun run checks` runs typecheck + lint + format check + tests + the Windows daemon tests (verify only, no fixing)
+- **All checks**: `bun run checks` runs typecheck + lint + format check + tests + the Windows native rustfmt/clippy/daemon tests (verify only, no fixing)
 - **Pre-commit**: `.githooks/pre-commit` runs fast checks on staged files (oxfmt format check + oxlint with `--deny-warnings`) followed by a full `bun run typecheck`
-- **Windows daemon**: `bun run test:daemon-win` runs `cargo test` for `src/main/daemon-win/`. It is a no-op off Windows or without cargo, so a Rust compile break can only be caught locally on Windows — CI's `windows-native` job is the backstop.
+- **Windows native**: `bun run test:daemon-win` runs `cargo fmt --check`, `cargo clippy`, and `cargo test` for `src/main/daemon-win/` and `src/main/app-gpui/`. It is a no-op off Windows or without cargo, so a Rust compile break can only be caught locally on Windows — CI's `windows-native` job is the backstop.
 - **Imports**: Group by external → components → hooks → types → utils. Use `type` for type-only imports (`import type { ToolType }`)
 - **Types**: Store shared types in `src/types/` (accessible to main + renderer). Use discriminated unions for polymorphic data
 - **Naming**: kebab-case (components), camelCase (functions/vars), SCREAMING_SNAKE_CASE (constants like `MACOS_COLORS`)
@@ -78,7 +78,7 @@ Poratake is a rebranded fork of Capty (https://github.com/capty-app/capty) and i
 ## General Guidelines
 
 - Don't implement hacky solutions to just make it work. We need proper solutions.
-- Never build or run dev. user will do. Exception: `cargo check`/`cargo test`/`cargo fmt` against `src/main/daemon-win/Cargo.toml` may be run directly, because no other local gate compiles Rust. Never run `bun run dev`, `build-win`, or any packaged build.
+- Launch a dev app when you need to verify a change: `bun run dev` for the Electron shell, `bun run dev:gpui` for the GPUI shell. `cargo check`/`cargo test`/`cargo fmt` against `src/main/daemon-win/Cargo.toml` and `src/main/app-gpui/Cargo.toml` may be run directly, because no other local gate compiles Rust. Never run `build-win`, `build-mac`, or any packaged build.
 - Write less code and maintainable code
 - Always put modularity and reusability in priority
 - Prefer tailwind's built-in classes over custom sizes like px[20px]

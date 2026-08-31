@@ -1,3 +1,4 @@
+import { screen } from 'electron';
 import {
   showRecordingControl,
   hideRecordingControl,
@@ -75,6 +76,41 @@ let pendingRecordingAction: {
   promise: Promise<unknown>;
 } | null = null;
 let recordingPreviewPreparation: CapturePreviewPreparation | null = null;
+
+function recordingFrameRate(
+  displayId: number | undefined,
+  bounds: {
+    x: number | undefined;
+    y: number | undefined;
+    width: number | undefined;
+    height: number | undefined;
+  }
+): number {
+  const saved = getConfig().recording.frameRate;
+  const configured =
+    Number.isFinite(saved) && saved >= 1 && saved <= 240
+      ? Math.round(saved)
+      : 60;
+  const matchingDisplay = screen
+    .getAllDisplays()
+    .find(candidate => candidate.id === displayId);
+  const display =
+    matchingDisplay ??
+    (bounds.x !== undefined &&
+    bounds.y !== undefined &&
+    bounds.width !== undefined &&
+    bounds.height !== undefined
+      ? screen.getDisplayMatching({
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
+        })
+      : undefined);
+  if (!display) return configured;
+  const refreshRate = Math.round(display.displayFrequency);
+  return Math.min(configured, refreshRate > 0 ? refreshRate : configured);
+}
 
 function disposeRecordingPreviewPreparation(): void {
   recordingPreviewPreparation?.dispose();
@@ -497,7 +533,7 @@ async function startPendingRecordingInternal(
       cameraDeviceId,
       cameraDeviceName,
       keyboardEnabled,
-      frameRate: 60,
+      frameRate: recordingFrameRate(screenId, { x, y, width, height }),
       outputPath,
       iosDeviceId,
       iosDeviceName,

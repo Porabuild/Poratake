@@ -1,0 +1,26 @@
+default_job = "gpui"
+
+[jobs.gpui]
+command = [
+  "cargo",
+  "run",
+  "--package",
+  "poratake-gpui",
+  "--bin",
+  "poratake-gpui",
+]
+need_stdout = true
+allow_warnings = true
+background = false
+on_change_strategy = "kill_then_restart"
+kill = ["taskkill", "/T", "/F", "/PID"]
+default_watch = false
+apply_gitignore = false
+watch = [
+  "Cargo.lock",
+  "Cargo.toml",
+  "app-gpui/Cargo.toml",
+  "app-gpui/src",
+  "../../build",
+  "../../public",
+]

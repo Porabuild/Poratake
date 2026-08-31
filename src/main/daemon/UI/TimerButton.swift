@@ -16,21 +16,21 @@ class TimerButton: NSView {
     private var isHovered: Bool = false
     private var isPressed: Bool = false
     private var trackingArea: NSTrackingArea?
+    private var accentColor: NSColor
+    private var foregroundColor: NSColor
     
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+    init(seconds: Int, accentColor: NSColor, foregroundColor: NSColor) {
+        self.accentColor = accentColor
+        self.foregroundColor = foregroundColor
+        super.init(frame: .zero)
         setupView()
-    }
-    
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setupView()
-    }
-    
-    convenience init(seconds: Int) {
-        self.init(frame: .zero)
-        self.remainingSeconds = seconds
+        remainingSeconds = seconds
         updateDisplay()
+    }
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError()
     }
     
     private func setupView() {
@@ -49,7 +49,7 @@ class TimerButton: NSView {
         if let image = NSImage(systemSymbolName: "timer", accessibilityDescription: nil) {
             let config = NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
             iconView.image = image.withSymbolConfiguration(config)
-            iconView.contentTintColor = .white
+            iconView.contentTintColor = foregroundColor
         }
         
         label = NSTextField(labelWithString: "\(remainingSeconds)")
@@ -57,7 +57,7 @@ class TimerButton: NSView {
         label.isEditable = false
         label.isBordered = false
         label.drawsBackground = false
-        label.textColor = .white
+        label.textColor = foregroundColor
         label.font = NSFont.monospacedDigitSystemFont(ofSize: 24, weight: .bold)
         label.alignment = .left
         label.setContentHuggingPriority(.required, for: .horizontal)
@@ -89,7 +89,6 @@ class TimerButton: NSView {
     }
     
     func applyTheme() {
-        let accentColor = NSColor.controlAccentColor
         let darkShade = accentColor.blended(withFraction: 0.12, of: .black) ?? accentColor
         
         if isPressed {
@@ -101,9 +100,17 @@ class TimerButton: NSView {
         }
         
         gradientLayer.locations = [0.0, 0.5, 1.0]
+        iconView.contentTintColor = foregroundColor
+        label.textColor = foregroundColor
         
         layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
+        layer?.borderColor = foregroundColor.withAlphaComponent(0.25).cgColor
+    }
+
+    func setTheme(accentColor: NSColor, foregroundColor: NSColor) {
+        self.accentColor = accentColor
+        self.foregroundColor = foregroundColor
+        applyTheme()
     }
     
     private func updateDisplay() {
@@ -166,8 +173,4 @@ class TimerButton: NSView {
         return true
     }
     
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        applyTheme()
-    }
 }

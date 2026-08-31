@@ -161,8 +161,8 @@ export function renderTextHandles({
   const brY = centerY + halfW * sin + halfH * cos;
 
   const handleStyle = {
-    fill: 'white',
-    stroke: '#007AFF',
+    fill: 'var(--primary-foreground)',
+    stroke: 'var(--primary)',
     strokeWidth: 2,
     cursor: 'default',
     pointerEvents: 'auto' as const,
@@ -175,7 +175,7 @@ export function renderTextHandles({
         y1={centerY - Math.cos(rotationRad) * (boxHeight / 2)}
         x2={rotateHandleX}
         y2={rotateHandleY}
-        stroke="#007AFF"
+        stroke="var(--primary)"
         strokeWidth={1}
         strokeDasharray="4 2"
         style={{ pointerEvents: 'none' }}
@@ -184,8 +184,8 @@ export function renderTextHandles({
         cx={rotateHandleX}
         cy={rotateHandleY}
         r={handleSize / 2}
-        fill="#007AFF"
-        stroke="white"
+        fill="var(--primary)"
+        stroke="var(--primary-foreground)"
         strokeWidth={2}
         style={{ cursor: 'grab', pointerEvents: 'auto' }}
         onMouseDown={e => onResizeStart(e, ann.id, 'rotate')}

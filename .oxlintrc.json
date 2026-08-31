@@ -28,7 +28,7 @@
     "dist-electron",
     "build",
     "coverage",
-    "src/main/daemon-win/target",
+    "src/main/target",
     "src/renderer/components/ui"
   ],
   "rules": {

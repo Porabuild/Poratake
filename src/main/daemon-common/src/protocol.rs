@@ -1,7 +1,9 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
+
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -37,7 +39,7 @@ pub struct Event {
 
 impl Response {
     pub fn success(id: &str, result: Option<Value>) -> Self {
-        Response {
+        Self {
             id: id.to_string(),
             success: true,
             result,
@@ -46,7 +48,7 @@ impl Response {
     }
 
     pub fn error(id: &str, code: &str, message: &str) -> Self {
-        Response {
+        Self {
             id: id.to_string(),
             success: false,
             result: None,
@@ -91,6 +93,12 @@ pub fn respond_error(id: &str, code: &str, message: &str) {
 
 pub fn parse_request(line: &str) -> Option<Request> {
     serde_json::from_str(line).ok()
+}
+
+pub fn params<T: DeserializeOwned>(request: &Request) -> Result<T, (String, String)> {
+    let value = serde_json::to_value(request.params.as_ref().cloned().unwrap_or_default())
+        .map_err(|error| ("INVALID_PARAMS".to_string(), error.to_string()))?;
+    serde_json::from_value(value).map_err(|error| ("INVALID_PARAMS".to_string(), error.to_string()))
 }
 
 pub fn param_str<'a>(params: &'a Option<HashMap<String, Value>>, key: &str) -> Option<&'a str> {

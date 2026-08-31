@@ -196,7 +196,7 @@ export function renderArrowHandles({
         y1={midY}
         x2={bendX}
         y2={bendY}
-        stroke="#007AFF"
+        stroke="var(--primary)"
         strokeWidth={1}
         strokeDasharray="4 2"
         style={{ pointerEvents: 'none' }}
@@ -207,8 +207,8 @@ export function renderArrowHandles({
           cx={cx}
           cy={cy}
           r={isBend ? handleSize / 2 - 1 : handleSize / 2}
-          fill={isBend ? '#007AFF' : 'white'}
-          stroke={isBend ? 'white' : '#007AFF'}
+          fill={isBend ? 'var(--primary)' : 'var(--primary-foreground)'}
+          stroke={isBend ? 'var(--primary-foreground)' : 'var(--primary)'}
           strokeWidth={2}
           style={{ cursor: 'move', pointerEvents: 'auto' }}
           onMouseDown={e => onResizeStart(e, ann.id, pos)}

@@ -1,10 +1,11 @@
 import Cocoa
+import Carbon.HIToolbox
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-class ScrollCaptureModule: Module {
-    let name = "scroll-capture"
+class ScrollCaptureModule: NSObject, Module {
+    let name = DaemonContract.ScrollCapture.module
 
     private var captureArea: NSRect = .zero
     private var displayId: CGDirectDisplayID = CGMainDisplayID()
@@ -30,21 +31,30 @@ class ScrollCaptureModule: Module {
     private let previewWidthPoints: CGFloat = 240
 
     private var previewImage: CGImage?
+    private var boundaryWindows: [NSWindow] = []
+    private var controlPanel: NSPanel?
+    private var autoButton: NSButton?
+    private var escapeHotKey: EventHotKeyRef?
+    private var enterHotKey: EventHotKeyRef?
+    private var hotKeyHandler: EventHandlerRef?
 
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "start":
-            handleStart(params: params, requestId: requestId)
-        case "startAutoScroll":
-            handleStartAutoScroll(params: params, requestId: requestId)
-        case "stopAutoScroll":
-            handleStopAutoScroll(requestId: requestId)
-        case "finish":
-            handleFinish(params: params, requestId: requestId)
-        case "cancel":
-            handleCancel(requestId: requestId)
-        default:
+        guard let method = DaemonContract.ScrollCapture.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .start:
+            handleStart(params: params, requestId: requestId)
+        case .startAutoScroll:
+            handleStartAutoScroll(params: params, requestId: requestId)
+        case .stopAutoScroll:
+            handleStopAutoScroll(requestId: requestId)
+        case .finish:
+            handleFinish(params: params, requestId: requestId)
+        case .cancel:
+            handleCancel(requestId: requestId)
         }
     }
 
@@ -57,11 +67,22 @@ class ScrollCaptureModule: Module {
             return
         }
 
+        displayId = CGMainDisplayID()
+        targetScreen = nil
         if let display = params?["displayId"]?.int() {
             displayId = CGDirectDisplayID(display)
+        } else if let originX = params?["displayOriginX"]?.int(),
+                  let originY = params?["displayOriginY"]?.int(),
+                  let screen = screenForTopLeftOrigin(x: originX, y: originY) {
+            targetScreen = screen
+            if let screenNumber = screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")
+            ] as? CGDirectDisplayID {
+                displayId = screenNumber
+            }
         }
 
-        targetScreen = screenForDisplayId(displayId)
+        targetScreen = targetScreen ?? screenForDisplayId(displayId)
 
         if let speed = params?["autoScrollSpeed"]?.string() {
             autoScrollSpeed = ScrollSpeed(rawValue: speed) ?? .medium
@@ -70,10 +91,14 @@ class ScrollCaptureModule: Module {
         if let max = params?["maxHeight"]?.int() {
             maxHeight = max
         }
+        let nativeControls = params?["nativeControls"]?.bool() ?? false
 
-        let screen = targetScreen ?? NSScreen.main ?? NSScreen.screens.first!
-        let screenFrame = screen.frame
-        let cocoaY = screenFrame.maxY - CGFloat(y) - CGFloat(height)
+        let mainScreenHeight = primaryScreenHeight()
+        let cocoaY = cocoaYFromTopLeft(
+            topLeftY: CGFloat(y),
+            height: CGFloat(height),
+            primaryHeight: mainScreenHeight
+        )
 
         captureArea = NSRect(x: CGFloat(x), y: cocoaY, width: CGFloat(width), height: CGFloat(height))
         capturedFrames.removeAll()
@@ -82,17 +107,28 @@ class ScrollCaptureModule: Module {
         lastFrameHash = 0
         duplicateFrameCount = 0
 
-        let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screenFrame.height
         let topLeftY = mainScreenHeight - cocoaY - CGFloat(height)
 
-        respond(id: requestId, result: ["started": true])
-        emit(event: "started", data: [
-            "x": x,
-            "y": Int(topLeftY),
-            "width": width,
-            "height": height,
-            "displayId": Int(displayId)
-        ])
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if nativeControls && !self.showCaptureUI() {
+                self.cleanup()
+                self.respondError(
+                    id: requestId,
+                    code: "UI_ERROR",
+                    message: "Failed to register scroll capture shortcuts"
+                )
+                return
+            }
+            self.respond(id: requestId, result: ["started": true])
+            self.emit(event: "started", data: [
+                "x": x,
+                "y": Int(topLeftY),
+                "width": width,
+                "height": height,
+                "displayId": Int(self.displayId)
+            ])
+        }
     }
 
     private func handleStartAutoScroll(params: [String: AnyCodable]?, requestId: String) {
@@ -172,6 +208,7 @@ class ScrollCaptureModule: Module {
         guard !isAutoScrolling else { return }
 
         isAutoScrolling = true
+        autoButton?.title = "Stop"
         isCursorOutside = false
         currentScrollStep = 0
 
@@ -200,6 +237,7 @@ class ScrollCaptureModule: Module {
         isCursorOutside = false
         autoScrollTimer?.invalidate()
         autoScrollTimer = nil
+        autoButton?.title = "Auto"
         stopCursorMonitor()
         if wasScrolling {
             emitAutoScrollChanged(scrolling: false)
@@ -253,9 +291,8 @@ class ScrollCaptureModule: Module {
     }
 
     private func warpCursorToCaptureCenter() {
-        let screen = targetScreen ?? NSScreen.main ?? NSScreen.screens.first!
         let centerX = captureArea.midX
-        let centerY = screen.frame.maxY - captureArea.midY
+        let centerY = primaryScreenHeight() - captureArea.midY
         CGWarpMouseCursorPosition(CGPoint(x: centerX, y: centerY))
     }
 
@@ -288,8 +325,7 @@ class ScrollCaptureModule: Module {
 
     private func simulateScroll(delta: Int32) {
         let mouseLocation = NSEvent.mouseLocation
-        let screen = targetScreen ?? NSScreen.main ?? NSScreen.screens.first!
-        let cgMouseY = screen.frame.maxY - mouseLocation.y
+        let cgMouseY = primaryScreenHeight() - mouseLocation.y
         let cgPoint = CGPoint(x: mouseLocation.x, y: cgMouseY)
 
         if let scrollEvent = CGEvent(scrollWheelEvent2Source: nil,
@@ -305,10 +341,9 @@ class ScrollCaptureModule: Module {
 
     @discardableResult
     private func captureCurrentFrame() -> Int? {
-        let screen = targetScreen ?? NSScreen.main ?? NSScreen.screens.first!
         let captureRect = CGRect(
             x: captureArea.origin.x,
-            y: screen.frame.maxY - captureArea.origin.y - captureArea.height,
+            y: primaryScreenHeight() - captureArea.origin.y - captureArea.height,
             width: captureArea.width,
             height: captureArea.height
         )
@@ -625,9 +660,238 @@ class ScrollCaptureModule: Module {
         }
     }
 
+    private func showCaptureUI() -> Bool {
+        hideCaptureUI()
+        guard registerCaptureHotKeys() else { return false }
+
+        let thickness: CGFloat = 2
+        let edgeRects = [
+            NSRect(
+                x: captureArea.minX - thickness,
+                y: captureArea.maxY,
+                width: captureArea.width + thickness * 2,
+                height: thickness
+            ),
+            NSRect(
+                x: captureArea.minX - thickness,
+                y: captureArea.minY - thickness,
+                width: captureArea.width + thickness * 2,
+                height: thickness
+            ),
+            NSRect(
+                x: captureArea.minX - thickness,
+                y: captureArea.minY,
+                width: thickness,
+                height: captureArea.height
+            ),
+            NSRect(
+                x: captureArea.maxX,
+                y: captureArea.minY,
+                width: thickness,
+                height: captureArea.height
+            )
+        ]
+        boundaryWindows = edgeRects.map { rect in
+            let window = NSWindow(
+                contentRect: rect,
+                styleMask: .borderless,
+                backing: .buffered,
+                defer: false
+            )
+            window.level = .screenSaver
+            window.isOpaque = true
+            window.backgroundColor = .systemBlue
+            window.ignoresMouseEvents = true
+            window.hasShadow = false
+            window.sharingType = .none
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            window.orderFrontRegardless()
+            return window
+        }
+
+        let panelSize = NSSize(width: 280, height: 52)
+        let screen = targetScreen ?? NSScreen.main ?? NSScreen.screens.first
+        let screenFrame = screen?.frame ?? .zero
+        let below = captureArea.minY - 12 - panelSize.height
+        let panelY = below >= screenFrame.minY ? below : captureArea.maxY + 12
+        let panelRect = NSRect(
+            x: captureArea.midX - panelSize.width / 2,
+            y: panelY,
+            width: panelSize.width,
+            height: panelSize.height
+        )
+        let panel = NSPanel(
+            contentRect: panelRect,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .screenSaver
+        panel.isOpaque = false
+        panel.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96)
+        panel.hasShadow = true
+        panel.sharingType = .none
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.becomesKeyOnlyIfNeeded = true
+
+        let auto = controlButton(title: "Auto", action: #selector(toggleAutoScrollFromUI(_:)))
+        let done = controlButton(title: "Done", action: #selector(doneFromUI(_:)))
+        let cancel = controlButton(title: "Cancel", action: #selector(cancelFromUI(_:)))
+        let stack = NSStackView(views: [auto, done, cancel])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.distribution = .fillEqually
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        panel.contentView = stack
+        panel.orderFrontRegardless()
+        controlPanel = panel
+        autoButton = auto
+        return true
+    }
+
+    private func controlButton(title: String, action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.bezelStyle = .rounded
+        button.setButtonType(.momentaryPushIn)
+        return button
+    }
+
+    private func hideCaptureUI() {
+        unregisterCaptureHotKeys()
+        boundaryWindows.forEach { $0.orderOut(nil) }
+        boundaryWindows.removeAll()
+        controlPanel?.orderOut(nil)
+        controlPanel = nil
+        autoButton = nil
+    }
+
+    private func registerCaptureHotKeys() -> Bool {
+        unregisterCaptureHotKeys()
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let installed = InstallEventHandler(
+            GetApplicationEventTarget(),
+            { _, event, userData in
+                guard let event = event, let userData = userData else {
+                    return OSStatus(eventNotHandledErr)
+                }
+                var hotKeyId = EventHotKeyID()
+                let status = GetEventParameter(
+                    event,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyId
+                )
+                guard status == noErr else { return status }
+                let module = Unmanaged<ScrollCaptureModule>
+                    .fromOpaque(userData)
+                    .takeUnretainedValue()
+                DispatchQueue.main.async {
+                    if hotKeyId.id == 1 {
+                        module.cancelFromUI(nil)
+                    } else if hotKeyId.id == 2 {
+                        module.doneFromUI(nil)
+                    }
+                }
+                return noErr
+            },
+            1,
+            &eventType,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &hotKeyHandler
+        )
+        guard installed == noErr else { return false }
+
+        let target = GetApplicationEventTarget()
+        let signature = OSType(0x5053_544b)
+        var escapeId = EventHotKeyID(signature: signature, id: 1)
+        var enterId = EventHotKeyID(signature: signature, id: 2)
+        let escapeStatus = RegisterEventHotKey(
+            UInt32(kVK_Escape),
+            0,
+            escapeId,
+            target,
+            0,
+            &escapeHotKey
+        )
+        let enterStatus = RegisterEventHotKey(
+            UInt32(kVK_Return),
+            0,
+            enterId,
+            target,
+            0,
+            &enterHotKey
+        )
+        guard escapeStatus == noErr && enterStatus == noErr else {
+            unregisterCaptureHotKeys()
+            return false
+        }
+        return true
+    }
+
+    private func unregisterCaptureHotKeys() {
+        if let hotKey = escapeHotKey {
+            UnregisterEventHotKey(hotKey)
+            escapeHotKey = nil
+        }
+        if let hotKey = enterHotKey {
+            UnregisterEventHotKey(hotKey)
+            enterHotKey = nil
+        }
+        if let handler = hotKeyHandler {
+            RemoveEventHandler(handler)
+            hotKeyHandler = nil
+        }
+    }
+
+    @objc private func toggleAutoScrollFromUI(_ sender: NSButton) {
+        if isAutoScrolling {
+            stopAutoScroll()
+        } else {
+            startAutoScroll()
+        }
+    }
+
+    @objc private func doneFromUI(_ sender: Any?) {
+        guard isCapturing else { return }
+        stopAutoScroll()
+        hideCaptureUI()
+        emit(event: "done")
+    }
+
+    @objc private func cancelFromUI(_ sender: Any?) {
+        guard isCapturing else { return }
+        cleanup()
+        emit(event: "cancelled")
+    }
+
+    private func screenForTopLeftOrigin(x: Int, y: Int) -> NSScreen? {
+        let mainScreenHeight = primaryScreenHeight()
+        return NSScreen.screens.first { screen in
+            Int(screen.frame.minX.rounded()) == x
+                && Int(topLeftYFromCocoaFrame(
+                    screen.frame,
+                    primaryHeight: mainScreenHeight
+                ).rounded()) == y
+        }
+    }
+
+    private func primaryScreenHeight() -> CGFloat {
+        NSScreen.screens.first {
+            $0.frame.minX.rounded() == 0 && $0.frame.minY.rounded() == 0
+        }?.frame.height ?? NSScreen.screens.first?.frame.height ?? targetScreen?.frame.maxY ?? 0
+    }
+
     private func cleanup() {
         stopAutoScroll()
         stopCursorMonitor()
+        hideCaptureUI()
 
         previewImage = nil
         capturedFrames.removeAll()
@@ -767,6 +1031,18 @@ class ScrollCaptureModule: Module {
 
         return mutableData.base64EncodedString()
     }
+}
+
+private func cocoaYFromTopLeft(
+    topLeftY: CGFloat,
+    height: CGFloat,
+    primaryHeight: CGFloat
+) -> CGFloat {
+    primaryHeight - topLeftY - height
+}
+
+private func topLeftYFromCocoaFrame(_ frame: NSRect, primaryHeight: CGFloat) -> CGFloat {
+    primaryHeight - frame.maxY
 }
 
 private struct CapturedFrame {

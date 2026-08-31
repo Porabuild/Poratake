@@ -2,7 +2,7 @@ import Cocoa
 import Foundation
 
 class RecordingOverlayModule: Module {
-    let name = "recording-overlay"
+    let name = DaemonContract.RecordingOverlay.module
     private var windows: [RecordingOverlayWindow] = []
     private var overlayViews: [NSScreen: RecordingOverlayView] = [:]
     private var highlightWindow: RecordingOverlayWindow?
@@ -18,15 +18,18 @@ class RecordingOverlayModule: Module {
     )
 
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "show":
-            handleShow(params: params, requestId: requestId)
-        case "showWindow":
-            handleShowWindow(params: params, requestId: requestId)
-        case "hide":
-            handleHide(requestId: requestId)
-        default:
+        guard let method = DaemonContract.RecordingOverlay.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .show:
+            handleShow(params: params, requestId: requestId)
+        case .showWindow:
+            handleShowWindow(params: params, requestId: requestId)
+        case .hide:
+            handleHide(requestId: requestId)
         }
     }
 
@@ -36,7 +39,7 @@ class RecordingOverlayModule: Module {
             return
         }
 
-        let color = Self.parseColor(params?["color"]?.string())
+        let color = themeColor(params?["color"]?.string()) ?? Self.highlightFallback
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -46,23 +49,6 @@ class RecordingOverlayModule: Module {
             )
             self.respond(id: requestId, result: ["visible": visible])
         }
-    }
-
-    /// The app hands over its live theme accent as `#rrggbb`.
-    private static func parseColor(_ value: String?) -> NSColor {
-        guard let hex = value?.trimmingCharacters(in: CharacterSet(charactersIn: "#")),
-              hex.count == 6,
-              let packed = UInt32(hex, radix: 16)
-        else {
-            return highlightFallback
-        }
-
-        return NSColor(
-            red: CGFloat((packed >> 16) & 0xff) / 255,
-            green: CGFloat((packed >> 8) & 0xff) / 255,
-            blue: CGFloat(packed & 0xff) / 255,
-            alpha: 1.0
-        )
     }
 
     private func handleShow(params: [String: AnyCodable]?, requestId: String) {
@@ -210,7 +196,7 @@ class RecordingOverlayModule: Module {
             if screen.frame.intersects(globalRecordingRect) {
                 overlayView.updateRecordingRect(localRect)
             } else {
-                overlayView.updateRecordingRect(.zero)
+                overlayView.dimEntireScreen()
             }
             
             window.contentView = overlayView
@@ -255,13 +241,9 @@ private class RecordingHighlightView: NSView {
         layer?.backgroundColor = NSColor.clear.cgColor
     }
 
+    @available(*, unavailable)
     required init?(coder: NSCoder) {
-        thickness = 1
-        radius = 8
-        color = .systemBlue
-        super.init(coder: coder)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
+        fatalError()
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -283,6 +265,7 @@ private class RecordingHighlightView: NSView {
 
 private class RecordingOverlayView: NSView {
     var recordingRect: NSRect = .zero
+    private var dimsEntireScreen = false
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -297,12 +280,25 @@ private class RecordingOverlayView: NSView {
     }
     
     func updateRecordingRect(_ rect: NSRect) {
+        dimsEntireScreen = false
         recordingRect = rect
+        needsDisplay = true
+    }
+
+    func dimEntireScreen() {
+        dimsEntireScreen = true
+        recordingRect = .zero
         needsDisplay = true
     }
     
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+
+        if dimsEntireScreen {
+            NSColor.black.withAlphaComponent(0.5).setFill()
+            bounds.fill()
+            return
+        }
         
         guard recordingRect.width > 0 && recordingRect.height > 0 else { return }
         

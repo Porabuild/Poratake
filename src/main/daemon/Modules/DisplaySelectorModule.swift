@@ -2,18 +2,21 @@ import Cocoa
 import Foundation
 
 class DisplaySelectorModule: Module {
-    let name = "display-selector"
+    let name = DaemonContract.DisplaySelector.module
     private var selector: DisplaySelectorUI?
     private var currentRequestId: String?
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "select":
-            handleSelect(requestId: requestId)
-        case "cancel":
-            handleCancel(requestId: requestId)
-        default:
+        guard let method = DaemonContract.DisplaySelector.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .select:
+            handleSelect(requestId: requestId)
+        case .cancel:
+            handleCancel(requestId: requestId)
         }
     }
     

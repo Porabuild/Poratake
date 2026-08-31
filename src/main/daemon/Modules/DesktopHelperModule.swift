@@ -3,17 +3,20 @@ import Foundation
 import QuartzCore
 
 class DesktopHelperModule: Module {
-    let name = "desktop-helper"
+    let name = DaemonContract.DesktopHelper.module
     private var overlayWindows: [NSWindow] = []
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "hide":
-            handleHide(requestId: requestId)
-        case "show":
-            handleShow(requestId: requestId)
-        default:
+        guard let method = DaemonContract.DesktopHelper.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .hide:
+            handleHide(requestId: requestId)
+        case .show:
+            handleShow(requestId: requestId)
         }
     }
     

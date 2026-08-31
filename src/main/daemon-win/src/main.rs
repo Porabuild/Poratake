@@ -5,10 +5,9 @@ mod mf;
 mod modules;
 mod overlay;
 mod panel;
-mod protocol;
-mod router;
 mod time_format;
 mod tone_map;
+pub mod trace;
 mod ui;
 
 use modules::area_selector::AreaSelectorModule;
@@ -28,18 +27,22 @@ use modules::screenshot::ScreenshotModule;
 use modules::scroll_capture::ScrollCaptureModule;
 use modules::timer_control::TimerControlModule;
 use modules::window_selector::WindowSelectorModule;
+use poratake_daemon_common::contract::WINDOWS_MODULES;
+use poratake_daemon_common::{protocol, router};
 use protocol::{Response, parse_request, send_event, send_response};
-use router::Router;
+use router::{RouteControl, Router};
 use serde_json::json;
 use std::io::BufRead;
 
 fn main() {
     ui::init();
 
-    let mut router = Router::new();
+    let mut router = Router::with_trace(|module, method| {
+        trace::trace(&format!("route {module} {method}"));
+    });
     router.register(Box::new(AreaSelectorModule::new()));
     router.register(Box::new(OcrModule));
-    router.register(Box::new(QrCodeModule));
+    router.register(Box::new(QrCodeModule::new()));
     router.register(Box::new(DesktopHelperModule));
     router.register(Box::new(DesktopWallpaperModule));
     router.register(Box::new(FreezeScreenModule::new()));
@@ -54,6 +57,10 @@ fn main() {
     router.register(Box::new(ScreenRecorderModule::new()));
     router.register(Box::new(ScrollCaptureModule::new()));
     router.register(Box::new(ScreenshotModule));
+    if let Err(message) = router.validate_modules(WINDOWS_MODULES) {
+        eprintln!("{message}");
+        std::process::exit(2);
+    }
 
     send_event("system:ready", Some(json!({ "pid": std::process::id() })));
 
@@ -77,6 +84,8 @@ fn main() {
             continue;
         };
 
-        router.route(request);
+        if router.route(request) == RouteControl::Exit {
+            break;
+        }
     }
 }

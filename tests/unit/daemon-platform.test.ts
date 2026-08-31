@@ -252,4 +252,40 @@ describe('native recording startup', () => {
       source.indexOf('try await stream?.startCapture()')
     );
   });
+
+  it('caps macOS recording at the selected display refresh rate', () => {
+    const types = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'src',
+        'main',
+        'daemon',
+        'ScreenRecorder',
+        'Types',
+        'RecorderTypes.swift'
+      ),
+      'utf8'
+    );
+    const recorder = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'src',
+        'main',
+        'daemon',
+        'ScreenRecorder',
+        'Recorders',
+        'ScreenCaptureRecorder.swift'
+      ),
+      'utf8'
+    );
+
+    expect(types).toContain('let selected = min(max(1, configured), 240)');
+    expect(types).toContain(
+      'return min(selected, max(1, maximum ?? selected))'
+    );
+    expect(recorder).toContain('maximum: targetScreen?.maximumFramesPerSecond');
+    expect(recorder).toContain(
+      'CMTime(value: 1, timescale: CMTimeScale(frameRate))'
+    );
+  });
 });

@@ -16,6 +16,8 @@ OUTPUT_FILE="$DAEMON_DIR/poratake-daemon"
 
 echo -e "${YELLOW}Building poratake-daemon...${NC}"
 
+bun "$PROJECT_ROOT/scripts/generate-daemon-contract.mjs" --check
+
 SWIFT_FILES=$(find "$DAEMON_DIR" -name "*.swift" -type f)
 if [ -z "$SWIFT_FILES" ]; then
     echo -e "${RED}Error: No Swift files found in $DAEMON_DIR${NC}"

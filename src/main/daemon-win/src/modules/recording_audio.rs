@@ -570,10 +570,8 @@ fn run_audio_worker(
         }
     };
 
-    if fatal {
-        if let Err(error) = &result {
-            let _ = health.send(error.clone());
-        }
+    if fatal && let Err(error) = &result {
+        let _ = health.send(error.clone());
     }
     let _ = completion.send(result);
     drop(capture);
@@ -860,11 +858,10 @@ pub(super) fn select_device(
             MicrophoneSelector::Id(device_id) => {
                 let wide = wide_string(device_id);
                 let device = unsafe { enumerator.GetDevice(PCWSTR(wide.as_ptr())) };
-                if let Ok(device) = device {
-                    if unsafe { device.GetState() }.is_ok_and(|state| state == DEVICE_STATE_ACTIVE)
-                    {
-                        return Ok(device);
-                    }
+                if let Ok(device) = device
+                    && unsafe { device.GetState() }.is_ok_and(|state| state == DEVICE_STATE_ACTIVE)
+                {
+                    return Ok(device);
                 }
             }
             MicrophoneSelector::Name(device_name) => {
@@ -1293,15 +1290,15 @@ impl AudioEncoder {
                 return Err(error);
             }
         };
-        if temporary_path.exists() {
-            if let Err(error) = std::fs::remove_file(&temporary_path) {
-                unsafe {
-                    let _ = MFShutdown();
-                }
-                return Err(RecorderError::capture(format!(
-                    "Failed to replace temporary audio asset: {error}"
-                )));
+        if temporary_path.exists()
+            && let Err(error) = std::fs::remove_file(&temporary_path)
+        {
+            unsafe {
+                let _ = MFShutdown();
             }
+            return Err(RecorderError::capture(format!(
+                "Failed to replace temporary audio asset: {error}"
+            )));
         }
         let result = Self::create(output_path, temporary_path.clone());
         if result.is_err() {

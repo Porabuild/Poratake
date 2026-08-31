@@ -8,6 +8,7 @@ use crate::overlay::{
 use crate::protocol::{Request, param_bool, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
+use poratake_daemon_common::contract::{FREEZE_SCREEN_MODULE, FreezeScreenMethod};
 use serde_json::json;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -40,11 +41,11 @@ struct FreezeUiState {
 }
 
 thread_local! {
-    static STATE: RefCell<FreezeUiState> = RefCell::new(FreezeUiState {
+    static STATE: RefCell<FreezeUiState> = const { RefCell::new(FreezeUiState {
         windows: Vec::new(),
         key_token: None,
         frozen_flag: None,
-    });
+    }) };
 }
 
 unsafe extern "system" fn wndproc(
@@ -219,25 +220,26 @@ impl FreezeScreenModule {
 
 impl Module for FreezeScreenModule {
     fn name(&self) -> &'static str {
-        "freeze-screen"
+        FREEZE_SCREEN_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "freeze" => {
+        match FreezeScreenMethod::parse(&request.method) {
+            Some(FreezeScreenMethod::Freeze) => {
                 let watch_space_key = param_bool(&request.params, "watchSpaceKey").unwrap_or(false);
                 let frozen = self.frozen.clone();
                 let request_id = request.id.clone();
 
                 run_on_ui(move || {
                     let is_frozen = create_overlays();
-                    if watch_space_key && is_frozen {
-                        if let Err(message) = start_space_key_watch(frozen.clone()) {
-                            teardown();
-                            frozen.store(false, Ordering::SeqCst);
-                            respond_error(&request_id, "UI_ERROR", &message);
-                            return;
-                        }
+                    if watch_space_key
+                        && is_frozen
+                        && let Err(message) = start_space_key_watch(frozen.clone())
+                    {
+                        teardown();
+                        frozen.store(false, Ordering::SeqCst);
+                        respond_error(&request_id, "UI_ERROR", &message);
+                        return;
                     }
                     frozen.store(is_frozen, Ordering::SeqCst);
                     respond_success(&request_id, json!({ "frozen": is_frozen }));
@@ -245,11 +247,11 @@ impl Module for FreezeScreenModule {
 
                 Reply::Deferred
             }
-            "prewarm" => {
+            Some(FreezeScreenMethod::Prewarm) => {
                 prewarm_capture();
                 Reply::Now(Ok(Some(json!({ "prewarmed": true }))))
             }
-            "release" => {
+            Some(FreezeScreenMethod::Release) => {
                 let frozen = self.frozen.clone();
                 let request_id = request.id.clone();
 
@@ -261,7 +263,7 @@ impl Module for FreezeScreenModule {
 
                 Reply::Deferred
             }
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }

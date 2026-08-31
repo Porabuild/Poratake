@@ -1,5 +1,6 @@
 use crate::protocol::Request;
 use crate::router::{Module, Reply, method_not_found};
+use poratake_daemon_common::contract::{DESKTOP_HELPER_MODULE, DesktopHelperMethod};
 use serde_json::json;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -11,18 +12,18 @@ pub struct DesktopHelperModule;
 
 impl Module for DesktopHelperModule {
     fn name(&self) -> &'static str {
-        "desktop-helper"
+        DESKTOP_HELPER_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "hide" => set_icons_visible(false)
+        match DesktopHelperMethod::parse(&request.method) {
+            Some(DesktopHelperMethod::Hide) => set_icons_visible(false)
                 .map(|_| Some(json!({ "hidden": true })))
                 .into(),
-            "show" => set_icons_visible(true)
+            Some(DesktopHelperMethod::Show) => set_icons_visible(true)
                 .map(|_| Some(json!({ "hidden": false })))
                 .into(),
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }
@@ -44,10 +45,10 @@ fn set_icons_visible(visible: bool) -> Result<(), (String, String)> {
 
 fn find_desktop_view() -> Option<HWND> {
     unsafe {
-        if let Ok(progman) = FindWindowW(w!("Progman"), None) {
-            if let Ok(view) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None) {
-                return Some(view);
-            }
+        if let Ok(progman) = FindWindowW(w!("Progman"), None)
+            && let Ok(view) = FindWindowExW(Some(progman), None, w!("SHELLDLL_DefView"), None)
+        {
+            return Some(view);
         }
 
         let mut worker: Option<HWND> = None;

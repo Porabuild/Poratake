@@ -3,14 +3,17 @@ import Foundation
 import ImageIO
 
 class DesktopWallpaperModule: Module {
-    let name = "desktop-wallpaper"
+    let name = DaemonContract.DesktopWallpaper.module
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "get":
-            handleGet(requestId: requestId)
-        default:
+        guard let method = DaemonContract.DesktopWallpaper.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .get:
+            handleGet(requestId: requestId)
         }
     }
     

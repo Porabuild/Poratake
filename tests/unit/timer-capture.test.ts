@@ -35,6 +35,11 @@ vi.mock('@/main/settings', () => ({
   updateConfig: (...a: unknown[]) => mockUpdateConfig(...a),
 }));
 
+vi.mock('@/main/settings/accent', () => ({
+  getAccentColor: () => '#8892ef',
+  getAccentForegroundColor: () => '#0a0a12',
+}));
+
 vi.mock('@/main/daemon', () => ({
   daemon: {
     call: (...a: unknown[]) => mockDaemonCall(...a),

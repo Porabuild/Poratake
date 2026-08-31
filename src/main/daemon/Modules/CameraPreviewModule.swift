@@ -3,7 +3,7 @@ import Cocoa
 import Foundation
 
 class CameraPreviewModule: Module {
-    let name = "camera-preview"
+    let name = DaemonContract.CameraPreview.module
     
     private var panel: NSPanel?
     private var contentView: CameraPreviewContentView?
@@ -15,17 +15,20 @@ class CameraPreviewModule: Module {
     private var isContentProtected: Bool = false
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "show":
-            handleShow(params: params, requestId: requestId)
-        case "hide":
-            handleHide(requestId: requestId)
-        case "update":
-            handleUpdate(params: params, requestId: requestId)
-        case "setContentProtection":
-            handleSetContentProtection(params: params, requestId: requestId)
-        default:
+        guard let method = DaemonContract.CameraPreview.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .show:
+            handleShow(params: params, requestId: requestId)
+        case .hide:
+            handleHide(requestId: requestId)
+        case .update:
+            handleUpdate(params: params, requestId: requestId)
+        case .setContentProtection:
+            handleSetContentProtection(params: params, requestId: requestId)
         }
     }
     
@@ -74,11 +77,11 @@ class CameraPreviewModule: Module {
         let deviceChanged = params?["deviceId"] != nil || params?["deviceName"] != nil
         let resolutionChanged = params?["resolution"] != nil
         
-        if let newDeviceId = params?["deviceId"]?.string() {
-            deviceId = newDeviceId
+        if params?["deviceId"] != nil {
+            deviceId = params?["deviceId"]?.string()
         }
-        if let newDeviceName = params?["deviceName"]?.string() {
-            deviceName = newDeviceName
+        if params?["deviceName"] != nil {
+            deviceName = params?["deviceName"]?.string()
         }
         if let newResolution = params?["resolution"]?.string() {
             resolution = newResolution
@@ -111,7 +114,11 @@ class CameraPreviewModule: Module {
     }
     
     private func handleSetContentProtection(params: [String: AnyCodable]?, requestId: String) {
-        isContentProtected = params?["enabled"]?.bool() ?? false
+        guard let enabled = params?["enabled"]?.bool() else {
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "enabled is required")
+            return
+        }
+        isContentProtected = enabled
         
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }

@@ -3,14 +3,17 @@ import CoreMediaIO
 import Foundation
 
 class RecordingControlModule: Module {
-    let name = "recording-control"
+    let name = DaemonContract.RecordingControl.module
 
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "listIOSDevices":
-            handleListIOSDevices(requestId: requestId)
-        default:
+        guard let method = DaemonContract.RecordingControl.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .listIosDevices:
+            handleListIOSDevices(requestId: requestId)
         }
     }
 

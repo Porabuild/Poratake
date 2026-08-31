@@ -106,5 +106,26 @@ describe('dev lock', () => {
         `node C:\\other\\node_modules\\vite\\bin\\vite.js`
       )
     ).toBe(false);
+    expect(
+      isPoratakeDevCommand(root, `node ${root}\\scripts\\dev-gpui.mjs`)
+    ).toBe(true);
+    expect(
+      isPoratakeDevCommand(
+        root,
+        `cargo run --manifest-path ${root}\\src\\main\\app-gpui\\Cargo.toml`
+      )
+    ).toBe(true);
+    expect(
+      isPoratakeDevCommand(
+        root,
+        `${root}\\src\\main\\target\\debug\\poratake-gpui.exe`
+      )
+    ).toBe(true);
+    expect(
+      isPoratakeDevCommand(
+        root,
+        `cargo run --manifest-path C:\\other\\src\\main\\app-gpui\\Cargo.toml`
+      )
+    ).toBe(false);
   });
 });

@@ -38,8 +38,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MONITORINFOEXW, MonitorFromWindow,
+    DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
+    HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
 };
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFAttributes,
@@ -427,7 +427,13 @@ fn run_worker(
             break;
         }
 
-        let frame_message = runtime.frames.recv_timeout(FRAME_WAIT);
+        let frame_message = match runtime.capture_controls.try_recv() {
+            Ok(message) => Ok(message),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+            | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                runtime.frames.recv_timeout(FRAME_WAIT)
+            }
+        };
         match frame_message {
             Ok(FrameMessage::Frame(frame)) => {
                 let source_time = match frame_time(&frame) {
@@ -451,18 +457,18 @@ fn run_worker(
 
                 match runtime.write_frame(&frame, source_time) {
                     Ok(Some(duration)) => {
-                        if start_sender.is_some() {
-                            if let Err(error) = runtime.sync_with_first_frame(source_time) {
-                                fail_worker(
-                                    error,
-                                    &mut runtime,
-                                    &shared,
-                                    &mut start_sender,
-                                    &mut failure_sender,
-                                    generation,
-                                );
-                                break;
-                            }
+                        if start_sender.is_some()
+                            && let Err(error) = runtime.sync_with_first_frame(source_time)
+                        {
+                            fail_worker(
+                                error,
+                                &mut runtime,
+                                &shared,
+                                &mut start_sender,
+                                &mut failure_sender,
+                                generation,
+                            );
+                            break;
                         }
                         update_duration(&shared, duration, generation);
                         let pending_sender = start_sender.take();
@@ -651,11 +657,11 @@ fn handle_command(
                 return false;
             }
 
-            if let Some(camera) = runtime.camera.as_ref() {
-                if let Err(error) = camera.pause() {
-                    let _ = response.send(Err(error));
-                    return false;
-                }
+            if let Some(camera) = runtime.camera.as_ref()
+                && let Err(error) = camera.pause()
+            {
+                let _ = response.send(Err(error));
+                return false;
             }
             *paused = true;
             runtime.timeline.pause();
@@ -681,11 +687,11 @@ fn handle_command(
                 return false;
             }
 
-            if let Some(camera) = runtime.camera.as_ref() {
-                if let Err(error) = camera.resume() {
-                    let _ = response.send(Err(error));
-                    return false;
-                }
+            if let Some(camera) = runtime.camera.as_ref()
+                && let Err(error) = camera.resume()
+            {
+                let _ = response.send(Err(error));
+                return false;
             }
             *paused = false;
             let status = RecorderStatus {
@@ -762,6 +768,7 @@ struct RecordingRuntime {
     camera_config: CameraRecordingConfig,
     camera_clock: Option<CameraSyncClock>,
     frames: Receiver<FrameMessage>,
+    capture_controls: Receiver<FrameMessage>,
     timeline: VideoTimeline,
     follows_target: bool,
     output_path: PathBuf,
@@ -771,15 +778,17 @@ impl RecordingRuntime {
     fn prepare(config: &RecordingConfig) -> Result<Self, RecorderError> {
         let project_dir = recording_project_dir(&config.output_path)?.to_path_buf();
         let target = CaptureTarget::resolve(config)?;
+        let frame_rate = effective_frame_rate(config.frame_rate, target.monitor.refresh_rate);
         let tracker_source = target.tracker_source();
         let (device, context, winrt_device) = create_d3d_device()?;
-        let (capture, frames, layout) = WindowsCapture::prepare(winrt_device, target)?;
+        let (capture, frames, capture_controls, layout) =
+            WindowsCapture::prepare(winrt_device, target)?;
         let follows_target = layout.fitted;
         let encoder = match MediaFoundationEncoder::new(
             &config.output_path,
             layout.width,
             layout.height,
-            config.frame_rate,
+            frame_rate,
             device,
             context,
             layout.crop,
@@ -817,7 +826,7 @@ impl RecordingRuntime {
             project_dir,
             device_id: config.camera_device_id.clone(),
             device_name: config.camera_device_name.clone(),
-            frame_rate: config.frame_rate,
+            frame_rate,
             enabled: config.camera_enabled,
         };
         let camera = if config.camera_enabled {
@@ -843,7 +852,8 @@ impl RecordingRuntime {
             camera_config,
             camera_clock: None,
             frames,
-            timeline: VideoTimeline::new(config.frame_rate),
+            capture_controls,
+            timeline: VideoTimeline::new(frame_rate),
             follows_target,
             output_path: config.output_path.clone(),
         })
@@ -1137,14 +1147,14 @@ fn publish_staged_assets(assets: &[StagedAsset]) -> Result<(), RecorderError> {
 
     let mut published = Vec::new();
     for (asset, backup_path) in assets.iter().zip(backup_paths) {
-        if let Some(backup) = &backup_path {
-            if let Err(error) = std::fs::rename(&asset.output_path, &backup) {
-                rollback_published_assets(&published);
-                cleanup_staged_assets(assets);
-                return Err(RecorderError::stop(format!(
-                    "Failed to stage existing recording asset: {error}"
-                )));
-            }
+        if let Some(backup) = &backup_path
+            && let Err(error) = std::fs::rename(&asset.output_path, backup)
+        {
+            rollback_published_assets(&published);
+            cleanup_staged_assets(assets);
+            return Err(RecorderError::stop(format!(
+                "Failed to stage existing recording asset: {error}"
+            )));
         }
 
         if let Err(error) = std::fs::rename(&asset.temporary_path, &asset.output_path) {
@@ -1242,10 +1252,10 @@ impl VideoTimeline {
             .saturating_sub(first)
             .saturating_sub(self.total_pause)
             .max(0);
-        if let Some(last) = self.last_written {
-            if timestamp <= last || timestamp.saturating_sub(last) < self.frame_duration {
-                return None;
-            }
+        if let Some(last) = self.last_written
+            && (timestamp <= last || timestamp.saturating_sub(last) < self.frame_duration)
+        {
+            return None;
         }
         Some(timestamp)
     }
@@ -1300,6 +1310,7 @@ struct MonitorTarget {
     device: String,
     device_number: i32,
     primary: bool,
+    refresh_rate: u32,
 }
 
 struct CaptureTarget {
@@ -1551,6 +1562,7 @@ fn enumerate_monitors() -> Result<Vec<MonitorTarget>, RecorderError> {
                 device: name,
                 device_number,
                 primary: (info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
+                refresh_rate: display_refresh_rate(&info.szDevice),
             });
         }
         BOOL(1)
@@ -1568,6 +1580,24 @@ fn enumerate_monitors() -> Result<Vec<MonitorTarget>, RecorderError> {
         return Err(RecorderError::configuration("Failed to list displays"));
     }
     Ok(monitors)
+}
+
+fn display_refresh_rate(device: &[u16]) -> u32 {
+    let mut mode = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    let available =
+        unsafe { EnumDisplaySettingsW(PCWSTR(device.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode) };
+    if available.as_bool() && mode.dmDisplayFrequency > 1 {
+        mode.dmDisplayFrequency
+    } else {
+        60
+    }
+}
+
+fn effective_frame_rate(requested: u32, refresh_rate: u32) -> u32 {
+    requested.min(refresh_rate.max(1))
 }
 
 struct WindowsCapture {
@@ -1588,7 +1618,15 @@ impl WindowsCapture {
     fn prepare(
         device: IDirect3DDevice,
         target: CaptureTarget,
-    ) -> Result<(Self, Receiver<FrameMessage>, CaptureLayout), RecorderError> {
+    ) -> Result<
+        (
+            Self,
+            Receiver<FrameMessage>,
+            Receiver<FrameMessage>,
+            CaptureLayout,
+        ),
+        RecorderError,
+    > {
         if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
             return Err(RecorderError::configuration(
                 "Windows Graphics Capture is not supported on this system",
@@ -1632,8 +1670,9 @@ impl WindowsCapture {
         })?;
         let _ = session.SetIsBorderRequired(false);
 
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let frame_sender = sender.clone();
+        let (frame_sender, frame_receiver) = std::sync::mpsc::sync_channel(1);
+        let (control_sender, control_receiver) = std::sync::mpsc::channel();
+        let error_sender = control_sender.clone();
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |source, _| {
                 let Some(source) = source.as_ref() else {
@@ -1641,10 +1680,10 @@ impl WindowsCapture {
                 };
                 match source.TryGetNextFrame() {
                     Ok(frame) => {
-                        let _ = frame_sender.send(FrameMessage::Frame(frame));
+                        let _ = frame_sender.try_send(FrameMessage::Frame(frame));
                     }
                     Err(error) => {
-                        let _ = frame_sender.send(FrameMessage::Error(RecorderError::capture(
+                        let _ = error_sender.send(FrameMessage::Error(RecorderError::capture(
                             format!("Failed to receive captured frame: {error}"),
                         )));
                     }
@@ -1658,7 +1697,7 @@ impl WindowsCapture {
         let records_window = target.window.is_some();
         let closed_handler =
             TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
-                let _ = sender.send(FrameMessage::Closed(records_window));
+                let _ = control_sender.send(FrameMessage::Closed(records_window));
                 Ok(())
             });
         let closed_token = item.Closed(&closed_handler).map_err(|error| {
@@ -1679,7 +1718,8 @@ impl WindowsCapture {
                 frame_token,
                 closed_token,
             },
-            receiver,
+            frame_receiver,
+            control_receiver,
             layout,
         ))
     }
@@ -2439,6 +2479,33 @@ fn temporary_video_path(output_path: &Path) -> Result<PathBuf, RecorderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_handoff_bounds_pending_frames_when_encoding_is_busy() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        let _ = sender.try_send(1);
+        let _ = sender.try_send(2);
+
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn capture_control_messages_do_not_wait_for_the_frame_queue() {
+        let (frame_sender, _frame_receiver) = std::sync::mpsc::sync_channel(1);
+        let (control_sender, control_receiver) = std::sync::mpsc::channel();
+
+        frame_sender.try_send(1).expect("queue frame");
+        control_sender.send(2).expect("queue control");
+
+        assert_eq!(control_receiver.try_recv(), Ok(2));
+    }
+
+    #[test]
+    fn requested_frame_rate_is_capped_by_the_recorded_display() {
+        assert_eq!(effective_frame_rate(60, 165), 60);
+        assert_eq!(effective_frame_rate(240, 165), 165);
+    }
 
     #[test]
     fn captures_float_pixels_only_on_hdr_displays() {

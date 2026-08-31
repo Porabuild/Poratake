@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isFeatureSupportedOn } from '@/types/capabilities';
+import { PLATFORM_CAPABILITIES } from '@/types/capabilities.generated';
 
 describe('isFeatureSupportedOn', () => {
   it('supports every feature on macOS', () => {
@@ -9,9 +10,9 @@ describe('isFeatureSupportedOn', () => {
     expect(isFeatureSupportedOn('darwin', 'screenshot-window')).toBe(true);
   });
 
-  it('defaults to supported when platform is unknown', () => {
-    expect(isFeatureSupportedOn(undefined, 'recording')).toBe(true);
-    expect(isFeatureSupportedOn(undefined, 'screenshot-area')).toBe(true);
+  it('does not infer capabilities when platform is unknown', () => {
+    expect(isFeatureSupportedOn(undefined, 'recording')).toBe(false);
+    expect(isFeatureSupportedOn(undefined, 'screenshot-area')).toBe(false);
   });
 
   it('supports core screenshot features on Windows', () => {
@@ -40,11 +41,33 @@ describe('isFeatureSupportedOn', () => {
     expect(isFeatureSupportedOn('win32', 'capture-sound')).toBe(false);
   });
 
-  it('gates daemon-backed features off on Linux', () => {
-    expect(isFeatureSupportedOn('linux', 'recording')).toBe(false);
-    expect(isFeatureSupportedOn('linux', 'ocr')).toBe(false);
-    expect(isFeatureSupportedOn('linux', 'desktop-icons')).toBe(false);
-    expect(isFeatureSupportedOn('linux', 'desktop-wallpaper')).toBe(false);
-    expect(isFeatureSupportedOn('linux', 'screenshot-area')).toBe(true);
+  it('keeps Electron Linux disabled until it uses daemon-linux', () => {
+    expect(isFeatureSupportedOn('linux', 'screenshot-area')).toBe(false);
+    expect(isFeatureSupportedOn('linux', 'qrcode')).toBe(false);
+  });
+
+  it('defines explicit GPUI Linux session capabilities', () => {
+    const x11: readonly string[] = PLATFORM_CAPABILITIES.linuxX11;
+    const wayland: readonly string[] = PLATFORM_CAPABILITIES.linuxWayland;
+    expect(x11.includes('screenshot-window')).toBe(true);
+    expect(x11.includes('scroll-capture')).toBe(true);
+    expect(x11.includes('display-selector')).toBe(true);
+    expect(x11.includes('recording')).toBe(true);
+    expect(wayland.includes('screenshot-window')).toBe(false);
+    expect(wayland.includes('screenshot-screen')).toBe(true);
+    expect(wayland.includes('screenshot-area')).toBe(true);
+    expect(wayland.includes('display-selector')).toBe(false);
+    expect(wayland.includes('recording')).toBe(true);
+    expect(x11.includes('video-editor')).toBe(true);
+    expect(wayland.includes('video-editor')).toBe(true);
+  });
+
+  it('keeps color picker support aligned with GPUI', () => {
+    expect(isFeatureSupportedOn('darwin', 'color-picker')).toBe(true);
+    expect(isFeatureSupportedOn('win32', 'color-picker')).toBe(true);
+    const x11: readonly string[] = PLATFORM_CAPABILITIES.linuxX11;
+    const wayland: readonly string[] = PLATFORM_CAPABILITIES.linuxWayland;
+    expect(x11.includes('color-picker')).toBe(true);
+    expect(wayland.includes('color-picker')).toBe(false);
   });
 });

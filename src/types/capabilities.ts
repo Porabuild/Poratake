@@ -1,56 +1,30 @@
-export type FeatureId =
-  | 'screenshot-screen'
-  | 'screenshot-area'
-  | 'screenshot-window'
-  | 'ocr'
-  | 'qrcode'
-  | 'timer-capture'
-  | 'scroll-capture'
-  | 'all-in-one'
-  | 'recording'
-  | 'video-editor'
-  | 'desktop-icons'
-  | 'freeze-screen'
-  | 'display-selector'
-  | 'print'
-  | 'desktop-wallpaper'
-  | 'transcription'
-  | 'capture-sound';
+import {
+  PLATFORM_CAPABILITIES,
+  type CapabilityTarget,
+  type FeatureId,
+} from './capabilities.generated';
 
-const CROSS_PLATFORM_FEATURES: readonly FeatureId[] = [
-  'screenshot-screen',
-  'screenshot-area',
-];
+export type { FeatureId } from './capabilities.generated';
 
-const WINDOWS_FEATURES: ReadonlySet<FeatureId> = new Set([
-  ...CROSS_PLATFORM_FEATURES,
-  'screenshot-window',
-  'ocr',
-  'qrcode',
-  'timer-capture',
-  'desktop-icons',
-  'display-selector',
-  'desktop-wallpaper',
-  'freeze-screen',
-  'scroll-capture',
-  'all-in-one',
-  'print',
-  'recording',
-  'video-editor',
-  'transcription',
-]);
+function capabilityTarget(
+  platform: string | undefined
+): CapabilityTarget | undefined {
+  switch (platform) {
+    case 'darwin':
+      return 'macos';
+    case 'win32':
+      return 'windows';
+    default:
+      return undefined;
+  }
+}
 
 export function isFeatureSupportedOn(
   platform: string | undefined,
   feature: FeatureId
 ): boolean {
-  switch (platform) {
-    case undefined:
-    case 'darwin':
-      return true;
-    case 'win32':
-      return WINDOWS_FEATURES.has(feature);
-    default:
-      return CROSS_PLATFORM_FEATURES.includes(feature);
-  }
+  const target = capabilityTarget(platform);
+  if (!target) return false;
+  const supported: readonly FeatureId[] = PLATFORM_CAPABILITIES[target];
+  return supported.includes(feature);
 }

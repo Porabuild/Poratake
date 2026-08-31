@@ -1,4 +1,5 @@
-use crate::protocol::{Request, param_bool, param_i32, param_i64, param_str};
+use crate::protocol::{Request, params};
+use poratake_daemon_common::contract::ScreenRecorderStartRequest;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -94,31 +95,21 @@ pub struct RecordingConfig {
 
 impl RecordingConfig {
     pub fn from_request(request: &Request) -> Result<Self, RecorderError> {
-        if request.params.is_none() {
+        let Some(request_params) = request.params.as_ref() else {
             return Err(RecorderError::invalid_params("start requires params"));
-        }
-
-        let Some(output_path) = param_str(&request.params, "outputPath") else {
-            return Err(RecorderError::invalid_params("outputPath is required"));
         };
-
-        if output_path.trim().is_empty() {
+        if !request_params.contains_key("outputPath") {
             return Err(RecorderError::invalid_params("outputPath is required"));
         }
-
-        let coordinates = [
-            param_i32(&request.params, "x"),
-            param_i32(&request.params, "y"),
-            param_i32(&request.params, "width"),
-            param_i32(&request.params, "height"),
-        ];
-        let provided_coordinates = coordinates.iter().filter(|value| value.is_some()).count();
-
-        if provided_coordinates != 0 && provided_coordinates != coordinates.len() {
-            return Err(RecorderError::invalid_params(
-                "x, y, width, and height must be provided together",
-            ));
+        let wire: ScreenRecorderStartRequest =
+            params(request).map_err(|(_, message)| RecorderError::invalid_params(message))?;
+        if wire.output_path.as_os_str().is_empty() {
+            return Err(RecorderError::invalid_params("outputPath is required"));
         }
+        wire.validate().map_err(RecorderError::invalid_params)?;
+
+        let coordinates = [wire.x, wire.y, wire.width, wire.height];
+        let provided_coordinates = coordinates.iter().filter(|value| value.is_some()).count();
 
         let capture_rect = if provided_coordinates == coordinates.len() {
             let rect = CaptureRect {
@@ -127,12 +118,6 @@ impl RecordingConfig {
                 width: coordinates[2].unwrap_or_default(),
                 height: coordinates[3].unwrap_or_default(),
             };
-
-            if rect.width <= 0 || rect.height <= 0 {
-                return Err(RecorderError::invalid_params(
-                    "width and height must be positive",
-                ));
-            }
 
             if rect.right().is_none() || rect.bottom().is_none() {
                 return Err(RecorderError::invalid_params(
@@ -145,20 +130,13 @@ impl RecordingConfig {
             None
         };
 
-        let frame_rate = param_i32(&request.params, "frameRate").unwrap_or(60);
-        if !(1..=240).contains(&frame_rate) {
-            return Err(RecorderError::invalid_params(
-                "frameRate must be between 1 and 240",
-            ));
-        }
-
-        if param_str(&request.params, "iosDeviceId").is_some() {
+        if wire.ios_device_id.is_some() {
             return Err(RecorderError::configuration(
                 "iOS device recording is not supported on Windows",
             ));
         }
 
-        let output_path = PathBuf::from(output_path);
+        let output_path = wire.output_path;
         let parent = recording_project_dir(&output_path)?;
 
         if !parent.is_dir() {
@@ -167,25 +145,36 @@ impl RecordingConfig {
             ));
         }
 
-        let window_id = param_i64(&request.params, "windowId").map(|handle| handle as isize);
+        let window_id = wire.window_id.map(|handle| handle as isize);
         if window_id == Some(0) {
             return Err(RecorderError::invalid_params("windowId is not a window"));
         }
 
+        let display_id = if capture_rect.is_none() && window_id.is_none() {
+            wire.display_id
+                .map(i32::try_from)
+                .transpose()
+                .map_err(|_| {
+                    RecorderError::invalid_params("displayId is outside the supported range")
+                })?
+        } else {
+            None
+        };
+
         Ok(Self {
             capture_rect,
-            display_id: param_i32(&request.params, "displayId"),
+            display_id,
             window_id,
-            frame_rate: frame_rate as u32,
+            frame_rate: wire.frame_rate,
             output_path,
-            keyboard_enabled: param_bool(&request.params, "keyboardEnabled").unwrap_or(false),
-            include_audio: param_bool(&request.params, "includeAudio").unwrap_or(true),
-            mic_enabled: param_bool(&request.params, "micEnabled").unwrap_or(false),
-            mic_device_id: param_str(&request.params, "micDeviceId").map(str::to_owned),
-            mic_device_name: param_str(&request.params, "micDeviceName").map(str::to_owned),
-            camera_enabled: param_bool(&request.params, "cameraEnabled").unwrap_or(false),
-            camera_device_id: param_str(&request.params, "cameraDeviceId").map(str::to_owned),
-            camera_device_name: param_str(&request.params, "cameraDeviceName").map(str::to_owned),
+            keyboard_enabled: wire.keyboard_enabled,
+            include_audio: wire.include_audio,
+            mic_enabled: wire.mic_enabled,
+            mic_device_id: wire.mic_device_id,
+            mic_device_name: wire.mic_device_name,
+            camera_enabled: wire.camera_enabled,
+            camera_device_id: wire.camera_device_id,
+            camera_device_name: wire.camera_device_name,
         })
     }
 }
@@ -334,6 +323,46 @@ mod tests {
         };
 
         assert_eq!(error.code, "INVALID_PARAMS");
+    }
+
+    #[test]
+    fn ignores_an_unrepresentable_display_id_for_an_area_capture() {
+        let params = HashMap::from([
+            (
+                "outputPath".to_string(),
+                json!(std::env::temp_dir().join("recording.mov")),
+            ),
+            ("x".to_string(), json!(0)),
+            ("y".to_string(), json!(0)),
+            ("width".to_string(), json!(1920)),
+            ("height".to_string(), json!(1080)),
+            ("displayId".to_string(), json!(u32::MAX)),
+        ]);
+
+        let Ok(config) = RecordingConfig::from_request(&start_request(params)) else {
+            panic!("area recording config should parse");
+        };
+
+        assert_eq!(config.display_id, None);
+        assert!(config.capture_rect.is_some());
+    }
+
+    #[test]
+    fn rejects_frame_rates_outside_the_shared_range() {
+        for frame_rate in [0, 241] {
+            let params = HashMap::from([
+                (
+                    "outputPath".to_string(),
+                    json!(std::env::temp_dir().join("recording.mov")),
+                ),
+                ("frameRate".to_string(), json!(frame_rate)),
+            ]);
+
+            let Err(error) = RecordingConfig::from_request(&start_request(params)) else {
+                panic!("invalid frame rate should be rejected");
+            };
+            assert_eq!(error.code, "INVALID_PARAMS");
+        }
     }
 
     #[test]

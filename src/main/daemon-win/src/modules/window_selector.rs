@@ -1,6 +1,8 @@
 use crate::overlay::{rect_height, rect_width};
 use crate::protocol::Request;
 use crate::router::{Module, Reply, method_not_found};
+use poratake_daemon_common::contract::{WINDOW_SELECTOR_MODULE, WindowSelectorMethod};
+use poratake_daemon_common::geometry::{WindowBounds, WindowInfo};
 use serde_json::json;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{
@@ -22,15 +24,6 @@ const EXCLUDED_CLASSES: [&str; 4] = [
     "Shell_TrayWnd",
     "Shell_SecondaryTrayWnd",
 ];
-
-#[derive(Clone)]
-struct TargetWindow {
-    window_id: isize,
-    title: String,
-    owner_name: String,
-    owner_pid: u32,
-    rect: RECT,
-}
 
 fn window_process_name(pid: u32) -> String {
     unsafe {
@@ -107,11 +100,11 @@ pub fn window_bounds(window: HWND) -> Option<RECT> {
     Some(rect)
 }
 
-fn collect_target_windows() -> Vec<TargetWindow> {
-    let mut targets: Vec<TargetWindow> = Vec::new();
+fn collect_target_windows() -> Vec<WindowInfo> {
+    let mut targets: Vec<WindowInfo> = Vec::new();
 
     unsafe extern "system" fn enum_proc(window: HWND, lparam: LPARAM) -> windows::core::BOOL {
-        let targets = unsafe { &mut *(lparam.0 as *mut Vec<TargetWindow>) };
+        let targets = unsafe { &mut *(lparam.0 as *mut Vec<WindowInfo>) };
         let keep_enumerating = windows::core::BOOL(1);
 
         if !unsafe { IsWindowVisible(window) }.as_bool() {
@@ -157,12 +150,17 @@ fn collect_target_windows() -> Vec<TargetWindow> {
             raw_title
         };
 
-        targets.push(TargetWindow {
-            window_id: window.0 as isize,
+        targets.push(WindowInfo {
+            window_id: window.0 as isize as i64,
             title,
             owner_name,
-            owner_pid: pid,
-            rect,
+            owner_pid: i64::from(pid),
+            bounds: WindowBounds {
+                x: f64::from(rect.left),
+                y: f64::from(rect.top),
+                width: f64::from(rect_width(&rect)),
+                height: f64::from(rect_height(&rect)),
+            },
         });
         keep_enumerating
     }
@@ -183,32 +181,16 @@ impl WindowSelectorModule {
 
 impl Module for WindowSelectorModule {
     fn name(&self) -> &'static str {
-        "window-selector"
+        WINDOW_SELECTOR_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "list" => {
-                let windows: Vec<serde_json::Value> = collect_target_windows()
-                    .iter()
-                    .map(|target| {
-                        json!({
-                            "windowId": target.window_id as i64,
-                            "title": target.title.as_str(),
-                            "ownerName": target.owner_name.as_str(),
-                            "ownerPid": target.owner_pid,
-                            "bounds": {
-                                "x": target.rect.left,
-                                "y": target.rect.top,
-                                "width": rect_width(&target.rect),
-                                "height": rect_height(&target.rect),
-                            },
-                        })
-                    })
-                    .collect();
+        match WindowSelectorMethod::parse(&request.method) {
+            Some(WindowSelectorMethod::List) => {
+                let windows = collect_target_windows();
                 Reply::Now(Ok(Some(json!({ "windows": windows }))))
             }
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }

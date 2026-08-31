@@ -3,9 +3,14 @@ use crate::overlay::{
     create_popup_window, default_wndproc, disable_window_transitions, ensure_window_class,
     rect_height, rect_width, scale_for_dpi,
 };
-use crate::protocol::{Request, param_i32, param_i64, param_str, respond_error, respond_success};
+use crate::panel::parse_color;
+use crate::protocol::{Request, params as parse_params, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
+use poratake_daemon_common::contract::{
+    RECORDING_OVERLAY_MODULE, RecordingOverlayMethod, RecordingOverlayShowWindowRequest,
+};
+use poratake_daemon_common::geometry::CaptureRect;
 use serde_json::json;
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -18,11 +23,11 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, DestroyWindow, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
-    GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, LWA_ALPHA,
-    OBJID_WINDOW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetLayeredWindowAttributes,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    GetWindowThreadProcessId, HTTRANSPARENT, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible,
+    LWA_ALPHA, OBJID_WINDOW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
+    WDA_EXCLUDEFROMCAPTURE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_NCHITTEST, WM_PAINT,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 const HIGHLIGHT_CLASS_NAME: &str = "PoratakeRecordingHighlight";
@@ -48,29 +53,16 @@ thread_local! {
     static HIGHLIGHT_COLOR: RefCell<COLORREF> = const { RefCell::new(HIGHLIGHT_FALLBACK) };
 }
 
-/// The app hands over its live theme accent as `#rrggbb`; COLORREF orders the
-/// channels the other way round.
-fn parse_color(value: Option<&str>) -> COLORREF {
-    let Some(hex) = value.map(|value| value.trim_start_matches('#')) else {
-        return HIGHLIGHT_FALLBACK;
-    };
-    if hex.len() != 6 {
-        return HIGHLIGHT_FALLBACK;
-    }
-
-    let channel = |range: std::ops::Range<usize>| u32::from_str_radix(&hex[range], 16).ok();
-    match (channel(0..2), channel(2..4), channel(4..6)) {
-        (Some(red), Some(green), Some(blue)) => COLORREF((blue << 16) | (green << 8) | red),
-        _ => HIGHLIGHT_FALLBACK,
-    }
-}
-
 unsafe extern "system" fn highlight_wndproc(
     window: HWND,
     message: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_NCHITTEST {
+        return LRESULT(HTTRANSPARENT as isize);
+    }
+
     if message == WM_PAINT {
         paint(window, HIGHLIGHT_COLOR.with(|color| *color.borrow()));
         return LRESULT(0);
@@ -299,34 +291,20 @@ impl RecordingOverlayModule {
 
 impl Module for RecordingOverlayModule {
     fn name(&self) -> &'static str {
-        "recording-overlay"
+        RECORDING_OVERLAY_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "show" => {
-                if param_i32(&request.params, "x").is_none()
-                    || param_i32(&request.params, "y").is_none()
-                {
-                    return Reply::Now(Err((
-                        "INVALID_PARAMS".to_string(),
-                        "show requires x, y, width, height".to_string(),
-                    )));
-                }
-                let Some(width) = param_i32(&request.params, "width") else {
-                    return Reply::Now(Err((
-                        "INVALID_PARAMS".to_string(),
-                        "show requires x, y, width, height".to_string(),
-                    )));
-                };
-                let Some(height) = param_i32(&request.params, "height") else {
+        match RecordingOverlayMethod::parse(&request.method) {
+            Some(RecordingOverlayMethod::Show) => {
+                let Ok(rect): Result<CaptureRect, _> = parse_params(request) else {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
                         "show requires x, y, width, height".to_string(),
                     )));
                 };
 
-                if width <= 0 || height <= 0 {
+                if !rect.has_positive_size() {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
                         "show requires positive width and height".to_string(),
@@ -340,21 +318,23 @@ impl Module for RecordingOverlayModule {
                 });
                 Reply::Deferred
             }
-            "showWindow" => {
-                let Some(handle) = param_i64(&request.params, "windowId") else {
+            Some(RecordingOverlayMethod::ShowWindow) => {
+                let Ok(params): Result<RecordingOverlayShowWindowRequest, _> =
+                    parse_params(request)
+                else {
                     return Reply::Now(Err((
                         "INVALID_PARAMS".to_string(),
                         "showWindow requires windowId".to_string(),
                     )));
                 };
 
-                let color = parse_color(param_str(&request.params, "color"));
-                let insert_after_handle = param_i64(&request.params, "belowWindowId");
+                let color = parse_color(params.color.as_deref()).unwrap_or(HIGHLIGHT_FALLBACK);
                 let request_id = request.id.clone();
                 run_on_ui(move || {
-                    let target = HWND(handle as isize as *mut c_void);
-                    let insert_after =
-                        insert_after_handle.map(|handle| HWND(handle as isize as *mut c_void));
+                    let target = HWND(params.window_id as isize as *mut c_void);
+                    let insert_after = params
+                        .below_window_id
+                        .map(|handle| HWND(handle as isize as *mut c_void));
                     match show_window_highlight(target, color, insert_after) {
                         Ok(shown) => {
                             respond_success(&request_id, json!({ "visible": shown }));
@@ -377,7 +357,7 @@ impl Module for RecordingOverlayModule {
                 });
                 Reply::Deferred
             }
-            "hide" => {
+            Some(RecordingOverlayMethod::Hide) => {
                 let request_id = request.id.clone();
                 run_on_ui(move || {
                     teardown();
@@ -385,7 +365,7 @@ impl Module for RecordingOverlayModule {
                 });
                 Reply::Deferred
             }
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }
@@ -396,15 +376,30 @@ mod tests {
 
     #[test]
     fn reads_the_theme_accent_into_a_colorref() {
-        assert_eq!(parse_color(Some("#8892ef")).0, 0x00EF_9288);
-        assert_eq!(parse_color(Some("5F6CD9")).0, 0x00D9_6C5F);
+        assert_eq!(
+            parse_color(Some("#8892ef")).map(|color| color.0),
+            Some(0x00EF_9288)
+        );
+        assert_eq!(
+            parse_color(Some("5F6CD9")).map(|color| color.0),
+            Some(0x00D9_6C5F)
+        );
     }
 
     #[test]
     fn falls_back_when_the_accent_is_unusable() {
-        assert_eq!(parse_color(None), HIGHLIGHT_FALLBACK);
-        assert_eq!(parse_color(Some("#fff")), HIGHLIGHT_FALLBACK);
-        assert_eq!(parse_color(Some("#zzzzzz")), HIGHLIGHT_FALLBACK);
+        assert_eq!(
+            parse_color(None).unwrap_or(HIGHLIGHT_FALLBACK),
+            HIGHLIGHT_FALLBACK
+        );
+        assert_eq!(
+            parse_color(Some("#fff")).unwrap_or(HIGHLIGHT_FALLBACK),
+            HIGHLIGHT_FALLBACK
+        );
+        assert_eq!(
+            parse_color(Some("#zzzzzz")).unwrap_or(HIGHLIGHT_FALLBACK),
+            HIGHLIGHT_FALLBACK
+        );
     }
 
     #[test]
@@ -435,5 +430,19 @@ mod tests {
 
         assert_eq!(rect_width(&frame), rect_width(&bounds) + 6);
         assert_eq!(rect_height(&frame), rect_height(&bounds) + 6);
+    }
+
+    #[test]
+    fn highlight_never_owns_pointer_input() {
+        let result = unsafe {
+            highlight_wndproc(
+                HWND::default(),
+                WM_NCHITTEST,
+                WPARAM::default(),
+                LPARAM::default(),
+            )
+        };
+
+        assert_eq!(result, LRESULT(HTTRANSPARENT as isize));
     }
 }

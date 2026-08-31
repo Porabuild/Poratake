@@ -1,0 +1,52 @@
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "AGPL-3.0-only",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "NCSA",
+  "OpenSSL",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+]
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained but only reachable transitively via gpui 0.2 / usvg / fontdue; no safe upgrade exists" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained but only reachable transitively via gpui 0.2 / cosmic-text / usvg; no safe upgrade exists" },
+  { id = "RUSTSEC-2025-0052", reason = "async-std is discontinued but only reachable transitively via gpui 0.2; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0384", reason = "instant is unmaintained but only reachable transitively via gpui 0.2; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but only reachable transitively via gpui 0.2; no safe upgrade exists" },
+  { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained but only reachable transitively via gpui 0.2 build-time macros; no safe upgrade exists" },
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained but only reachable transitively via gpui 0.2; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0413", reason = "atk is unmaintained but only reachable through tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0416", reason = "atk-sys is unmaintained but only reachable through tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0412", reason = "gdk is unmaintained but only reachable through tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0418", reason = "gdk-sys is unmaintained but only reachable through tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0415", reason = "gtk is unmaintained but required by tray-icon's Linux AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0420", reason = "gtk-sys is unmaintained but required by tray-icon's Linux AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0419", reason = "gtk3-macros is unmaintained but only used to build tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained but only used by the Linux GTK3 build-time macros; no safe upgrade exists" },
+  { id = "RUSTSEC-2024-0429", reason = "glib VariantStrIter is unsound but that API is not referenced by Poratake or the tray-icon GTK3 closure; tray-icon cannot yet use fixed glib 0.20" },
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

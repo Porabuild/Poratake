@@ -39,5 +39,6 @@ export interface ExportRenderProps {
   scale: number;
 }
 
-export const SELECTION_STROKE = 'rgba(0, 122, 255, 0.8)';
+export const SELECTION_STROKE =
+  'color-mix(in srgb, var(--primary) 80%, transparent)';
 export const SELECTION_STROKE_WIDTH = 6;

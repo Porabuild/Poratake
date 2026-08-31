@@ -9,14 +9,22 @@ use crate::panel::{
     button_at, button_fill, button_rect, button_state, draw_label, draw_pill, paint_buffered,
     panel_height, panel_width,
 };
-use crate::protocol::{Request, param_i32, param_str, respond_error, respond_success, send_event};
+use crate::protocol::{Request, params, respond_error, respond_success, send_event};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
+use poratake_daemon_common::contract::{
+    SCROLL_CAPTURE_CANCELLED_EVENT, SCROLL_CAPTURE_DONE_EVENT, SCROLL_CAPTURE_FRAME_EVENT,
+    SCROLL_CAPTURE_MODULE, SCROLL_CAPTURE_SCROLL_ENDED_EVENT, ScrollCaptureAutoScrollRequest,
+    ScrollCaptureFinishRequest, ScrollCaptureFinishResult, ScrollCaptureMethod,
+    ScrollCaptureStartRequest, ScrollSpeed,
+};
+use poratake_daemon_common::scroll::{
+    CaptureOutcome, FRAME_OVERLAP_PERCENT, FrameAccumulator, scroll_interval_millis, scroll_plan,
+    write_png,
+};
 use serde_json::json;
 use std::cell::RefCell;
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CAPTUREBLT, CombineRgn,
@@ -45,11 +53,7 @@ const BOUNDARY_THICKNESS: i32 = 2;
 const COLOR_KEY: COLORREF = COLORREF(0);
 const BOUNDARY_COLOR: COLORREF = COLORREF(0x00FF7A00);
 const AUTO_SCROLL_TIMER_ID: usize = 1;
-const FRAME_OVERLAP_PERCENT: i32 = 30;
-const MAX_DUPLICATE_FRAMES: usize = 3;
 const WHEEL_DELTA: i32 = -120;
-const WHEEL_LOGICAL_PIXELS: f64 = 48.0;
-const MAX_OVERLAP_CHANNEL_DIFFERENCE: u64 = 18;
 
 #[derive(Clone, Copy)]
 struct CaptureBounds {
@@ -77,53 +81,6 @@ impl CaptureBounds {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ScrollSpeed {
-    Slow,
-    Medium,
-    Fast,
-}
-
-impl ScrollSpeed {
-    fn parse(value: Option<&str>) -> Self {
-        match value {
-            Some("slow") => Self::Slow,
-            Some("fast") => Self::Fast,
-            _ => Self::Medium,
-        }
-    }
-
-    fn interval(self) -> u32 {
-        match self {
-            Self::Slow => 40,
-            Self::Medium => 30,
-            Self::Fast => 20,
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct ScrollPlan {
-    target_logical_points: usize,
-    wheel_detents: usize,
-    interval: u32,
-}
-
-fn scroll_plan(logical_viewport_height: f64, speed: ScrollSpeed) -> ScrollPlan {
-    let target_logical_points = (logical_viewport_height * (100 - FRAME_OVERLAP_PERCENT) as f64
-        / 100.0)
-        .round()
-        .max(1.0) as usize;
-    let wheel_detents =
-        ((target_logical_points as f64 / WHEEL_LOGICAL_PIXELS).ceil() as usize).max(1);
-
-    ScrollPlan {
-        target_logical_points,
-        wheel_detents,
-        interval: speed.interval(),
-    }
-}
-
 fn logical_height(physical_height: usize, scale_factor: f64) -> usize {
     (physical_height as f64 / scale_factor).ceil() as usize
 }
@@ -132,56 +89,36 @@ fn dpi_for_scale_factor(scale_factor: f64) -> u32 {
     (96.0 * scale_factor).round().max(96.0) as u32
 }
 
-struct CapturedFrame {
-    width: usize,
-    height: usize,
-    pixels: Vec<u8>,
-    overlap: usize,
-}
-
-enum CaptureOutcome {
-    Added,
-    Repeated,
-    Ended,
-    NoOverlap,
-}
-
 struct CaptureState {
     bounds: Option<CaptureBounds>,
-    frames: Vec<CapturedFrame>,
+    accumulator: FrameAccumulator,
     is_capturing: bool,
     is_auto_scrolling: bool,
     done_requested: bool,
     auto_scroll_speed: ScrollSpeed,
     max_height: usize,
     scale_factor: f64,
-    last_frame_hash: Option<u64>,
-    duplicate_frame_count: usize,
     scroll_step_points: usize,
     scroll_steps_per_frame: usize,
     current_scroll_step: usize,
     capture_on_next_tick: bool,
-    estimated_height: usize,
 }
 
 impl Default for CaptureState {
     fn default() -> Self {
         Self {
             bounds: None,
-            frames: Vec::new(),
+            accumulator: FrameAccumulator::default(),
             is_capturing: false,
             is_auto_scrolling: false,
             done_requested: false,
-            auto_scroll_speed: ScrollSpeed::Medium,
+            auto_scroll_speed: ScrollSpeed::default(),
             max_height: 20_000,
             scale_factor: 1.0,
-            last_frame_hash: None,
-            duplicate_frame_count: 0,
             scroll_step_points: 0,
             scroll_steps_per_frame: 0,
             current_scroll_step: 0,
             capture_on_next_tick: false,
-            estimated_height: 0,
         }
     }
 }
@@ -220,7 +157,7 @@ struct ScrollUiState {
 }
 
 thread_local! {
-    static UI_STATE: RefCell<ScrollUiState> = RefCell::new(ScrollUiState {
+    static UI_STATE: RefCell<ScrollUiState> = const { RefCell::new(ScrollUiState {
         boundary: None,
         panel: None,
         font: None,
@@ -230,7 +167,7 @@ thread_local! {
         escape_token: None,
         enter_token: None,
         capture_state: None,
-    });
+    }) };
 }
 
 unsafe extern "system" fn boundary_wndproc(
@@ -522,7 +459,7 @@ fn done_from_ui() {
     }
 
     stop_auto_scroll_ui(&state);
-    send_event("scroll-capture:done", None);
+    send_event(SCROLL_CAPTURE_DONE_EVENT, None);
 }
 
 fn cancel_from_ui() {
@@ -543,7 +480,7 @@ fn cancel_from_ui() {
 
     teardown_ui();
     if was_capturing {
-        send_event("scroll-capture:cancelled", None);
+        send_event(SCROLL_CAPTURE_CANCELLED_EVENT, None);
     }
 }
 
@@ -551,6 +488,7 @@ fn show_capture_ui(
     state: Arc<Mutex<CaptureState>>,
     bounds: CaptureBounds,
     dpi: u32,
+    visible: bool,
 ) -> Result<(), String> {
     teardown_ui();
     ensure_window_class(BOUNDARY_CLASS_NAME, Some(boundary_wndproc), None);
@@ -581,7 +519,9 @@ fn show_capture_ui(
         let layered = SetLayeredWindowAttributes(boundary, COLOR_KEY, 255, LWA_COLORKEY);
         if layered.is_ok() {
             let _ = SetWindowDisplayAffinity(boundary, WDA_EXCLUDEFROMCAPTURE);
-            let _ = ShowWindow(boundary, SW_SHOWNOACTIVATE);
+            if visible {
+                let _ = ShowWindow(boundary, SW_SHOWNOACTIVATE);
+            }
             SetWindowPos(
                 boundary,
                 Some(HWND_TOPMOST),
@@ -617,7 +557,9 @@ fn show_capture_ui(
         let layered = SetLayeredWindowAttributes(panel, COLOR_KEY, PANEL_ALPHA, LWA_ALPHA);
         if layered.is_ok() {
             let _ = SetWindowDisplayAffinity(panel, WDA_EXCLUDEFROMCAPTURE);
-            let _ = ShowWindow(panel, SW_SHOWNOACTIVATE);
+            if visible {
+                let _ = ShowWindow(panel, SW_SHOWNOACTIVATE);
+            }
             SetWindowPos(
                 panel,
                 Some(HWND_TOPMOST),
@@ -647,27 +589,29 @@ fn show_capture_ui(
         ui.capture_state = Some(state);
     });
 
-    let escape_token = match add_key_handler(VK_ESCAPE.0 as u32, cancel_from_ui) {
-        Ok(token) => token,
-        Err(message) => {
-            teardown_ui();
-            return Err(message);
-        }
-    };
-    UI_STATE.with(|ui| {
-        ui.borrow_mut().escape_token = Some(escape_token);
-    });
-    let enter_token = match add_key_handler(VK_RETURN.0 as u32, done_from_ui) {
-        Ok(token) => token,
-        Err(message) => {
-            teardown_ui();
-            return Err(message);
-        }
-    };
-    UI_STATE.with(|ui| {
-        let mut ui = ui.borrow_mut();
-        ui.enter_token = Some(enter_token);
-    });
+    if visible {
+        let escape_token = match add_key_handler(VK_ESCAPE.0 as u32, cancel_from_ui) {
+            Ok(token) => token,
+            Err(message) => {
+                teardown_ui();
+                return Err(message);
+            }
+        };
+        UI_STATE.with(|ui| {
+            ui.borrow_mut().escape_token = Some(escape_token);
+        });
+        let enter_token = match add_key_handler(VK_RETURN.0 as u32, done_from_ui) {
+            Ok(token) => token,
+            Err(message) => {
+                teardown_ui();
+                return Err(message);
+            }
+        };
+        UI_STATE.with(|ui| {
+            let mut ui = ui.borrow_mut();
+            ui.enter_token = Some(enter_token);
+        });
+    }
 
     Ok(())
 }
@@ -753,7 +697,7 @@ fn start_auto_scroll_ui(state: &Arc<Mutex<CaptureState>>) -> Result<(), (String,
         })?;
         state
             .is_auto_scrolling
-            .then_some(state.auto_scroll_speed.interval())
+            .then_some(scroll_interval_millis(state.auto_scroll_speed) as u32)
     };
 
     if let Some(interval) = running_interval {
@@ -832,7 +776,7 @@ fn start_auto_scroll_ui(state: &Arc<Mutex<CaptureState>>) -> Result<(), (String,
             }
         }
 
-        (bounds, plan.interval)
+        (bounds, plan.interval_millis as u32)
     };
 
     unsafe {
@@ -903,19 +847,19 @@ fn auto_scroll_tick() {
             match capture_current_frame(&mut state) {
                 Ok(CaptureOutcome::Added) => {
                     let estimated_height =
-                        logical_height(state.estimated_height, state.scale_factor);
+                        logical_height(state.accumulator.estimated_height(), state.scale_factor);
                     if estimated_height >= state.max_height {
                         stop = true;
                         event = Some(json!({
                             "reason": "max-height",
-                            "frameCount": state.frames.len(),
+                            "frameCount": state.accumulator.frames().len(),
                             "estimatedHeight": estimated_height,
                         }));
                     } else {
                         send_event(
-                            "scroll-capture:frame-captured",
+                            SCROLL_CAPTURE_FRAME_EVENT,
                             Some(json!({
-                                "frameCount": state.frames.len(),
+                                "frameCount": state.accumulator.frames().len(),
                                 "estimatedHeight": estimated_height,
                             })),
                         );
@@ -926,14 +870,14 @@ fn auto_scroll_tick() {
                     stop = true;
                     event = Some(json!({
                         "reason": "duplicate",
-                        "frameCount": state.frames.len(),
+                        "frameCount": state.accumulator.frames().len(),
                     }));
                 }
                 Ok(CaptureOutcome::NoOverlap) => {
                     stop = true;
                     event = Some(json!({
                         "reason": "no-overlap",
-                        "frameCount": state.frames.len(),
+                        "frameCount": state.accumulator.frames().len(),
                     }));
                 }
                 Err(message) => {
@@ -941,7 +885,7 @@ fn auto_scroll_tick() {
                     event = Some(json!({
                         "reason": "capture-error",
                         "message": message,
-                        "frameCount": state.frames.len(),
+                        "frameCount": state.accumulator.frames().len(),
                     }));
                 }
             }
@@ -957,7 +901,7 @@ fn auto_scroll_tick() {
                 stop = true;
                 event = Some(json!({
                     "reason": "input-error",
-                    "frameCount": state.frames.len(),
+                    "frameCount": state.accumulator.frames().len(),
                 }));
             } else {
                 state.current_scroll_step += 1;
@@ -981,7 +925,7 @@ fn auto_scroll_tick() {
                 let _ = InvalidateRect(Some(panel), None, false);
             }
         }
-        send_event("scroll-capture:scroll-ended", event);
+        send_event(SCROLL_CAPTURE_SCROLL_ENDED_EVENT, event);
     }
 }
 
@@ -1092,55 +1036,12 @@ fn capture_current_frame(state: &mut CaptureState) -> Result<CaptureOutcome, Str
         .bounds
         .ok_or_else(|| "Capture bounds are unavailable".to_string())?;
     let pixels = capture_pixels_without_ui(bounds)?;
-    let hash = frame_hash(&pixels, bounds.width as usize, bounds.height as usize);
-
-    if state.last_frame_hash == Some(hash) {
-        state.duplicate_frame_count += 1;
-        if state.duplicate_frame_count >= MAX_DUPLICATE_FRAMES {
-            return Ok(CaptureOutcome::Ended);
-        }
-        return Ok(CaptureOutcome::Repeated);
-    }
-
     let width = bounds.width as usize;
     let height = bounds.height as usize;
-    let overlap = if let Some(previous) = state.frames.last() {
-        let expected = height
-            .saturating_sub(state.scroll_step_points)
-            .clamp(1, height);
-        let Some(overlap) = find_overlap(previous, &pixels, width, height, expected) else {
-            return Ok(CaptureOutcome::NoOverlap);
-        };
-        overlap
-    } else {
-        0
-    };
-    if !state.frames.is_empty() && overlap == height {
-        state.duplicate_frame_count += 1;
-        if state.duplicate_frame_count >= MAX_DUPLICATE_FRAMES {
-            return Ok(CaptureOutcome::Ended);
-        }
-        return Ok(CaptureOutcome::Repeated);
-    }
-    let new_content_height = height.saturating_sub(overlap);
-
-    state.duplicate_frame_count = 0;
-    state.last_frame_hash = Some(hash);
-
-    if state.frames.is_empty() {
-        state.estimated_height = height;
-    } else {
-        state.estimated_height = state.estimated_height.saturating_add(new_content_height);
-    }
-
-    state.frames.push(CapturedFrame {
-        width,
-        height,
-        pixels,
-        overlap,
-    });
-
-    Ok(CaptureOutcome::Added)
+    let expected = height
+        .saturating_sub(state.scroll_step_points)
+        .clamp(1, height);
+    Ok(state.accumulator.submit(pixels, width, height, expected))
 }
 
 fn capture_pixels(bounds: CaptureBounds) -> Result<Vec<u8>, String> {
@@ -1228,322 +1129,6 @@ fn capture_pixels(bounds: CaptureBounds) -> Result<Vec<u8>, String> {
     }
 }
 
-fn frame_hash(pixels: &[u8], width: usize, height: usize) -> u64 {
-    let sample_width = 100_usize.min(width);
-    let sample_height = 50_usize.min(height);
-    let sample_top = height.saturating_sub((height / 4).max(sample_height));
-    let sample_region_height = height - sample_top;
-    let mut hash = 0xcbf29ce484222325_u64;
-
-    for sample_y in 0..sample_height {
-        let y = sample_top + sample_y * sample_region_height / sample_height;
-        for sample_x in 0..sample_width {
-            let x = sample_x * width / sample_width;
-            let offset = (y * width + x) * 4;
-            for channel in &pixels[offset..offset + 3] {
-                hash ^= *channel as u64;
-                hash = hash.wrapping_mul(0x100000001b3);
-            }
-        }
-    }
-
-    hash
-}
-
-fn find_overlap(
-    previous: &CapturedFrame,
-    current_pixels: &[u8],
-    width: usize,
-    height: usize,
-    expected: usize,
-) -> Option<usize> {
-    let strip_height = 40_usize.min(height / 2);
-    if strip_height == 0 || previous.width != width || previous.height != height {
-        return None;
-    }
-
-    let min_overlap = strip_height;
-    let max_overlap = height;
-    let strip_width = width.min(800);
-    let start_x = (width - strip_width) / 2;
-    let mut best_overlap = expected.clamp(min_overlap, max_overlap);
-    let mut best_score = u64::MAX;
-
-    let mut overlap = min_overlap;
-    while overlap <= max_overlap {
-        let score = compare_overlap_strip(
-            &previous.pixels,
-            current_pixels,
-            width,
-            height - strip_height,
-            overlap - strip_height,
-            start_x,
-            strip_width,
-            strip_height,
-        );
-        if score < best_score
-            || (score == best_score && overlap.abs_diff(expected) < best_overlap.abs_diff(expected))
-        {
-            best_score = score;
-            best_overlap = overlap;
-        }
-        overlap = overlap.saturating_add(4);
-        if overlap == usize::MAX {
-            break;
-        }
-    }
-
-    let fine_start = best_overlap.saturating_sub(3).max(min_overlap);
-    let fine_end = (best_overlap + 3).min(max_overlap);
-    for overlap in fine_start..=fine_end {
-        let score = compare_overlap_strip(
-            &previous.pixels,
-            current_pixels,
-            width,
-            height - strip_height,
-            overlap - strip_height,
-            start_x,
-            strip_width,
-            strip_height,
-        );
-        if score < best_score
-            || (score == best_score && overlap.abs_diff(expected) < best_overlap.abs_diff(expected))
-        {
-            best_score = score;
-            best_overlap = overlap;
-        }
-    }
-
-    let sampled_channels = strip_width.div_ceil(2) * strip_height.div_ceil(2) * 3;
-    if best_score > sampled_channels as u64 * MAX_OVERLAP_CHANNEL_DIFFERENCE {
-        return None;
-    }
-
-    Some(best_overlap)
-}
-
-fn compare_overlap_strip(
-    previous: &[u8],
-    current: &[u8],
-    width: usize,
-    previous_y: usize,
-    current_y: usize,
-    start_x: usize,
-    strip_width: usize,
-    strip_height: usize,
-) -> u64 {
-    let mut difference = 0_u64;
-    for y in (0..strip_height).step_by(2) {
-        for x in (0..strip_width).step_by(2) {
-            let previous_offset = ((previous_y + y) * width + start_x + x) * 4;
-            let current_offset = ((current_y + y) * width + start_x + x) * 4;
-            for channel in 0..3 {
-                difference += previous[previous_offset + channel]
-                    .abs_diff(current[current_offset + channel])
-                    as u64;
-            }
-        }
-    }
-    difference
-}
-
-fn stitch_frames(frames: &[CapturedFrame]) -> Result<(usize, usize), String> {
-    let Some(first) = frames.first() else {
-        return Err("No frames were captured".to_string());
-    };
-
-    if frames
-        .iter()
-        .any(|frame| frame.width != first.width || frame.height != first.height)
-    {
-        return Err("Captured frame dimensions do not match".to_string());
-    }
-
-    let total_height = frames
-        .iter()
-        .skip(1)
-        .try_fold(first.height, |height, frame| {
-            height.checked_add(frame.height.saturating_sub(frame.overlap))
-        })
-        .ok_or_else(|| "Stitched image is too large".to_string())?;
-    first
-        .width
-        .checked_mul(total_height)
-        .and_then(|count| count.checked_mul(4))
-        .ok_or_else(|| "Stitched image is too large".to_string())?;
-
-    Ok((first.width, total_height))
-}
-
-fn write_png(
-    path: &str,
-    width: usize,
-    height: usize,
-    frames: &[CapturedFrame],
-) -> Result<(), String> {
-    if width == 0 || height == 0 || frames.is_empty() {
-        return Err("Invalid image dimensions".to_string());
-    }
-    let width_u32 = u32::try_from(width).map_err(|_| "Image width is too large".to_string())?;
-    let height_u32 = u32::try_from(height).map_err(|_| "Image height is too large".to_string())?;
-    let file = File::create(path).map_err(|error| error.to_string())?;
-    let mut writer = BufWriter::new(file);
-    writer
-        .write_all(&[137, 80, 78, 71, 13, 10, 26, 10])
-        .map_err(|error| error.to_string())?;
-
-    let mut header = Vec::with_capacity(13);
-    header.extend_from_slice(&width_u32.to_be_bytes());
-    header.extend_from_slice(&height_u32.to_be_bytes());
-    header.extend_from_slice(&[8, 6, 0, 0, 0]);
-    write_png_chunk(&mut writer, b"IHDR", &header)?;
-    write_png_pixels(&mut writer, width, height, frames)?;
-    write_png_chunk(&mut writer, b"IEND", &[])?;
-    writer.flush().map_err(|error| error.to_string())
-}
-
-fn write_png_chunk(
-    writer: &mut impl Write,
-    chunk_type: &[u8; 4],
-    data: &[u8],
-) -> Result<(), String> {
-    let length = u32::try_from(data.len()).map_err(|_| "PNG chunk is too large".to_string())?;
-    writer
-        .write_all(&length.to_be_bytes())
-        .and_then(|_| writer.write_all(chunk_type))
-        .and_then(|_| writer.write_all(data))
-        .map_err(|error| error.to_string())?;
-
-    let mut crc = crc32_start();
-    crc = crc32_update(crc, chunk_type);
-    crc = crc32_update(crc, data);
-    writer
-        .write_all(&crc32_finish(crc).to_be_bytes())
-        .map_err(|error| error.to_string())
-}
-
-fn write_png_pixels(
-    writer: &mut impl Write,
-    width: usize,
-    height: usize,
-    frames: &[CapturedFrame],
-) -> Result<(), String> {
-    let row_bytes = width
-        .checked_mul(4)
-        .ok_or_else(|| "PNG row is too large".to_string())?;
-    let filtered_row_bytes = row_bytes + 1;
-    let blocks_per_row = filtered_row_bytes.div_ceil(u16::MAX as usize);
-    let raw_length = filtered_row_bytes
-        .checked_mul(height)
-        .ok_or_else(|| "PNG data is too large".to_string())?;
-    let block_count = blocks_per_row
-        .checked_mul(height)
-        .ok_or_else(|| "PNG data is too large".to_string())?;
-    let payload_length = raw_length
-        .checked_add(block_count * 5)
-        .and_then(|length| length.checked_add(6))
-        .ok_or_else(|| "PNG data is too large".to_string())?;
-    let payload_length =
-        u32::try_from(payload_length).map_err(|_| "PNG data is too large".to_string())?;
-
-    writer
-        .write_all(&payload_length.to_be_bytes())
-        .and_then(|_| writer.write_all(b"IDAT"))
-        .map_err(|error| error.to_string())?;
-
-    let mut crc = crc32_update(crc32_start(), b"IDAT");
-    let zlib_header = [0x78, 0x01];
-    write_crc_bytes(writer, &mut crc, &zlib_header)?;
-    let mut adler_a = 1_u32;
-    let mut adler_b = 0_u32;
-
-    let rows = frames.iter().enumerate().flat_map(|(index, frame)| {
-        let first_row = if index == 0 {
-            0
-        } else {
-            frame.overlap.min(frame.height)
-        };
-        (first_row..frame.height)
-            .map(move |row| &frame.pixels[row * row_bytes..(row + 1) * row_bytes])
-    });
-
-    for (row, pixels) in rows.enumerate() {
-        let mut filtered = Vec::with_capacity(filtered_row_bytes);
-        filtered.push(0);
-        filtered.extend_from_slice(pixels);
-        update_adler32(&mut adler_a, &mut adler_b, &filtered);
-
-        let mut offset = 0;
-        while offset < filtered.len() {
-            let block_length = (filtered.len() - offset).min(u16::MAX as usize);
-            let is_final = row + 1 == height && offset + block_length == filtered.len();
-            let length = block_length as u16;
-            let header = [
-                u8::from(is_final),
-                length as u8,
-                (length >> 8) as u8,
-                !length as u8,
-                (!length >> 8) as u8,
-            ];
-            write_crc_bytes(writer, &mut crc, &header)?;
-            write_crc_bytes(writer, &mut crc, &filtered[offset..offset + block_length])?;
-            offset += block_length;
-        }
-    }
-
-    let adler = (adler_b << 16) | adler_a;
-    write_crc_bytes(writer, &mut crc, &adler.to_be_bytes())?;
-    writer
-        .write_all(&crc32_finish(crc).to_be_bytes())
-        .map_err(|error| error.to_string())
-}
-
-fn write_crc_bytes(writer: &mut impl Write, crc: &mut u32, bytes: &[u8]) -> Result<(), String> {
-    writer.write_all(bytes).map_err(|error| error.to_string())?;
-    *crc = crc32_update(*crc, bytes);
-    Ok(())
-}
-
-fn update_adler32(a: &mut u32, b: &mut u32, bytes: &[u8]) {
-    for chunk in bytes.chunks(5_552) {
-        for byte in chunk {
-            *a += *byte as u32;
-            *b += *a;
-        }
-        *a %= 65_521;
-        *b %= 65_521;
-    }
-}
-
-fn crc32_start() -> u32 {
-    u32::MAX
-}
-
-fn crc32_update(mut crc: u32, bytes: &[u8]) -> u32 {
-    static TABLE: OnceLock<[u32; 256]> = OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let mut table = [0_u32; 256];
-        for (index, entry) in table.iter_mut().enumerate() {
-            let mut value = index as u32;
-            for _ in 0..8 {
-                let mask = 0_u32.wrapping_sub(value & 1);
-                value = (value >> 1) ^ (0xedb88320 & mask);
-            }
-            *entry = value;
-        }
-        table
-    });
-
-    for byte in bytes {
-        crc = table[((crc ^ *byte as u32) & 0xff) as usize] ^ (crc >> 8);
-    }
-    crc
-}
-
-fn crc32_finish(crc: u32) -> u32 {
-    !crc
-}
-
 pub struct ScrollCaptureModule {
     state: Arc<Mutex<CaptureState>>,
 }
@@ -1556,51 +1141,13 @@ impl ScrollCaptureModule {
     }
 
     fn start(&mut self, request: &Request) -> Reply {
-        let Some(x) = param_i32(&request.params, "x") else {
-            return invalid_start_params();
+        let request_params: ScrollCaptureStartRequest = match params(request) {
+            Ok(request_params) => request_params,
+            Err(error) => return Reply::Now(Err(error)),
         };
-        let Some(y) = param_i32(&request.params, "y") else {
-            return invalid_start_params();
-        };
-        let Some(width) = param_i32(&request.params, "width") else {
-            return invalid_start_params();
-        };
-        let Some(height) = param_i32(&request.params, "height") else {
-            return invalid_start_params();
-        };
-        if width <= 0
-            || height <= 0
-            || x.checked_add(width).is_none()
-            || y.checked_add(height).is_none()
-        {
-            return invalid_start_params();
+        if let Err(message) = request_params.validate() {
+            return Reply::Now(Err(("INVALID_PARAMS".into(), message)));
         }
-
-        let scale_factor = request
-            .params
-            .as_ref()
-            .and_then(|params| params.get("scaleFactor"))
-            .and_then(|value| value.as_f64())
-            .unwrap_or(1.0);
-        if !scale_factor.is_finite() || !(0.25..=8.0).contains(&scale_factor) {
-            return Reply::Now(Err((
-                "INVALID_PARAMS".to_string(),
-                "scaleFactor must be between 0.25 and 8".to_string(),
-            )));
-        }
-
-        let speed = ScrollSpeed::parse(param_str(&request.params, "autoScrollSpeed"));
-        let logical_capture_height = logical_height(height as usize, scale_factor);
-        let max_height = (param_i32(&request.params, "maxHeight")
-            .unwrap_or(20_000)
-            .max(1) as usize)
-            .max(logical_capture_height);
-        let bounds = CaptureBounds {
-            x,
-            y,
-            width,
-            height,
-        };
 
         {
             let Ok(state) = self.state.lock() else {
@@ -1617,32 +1164,49 @@ impl ScrollCaptureModule {
             }
         }
 
-        let mut capture_state = CaptureState::default();
-        capture_state.bounds = Some(bounds);
-        capture_state.is_capturing = true;
-        capture_state.auto_scroll_speed = speed;
-        capture_state.max_height = max_height;
-        capture_state.scale_factor = scale_factor;
-        capture_state.scroll_step_points =
-            ((height as usize * (100 - FRAME_OVERLAP_PERCENT as usize)) / 100).max(1);
+        let bounds = CaptureBounds {
+            x: request_params.capture.rect.x,
+            y: request_params.capture.rect.y,
+            width: request_params.capture.rect.width,
+            height: request_params.capture.rect.height,
+        };
+        let capture_state = CaptureState {
+            bounds: Some(bounds),
+            is_capturing: true,
+            auto_scroll_speed: request_params.auto_scroll_speed,
+            max_height: request_params.normalized_max_height(),
+            scale_factor: request_params.capture.scale_factor,
+            scroll_step_points: ((request_params.capture.rect.height as usize
+                * (100 - FRAME_OVERLAP_PERCENT))
+                / 100)
+                .max(1),
+            ..CaptureState::default()
+        };
         let state = Arc::new(Mutex::new(capture_state));
         self.state = state.clone();
         let request_id = request.id.clone();
-        let dpi = dpi_for_scale_factor(scale_factor);
-        run_on_ui(move || match show_capture_ui(state.clone(), bounds, dpi) {
-            Ok(()) => respond_success(&request_id, json!({ "started": true })),
-            Err(message) => {
-                if let Ok(mut state) = state.lock() {
-                    state.reset();
+        let dpi = dpi_for_scale_factor(request_params.capture.scale_factor);
+        let native_controls = request_params.native_controls.unwrap_or(true);
+        run_on_ui(
+            move || match show_capture_ui(state.clone(), bounds, dpi, native_controls) {
+                Ok(()) => respond_success(&request_id, json!({ "started": true })),
+                Err(message) => {
+                    if let Ok(mut state) = state.lock() {
+                        state.reset();
+                    }
+                    teardown_ui();
+                    respond_error(&request_id, "UI_ERROR", &message);
                 }
-                teardown_ui();
-                respond_error(&request_id, "UI_ERROR", &message);
-            }
-        });
+            },
+        );
         Reply::Deferred
     }
 
     fn start_auto_scroll(&self, request: &Request) -> Reply {
+        let request_params: ScrollCaptureAutoScrollRequest = match params(request) {
+            Ok(request_params) => request_params,
+            Err(error) => return Reply::Now(Err(error)),
+        };
         {
             let Ok(mut state) = self.state.lock() else {
                 return Reply::Now(Err((
@@ -1656,13 +1220,8 @@ impl ScrollCaptureModule {
                     "Not in capture mode".to_string(),
                 )));
             }
-            if let Some(speed) = param_str(&request.params, "speed") {
-                state.auto_scroll_speed = match speed {
-                    "slow" => ScrollSpeed::Slow,
-                    "medium" => ScrollSpeed::Medium,
-                    "fast" => ScrollSpeed::Fast,
-                    _ => state.auto_scroll_speed,
-                };
+            if let Some(speed) = request_params.speed {
+                state.auto_scroll_speed = speed;
             }
         }
 
@@ -1686,11 +1245,9 @@ impl ScrollCaptureModule {
     }
 
     fn finish(&self, request: &Request) -> Reply {
-        let Some(output_path) = param_str(&request.params, "outputPath") else {
-            return Reply::Now(Err((
-                "INVALID_PARAMS".to_string(),
-                "finish requires outputPath".to_string(),
-            )));
+        let request_params: ScrollCaptureFinishRequest = match params(request) {
+            Ok(request_params) => request_params,
+            Err(error) => return Reply::Now(Err(error)),
         };
 
         let frames = {
@@ -1708,32 +1265,34 @@ impl ScrollCaptureModule {
             }
 
             state.stop_auto_scroll();
-            let frames = std::mem::take(&mut state.frames);
+            let frames = state.accumulator.take_frames();
             state.reset();
             frames
         };
 
         run_on_ui(teardown_ui);
-        let output_path = output_path.to_string();
+        let output_path = request_params.output_path;
         let request_id = request.id.clone();
         let frame_count = frames.len();
         std::thread::spawn(move || {
-            let result = stitch_frames(&frames).and_then(|(width, height)| {
-                write_png(&output_path, width, height, &frames)?;
-                Ok((width, height))
-            });
+            let result = write_png(&output_path, &frames);
 
             match result {
-                Ok((width, height)) => respond_success(
-                    &request_id,
-                    json!({
-                        "success": true,
-                        "outputPath": output_path,
-                        "width": width,
-                        "height": height,
-                        "frameCount": frame_count,
-                    }),
-                ),
+                Ok((width, height)) => {
+                    let result = ScrollCaptureFinishResult {
+                        success: true,
+                        output_path,
+                        width,
+                        height,
+                        frame_count,
+                    };
+                    match serde_json::to_value(result) {
+                        Ok(result) => respond_success(&request_id, result),
+                        Err(error) => {
+                            respond_error(&request_id, "STITCH_ERROR", &error.to_string())
+                        }
+                    }
+                }
                 Err(message) => respond_error(&request_id, "STITCH_ERROR", &message),
             }
         });
@@ -1754,7 +1313,7 @@ impl ScrollCaptureModule {
             .unwrap_or(false);
         run_on_ui(teardown_ui);
         if was_capturing {
-            send_event("scroll-capture:cancelled", None);
+            send_event(SCROLL_CAPTURE_CANCELLED_EVENT, None);
         }
         Reply::Now(Ok(Some(json!({ "cancelled": true }))))
     }
@@ -1762,110 +1321,24 @@ impl ScrollCaptureModule {
 
 impl Module for ScrollCaptureModule {
     fn name(&self) -> &'static str {
-        "scroll-capture"
+        SCROLL_CAPTURE_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "start" => self.start(request),
-            "startAutoScroll" => self.start_auto_scroll(request),
-            "stopAutoScroll" => self.stop_auto_scroll(request),
-            "finish" => self.finish(request),
-            "cancel" => self.cancel(),
-            method => method_not_found(method),
+        match ScrollCaptureMethod::parse(&request.method) {
+            Some(ScrollCaptureMethod::Start) => self.start(request),
+            Some(ScrollCaptureMethod::StartAutoScroll) => self.start_auto_scroll(request),
+            Some(ScrollCaptureMethod::StopAutoScroll) => self.stop_auto_scroll(request),
+            Some(ScrollCaptureMethod::Finish) => self.finish(request),
+            Some(ScrollCaptureMethod::Cancel) => self.cancel(),
+            None => method_not_found(&request.method),
         }
     }
-}
-
-fn invalid_start_params() -> Reply {
-    Reply::Now(Err((
-        "INVALID_PARAMS".to_string(),
-        "start requires x, y, width, height".to_string(),
-    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn frame(start_row: usize, width: usize, height: usize) -> CapturedFrame {
-        let mut pixels = Vec::with_capacity(width * height * 4);
-        for y in 0..height {
-            for x in 0..width {
-                let seed = ((start_row + y) as u32).wrapping_mul(0x45d9f3b)
-                    ^ (x as u32).wrapping_mul(0x119de1f3);
-                pixels.extend_from_slice(&[
-                    seed as u8,
-                    seed.rotate_left(9) as u8,
-                    seed.rotate_left(17) as u8,
-                    255,
-                ]);
-            }
-        }
-        CapturedFrame {
-            width,
-            height,
-            pixels,
-            overlap: 0,
-        }
-    }
-
-    #[test]
-    fn finds_overlap_between_translated_frames() {
-        let width = 96;
-        let height = 160;
-        let overlap = 52;
-        let previous = frame(0, width, height);
-        let current = frame(height - overlap, width, height);
-
-        assert_eq!(
-            find_overlap(&previous, &current.pixels, width, height, 48),
-            Some(overlap)
-        );
-    }
-
-    #[test]
-    fn recognizes_repeated_frame_content() {
-        let width = 96;
-        let height = 160;
-        let previous = frame(0, width, height);
-        let repeated = frame(0, width, height);
-
-        assert_eq!(
-            frame_hash(&previous.pixels, width, height),
-            frame_hash(&repeated.pixels, width, height)
-        );
-        assert_eq!(
-            find_overlap(&previous, &repeated.pixels, width, height, 48),
-            Some(height)
-        );
-    }
-
-    #[test]
-    fn rejects_frames_without_confident_overlap() {
-        let width = 96;
-        let height = 160;
-        let previous = frame(0, width, height);
-        let unrelated = frame(10_000, width, height);
-
-        assert_eq!(
-            find_overlap(&previous, &unrelated.pixels, width, height, 48),
-            None
-        );
-    }
-
-    #[test]
-    fn plans_equal_displacement_across_speeds() {
-        let slow = scroll_plan(1_000.0, ScrollSpeed::Slow);
-        let medium = scroll_plan(1_000.0, ScrollSpeed::Medium);
-        let fast = scroll_plan(1_000.0, ScrollSpeed::Fast);
-
-        assert_eq!(slow.target_logical_points, 700);
-        assert_eq!(slow.wheel_detents, medium.wheel_detents);
-        assert_eq!(medium.wheel_detents, fast.wheel_detents);
-        assert!(slow.interval > medium.interval);
-        assert!(medium.interval > fast.interval);
-    }
 
     #[test]
     fn converts_physical_stitched_height_to_logical_max_height_units() {

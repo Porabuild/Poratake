@@ -4,6 +4,7 @@ use crate::overlay::{
 use crate::protocol::{Request, param_bool, param_i32, param_str, respond_success};
 use crate::router::{Module, Reply, method_not_found};
 use crate::ui::run_on_ui;
+use poratake_daemon_common::contract::{AREA_SELECTOR_MODULE, AreaSelectorMethod};
 use serde_json::json;
 use std::ffi::c_void;
 use windows::Win32::Foundation::{HWND, RECT};
@@ -108,12 +109,12 @@ impl AreaSelectorModule {
 
 impl Module for AreaSelectorModule {
     fn name(&self) -> &'static str {
-        "area-selector"
+        AREA_SELECTOR_MODULE
     }
 
     fn handle(&mut self, request: &Request) -> Reply {
-        match request.method.as_str() {
-            "getForegroundWindow" => {
+        match AreaSelectorMethod::parse(&request.method) {
+            Some(AreaSelectorMethod::GetForegroundWindow) => {
                 let window = unsafe { GetForegroundWindow() };
                 let handle = if window.0.is_null() {
                     json!(null)
@@ -122,7 +123,7 @@ impl Module for AreaSelectorModule {
                 };
                 Reply::Now(Ok(Some(json!({ "windowHandle": handle }))))
             }
-            "setForegroundWindow" => {
+            Some(AreaSelectorMethod::SetForegroundWindow) => {
                 let Some(window_handle) = param_str(&request.params, "windowHandle")
                     .and_then(|value| value.parse::<usize>().ok())
                     .filter(|value| *value != 0)
@@ -175,7 +176,7 @@ impl Module for AreaSelectorModule {
                 });
                 Reply::Deferred
             }
-            "setWindowRegion" => {
+            Some(AreaSelectorMethod::SetWindowRegion) => {
                 let Some(window_handle) = param_str(&request.params, "windowHandle")
                     .and_then(|value| value.parse::<usize>().ok())
                     .filter(|value| *value != 0)
@@ -228,9 +229,11 @@ impl Module for AreaSelectorModule {
                     ))),
                 }
             }
-            method @ ("disableWindowTransitions"
-            | "hideWindowWithoutTransitions"
-            | "showWindowWithoutTransitions") => {
+            Some(
+                method @ (AreaSelectorMethod::DisableWindowTransitions
+                | AreaSelectorMethod::HideWindowWithoutTransitions
+                | AreaSelectorMethod::ShowWindowWithoutTransitions),
+            ) => {
                 let Some(window_handle) = param_str(&request.params, "windowHandle")
                     .and_then(|value| value.parse::<usize>().ok())
                     .filter(|value| *value != 0)
@@ -248,7 +251,7 @@ impl Module for AreaSelectorModule {
                     disable_window_transitions(window)
                 };
                 let result = result.and_then(|()| match method {
-                    "showWindowWithoutTransitions" => unsafe {
+                    AreaSelectorMethod::ShowWindowWithoutTransitions => unsafe {
                         SetWindowPos(
                             window,
                             Some(HWND_TOPMOST),
@@ -259,7 +262,7 @@ impl Module for AreaSelectorModule {
                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
                         )
                     },
-                    "hideWindowWithoutTransitions" => unsafe {
+                    AreaSelectorMethod::HideWindowWithoutTransitions => unsafe {
                         set_electron_window_region(window, None)?;
                         SetWindowPos(
                             window,
@@ -285,7 +288,7 @@ impl Module for AreaSelectorModule {
                     ))),
                 }
             }
-            method => method_not_found(method),
+            None => method_not_found(&request.method),
         }
     }
 }

@@ -362,6 +362,7 @@ export interface RecordingSettings {
   autoZoom: boolean;
   showPreview: boolean;
   startDelay: number;
+  frameRate: number;
   systemAudio: boolean;
   micEnabled: boolean;
   selectedMicId: string | null;
@@ -374,6 +375,7 @@ export const DEFAULT_RECORDING_SETTINGS: RecordingSettings = {
   autoZoom: false,
   showPreview: true,
   startDelay: 3,
+  frameRate: 60,
   systemAudio: true,
   micEnabled: false,
   selectedMicId: null,

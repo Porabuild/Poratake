@@ -27,9 +27,9 @@ input[type='range']::-webkit-slider-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #007aff;
+  background: var(--primary);
   cursor: default;
-  border: 2px solid white;
+  border: 2px solid var(--primary-foreground);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
@@ -37,9 +37,9 @@ input[type='range']::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #007aff;
+  background: var(--primary);
   cursor: default;
-  border: 2px solid white;
+  border: 2px solid var(--primary-foreground);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 

@@ -6,6 +6,10 @@ class Router {
     func register(_ module: Module) {
         modules[module.name] = module
     }
+
+    func matchesModules(_ expected: Set<String>) -> Bool {
+        Set(modules.keys) == expected
+    }
     
     func route(_ request: Request) {
         if request.module == "system" {

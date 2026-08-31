@@ -3,14 +3,17 @@ import Foundation
 import ImageIO
 
 class OCRModule: Module {
-    let name = "ocr"
+    let name = DaemonContract.OCR.module
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "recognize":
-            handleRecognize(params: params, requestId: requestId)
-        default:
+        guard let method = DaemonContract.OCR.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .recognize:
+            handleRecognize(params: params, requestId: requestId)
         }
     }
     

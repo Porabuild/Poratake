@@ -3,7 +3,7 @@ import Foundation
 
 @available(macOS 12.3, *)
 class ScreenRecorderModule: Module {
-    let name = "screen-recorder"
+    let name = DaemonContract.ScreenRecorder.module
     
     private let screenRecorder = ScreenCaptureRecorder()
     private let iosRecorder = IOSDeviceRecorder()
@@ -25,25 +25,28 @@ class ScreenRecorderModule: Module {
     }
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
-        switch method {
-        case "start":
-            handleStart(params: params, requestId: requestId)
-        case "pause":
-            handlePause(requestId: requestId)
-        case "resume":
-            handleResume(requestId: requestId)
-        case "stop":
-            handleStop(requestId: requestId)
-        case "status":
-            handleStatus(requestId: requestId)
-        case "setMicrophone":
-            handleSetMicrophone(params: params, requestId: requestId)
-        case "setSystemAudio":
-            handleSetSystemAudio(params: params, requestId: requestId)
-        case "setCamera":
-            handleSetCamera(params: params, requestId: requestId)
-        default:
+        guard let method = DaemonContract.ScreenRecorder.Method(rawValue: method) else {
             respondError(id: requestId, code: "METHOD_NOT_FOUND", message: "Unknown method: \(method)")
+            return
+        }
+
+        switch method {
+        case .start:
+            handleStart(params: params, requestId: requestId)
+        case .pause:
+            handlePause(requestId: requestId)
+        case .resume:
+            handleResume(requestId: requestId)
+        case .stop:
+            handleStop(requestId: requestId)
+        case .status:
+            handleStatus(requestId: requestId)
+        case .setMicrophone:
+            handleSetMicrophone(params: params, requestId: requestId)
+        case .setSystemAudio:
+            handleSetSystemAudio(params: params, requestId: requestId)
+        case .setCamera:
+            handleSetCamera(params: params, requestId: requestId)
         }
     }
     
@@ -55,6 +58,47 @@ class ScreenRecorderModule: Module {
         
         guard let outputPath = params["outputPath"]?.string() else {
             respondError(id: requestId, code: "INVALID_PARAMS", message: "outputPath is required")
+            return
+        }
+        if let field = invalidStartField(in: params) {
+            respondError(
+                id: requestId,
+                code: "INVALID_PARAMS",
+                message: "\(field) has an invalid type"
+            )
+            return
+        }
+
+        let coordinates = [
+            params["x"]?.int(),
+            params["y"]?.int(),
+            params["width"]?.int(),
+            params["height"]?.int()
+        ]
+        let providedCoordinates = coordinates.compactMap { $0 }.count
+        guard providedCoordinates == 0 || providedCoordinates == coordinates.count else {
+            respondError(
+                id: requestId,
+                code: "INVALID_PARAMS",
+                message: "x, y, width and height must be provided together"
+            )
+            return
+        }
+        if let width = coordinates[2], let height = coordinates[3], width <= 0 || height <= 0 {
+            respondError(
+                id: requestId,
+                code: "INVALID_PARAMS",
+                message: "width and height must be positive"
+            )
+            return
+        }
+        let frameRate = params["frameRate"]?.int() ?? 60
+        guard (1...240).contains(frameRate) else {
+            respondError(
+                id: requestId,
+                code: "INVALID_PARAMS",
+                message: "frameRate must be between 1 and 240"
+            )
             return
         }
         
@@ -76,7 +120,7 @@ class ScreenRecorderModule: Module {
             cameraDeviceId: params["cameraDeviceId"]?.string(),
             cameraDeviceName: params["cameraDeviceName"]?.string(),
             keyboardEnabled: params["keyboardEnabled"]?.bool() ?? false,
-            frameRate: params["frameRate"]?.int() ?? 60,
+            frameRate: frameRate,
             outputPath: outputPath,
             iosDeviceId: iosDeviceId,
             iosDeviceName: iosDeviceName
@@ -117,7 +161,41 @@ class ScreenRecorderModule: Module {
             }
         }
     }
-    
+
+    private func invalidStartField(in params: [String: AnyCodable]) -> String? {
+        for field in ["x", "y", "width", "height"] {
+            guard let value = params[field], !(value.value is NSNull) else { continue }
+            guard let integer = value.value as? Int, Int32(exactly: integer) != nil else {
+                return field
+            }
+        }
+        if let value = params["displayId"], !(value.value is NSNull) {
+            guard let integer = value.value as? Int, UInt32(exactly: integer) != nil else {
+                return "displayId"
+            }
+        }
+        if let value = params["windowId"], !(value.value is NSNull), !(value.value is Int) {
+            return "windowId"
+        }
+        if let value = params["frameRate"], !(value.value is Int) {
+            return "frameRate"
+        }
+        for field in ["includeAudio", "micEnabled", "cameraEnabled", "keyboardEnabled"] {
+            if let value = params[field], !(value.value is Bool) {
+                return field
+            }
+        }
+        for field in [
+            "micDeviceId", "micDeviceName", "cameraDeviceId", "cameraDeviceName",
+            "iosDeviceId", "iosDeviceName"
+        ] {
+            if let value = params[field], !(value.value is NSNull), !(value.value is String) {
+                return field
+            }
+        }
+        return nil
+    }
+
     private func handlePause(requestId: String) {
         do {
             if isIOSRecording {
@@ -239,7 +317,16 @@ class ScreenRecorderModule: Module {
 
     private func handleSetMicrophone(params: [String: AnyCodable]?, requestId: String) {
         guard guardLiveDeviceChange(requestId: requestId) else { return }
-        let enabled = params?["enabled"]?.bool() ?? false
+        guard let enabled = params?["enabled"]?.bool() else {
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "enabled is required")
+            return
+        }
+        for field in ["deviceId", "deviceName"] {
+            if let value = params?[field], !(value.value is NSNull), !(value.value is String) {
+                respondError(id: requestId, code: "INVALID_PARAMS", message: "\(field) has an invalid type")
+                return
+            }
+        }
         let deviceId = params?["deviceId"]?.string()
         let deviceName = params?["deviceName"]?.string()
 
@@ -264,7 +351,10 @@ class ScreenRecorderModule: Module {
 
     private func handleSetSystemAudio(params: [String: AnyCodable]?, requestId: String) {
         guard guardLiveDeviceChange(requestId: requestId) else { return }
-        let enabled = params?["enabled"]?.bool() ?? false
+        guard let enabled = params?["enabled"]?.bool() else {
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "enabled is required")
+            return
+        }
 
         Task { @MainActor in
             do {
@@ -283,7 +373,10 @@ class ScreenRecorderModule: Module {
 
     private func handleSetCamera(params: [String: AnyCodable]?, requestId: String) {
         guard guardLiveDeviceChange(requestId: requestId) else { return }
-        let enabled = params?["enabled"]?.bool() ?? false
+        guard let enabled = params?["enabled"]?.bool() else {
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "enabled is required")
+            return
+        }
 
         Task { @MainActor in
             do {

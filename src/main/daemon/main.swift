@@ -24,6 +24,9 @@ router.register(ScrollCaptureModule())
 if #available(macOS 12.3, *) {
     router.register(ScreenRecorderModule())
 }
+if !router.matchesModules(DaemonContract.macOSModules) {
+    fatalError("daemon modules do not match the generated contract")
+}
 
 func setupSignalHandlers() {
     signal(SIGINT) { _ in

@@ -43,6 +43,14 @@ const mockOnConfigUpdated = vi.fn();
 const mockUpdateConfig = vi.fn();
 const mockGenerateInitialEditorState = vi.fn();
 const mockStartRecordingCountdown = vi.fn();
+const mockDisplay = { id: 1, displayFrequency: 165 };
+
+vi.mock('electron', () => ({
+  screen: {
+    getAllDisplays: () => [mockDisplay],
+    getDisplayMatching: () => mockDisplay,
+  },
+}));
 
 vi.mock('@/main/capture/video/recording-control.ts', () => ({
   showRecordingControl: () => mockShowRecordingControl(),
@@ -141,7 +149,12 @@ describe('recording-actions', () => {
     mockIsRecording.mockReturnValue(false);
     mockOnConfigUpdated.mockReturnValue(() => {});
     mockGetConfig.mockReturnValue({
-      recording: { iosDevice: null, showPreview: false, camera: null },
+      recording: {
+        iosDevice: null,
+        showPreview: false,
+        frameRate: 60,
+        camera: null,
+      },
     });
     mockCreateRecordingProject.mockReturnValue('/p/Rec.poratake/recording.mov');
     mockStartRecordingWithConfig.mockResolvedValue(undefined);
@@ -689,6 +702,31 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording();
       expect(mockStartRecordingWithConfig).toHaveBeenCalled();
+    });
+
+    it('caps the configured frame rate at the selected display refresh rate', async () => {
+      mockGetConfig.mockReturnValue({
+        recording: {
+          iosDevice: null,
+          showPreview: false,
+          frameRate: 240,
+          camera: null,
+        },
+      });
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+
+      await m.startPendingRecording();
+
+      expect(mockStartRecordingWithConfig.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ frameRate: 165 })
+      );
     });
 
     it('releases a held freeze before confirming the selection', async () => {
