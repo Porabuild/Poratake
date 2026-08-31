@@ -1538,9 +1538,12 @@ mod tests {
             1.5,
         );
         let displays = [first, second];
+        let scale = crate::capture::overlay::capture_coordinate_scale(1.5);
 
+        assert_eq!(first, (0.0, 0.0, 1920.0, 1080.0));
+        assert_eq!(second, (1920.0 * scale, 0.0, 1280.0 * scale, 720.0 * scale));
         assert_eq!(
-            chrome::display_containing(&displays, 3_200.0, 500.0),
+            chrome::display_containing(&displays, 1_920.0 * scale + 1_280.0 * scale / 2.0, 500.0),
             Some(second)
         );
     }
