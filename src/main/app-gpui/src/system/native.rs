@@ -1,9 +1,20 @@
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
-use std::time::Duration;
-
 use crate::system::hotkeys::HotkeyRegistry;
 use crate::system::tray::{self, Intent, TrayMenuState};
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(windows)]
+mod windows;
+
+#[cfg(target_os = "macos")]
+pub fn configure_app() {
+    macos::configure_app();
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn configure_app() {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TrayRect {
@@ -13,11 +24,26 @@ pub struct TrayRect {
     pub height: f32,
 }
 
+impl From<tray_icon::Rect> for TrayRect {
+    fn from(rect: tray_icon::Rect) -> Self {
+        Self {
+            x: rect.position.x as f32,
+            y: rect.position.y as f32,
+            width: rect.size.width as f32,
+            height: rect.size.height as f32,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum NativeEvent {
     Intent {
         intent: Intent,
         tray_rect: Option<TrayRect>,
+    },
+    #[cfg(target_os = "macos")]
+    Hotkey {
+        id: u32,
     },
     ToggleTrayMenu {
         tray_rect: Option<TrayRect>,
@@ -33,9 +59,13 @@ pub enum NativeCommand {
 }
 
 pub struct NativeBridge {
-    commands: Sender<NativeCommand>,
+    #[cfg(windows)]
+    driver: windows::Driver,
+    #[cfg(target_os = "linux")]
+    commands: Option<linux::CommandSender>,
     events: smol::channel::Receiver<NativeEvent>,
-    thread_id: u32,
+    #[cfg(target_os = "macos")]
+    driver: macos::Driver,
 }
 
 impl NativeBridge {
@@ -44,28 +74,46 @@ impl NativeBridge {
     }
 
     pub fn send(&self, command: NativeCommand) {
-        if self.commands.send(command).is_err() {
-            return;
+        #[cfg(target_os = "macos")]
+        self.driver.send(command);
+        #[cfg(windows)]
+        self.driver.send(command);
+        #[cfg(target_os = "linux")]
+        if let Some(commands) = &self.commands {
+            commands.send(command);
         }
-        wake(self.thread_id);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn resolve_hotkey(&self, id: u32) -> Option<NativeEvent> {
+        self.driver.resolve_hotkey(id)
     }
 }
 
+#[cfg(windows)]
 pub fn spawn(state: TrayMenuState, hotkeys: Vec<(Intent, String)>) -> NativeBridge {
-    let (command_tx, command_rx) = mpsc::channel();
     let (event_tx, event_rx) = smol::channel::unbounded();
-    let (id_tx, id_rx) = mpsc::channel();
-
-    thread::Builder::new()
-        .name("native-shell".into())
-        .spawn(move || run(state, hotkeys, command_rx, event_tx, id_tx))
-        .ok();
-
-    let thread_id = id_rx.recv_timeout(Duration::from_secs(5)).unwrap_or(0);
     NativeBridge {
-        commands: command_tx,
+        driver: windows::Driver::spawn(state, hotkeys, event_tx),
         events: event_rx,
-        thread_id,
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn spawn(state: TrayMenuState, hotkeys: Vec<(Intent, String)>) -> NativeBridge {
+    let (event_tx, event_rx) = smol::channel::unbounded();
+    NativeBridge {
+        commands: linux::spawn(state, hotkeys, event_tx),
+        events: event_rx,
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn spawn(state: TrayMenuState, hotkey_bindings: Vec<(Intent, String)>) -> NativeBridge {
+    let (event_tx, event_rx) = smol::channel::unbounded();
+    NativeBridge {
+        events: event_rx,
+        driver: macos::Driver::new(state, hotkey_bindings, event_tx),
     }
 }
 
@@ -86,6 +134,7 @@ impl Shell {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn emit_intent(&self, intent: Intent) {
         let event = NativeEvent::Intent {
             intent,
@@ -96,52 +145,37 @@ impl Shell {
         }
     }
 
-    fn emit_tray_menu(&self, rect: tray_icon::Rect) {
-        let tray_rect = Some(TrayRect {
-            x: rect.position.x as f32,
-            y: rect.position.y as f32,
-            width: rect.size.width as f32,
-            height: rect.size.height as f32,
-        });
+    fn emit_tray_menu(&self, tray_rect: TrayRect) {
         if self
             .events
-            .send_blocking(NativeEvent::ToggleTrayMenu { tray_rect })
+            .send_blocking(NativeEvent::ToggleTrayMenu {
+                tray_rect: Some(tray_rect),
+            })
             .is_err()
         {
             eprintln!("[native] event channel closed");
         }
     }
 
-    fn drain_native_queues(&self) {
-        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-            if let tray_icon::TrayIconEvent::Click {
-                rect,
-                button: tray_icon::MouseButton::Left | tray_icon::MouseButton::Right,
-                button_state: tray_icon::MouseButtonState::Up,
-                ..
-            } = event
-            {
-                self.emit_tray_menu(rect);
-            }
+    fn hotkey_event(&self, id: u32) -> Option<NativeEvent> {
+        if self.hotkeys.is_pre_recording_escape(id) {
+            return Some(NativeEvent::CancelPreRecording);
         }
-        while let Ok(event) = global_hotkey::GlobalHotKeyEvent::receiver().try_recv() {
-            if event.state() != global_hotkey::HotKeyState::Pressed {
-                continue;
-            }
-            if self.hotkeys.is_pre_recording_escape(event.id()) {
-                if self
-                    .events
-                    .send_blocking(NativeEvent::CancelPreRecording)
-                    .is_err()
-                {
-                    eprintln!("[native] event channel closed");
-                }
-                continue;
-            }
-            match self.hotkeys.intent_for(event.id()) {
-                Some(intent) => self.emit_intent(intent),
-                None => eprintln!("[hotkey] unmapped id {}", event.id()),
-            }
+        self.hotkeys
+            .intent_for(id)
+            .map(|intent| NativeEvent::Intent {
+                intent,
+                tray_rect: self.tray_rect(),
+            })
+    }
+
+    fn emit_hotkey(&self, id: u32) {
+        let Some(event) = self.hotkey_event(id) else {
+            eprintln!("[hotkey] unmapped id {id}");
+            return;
+        };
+        if self.events.send_blocking(event).is_err() {
+            eprintln!("[native] event channel closed");
         }
     }
 
@@ -164,8 +198,19 @@ impl Shell {
                         eprintln!("[tray] icon update failed: {error}");
                     }
                 }
+                #[cfg(target_os = "linux")]
+                tray.set_menu(Some(linux::native_menu(state)));
             }
-            None => self.tray = create_tray(state.dark_mode),
+            None => {
+                #[cfg(target_os = "linux")]
+                {
+                    self.tray = create_tray(state.dark_mode, Some(linux::native_menu(state)));
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    self.tray = create_tray(state.dark_mode);
+                }
+            }
         }
     }
 
@@ -182,115 +227,48 @@ impl Shell {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn create_tray(
+    dark_mode: bool,
+    menu: Option<Box<dyn tray_icon::menu::ContextMenu>>,
+) -> Option<tray_icon::TrayIcon> {
+    create_tray_builder(dark_mode)
+        .with_menu(menu?)
+        .build()
+        .map_err(|error| {
+            eprintln!("[tray] creation failed: {error}");
+            error
+        })
+        .ok()
+}
+
+#[cfg(not(target_os = "linux"))]
 fn create_tray(dark_mode: bool) -> Option<tray_icon::TrayIcon> {
+    build_tray(create_tray_builder(dark_mode))
+}
+
+fn create_tray_builder(dark_mode: bool) -> tray_icon::TrayIconBuilder {
     let mut builder = tray_icon::TrayIconBuilder::new()
         .with_tooltip("Poratake")
         .with_menu_on_left_click(false)
         .with_menu_on_right_click(false);
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.with_icon_as_template(true);
+    }
     if let Some(icon) = tray::tray_icon(dark_mode) {
         builder = builder.with_icon(icon);
     }
+    builder
+}
+
+#[cfg(not(target_os = "linux"))]
+fn build_tray(builder: tray_icon::TrayIconBuilder) -> Option<tray_icon::TrayIcon> {
     match builder.build() {
         Ok(tray) => Some(tray),
         Err(error) => {
             eprintln!("[tray] creation failed: {error}");
             None
         }
-    }
-}
-
-fn run(
-    state: TrayMenuState,
-    hotkey_bindings: Vec<(Intent, String)>,
-    commands: Receiver<NativeCommand>,
-    events: smol::channel::Sender<NativeEvent>,
-    id_tx: Sender<u32>,
-) {
-    create_message_queue();
-    let _ = id_tx.send(current_thread_id());
-
-    let mut hotkeys = HotkeyRegistry::new();
-    hotkeys.apply(&hotkey_bindings);
-
-    let tray = create_tray(state.dark_mode);
-
-    let mut shell = Shell {
-        tray,
-        hotkeys,
-        events,
-    };
-
-    pump(&mut shell, &commands);
-}
-
-#[cfg(windows)]
-fn current_thread_id() -> u32 {
-    unsafe { ::windows::Win32::System::Threading::GetCurrentThreadId() }
-}
-
-#[cfg(windows)]
-fn create_message_queue() {
-    use ::windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_NOREMOVE};
-
-    let mut message = MSG::default();
-    unsafe {
-        let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
-    }
-}
-
-#[cfg(not(windows))]
-fn create_message_queue() {}
-
-#[cfg(not(windows))]
-fn current_thread_id() -> u32 {
-    0
-}
-
-#[cfg(windows)]
-fn wake(thread_id: u32) {
-    use ::windows::Win32::Foundation::{LPARAM, WPARAM};
-    use ::windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
-
-    if thread_id == 0 {
-        return;
-    }
-    if unsafe { PostThreadMessageW(thread_id, WM_APP, WPARAM(0), LPARAM(0)) }.is_err() {
-        eprintln!("[native] failed to wake the native event thread");
-    }
-}
-
-#[cfg(not(windows))]
-fn wake(_thread_id: u32) {}
-
-#[cfg(windows)]
-fn pump(shell: &mut Shell, commands: &Receiver<NativeCommand>) {
-    use ::windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetMessageW, TranslateMessage, MSG,
-    };
-
-    let mut message = MSG::default();
-    loop {
-        let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
-        if result.0 == 0 {
-            break;
-        }
-        if result.0 != -1 {
-            unsafe {
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-        }
-        shell.drain_native_queues();
-        while let Ok(command) = commands.try_recv() {
-            shell.apply(command);
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn pump(shell: &mut Shell, commands: &Receiver<NativeCommand>) {
-    while let Ok(command) = commands.recv() {
-        shell.apply(command);
-        shell.drain_native_queues();
     }
 }

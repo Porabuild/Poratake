@@ -459,6 +459,7 @@ mod display_name_tests {
 
     #[test]
     fn a_recording_is_named_without_its_extension() {
+        #[cfg(windows)]
         assert_eq!(
             project_display_name(Path::new(r"C:\clips\parity-clip.mp4")),
             "parity-clip"

@@ -11,6 +11,7 @@ name = "poratake-gpui"
 path = "src/main.rs"
 
 [dependencies]
+poratake-daemon-common = { path = "../daemon-common" }
 gpui = { version = "0.2.2", default-features = false, features = [
   "windows-manifest",
 ] }
@@ -27,11 +28,22 @@ parking_lot = "0.12"
 dirs = "6"
 lyon = "1"
 smallvec = "1"
-arboard = "3.6.1"
 rfd = "0.15"
 chrono = "0.4.45"
 smol = "2.0.2"
 global-hotkey = "0.8.0"
+tray-icon = { version = "0.24.2", default-features = false }
+md-5 = "0.11.0"
+fontdue = "0.9.4"
+tiny-skia = "0.11.4"
+usvg = "0.45.1"
+resvg = "0.45.1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.11.0"
+hmac = "0.13.0"
+base64 = "0.23.1"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
   "Data_Xml_Dom",
   "Win32_Foundation",
@@ -52,16 +64,31 @@ windows = { version = "0.61", features = [
   "Win32_UI_Shell",
   "UI_Notifications",
 ] }
-tray-icon = { version = "0.24.2", default-features = false }
-md-5 = "0.11.0"
-fontdue = "0.9.4"
-tiny-skia = "0.11.4"
-usvg = "0.45.1"
-resvg = "0.45.1"
-ureq = { version = "3", default-features = false, features = ["rustls"] }
-sha2 = "0.11.0"
-hmac = "0.13.0"
-base64 = "0.23.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+cocoa = "=0.26.0"
+objc = "0.2.7"
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", features = ["NSError", "NSString"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = [
+  "UNNotificationContent",
+  "UNNotificationRequest",
+  "UNUserNotificationCenter",
+  "bitflags",
+  "block2",
+  "std",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9.12"
+glib = "0.18.5"
+gtk = "0.18.2"
+gpui = { version = "0.2.2", default-features = false, features = [
+  "wayland",
+  "x11",
+] }
+tray-icon = { version = "0.24.2", default-features = false, features = ["gtk"] }
 
 [dev-dependencies]
 # `TestAppContext` and the `gpui::test` macro live behind this feature. It is a

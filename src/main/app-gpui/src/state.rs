@@ -32,10 +32,12 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
 
     let service = CaptureService::new(DaemonHandle::new(), config.clone());
 
-    if let Err(error) = service.daemon.start() {
-        // Capture features degrade gracefully; the editor still works for
-        // files opened from disk.
-        eprintln!("[daemon] failed to start: {error}");
+    if crate::system::capabilities::has_native_daemon() {
+        if let Err(error) = service.daemon.start() {
+            // Capture features degrade gracefully; the editor still works for
+            // files opened from disk.
+            eprintln!("[daemon] failed to start: {error}");
+        }
     }
 
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));

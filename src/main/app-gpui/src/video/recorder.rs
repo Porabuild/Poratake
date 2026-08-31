@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use serde_json::json;
+use poratake_daemon_common::contract::{
+    ScreenRecorderMicrophoneRequest, ScreenRecorderStartRequest,
+};
 
 use crate::config::store::ConfigStore;
 use crate::daemon::DaemonHandle;
@@ -66,12 +68,15 @@ pub struct RecordingConfig {
     pub y: i32,
     pub width: i32,
     pub height: i32,
+    pub display_id: Option<u32>,
     pub window_id: Option<i64>,
     pub include_audio: bool,
     pub mic_enabled: bool,
     pub mic_device_id: Option<String>,
     pub camera_enabled: bool,
     pub camera_device_id: Option<String>,
+    pub ios_device_id: Option<String>,
+    pub ios_device_name: Option<String>,
     pub keyboard_enabled: bool,
     pub frame_rate: u32,
     pub output_path: PathBuf,
@@ -127,34 +132,11 @@ pub fn start(daemon: &DaemonHandle, config: &RecordingConfig) -> anyhow::Result<
     if is_recording() {
         anyhow::bail!("a recording is already active");
     }
-    if !daemon.is_running() {
-        daemon.start()?;
-    }
-
-    let params = json!({
-        "x": config.x,
-        "y": config.y,
-        "width": config.width,
-        "height": config.height,
-        "windowId": config.window_id,
-        "includeAudio": config.include_audio,
-        "micEnabled": config.mic_enabled,
-        "micDeviceId": config.mic_device_id,
-        "cameraEnabled": config.camera_enabled,
-        "cameraDeviceId": config.camera_device_id,
-        "keyboardEnabled": config.keyboard_enabled,
-        "frameRate": config.frame_rate,
-        "outputPath": crate::video::project::recording_video_path(&config.output_path)
-            .to_string_lossy(),
-    });
+    let request = start_request(config);
 
     daemon
-        .call_with_timeout(
-            "screen-recorder",
-            "start",
-            Some(params),
-            std::time::Duration::from_secs(60),
-        )
+        .screen_recorder()
+        .start(&request)
         .map_err(|error| anyhow::anyhow!("screen-recorder start failed: {error}"))?;
     if config.camera_enabled {
         if let Err(error) = set_camera_content_protection(daemon, true) {
@@ -165,12 +147,35 @@ pub fn start(daemon: &DaemonHandle, config: &RecordingConfig) -> anyhow::Result<
     Ok(())
 }
 
+fn start_request(config: &RecordingConfig) -> ScreenRecorderStartRequest {
+    ScreenRecorderStartRequest {
+        x: Some(config.x),
+        y: Some(config.y),
+        width: Some(config.width),
+        height: Some(config.height),
+        display_id: config.display_id,
+        window_id: config.window_id,
+        include_audio: config.include_audio,
+        mic_enabled: config.mic_enabled,
+        mic_device_id: config.mic_device_id.clone(),
+        mic_device_name: None,
+        camera_enabled: config.camera_enabled,
+        camera_device_id: config.camera_device_id.clone(),
+        camera_device_name: None,
+        keyboard_enabled: config.keyboard_enabled,
+        frame_rate: config.frame_rate,
+        output_path: crate::video::project::recording_video_path(&config.output_path),
+        ios_device_id: config.ios_device_id.clone(),
+        ios_device_name: config.ios_device_name.clone(),
+    }
+}
+
 pub fn pause(daemon: &DaemonHandle) {
     if state() != RecorderState::Recording {
         return;
     }
-    match daemon.call("screen-recorder", "pause", None) {
-        Ok(_) => store_state(RecorderState::Paused),
+    match daemon.screen_recorder().pause() {
+        Ok(()) => store_state(RecorderState::Paused),
         Err(error) => eprintln!("[recorder] pause failed: {error}"),
     }
 }
@@ -179,8 +184,8 @@ pub fn resume(daemon: &DaemonHandle) {
     if state() != RecorderState::Paused {
         return;
     }
-    match daemon.call("screen-recorder", "resume", None) {
-        Ok(_) => store_state(RecorderState::Recording),
+    match daemon.screen_recorder().resume() {
+        Ok(()) => store_state(RecorderState::Recording),
         Err(error) => eprintln!("[recorder] resume failed: {error}"),
     }
 }
@@ -189,12 +194,7 @@ pub fn stop(daemon: &DaemonHandle) -> bool {
     if !is_recording() {
         return false;
     }
-    let stopped = daemon.call_with_timeout(
-        "screen-recorder",
-        "stop",
-        None,
-        std::time::Duration::from_secs(60),
-    );
+    let stopped = daemon.screen_recorder().stop();
     match stopped {
         Ok(_) => {
             if let Err(error) = set_camera_content_protection(daemon, false) {
@@ -216,41 +216,25 @@ pub fn set_microphone(
     device_id: Option<&str>,
 ) -> anyhow::Result<()> {
     daemon
-        .call(
-            "screen-recorder",
-            "setMicrophone",
-            Some(json!({ "enabled": enabled, "deviceId": device_id })),
-        )
-        .map(|_| ())
+        .screen_recorder()
+        .set_microphone(ScreenRecorderMicrophoneRequest {
+            enabled,
+            device_id: device_id.map(str::to_string),
+            device_name: None,
+        })
 }
 
 pub fn set_system_audio(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
-    daemon
-        .call(
-            "screen-recorder",
-            "setSystemAudio",
-            Some(json!({ "enabled": enabled })),
-        )
-        .map(|_| ())
+    daemon.screen_recorder().set_system_audio(enabled)
 }
 
 pub fn set_camera(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
-    daemon
-        .call(
-            "screen-recorder",
-            "setCamera",
-            Some(json!({ "enabled": enabled })),
-        )
-        .map(|_| ())?;
+    daemon.screen_recorder().set_camera(enabled)?;
     if let Err(error) = set_camera_content_protection(daemon, enabled) {
         // The camera was switched but its capture exclusion could not be, so
         // the daemon is rolled back to the state the caller still believes in.
         if enabled {
-            let _ = daemon.call(
-                "screen-recorder",
-                "setCamera",
-                Some(json!({ "enabled": false })),
-            );
+            let _ = daemon.screen_recorder().set_camera(false);
         }
         return Err(error);
     }
@@ -263,13 +247,7 @@ pub fn set_camera(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
 /// explicitly on start and toggle, and back off on stop. Without this the
 /// preview bubble is burned into the recording.
 fn set_camera_content_protection(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
-    daemon
-        .call(
-            "camera-preview",
-            "setContentProtection",
-            Some(json!({ "enabled": enabled })),
-        )
-        .map(|_| ())
+    daemon.camera_preview().set_content_protection(enabled)
 }
 
 /// Port of `formatDuration` in the recording control bar: `M:SS`.
@@ -304,6 +282,30 @@ mod tests {
     }
 
     #[test]
+    fn start_request_keeps_the_selected_display_id() {
+        let config = RecordingConfig {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            display_id: Some(73),
+            window_id: None,
+            include_audio: true,
+            mic_enabled: false,
+            mic_device_id: None,
+            camera_enabled: false,
+            camera_device_id: None,
+            ios_device_id: None,
+            ios_device_name: None,
+            keyboard_enabled: false,
+            frame_rate: 60,
+            output_path: PathBuf::from("capture.poratake"),
+        };
+
+        assert_eq!(start_request(&config).display_id, Some(73));
+    }
+
+    #[test]
     fn state_transitions_are_observable() {
         store_state(RecorderState::Idle);
         assert!(!is_recording());
@@ -325,10 +327,7 @@ mod tests {
         )
         .expect("read recorder.rs");
         let production = source.split("#[cfg(test)]").next().expect("test module");
-        assert!(
-            production.contains("\"setContentProtection\""),
-            "recorder.rs no longer calls camera-preview setContentProtection on start, stop or camera toggle"
-        );
+        assert!(production.contains("camera_preview().set_content_protection(enabled)"));
     }
 
     /// A rename of the command in the Windows daemon would silently break the
@@ -343,7 +342,7 @@ mod tests {
             std::fs::read_to_string(root.join("src/main/daemon-win/src/modules/camera_preview.rs"))
                 .expect("read camera_preview.rs");
         assert!(
-            source.contains("\"setContentProtection\""),
+            source.contains("Some(CameraPreviewMethod::SetContentProtection)"),
             "camera_preview.rs no longer serves the setContentProtection command"
         );
     }

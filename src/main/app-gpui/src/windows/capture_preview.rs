@@ -150,10 +150,15 @@ impl CapturePreviewWindow {
             return;
         };
         let (bounds, display_id) = preview_stack_placement(cx);
+        let window_bounds = display_id
+            .and_then(|id| cx.find_display(id))
+            .map(|display| crate::system::work_area::local_window_bounds(bounds, display.as_ref()))
+            .unwrap_or(bounds);
+        #[cfg(windows)]
         let bottom_aligned = preview_bottom_aligned(cx);
         let opened = cx.open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(WindowBounds::Windowed(window_bounds)),
                 titlebar: None,
                 focus: false,
                 show: !cfg!(windows),
@@ -166,6 +171,8 @@ impl CapturePreviewWindow {
                 ..Default::default()
             },
             |window, cx| {
+                #[cfg(not(windows))]
+                let _ = window;
                 #[cfg(windows)]
                 if !cfg!(test) {
                     if let Some(hwnd) = crate::windows::window_hwnd(window) {
@@ -200,10 +207,12 @@ impl CapturePreviewWindow {
     }
 }
 
+#[cfg(windows)]
 fn sync_preview_viewport(window: &mut Window, bounds: Bounds<gpui::Pixels>) {
     window.resize(bounds.size);
 }
 
+#[cfg(any(windows, test))]
 fn preview_viewport_ready(
     viewport: gpui::Size<gpui::Pixels>,
     bounds: Bounds<gpui::Pixels>,
@@ -347,7 +356,9 @@ fn selected_display(cx: &mut App) -> Option<(Bounds<gpui::Pixels>, gpui::Display
         .or_else(|| displays.first().cloned())
         .map(|display| {
             (
-                crate::system::work_area::work_area(display.bounds()),
+                crate::system::work_area::work_area(crate::system::work_area::display_bounds(
+                    display.as_ref(),
+                )),
                 display.id(),
             )
         })
@@ -662,16 +673,14 @@ fn polish_and_copy(path: &Path, cx: &mut App) -> bool {
         &settings,
     );
 
-    let (width, height) = (canvas.width() as usize, canvas.height() as usize);
-    let copied = arboard::Clipboard::new()
-        .and_then(|mut clipboard| {
-            clipboard.set_image(arboard::ImageData {
-                width,
-                height,
-                bytes: std::borrow::Cow::Owned(canvas.into_raw()),
-            })
-        })
-        .is_ok();
+    let (width, height) = (canvas.width(), canvas.height());
+    let copied = crate::system::clipboard::ClipboardService::write_rgba(
+        cx,
+        width,
+        height,
+        canvas.into_raw(),
+    )
+    .is_ok();
     if !copied {
         report_copy_failure(cx, "could not reach the clipboard");
     }
@@ -688,16 +697,10 @@ fn copy_image(path: &Path, cx: &mut App) -> bool {
         return false;
     };
     let rgba = decoded.to_rgba8();
-    let (width, height) = (rgba.width() as usize, rgba.height() as usize);
-    let copied = arboard::Clipboard::new()
-        .and_then(|mut clipboard| {
-            clipboard.set_image(arboard::ImageData {
-                width,
-                height,
-                bytes: std::borrow::Cow::Owned(rgba.into_raw()),
-            })
-        })
-        .is_ok();
+    let (width, height) = (rgba.width(), rgba.height());
+    let copied =
+        crate::system::clipboard::ClipboardService::write_rgba(cx, width, height, rgba.into_raw())
+            .is_ok();
     if !copied {
         report_copy_failure(cx, "could not reach the clipboard");
     }
@@ -709,11 +712,7 @@ fn report_copy_failure(cx: &mut App, message: &str) {
 }
 
 fn delete_capture(path: &Path) {
-    let path_str = path.to_string_lossy().to_string();
-    let mut items = crate::history_store::load_history();
-    items.retain(|item| item.original_path != path_str);
-    crate::history_store::save_history(&items);
-    let _ = std::fs::remove_file(path);
+    crate::history_store::delete_path(path, crate::history_store::HistoryItemType::Screenshot);
 }
 
 fn begin_remove_preview(
@@ -1289,10 +1288,9 @@ impl CapturePreviewWindow {
                                             });
                                             match result {
                                                 Ok(url) => {
-                                                    let _ = arboard::Clipboard::new().and_then(
-                                                        |mut clipboard| {
-                                                            clipboard.set_text(url.clone())
-                                                        },
+                                                    crate::system::clipboard::ClipboardService::write_text(
+                                                        cx,
+                                                        url.clone(),
                                                     );
                                                     crate::windows::toast::Toast::show(
                                                         cx,

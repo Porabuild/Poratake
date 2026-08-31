@@ -56,6 +56,35 @@ fn link_row(
         .into_any_element()
 }
 
+fn brand_logo(theme: &ThemeVars) -> AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_end()
+        .h(px(29.0))
+        .text_size(px(24.0))
+        .child(div().font_weight(gpui::FontWeight::BOLD).child("Pora"))
+        .child(
+            div()
+                .relative()
+                .h(px(24.0))
+                .w(px(5.76))
+                .ml(px(2.4))
+                .mr(px(0.72))
+                .child(
+                    div()
+                        .absolute()
+                        .bottom(px(1.0))
+                        .left(px(0.72))
+                        .size(px(4.32))
+                        .rounded_full()
+                        .bg(theme.accent),
+                ),
+        )
+        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("take"))
+        .into_any_element()
+}
+
 /// `renderUpdateSection` in `about-tab.tsx`: a status line with its icon, a
 /// `Check` button for the resting states, and a card naming the new version when
 /// there is one. The reference's `Install Update` button has no counterpart --
@@ -285,12 +314,7 @@ pub fn render(
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                        .child(
-                            div()
-                                .text_size(px(18.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("Poratake"),
-                        )
+                        .child(brand_logo(theme))
                         .child(
                             div()
                                 .text_size(px(13.0))

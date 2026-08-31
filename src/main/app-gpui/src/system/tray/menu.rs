@@ -50,6 +50,16 @@ enum Spec {
     Separator,
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) enum NativeMenuEntry {
+    Item {
+        intent: Intent,
+        label: String,
+        enabled: bool,
+    },
+    Separator,
+}
+
 fn item(intent: Intent, label: &str, icon: &'static str) -> Spec {
     Spec::Item {
         intent,
@@ -62,6 +72,9 @@ fn item(intent: Intent, label: &str, icon: &'static str) -> Spec {
 
 impl Spec {
     fn accelerator(mut self, value: &str) -> Self {
+        if !crate::system::capabilities::global_shortcuts_supported() {
+            return self;
+        }
         if let Spec::Item {
             accelerator: slot, ..
         } = &mut self
@@ -149,10 +162,16 @@ fn specs(state: &TrayMenuState) -> Vec<Spec> {
     );
     specs.push(Spec::Separator);
 
-    specs.push(
+    push_gated(
+        &mut specs,
+        Feature::ScreenshotScreen,
         item(Intent::CaptureScreen, "Capture Screen", "monitor").accelerator(&screenshot.screen),
     );
-    specs.push(item(Intent::CaptureArea, "Capture Area", "scan").accelerator(&screenshot.area));
+    push_gated(
+        &mut specs,
+        Feature::ScreenshotArea,
+        item(Intent::CaptureArea, "Capture Area", "scan").accelerator(&screenshot.area),
+    );
     push_gated(
         &mut specs,
         Feature::ScreenshotWindow,
@@ -241,15 +260,9 @@ fn specs(state: &TrayMenuState) -> Vec<Spec> {
     specs.push(Spec::Separator);
 
     specs.push(item(Intent::OpenSettings, "Settings...", "settings"));
-    specs.push(item(
-        Intent::HideTrayIcon,
-        if cfg!(target_os = "macos") {
-            "Hide Menu Bar Icon"
-        } else {
-            "Hide Tray Icon"
-        },
-        "eye-off",
-    ));
+    if cfg!(windows) {
+        specs.push(item(Intent::HideTrayIcon, "Hide Tray Icon", "eye-off"));
+    }
     specs.push(item(Intent::OpenIssues, "Poratake Issues", "aperture"));
     specs.push(item(Intent::Quit, "Quit", "power"));
 
@@ -283,6 +296,26 @@ pub fn entries(
                 });
                 MenuEntry::Item(item)
             }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn native_entries(state: &TrayMenuState) -> Vec<NativeMenuEntry> {
+    specs(state)
+        .into_iter()
+        .map(|spec| match spec {
+            Spec::Separator => NativeMenuEntry::Separator,
+            Spec::Item {
+                intent,
+                label,
+                enabled,
+                ..
+            } => NativeMenuEntry::Item {
+                intent,
+                label,
+                enabled,
+            },
         })
         .collect()
 }
@@ -333,6 +366,10 @@ mod tests {
     #[test]
     fn desktop_icons_label_follows_state() {
         let mut current = state();
+        if !is_supported(Feature::DesktopIcons) {
+            assert!(!labels(&specs(&current)).contains(&"Hide Desktop Icons".to_string()));
+            return;
+        }
         assert!(labels(&specs(&current)).contains(&"Hide Desktop Icons".to_string()));
         current.desktop_icons_hidden = true;
         assert!(labels(&specs(&current)).contains(&"Show Desktop Icons".to_string()));
@@ -346,6 +383,10 @@ mod tests {
         let record_screen = built.iter().find(
             |spec| matches!(spec, Spec::Item { intent, .. } if *intent == Intent::RecordScreen),
         );
+        if !is_supported(Feature::Recording) {
+            assert!(record_screen.is_none());
+            return;
+        }
         match record_screen {
             Some(Spec::Item { enabled, .. }) => assert!(!enabled),
             _ => panic!("record screen item missing"),

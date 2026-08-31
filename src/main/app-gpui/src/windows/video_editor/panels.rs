@@ -1596,57 +1596,63 @@ fn video_backgrounds(
         },
     )];
 
-    let desktop = entity.clone();
-    let is_desktop = wallpaper.enabled
-        && wallpaper.background_image.is_some()
-        && wallpaper.gradient.is_none()
-        && !customs.iter().any(|background| match &background.data {
-            CustomBackgroundData::Image { data } => {
-                wallpaper.background_image.as_deref() == Some(data.image_url.as_str())
-            }
-            CustomBackgroundData::Gradient { .. } => false,
-        });
-    let select_desktop = move |_: &mut gpui::Window, cx: &mut gpui::App| {
-        if let Some(entity) = desktop.upgrade() {
-            entity.update(cx, |this, cx| {
-                let source = this.desktop_wallpaper_source.clone().or_else(|| {
-                    crate::editor::background::desktop_wallpaper(&crate::state::state(cx).daemon)
-                });
-                if this.desktop_wallpaper_source.is_none() {
-                    this.desktop_wallpaper_source = source.clone();
+    if crate::system::capabilities::is_supported(
+        crate::system::capabilities::Feature::DesktopWallpaper,
+    ) {
+        let desktop = entity.clone();
+        let is_desktop = wallpaper.enabled
+            && wallpaper.background_image.is_some()
+            && wallpaper.gradient.is_none()
+            && !customs.iter().any(|background| match &background.data {
+                CustomBackgroundData::Image { data } => {
+                    wallpaper.background_image.as_deref() == Some(data.image_url.as_str())
                 }
-                this.update_wallpaper(cx, |wallpaper| {
-                    if let Some(source) = source.clone() {
-                        wallpaper.enabled = true;
-                        wallpaper.background_image = Some(source);
-                        wallpaper.gradient = None;
-                        if wallpaper.padding == 0.0 {
-                            wallpaper.padding = 50.0;
-                        }
-                    }
-                });
+                CustomBackgroundData::Gradient { .. } => false,
             });
-        }
-    };
-    tiles.push(match view.desktop_wallpaper_preview.clone() {
-        Some(image) => image_tile(
-            "video-wallpaper-desktop",
-            image,
-            tile,
-            is_desktop,
-            theme,
-            select_desktop,
-        ),
-        None => icon_tile(
-            "video-wallpaper-desktop",
-            "Use Desktop Wallpaper",
-            "monitor",
-            tile,
-            is_desktop,
-            theme,
-            select_desktop,
-        ),
-    });
+        let select_desktop = move |_: &mut gpui::Window, cx: &mut gpui::App| {
+            if let Some(entity) = desktop.upgrade() {
+                entity.update(cx, |this, cx| {
+                    let source = this.desktop_wallpaper_source.clone().or_else(|| {
+                        crate::editor::background::desktop_wallpaper(
+                            &crate::state::state(cx).daemon,
+                        )
+                    });
+                    if this.desktop_wallpaper_source.is_none() {
+                        this.desktop_wallpaper_source = source.clone();
+                    }
+                    this.update_wallpaper(cx, |wallpaper| {
+                        if let Some(source) = source.clone() {
+                            wallpaper.enabled = true;
+                            wallpaper.background_image = Some(source);
+                            wallpaper.gradient = None;
+                            if wallpaper.padding == 0.0 {
+                                wallpaper.padding = 50.0;
+                            }
+                        }
+                    });
+                });
+            }
+        };
+        tiles.push(match view.desktop_wallpaper_preview.clone() {
+            Some(image) => image_tile(
+                "video-wallpaper-desktop",
+                image,
+                tile,
+                is_desktop,
+                theme,
+                select_desktop,
+            ),
+            None => icon_tile(
+                "video-wallpaper-desktop",
+                "Use Desktop Wallpaper",
+                "monitor",
+                tile,
+                is_desktop,
+                theme,
+                select_desktop,
+            ),
+        });
+    }
 
     for (index, (id, name, colors, angle)) in wallpaper::SVG_PRESETS.iter().enumerate() {
         let selected = wallpaper.enabled && current_gradient_id.as_deref() == Some(*id);

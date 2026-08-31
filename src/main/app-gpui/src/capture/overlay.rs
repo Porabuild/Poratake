@@ -7,6 +7,9 @@ use gpui::{
     KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
     Styled, Window, WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
+#[cfg(not(test))]
+use poratake_daemon_common::contract::RecordingOverlayShowWindowRequest;
+use poratake_daemon_common::geometry::{CaptureRect, DisplayOrigin};
 
 use crate::capture::selection;
 use crate::capture::CaptureService;
@@ -28,13 +31,7 @@ enum Interaction {
 }
 
 /// A confirmed selection in global *physical* pixels.
-#[derive(Clone, Copy, Debug)]
-pub struct ScreenRect {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-}
+pub type ScreenRect = CaptureRect;
 
 #[derive(Clone, Copy)]
 pub struct OverlayLaunch {
@@ -46,6 +43,7 @@ pub struct OverlayLaunch {
 #[derive(Default)]
 struct OverlaySession {
     handles: Vec<TrackedOverlay>,
+    #[cfg(windows)]
     pooled: Vec<PooledOverlay>,
     outlined_window_id: Option<i64>,
 }
@@ -53,11 +51,14 @@ struct OverlaySession {
 #[derive(Clone)]
 struct TrackedOverlay {
     handle: AnyWindowHandle,
+    #[cfg(windows)]
     display_id: DisplayId,
     generation: u64,
+    #[cfg(windows)]
     focus: bool,
 }
 
+#[cfg(windows)]
 struct PooledOverlay {
     handle: gpui::WindowHandle<AreaOverlay>,
     display_id: DisplayId,
@@ -99,17 +100,7 @@ pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
     #[cfg(target_os = "macos")]
     {
         let daemon = crate::state::state(cx).daemon;
-        let shown = daemon.call(
-            "recording-overlay",
-            "show",
-            Some(serde_json::json!({
-                "x": rect.x,
-                "y": rect.y,
-                "width": rect.width,
-                "height": rect.height,
-            })),
-        );
-        if !shown.is_ok_and(|result| result["visible"].as_bool() == Some(true)) {
+        if daemon.recording_overlay().show(rect) != Ok(true) {
             return false;
         }
         close_all(cx);
@@ -144,7 +135,7 @@ pub fn end_recording_handoff(cx: &mut App) {
     #[cfg(not(test))]
     {
         let daemon = crate::state::state(cx).daemon;
-        let _ = daemon.call("recording-overlay", "hide", None);
+        let _ = daemon.recording_overlay().hide();
     }
     close_all(cx);
 }
@@ -165,32 +156,22 @@ pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> boo
             crate::theme::presets::ThemeMode::Light => preset.light.accent,
             _ => preset.dark.accent,
         };
-        let params = window_outline_params(window_id, color, recording_control_window_id(cx));
+        let request = RecordingOverlayShowWindowRequest {
+            window_id,
+            color: Some(color.to_string()),
+            below_window_id: recording_control_window_id(cx),
+        };
         service
             .daemon
-            .call("recording-overlay", "showWindow", Some(params))
-            .is_ok_and(|result| result["visible"].as_bool() == Some(true))
+            .recording_overlay()
+            .show_window(request)
+            .unwrap_or(false)
     };
 
     if visible {
         session(cx).outlined_window_id = Some(window_id);
     }
     visible
-}
-
-fn window_outline_params(
-    window_id: i64,
-    color: &str,
-    below_window_id: Option<i64>,
-) -> serde_json::Value {
-    let mut params = serde_json::json!({
-        "windowId": window_id,
-        "color": color,
-    });
-    if let Some(below_window_id) = below_window_id {
-        params["belowWindowId"] = below_window_id.into();
-    }
-    params
 }
 
 #[cfg(all(windows, not(test)))]
@@ -262,6 +243,7 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
     }
 }
 
+#[cfg(windows)]
 pub fn raise_all(generation: u64, cx: &mut App) {
     let handles = session(cx).handles.clone();
     for tracked in handles {
@@ -299,7 +281,7 @@ fn local_recording_rect(
     display_bounds: Bounds<Pixels>,
     scale: f32,
 ) -> Option<selection::Rect> {
-    let scale = scale.max(0.01);
+    let scale = capture_coordinate_scale(scale);
     let display_x = f32::from(display_bounds.left()) * scale;
     let display_y = f32::from(display_bounds.top()) * scale;
     let display_width = f32::from(display_bounds.size.width) * scale;
@@ -373,15 +355,26 @@ fn set_overlay_hole(window: &Window, hole: Option<selection::Rect>) {
     let _ = (window, hole);
 }
 
-pub fn app_scale_factor(cx: &mut App) -> f32 {
-    cx.windows()
-        .into_iter()
-        .find_map(|handle| handle.update(cx, |_, window, _| window.scale_factor()).ok())
-        .unwrap_or(1.0)
+pub fn display_scale_factor(display: &dyn gpui::PlatformDisplay, cx: &mut App) -> f32 {
+    for handle in cx.windows() {
+        let scale = handle
+            .update(cx, |_, window, cx| {
+                window
+                    .display(cx)
+                    .filter(|current| current.id() == display.id())
+                    .map(|_| window.scale_factor())
+            })
+            .ok()
+            .flatten();
+        if let Some(scale) = scale {
+            return scale;
+        }
+    }
+    crate::system::work_area::capture_scale_factor(display, cx)
 }
 
 pub fn physical_rect(bounds: Bounds<Pixels>, scale: f32) -> ScreenRect {
-    let scale = scale.max(0.01);
+    let scale = capture_coordinate_scale(scale);
     ScreenRect {
         x: (f32::from(bounds.origin.x) * scale).round() as i32,
         y: (f32::from(bounds.origin.y) * scale).round() as i32,
@@ -390,13 +383,45 @@ pub fn physical_rect(bounds: Bounds<Pixels>, scale: f32) -> ScreenRect {
     }
 }
 
+pub fn display_capture(
+    bounds: Bounds<Pixels>,
+    scale: f32,
+    display_id: Option<u32>,
+) -> crate::capture::DisplayCapture {
+    let rect = physical_rect(bounds, scale);
+    crate::capture::DisplayCapture::new(
+        rect,
+        f64::from(scale),
+        DisplayOrigin {
+            x: rect.x,
+            y: rect.y,
+        },
+        display_id,
+    )
+}
+
+pub(crate) fn capture_coordinate_scale(scale: f32) -> f32 {
+    if cfg!(target_os = "macos") {
+        1.0
+    } else {
+        scale.max(0.01)
+    }
+}
+
 fn overlay_options(
     display_bounds: Bounds<Pixels>,
     display_id: DisplayId,
     focus: bool,
 ) -> WindowOptions {
+    #[cfg(target_os = "macos")]
+    let window_bounds = Bounds {
+        origin: gpui::point(px(0.0), px(0.0)),
+        size: display_bounds.size,
+    };
+    #[cfg(not(target_os = "macos"))]
+    let window_bounds = display_bounds;
     WindowOptions {
-        window_bounds: Some(gpui::WindowBounds::Windowed(display_bounds)),
+        window_bounds: Some(gpui::WindowBounds::Windowed(window_bounds)),
         titlebar: None,
         focus,
         show: !cfg!(windows),
@@ -521,6 +546,7 @@ fn show_overlay_before_freeze(window: &Window) -> bool {
     }
 }
 
+#[cfg(any(windows, test))]
 fn can_show_before_freeze(windows_build: u32, capture_excluded: bool) -> bool {
     windows_build >= 19041 && capture_excluded
 }
@@ -532,10 +558,14 @@ fn track_overlay(
     focus: bool,
     cx: &mut App,
 ) {
+    #[cfg(not(windows))]
+    let _ = (display_id, focus);
     session(cx).handles.push(TrackedOverlay {
         handle,
+        #[cfg(windows)]
         display_id,
         generation,
+        #[cfg(windows)]
         focus,
     });
 }
@@ -597,6 +627,7 @@ fn open_overlay_window(
                 let window_list_generation = overlay.window_list_generation.wrapping_add(1);
                 let color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
                 let mut replacement = build(scale, focus_handle);
+                replacement.display_id = Some(u32::from(display_id));
                 replacement.window_list_generation = window_list_generation;
                 replacement.color_frame_generation = color_frame_generation;
                 *overlay = replacement;
@@ -629,7 +660,11 @@ fn open_overlay_window(
             prepare_overlay_window(window, display_bounds);
             let scale = window.scale_factor();
             let focus_handle = cx.focus_handle();
-            let view = cx.new(|_| build(scale, focus_handle));
+            let view = cx.new(|_| {
+                let mut view = build(scale, focus_handle);
+                view.display_id = Some(u32::from(display_id));
+                view
+            });
             view.update(cx, after_new);
             let shown = reveal_overlay_window(window, launch, active);
             if launch.focus && shown {
@@ -664,7 +699,7 @@ pub fn prewarm(cx: &mut App) {
     let service = crate::state::state(cx);
     for display in cx.displays() {
         let display_id = display.id();
-        let display_bounds = display.bounds();
+        let display_bounds = crate::system::work_area::display_bounds(display.as_ref());
         let Some(handle) = open_overlay_window(
             display_id,
             display_bounds,
@@ -702,6 +737,7 @@ fn begin_recording(
     cx: &mut App,
     target: crate::video::recorder::RecordingTarget,
     rect: ScreenRect,
+    display_id: Option<u32>,
     window_id: Option<i64>,
     target_name: Option<String>,
 ) {
@@ -709,6 +745,7 @@ fn begin_recording(
         cx,
         target,
         rect,
+        display_id,
         window_id,
         target_name,
     );
@@ -716,6 +753,7 @@ fn begin_recording(
 
 pub struct AreaOverlay {
     pub focus_handle: gpui::FocusHandle,
+    display_id: Option<u32>,
     display_bounds: Bounds<Pixels>,
     scale: f32,
     intent: crate::capture::intent::CaptureIntent,
@@ -732,6 +770,7 @@ pub struct AreaOverlay {
     rect: Option<selection::Rect>,
     interaction: Option<Interaction>,
     cursor: gpui::CursorStyle,
+    screen_picker: bool,
     /// Set in all-in-one mode: the toolbar's current mode and target.
     all_in_one: Option<crate::capture::all_in_one::Choices>,
     all_in_one_targets: [crate::capture::all_in_one::Target; 2],
@@ -753,6 +792,7 @@ impl AreaOverlay {
     ) -> Self {
         Self {
             focus_handle,
+            display_id: None,
             display_bounds,
             scale,
             pointer: None,
@@ -764,6 +804,7 @@ impl AreaOverlay {
             picking_windows: false,
             window_list_generation: 0,
             hovered_window: None,
+            screen_picker: false,
             all_in_one: None,
             all_in_one_targets: [crate::capture::all_in_one::Target::Area; 2],
             picking_color: false,
@@ -806,6 +847,7 @@ impl AreaOverlay {
         self.window_list_generation
     }
 
+    #[cfg(any(not(test), windows))]
     fn accepts_color_frame(&self, generation: u64) -> bool {
         self.picking_color && self.color_frame_generation == generation
     }
@@ -834,13 +876,21 @@ impl AreaOverlay {
         self
     }
 
+    pub fn with_screen_picker(mut self) -> Self {
+        self.screen_picker = true;
+        self.cursor = gpui::CursorStyle::default();
+        self
+    }
+
     fn is_picking_windows(&self) -> bool {
         self.picking_windows
     }
 
     fn is_picking_screen(&self) -> bool {
-        self.all_in_one
-            .is_some_and(|choices| choices.target == crate::capture::all_in_one::Target::Screen)
+        self.screen_picker
+            || self
+                .all_in_one
+                .is_some_and(|choices| choices.target == crate::capture::all_in_one::Target::Screen)
     }
 
     fn screen_picker_dimmed(&self, window_hovered: bool) -> Option<bool> {
@@ -851,7 +901,7 @@ impl AreaOverlay {
     /// this overlay's logical client coordinates.
     fn hovered_frame(&self) -> Option<(Point<Pixels>, gpui::Size<Pixels>)> {
         let window = self.windows.get(self.hovered_window?)?;
-        let scale = self.scale.max(0.01);
+        let scale = capture_coordinate_scale(self.scale);
         let left = px(window.bounds.x as f32 / scale) - self.display_bounds.left();
         let top = px(window.bounds.y as f32 / scale) - self.display_bounds.top();
         Some((
@@ -891,6 +941,7 @@ impl AreaOverlay {
                 cx,
                 crate::video::recorder::RecordingTarget::Window,
                 rect,
+                self.display_id,
                 Some(window_id),
                 Some(label),
             );
@@ -965,6 +1016,34 @@ impl AreaOverlay {
             |this, cx| this.apply_all_in_one_target(cx),
             true,
             "the all-in-one overlay",
+            cx,
+        )
+    }
+
+    pub fn open_screen_picker(
+        service: CaptureService,
+        display_id: DisplayId,
+        display_bounds: Bounds<Pixels>,
+        launch: OverlayLaunch,
+        cx: &mut App,
+    ) -> Option<gpui::WindowHandle<AreaOverlay>> {
+        open_overlay_window(
+            display_id,
+            display_bounds,
+            launch,
+            |scale, focus_handle| {
+                AreaOverlay::with_focus(
+                    display_bounds,
+                    scale,
+                    service,
+                    crate::capture::intent::CaptureIntent::Screenshot,
+                    focus_handle,
+                )
+                .with_screen_picker()
+            },
+            |_, _| {},
+            true,
+            "the display picker",
             cx,
         )
     }
@@ -1094,7 +1173,9 @@ impl AreaOverlay {
             let service = self.service.clone();
             let freeze = service.config.get().screenshot.freeze_screen;
             let reservation = freeze.then(|| service.reserve_cached_capture());
-            let rect = physical_rect(self.display_bounds, self.scale);
+            let scale = self.scale;
+            let capture = display_capture(self.display_bounds, scale, self.display_id);
+            let rect = capture.rect;
             cx.spawn(async move |entity, cx| {
                 let frame = cx
                     .background_executor()
@@ -1110,14 +1191,7 @@ impl AreaOverlay {
                             generation
                         ));
                         let frame = service
-                            .capture_area_to_file_with_options(
-                                rect.x,
-                                rect.y,
-                                rect.width,
-                                rect.height,
-                                &path,
-                                freeze,
-                            )
+                            .capture_area_to_file_with_options(capture, &path, freeze)
                             .ok()
                             .and_then(|_| image::open(&path).ok())
                             .map(|image| std::sync::Arc::new(image.to_rgba8()));
@@ -1155,7 +1229,7 @@ impl AreaOverlay {
         let (x, y) = crate::capture::color_picker::frame_point(frame, position, self.viewport());
         let pixel = frame.get_pixel(x, y).0;
         let hex = format!("#{:02x}{:02x}{:02x}", pixel[0], pixel[1], pixel[2]);
-        let _ = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(hex.clone()));
+        crate::system::clipboard::ClipboardService::write_text(cx, hex.clone());
         crate::windows::toast::Toast::show(cx, "Color copied", hex);
         true
     }
@@ -1272,13 +1346,15 @@ impl AreaOverlay {
             return;
         }
 
-        // Logical client coords → physical screen pixels.
-        let x = (f32::from(self.display_bounds.left() + origin.x) * self.scale).round() as i32;
-        let y = (f32::from(self.display_bounds.top() + origin.y) * self.scale).round() as i32;
-        let width = (f32::from(size.width) * self.scale).round() as i32;
-        let height = (f32::from(size.height) * self.scale).round() as i32;
+        let coordinate_scale = capture_coordinate_scale(self.scale);
+        let x =
+            (f32::from(self.display_bounds.left() + origin.x) * coordinate_scale).round() as i32;
+        let y = (f32::from(self.display_bounds.top() + origin.y) * coordinate_scale).round() as i32;
+        let width = (f32::from(size.width) * coordinate_scale).round() as i32;
+        let height = (f32::from(size.height) * coordinate_scale).round() as i32;
 
         let intent = self.intent;
+        let scale = self.scale;
         if retains_overlay_after_selection(intent) {
             self.all_in_one = None;
             sync_recording_handoff(cx);
@@ -1291,6 +1367,7 @@ impl AreaOverlay {
                     width,
                     height,
                 },
+                self.display_id,
                 None,
                 None,
             );
@@ -1299,19 +1376,42 @@ impl AreaOverlay {
         }
 
         let coordinator = crate::state::coordinator(cx);
-        coordinator.update(cx, |coordinator, cx| {
-            coordinator.capture_area_for(
-                ScreenRect {
-                    x,
-                    y,
-                    width,
-                    height,
-                },
-                intent,
-                cx,
-            );
-        });
+        let display_origin = (
+            (f32::from(self.display_bounds.left()) * coordinate_scale).round() as i32,
+            (f32::from(self.display_bounds.top()) * coordinate_scale).round() as i32,
+        );
+        let display_id = self.display_id;
+        let reservation = self
+            .service
+            .config
+            .get()
+            .screenshot
+            .freeze_screen
+            .then(|| self.service.reserve_cached_capture());
         dismiss(window, cx);
+        cx.defer(move |cx| {
+            coordinator.update(cx, |coordinator, cx| {
+                coordinator.capture_area_reserved(
+                    crate::capture::DisplayCapture::new(
+                        ScreenRect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        },
+                        f64::from(scale),
+                        DisplayOrigin {
+                            x: display_origin.0,
+                            y: display_origin.1,
+                        },
+                        display_id,
+                    ),
+                    intent,
+                    reservation,
+                    cx,
+                );
+            });
+        });
     }
 }
 
@@ -1779,8 +1879,8 @@ impl Render for AreaOverlay {
                                     .font_family(crate::ui::colors::MONO_FONT)
                                     .child(format!(
                                         "{} × {}",
-                                        (f32::from(bounds_size.width * self.scale)).round() as i32,
-                                        (f32::from(bounds_size.height * self.scale)).round() as i32
+                                        f32::from(bounds_size.width).round() as i32,
+                                        f32::from(bounds_size.height).round() as i32
                                     )),
                             )
                     })
@@ -1836,12 +1936,8 @@ impl AreaOverlay {
 
     fn confirm_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let scale = self.scale;
-        let rect = ScreenRect {
-            x: (f32::from(self.display_bounds.left()) * scale).round() as i32,
-            y: (f32::from(self.display_bounds.top()) * scale).round() as i32,
-            width: (f32::from(self.display_bounds.size.width) * scale).round() as i32,
-            height: (f32::from(self.display_bounds.size.height) * scale).round() as i32,
-        };
+        let capture = display_capture(self.display_bounds, scale, self.display_id);
+        let rect = capture.rect;
         let intent = self.intent;
         if retains_overlay_after_selection(intent) {
             self.rect = Some(selection::Rect {
@@ -1856,6 +1952,7 @@ impl AreaOverlay {
                 cx,
                 crate::video::recorder::RecordingTarget::Screen,
                 rect,
+                self.display_id,
                 None,
                 None,
             );
@@ -1863,10 +1960,19 @@ impl AreaOverlay {
             return;
         }
         let coordinator = crate::state::coordinator(cx);
-        coordinator.update(cx, |coordinator, cx| {
-            coordinator.capture_area_for(rect, intent, cx);
-        });
+        let reservation = self
+            .service
+            .config
+            .get()
+            .screenshot
+            .freeze_screen
+            .then(|| self.service.reserve_cached_capture());
         dismiss(window, cx);
+        cx.defer(move |cx| {
+            coordinator.update(cx, |coordinator, cx| {
+                coordinator.capture_area_reserved(capture, intent, reservation, cx);
+            });
+        });
     }
 
     fn on_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1888,7 +1994,7 @@ impl AreaOverlay {
             return;
         }
         if self.is_picking_windows() {
-            let scale = self.scale.max(0.01);
+            let scale = capture_coordinate_scale(self.scale);
             let x = f32::from(self.display_bounds.left() + event.position.x) * scale;
             let y = f32::from(self.display_bounds.top() + event.position.y) * scale;
             let hovered = crate::capture::windows_list::hit_test(&self.windows, x as f64, y as f64)
@@ -1959,6 +2065,7 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{px, size, TestAppContext};
+    use poratake_daemon_common::contract::RecordingOverlayShowWindowRequest;
 
     use crate::config::store::ConfigStore;
     use crate::ui::chrome;
@@ -1994,8 +2101,13 @@ mod tests {
 
     #[test]
     fn window_outline_uses_the_electron_daemon_contract() {
+        let request = RecordingOverlayShowWindowRequest {
+            window_id: 42,
+            color: Some("#8892ef".to_string()),
+            below_window_id: Some(84),
+        };
         assert_eq!(
-            super::window_outline_params(42, "#8892ef", Some(84)),
+            serde_json::to_value(request).expect("serialize request"),
             serde_json::json!({
                 "windowId": 42,
                 "color": "#8892ef",
@@ -2005,16 +2117,70 @@ mod tests {
     }
 
     #[test]
-    fn physical_rect_multiplies_logical_bounds_by_scale() {
+    fn capture_rect_uses_platform_coordinate_units() {
         let bounds = gpui::Bounds {
             origin: gpui::point(px(100.0), px(50.0)),
             size: size(px(800.0), px(600.0)),
         };
         let rect = super::physical_rect(bounds, 1.5);
-        assert_eq!(rect.x, 150);
-        assert_eq!(rect.y, 75);
-        assert_eq!(rect.width, 1200);
-        assert_eq!(rect.height, 900);
+        let scale = super::capture_coordinate_scale(1.5);
+        assert_eq!(rect.x, (100.0 * scale) as i32);
+        assert_eq!(rect.y, (50.0 * scale) as i32);
+        assert_eq!(rect.width, (800.0 * scale) as i32);
+        assert_eq!(rect.height, (600.0 * scale) as i32);
+    }
+
+    #[test]
+    fn display_capture_keeps_target_display_geometry_scale_and_id_together() {
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(-1600.0), px(120.0)),
+            size: size(px(1000.0), px(800.0)),
+        };
+        let capture = super::display_capture(bounds, 1.5, Some(73));
+        let coordinate_scale = super::capture_coordinate_scale(1.5);
+
+        assert_eq!(capture.rect.x, (-1600.0 * coordinate_scale) as i32);
+        assert_eq!(capture.rect.y, (120.0 * coordinate_scale) as i32);
+        assert_eq!(capture.rect.width, (1000.0 * coordinate_scale) as i32);
+        assert_eq!(capture.rect.height, (800.0 * coordinate_scale) as i32);
+        assert_eq!(capture.scale_factor, 1.5);
+        assert_eq!(capture.display_origin().x, capture.rect.x);
+        assert_eq!(capture.display_origin().y, capture.rect.y);
+        assert_eq!(capture.display_id, Some(73));
+    }
+
+    #[gpui::test]
+    fn opened_overlay_keeps_the_selected_display_id(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (display_id, display_bounds) = cx.read(|cx| {
+            let display = cx.primary_display().expect("primary display");
+            (display.id(), display.bounds())
+        });
+        let opened = cx.update(|cx| {
+            super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: false,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open overlay")
+        });
+
+        assert_eq!(
+            opened
+                .update(cx, |overlay, _, _| overlay.display_id)
+                .expect("read display id"),
+            Some(u32::from(display_id))
+        );
     }
 
     #[test]
@@ -2023,13 +2189,14 @@ mod tests {
             origin: gpui::point(px(100.0), px(50.0)),
             size: size(px(800.0), px(600.0)),
         };
+        let scale = super::capture_coordinate_scale(1.5);
         assert_eq!(
             super::local_recording_rect(
                 super::ScreenRect {
-                    x: 300,
-                    y: 150,
-                    width: 600,
-                    height: 450,
+                    x: (200.0 * scale) as i32,
+                    y: (100.0 * scale) as i32,
+                    width: (400.0 * scale) as i32,
+                    height: (300.0 * scale) as i32,
                 },
                 display,
                 1.5,
@@ -2042,16 +2209,7 @@ mod tests {
             })
         );
         assert_eq!(
-            super::local_recording_rect(
-                super::ScreenRect {
-                    x: 150,
-                    y: 75,
-                    width: 1200,
-                    height: 900,
-                },
-                display,
-                1.5,
-            ),
+            super::local_recording_rect(super::physical_rect(display, 1.5), display, 1.5,),
             Some(crate::capture::selection::Rect {
                 x: 0.0,
                 y: 0.0,
@@ -2585,6 +2743,44 @@ mod tests {
     }
 
     #[gpui::test]
+    fn dedicated_display_picker_reuses_the_screen_target_state(cx: &mut TestAppContext) {
+        use crate::capture::intent::CaptureIntent;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let (overlay, cx) = cx.add_window_view(|window, cx| {
+            let focus_handle = cx.focus_handle();
+            window.focus(&focus_handle);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                CaptureIntent::Screenshot,
+                focus_handle,
+            )
+            .with_screen_picker()
+        });
+
+        assert!(overlay.read_with(cx, |overlay, _| overlay.is_picking_screen()));
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| overlay.screen_picker_dimmed(false)),
+            Some(true)
+        );
+        assert_eq!(overlay.read_with(cx, |overlay, _| overlay.all_in_one), None);
+        assert_eq!(
+            overlay.read_with(cx, |overlay, _| overlay.cursor),
+            gpui::CursorStyle::default()
+        );
+    }
+
+    #[gpui::test]
     fn all_in_one_mode_syncs_across_overlay_windows(cx: &mut TestAppContext) {
         use crate::capture::all_in_one::{Choices, Mode};
         use crate::capture::intent::CaptureIntent;
@@ -2698,5 +2894,28 @@ mod tests {
         cx.run_until_parked();
 
         assert!(first.update(cx, |_, _, _| ()).is_err());
+    }
+
+    #[test]
+    fn selection_reserves_frozen_pixels_before_dismissal() {
+        let source = include_str!("overlay.rs");
+        for (start, end) in [
+            ("fn confirm(", "fn prompt("),
+            ("fn confirm_screen(", "fn on_move("),
+        ] {
+            let start = source.find(start).expect("selection handler");
+            let source = &source[start..];
+            let body = &source[..source.find(end).expect("next selection handler")];
+            let reserved = body
+                .find("reserve_cached_capture()")
+                .expect("cached reservation");
+            let dismissed = body.find("dismiss(window, cx)").expect("dismissal");
+            let captured = body
+                .find("capture_area_reserved(")
+                .expect("reserved capture");
+
+            assert!(reserved < dismissed);
+            assert!(dismissed < captured);
+        }
     }
 }

@@ -6,9 +6,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use parking_lot::{Condvar, Mutex};
-use serde_json::json;
+use poratake_daemon_common::geometry::{CaptureAreaRequest, CaptureWindowRequest};
+
+pub use poratake_daemon_common::geometry::DisplayCaptureContext as DisplayCapture;
 
 use crate::config::store::ConfigStore;
 use crate::daemon::DaemonHandle;
@@ -104,31 +106,16 @@ impl CaptureService {
     /// physical pixels plus a destination file path.
     pub fn capture_area_to_file_with_options(
         &self,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
+        capture: DisplayCapture,
         path: &std::path::Path,
         cached: bool,
     ) -> Result<()> {
-        if !self.daemon.is_running() {
-            self.daemon.start()?;
-        }
-        self.daemon
-            .call(
-                "screenshot",
-                "capture-area",
-                Some(json!({
-                    "x": x,
-                    "y": y,
-                    "width": width,
-                    "height": height,
-                    "path": path.to_string_lossy(),
-                    "cached": cached,
-                })),
-            )
-            .map_err(|error| anyhow!("capture-area failed: {error}"))?;
-        Ok(())
+        self.daemon.screenshot().capture_area(&CaptureAreaRequest {
+            capture,
+            path: path.to_path_buf(),
+            cached,
+            window_id: None,
+        })
     }
 
     /// `freezeScreen()` in `capture/freeze-screen`: the daemon paints a still
@@ -155,13 +142,7 @@ impl CaptureService {
     }
 
     fn freeze_screen_started(&self) -> Result<()> {
-        if !self.daemon.is_running() {
-            self.daemon.start()?;
-        }
-        self.daemon
-            .call("freeze-screen", "freeze", Some(json!({})))
-            .map_err(|error| anyhow!("freeze failed: {error}"))?;
-        Ok(())
+        self.daemon.freeze_screen().freeze()
     }
 
     fn finish_freeze(&self, generation: u64, result: Result<()>) -> Result<()> {
@@ -197,10 +178,7 @@ impl CaptureService {
     /// settle, and only then reads the pixels.
     pub(crate) fn capture_area_cached(
         &self,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
+        capture: DisplayCapture,
         path: &std::path::Path,
         reservation: Option<CachedCaptureReservation>,
     ) -> Result<()> {
@@ -208,7 +186,7 @@ impl CaptureService {
         if let Some(reservation) = reservation.as_ref() {
             reservation.wait_for_freeze();
         }
-        let result = self.capture_area_to_file_with_options(x, y, width, height, path, cached);
+        let result = self.capture_area_to_file_with_options(capture, path, cached);
         drop(reservation);
         result
     }
@@ -226,10 +204,7 @@ impl CaptureService {
         if !self.daemon.is_running() {
             return true;
         }
-        if let Err(error) = self
-            .daemon
-            .call("freeze-screen", "release", Some(json!({})))
-        {
+        if let Err(error) = self.daemon.freeze_screen().release() {
             eprintln!("[freeze] failed to release the frozen displays: {error}");
             return false;
         }
@@ -242,29 +217,18 @@ impl CaptureService {
         if !self.daemon.is_running() {
             return;
         }
-        if let Err(error) = self
-            .daemon
-            .call("freeze-screen", "prewarm", Some(json!({})))
-        {
+        if let Err(error) = self.daemon.freeze_screen().prewarm() {
             eprintln!("[freeze] prewarm failed: {error}");
         }
     }
 
     pub fn capture_window_to_file(&self, window_id: i64, path: &std::path::Path) -> Result<()> {
-        if !self.daemon.is_running() {
-            self.daemon.start()?;
-        }
         self.daemon
-            .call(
-                "screenshot",
-                "capture-window",
-                Some(json!({
-                    "windowId": window_id,
-                    "path": path.to_string_lossy(),
-                })),
-            )
-            .map_err(|error| anyhow!("capture-window failed: {error}"))?;
-        Ok(())
+            .screenshot()
+            .capture_window(&CaptureWindowRequest {
+                window_id,
+                path: path.to_path_buf(),
+            })
     }
 }
 
@@ -297,15 +261,17 @@ fn each_display(
 ) -> bool {
     let service = crate::state::state(cx);
     let primary = cx.primary_display().map(|display| display.id());
-    let displays = cx.displays();
+    let mut displays = cx.displays();
     if displays.is_empty() {
         crate::windows::toast::Toast::show(cx, "Capture failed", "No display available");
         return false;
     }
+    displays.sort_by_key(|display| Some(display.id()) != primary);
     let mut opened = false;
     for display in displays {
-        let focus = primary.map(|id| id == display.id()).unwrap_or(!opened);
-        if open(service.clone(), display.id(), display.bounds(), focus, cx) {
+        let focus = !opened;
+        let bounds = crate::system::work_area::display_bounds(display.as_ref());
+        if open(service.clone(), display.id(), bounds, focus, cx) {
             opened = true;
         }
     }
@@ -318,6 +284,11 @@ fn each_display(
 /// `prewarmFreezeScreen()`: warms the daemon's capture pipeline off the main
 /// thread at startup.
 pub fn prewarm_freeze_screen(cx: &mut gpui::App) {
+    if !crate::system::capabilities::is_supported(
+        crate::system::capabilities::Feature::FreezeScreen,
+    ) {
+        return;
+    }
     let service = crate::state::state(cx);
     cx.background_executor()
         .spawn(async move { service.prewarm_freeze() })
@@ -330,7 +301,10 @@ fn with_frozen_screen(
     open: impl FnOnce(&mut gpui::App, bool, u64) -> bool + 'static,
 ) {
     let service = crate::state::state(cx);
-    if !service.config.get().screenshot.freeze_screen {
+    if !crate::system::capabilities::is_supported(
+        crate::system::capabilities::Feature::FreezeScreen,
+    ) || !service.config.get().screenshot.freeze_screen
+    {
         if let Some(generation) = release_first {
             let releasing = service.clone();
             cx.background_executor()
@@ -385,6 +359,9 @@ fn with_frozen_screen(
 
 /// Opens the shared area overlay for one of the selection-driven flows.
 pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
+    if !capture_topology_supported(cx) {
+        return;
+    }
     let release_first = overlay::replace_all(cx);
     with_frozen_screen(cx, release_first, move |cx, deferred_show, generation| {
         each_display(cx, |service, id, bounds, focus, cx| {
@@ -408,6 +385,9 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
 /// Opens the all-in-one overlay: one surface that switches between the
 /// screenshot, recording and OCR flows over area, window or screen.
 pub fn start_all_in_one(cx: &mut gpui::App) {
+    if !capture_topology_supported(cx) {
+        return;
+    }
     let choices = all_in_one::restore(&crate::state::state(cx).config);
     let release_first = overlay::replace_all(cx);
     with_frozen_screen(cx, release_first, move |cx, deferred_show, generation| {
@@ -429,6 +409,22 @@ pub fn start_all_in_one(cx: &mut gpui::App) {
     });
 }
 
+fn capture_topology_supported(_cx: &mut gpui::App) -> bool {
+    #[cfg(target_os = "linux")]
+    if crate::system::linux_session::current()
+        == crate::system::linux_session::LinuxSession::Wayland
+        && _cx.displays().len() != 1
+    {
+        crate::windows::toast::Toast::show(
+            _cx,
+            "Capture unavailable",
+            "Wayland capture currently requires a single active display",
+        );
+        return false;
+    }
+    true
+}
+
 fn selected_display(cx: &mut gpui::App) -> Option<std::rc::Rc<dyn gpui::PlatformDisplay>> {
     cx.primary_display()
         .or_else(|| cx.displays().into_iter().next())
@@ -439,11 +435,19 @@ pub fn start_screen_recording(cx: &mut gpui::App) {
     let Some(display) = selected_display(cx) else {
         return;
     };
-    let scale = overlay::app_scale_factor(cx);
+    let scale = overlay::display_scale_factor(display.as_ref(), cx);
+    #[cfg(target_os = "macos")]
+    let display_id = Some(u32::from(display.id()));
+    #[cfg(not(target_os = "macos"))]
+    let display_id = None;
     crate::windows::recording_control::RecordingControl::open(
         cx,
         crate::video::recorder::RecordingTarget::Screen,
-        overlay::physical_rect(display.bounds(), scale),
+        overlay::physical_rect(
+            crate::system::work_area::display_bounds(display.as_ref()),
+            scale,
+        ),
+        display_id,
         None,
         None,
     );
@@ -520,16 +524,168 @@ pub fn start_window_capture(cx: &mut gpui::App) {
     start_window_picker(intent::CaptureIntent::Screenshot, cx);
 }
 
-pub fn start_screen_capture(cx: &mut gpui::App) {
-    let Some(display) = selected_display(cx) else {
-        return;
-    };
-    let scale = overlay::app_scale_factor(cx);
-    let rect = overlay::physical_rect(display.bounds(), scale);
+#[derive(Clone)]
+struct ScreenTarget {
+    display_id: gpui::DisplayId,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    scale: f32,
+    capture_display_id: Option<u32>,
+    primary: bool,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn x11_screen_bounds(
+    rect: poratake_daemon_common::geometry::CaptureRect,
+    scale: f32,
+) -> gpui::Bounds<gpui::Pixels> {
+    gpui::Bounds {
+        origin: gpui::point(
+            gpui::px(rect.x as f32 / scale),
+            gpui::px(rect.y as f32 / scale),
+        ),
+        size: gpui::size(
+            gpui::px(rect.width as f32 / scale),
+            gpui::px(rect.height as f32 / scale),
+        ),
+    }
+}
+
+fn screen_targets(cx: &mut gpui::App) -> Result<Vec<ScreenTarget>> {
+    #[cfg(target_os = "linux")]
+    if crate::system::linux_session::current() == crate::system::linux_session::LinuxSession::X11 {
+        let display =
+            selected_display(cx).ok_or_else(|| anyhow::anyhow!("No display available"))?;
+        let physical = crate::state::state(cx)
+            .daemon
+            .screenshot()
+            .list_displays()?;
+        let scale = crate::system::work_area::x11_capture_scale_factor(display.as_ref(), &physical)
+            .unwrap_or(1.0);
+        let mut targets: Vec<_> = physical
+            .into_iter()
+            .map(|physical| ScreenTarget {
+                display_id: display.id(),
+                bounds: x11_screen_bounds(physical.rect, scale),
+                scale,
+                capture_display_id: None,
+                primary: physical.primary,
+            })
+            .collect();
+        targets.sort_by_key(|target| !target.primary);
+        return Ok(targets);
+    }
+
+    let primary = cx.primary_display().map(|display| display.id());
+    let mut targets = Vec::new();
+    for display in cx.displays() {
+        let scale = overlay::display_scale_factor(display.as_ref(), cx);
+        #[cfg(target_os = "macos")]
+        let capture_display_id = Some(u32::from(display.id()));
+        #[cfg(not(target_os = "macos"))]
+        let capture_display_id = None;
+        targets.push(ScreenTarget {
+            display_id: display.id(),
+            bounds: crate::system::work_area::display_bounds(display.as_ref()),
+            scale,
+            capture_display_id,
+            primary: primary == Some(display.id()),
+        });
+    }
+    targets.sort_by_key(|target| !target.primary);
+    Ok(targets)
+}
+
+fn capture_screen_target(target: ScreenTarget, cx: &mut gpui::App) {
+    let capture = overlay::display_capture(target.bounds, target.scale, target.capture_display_id);
     let coordinator = crate::state::coordinator(cx);
-    coordinator.update(cx, |coord, cx| {
-        coord.capture_area(rect, cx);
+    coordinator.update(cx, |coordinator, cx| {
+        coordinator.capture_area_for(capture, intent::CaptureIntent::Screenshot, cx);
     });
+}
+
+fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut gpui::App) {
+    let service = crate::state::state(cx);
+    let reservation = (service.config.get().screenshot.freeze_screen
+        && crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::FreezeScreen,
+        ))
+    .then(|| service.reserve_cached_capture());
+    let capture = overlay::display_capture(target.bounds, target.scale, target.capture_display_id);
+    let coordinator = crate::state::coordinator(cx);
+    if close_overlays {
+        let _ = overlay::replace_all(cx);
+    }
+    cx.defer(move |cx| {
+        coordinator.update(cx, |coordinator, cx| {
+            coordinator.capture_area_reserved(
+                capture,
+                intent::CaptureIntent::Screenshot,
+                reservation,
+                cx,
+            );
+        });
+    });
+}
+
+fn all_screen_targets_opened(opened: usize, target_count: usize) -> bool {
+    opened == target_count
+}
+
+pub fn start_screen_capture(cx: &mut gpui::App) {
+    if !capture_topology_supported(cx) {
+        return;
+    }
+
+    let targets = match screen_targets(cx) {
+        Ok(targets) if !targets.is_empty() => targets,
+        Ok(_) => {
+            crate::windows::toast::Toast::show(cx, "Capture failed", "No display available");
+            return;
+        }
+        Err(error) => {
+            crate::windows::toast::Toast::show(cx, "Capture failed", error.to_string());
+            return;
+        }
+    };
+
+    if targets.len() > 1
+        && crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::DisplaySelector,
+        )
+    {
+        let fallback = targets[0].clone();
+        let release_first = overlay::replace_all(cx);
+        with_frozen_screen(cx, release_first, move |cx, deferred_show, generation| {
+            let service = crate::state::state(cx);
+            let target_count = targets.len();
+            let mut opened = 0;
+            for target in targets {
+                if overlay::AreaOverlay::open_screen_picker(
+                    service.clone(),
+                    target.display_id,
+                    target.bounds,
+                    overlay::OverlayLaunch {
+                        focus: opened == 0,
+                        deferred_show,
+                        generation,
+                    },
+                    cx,
+                )
+                .is_some()
+                {
+                    opened += 1;
+                }
+            }
+            if all_screen_targets_opened(opened, target_count) {
+                return true;
+            }
+            fallback_screen_target(fallback.clone(), opened > 0, cx);
+            false
+        });
+        return;
+    }
+
+    capture_screen_target(targets[0].clone(), cx);
 }
 
 #[cfg(test)]
@@ -540,6 +696,31 @@ mod tests {
     use super::CaptureService;
     use crate::config::store::ConfigStore;
     use crate::daemon::DaemonHandle;
+
+    #[test]
+    fn x11_screen_target_keeps_the_randr_monitor_geometry() {
+        let bounds = super::x11_screen_bounds(
+            poratake_daemon_common::geometry::CaptureRect {
+                x: -1920,
+                y: 120,
+                width: 1920,
+                height: 1080,
+            },
+            2.0,
+        );
+
+        assert_eq!(f32::from(bounds.origin.x), -960.0);
+        assert_eq!(f32::from(bounds.origin.y), 60.0);
+        assert_eq!(f32::from(bounds.size.width), 960.0);
+        assert_eq!(f32::from(bounds.size.height), 540.0);
+    }
+
+    #[test]
+    fn partial_screen_picker_returns_control_to_the_freeze_driver() {
+        assert!(super::all_screen_targets_opened(2, 2));
+        assert!(!super::all_screen_targets_opened(1, 2));
+        assert!(!super::all_screen_targets_opened(0, 2));
+    }
 
     #[cfg(windows)]
     #[gpui::test]

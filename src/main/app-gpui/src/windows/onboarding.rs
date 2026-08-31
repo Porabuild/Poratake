@@ -1,6 +1,6 @@
-//! Onboarding window — port of `renderer/windows/onboarding-window.tsx`. The
-//! Windows flow is the welcome step followed by the shortcut step; the
-//! permission and macOS-shortcut steps are macOS-only and are not built here.
+//! Onboarding window — port of `renderer/windows/onboarding-window.tsx`.
+
+use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, FocusHandle, KeyDownEvent, Render,
@@ -20,10 +20,26 @@ use crate::windows::registry::{self, WindowKind};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
     Welcome,
+    DisableMacShortcuts,
     Shortcuts,
+    Permissions,
 }
 
-const STEPS: [Step; 2] = [Step::Welcome, Step::Shortcuts];
+const WINDOWS_STEPS: [Step; 2] = [Step::Welcome, Step::Shortcuts];
+const MAC_STEPS: [Step; 4] = [
+    Step::Welcome,
+    Step::DisableMacShortcuts,
+    Step::Shortcuts,
+    Step::Permissions,
+];
+
+fn steps() -> &'static [Step] {
+    if cfg!(target_os = "macos") {
+        &MAC_STEPS
+    } else {
+        &WINDOWS_STEPS
+    }
+}
 
 /// The shortcut fields the step offers, in the renderer's order.
 const SHORTCUT_FIELDS: [(&str, &str); 3] = [
@@ -37,6 +53,7 @@ pub struct OnboardingWindow {
     step: usize,
     recording_shortcut: Option<&'static str>,
     scroll: ScrollHandle,
+    permission_polling: bool,
     focus_handle: FocusHandle,
 }
 
@@ -71,6 +88,7 @@ impl OnboardingWindow {
                         step: 0,
                         recording_shortcut: None,
                         scroll: ScrollHandle::new(),
+                        permission_polling: false,
                         focus_handle: cx.focus_handle(),
                     });
                     window.focus(&view.read(cx).focus_handle);
@@ -83,18 +101,46 @@ impl OnboardingWindow {
     }
 
     fn current(&self) -> Step {
-        STEPS[self.step.min(STEPS.len() - 1)]
+        let steps = steps();
+        steps[self.step.min(steps.len() - 1)]
     }
 
     fn is_last_step(&self) -> bool {
-        self.step + 1 >= STEPS.len()
+        self.step + 1 >= steps().len()
     }
 
-    fn next(&mut self, cx: &mut Context<Self>) {
+    fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_last_step() {
             self.step += 1;
+            if self.current() == Step::Permissions {
+                self.start_permission_polling(window, cx);
+            }
             cx.notify();
         }
+    }
+
+    fn start_permission_polling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.permission_polling {
+            return;
+        }
+        self.permission_polling = true;
+        cx.spawn_in(window, async move |entity, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let Ok(keep_polling) = entity.update_in(cx, |this, _window, cx| {
+                let keep_polling = this.current() == Step::Permissions;
+                this.permission_polling = keep_polling;
+                if keep_polling {
+                    cx.notify();
+                }
+                keep_polling
+            }) else {
+                break;
+            };
+            if !keep_polling {
+                break;
+            }
+        })
+        .detach();
     }
 
     fn back(&mut self, cx: &mut Context<Self>) {
@@ -158,6 +204,17 @@ impl OnboardingWindow {
     }
 
     fn welcome_step(&self, theme: &ThemeVars) -> gpui::AnyElement {
+        let (status_title, status_description) = if cfg!(target_os = "macos") {
+            (
+                "Lives in Your Menu Bar",
+                "Poratake runs quietly in your menu bar. Click the icon to access all features or use keyboard shortcuts for quick captures.",
+            )
+        } else {
+            (
+                "Lives in Your System Tray",
+                "Poratake runs quietly in your system tray. Click the icon to access all features or use keyboard shortcuts for quick captures.",
+            )
+        };
         div()
             .flex()
             .flex_col()
@@ -208,8 +265,8 @@ impl OnboardingWindow {
                     .w_full()
                     .child(feature_card(
                         "monitor",
-                        "Lives in Your System Tray",
-                        "Poratake runs quietly in your system tray. Click the icon to access all features or use keyboard shortcuts for quick captures.",
+                        status_title,
+                        status_description,
                         Srgba::parse("#3b82f6").to_hsla(),
                         theme,
                     ))
@@ -313,6 +370,136 @@ impl OnboardingWindow {
             )
             .into_any_element()
     }
+
+    fn disable_mac_shortcuts_step(&self, theme: &ThemeVars) -> gpui::AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mb(px(16.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .text_center()
+                    .child(
+                        div()
+                            .mb(px(16.0))
+                            .size(px(chrome::ONBOARDING_ICON))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(Srgba::parse("#f97316").to_hsla().opacity(0.1))
+                            .text_color(Srgba::parse("#f97316").to_hsla())
+                            .child(icon_element("keyboard", px(32.0))),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(chrome::ONBOARDING_TITLE_SIZE))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Disable macOS Screenshot Shortcuts"),
+                    )
+                    .child(
+                        div()
+                            .mt(px(4.0))
+                            .text_size(px(chrome::ONBOARDING_BODY_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .child("To use Poratake's shortcuts, disable the default macOS screenshot shortcuts first."),
+                    ),
+            )
+            .child(
+                div()
+                    .rounded(px(chrome::ONBOARDING_CARD_RADIUS))
+                    .bg(theme.muted_background)
+                    .p(px(chrome::ONBOARDING_CARD_PAD))
+                    .text_size(px(chrome::ONBOARDING_HINT_SIZE))
+                    .text_color(theme.muted_foreground)
+                    .child("1. Open Keyboard Settings\n2. Select Screenshots in the sidebar\n3. Uncheck all screenshot shortcuts (⌘⇧3, ⌘⇧4, ⌘⇧5)"),
+            )
+            .child(
+                div().mt(px(12.0)).child(
+                    Button::new("onboarding-open-keyboard-settings")
+                        .variant(ButtonVariant::Secondary)
+                        .label("Open Keyboard Settings")
+                        .icon("external-link")
+                        .full_width()
+                        .on_click(|_event, _window, _cx| {
+                            crate::system::permissions::open_keyboard_shortcut_preferences();
+                        }),
+                ),
+            )
+            .child(
+                div()
+                    .mt(px(12.0))
+                    .text_center()
+                    .text_size(px(chrome::ONBOARDING_HINT_SIZE))
+                    .text_color(theme.muted_foreground)
+                    .child("You can skip this step, but Poratake's shortcuts may conflict with macOS defaults."),
+            )
+            .into_any_element()
+    }
+
+    fn permissions_step(&self, theme: &ThemeVars) -> gpui::AnyElement {
+        let screen = crate::system::permissions::screen_recording_granted();
+        let accessibility = crate::system::permissions::accessibility_granted();
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mb(px(16.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .text_center()
+                    .child(
+                        div()
+                            .mb(px(16.0))
+                            .size(px(chrome::ONBOARDING_ICON))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(theme.accent.opacity(0.1))
+                            .text_color(theme.accent)
+                            .child(icon_element("shield", px(32.0))),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(chrome::ONBOARDING_TITLE_SIZE))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Setup Permissions"),
+                    )
+                    .child(
+                        div()
+                            .mt(px(4.0))
+                            .text_size(px(chrome::ONBOARDING_BODY_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .child("Poratake needs these permissions to work properly"),
+                    ),
+            )
+            .child(permission_card(
+                "monitor",
+                "Screen Recording",
+                "Required to capture screenshots of your screen",
+                screen,
+                "onboarding-screen-recording",
+                crate::system::permissions::open_screen_recording_preferences,
+                theme,
+            ))
+            .child(div().h(px(12.0)))
+            .child(permission_card(
+                "accessibility",
+                "Accessibility",
+                "Required to hide desktop icons when capturing",
+                accessibility,
+                "onboarding-accessibility",
+                crate::system::permissions::open_accessibility_preferences,
+                theme,
+            ))
+            .into_any_element()
+    }
 }
 
 fn feature_card(
@@ -365,6 +552,91 @@ fn feature_card(
         .into_any_element()
 }
 
+fn permission_card(
+    icon: &'static str,
+    title: &'static str,
+    description: &'static str,
+    granted: bool,
+    id: &'static str,
+    open: fn(),
+    theme: &ThemeVars,
+) -> gpui::AnyElement {
+    let status = if granted { "check" } else { "x" };
+    let status_color = if granted {
+        Srgba::parse("#22c55e").to_hsla()
+    } else {
+        theme.destructive
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(px(12.0))
+        .rounded(px(chrome::ONBOARDING_CARD_RADIUS))
+        .bg(theme.muted_background)
+        .p(px(chrome::ONBOARDING_CARD_PAD))
+        .child(
+            div()
+                .size(px(32.0))
+                .flex_shrink_0()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme.accent.opacity(0.1))
+                .text_color(theme.accent)
+                .child(icon_element(icon, px(16.0))),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(chrome::ONBOARDING_BODY_SIZE))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .size(px(20.0))
+                                .rounded_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(status_color.opacity(0.2))
+                                .text_color(status_color)
+                                .child(icon_element(status, px(12.0))),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(2.0))
+                        .text_size(px(chrome::ONBOARDING_HINT_SIZE))
+                        .text_color(theme.muted_foreground)
+                        .child(description),
+                )
+                .when(!granted, |el| {
+                    el.child(
+                        div().mt(px(12.0)).child(
+                            Button::new(id)
+                                .variant(ButtonVariant::Secondary)
+                                .label("Open System Preferences")
+                                .on_click(move |_event, _window, _cx| open()),
+                        ),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
 /// `StepIndicator` — one dot per step, filled behind the current one.
 fn step_indicator(current: usize, theme: &ThemeVars) -> gpui::AnyElement {
     let mut row = div()
@@ -373,7 +645,7 @@ fn step_indicator(current: usize, theme: &ThemeVars) -> gpui::AnyElement {
         .items_center()
         .justify_center()
         .gap(px(8.0));
-    for position in 0..STEPS.len() {
+    for position in 0..steps().len() {
         let color = if position == current {
             theme.accent
         } else if position < current {
@@ -397,8 +669,12 @@ impl Render for OnboardingWindow {
         let step = self.current();
         let content = match step {
             Step::Welcome => self.welcome_step(&theme),
+            Step::DisableMacShortcuts => self.disable_mac_shortcuts_step(&theme),
             Step::Shortcuts => self.shortcuts_step(&theme, cx),
+            Step::Permissions => self.permissions_step(&theme),
         };
+        let all_permissions_granted = crate::system::permissions::screen_recording_granted()
+            && crate::system::permissions::accessibility_granted();
 
         let mut actions = div().flex().flex_row().w_full().gap(px(8.0));
         if self.step > 0 {
@@ -418,6 +694,7 @@ impl Render for OnboardingWindow {
                 .variant(ButtonVariant::Primary)
                 .label("Get Started")
                 .flex_1()
+                .disabled(step == Step::Permissions && !all_permissions_granted)
                 .on_click(cx.listener(|this, _event, window, cx| this.finish(window, cx)))
         } else {
             Button::new("onboarding-next")
@@ -427,7 +704,7 @@ impl Render for OnboardingWindow {
                 .icon_size(px(chrome::TOOL_BUTTON_ICON))
                 .gap(px(4.0))
                 .flex_1()
-                .on_click(cx.listener(|this, _event, _window, cx| this.next(cx)))
+                .on_click(cx.listener(|this, _event, window, cx| this.next(window, cx)))
         });
 
         div()
@@ -499,7 +776,20 @@ mod tests {
 
     #[test]
     fn the_windows_flow_is_welcome_then_shortcuts() {
-        assert_eq!(STEPS, [Step::Welcome, Step::Shortcuts]);
+        assert_eq!(WINDOWS_STEPS, [Step::Welcome, Step::Shortcuts]);
+    }
+
+    #[test]
+    fn the_macos_flow_includes_shortcut_and_permission_setup() {
+        assert_eq!(
+            MAC_STEPS,
+            [
+                Step::Welcome,
+                Step::DisableMacShortcuts,
+                Step::Shortcuts,
+                Step::Permissions
+            ]
+        );
     }
 
     #[test]

@@ -1,6 +1,8 @@
-//! H.264/AAC encoding through Media Foundation's sink writer. Media Foundation
-//! interfaces are not agile, so the writer lives on one dedicated thread and
-//! callers push plain byte buffers to it over a channel.
+//! H.264/AAC encoding for video export, one hardware-native backend per
+//! platform: Media Foundation's sink writer on Windows, VideoToolbox on
+//! macOS, and a distribution FFmpeg with libx264 on Linux. Each backend
+//! lives on one dedicated thread; callers push plain byte buffers to it over
+//! a channel.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -10,6 +12,7 @@ pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub const AUDIO_CHANNELS: u32 = 2;
 pub const AUDIO_BITS_PER_SAMPLE: u32 = 16;
 /// 128 kbps AAC, the rate the AAC encoder accepts for stereo at 48 kHz.
+#[cfg(any(windows, target_os = "macos"))]
 pub const AUDIO_BYTES_PER_SECOND: u32 = 16_000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -390,17 +393,470 @@ mod backend {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod backend {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::process::{Child, ChildStdin, Command as ProcessCommand, Stdio};
+
+    pub fn run(
+        path: PathBuf,
+        settings: Settings,
+        commands: Receiver<Command>,
+        ready: Sender<Result<(), String>>,
+    ) {
+        let ffmpeg = crate::video::ffmpeg_path();
+        if !ffmpeg.is_file() {
+            let _ = ready.send(Err(format!("FFmpeg was not found at {}", ffmpeg.display())));
+            return;
+        }
+        let audio_path = std::env::temp_dir().join(format!(
+            "poratake-export-audio-{}-{}.pcm",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = ready.send(Ok(()));
+
+        let mut child = None;
+        let mut input = None;
+        let mut failure = None;
+        while let Ok(command) = commands.recv() {
+            match command {
+                Command::Audio { pcm, time, .. } => {
+                    if failure.is_none() {
+                        failure = write_audio(&audio_path, &pcm, time).err();
+                    }
+                }
+                Command::Video { bgra, .. } => {
+                    if failure.is_some() {
+                        continue;
+                    }
+                    if child.is_none() {
+                        match start(
+                            &ffmpeg,
+                            &path,
+                            settings,
+                            settings.has_audio.then_some(audio_path.as_path()),
+                        ) {
+                            Ok((process, stdin)) => {
+                                child = Some(process);
+                                input = Some(stdin);
+                            }
+                            Err(error) => {
+                                failure = Some(error);
+                                continue;
+                            }
+                        }
+                    }
+                    if let Err(error) = input
+                        .as_mut()
+                        .ok_or_else(|| "FFmpeg input is unavailable".to_string())
+                        .and_then(|stdin| {
+                            stdin
+                                .write_all(&bgra)
+                                .map_err(|error| format!("FFmpeg input failed: {error}"))
+                        })
+                    {
+                        failure = Some(error);
+                    }
+                }
+                Command::Finish { reply } => {
+                    drop(input.take());
+                    let result = match (failure.take(), child.take()) {
+                        (Some(error), _) => Err(error),
+                        (None, Some(process)) => finish(process),
+                        (None, None) => Err("no video frames were written".to_string()),
+                    };
+                    let _ = std::fs::remove_file(&audio_path);
+                    let _ = reply.send(result);
+                    return;
+                }
+            }
+        }
+        if let Some(mut process) = child {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+        let _ = std::fs::remove_file(audio_path);
+    }
+
+    fn write_audio(path: &Path, pcm: &[u8], time: i64) -> Result<(), String> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| format!("audio staging failed: {error}"))?;
+        if time > 0 && file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
+            let bytes = time as u64 * AUDIO_SAMPLE_RATE as u64 * AUDIO_CHANNELS as u64 * 2
+                / UNITS_PER_SECOND as u64;
+            std::io::copy(&mut std::io::repeat(0).take(bytes), &mut file)
+                .map_err(|error| format!("audio padding failed: {error}"))?;
+        }
+        file.write_all(pcm)
+            .map_err(|error| format!("audio staging failed: {error}"))
+    }
+
+    fn start(
+        ffmpeg: &Path,
+        path: &Path,
+        settings: Settings,
+        audio_path: Option<&Path>,
+    ) -> Result<(Child, ChildStdin), String> {
+        let mut command = ProcessCommand::new(ffmpeg);
+        command
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "bgra",
+                "-video_size",
+                &format!("{}x{}", settings.width, settings.height),
+                "-framerate",
+                &settings.frame_rate.max(1).to_string(),
+                "-i",
+                "pipe:0",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        if let Some(audio_path) = audio_path {
+            command
+                .args(["-f", "s16le", "-ar", "48000", "-ac", "2", "-i"])
+                .arg(audio_path);
+        }
+        command.args([
+            "-c:v",
+            "h264_videotoolbox",
+            "-b:v",
+            &settings.bitrate.to_string(),
+            "-pix_fmt",
+            "yuv420p",
+            "-force_key_frames",
+            "expr:eq(t,0)",
+        ]);
+        if audio_path.is_some() {
+            command.args([
+                "-c:a",
+                "aac_at",
+                "-b:a",
+                &format!("{}k", AUDIO_BYTES_PER_SECOND * 8 / 1000),
+            ]);
+        } else {
+            command.arg("-an");
+        }
+        command.args(["-movflags", "+faststart"]).arg(path);
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("could not start FFmpeg: {error}"))?;
+        let input = child
+            .stdin
+            .take()
+            .ok_or_else(|| "FFmpeg input is unavailable".to_string())?;
+        Ok((child, input))
+    }
+
+    fn finish(process: Child) -> Result<(), String> {
+        let output = process
+            .wait_with_output()
+            .map_err(|error| format!("FFmpeg wait failed: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if detail.is_empty() {
+            format!("FFmpeg exited with {}", output.status)
+        } else {
+            detail
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
 mod backend {
     use super::*;
 
+    use std::io::Write;
+    use std::process::Command as StdCommand;
+    use std::process::{Child, ChildStdin, Stdio};
+    use std::sync::{Arc, Mutex};
+
+    use poratake_daemon_common::ffmpeg;
+
+    /// How long the encoders get to flush and finalize after their inputs
+    /// close; a wedged FFmpeg is killed past the deadline.
+    const FINALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    /// 128 kbps AAC, matching the rate the other platforms' mixers assume.
+    const AUDIO_BIT_RATE: &str = "128k";
+
+    struct Session {
+        ffmpeg: PathBuf,
+        child: Child,
+        stdin: ChildStdin,
+        output: PathBuf,
+        video_temp: PathBuf,
+        audio_temp: Option<PathBuf>,
+        audio_file: Option<std::fs::File>,
+        /// The last line FFmpeg printed, surfaced when the encode fails so a
+        /// bad pixel format or full disk is diagnosable.
+        stderr_tail: Arc<Mutex<String>>,
+    }
+
+    impl Session {
+        /// Spawns the video-only encode. The composed frames stream through
+        /// stdin while audio accumulates beside it; [`Self::finalize`] muxes
+        /// the two into the output file.
+        fn start(ffmpeg: PathBuf, path: &Path, settings: Settings) -> Result<Self, String> {
+            let directory = path.parent().unwrap_or_else(|| Path::new("."));
+            let video_temp = staged_path(directory, path, "video");
+            let audio_temp = settings
+                .has_audio
+                .then(|| staged_path(directory, path, "audio"));
+            let mut args = ffmpeg::quiet_args();
+            args.extend(ffmpeg::raw_video_input_args(
+                "bgra",
+                settings.width,
+                settings.height,
+                settings.frame_rate,
+            ));
+            args.extend(ffmpeg::h264_encode_args(ffmpeg::VideoRate::Bitrate(
+                settings.bitrate,
+            )));
+            args.push("-y".into());
+            let mut child = StdCommand::new(&ffmpeg)
+                .args(&args)
+                .arg(&video_temp)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("could not spawn the export encoder: {error}"))?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or("the export encoder has no stdin")?;
+            let stderr = child
+                .stderr
+                .take()
+                .ok_or("the export encoder has no stderr")?;
+            let stderr_tail = ffmpeg::spawn_stderr_tail(stderr, |_| {});
+            let audio_file = match &audio_temp {
+                Some(audio_temp) => Some(
+                    std::fs::File::create(audio_temp)
+                        .map_err(|error| format!("could not stage export audio: {error}"))?,
+                ),
+                None => None,
+            };
+            Ok(Self {
+                ffmpeg,
+                child,
+                stdin,
+                output: path.to_path_buf(),
+                video_temp,
+                audio_temp,
+                audio_file,
+                stderr_tail,
+            })
+        }
+
+        fn write_video(&mut self, bgra: &[u8]) -> Result<(), String> {
+            self.stdin.write_all(bgra).map_err(|_| {
+                format!(
+                    "the export encoder stopped accepting frames: {}",
+                    self.stderr_tail.lock().unwrap()
+                )
+            })
+        }
+
+        fn write_audio(&mut self, pcm: &[u8]) -> Result<(), String> {
+            let Some(audio_file) = self.audio_file.as_mut() else {
+                return Ok(());
+            };
+            audio_file
+                .write_all(pcm)
+                .map_err(|_| "could not stage export audio".to_string())
+        }
+
+        /// Closes the inputs, muxes audio in when present, and moves the
+        /// result onto the output path.
+        fn finalize(self) -> Result<(), String> {
+            let Session {
+                ffmpeg,
+                mut child,
+                stdin,
+                output,
+                video_temp,
+                audio_temp,
+                audio_file,
+                stderr_tail,
+            } = self;
+            drop(stdin);
+            drop(audio_file);
+            let remove_staged_files = |video_temp: &Path, audio_temp: &Option<PathBuf>| {
+                let _ = std::fs::remove_file(video_temp);
+                if let Some(audio_temp) = audio_temp {
+                    let _ = std::fs::remove_file(audio_temp);
+                }
+            };
+            ffmpeg::wait_for_exit(&mut child, FINALIZE_TIMEOUT)
+                .then_some(())
+                .ok_or_else(|| {
+                    format!(
+                        "the export encoder did not finish: {}",
+                        stderr_tail.lock().unwrap()
+                    )
+                })?;
+            let Some(audio_temp) = audio_temp else {
+                let moved = std::fs::rename(&video_temp, &output)
+                    .map_err(|error| format!("could not finalize the export: {error}"));
+                remove_staged_files(&video_temp, &None);
+                return moved;
+            };
+            let mux = StdCommand::new(&ffmpeg)
+                .args(["-hide_banner", "-loglevel", "error", "-i"])
+                .arg(&video_temp)
+                .args([
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    &AUDIO_SAMPLE_RATE.to_string(),
+                    "-ac",
+                    &AUDIO_CHANNELS.to_string(),
+                    "-i",
+                ])
+                .arg(&audio_temp)
+                .args([
+                    "-map",
+                    "0:v",
+                    "-map",
+                    "1:a",
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    AUDIO_BIT_RATE,
+                    "-movflags",
+                    "+faststart",
+                    "-y",
+                ])
+                .arg(&output)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn();
+            let mut mux = match mux {
+                Ok(mux) => mux,
+                Err(error) => {
+                    remove_staged_files(&video_temp, &Some(audio_temp));
+                    return Err(format!("could not spawn the export muxer: {error}"));
+                }
+            };
+            // The muxer's stderr is the only place a mux failure explains
+            // itself; capture it for the error message before waiting.
+            let mut mux_error = String::new();
+            if let Some(stderr) = mux.stderr.take() {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(stderr)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    if !line.is_empty() {
+                        mux_error = line;
+                    }
+                }
+            }
+            let finished = ffmpeg::wait_for_exit(&mut mux, FINALIZE_TIMEOUT);
+            remove_staged_files(&video_temp, &Some(audio_temp));
+            if !finished {
+                return Err(format!("the export muxer did not finish: {mux_error}"));
+            }
+            Ok(())
+        }
+    }
+
+    /// `<name>.poratake-video.tmp`-style staging beside the real output, so
+    /// the final rename stays on one filesystem.
+    fn staged_path(directory: &Path, output: &Path, kind: &str) -> PathBuf {
+        let name = output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("export");
+        directory.join(format!(".{name}.poratake-{kind}.tmp"))
+    }
+
     pub fn run(
-        _path: PathBuf,
-        _settings: Settings,
-        _commands: Receiver<Command>,
+        path: PathBuf,
+        settings: Settings,
+        commands: Receiver<Command>,
         ready: Sender<Result<(), String>>,
     ) {
-        let _ = ready.send(Err("video export is only supported on Windows".into()));
+        let Some(ffmpeg) = ffmpeg::resolve_h264() else {
+            let _ = ready.send(Err(
+                "video export needs FFmpeg with the libx264 encoder on PATH \
+                 (or PORATAKE_FFMPEG_PATH)"
+                    .to_string(),
+            ));
+            return;
+        };
+        let mut session = match Session::start(ffmpeg, &path, settings) {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = ready.send(Err(error));
+                return;
+            }
+        };
+        let _ = ready.send(Ok(()));
+
+        while let Ok(command) = commands.recv() {
+            let outcome = match command {
+                // Raw-video timestamps come from the frame rate, so the
+                // timeline offsets the other platforms use are not needed.
+                Command::Video {
+                    bgra,
+                    time,
+                    duration,
+                } => {
+                    let _ = (time, duration);
+                    session.write_video(&bgra)
+                }
+                Command::Audio {
+                    pcm,
+                    time,
+                    duration,
+                } => {
+                    let _ = (time, duration);
+                    session.write_audio(&pcm)
+                }
+                Command::Finish { reply } => {
+                    let _ = reply.send(session.finalize());
+                    break;
+                }
+            };
+            if outcome.is_err() {
+                // The encode is broken; drain the channel so a dropped
+                // Encoder cannot deadlock a caller still sending.
+                let _ = session.child.kill();
+                let _ = session.child.wait();
+                while let Ok(command) = commands.recv() {
+                    match command {
+                        Command::Finish { reply } => {
+                            let _ = reply.send(Err(outcome.err().unwrap_or_default()));
+                            break;
+                        }
+                        Command::Video { bgra, .. } => drop(bgra),
+                        Command::Audio { pcm, .. } => drop(pcm),
+                    }
+                }
+                return;
+            }
+        }
     }
 }
 

@@ -8,6 +8,9 @@ use crate::system::accelerator;
 use crate::system::tray::Intent;
 
 pub fn bindings(config: &SettingsConfig) -> Vec<(Intent, String)> {
+    if !crate::system::capabilities::global_shortcuts_supported() {
+        return Vec::new();
+    }
     let shortcuts = &config.shortcuts;
     vec![
         (Intent::CaptureArea, shortcuts.screenshot.area.clone()),
@@ -29,6 +32,11 @@ pub fn bindings(config: &SettingsConfig) -> Vec<(Intent, String)> {
         (Intent::RecordScreen, shortcuts.recording.screen.clone()),
     ]
     .into_iter()
+    .filter(|(intent, _)| {
+        intent
+            .feature()
+            .is_none_or(crate::system::capabilities::is_supported)
+    })
     .filter(|(_, value)| !value.trim().is_empty())
     .collect()
 }
@@ -42,6 +50,14 @@ pub struct HotkeyRegistry {
 
 impl HotkeyRegistry {
     pub fn new() -> Self {
+        if !crate::system::capabilities::global_shortcuts_supported() {
+            return Self {
+                manager: None,
+                registered: Vec::new(),
+                intents: HashMap::new(),
+                pre_recording_escape: None,
+            };
+        }
         let manager = match GlobalHotKeyManager::new() {
             Ok(manager) => Some(manager),
             Err(error) => {

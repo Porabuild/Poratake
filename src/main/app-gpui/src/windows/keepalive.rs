@@ -6,7 +6,9 @@ use gpui::{
 /// Poratake is a tray-first app with no main window, but the Windows backend
 /// quits the process when its last window closes. This hidden 1x1 window keeps
 /// the app alive between visible surfaces.
-pub struct KeepAlive;
+pub struct KeepAlive {
+    _appearance_subscription: gpui::Subscription,
+}
 
 impl KeepAlive {
     pub fn open(cx: &mut App) {
@@ -26,7 +28,24 @@ impl KeepAlive {
                 is_minimizable: false,
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| Self),
+            |window, cx| {
+                cx.new(|cx| {
+                    crate::theme::watcher::apply_system_mode(
+                        crate::theme::watcher::window_theme_mode(window.appearance()),
+                        cx,
+                    );
+                    let appearance_subscription =
+                        cx.observe_window_appearance(window, |_, window, cx| {
+                            crate::theme::watcher::apply_system_mode(
+                                crate::theme::watcher::window_theme_mode(window.appearance()),
+                                cx,
+                            );
+                        });
+                    Self {
+                        _appearance_subscription: appearance_subscription,
+                    }
+                })
+            },
         );
         if let Err(error) = opened {
             eprintln!("[keepalive] failed to open anchor window: {error}");

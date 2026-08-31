@@ -1,60 +1,30 @@
 //! Port of `src/main/devices/index.ts` — the daemon's microphone and camera
 //! lists, used by the Devices settings page and the recording control bar.
 
-use serde::Deserialize;
-use serde_json::json;
+pub use poratake_daemon_common::contract::{
+    MediaDevice, MediaDeviceKind as DeviceKind, MediaDeviceLists,
+};
 
 use crate::daemon::DaemonHandle;
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub struct MediaDevice {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub label: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaDeviceLists {
-    #[serde(default)]
-    pub microphones: Vec<MediaDevice>,
-    #[serde(default)]
-    pub cameras: Vec<MediaDevice>,
-    #[serde(default)]
-    pub default_microphone_id: Option<String>,
-    #[serde(default)]
-    pub default_camera_id: Option<String>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DeviceKind {
-    Microphone,
-    Camera,
-}
-
-impl DeviceKind {
-    fn id(self) -> &'static str {
-        match self {
-            Self::Microphone => "microphone",
-            Self::Camera => "camera",
-        }
-    }
-}
 
 /// The Swift daemon asks for TCC authorization per kind, so a caller that only
 /// needs microphones must not trigger a camera prompt.
 pub fn list(daemon: &DaemonHandle, kinds: &[DeviceKind]) -> MediaDeviceLists {
-    if !daemon.is_running() && daemon.start().is_err() {
-        return MediaDeviceLists::default();
-    }
-    let params = (!kinds.is_empty())
-        .then(|| json!({ "kinds": kinds.iter().map(|kind| kind.id()).collect::<Vec<_>>() }));
-    match daemon.call("media-devices", "list", params) {
-        Ok(response) => serde_json::from_value(response).unwrap_or_default(),
+    match daemon.media_devices().list(kinds) {
+        Ok(response) => response,
         Err(error) => {
             eprintln!("[devices] list failed: {error}");
             MediaDeviceLists::default()
+        }
+    }
+}
+
+pub fn list_ios(daemon: &DaemonHandle) -> Vec<MediaDevice> {
+    match daemon.recording_control().list_ios_devices() {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("[devices] iOS device list failed: {error}");
+            Vec::new()
         }
     }
 }
@@ -93,6 +63,7 @@ pub fn options_with_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn parses_the_daemon_payload() {

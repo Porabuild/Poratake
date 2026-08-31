@@ -14,6 +14,159 @@
 
 use gpui::{px, Bounds, Pixels};
 
+pub fn display_bounds(display: &dyn gpui::PlatformDisplay) -> Bounds<Pixels> {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let bounds = CGDisplayBounds(u32::from(display.id()));
+        return Bounds {
+            origin: gpui::point(px(bounds.origin.x as f32), px(bounds.origin.y as f32)),
+            size: gpui::size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    display.bounds()
+}
+
+pub fn capture_scale_factor(display: &dyn gpui::PlatformDisplay, cx: &mut gpui::App) -> f32 {
+    #[cfg(target_os = "macos")]
+    if let Some(scale) = macos_display_scale_factor(u32::from(display.id())) {
+        return scale;
+    }
+    #[cfg(windows)]
+    {
+        let bounds = display.bounds();
+        let Some((monitor, _)) = monitor_rects(bounds) else {
+            return 1.0;
+        };
+        if let Some(scale) =
+            scale_from_widths(f32::from(bounds.size.width), (monitor.2 - monitor.0) as f32)
+        {
+            return scale;
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if crate::system::linux_session::current() == crate::system::linux_session::LinuxSession::X11 {
+        let physical = crate::state::state(cx)
+            .daemon
+            .screenshot()
+            .list_displays()
+            .unwrap_or_default();
+        if let Some(scale) = x11_capture_scale_factor(display, &physical) {
+            return scale;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cx;
+    1.0
+}
+
+#[cfg(target_os = "linux")]
+pub fn x11_capture_scale_factor(
+    display: &dyn gpui::PlatformDisplay,
+    physical: &[poratake_daemon_common::geometry::DisplayInfo],
+) -> Option<f32> {
+    x11_scale_for_width(f32::from(display.bounds().size.width), physical)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn x11_scale_for_width(
+    logical_width: f32,
+    physical: &[poratake_daemon_common::geometry::DisplayInfo],
+) -> Option<f32> {
+    let left = physical.iter().map(|display| display.rect.x).min()?;
+    let right = physical
+        .iter()
+        .map(|display| display.rect.x + display.rect.width)
+        .max()?;
+    scale_from_widths(logical_width, (right - left) as f32)
+}
+
+fn scale_from_widths(logical: f32, physical: f32) -> Option<f32> {
+    (logical > 0.0 && physical > 0.0).then_some(physical / logical)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn scale_for_display_id(display_id: u32, scales: &[(u32, f32)]) -> Option<f32> {
+    scales
+        .iter()
+        .find_map(|(candidate, scale)| (*candidate == display_id).then_some(*scale))
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_display_scale_factor(display_id: u32) -> Option<f32> {
+    use cocoa::appkit::NSScreen;
+    use cocoa::base::nil;
+    use cocoa::foundation::{NSArray, NSDictionary, NSString};
+    use objc::{msg_send, sel, sel_impl};
+
+    unsafe {
+        let screens = NSScreen::screens(nil);
+        let key = NSString::alloc(nil).init_str("NSScreenNumber");
+        let mut scales = Vec::with_capacity(screens.count() as usize);
+        for index in 0..screens.count() {
+            let screen = screens.objectAtIndex(index);
+            let number = screen.deviceDescription().objectForKey_(key);
+            if number == nil {
+                continue;
+            }
+            let candidate: u32 = msg_send![number, unsignedIntValue];
+            scales.push((candidate, screen.backingScaleFactor() as f32));
+        }
+        let _: () = msg_send![key, release];
+        scale_for_display_id(display_id, &scales)
+    }
+}
+
+pub fn local_window_bounds(
+    bounds: Bounds<Pixels>,
+    display: &dyn gpui::PlatformDisplay,
+) -> Bounds<Pixels> {
+    #[cfg(target_os = "macos")]
+    {
+        let display = display_bounds(display);
+        return Bounds {
+            origin: gpui::point(
+                px(f32::from(bounds.origin.x - display.origin.x)),
+                px(f32::from(bounds.origin.y - display.origin.y)),
+            ),
+            size: bounds.size,
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = display;
+        bounds
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CgPoint {
+    x: f64,
+    y: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CgSize {
+    width: f64,
+    height: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CgRect {
+    origin: CgPoint,
+    size: CgSize,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGDisplayBounds(display: u32) -> CgRect;
+}
+
 /// The work area of the monitor showing `display`, or `display` unchanged if
 /// the platform will not say.
 pub fn work_area(display: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -113,7 +266,83 @@ fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
     ))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
+    use cocoa::appkit::NSScreen;
+    use cocoa::base::nil;
+    use cocoa::foundation::{NSArray, NSDictionary, NSString};
+    use objc::{msg_send, sel, sel_impl};
+
+    unsafe {
+        let screens = NSScreen::screens(nil);
+        let key = NSString::alloc(nil).init_str("NSScreenNumber");
+        for index in 0..screens.count() {
+            let screen = screens.objectAtIndex(index);
+            let number = screen.deviceDescription().objectForKey_(key);
+            if number == nil {
+                continue;
+            }
+            let display_id: u32 = msg_send![number, unsignedIntValue];
+            let cg = CGDisplayBounds(display_id);
+            if cg.origin.x as f32 != f32::from(display.origin.x)
+                || cg.origin.y as f32 != f32::from(display.origin.y)
+                || cg.size.width as f32 != f32::from(display.size.width)
+                || cg.size.height as f32 != f32::from(display.size.height)
+            {
+                continue;
+            }
+            let frame = screen.frame();
+            let visible = screen.visibleFrame();
+            let monitor = (
+                cg.origin.x.round() as i32,
+                cg.origin.y.round() as i32,
+                (cg.origin.x + cg.size.width).round() as i32,
+                (cg.origin.y + cg.size.height).round() as i32,
+            );
+            let work = appkit_visible_work_rect(
+                monitor,
+                (
+                    frame.origin.x,
+                    frame.origin.y,
+                    frame.size.width,
+                    frame.size.height,
+                ),
+                (
+                    visible.origin.x,
+                    visible.origin.y,
+                    visible.size.width,
+                    visible.size.height,
+                ),
+            );
+            let _: () = msg_send![key, release];
+            return Some((monitor, work));
+        }
+        let _: () = msg_send![key, release];
+    }
+    None
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn appkit_visible_work_rect(
+    monitor: Rect,
+    frame: (f64, f64, f64, f64),
+    visible: (f64, f64, f64, f64),
+) -> Rect {
+    let (frame_x, frame_y, frame_width, frame_height) = frame;
+    let (visible_x, visible_y, visible_width, visible_height) = visible;
+    let left = visible_x - frame_x;
+    let right = frame_width - left - visible_width;
+    let top = frame_y + frame_height - visible_y - visible_height;
+    let bottom = visible_y - frame_y;
+    (
+        (monitor.0 as f64 + left).round() as i32,
+        (monitor.1 as f64 + top).round() as i32,
+        (monitor.2 as f64 - right).round() as i32,
+        (monitor.3 as f64 - bottom).round() as i32,
+    )
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn monitor_rects(_display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
     None
 }
@@ -174,6 +403,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn capture_scale_uses_the_selected_displays_physical_width() {
+        assert_eq!(scale_from_widths(1280.0, 1920.0), Some(1.5));
+        assert_eq!(scale_from_widths(1920.0, 1920.0), Some(1.0));
+    }
+
+    #[test]
+    fn x11_capture_scale_uses_the_full_randr_desktop() {
+        use poratake_daemon_common::geometry::{CaptureRect, DisplayInfo};
+
+        let displays = [
+            DisplayInfo {
+                rect: CaptureRect {
+                    x: -1920,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                primary: false,
+            },
+            DisplayInfo {
+                rect: CaptureRect {
+                    x: 0,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                },
+                primary: true,
+            },
+        ];
+
+        assert_eq!(x11_scale_for_width(2240.0, &displays), Some(2.0));
+    }
+
+    #[test]
+    fn capture_scale_uses_the_selected_macos_display_id() {
+        let scales = [(17, 1.0), (73, 2.0)];
+        assert_eq!(scale_for_display_id(73, &scales), Some(2.0));
+        assert_eq!(scale_for_display_id(99, &scales), None);
+    }
+
     /// Nonsense from the platform must not produce a window placed off-screen.
     #[test]
     fn a_degenerate_rectangle_falls_back_to_the_full_bounds() {
@@ -193,6 +463,18 @@ mod tests {
         assert_eq!(
             inset_bounds(display, (0, 0, 1920, 1080), (0, 0, 1920, 1080)),
             display
+        );
+    }
+
+    #[test]
+    fn appkit_menu_bar_and_bottom_dock_map_to_top_left_coordinates() {
+        assert_eq!(
+            appkit_visible_work_rect(
+                (0, 0, 1440, 900),
+                (0.0, 0.0, 1440.0, 900.0),
+                (0.0, 50.0, 1440.0, 826.0),
+            ),
+            (0, 24, 1440, 850)
         );
     }
 }

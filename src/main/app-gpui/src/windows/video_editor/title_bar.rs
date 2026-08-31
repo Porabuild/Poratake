@@ -17,6 +17,8 @@ pub struct TitleBarState {
     pub is_sidebar_open: bool,
     pub is_exporting: bool,
     pub export_progress: f32,
+    pub renaming: bool,
+    pub rename_field: gpui::Entity<crate::ui::text_field::TextField>,
 }
 
 pub fn render(
@@ -156,6 +158,28 @@ pub fn render(
         ));
     }
 
+    let name_content = if state.renaming {
+        div()
+            .w(px(220.0))
+            .child(state.rename_field.clone())
+            .into_any_element()
+    } else {
+        Button::new("video-rename-project")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .child(
+                div()
+                    .text_size(px(chrome::VIDEO_FILENAME_SIZE))
+                    .child(state.file_name.clone())
+                    .into_any_element(),
+            )
+            .tooltip("Rename project")
+            .on_click(cx.listener(|this, _event, window, cx| {
+                this.begin_rename(window, cx);
+            }))
+            .into_any_element()
+    };
+
     let mut bar = div()
         .flex()
         .flex_row()
@@ -164,14 +188,7 @@ pub fn render(
         .w_full()
         .flex_none()
         .bg(theme.card)
-        .child(
-            name.child(
-                div()
-                    .truncate()
-                    .text_size(px(chrome::VIDEO_FILENAME_SIZE))
-                    .child(state.file_name.clone()),
-            ),
-        )
+        .child(name.child(name_content))
         .child(actions);
     if !chrome::is_macos() {
         bar = bar.child(crate::ui::window_controls::render(window, cx, theme));

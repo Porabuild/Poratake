@@ -13,6 +13,7 @@
 #[cfg(windows)]
 use std::thread;
 
+#[cfg(windows)]
 use smol::channel::Receiver;
 
 use crate::theme::presets::ThemeMode;
@@ -41,6 +42,13 @@ pub fn apply_system_mode(mode: ThemeMode, cx: &mut gpui::App) {
     vars::update_theme(cx, mode, &config.appearance.theme);
     if crate::state::try_native(cx).is_some() {
         crate::intents::refresh_shell(cx);
+    }
+}
+
+pub fn window_theme_mode(appearance: gpui::WindowAppearance) -> ThemeMode {
+    match appearance {
+        gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => ThemeMode::Light,
+        gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => ThemeMode::Dark,
     }
 }
 
@@ -100,12 +108,6 @@ fn watch(tx: smol::channel::Sender<ThemeMode>) {
     }
 }
 
-/// No registry to watch off Windows; the receiver simply never fires.
-#[cfg(not(windows))]
-pub fn spawn() -> Receiver<ThemeMode> {
-    smol::channel::unbounded().1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +164,17 @@ mod tests {
             ThemeMode::Light,
             ThemeMode::Light
         ));
+    }
+
+    #[test]
+    fn maps_native_window_appearances_to_theme_modes() {
+        assert_eq!(
+            window_theme_mode(gpui::WindowAppearance::VibrantLight),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            window_theme_mode(gpui::WindowAppearance::VibrantDark),
+            ThemeMode::Dark
+        );
     }
 }

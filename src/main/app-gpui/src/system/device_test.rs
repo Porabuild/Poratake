@@ -9,7 +9,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
-use serde_json::json;
+use poratake_daemon_common::contract::{CameraPreviewRequest, MicrophoneTestRequest};
 
 use crate::daemon::DaemonHandle;
 
@@ -63,14 +63,14 @@ pub fn start_mic_test(daemon: &DaemonHandle, device_id: Option<&str>, device_nam
     if !crate::system::permissions::ensure_access(crate::system::permissions::Device::Microphone) {
         return;
     }
-    if !daemon.is_running() && daemon.start().is_err() {
-        return;
-    }
     subscribe(daemon);
     MIC_ACTIVE.store(true, Ordering::Relaxed);
     LEVEL.store(0f32.to_bits(), Ordering::Relaxed);
-    let params = json!({ "deviceId": device_id, "deviceName": device_name });
-    if let Err(error) = daemon.call("media-devices", "startMicTest", Some(params)) {
+    let request = MicrophoneTestRequest {
+        device_id: device_id.map(str::to_owned),
+        device_name: device_name.map(str::to_owned),
+    };
+    if let Err(error) = daemon.media_devices().start_mic_test(&request) {
         eprintln!("[devices] startMicTest failed: {error}");
         MIC_ACTIVE.store(false, Ordering::Relaxed);
     }
@@ -81,7 +81,7 @@ pub fn stop_mic_test(daemon: &DaemonHandle) {
         return;
     }
     LEVEL.store(0f32.to_bits(), Ordering::Relaxed);
-    if let Err(error) = daemon.call("media-devices", "stopMicTest", None) {
+    if let Err(error) = daemon.media_devices().stop_mic_test() {
         eprintln!("[devices] stopMicTest failed: {error}");
     }
 }
@@ -95,18 +95,24 @@ pub fn start_camera_test(
     if !crate::system::permissions::ensure_access(crate::system::permissions::Device::Camera) {
         return;
     }
-    if !daemon.is_running() && daemon.start().is_err() {
-        return;
-    }
     CAMERA_ACTIVE.store(true, Ordering::Relaxed);
-    let params = json!({
-        "selectedDeviceId": device_id,
-        "selectedDeviceName": device_name,
-        "flipped": flipped,
-    });
-    if let Err(error) = daemon.call("camera-preview", "show", Some(params)) {
+    let request = camera_preview_request(device_id, device_name, flipped);
+    if let Err(error) = daemon.camera_preview().show(&request) {
         eprintln!("[devices] camera-preview show failed: {error}");
         CAMERA_ACTIVE.store(false, Ordering::Relaxed);
+    }
+}
+
+fn camera_preview_request(
+    device_id: Option<&str>,
+    device_name: Option<&str>,
+    flipped: bool,
+) -> CameraPreviewRequest {
+    CameraPreviewRequest {
+        device_id: device_id.map(str::to_owned),
+        device_name: device_name.map(str::to_owned),
+        flipped: Some(flipped),
+        ..CameraPreviewRequest::default()
     }
 }
 
@@ -114,7 +120,7 @@ pub fn stop_camera_test(daemon: &DaemonHandle) {
     if !CAMERA_ACTIVE.swap(false, Ordering::Relaxed) {
         return;
     }
-    if let Err(error) = daemon.call("camera-preview", "hide", None) {
+    if let Err(error) = daemon.camera_preview().hide() {
         eprintln!("[devices] camera-preview hide failed: {error}");
     }
 }
@@ -122,6 +128,7 @@ pub fn stop_camera_test(daemon: &DaemonHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_missing_or_out_of_range_level_reads_as_something_the_meter_can_use() {
@@ -141,5 +148,22 @@ mod tests {
             assert_eq!(level(), value);
         }
         LEVEL.store(0f32.to_bits(), Ordering::Relaxed);
+    }
+
+    #[test]
+    fn camera_test_forwards_the_selected_device() {
+        assert_eq!(
+            serde_json::to_value(camera_preview_request(
+                Some("camera-id"),
+                Some("External Camera"),
+                true,
+            ))
+            .expect("camera preview request"),
+            json!({
+                "deviceId": "camera-id",
+                "deviceName": "External Camera",
+                "flipped": true,
+            })
+        );
     }
 }

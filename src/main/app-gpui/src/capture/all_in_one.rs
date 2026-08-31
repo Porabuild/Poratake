@@ -83,8 +83,6 @@ impl Target {
         }
     }
 
-    /// Window targets need the daemon's window list, which only Windows and
-    /// macOS provide.
     pub fn is_supported(self) -> bool {
         match self {
             Self::Window => is_supported(Feature::ScreenshotWindow),
@@ -112,9 +110,14 @@ pub fn restore(store: &ConfigStore) -> Choices {
         Mode::Record if !is_supported(Feature::Recording) => Mode::Screenshot,
         mode => mode,
     };
-    let target = match mode {
+    let restored_target = match mode {
         Mode::Record => Target::parse(&config.all_in_one.last_targets.record),
         _ => Target::parse(&config.all_in_one.last_targets.screenshot),
+    };
+    let target = if restored_target.is_supported() {
+        restored_target
+    } else {
+        Target::Area
     };
     Choices { mode, target }
 }
@@ -165,13 +168,17 @@ mod tests {
         assert_eq!(restore(&store), Choices::default());
 
         store.update(|config| config.all_in_one.remember_choices = true);
-        assert_eq!(
-            restore(&store),
+        let expected = if crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::Recording,
+        ) {
             Choices {
                 mode: Mode::Record,
-                target: Target::Screen
+                target: Target::Screen,
             }
-        );
+        } else {
+            Choices::default()
+        };
+        assert_eq!(restore(&store), expected);
     }
 
     #[test]

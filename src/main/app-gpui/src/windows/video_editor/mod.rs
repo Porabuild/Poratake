@@ -119,6 +119,8 @@ pub struct VideoEditorWindow {
     transcription_model: String,
     transcription_prompt: String,
     prompt_field: Entity<crate::ui::text_area::TextArea>,
+    rename_field: Entity<crate::ui::text_field::TextField>,
+    renaming: bool,
     upload_to_cloud: bool,
     cloud_upload: crate::cloud::UploadState,
     uploaded_url: Option<String>,
@@ -159,7 +161,29 @@ impl VideoEditorWindow {
     }
 
     fn new(path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+        let has_saved_state = path
+            .as_deref()
+            .is_some_and(|path| crate::video::project::editor_state_path(path).is_file());
         let mut state = path.as_deref().map(model::load_state).unwrap_or_default();
+        if !has_saved_state {
+            let recording = crate::state::state(cx).config.get().recording;
+            state.camera_style.mirrored = recording.camera.flipped;
+            if recording.auto_zoom {
+                if let Some(cursor_data) = path
+                    .as_deref()
+                    .and_then(crate::video::sidecars::load_cursor)
+                {
+                    state.zoom_segments = crate::video::auto_zoom::generate(
+                        &cursor_data,
+                        chrono::Utc::now().timestamp_millis(),
+                    );
+                    if !state.zoom_segments.is_empty() {
+                        state.ui.sidebar_open = true;
+                        state.ui.sidebar_tab = "zoom".to_string();
+                    }
+                }
+            }
+        }
         // A recording whose camera was toggled on and off records its
         // on-periods in `camera.json`; the first open turns them into timeline
         // segments, the same way `useCameraSegments` seeds itself.
@@ -183,6 +207,28 @@ impl VideoEditorWindow {
             .timeline_zoom
             .map(|value| timeline::clamp_zoom(value as f32))
             .unwrap_or(timeline::DEFAULT_PIXELS_PER_SECOND);
+        let initial_name = path
+            .as_deref()
+            .map(model::project_display_name)
+            .unwrap_or_else(|| "Untitled".to_string());
+        let submit_owner = cx.entity().downgrade();
+        let cancel_owner = submit_owner.clone();
+        let rename_field = cx.new(|cx| {
+            crate::ui::text_field::TextField::new(initial_name, cx)
+                .bare()
+                .on_submit(move |value, window, app| {
+                    let value = value.to_string();
+                    let _ = submit_owner.update(app, |this, cx| {
+                        this.rename_project(&value, window, cx);
+                    });
+                })
+                .on_cancel(move |_value, _window, app| {
+                    let _ = cancel_owner.update(app, |this, cx| {
+                        this.renaming = false;
+                        cx.notify();
+                    });
+                })
+        });
         Self {
             path,
             state,
@@ -226,6 +272,8 @@ impl VideoEditorWindow {
                     .placeholder("Add context to improve accuracy...")
                     .rows(4)
             }),
+            rename_field,
+            renaming: false,
             upload_to_cloud: false,
             cloud_upload: crate::cloud::UploadState::Idle,
             uploaded_url: None,
@@ -426,6 +474,11 @@ impl VideoEditorWindow {
     }
 
     fn load_desktop_wallpaper(&mut self, cx: &mut Context<Self>) {
+        if !crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::DesktopWallpaper,
+        ) {
+            return;
+        }
         let daemon = crate::state::state(cx).daemon.clone();
         cx.spawn(async move |entity, cx| {
             let wallpaper = cx
@@ -701,25 +754,41 @@ impl VideoEditorWindow {
     }
 
     pub fn reset_state(&mut self, cx: &mut Context<Self>) {
-        self.commit(cx, |state| {
-            let segments = std::mem::take(&mut state.segments);
-            let zoom_segments = std::mem::take(&mut state.zoom_segments);
-            let camera_segments = std::mem::take(&mut state.camera_segments);
-            let drawing_segments = std::mem::take(&mut state.drawing_segments);
-            let music_tracks = std::mem::take(&mut state.music_tracks);
-            let source_duration = state.source_duration;
-            let recording_type = state.recording_type.clone();
-            *state = VideoEditorState {
-                segments,
-                zoom_segments,
-                camera_segments,
-                drawing_segments,
-                music_tracks,
-                source_duration,
-                recording_type,
-                ..VideoEditorState::default()
-            };
-        });
+        let source_duration = self.state.source_duration;
+        let recording_type = self.state.recording_type.clone();
+        let recording = crate::state::state(cx).config.get().recording;
+        let mut state = VideoEditorState {
+            source_duration,
+            recording_type,
+            ..VideoEditorState::default()
+        };
+        state.camera_style.mirrored = recording.camera.flipped;
+        if let Some(duration) = source_duration.filter(|duration| *duration > 0.0) {
+            state.segments = vec![model::Segment::spanning(duration)];
+        }
+        if recording.auto_zoom {
+            if let Some(cursor_data) = self
+                .path
+                .as_deref()
+                .and_then(crate::video::sidecars::load_cursor)
+            {
+                state.zoom_segments = crate::video::auto_zoom::generate(
+                    &cursor_data,
+                    chrono::Utc::now().timestamp_millis(),
+                );
+                if !state.zoom_segments.is_empty() {
+                    state.ui.sidebar_open = true;
+                    state.ui.sidebar_tab = "zoom".to_string();
+                }
+            }
+        }
+        self.state = state;
+        self.history.clear();
+        self.future.clear();
+        self.selected_clip = None;
+        self.persist(cx);
+        self.sync_preview_state(cx);
+        cx.notify();
     }
 
     pub fn confirm_reset(&mut self, cx: &mut Context<Self>) {
@@ -1702,6 +1771,56 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
+    pub fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.path.as_deref() else {
+            return;
+        };
+        if project::project_folder(path).is_none() {
+            return;
+        }
+        let name = model::project_display_name(path);
+        self.rename_field
+            .update(cx, |field, cx| field.set_value(&name, cx));
+        self.renaming = true;
+        window.focus(&self.rename_field.read(cx).focus_handle());
+        cx.notify();
+    }
+
+    fn rename_project(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(old_path) = self.path.clone() else {
+            return;
+        };
+        self.source = None;
+        let new_project = match project::rename_project(&old_path, value) {
+            Ok(path) => path,
+            Err(error) => {
+                self.load_preview(cx);
+                crate::windows::toast::Toast::show(cx, "Rename failed", error.to_string());
+                return;
+            }
+        };
+        let old_project = project::project_folder(&old_path).unwrap_or_else(|| old_path.clone());
+        let new_path = if old_path == old_project {
+            new_project.clone()
+        } else {
+            new_project.join(old_path.file_name().unwrap_or_default())
+        };
+        if let Some(background) = self.state.wallpaper.background_image.as_mut() {
+            *background = background.replace(
+                old_project.to_string_lossy().as_ref(),
+                new_project.to_string_lossy().as_ref(),
+            );
+        }
+        crate::thumbnails::rekey(&old_path, &new_path);
+        crate::history_store::update_item_path(&old_path, &new_path);
+        self.path = Some(new_path);
+        self.renaming = false;
+        self.persist(cx);
+        self.load_preview(cx);
+        window.focus(&self.focus_handle);
+        cx.notify();
+    }
+
     pub fn cancel_export(&mut self, cx: &mut Context<Self>) {
         self.export_cancelled.store(true, Ordering::Relaxed);
         self.is_exporting = false;
@@ -1724,9 +1843,7 @@ impl VideoEditorWindow {
 
     pub fn copy_uploaded_url(&mut self, cx: &mut Context<Self>) {
         if let Some(url) = &self.uploaded_url {
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(url.clone());
-            }
+            crate::system::clipboard::ClipboardService::write_text(cx, url.clone());
         }
         cx.notify();
     }
@@ -1832,17 +1949,30 @@ impl VideoEditorWindow {
             return;
         }
 
-        let removed = match project::project_folder(&path) {
-            Some(folder) => std::fs::remove_dir_all(folder),
-            None => std::fs::remove_file(&path),
-        };
-        if let Err(error) = removed {
-            eprintln!("[video-editor] delete failed: {error}");
+        if !crate::history_store::delete_path(&path, crate::history_store::HistoryItemType::Video) {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Delete failed",
+                "The recording could not be deleted",
+            );
             return;
         }
-        crate::thumbnails::remove(&path);
+        let notify = crate::state::state(cx)
+            .config
+            .get()
+            .general
+            .show_deletion_notifications;
         window.remove_window();
         registry::close(RegistryKind::VideoEditor, cx);
+        if notify {
+            cx.defer(|cx| {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Video deleted",
+                    "The video has been permanently deleted",
+                );
+            });
+        }
     }
 
     pub fn update_cursor(
@@ -2137,6 +2267,8 @@ impl Render for VideoEditorWindow {
                 is_sidebar_open: self.state.ui.sidebar_open,
                 is_exporting: self.is_exporting,
                 export_progress: self.export_progress,
+                renaming: self.renaming,
+                rename_field: self.rename_field.clone(),
             },
             &theme,
             window,
@@ -2260,6 +2392,8 @@ impl Render for VideoEditorWindow {
         let sidebar_width = self.sidebar_width;
         let panel_width = (sidebar_width - crate::ui::chrome::VIDEO_SIDEBAR_RESIZE).max(0.0);
         let mut sidebar_panel = div()
+            .flex()
+            .flex_col()
             .w(px(panel_width))
             .flex_shrink_0()
             .h_full()

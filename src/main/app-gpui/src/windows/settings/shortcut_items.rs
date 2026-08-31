@@ -373,25 +373,32 @@ fn panel_specs() -> Vec<Spec> {
     ]
 }
 
+fn global_shortcuts_visible(_: &SettingsConfig) -> bool {
+    crate::system::capabilities::global_shortcuts_supported()
+}
+
 pub fn items() -> Vec<Item> {
     specs()
         .into_iter()
         .chain(tool_specs())
         .chain(panel_specs())
-        .map(|spec| Item {
-            id: spec.id,
-            category: Category::Shortcuts,
-            section: spec.section,
-            label: spec.label,
-            description: spec.description,
-            keywords: spec.keywords,
-            feature: spec.feature,
-            visible_when: None,
-            control: Control::Shortcut {
-                get: spec.get,
-                set: spec.set,
-                single_key: matches!(spec.section, EDITOR_TOOLS | VIDEO_EDITOR),
-            },
+        .map(|spec| {
+            let global = matches!(spec.section, SCREENSHOT | RECORDING | OTHER);
+            Item {
+                id: spec.id,
+                category: Category::Shortcuts,
+                section: spec.section,
+                label: spec.label,
+                description: spec.description,
+                keywords: spec.keywords,
+                feature: spec.feature,
+                visible_when: global.then_some(global_shortcuts_visible),
+                control: Control::Shortcut {
+                    get: spec.get,
+                    set: spec.set,
+                    single_key: matches!(spec.section, EDITOR_TOOLS | VIDEO_EDITOR),
+                },
+            }
         })
         .collect()
 }

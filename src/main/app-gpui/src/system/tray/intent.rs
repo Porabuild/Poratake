@@ -50,7 +50,7 @@ const INTENT_IDS: &[(Intent, &str)] = &[
 ];
 
 impl Intent {
-    #[cfg(test)]
+    #[cfg(any(target_os = "linux", test))]
     pub fn id(self) -> &'static str {
         INTENT_IDS
             .iter()
@@ -64,6 +64,25 @@ impl Intent {
             .iter()
             .find(|(_, candidate)| *candidate == id)
             .map(|(intent, _)| *intent)
+    }
+
+    pub fn feature(self) -> Option<crate::system::capabilities::Feature> {
+        use crate::system::capabilities::Feature;
+
+        match self {
+            Self::AllInOne => Some(Feature::AllInOne),
+            Self::CaptureScreen => Some(Feature::ScreenshotScreen),
+            Self::CaptureArea => Some(Feature::ScreenshotArea),
+            Self::CaptureWindow => Some(Feature::ScreenshotWindow),
+            Self::ScrollCapture => Some(Feature::ScrollCapture),
+            Self::CaptureText => Some(Feature::Ocr),
+            Self::ScanQrCode => Some(Feature::QrCode),
+            Self::TimerCapture => Some(Feature::TimerCapture),
+            Self::RecordScreen | Self::RecordArea | Self::RecordWindow => Some(Feature::Recording),
+            Self::OpenInVideoEditor => Some(Feature::VideoEditor),
+            Self::ToggleDesktopIcons => Some(Feature::DesktopIcons),
+            _ => None,
+        }
     }
 }
 

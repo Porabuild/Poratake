@@ -44,6 +44,7 @@ fn recently_closed_on_deactivation() -> bool {
 struct MenuGeometry {
     bounds: Bounds<Pixels>,
     display_id: Option<DisplayId>,
+    #[cfg(windows)]
     scale_factor: Option<f32>,
 }
 
@@ -51,6 +52,7 @@ pub(crate) struct MenuDisplay {
     pub(crate) work_area: Bounds<Pixels>,
     pub(crate) tray_rect: Option<TrayRect>,
     pub(crate) id: DisplayId,
+    #[cfg(windows)]
     pub(crate) scale_factor: Option<f32>,
 }
 
@@ -114,6 +116,7 @@ impl TrayMenuVisibility {
 
 pub struct TrayMenuWindow {
     menu: Entity<MenuView>,
+    #[cfg(windows)]
     dismiss: DismissHandler,
     activation: Option<Subscription>,
     visibility: TrayMenuVisibility,
@@ -131,8 +134,11 @@ impl TrayMenuWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        #[cfg(not(windows))]
+        let _ = &dismiss;
         let mut view = Self {
             menu,
+            #[cfg(windows)]
             dismiss,
             activation: None,
             visibility: TrayMenuVisibility::new(visible),
@@ -234,13 +240,20 @@ impl TrayMenuWindow {
         let entries = crate::system::tray::entries(&state, tray_rect);
         let geometry = menu_geometry(tray_rect, &entries, cx);
         let max_height = geometry.bounds.size.height;
+        let window_bounds = geometry
+            .display_id
+            .and_then(|id| cx.find_display(id))
+            .map(|display| {
+                crate::system::work_area::local_window_bounds(geometry.bounds, display.as_ref())
+            })
+            .unwrap_or(geometry.bounds);
         let initial_bounds = if cfg!(windows) && !visible {
             Bounds {
                 origin: gpui::point(px(-32000.0), px(-32000.0)),
                 size: geometry.bounds.size,
             }
         } else {
-            geometry.bounds
+            window_bounds
         };
         cx.open_window(
             WindowOptions {
@@ -431,6 +444,7 @@ fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut Ap
         return MenuGeometry {
             bounds: Bounds::centered(None, window_size, cx),
             display_id: None,
+            #[cfg(windows)]
             scale_factor: None,
         };
     };
@@ -443,6 +457,7 @@ fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut Ap
         return MenuGeometry {
             bounds: Bounds::centered(Some(display.id), window_size, cx),
             display_id: Some(display.id),
+            #[cfg(windows)]
             scale_factor: display.scale_factor,
         };
     };
@@ -465,6 +480,7 @@ fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut Ap
             size: window_size,
         },
         display_id: Some(display.id),
+        #[cfg(windows)]
         scale_factor: display.scale_factor,
     }
 }
@@ -484,6 +500,7 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
             work_area: crate::system::work_area::work_area(display.bounds()),
             tray_rect: None,
             id: display.id(),
+            #[cfg(windows)]
             scale_factor: None,
         });
     };
@@ -552,18 +569,32 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
         },
         tray_rect: Some(tray_rect),
         id: display.id(),
+        #[cfg(windows)]
         scale_factor: Some(dpi_x as f32 / 96.0),
     })
 }
 
 #[cfg(not(windows))]
 pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<MenuDisplay> {
-    let display = cx.displays().first()?.clone();
+    let displays = cx.displays();
+    let display = tray_rect
+        .and_then(|rect| {
+            let x = rect.x + rect.width / 2.0;
+            let y = rect.y + rect.height / 2.0;
+            displays.iter().find(|display| {
+                let bounds = crate::system::work_area::display_bounds(display.as_ref());
+                x >= f32::from(bounds.left())
+                    && x < f32::from(bounds.right())
+                    && y >= f32::from(bounds.top())
+                    && y < f32::from(bounds.bottom())
+            })
+        })
+        .or_else(|| displays.first())?;
+    let bounds = crate::system::work_area::display_bounds(display.as_ref());
     Some(MenuDisplay {
-        work_area: crate::system::work_area::work_area(display.bounds()),
+        work_area: crate::system::work_area::work_area(bounds),
         tray_rect,
         id: display.id(),
-        scale_factor: None,
     })
 }
 
@@ -578,6 +609,7 @@ fn menu_height(entries: &[MenuEntry]) -> f32 {
         + MENU_PADDING
 }
 
+#[cfg(any(windows, test))]
 fn physical_to_logical_rect(
     rect: TrayRect,
     physical_x: f32,

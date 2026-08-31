@@ -1,67 +1,20 @@
 //! Port of `capture/window-selector/index.ts` — the daemon's window list, used
 //! by the overlay's window-pick mode.
 
-use serde::Deserialize;
-
 use crate::daemon::DaemonHandle;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
-pub struct Rect {
-    #[serde(default)]
-    pub x: f64,
-    #[serde(default)]
-    pub y: f64,
-    #[serde(default)]
-    pub width: f64,
-    #[serde(default)]
-    pub height: f64,
-}
-
-impl Rect {
-    pub fn contains(&self, x: f64, y: f64) -> bool {
-        x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WindowListItem {
-    pub window_id: i64,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub owner_name: String,
-    #[serde(default)]
-    pub owner_pid: i64,
-    #[serde(default)]
-    pub bounds: Rect,
-}
-
-impl WindowListItem {
-    pub fn label(&self) -> String {
-        if self.title.trim().is_empty() {
-            self.owner_name.clone()
-        } else {
-            format!("{} \u{2014} {}", self.owner_name, self.title)
-        }
-    }
-}
+#[cfg(test)]
+pub(crate) use poratake_daemon_common::geometry::WindowBounds as Rect;
+pub use poratake_daemon_common::geometry::WindowInfo as WindowListItem;
 
 pub fn list(daemon: &DaemonHandle) -> Vec<WindowListItem> {
-    if !daemon.is_running() && daemon.start().is_err() {
-        return Vec::new();
-    }
-    let response = match daemon.call("window-selector", "list", None) {
-        Ok(response) => response,
+    match daemon.window_selector().list() {
+        Ok(windows) => windows,
         Err(error) => {
             eprintln!("[window-selector] list failed: {error}");
-            return Vec::new();
+            Vec::new()
         }
-    };
-    serde_json::from_value::<Vec<WindowListItem>>(
-        response.get("windows").cloned().unwrap_or_default(),
-    )
-    .unwrap_or_default()
+    }
 }
 
 pub fn hit_test(windows: &[WindowListItem], x: f64, y: f64) -> Option<&WindowListItem> {

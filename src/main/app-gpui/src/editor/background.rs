@@ -11,22 +11,22 @@ pub const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "jfif", "svg", "w
 /// module. The daemon answers with either a file path or an inline data URL,
 /// both of which the rasterizer can load.
 pub fn desktop_wallpaper(daemon: &crate::daemon::DaemonHandle) -> Option<String> {
-    if !daemon.is_running() {
-        daemon.start().ok()?;
-    }
-    let response = daemon.call("desktop-wallpaper", "get", None).ok()?;
+    let response = daemon.desktop_wallpaper().get().ok()?;
     from_response(&response)
 }
 
 /// Splits the daemon's `{ type, value }` answer into something loadable, or
 /// `None` when the file it points at is gone.
-pub fn from_response(response: &serde_json::Value) -> Option<String> {
-    let kind = response.get("type")?.as_str()?;
-    let value = response.get("value")?.as_str()?;
-    match kind {
-        "data" => Some(value.to_string()),
-        "path" => PathBuf::from(value).is_file().then(|| value.to_string()),
-        _ => None,
+pub fn from_response(
+    response: &poratake_daemon_common::contract::DesktopWallpaperResult,
+) -> Option<String> {
+    match response {
+        poratake_daemon_common::contract::DesktopWallpaperResult::Data(value) => {
+            Some(value.clone())
+        }
+        poratake_daemon_common::contract::DesktopWallpaperResult::Path(value) => {
+            PathBuf::from(value).is_file().then(|| value.clone())
+        }
     }
 }
 
@@ -45,7 +45,9 @@ mod tests {
 
     #[test]
     fn a_data_url_is_used_as_is() {
-        let response = serde_json::json!({ "type": "data", "value": "data:image/png;base64,AAAA" });
+        let response = poratake_daemon_common::contract::DesktopWallpaperResult::Data(
+            "data:image/png;base64,AAAA".into(),
+        );
         assert_eq!(
             from_response(&response).as_deref(),
             Some("data:image/png;base64,AAAA")
@@ -54,10 +56,9 @@ mod tests {
 
     #[test]
     fn a_missing_file_path_yields_nothing() {
-        let response = serde_json::json!({
-            "type": "path",
-            "value": "/definitely/not/here.png"
-        });
+        let response = poratake_daemon_common::contract::DesktopWallpaperResult::Path(
+            "/definitely/not/here.png".into(),
+        );
         assert!(from_response(&response).is_none());
     }
 
@@ -65,21 +66,13 @@ mod tests {
     fn an_existing_file_path_is_returned() {
         let path = std::env::temp_dir().join("poratake-wallpaper-test.png");
         std::fs::write(&path, b"not really a png").expect("write");
-        let response = serde_json::json!({
-            "type": "path",
-            "value": path.to_string_lossy(),
-        });
+        let response = poratake_daemon_common::contract::DesktopWallpaperResult::Path(
+            path.to_string_lossy().into_owned(),
+        );
         assert_eq!(
             from_response(&response),
             Some(path.to_string_lossy().to_string())
         );
         let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn an_unknown_kind_is_ignored() {
-        let response = serde_json::json!({ "type": "url", "value": "https://example.com/a.png" });
-        assert!(from_response(&response).is_none());
-        assert!(from_response(&serde_json::json!({})).is_none());
     }
 }

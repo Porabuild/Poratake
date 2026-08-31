@@ -54,7 +54,7 @@ pub fn hide(daemon: &DaemonHandle, source: HideSource) -> bool {
         return true;
     }
 
-    match daemon.call("desktop-helper", "hide", None) {
+    match daemon.desktop_helper().hide() {
         Ok(_) => {
             with_state(|state| state.hidden = true);
             true
@@ -92,7 +92,7 @@ pub fn show(daemon: &DaemonHandle, source: HideSource) -> bool {
         return true;
     }
 
-    match daemon.call("desktop-helper", "show", None) {
+    match daemon.desktop_helper().show() {
         Ok(_) => {
             with_state(|state| state.hidden = false);
             true

@@ -72,9 +72,46 @@ fn read_apps_use_light_theme() -> Option<bool> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub fn system_theme_mode() -> ThemeMode {
-    ThemeMode::Dark
+    let dark = std::process::Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .is_ok_and(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .eq_ignore_ascii_case("dark")
+        });
+    if dark {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn system_theme_mode() -> ThemeMode {
+    let environment_dark = std::env::var("GTK_THEME")
+        .ok()
+        .is_some_and(|theme| theme.to_ascii_lowercase().contains("dark"));
+    let gnome_dark = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_ascii_lowercase())
+        .is_some_and(|scheme| scheme.contains("dark"));
+    if environment_dark || gnome_dark {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+pub fn system_theme_mode() -> ThemeMode {
+    ThemeMode::Light
 }
 
 pub fn resolve_theme_mode(mode: ThemeMode) -> ThemeMode {

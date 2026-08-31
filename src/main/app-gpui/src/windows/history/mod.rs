@@ -304,8 +304,14 @@ impl HistoryWindow {
         let Some(item) = self.visible().get(index).cloned() else {
             return;
         };
-        crate::thumbnails::remove(std::path::Path::new(&item.original_path));
-        history_store::remove_item(&item.id);
+        if !history_store::delete_item(&item.id) {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Delete failed",
+                "The capture could not be deleted",
+            );
+            return;
+        }
         self.media.remove(&item.id);
         self.items.retain(|candidate| candidate.id != item.id);
 
@@ -319,10 +325,27 @@ impl HistoryWindow {
     }
 
     pub fn clear_all(&mut self, cx: &mut Context<Self>) {
-        for item in &self.items {
-            crate::thumbnails::remove(std::path::Path::new(&item.original_path));
+        let confirmed = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Clear History")
+            .set_description("Permanently delete all screenshots and videos from history?")
+            .set_buttons(rfd::MessageButtons::OkCancelCustom(
+                "Clear History".into(),
+                "Cancel".into(),
+            ))
+            .show();
+        if confirmed != rfd::MessageDialogResult::Custom("Clear History".into()) {
+            return;
         }
-        history_store::save_history(&[]);
+        if !history_store::clear_history() {
+            self.reload(cx);
+            crate::windows::toast::Toast::show(
+                cx,
+                "Clear history failed",
+                "Some captures could not be deleted",
+            );
+            return;
+        }
         self.items.clear();
         self.media.clear();
         self.selected_index = 0;

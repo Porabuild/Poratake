@@ -25,6 +25,41 @@ pub fn project_folder(path: &Path) -> Option<PathBuf> {
     is_project(parent).then(|| parent.to_path_buf())
 }
 
+pub fn rename_project(path: &Path, new_name: &str) -> std::io::Result<PathBuf> {
+    let project = project_folder(path).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a recording project")
+    })?;
+    let sanitized = new_name
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            _ => character,
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim();
+    if sanitized.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid project name",
+        ));
+    }
+    let parent = project.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "project has no parent")
+    })?;
+    let renamed = parent.join(format!("{sanitized}{PROJECT_EXTENSION}"));
+    if renamed == project {
+        return Ok(project);
+    }
+    if renamed.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "a project with this name already exists",
+        ));
+    }
+    std::fs::rename(&project, &renamed)?;
+    Ok(renamed)
+}
+
 fn sidecar(path: &Path, project_file: &str, loose_suffix: &str) -> PathBuf {
     match project_folder(path) {
         Some(folder) => folder.join(project_file),
@@ -120,5 +155,15 @@ mod tests {
         );
         assert_eq!(recording_video_path(&loose), loose);
         assert_eq!(recording_features(&loose), RecordingFeatures::default());
+    }
+
+    #[test]
+    fn rename_project_sanitizes_the_name_and_moves_the_folder() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let project = dir.path().join("Original.poratake");
+        std::fs::create_dir(&project).expect("create project");
+        let renamed = rename_project(&project, "New: Name").expect("rename project");
+        assert_eq!(renamed, dir.path().join("New- Name.poratake"));
+        assert!(renamed.is_dir());
     }
 }

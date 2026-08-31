@@ -1,20 +1,12 @@
 use gpui::App;
 
 pub fn open_clipboard(cx: &mut App) {
-    let image = match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_image()) {
-        Ok(image) => image,
-        Err(error) => {
-            eprintln!("[editor] clipboard has no image: {error}");
-            return;
-        }
+    let Some(image) = crate::system::clipboard::ClipboardService::read_image(cx) else {
+        eprintln!("[editor] clipboard has no image");
+        return;
     };
-
-    let Some(buffer) = image::RgbaImage::from_raw(
-        image.width as u32,
-        image.height as u32,
-        image.bytes.into_owned(),
-    ) else {
-        eprintln!("[editor] clipboard image had an unexpected stride");
+    let Ok(buffer) = image::load_from_memory(&image.bytes) else {
+        eprintln!("[editor] clipboard image could not be decoded");
         return;
     };
 

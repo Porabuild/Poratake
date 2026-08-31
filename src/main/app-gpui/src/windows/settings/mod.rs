@@ -17,7 +17,7 @@ use gpui::{
 
 use crate::config::schema::SettingsConfig;
 use crate::config::store::ConfigStore;
-use crate::theme::presets::{resolve_theme_mode, AppThemePreset, ThemeMode, APP_THEME_PRESETS};
+use crate::theme::presets::{resolve_theme_mode, ThemeMode};
 use crate::theme::vars::{active_mode, active_theme, update_theme, ThemeVars};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
@@ -1074,8 +1074,7 @@ fn extras(
         .filter(|(_, item)| filter.is_empty() || item.matches(filter))
         .map(|(index, _)| index)
         .collect();
-    let has_theme_cards = category == Category::Appearance;
-    if extra.is_empty() && !has_theme_cards {
+    if extra.is_empty() {
         return page;
     }
 
@@ -1088,9 +1087,6 @@ fn extras(
         .pt(px(SECTION_GAP))
         .child(disclosure_header(key, open, theme, ui_window, cx));
     if open {
-        if has_theme_cards {
-            block = block.child(theme_cards(window, theme, ui_window, cx));
-        }
         for index in extra {
             let item = &items[index];
             block = block.child(window.render_setting(
@@ -1153,124 +1149,6 @@ fn disclosure_header(
         .into_any_element()
 }
 
-fn theme_cards(
-    window: &SettingsWindow,
-    theme: &ThemeVars,
-    ui_window: &mut Window,
-    cx: &mut Context<SettingsWindow>,
-) -> AnyElement {
-    let active_theme_id = window.config().appearance.theme.clone();
-    let mut row = div().flex().flex_row().flex_wrap().gap(px(8.0)).pb(px(8.0));
-    for preset in APP_THEME_PRESETS {
-        row = row.child(theme_card(
-            preset,
-            active_theme_id == preset.id,
-            theme,
-            ui_window,
-            cx,
-        ));
-    }
-    row.into_any_element()
-}
-
-fn theme_card(
-    preset: &'static AppThemePreset,
-    active: bool,
-    theme: &ThemeVars,
-    ui_window: &mut Window,
-    cx: &mut Context<SettingsWindow>,
-) -> AnyElement {
-    let id = format!("appearance-theme-{}", preset.id);
-    let focus = crate::ui::primitives::control_focus(&id, false, ui_window, cx);
-    let (hover, hovered) = crate::ui::primitives::hover_flag(&id, ui_window, cx);
-    div()
-        .id(SharedString::from(id))
-        .track_focus(&focus)
-        .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
-        .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .w(px(156.0))
-        .p(px(8.0))
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(if active { theme.accent } else { theme.border })
-        .bg(if hovered {
-            theme.default_hover
-        } else {
-            theme.card
-        })
-        .on_hover({
-            let hover = hover.clone();
-            move |over: &bool, _window, cx| {
-                crate::ui::primitives::track_hover(&hover, *over, cx);
-            }
-        })
-        .on_click(cx.listener(move |this, _event, _window, cx| {
-            this.mutate(cx, |config| {
-                config.appearance.theme = preset.id.to_string();
-            });
-        }))
-        .child(
-            div()
-                .flex()
-                .gap(px(8.0))
-                .child(swatch("Dark", preset.dark, theme))
-                .child(swatch("Light", preset.light, theme)),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .child(preset.label),
-        )
-        .into_any_element()
-}
-
-fn swatch(
-    label: &'static str,
-    variant: crate::theme::presets::ThemeVariant,
-    theme: &ThemeVars,
-) -> AnyElement {
-    use crate::theme::color::Srgba;
-
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(4.0))
-        .flex_1()
-        .child(
-            div()
-                .text_size(px(10.0))
-                .text_color(theme.muted_foreground)
-                .child(label),
-        )
-        .child(
-            div()
-                .flex()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .h(px(24.0))
-                        .flex_1()
-                        .rounded(px(4.0))
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(Srgba::parse(variant.bg).to_hsla()),
-                )
-                .child(
-                    div()
-                        .h(px(24.0))
-                        .flex_1()
-                        .rounded(px(4.0))
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(Srgba::parse(variant.accent).to_hsla()),
-                ),
-        )
-        .into_any_element()
-}
-
 impl crate::ui::shortcut_input::ShortcutRecorder for SettingsWindow {
     fn start_recording_shortcut(
         &mut self,
@@ -1304,11 +1182,19 @@ mod tests {
 
         let sections = group_by_section(&items, visible);
         let names: Vec<&str> = sections.iter().map(|(name, _)| *name).collect();
-        assert_eq!(
-            names,
-            vec!["Application", "Preview", "All-in-One", "History"],
-            "sections come out in order of first appearance, each exactly once"
-        );
+        let mut expected = vec!["Application", "Preview"];
+        if crate::system::capabilities::is_supported(crate::system::capabilities::Feature::AllInOne)
+        {
+            expected.push("All-in-One");
+        }
+        expected.push("History");
+        assert_eq!(names, expected);
+
+        if !crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::AllInOne,
+        ) {
+            return;
+        }
 
         let order: Vec<&str> = sections
             .iter()
@@ -1359,6 +1245,14 @@ mod extras_tests {
         );
 
         assert!(!EXTRA_ITEM_IDS.is_empty());
+        if !crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::ScrollCapture,
+        ) {
+            assert!(EXTRA_ITEM_IDS
+                .iter()
+                .all(|id| !items.iter().any(|item| item.id == *id)));
+            return;
+        }
         for id in EXTRA_ITEM_IDS {
             assert!(
                 items.iter().any(|item| item.id == *id),
@@ -1404,13 +1298,14 @@ mod extras_tests {
     #[gpui::test]
     fn the_disclosure_starts_closed(cx: &mut gpui::TestAppContext) {
         let items = registry::items();
-        assert!(
-            items
+        if crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::ScrollCapture,
+        ) {
+            assert!(items
                 .iter()
                 .any(|item| item.id == "shortcuts.scrollCapture"
-                    && item.category == Category::Shortcuts),
-            "the scroll capture row is still registered, just held back"
-        );
+                    && item.category == Category::Shortcuts));
+        }
 
         let dir = tempfile::tempdir().expect("temp dir");
         let store = std::sync::Arc::new(

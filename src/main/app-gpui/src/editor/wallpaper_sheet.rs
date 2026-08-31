@@ -318,7 +318,11 @@ fn backgrounds_section(
     );
 
     let mut tiles: Vec<AnyElement> = Vec::new();
-    tiles.push(desktop_tile(wallpaper, customs, tile, handlers, theme));
+    if crate::system::capabilities::is_supported(
+        crate::system::capabilities::Feature::DesktopWallpaper,
+    ) {
+        tiles.push(desktop_tile(wallpaper, customs, tile, handlers, theme));
+    }
     for (index, (id, name, colors, angle)) in wallpaper::SVG_PRESETS.iter().enumerate() {
         let selected = wallpaper
             .gradient

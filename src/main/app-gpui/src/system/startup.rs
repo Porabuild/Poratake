@@ -22,6 +22,7 @@
 /// call sites in `updateConfig` and `applyLoginItemSetting`: the value holds
 /// the executable path, quoted when it contains spaces, exactly the shape
 /// `setLoginItemSettings` produces.
+#[cfg(windows)]
 pub fn set_open_at_login(enabled: bool) {
     use windows::core::w;
     use windows::Win32::System::Registry::{
@@ -80,6 +81,7 @@ pub fn set_open_at_login(enabled: bool) {
 ///
 /// Read-only counterpart to [`set_open_at_login`], mirroring the Electron
 /// shell's `app.getLoginItemSettings`.
+#[cfg(windows)]
 pub fn is_open_at_login() -> bool {
     use windows::core::w;
     use windows::Win32::System::Registry::{
@@ -122,12 +124,124 @@ pub fn is_open_at_login() -> bool {
 /// `setLoginItemSettings` quotes the executable path when it contains spaces,
 /// so the auto-run command line stays one argument; a path without spaces is
 /// written bare, and one that is already quoted is not quoted twice.
+#[cfg(any(windows, test))]
 fn quote_path(path: &str) -> String {
     if path.contains(' ') && !path.starts_with('"') {
         format!("\"{path}\"")
     } else {
         path.to_string()
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_open_at_login(enabled: bool) {
+    let Some(path) = dirs::home_dir().map(|home| {
+        home.join("Library")
+            .join("LaunchAgents")
+            .join("com.porabuild.poratake-gpui.plist")
+    }) else {
+        return;
+    };
+    if !enabled {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let executable = xml_escape(executable.to_string_lossy().as_ref());
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>com.porabuild.poratake-gpui</string><key>ProgramArguments</key><array><string>{executable}</string></array><key>RunAtLoad</key><true/></dict></plist>"
+    );
+    if let Err(error) = std::fs::write(path, plist) {
+        eprintln!("[startup] failed to write launch agent: {error}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn is_open_at_login() -> bool {
+    dirs::home_dir().is_some_and(|home| {
+        home.join("Library")
+            .join("LaunchAgents")
+            .join("com.porabuild.poratake-gpui.plist")
+            .is_file()
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_open_at_login(enabled: bool) {
+    let Some(path) = dirs::config_dir().map(|config| {
+        config
+            .join("autostart")
+            .join("com.porabuild.poratake-gpui.desktop")
+    }) else {
+        return;
+    };
+    if !enabled {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName=Poratake\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+        quote_desktop_exec(executable.to_string_lossy().as_ref())
+    );
+    if let Err(error) = std::fs::write(path, entry) {
+        eprintln!("[startup] failed to write autostart entry: {error}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn is_open_at_login() -> bool {
+    dirs::config_dir().is_some_and(|config| {
+        config
+            .join("autostart")
+            .join("com.porabuild.poratake-gpui.desktop")
+            .is_file()
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+pub fn set_open_at_login(_enabled: bool) {}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+pub fn is_open_at_login() -> bool {
+    false
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn quote_desktop_exec(value: &str) -> String {
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('`', "\\`")
+    )
 }
 
 #[cfg(test)]
@@ -148,6 +262,15 @@ mod tests {
         assert_eq!(
             quote_path("\"C:\\Program Files\\Poratake\\poratake.exe\""),
             "\"C:\\Program Files\\Poratake\\poratake.exe\""
+        );
+    }
+
+    #[test]
+    fn platform_startup_files_escape_executable_paths() {
+        assert_eq!(xml_escape("A&B<\"C\""), "A&amp;B&lt;&quot;C&quot;");
+        assert_eq!(
+            quote_desktop_exec("/opt/Poratake App/poratake\"gpui"),
+            "\"/opt/Poratake App/poratake\\\"gpui\""
         );
     }
 }

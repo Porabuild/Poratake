@@ -27,6 +27,7 @@ pub fn render(
 ) -> AnyElement {
     let recording_enabled = is_supported(Feature::Recording);
     let ocr_enabled = is_supported(Feature::Ocr);
+    let color_picker_enabled = is_supported(Feature::ColorPicker);
 
     let mut modes = div()
         .flex()
@@ -104,18 +105,22 @@ pub fn render(
                         )),
                     )
                 })
-                .child(
-                    toolbar_button(
-                        "all-in-one-pick-color",
-                        "pipette",
-                        "Pick color",
-                        picking_color,
-                        theme,
+                .when(color_picker_enabled, |el| {
+                    el.child(
+                        toolbar_button(
+                            "all-in-one-pick-color",
+                            "pipette",
+                            "Pick color",
+                            picking_color,
+                            theme,
+                        )
+                        .on_click(cx.listener(
+                            |this, _event, window, cx| {
+                                this.start_color_picker(window, cx);
+                            },
+                        )),
                     )
-                    .on_click(cx.listener(|this, _event, window, cx| {
-                        this.start_color_picker(window, cx);
-                    })),
-                )
+                })
                 .child(hairline(theme))
                 .child(
                     toolbar_button("all-in-one-close", "x", "Close", false, theme).on_click(

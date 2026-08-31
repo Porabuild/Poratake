@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, point, prelude::*, px, size, AnyElement, App, Bounds, Context, FocusHandle, Render,
-    SharedString, Styled, Subscription, WeakEntity, Window, WindowBackgroundAppearance,
+    div, point, prelude::*, px, size, AnyElement, App, Bounds, Context, FocusHandle, Pixels,
+    Render, SharedString, Styled, Subscription, WeakEntity, Window, WindowBackgroundAppearance,
     WindowBounds, WindowKind, WindowOptions,
 };
 
@@ -27,11 +27,19 @@ const DEVICE_MENU_WINDOW_HEIGHT: f32 = 300.0;
 const CONTROL_WINDOW_HORIZONTAL_GUTTER: f32 = 16.0;
 const DEVICE_DROPDOWN_WIDTH: f32 = 256.0;
 const DEVICE_DROPDOWN_HEIGHT: f32 = 224.0;
+const COUNTDOWN_WINDOW_HEIGHT: f32 = 148.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     PreRecording,
     Recording,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeviceMenuKind {
+    Media(crate::system::devices::DeviceKind),
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Ios,
 }
 
 fn can_cancel_with_escape(mode: Mode) -> bool {
@@ -53,20 +61,30 @@ pub struct RecordingControl {
     target: RecordingTarget,
     target_name: Option<SharedString>,
     rect: ScreenRect,
+    display_id: Option<u32>,
     window_id: Option<i64>,
     project: Option<PathBuf>,
     system_audio: bool,
     microphone: bool,
     camera: bool,
+    camera_locked: bool,
     selected_mic_id: Option<String>,
     selected_camera_id: Option<String>,
+    selected_ios_id: Option<String>,
+    selected_ios_name: Option<String>,
+    ios_devices: Vec<crate::system::devices::MediaDevice>,
     devices: crate::system::devices::MediaDeviceLists,
     device_request: u64,
-    pending_device_menu: Option<(crate::system::devices::DeviceKind, SharedString)>,
+    pending_device_menu: Option<(DeviceMenuKind, SharedString)>,
     menu: MenuHandle,
     bounds_subscription: Option<Subscription>,
     started_at: Option<Instant>,
+    paused_at: Option<Instant>,
+    paused_total: Duration,
     elapsed: u64,
+    countdown_generation: u64,
+    countdown_active: bool,
+    countdown_remaining: Option<u32>,
     focus_handle: FocusHandle,
 }
 
@@ -75,24 +93,38 @@ impl RecordingControl {
         cx: &mut App,
         target: RecordingTarget,
         rect: ScreenRect,
+        display_id: Option<u32>,
         window_id: Option<i64>,
         target_name: Option<String>,
     ) {
         if recorder::is_recording() {
             return;
         }
-        if Self::update_pre_recording(cx, target, rect, window_id, target_name.as_deref()) {
+        if Self::update_pre_recording(
+            cx,
+            target,
+            rect,
+            display_id,
+            window_id,
+            target_name.as_deref(),
+        ) {
             set_pre_recording_escape(true, cx);
             return;
         }
         let config = crate::state::state(cx).config.get().recording;
-        let width = chrome::recording_control_width(false, target_name.is_some());
-        let bounds = bar_bounds(cx, rect, width, false);
+        let width = recording_control_width(false, target_name.is_some());
+        let bounds = bar_bounds(cx, rect, width, false, false);
+        let display = display_for_rect(cx, rect);
+        let platform_display_id = display.as_ref().map(|display| display.id());
+        let window_bounds = display
+            .as_ref()
+            .map(|display| crate::system::work_area::local_window_bounds(bounds, display.as_ref()))
+            .unwrap_or(bounds);
 
         registry::open_or_activate(RegistryKind::RecordingControl, cx, move |cx| {
             cx.open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_bounds: Some(WindowBounds::Windowed(window_bounds)),
                     titlebar: None,
                     focus: true,
                     show: true,
@@ -100,6 +132,7 @@ impl RecordingControl {
                     is_movable: false,
                     is_resizable: false,
                     is_minimizable: false,
+                    display_id: platform_display_id,
                     window_background: WindowBackgroundAppearance::Transparent,
                     ..Default::default()
                 },
@@ -110,20 +143,33 @@ impl RecordingControl {
                         target,
                         target_name: target_name.map(SharedString::from),
                         rect,
+                        display_id,
                         window_id,
                         project: None,
                         system_audio: config.system_audio,
                         microphone: config.mic_enabled,
                         camera: config.camera.enabled,
+                        camera_locked: false,
                         selected_mic_id: config.selected_mic_id.clone(),
                         selected_camera_id: config.camera.selected_device_id.clone(),
+                        selected_ios_id: config.ios_device.as_ref().map(|device| device.id.clone()),
+                        selected_ios_name: config
+                            .ios_device
+                            .as_ref()
+                            .and_then(|device| device.name.clone()),
+                        ios_devices: Vec::new(),
                         devices: crate::system::devices::MediaDeviceLists::default(),
                         device_request: 0,
                         pending_device_menu: None,
                         menu: MenuHandle::new(),
                         bounds_subscription: None,
                         started_at: None,
+                        paused_at: None,
+                        paused_total: Duration::ZERO,
                         elapsed: 0,
+                        countdown_generation: 0,
+                        countdown_active: false,
+                        countdown_remaining: None,
                         focus_handle: cx.focus_handle(),
                     });
                     view.update(cx, |this, cx| {
@@ -157,6 +203,9 @@ impl RecordingControl {
                     if !can_cancel_with_escape(this.mode) {
                         return false;
                     }
+                    this.countdown_generation += 1;
+                    this.countdown_active = false;
+                    this.countdown_remaining = None;
                     window.remove_window();
                     true
                 })
@@ -189,6 +238,7 @@ impl RecordingControl {
         cx: &mut App,
         target: RecordingTarget,
         rect: ScreenRect,
+        display_id: Option<u32>,
         window_id: Option<i64>,
         target_name: Option<&str>,
     ) -> bool {
@@ -196,7 +246,8 @@ impl RecordingControl {
         let bounds = bar_bounds(
             cx,
             rect,
-            chrome::recording_control_width(false, target_name.is_some()),
+            recording_control_width(false, target_name.is_some()),
+            false,
             false,
         );
         let target_name = target_name.map(str::to_owned);
@@ -216,6 +267,7 @@ impl RecordingControl {
                     }
                     this.target = target;
                     this.rect = rect;
+                    this.display_id = display_id;
                     this.window_id = window_id;
                     this.target_name = target_name.clone().map(SharedString::from);
                     this.sync_window_bounds(window, cx, false);
@@ -233,6 +285,53 @@ impl RecordingControl {
     }
 
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.countdown_active {
+            return;
+        }
+        let delay = crate::state::state(cx)
+            .config
+            .get()
+            .recording
+            .start_delay
+            .round()
+            .clamp(0.0, 10.0) as u32;
+        if delay == 0 {
+            self.begin_recording(window, cx);
+            return;
+        }
+        self.countdown_generation += 1;
+        let generation = self.countdown_generation;
+        self.countdown_active = true;
+        self.countdown_remaining = Some(delay);
+        self.sync_window_bounds(window, cx, false);
+        cx.notify();
+        cx.spawn_in(window, async move |entity, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let Ok(done) = entity.update_in(cx, |this, window, cx| {
+                if !this.countdown_active || this.countdown_generation != generation {
+                    return true;
+                }
+                let remaining = this.countdown_remaining.unwrap_or(1);
+                if remaining > 1 {
+                    this.countdown_remaining = Some(remaining - 1);
+                    cx.notify();
+                    return false;
+                }
+                this.countdown_active = false;
+                this.countdown_remaining = None;
+                this.begin_recording(window, cx);
+                true
+            }) else {
+                break;
+            };
+            if done {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn begin_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let service = crate::state::state(cx);
         let project = match recorder::create_project(&service.config) {
             Ok(path) => path,
@@ -242,18 +341,20 @@ impl RecordingControl {
             }
         };
         let recording = service.config.get().recording;
-
         let config = RecordingConfig {
             x: self.rect.x,
             y: self.rect.y,
             width: self.rect.width,
             height: self.rect.height,
+            display_id: self.display_id,
             window_id: self.window_id,
             include_audio: self.system_audio,
             mic_enabled: self.microphone,
             mic_device_id: recording.selected_mic_id.clone(),
             camera_enabled: self.camera,
             camera_device_id: recording.camera.selected_device_id.clone(),
+            ios_device_id: self.selected_ios_id.clone(),
+            ios_device_name: self.selected_ios_name.clone(),
             keyboard_enabled: false,
             frame_rate: recording.frame_rate,
             output_path: project.clone(),
@@ -268,8 +369,12 @@ impl RecordingControl {
             );
             return;
         }
+        let ios_recording = self.selected_ios_id.is_some();
+        if ios_recording {
+            crate::capture::overlay::close_all(cx);
+        }
         #[cfg(target_os = "macos")]
-        if !crate::capture::overlay::begin_recording_handoff(self.rect, cx) {
+        if !ios_recording && !crate::capture::overlay::begin_recording_handoff(self.rect, cx) {
             let _ = std::fs::remove_dir_all(&project);
             crate::windows::toast::Toast::show(
                 cx,
@@ -292,7 +397,10 @@ impl RecordingControl {
 
         self.project = Some(project);
         self.mode = Mode::Recording;
+        self.camera_locked = self.camera;
         self.started_at = Some(Instant::now());
+        self.paused_at = None;
+        self.paused_total = Duration::ZERO;
         self.elapsed = 0;
         self.sync_window_bounds(
             window,
@@ -308,11 +416,11 @@ impl RecordingControl {
         cx.spawn(async move |entity, cx| loop {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             let running = entity.update(cx, |this, cx| {
-                let Some(started_at) = this.started_at else {
+                if this.started_at.is_none() {
                     return false;
-                };
+                }
                 if recorder::state() == recorder::RecorderState::Recording {
-                    this.elapsed = started_at.elapsed().as_secs();
+                    this.elapsed = this.recording_duration().as_secs();
                     cx.notify();
                 }
                 true
@@ -382,21 +490,24 @@ impl RecordingControl {
         true
     }
 
-    fn input_toggles(&self, window: &mut Window, cx: &mut Context<Self>) -> [AnyElement; 3] {
-        [
-            self.device_dropdown(
+    fn input_toggles(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut toggles = Vec::new();
+        if self.mode == Mode::PreRecording || self.camera_locked {
+            toggles.push(self.device_dropdown(
                 "camera",
                 if self.camera { "video" } else { "video-off" },
                 "Select camera",
-                crate::system::devices::DeviceKind::Camera,
+                DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
                 window,
                 cx,
-            ),
+            ));
+        }
+        toggles.extend([
             self.device_dropdown(
                 "microphone",
                 if self.microphone { "mic" } else { "mic-off" },
                 "Select microphone",
-                crate::system::devices::DeviceKind::Microphone,
+                DeviceMenuKind::Media(crate::system::devices::DeviceKind::Microphone),
                 window,
                 cx,
             ),
@@ -421,11 +532,26 @@ impl RecordingControl {
                     "Turn system sounds on"
                 })
                 .on_click(cx.listener(|this, _event, _window, cx| {
+                    if this.countdown_active {
+                        return;
+                    }
                     let next = !this.system_audio;
                     this.set_system_audio(next, cx);
                 }))
                 .into_any_element(),
-        ]
+        ]);
+        #[cfg(target_os = "macos")]
+        if self.mode == Mode::PreRecording {
+            toggles.push(self.device_dropdown(
+                "ios-device",
+                "smartphone",
+                "Select iPhone or iPad",
+                DeviceMenuKind::Ios,
+                window,
+                cx,
+            ));
+        }
+        toggles
     }
 
     fn device_dropdown(
@@ -433,7 +559,7 @@ impl RecordingControl {
         id: &'static str,
         icon: &'static str,
         tooltip: &'static str,
-        kind: crate::system::devices::DeviceKind,
+        kind: DeviceMenuKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -459,6 +585,7 @@ impl RecordingControl {
             .h(px(chrome::OVERLAY_BUTTON_SIZE))
             .w(px(48.0))
             .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
+            .opacity(if self.countdown_active { 0.35 } else { 1.0 })
             .when(trigger_hovered, |el| el.bg(crate::ui::colors::white(0.15)))
             .on_hover({
                 let trigger_hover = trigger_hover.clone();
@@ -475,6 +602,9 @@ impl RecordingControl {
             .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
                 if let Some(entity) = entity.upgrade() {
                     entity.update(cx, |this, cx| {
+                        if this.countdown_active {
+                            return;
+                        }
                         this.toggle_device_menu(kind, menu_id.clone().into(), window, cx);
                     });
                 }
@@ -486,6 +616,9 @@ impl RecordingControl {
                 }
                 if let Some(entity) = key_entity.upgrade() {
                     entity.update(cx, |this, cx| {
+                        if this.countdown_active {
+                            return;
+                        }
                         this.toggle_device_menu(kind, key_menu_id.clone().into(), window, cx);
                     });
                 }
@@ -496,7 +629,7 @@ impl RecordingControl {
 
     fn toggle_device_menu(
         &mut self,
-        kind: crate::system::devices::DeviceKind,
+        kind: DeviceMenuKind,
         owner: SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -524,11 +657,17 @@ impl RecordingControl {
         else {
             return;
         };
-        let entries = self.device_menu_entries(kind, cx.entity().downgrade());
+        let entries = match kind {
+            DeviceMenuKind::Media(kind) => self.device_menu_entries(kind, cx.entity().downgrade()),
+            DeviceMenuKind::Ios => self.ios_menu_entries(cx.entity().downgrade()),
+        };
         self.menu
             .toggle(device_menu_placement(owner.clone()), entries, window, cx);
         if self.menu.is_open_for(owner.as_ref()) {
-            self.refresh_devices(kind, owner, window, cx);
+            match kind {
+                DeviceMenuKind::Media(kind) => self.refresh_devices(kind, owner, window, cx),
+                DeviceMenuKind::Ios => self.refresh_ios_devices(owner, window, cx),
+            }
         }
     }
 
@@ -622,6 +761,39 @@ impl RecordingControl {
         builder.build()
     }
 
+    fn ios_menu_entries(&self, entity: WeakEntity<Self>) -> Vec<MenuEntry> {
+        let none_entity = entity.clone();
+        let mut builder = MenuBuilder::new()
+            .item(
+                MenuItem::new("None")
+                    .trailing_check(self.selected_ios_id.is_none())
+                    .on_select(move |_window, cx| {
+                        if let Some(entity) = none_entity.upgrade() {
+                            entity.update(cx, |this, cx| this.select_ios_device(None, cx));
+                        }
+                    }),
+            )
+            .separator();
+        for device in &self.ios_devices {
+            let device = device.clone();
+            let selected = self.selected_ios_id.as_deref() == Some(device.id.as_str());
+            let device_entity = entity.clone();
+            builder = builder.item(
+                MenuItem::new(device.label.clone())
+                    .trailing_check(selected)
+                    .on_select(move |_window, cx| {
+                        if let Some(entity) = device_entity.upgrade() {
+                            let device = device.clone();
+                            entity.update(cx, |this, cx| {
+                                this.select_ios_device(Some((device.id, device.label)), cx);
+                            });
+                        }
+                    }),
+            );
+        }
+        builder.build()
+    }
+
     fn refresh_devices(
         &mut self,
         kind: crate::system::devices::DeviceKind,
@@ -656,6 +828,49 @@ impl RecordingControl {
             });
         })
         .detach();
+    }
+
+    fn refresh_ios_devices(
+        &mut self,
+        owner: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.device_request = self.device_request.wrapping_add(1);
+        let request = self.device_request;
+        let daemon = crate::state::state(cx).daemon;
+        cx.spawn_in(window, async move |entity, cx| {
+            let listed = cx
+                .background_executor()
+                .spawn(async move { crate::system::devices::list_ios(&daemon) })
+                .await;
+            let _ = entity.update_in(cx, |this, window, cx| {
+                if this.device_request != request {
+                    return;
+                }
+                this.ios_devices = listed;
+                if this.menu.is_open_for(owner.as_ref()) {
+                    let entries = this.ios_menu_entries(cx.entity().downgrade());
+                    this.menu
+                        .open(device_menu_placement(owner.clone()), entries, window, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn select_ios_device(&mut self, selection: Option<(String, String)>, cx: &mut Context<Self>) {
+        self.selected_ios_id = selection.as_ref().map(|(id, _)| id.clone());
+        self.selected_ios_name = selection.as_ref().map(|(_, name)| name.clone());
+        crate::state::state(cx).config.update(move |config| {
+            config.recording.ios_device =
+                selection.map(|(id, name)| crate::config::schema::IosDeviceSettings {
+                    id,
+                    name: Some(name),
+                });
+        });
+        cx.notify();
     }
 
     fn select_device(
@@ -699,14 +914,40 @@ impl RecordingControl {
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
         let daemon = crate::state::state(cx).daemon;
         match recorder::state() {
-            recorder::RecorderState::Recording => recorder::pause(&daemon),
-            recorder::RecorderState::Paused => recorder::resume(&daemon),
+            recorder::RecorderState::Recording => {
+                recorder::pause(&daemon);
+                if recorder::state() == recorder::RecorderState::Paused {
+                    self.paused_at = Some(Instant::now());
+                }
+            }
+            recorder::RecorderState::Paused => {
+                recorder::resume(&daemon);
+                if recorder::state() == recorder::RecorderState::Recording {
+                    if let Some(paused_at) = self.paused_at.take() {
+                        self.paused_total += paused_at.elapsed();
+                    }
+                }
+            }
             recorder::RecorderState::Idle => {}
         }
         cx.notify();
     }
 
+    fn recording_duration(&self) -> Duration {
+        let Some(started_at) = self.started_at else {
+            return Duration::from_secs(self.elapsed);
+        };
+        let current_pause = self
+            .paused_at
+            .map(|paused_at| paused_at.elapsed())
+            .unwrap_or_default();
+        started_at
+            .elapsed()
+            .saturating_sub(self.paused_total + current_pause)
+    }
+
     fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let duration = self.recording_duration().as_secs_f64();
         let service = crate::state::state(cx);
         let stopped = recorder::stop(&service.daemon);
         if !stopped {
@@ -720,6 +961,8 @@ impl RecordingControl {
 
         let project = self.project.take();
         self.started_at = None;
+        self.paused_at = None;
+        self.paused_total = Duration::ZERO;
 
         window.remove_window();
         registry::close(RegistryKind::RecordingControl, cx);
@@ -734,13 +977,43 @@ impl RecordingControl {
             return;
         }
 
-        let (max_items, show_preview) = {
+        let (history_enabled, max_items, show_preview, recording) = {
             let config = service.config.get();
             (
+                config.history.enabled,
                 config.history.max_items as usize,
                 config.recording.show_preview,
+                config.recording.clone(),
             )
         };
+        let mut state = crate::windows::video_editor::model::VideoEditorState {
+            saved_at: chrono::Utc::now().to_rfc3339(),
+            recording_type: self
+                .selected_ios_id
+                .as_ref()
+                .map(|_| "ios-device".to_string()),
+            source_duration: (duration > 0.0).then_some(duration),
+            ..Default::default()
+        };
+        state.camera_style.mirrored = recording.camera.flipped;
+        if duration > 0.0 {
+            state.segments = vec![crate::windows::video_editor::model::Segment::spanning(
+                duration,
+            )];
+        }
+        if recording.auto_zoom {
+            if let Some(cursor_data) = crate::video::sidecars::load_cursor(&project) {
+                state.zoom_segments = crate::video::auto_zoom::generate(
+                    &cursor_data,
+                    chrono::Utc::now().timestamp_millis(),
+                );
+                if !state.zoom_segments.is_empty() {
+                    state.ui.sidebar_open = true;
+                    state.ui.sidebar_tab = "zoom".to_string();
+                }
+            }
+        }
+        crate::windows::video_editor::model::save_state(&project, &state);
         crate::history_store::add_item(
             crate::history_store::HistoryItem {
                 id: format!(
@@ -751,9 +1024,10 @@ impl RecordingControl {
                 original_path: project.to_string_lossy().to_string(),
                 r#type: crate::history_store::HistoryItemType::Video,
                 editor_state: None,
-                duration: Some(self.elapsed as f64),
+                duration: Some(duration),
             },
             max_items,
+            history_enabled,
         );
 
         if show_preview {
@@ -769,6 +1043,9 @@ impl RecordingControl {
             self.finish(true, window, cx);
             return;
         }
+        self.countdown_generation += 1;
+        self.countdown_active = false;
+        self.countdown_remaining = None;
         set_pre_recording_escape(false, cx);
         window.remove_window();
         registry::close(RegistryKind::RecordingControl, cx);
@@ -781,11 +1058,18 @@ impl RecordingControl {
         cx: &mut Context<Self>,
         device_menu_open: bool,
     ) {
-        let width = chrome::recording_control_width(
-            self.mode == Mode::Recording,
-            self.target_name.is_some(),
+        let mut width =
+            recording_control_width(self.mode == Mode::Recording, self.target_name.is_some());
+        if self.mode == Mode::Recording && !self.camera_locked {
+            width -= 48.0;
+        }
+        let bounds = bar_bounds(
+            cx,
+            self.rect,
+            width,
+            device_menu_open,
+            self.countdown_active,
         );
-        let bounds = bar_bounds(cx, self.rect, width, device_menu_open);
         if window.bounds() == bounds {
             return;
         }
@@ -844,13 +1128,22 @@ fn merge_device_refresh(
 }
 
 fn take_ready_device_menu(
-    pending: &mut Option<(crate::system::devices::DeviceKind, SharedString)>,
+    pending: &mut Option<(DeviceMenuKind, SharedString)>,
     window_height: gpui::Pixels,
-) -> Option<(crate::system::devices::DeviceKind, SharedString)> {
+) -> Option<(DeviceMenuKind, SharedString)> {
     if window_height < px(DEVICE_MENU_WINDOW_HEIGHT) {
         return None;
     }
     pending.take()
+}
+
+fn recording_control_width(recording: bool, has_target_name: bool) -> f32 {
+    let width = chrome::recording_control_width(recording, has_target_name);
+    if cfg!(target_os = "macos") && !recording {
+        width + 48.0
+    } else {
+        width
+    }
 }
 
 fn activates_device_menu(key: &str) -> bool {
@@ -892,27 +1185,21 @@ fn bar_bounds(
     rect: ScreenRect,
     width: f32,
     device_menu_open: bool,
+    countdown_active: bool,
 ) -> Bounds<gpui::Pixels> {
-    let scale = crate::capture::overlay::app_scale_factor(cx).max(0.01);
-    let displays: Vec<(f32, f32, f32, f32)> = cx
-        .displays()
-        .into_iter()
+    let (work_x, work_y, work_width) = display_for_rect(cx, rect)
         .map(|display| {
-            let bounds = display.bounds();
+            let bounds = crate::system::work_area::display_bounds(display.as_ref());
             (
                 f32::from(bounds.origin.x),
                 f32::from(bounds.origin.y),
                 f32::from(bounds.size.width),
-                f32::from(bounds.size.height),
             )
         })
-        .collect();
-    let center_x = rect.x as f32 / scale + rect.width as f32 / scale / 2.0;
-    let center_y = rect.y as f32 / scale + rect.height as f32 / scale / 2.0;
-    let (work_x, work_y, work_width, _) = chrome::display_containing(&displays, center_x, center_y)
-        .unwrap_or((0.0, 0.0, 1920.0, 1080.0));
+        .unwrap_or((0.0, 0.0, 1920.0));
     let (bar_x, y) = chrome::recording_bar_origin(work_x, work_y, work_width, width);
-    let (window_width, bar_offset, height) = control_window_metrics(width, device_menu_open);
+    let (window_width, bar_offset, height) =
+        control_window_metrics(width, device_menu_open, countdown_active);
     let x = bar_x - bar_offset;
     Bounds {
         origin: gpui::point(px(x), px(y)),
@@ -920,7 +1207,43 @@ fn bar_bounds(
     }
 }
 
-fn control_window_metrics(width: f32, device_menu_open: bool) -> (f32, f32, f32) {
+fn display_for_rect(
+    cx: &mut App,
+    rect: ScreenRect,
+) -> Option<std::rc::Rc<dyn gpui::PlatformDisplay>> {
+    let center_x = rect.x as f32 + rect.width as f32 / 2.0;
+    let center_y = rect.y as f32 + rect.height as f32 / 2.0;
+    let displays = cx.displays();
+    let geometries: Vec<_> = displays
+        .iter()
+        .map(|display| {
+            let bounds = crate::system::work_area::display_bounds(display.as_ref());
+            let scale = crate::capture::overlay::display_scale_factor(display.as_ref(), cx);
+            capture_display_geometry(bounds, scale)
+        })
+        .collect();
+    let selected = chrome::display_containing(&geometries, center_x, center_y)?;
+    displays
+        .into_iter()
+        .zip(geometries)
+        .find_map(|(display, geometry)| (geometry == selected).then_some(display))
+}
+
+fn capture_display_geometry(bounds: Bounds<Pixels>, scale: f32) -> (f32, f32, f32, f32) {
+    let bounds = crate::capture::overlay::physical_rect(bounds, scale);
+    (
+        bounds.x as f32,
+        bounds.y as f32,
+        bounds.width as f32,
+        bounds.height as f32,
+    )
+}
+
+fn control_window_metrics(
+    width: f32,
+    device_menu_open: bool,
+    countdown_active: bool,
+) -> (f32, f32, f32) {
     let window_width = if device_menu_open {
         width.max(DEVICE_MENU_WINDOW_WIDTH) + CONTROL_WINDOW_HORIZONTAL_GUTTER * 2.0
     } else {
@@ -929,6 +1252,8 @@ fn control_window_metrics(width: f32, device_menu_open: bool) -> (f32, f32, f32)
     let bar_offset = ((window_width - width) / 2.0).round();
     let height = if device_menu_open {
         DEVICE_MENU_WINDOW_HEIGHT
+    } else if countdown_active {
+        COUNTDOWN_WINDOW_HEIGHT
     } else {
         chrome::RECORDING_WINDOW_HEIGHT
     };
@@ -974,6 +1299,7 @@ impl Render for RecordingControl {
         let theme = active_theme(cx);
         let paused = recorder::state() == recorder::RecorderState::Paused;
         let toggles = self.input_toggles(window, cx);
+        let countdown = self.countdown_remaining;
 
         let mut bar = crate::ui::primitives::toolbar_surface(&theme)
             .id("recording-control-bar")
@@ -1001,6 +1327,7 @@ impl Render for RecordingControl {
                         .size(ButtonSize::IconSm)
                         .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
                         .animate_press(false)
+                        .disabled(self.countdown_active)
                         // `<Circle className="size-3.5 fill-current" />` -- a
                         // *filled* disc. The lucide icons here are stroke-only,
                         // so an outline circle is the wrong shape; a filled div
@@ -1020,6 +1347,7 @@ impl Render for RecordingControl {
                     cx,
                 )),
                 &self.menu,
+                countdown,
                 cx,
             );
         }
@@ -1075,6 +1403,7 @@ impl Render for RecordingControl {
                     ),
             ),
             &self.menu,
+            None,
             cx,
         )
     }
@@ -1084,6 +1413,7 @@ fn recording_shell(
     focus: &FocusHandle,
     bar: impl IntoElement,
     menu: &MenuHandle,
+    countdown: Option<u32>,
     cx: &mut Context<RecordingControl>,
 ) -> impl IntoElement {
     div()
@@ -1108,6 +1438,45 @@ fn recording_shell(
         )
         .pt(px(chrome::RECORDING_BAR_PAD_TOP))
         .child(bar)
+        .when_some(countdown, |el, seconds| {
+            el.child(
+                crate::ui::primitives::toolbar_surface(&active_theme(cx))
+                    .mt(px(8.0))
+                    .gap(px(12.0))
+                    .px(px(16.0))
+                    .py(px(10.0))
+                    .child(
+                        div()
+                            .text_size(px(30.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(seconds.to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child("Recording starts soon"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(active_theme(cx).muted_foreground)
+                                    .child("Press Escape to cancel"),
+                            ),
+                    )
+                    .child(overlay_icon(
+                        "recording-countdown-cancel",
+                        "x",
+                        "Cancel countdown",
+                        |this, window, cx| this.cancel(window, cx),
+                        cx,
+                    )),
+            )
+        })
         .children(menu.render())
 }
 
@@ -1153,10 +1522,47 @@ mod tests {
     }
 
     #[test]
+    fn recording_target_selection_uses_each_displays_capture_scale() {
+        let first = capture_display_geometry(
+            Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(1920.0), px(1080.0)),
+            },
+            1.0,
+        );
+        let second = capture_display_geometry(
+            Bounds {
+                origin: point(px(1920.0), px(0.0)),
+                size: size(px(1280.0), px(720.0)),
+            },
+            1.5,
+        );
+        let displays = [first, second];
+
+        assert_eq!(
+            chrome::display_containing(&displays, 3_200.0, 500.0),
+            Some(second)
+        );
+    }
+
+    #[test]
     fn device_menu_window_matches_electron_bounds() {
-        assert_eq!(control_window_metrics(236.0, false), (236.0, 0.0, 52.0));
-        assert_eq!(control_window_metrics(236.0, true), (332.0, 48.0, 300.0));
-        assert_eq!(control_window_metrics(400.0, true), (432.0, 16.0, 300.0));
+        assert_eq!(
+            control_window_metrics(236.0, false, false),
+            (236.0, 0.0, 52.0)
+        );
+        assert_eq!(
+            control_window_metrics(236.0, false, true),
+            (236.0, 0.0, 148.0)
+        );
+        assert_eq!(
+            control_window_metrics(236.0, true, false),
+            (332.0, 48.0, 300.0)
+        );
+        assert_eq!(
+            control_window_metrics(400.0, true, false),
+            (432.0, 16.0, 300.0)
+        );
         assert_eq!(
             (chrome::OVERLAY_TARGET_TRIGGER_WIDTH - DEVICE_DROPDOWN_WIDTH) / 2.0,
             -104.0
@@ -1176,13 +1582,18 @@ mod tests {
                     width: 100,
                     height: 100,
                 },
+                display_id: None,
                 window_id: None,
                 project: None,
                 system_audio: true,
                 microphone: true,
                 camera: false,
+                camera_locked: false,
                 selected_mic_id: Some("mic-1".into()),
                 selected_camera_id: None,
+                selected_ios_id: None,
+                selected_ios_name: None,
+                ios_devices: Vec::new(),
                 devices: crate::system::devices::MediaDeviceLists {
                     microphones: vec![crate::system::devices::MediaDevice {
                         id: "mic-1".into(),
@@ -1197,7 +1608,12 @@ mod tests {
                 menu: MenuHandle::new(),
                 bounds_subscription: None,
                 started_at: None,
+                paused_at: None,
+                paused_total: Duration::ZERO,
                 elapsed: 0,
+                countdown_generation: 0,
+                countdown_active: false,
+                countdown_remaining: None,
                 focus_handle: cx.focus_handle(),
             })
         });
@@ -1280,7 +1696,7 @@ mod tests {
     #[test]
     fn device_menu_waits_for_the_expanded_gpui_viewport() {
         let mut pending = Some((
-            crate::system::devices::DeviceKind::Camera,
+            DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
             SharedString::from("recording-camera"),
         ));
 
@@ -1309,20 +1725,30 @@ mod tests {
                     width: 1920,
                     height: 1080,
                 },
+                display_id: None,
                 window_id: None,
                 project: None,
                 system_audio: true,
                 microphone: true,
                 camera: false,
+                camera_locked: false,
                 selected_mic_id: None,
                 selected_camera_id: None,
+                selected_ios_id: None,
+                selected_ios_name: None,
+                ios_devices: Vec::new(),
                 devices: crate::system::devices::MediaDeviceLists::default(),
                 device_request: 0,
                 pending_device_menu: None,
                 menu: MenuHandle::new(),
                 bounds_subscription: None,
                 started_at: None,
+                paused_at: None,
+                paused_total: Duration::ZERO,
                 elapsed: 0,
+                countdown_generation: 0,
+                countdown_active: false,
+                countdown_remaining: None,
                 focus_handle: cx.focus_handle(),
             };
             control.bounds_subscription = Some(cx.observe_window_bounds(
@@ -1338,7 +1764,7 @@ mod tests {
         cx.update(|window, cx| {
             control.update(cx, |control, cx| {
                 control.toggle_device_menu(
-                    crate::system::devices::DeviceKind::Camera,
+                    DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
                     "recording-camera".into(),
                     window,
                     cx,
@@ -1363,7 +1789,7 @@ mod tests {
         cx.update(|window, cx| {
             control.update(cx, |control, cx| {
                 control.toggle_device_menu(
-                    crate::system::devices::DeviceKind::Camera,
+                    DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
                     "recording-camera".into(),
                     window,
                     cx,

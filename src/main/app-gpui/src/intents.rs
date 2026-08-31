@@ -16,6 +16,17 @@ const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 const VIDEO_EXTENSIONS: &[&str] = &["poratake", "mp4", "mov", "webm"];
 
 pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
+    if intent
+        .feature()
+        .is_some_and(|feature| !is_supported(feature))
+    {
+        crate::windows::toast::Toast::show(
+            cx,
+            "Not available",
+            "This action is not supported in the current desktop session",
+        );
+        return;
+    }
     match intent {
         Intent::AllInOne => {
             if is_supported(Feature::AllInOne) {
@@ -31,7 +42,11 @@ pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
         }
         Intent::CaptureText => start_selection(CaptureIntent::Ocr, Feature::Ocr, cx),
         Intent::ScanQrCode => start_selection(CaptureIntent::QrCode, Feature::QrCode, cx),
-        Intent::TimerCapture => start_selection(CaptureIntent::Timer, Feature::TimerCapture, cx),
+        Intent::TimerCapture => {
+            if !crate::capture::timer::is_active() {
+                start_selection(CaptureIntent::Timer, Feature::TimerCapture, cx);
+            }
+        }
         Intent::ScrollCapture => {
             if crate::capture::scroll::is_active() {
                 return;
@@ -118,6 +133,7 @@ pub fn refresh_shell(cx: &mut App) {
 pub fn open_settings(category: Category, cx: &mut App) {
     registry::open_or_activate(WindowKind::Settings, cx, |cx| {
         let store = crate::state::state(cx).config;
+        #[cfg(windows)]
         let dark = crate::theme::vars::active_mode(cx) == crate::theme::presets::ThemeMode::Dark;
         let bounds = Bounds::centered(
             None,
@@ -136,6 +152,8 @@ pub fn open_settings(category: Category, cx: &mut App) {
         );
         options.window_background = WindowBackgroundAppearance::Blurred;
         cx.open_window(options, |window, cx| {
+            #[cfg(not(windows))]
+            let _ = window;
             #[cfg(windows)]
             if let Some(hwnd) = crate::windows::window_hwnd(window) {
                 crate::system::window_composition::configure_acrylic_surface(hwnd, dark);

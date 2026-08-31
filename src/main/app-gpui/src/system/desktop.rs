@@ -23,7 +23,10 @@ fn allowed_external_url(url: &str) -> bool {
     let Some((scheme, _)) = url.split_once(':') else {
         return false;
     };
-    scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    scheme.eq_ignore_ascii_case("http")
+        || scheme.eq_ignore_ascii_case("https")
+        || scheme.eq_ignore_ascii_case("ms-settings")
+        || scheme.eq_ignore_ascii_case("x-apple.systempreferences")
 }
 
 #[cfg(target_os = "windows")]
@@ -81,5 +84,9 @@ mod tests {
         ));
         assert!(!super::allowed_external_url("javascript:alert(1)"));
         assert!(!super::allowed_external_url("example.com"));
+        assert!(super::allowed_external_url("ms-settings:privacy-webcam"));
+        assert!(super::allowed_external_url(
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ));
     }
 }

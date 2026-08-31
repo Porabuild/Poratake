@@ -205,18 +205,19 @@ impl TextField {
         cx.notify();
     }
 
-    fn copy_selection(&self) {
+    fn copy_selection(&self, cx: &App) {
         let (start, end) = self.selection();
         if start == end || self.secret {
             return;
         }
-        let _ = arboard::Clipboard::new()
-            .and_then(|mut clipboard| clipboard.set_text(self.value[start..end].to_string()));
+        crate::system::clipboard::ClipboardService::write_text(
+            cx,
+            self.value[start..end].to_string(),
+        );
     }
 
     fn paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(text) = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text())
-        else {
+        let Some(text) = crate::system::clipboard::ClipboardService::read_text(cx) else {
             return;
         };
         let single_line: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
@@ -268,9 +269,9 @@ impl TextField {
                     self.cursor = self.value.len();
                     cx.notify();
                 }
-                "c" => self.copy_selection(),
+                "c" => self.copy_selection(cx),
                 "x" => {
-                    self.copy_selection();
+                    self.copy_selection(cx);
                     self.replace_selection("", window, cx);
                 }
                 "v" => self.paste(window, cx),

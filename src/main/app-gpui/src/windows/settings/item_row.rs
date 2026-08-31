@@ -65,6 +65,7 @@ impl SettingsWindow {
         let control: AnyElement = match &item.control {
             Control::Switch { get, set, disabled } => {
                 let set = *set;
+                let requires_accessibility = item.id == "screenshot.hideDesktopIcons";
                 Switch::new(
                     SharedString::from(format!("{}-switch", item.id)),
                     get(self.config()),
@@ -72,6 +73,13 @@ impl SettingsWindow {
                 .disabled(disabled.is_some_and(|predicate| predicate(self.config())))
                 .on_change(cx.listener(move |this, value: &bool, _window, cx| {
                     let value = *value;
+                    if value
+                        && requires_accessibility
+                        && !crate::system::permissions::accessibility_granted()
+                    {
+                        crate::system::permissions::open_accessibility_preferences();
+                        return;
+                    }
                     this.mutate(cx, move |config| set(config, value));
                 }))
                 .into_any_element()

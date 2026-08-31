@@ -2,7 +2,6 @@ mod capture;
 mod cloud;
 mod config;
 mod daemon;
-mod daemon_contract;
 mod editor;
 mod history_store;
 mod intents;
@@ -19,11 +18,32 @@ mod windows;
 
 use gpui::{prelude::*, px, size, App, Application, Bounds};
 
-use crate::system::native::{self, NativeCommand, NativeEvent};
+#[cfg(windows)]
+use crate::system::native::NativeCommand;
+use crate::system::native::{self, NativeEvent};
 use crate::system::tray::{Intent, TrayMenuState};
 use crate::theme::presets::{resolve_theme_mode, ThemeMode};
+#[cfg(windows)]
 use crate::theme::watcher;
 use crate::ui::chrome;
+
+fn dispatch_native_event(event: NativeEvent, cx: &mut App) {
+    match event {
+        NativeEvent::Intent { intent, tray_rect } => intents::dispatch(intent, tray_rect, cx),
+        #[cfg(target_os = "macos")]
+        NativeEvent::Hotkey { id } => {
+            if let Some(event) = state::native(cx).resolve_hotkey(id) {
+                dispatch_native_event(event, cx);
+            }
+        }
+        NativeEvent::ToggleTrayMenu { tray_rect } => {
+            windows::tray_menu::TrayMenuWindow::toggle(tray_rect, cx)
+        }
+        NativeEvent::CancelPreRecording => {
+            windows::recording_control::RecordingControl::cancel_pre_recording(cx);
+        }
+    }
+}
 
 pub fn open_editor_for(cx: &mut App, path: &str) -> bool {
     let (image_width, image_height) = match image::open(std::path::Path::new(path)) {
@@ -77,7 +97,16 @@ fn main() {
         std::process::exit(0);
     }
 
-    Application::new().run(|cx: &mut App| {
+    // Resolved after the single-instance gate so a CLI hand-off launch that is
+    // about to exit never pays for display detection.
+    #[cfg(target_os = "linux")]
+    let display_environment = system::linux_session::configure();
+
+    Application::new().run(move |cx: &mut App| {
+        #[cfg(target_os = "linux")]
+        display_environment.restore();
+
+        native::configure_app();
         let config = state::init(cx);
         let settings = config.get();
         let mode = resolve_theme_mode(ThemeMode::parse(&settings.appearance.mode));
@@ -85,17 +114,20 @@ fn main() {
         // Electron's `nativeTheme.on('updated', ...)` follows the OS light/dark
         // switch live; the watcher reports the same switches so open windows
         // repaint when the user's appearance mode is `system`.
-        let system_theme = watcher::spawn();
-        cx.spawn(async move |cx| {
-            while let Ok(mode) = system_theme.recv().await {
-                let result = cx.update(|cx| watcher::apply_system_mode(mode, cx));
-                if let Err(error) = result {
-                    eprintln!("[theme] system-mode update failed: {error}");
-                    break;
+        #[cfg(windows)]
+        {
+            let system_theme = watcher::spawn();
+            cx.spawn(async move |cx| {
+                while let Ok(mode) = system_theme.recv().await {
+                    let result = cx.update(|cx| watcher::apply_system_mode(mode, cx));
+                    if let Err(error) = result {
+                        eprintln!("[theme] system-mode update failed: {error}");
+                        break;
+                    }
                 }
-            }
-        })
-        .detach();
+            })
+            .detach();
+        }
         editor::actions::init_bindings(cx);
         capture::overlay::init_bindings(cx);
         // `capture/index.ts` prewarms the freeze pipeline at startup so the
@@ -114,6 +146,7 @@ fn main() {
             TrayMenuState::from_config(&settings),
             system::hotkeys::bindings(&settings),
         );
+        #[cfg(windows)]
         if settings.general.hide_menu_bar_icon {
             bridge.send(NativeCommand::SetTrayVisible(false));
         }
@@ -122,17 +155,7 @@ fn main() {
 
         cx.spawn(async move |cx| {
             while let Ok(event) = events.recv().await {
-                let result = cx.update(|cx| match event {
-                    NativeEvent::Intent { intent, tray_rect } => {
-                        intents::dispatch(intent, tray_rect, cx)
-                    }
-                    NativeEvent::ToggleTrayMenu { tray_rect } => {
-                        windows::tray_menu::TrayMenuWindow::toggle(tray_rect, cx)
-                    }
-                    NativeEvent::CancelPreRecording => {
-                        windows::recording_control::RecordingControl::cancel_pre_recording(cx);
-                    }
-                });
+                let result = cx.update(|cx| dispatch_native_event(event, cx));
                 if let Err(error) = result {
                     eprintln!("[intent] dispatch failed: {error}");
                     break;
@@ -140,6 +163,34 @@ fn main() {
             }
         })
         .detach();
+
+        #[cfg(target_os = "linux")]
+        {
+            // Probe verdicts arrive from background threads, but the native
+            // tray menu above was built once up front; refresh it when a
+            // pending verdict flips so late-starting backends are picked up.
+            let session = system::linux_session::current();
+            let snapshot = system::linux_session::capabilities();
+            let pending = match session {
+                system::linux_session::LinuxSession::Wayland if !snapshot.screen_cast => true,
+                system::linux_session::LinuxSession::X11 if !snapshot.ffmpeg_encoder => true,
+                _ => false,
+            };
+            if pending {
+                cx.spawn(async move |cx| {
+                    for _ in 0..120 {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(250))
+                            .await;
+                        if system::linux_session::capabilities() != snapshot {
+                            let _ = cx.update(crate::intents::refresh_shell);
+                            return;
+                        }
+                    }
+                })
+                .detach();
+            }
+        }
 
         windows::keepalive::KeepAlive::open(cx);
         #[cfg(windows)]
@@ -225,6 +276,7 @@ fn main() {
                             width: 1920,
                             height: 1080,
                         },
+                        None,
                         None,
                         None,
                     );

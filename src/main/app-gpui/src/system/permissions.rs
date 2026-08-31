@@ -17,12 +17,67 @@ pub fn ensure_access(device: Device) -> bool {
     true
 }
 
+pub fn screen_recording_granted() -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        return CGPreflightScreenCaptureAccess();
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+pub fn accessibility_granted() -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        return AXIsProcessTrusted() != 0;
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+pub fn open_screen_recording_preferences() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        CGRequestScreenCaptureAccess();
+    }
+    crate::system::desktop::open_url(
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    );
+}
+
+pub fn open_accessibility_preferences() {
+    crate::system::desktop::open_url(
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    );
+}
+
+pub fn open_keyboard_shortcut_preferences() {
+    crate::system::desktop::open_url(
+        "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?Shortcuts",
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXIsProcessTrusted() -> u8;
+}
+
+#[cfg(any(windows, test))]
 fn consent_is_denied(consent: Option<&str>) -> bool {
     // Windows' consent registry values are empty or absent on working machines,
     // so this fail-open behaviour is deliberate; only an explicit `Deny` blocks use.
     matches!(consent, Some("Deny"))
 }
 
+#[cfg(any(windows, test))]
 fn settings_url(device: Device) -> &'static str {
     match device {
         Device::Microphone => "ms-settings:privacy-microphone",

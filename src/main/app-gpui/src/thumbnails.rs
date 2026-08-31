@@ -94,6 +94,18 @@ pub fn remove(original: &Path) {
     }
 }
 
+pub fn rekey(old: &Path, new: &Path) {
+    let old_thumbnail = thumbnail_path(old);
+    if !old_thumbnail.is_file() {
+        return;
+    }
+    let new_thumbnail = thumbnail_path(new);
+    if let Some(parent) = new_thumbnail.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::rename(old_thumbnail, new_thumbnail);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,8 +10,22 @@
 //! closes the toast after 5s via a JS timer; that is not mirrored, because the
 //! WinRT equivalent (an `ExpirationTime` that near) silently prevents delivery.
 
+#[cfg(target_os = "macos")]
+use block2::RcBlock;
+#[cfg(target_os = "macos")]
+use objc2::runtime::Bool;
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSError, NSString};
+#[cfg(target_os = "macos")]
+use objc2_user_notifications::{
+    UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
+    UNUserNotificationCenter,
+};
+#[cfg(windows)]
 use windows::core::HSTRING;
+#[cfg(windows)]
 use windows::Data::Xml::Dom::XmlDocument;
+#[cfg(windows)]
 use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 
 /// The AppUserModelID read from the installed Start Menu shortcut's
@@ -19,14 +33,103 @@ use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 /// electron-builder appId `com.porabuild.poratake`: the notification is
 /// registered under the AUMID, and `CreateToastNotifier` with the appId
 /// succeeds while the toast silently never appears.
+#[cfg(windows)]
 const APP_USER_MODEL_ID: &str = "electron.app.Poratake";
 
 pub fn show(title: &str, body: &str) {
+    #[cfg(windows)]
     if let Err(error) = show_toast(title, body) {
         eprintln!("[notification] failed to show the toast: {error}");
     }
+    #[cfg(target_os = "macos")]
+    show_macos_notification(title, body);
+    #[cfg(target_os = "linux")]
+    {
+        let title = title.to_owned();
+        let body = body.to_owned();
+        std::thread::spawn(move || {
+            if let Err(error) = show_linux_notification(&title, &body) {
+                eprintln!("[notification] failed to show notification: {error}");
+            }
+        });
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    let _ = (title, body);
 }
 
+#[cfg(target_os = "linux")]
+fn show_linux_notification(title: &str, body: &str) -> Result<(), dbus::Error> {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use dbus::arg::{RefArg, Variant};
+    use dbus::blocking::Connection;
+
+    let connection = Connection::new_session()?;
+    let proxy = connection.with_proxy(
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        Duration::from_secs(2),
+    );
+    let _: (u32,) = proxy.method_call(
+        "org.freedesktop.Notifications",
+        "Notify",
+        (
+            "Poratake",
+            0_u32,
+            "",
+            title,
+            body,
+            Vec::<String>::new(),
+            HashMap::<String, Variant<Box<dyn RefArg>>>::new(),
+            -1_i32,
+        ),
+    )?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn show_macos_notification(title: &str, body: &str) {
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    let title = title.to_owned();
+    let body = body.to_owned();
+    let center_for_authorization = center.clone();
+    let authorization = RcBlock::new(move |granted: Bool, error: *mut NSError| {
+        if !error.is_null() {
+            eprintln!("[notification] failed to request notification authorization");
+            return;
+        }
+        if !granted.as_bool() {
+            return;
+        }
+
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str(&title));
+        content.setBody(&NSString::from_str(&body));
+        let identifier = NSString::from_str(&format!(
+            "poratake-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+            &identifier,
+            &content,
+            None,
+        );
+        let completion = RcBlock::new(|error: *mut NSError| {
+            if !error.is_null() {
+                eprintln!("[notification] failed to show notification");
+            }
+        });
+        center_for_authorization
+            .addNotificationRequest_withCompletionHandler(&request, Some(&completion));
+    });
+    center.requestAuthorizationWithOptions_completionHandler(
+        UNAuthorizationOptions::Alert,
+        &authorization,
+    );
+}
+
+#[cfg(windows)]
 fn show_toast(title: &str, body: &str) -> windows::core::Result<()> {
     let document = XmlDocument::new()?;
     document.LoadXml(&HSTRING::from(toast_xml(title, body)))?;
@@ -49,6 +152,7 @@ fn show_toast(title: &str, body: &str) -> windows::core::Result<()> {
 
 /// A ToastGeneric toast with the title and body as the two `<text>` nodes and
 /// `<audio silent="true"/>` matching Electron's `silent: true`.
+#[cfg(windows)]
 fn toast_xml(title: &str, body: &str) -> String {
     format!(
         r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual><audio silent="true"/></toast>"#,
@@ -60,6 +164,7 @@ fn toast_xml(title: &str, body: &str) -> String {
 /// XML-escapes a toast payload. Titles and bodies carry file names and error
 /// strings; a bare `&` or `<` makes `LoadXml` fail and the notification
 /// silently vanish.
+#[cfg(any(windows, test))]
 fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {
@@ -76,10 +181,14 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use windows::core::HSTRING;
+    #[cfg(windows)]
     use windows::Data::Xml::Dom::XmlDocument;
 
-    use super::{escape, toast_xml};
+    use super::escape;
+    #[cfg(windows)]
+    use super::toast_xml;
 
     #[test]
     fn escape_handles_the_xml_metacharacters() {
@@ -93,6 +202,7 @@ mod tests {
         assert_eq!(escape("plain text"), "plain text");
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_title_and_body_with_ampersands_and_angle_brackets_load_as_xml() {
         let xml = toast_xml("A & B", "<error> failed to write &/read");

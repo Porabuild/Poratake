@@ -1,7 +1,7 @@
 //! Audio for the video export: decode the recording's tracks, apply the
 //! timeline's trims and speeds, and mix them down to one interleaved stream the
 //! encoder can take. This replaces the FFmpeg filter graph the Electron shell
-//! shells out to, so the native shell needs no external binary.
+//! uses for timeline composition.
 
 use std::path::Path;
 
@@ -285,7 +285,84 @@ mod backend {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod backend {
+    use std::io::{BufReader, Read as _};
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    use super::Pcm;
+
+    pub fn decode(path: &Path) -> Option<Pcm> {
+        decode_with_ffmpeg(&crate::video::ffmpeg_path(), path)
+    }
+
+    fn decode_with_ffmpeg(ffmpeg: &Path, path: &Path) -> Option<Pcm> {
+        let output = crate::video::command_stdout(
+            Command::new(ffmpeg)
+                .args(["-hide_banner", "-loglevel", "error", "-i"])
+                .arg(path)
+                .args([
+                    "-vn",
+                    "-f",
+                    "s16le",
+                    "-acodec",
+                    "pcm_s16le",
+                    "-ar",
+                    "48000",
+                    "-ac",
+                    "2",
+                    "pipe:1",
+                ])
+                .stdin(Stdio::null()),
+            std::time::Duration::from_secs(120),
+            |stdout| {
+                let mut stdout = BufReader::new(stdout);
+                let mut samples = Vec::new();
+                let mut bytes = [0; 2];
+                loop {
+                    match stdout.read_exact(&mut bytes) {
+                        Ok(()) => samples.push(i16::from_le_bytes(bytes)),
+                        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Ok(samples)
+            },
+        )
+        .ok()?;
+        if !output.status.success() || output.stdout.is_empty() {
+            return None;
+        }
+        Some(output.stdout)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use super::*;
+
+        #[test]
+        fn unix_ffmpeg_process_decodes_stereo_pcm() {
+            let directory = tempfile::tempdir().expect("temp directory");
+            let ffmpeg = directory.path().join("ffmpeg");
+            std::fs::write(&ffmpeg, "#!/bin/sh\nprintf '\\001\\000\\377\\377'\n")
+                .expect("fake FFmpeg");
+            let mut permissions = std::fs::metadata(&ffmpeg)
+                .expect("fake FFmpeg metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&ffmpeg, permissions).expect("fake FFmpeg permissions");
+            let source = directory.path().join("source.m4a");
+            std::fs::write(&source, []).expect("source file");
+
+            assert_eq!(decode_with_ffmpeg(&ffmpeg, &source), Some(vec![1, -1]));
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod backend {
     use std::path::Path;
 

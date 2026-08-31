@@ -500,7 +500,7 @@ pub fn download(
 
 fn installer_path(name: &str) -> Result<std::path::PathBuf, String> {
     let path = std::path::Path::new(name);
-    if path.file_name() != Some(std::ffi::OsStr::new(name)) {
+    if name.contains(['/', '\\', ':']) || path.file_name() != Some(std::ffi::OsStr::new(name)) {
         return Err("the release asset has an invalid file name".to_string());
     }
     Ok(std::env::temp_dir().join(path))

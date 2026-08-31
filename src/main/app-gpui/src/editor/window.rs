@@ -1,7 +1,7 @@
 //! Editor window entity — owns editor state, wires the title bar and canvas
 //! together, and hosts the color palette popover.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -23,6 +23,17 @@ use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::colors::Tool;
 use crate::ui::menu::MenuHandle;
+
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedEditorState {
+    #[serde(default)]
+    annotations: Vec<Annotation>,
+    #[serde(default)]
+    wallpaper: crate::editor::wallpaper::WallpaperSettings,
+    #[serde(default)]
+    layers: Vec<crate::editor::layers::ImageLayer>,
+}
 
 pub struct EditorWindow {
     pub image: Option<Arc<gpui::RenderImage>>,
@@ -103,6 +114,8 @@ pub struct EditorWindow {
     /// Pointer position and scroll offset a pan started from.
     pan_origin: Option<(gpui::Point<Pixels>, gpui::Point<Pixels>)>,
     next_id: u32,
+    persisted_editor_state: RefCell<Option<serde_json::Value>>,
+    last_editor_state_write: Cell<std::time::Instant>,
     pub focus_handle: gpui::FocusHandle,
     bounds_sub: Option<Subscription>,
 }
@@ -119,10 +132,21 @@ impl EditorWindow {
             }
         };
 
+        let persisted = crate::history_store::editor_state_for_path(std::path::Path::new(path))
+            .and_then(|state| serde_json::from_value::<PersistedEditorState>(state).ok())
+            .unwrap_or_default();
+        let persisted_value = serde_json::to_value(&persisted).ok();
+        let next_id = persisted
+            .annotations
+            .iter()
+            .filter_map(|annotation| annotation.id().strip_prefix("ann-"))
+            .filter_map(|id| id.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
         let mut editor = Self {
             image,
             base_image: base.map(Arc::new),
-            layers: Vec::new(),
+            layers: persisted.layers,
             capture_mode: false,
             balance_crop: None,
             selected_annotation: None,
@@ -155,7 +179,7 @@ impl EditorWindow {
             redact_intensity: 5.0,
             shape_fill_mode: "outline".to_string(),
             zoom: 1.0,
-            history: AnnotationHistory::new(Vec::new()),
+            history: AnnotationHistory::new(persisted.annotations),
             draft: None,
             drag_start: None,
             pending_pointer_update: None,
@@ -167,7 +191,7 @@ impl EditorWindow {
             zoom_bar_bounds: Rc::new(RefCell::new(None)),
             fit_for: None,
             zoom_backdrop: None,
-            wallpaper: crate::editor::wallpaper::WallpaperSettings::default(),
+            wallpaper: persisted.wallpaper,
             wallpaper_preset_id: String::new(),
             cloud_upload: crate::cloud::UploadState::Idle,
             redact_patches: std::collections::HashMap::new(),
@@ -191,7 +215,9 @@ impl EditorWindow {
                 spacing: 0.0,
             })),
             bounds: Rc::new(RefCell::new(None)),
-            next_id: 0,
+            next_id,
+            persisted_editor_state: RefCell::new(persisted_value),
+            last_editor_state_write: Cell::new(std::time::Instant::now()),
             focus_handle: cx.focus_handle(),
             bounds_sub: None,
         };
@@ -378,24 +404,80 @@ impl EditorWindow {
     }
 
     fn sync_snapshot(&self) {
-        let mut snap = self.snapshot.borrow_mut();
-        snap.redact_patches = self.redact_patches_by_id();
-        snap.crop = self.crop;
-        snap.wallpaper = self.wallpaper.clone();
-        snap.backdrop = self.backdrop.clone();
-        snap.selected = self.selected_annotation.clone();
-        snap.balance_crop = self.balance_crop;
-        snap.layers = self.layers.clone();
-        snap.spacing = self.wallpaper.spacing;
-        snap.image = self.image.clone();
-        snap.image_width = self.image_width;
-        snap.image_height = self.image_height;
-        snap.zoom = self.zoom;
-        snap.annotations = self.history.current().to_vec();
-        snap.draft = self.draft.clone();
-        snap.tool = self.tool;
-        snap.color_hex = self.color_hex.clone();
-        snap.stroke_width = self.stroke_width;
+        {
+            let mut snap = self.snapshot.borrow_mut();
+            snap.redact_patches = self.redact_patches_by_id();
+            snap.crop = self.crop;
+            snap.wallpaper = self.wallpaper.clone();
+            snap.backdrop = self.backdrop.clone();
+            snap.selected = self.selected_annotation.clone();
+            snap.balance_crop = self.balance_crop;
+            snap.layers = self.layers.clone();
+            snap.spacing = self.wallpaper.spacing;
+            snap.image = self.image.clone();
+            snap.image_width = self.image_width;
+            snap.image_height = self.image_height;
+            snap.zoom = self.zoom;
+            snap.annotations = self.history.current().to_vec();
+            snap.draft = self.draft.clone();
+            snap.tool = self.tool;
+            snap.color_hex = self.color_hex.clone();
+            snap.stroke_width = self.stroke_width;
+        }
+        self.persist_editor_state(false);
+    }
+
+    fn persist_editor_state(&self, force: bool) {
+        if self.file_path.is_empty() || self.draft.is_some() {
+            return;
+        }
+        let mut wallpaper = self.wallpaper.clone();
+        if let Some(source) = wallpaper.background_image.as_deref() {
+            if !source.starts_with("data:") {
+                if let Ok(bytes) = std::fs::read(source) {
+                    use base64::Engine;
+                    let mime = match std::path::Path::new(source)
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref()
+                    {
+                        Some("jpg" | "jpeg") => "image/jpeg",
+                        Some("webp") => "image/webp",
+                        Some("gif") => "image/gif",
+                        Some("svg") => "image/svg+xml",
+                        _ => "image/png",
+                    };
+                    wallpaper.background_image = Some(format!(
+                        "data:{mime};base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    ));
+                }
+            }
+        }
+        let state = match serde_json::to_value(PersistedEditorState {
+            annotations: self.history.current().to_vec(),
+            wallpaper,
+            layers: self.layers.clone(),
+        }) {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        if self.persisted_editor_state.borrow().as_ref() == Some(&state) {
+            return;
+        }
+        if !force
+            && self.last_editor_state_write.get().elapsed() < std::time::Duration::from_millis(500)
+        {
+            return;
+        }
+        if crate::history_store::update_editor_state_by_path(
+            std::path::Path::new(&self.file_path),
+            state.clone(),
+        ) {
+            *self.persisted_editor_state.borrow_mut() = Some(state);
+            self.last_editor_state_write.set(std::time::Instant::now());
+        }
     }
 
     fn annotation_id(&mut self) -> String {
@@ -1287,13 +1369,15 @@ impl Render for EditorWindow {
         .on_action(cx.listener(|this, _: &actions::ToggleCaptureMode, _, cx| {
             this.toggle_capture_mode(cx);
         }))
-        .on_action(cx.listener(|this, _: &actions::CopyAnnotation, _, cx| {
-            // A selected annotation is copied; otherwise the whole image
-            // is, which is what the renderer's Ctrl+C falls back to.
-            if !this.copy_selected_annotation() {
-                this.copy_to_clipboard(cx);
-            }
-        }))
+        .on_action(
+            cx.listener(|this, _: &actions::CopyAnnotation, window, cx| {
+                // A selected annotation is copied; otherwise the whole image
+                // is, which is what the renderer's Ctrl+C falls back to.
+                if !this.copy_selected_annotation() {
+                    this.copy_to_clipboard(window, cx);
+                }
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::CutAnnotation, _, cx| {
             this.cut_selected_annotation(cx);
         }))
@@ -1472,6 +1556,12 @@ impl Render for EditorWindow {
     }
 }
 
+impl Drop for EditorWindow {
+    fn drop(&mut self) {
+        self.persist_editor_state(true);
+    }
+}
+
 fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
     let option_entity = weak.clone();
     let action_entity = weak.clone();
@@ -1489,7 +1579,7 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
                 cx.notify();
             });
         }),
-        on_action: Rc::new(move |action, _window, cx: &mut App| {
+        on_action: Rc::new(move |action, window, cx: &mut App| {
             let Some(entity) = action_entity.upgrade() else {
                 return;
             };
@@ -1501,7 +1591,7 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
                 return;
             }
             entity.update(cx, |editor, cx| {
-                editor.apply_action(action, cx);
+                editor.apply_action(action, window, cx);
                 cx.notify();
             });
         }),
@@ -1666,6 +1756,11 @@ impl EditorWindow {
             EditorOption::WallpaperSpacing(value) => self.wallpaper.spacing = value,
             EditorOption::ClearAttachedImages => self.clear_layers(cx),
             EditorOption::WallpaperUseDesktop => {
+                if !crate::system::capabilities::is_supported(
+                    crate::system::capabilities::Feature::DesktopWallpaper,
+                ) {
+                    return;
+                }
                 let daemon = crate::state::state(cx).daemon;
                 let background = cx.background_executor().clone();
                 cx.spawn(async move |entity, cx| {
@@ -1839,12 +1934,12 @@ impl EditorWindow {
         self.sync_snapshot();
     }
 
-    fn apply_action(&mut self, action: EditorAction, cx: &mut Context<Self>) {
+    fn apply_action(&mut self, action: EditorAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             EditorAction::Undo => self.undo(),
             EditorAction::Redo => self.redo(),
-            EditorAction::Copy => self.copy_to_clipboard(cx),
-            EditorAction::Save => self.save_as(),
+            EditorAction::Copy => self.copy_to_clipboard(window, cx),
+            EditorAction::Save => self.save_as(window, cx),
             EditorAction::CloudUpload => self.upload_to_cloud(cx),
             EditorAction::CaptureToggle => self.toggle_capture_mode(cx),
             EditorAction::Pin => {}
@@ -1916,26 +2011,34 @@ impl EditorWindow {
         crate::editor::export::encode_png(&canvas)
     }
 
-    pub fn copy_to_clipboard(&mut self, cx: &mut Context<Self>) {
+    pub fn copy_to_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.export_png() {
             Ok(png) => {
-                if paste_png_to_clipboard(&png).is_ok() {
-                    self.is_copied = true;
-                    cx.notify();
-                    let entity = cx.entity().downgrade();
-                    cx.spawn(async move |_entity, cx| {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(2))
-                            .await;
-                        if let Some(entity) = entity.upgrade() {
-                            let _ = entity.update(cx, |editor, cx| {
-                                editor.is_copied = false;
-                                cx.notify();
-                            });
-                        }
-                    })
-                    .detach();
+                crate::system::clipboard::ClipboardService::write_png(cx, png);
+                self.is_copied = true;
+                if crate::state::state(cx)
+                    .config
+                    .get()
+                    .screenshot
+                    .close_on_copy
+                {
+                    window.remove_window();
+                    return;
                 }
+                cx.notify();
+                let entity = cx.entity().downgrade();
+                cx.spawn(async move |_entity, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(2))
+                        .await;
+                    if let Some(entity) = entity.upgrade() {
+                        let _ = entity.update(cx, |editor, cx| {
+                            editor.is_copied = false;
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
             }
             Err(error) => eprintln!("[editor] copy failed: {error}"),
         }
@@ -1949,6 +2052,11 @@ impl EditorWindow {
         if self.cloud_upload == UploadState::Uploading {
             return;
         }
+        let config = crate::state::state(cx).config.get().cloud;
+        if !crate::cloud::is_configured(&config) {
+            crate::intents::open_settings(crate::windows::settings::registry::Category::Cloud, cx);
+            return;
+        }
         let png = match self.export_png() {
             Ok(png) => png,
             Err(error) => {
@@ -1956,7 +2064,6 @@ impl EditorWindow {
                 return;
             }
         };
-        let config = crate::state::state(cx).config.get().cloud;
         let name = crate::editor::filename::generate_screenshot_export_name("png");
         let path = std::env::temp_dir().join(&name);
 
@@ -1975,15 +2082,16 @@ impl EditorWindow {
                 .await;
 
             let (state, title, body) = match uploaded {
-                Ok(url) => {
-                    let _ = arboard::Clipboard::new()
-                        .and_then(|mut clipboard| clipboard.set_text(url.clone()));
-                    (UploadState::Success, "Link copied", url)
-                }
+                Ok(url) => (UploadState::Success, "Link copied", url),
                 Err(error) => (UploadState::Error, "Upload failed", error.to_string()),
             };
 
-            let _ = cx.update(|cx| crate::windows::toast::Toast::show(cx, title, body));
+            let _ = cx.update(|cx| {
+                if state == UploadState::Success {
+                    crate::system::clipboard::ClipboardService::write_text(cx, body.clone());
+                }
+                crate::windows::toast::Toast::show(cx, title, body)
+            });
             let _ = entity.update(cx, |editor, cx| {
                 editor.cloud_upload = state;
                 cx.notify();
@@ -2021,20 +2129,18 @@ impl EditorWindow {
         };
         let encoded = base64::engine::general_purpose::STANDARD.encode(png);
         let daemon = crate::state::state(cx).daemon;
-        cx.background_executor()
-            .spawn(async move {
-                if !daemon.is_running() && daemon.start().is_err() {
-                    return;
-                }
-                if let Err(error) = daemon.call(
-                    "print",
-                    "image",
-                    Some(serde_json::json!({ "imageBase64": encoded })),
-                ) {
-                    eprintln!("[print] failed: {error}");
-                }
-            })
-            .detach();
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |_, cx| {
+            let result = background
+                .spawn(async move { daemon.print().image(encoded) })
+                .await;
+            if let Err(error) = result {
+                let _ = cx.update(|cx| {
+                    crate::windows::toast::Toast::show(cx, "Printing failed", error.to_string())
+                });
+            }
+        })
+        .detach();
     }
 
     /// Deletes the file this editor was opened from, after confirming.
@@ -2056,11 +2162,17 @@ impl EditorWindow {
         }
 
         let path = std::path::PathBuf::from(&self.file_path);
-        if let Err(error) = std::fs::remove_file(&path) {
-            eprintln!("[editor] delete failed: {error}");
+        if !crate::history_store::delete_path(
+            &path,
+            crate::history_store::HistoryItemType::Screenshot,
+        ) {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Delete failed",
+                "The screenshot could not be deleted",
+            );
             return;
         }
-        crate::thumbnails::remove(&path);
         let notify = crate::state::state(cx)
             .config
             .get()
@@ -2079,7 +2191,7 @@ impl EditorWindow {
         }
     }
 
-    pub fn save_as(&mut self) {
+    pub fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let png = match self.export_png() {
             Ok(png) => png,
             Err(error) => {
@@ -2088,32 +2200,56 @@ impl EditorWindow {
             }
         };
 
-        let default_name = crate::editor::filename::generate_screenshot_export_name("png");
-        let pictures = dirs::picture_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let settings = crate::state::state(cx).config.get();
+        let jpeg = settings.screenshot.format == "jpeg";
+        let extension = if jpeg { "jpg" } else { "png" };
+        let bytes = if jpeg {
+            let decoded = match image::load_from_memory(&png) {
+                Ok(image) => image.to_rgb8(),
+                Err(error) => {
+                    eprintln!("[editor] jpeg conversion failed: {error}");
+                    return;
+                }
+            };
+            let mut bytes = Vec::new();
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92);
+            if let Err(error) = encoder.encode_image(&decoded) {
+                eprintln!("[editor] jpeg encoding failed: {error}");
+                return;
+            }
+            bytes
+        } else {
+            png
+        };
+        let default_name = crate::editor::filename::generate_screenshot_export_name(extension);
+        let saved_directory = std::path::PathBuf::from(&settings.save_locations.screenshot);
+        let directory = if saved_directory.is_dir() {
+            saved_directory
+        } else {
+            dirs::picture_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
+        };
         let path = rfd::FileDialog::new()
             .set_title("Save Screenshot")
             .set_file_name(&default_name)
-            .add_filter("PNG Image", &["png"])
-            .set_directory(&pictures)
+            .add_filter(if jpeg { "JPEG Image" } else { "PNG Image" }, &[extension])
+            .set_directory(&directory)
             .save_file();
 
         if let Some(path) = path {
-            match std::fs::write(&path, png) {
-                Ok(()) => println!("[editor] saved {}", path.display()),
+            match std::fs::write(&path, bytes) {
+                Ok(()) => {
+                    if let Some(parent) = path.parent() {
+                        let parent = parent.to_string_lossy().to_string();
+                        crate::state::state(cx)
+                            .config
+                            .update(move |config| config.save_locations.screenshot = parent);
+                    }
+                    if settings.screenshot.close_on_save {
+                        window.remove_window();
+                    }
+                }
                 Err(error) => eprintln!("[editor] save failed: {error}"),
             }
         }
     }
-}
-
-fn paste_png_to_clipboard(png: &[u8]) -> anyhow::Result<()> {
-    let decoded = image::load_from_memory(png)?.to_rgba8();
-    let (width, height) = (decoded.width() as usize, decoded.height() as usize);
-    let mut clipboard = arboard::Clipboard::new()?;
-    clipboard.set_image(arboard::ImageData {
-        width,
-        height,
-        bytes: std::borrow::Cow::Owned(decoded.into_raw()),
-    })?;
-    Ok(())
 }

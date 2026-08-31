@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -75,18 +76,185 @@ pub fn save_history(items: &[HistoryItem]) {
     }
 }
 
-pub fn add_item(item: HistoryItem, max_items: usize) {
+pub fn add_item(item: HistoryItem, max_items: usize, enabled: bool) {
+    if !enabled {
+        return;
+    }
     let mut items = load_history();
     items.insert(0, item);
-    items.truncate(max_items);
+    while items.len() > max_items {
+        let Some(removed) = items.pop() else {
+            break;
+        };
+        if cleanup_item(&removed).is_err() {
+            items.push(removed);
+            break;
+        }
+    }
     save_history(&items);
 }
 
-pub fn remove_item(id: &str) {
+pub fn delete_item(id: &str) -> bool {
     let mut items = load_history();
-    let original_len = items.len();
-    items.retain(|item| item.id != id);
-    if items.len() != original_len {
+    let Some(index) = items.iter().position(|item| item.id == id) else {
+        return false;
+    };
+    if cleanup_item(&items[index]).is_err() {
+        return false;
+    }
+    items.remove(index);
+    save_history(&items);
+    true
+}
+
+pub fn delete_path(path: &Path, kind: HistoryItemType) -> bool {
+    let path_string = path.to_string_lossy();
+    let mut items = load_history();
+    if let Some(index) = items
+        .iter()
+        .position(|item| item.original_path == path_string)
+    {
+        if cleanup_item(&items[index]).is_err() {
+            return false;
+        }
+        items.remove(index);
         save_history(&items);
+        return true;
+    }
+    cleanup_path(path, kind).is_ok()
+}
+
+pub fn clear_history() -> bool {
+    let items = load_history();
+    let retained = items
+        .into_iter()
+        .filter(|item| cleanup_item(item).is_err())
+        .collect::<Vec<_>>();
+    let cleared = retained.is_empty();
+    save_history(&retained);
+    cleared
+}
+
+pub fn editor_state_for_path(path: &Path) -> Option<Value> {
+    let path = path.to_string_lossy();
+    load_history()
+        .into_iter()
+        .find(|item| item.original_path == path)
+        .and_then(|item| item.editor_state)
+}
+
+pub fn update_editor_state_by_path(path: &Path, state: Value) -> bool {
+    let path = path.to_string_lossy();
+    let mut items = load_history();
+    let Some(item) = items.iter_mut().find(|item| item.original_path == path) else {
+        return false;
+    };
+    item.editor_state = Some(state);
+    save_history(&items);
+    true
+}
+
+pub fn update_item_path(old_path: &Path, new_path: &Path) -> bool {
+    let old_path = old_path.to_string_lossy();
+    let mut items = load_history();
+    let Some(item) = items.iter_mut().find(|item| item.original_path == old_path) else {
+        return false;
+    };
+    item.original_path = new_path.to_string_lossy().to_string();
+    save_history(&items);
+    true
+}
+
+fn cleanup_item(item: &HistoryItem) -> std::io::Result<()> {
+    cleanup_path(Path::new(&item.original_path), item.r#type)
+}
+
+fn cleanup_path(path: &Path, kind: HistoryItemType) -> std::io::Result<()> {
+    if kind == HistoryItemType::Screenshot {
+        remove_file_if_exists(path)?;
+        crate::thumbnails::remove(path);
+        return Ok(());
+    }
+    if let Some(project) = crate::video::project::project_folder(path) {
+        if project.exists() {
+            std::fs::remove_dir_all(project)?;
+        }
+        crate::thumbnails::remove(path);
+        return Ok(());
+    }
+    for asset in [
+        crate::video::project::recording_video_path(path),
+        crate::video::project::system_audio_path(path),
+        crate::video::project::mic_audio_path(path),
+        crate::video::project::cursor_path(path),
+        crate::video::project::camera_video_path(path),
+        crate::video::project::camera_meta_path(path),
+        crate::video::project::keys_path(path),
+        crate::video::project::editor_state_path(path),
+        crate::video::project::subtitle_path(path),
+    ] {
+        remove_file_if_exists(&asset)?;
+    }
+    crate::thumbnails::remove(path);
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screenshot_cleanup_removes_the_original_file() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let screenshot = directory.path().join("capture.png");
+        std::fs::write(&screenshot, b"image").expect("write screenshot");
+
+        cleanup_path(&screenshot, HistoryItemType::Screenshot).expect("clean screenshot");
+
+        assert!(!screenshot.exists());
+    }
+
+    #[test]
+    fn video_cleanup_removes_the_entire_project() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let project = directory.path().join("Recording.poratake");
+        std::fs::create_dir(&project).expect("create project");
+        std::fs::write(project.join(crate::video::project::RECORDING), b"video")
+            .expect("write recording");
+
+        cleanup_path(&project, HistoryItemType::Video).expect("clean project");
+
+        assert!(!project.exists());
+    }
+
+    #[test]
+    fn loose_video_cleanup_removes_every_sidecar() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let video = directory.path().join("recording.mp4");
+        let assets = [
+            video.clone(),
+            crate::video::project::system_audio_path(&video),
+            crate::video::project::mic_audio_path(&video),
+            crate::video::project::cursor_path(&video),
+            crate::video::project::camera_video_path(&video),
+            crate::video::project::camera_meta_path(&video),
+            crate::video::project::keys_path(&video),
+            crate::video::project::editor_state_path(&video),
+            crate::video::project::subtitle_path(&video),
+        ];
+        for asset in &assets {
+            std::fs::write(asset, b"asset").expect("write asset");
+        }
+
+        cleanup_path(&video, HistoryItemType::Video).expect("clean recording");
+
+        assert!(assets.iter().all(|asset| !asset.exists()));
     }
 }
