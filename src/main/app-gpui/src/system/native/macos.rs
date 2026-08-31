@@ -79,11 +79,13 @@ fn install_event_handlers(events: smol::channel::Sender<NativeEvent>) {
             let _ = tray_events.send_blocking(NativeEvent::ToggleTrayMenu { tray_rect });
         }
     }));
-    global_hotkey::GlobalHotKeyEvent::set_event_handler(Some(move |event| {
-        if event.state() == global_hotkey::HotKeyState::Pressed {
-            let _ = events.send_blocking(NativeEvent::Hotkey { id: event.id() });
-        }
-    }));
+    global_hotkey::GlobalHotKeyEvent::set_event_handler(Some(
+        move |event: global_hotkey::GlobalHotKeyEvent| {
+            if event.state() == global_hotkey::HotKeyState::Pressed {
+                let _ = events.send_blocking(NativeEvent::Hotkey { id: event.id() });
+            }
+        },
+    ));
 }
 
 #[link(name = "objc")]

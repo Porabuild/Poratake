@@ -100,7 +100,7 @@ pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
     #[cfg(target_os = "macos")]
     {
         let daemon = crate::state::state(cx).daemon;
-        if daemon.recording_overlay().show(rect) != Ok(true) {
+        if daemon.recording_overlay().show(rect).ok() != Some(true) {
             return false;
         }
         close_all(cx);
