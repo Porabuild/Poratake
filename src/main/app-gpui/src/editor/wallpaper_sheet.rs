@@ -13,6 +13,7 @@ use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, ICON_MD};
+use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
 use herogpui::components::{Button, PickerItem, Select, Size, Switch, Variant};
 use herogpui::components::{Slider, SliderSize};
@@ -155,16 +156,11 @@ fn header(handlers: &EditorHandlers, theme: &ThemeVars) -> AnyElement {
                 .text_color(theme.foreground)
                 .child("Wallpaper"),
         )
-        .child(
-            herogpui::components::Tooltip::new("Close").child(
-                Button::new("wallpaper-sheet-close")
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .child(icon_element("x", px(14.0)))
-                    .on_press(move |_event: &ClickEvent, window, cx| close(window, cx)),
-            ),
-        )
+        .child(icon_button::with_tooltip(
+            "Close",
+            icon_button::compact_sm("wallpaper-sheet-close", "x")
+                .on_press(move |_event: &ClickEvent, window, cx| close(window, cx)),
+        ))
         .into_any_element()
 }
 
@@ -248,37 +244,27 @@ fn preset_manager(
         let toggle = handlers.option(EditorOption::WallpaperToggleDefaultPreset);
         let delete = handlers.option(EditorOption::WallpaperDeletePreset);
         row = row
-            .child(
-                herogpui::components::Tooltip::new(if is_default {
+            .child(icon_button::with_tooltip(
+                if is_default {
                     "Stop using this preset for Polish"
                 } else {
                     "Use this preset for Polish"
-                })
-                .child(
-                    Button::new("wallpaper-preset-star")
-                        .child(icon_element("star", px(14.0)))
-                        .variant(Variant::Ghost)
-                        .recipe("compact-icon")
-                        .sx(|el| {
-                            el.text_color(if is_default {
-                                theme.primary
-                            } else {
-                                theme.muted_foreground
-                            })
+                },
+                icon_button::compact_sm("wallpaper-preset-star", "star")
+                    .sx(|el| {
+                        el.text_color(if is_default {
+                            theme.primary
+                        } else {
+                            theme.muted_foreground
                         })
-                        .on_press(move |_event, window, cx| toggle(window, cx)),
-                ),
-            )
-            .child(
-                herogpui::components::Tooltip::new("Delete preset").child(
-                    Button::new("wallpaper-preset-delete")
-                        .child(icon_element("trash-2", px(14.0)))
-                        .variant(Variant::Ghost)
-                        .recipe("compact-icon")
-                        .recipe("muted")
-                        .on_press(move |_event, window, cx| delete(window, cx)),
-                ),
-            );
+                    })
+                    .on_press(move |_event, window, cx| toggle(window, cx)),
+            ))
+            .child(icon_button::with_tooltip(
+                "Delete preset",
+                icon_button::compact_sm_muted("wallpaper-preset-delete", "trash-2")
+                    .on_press(move |_event, window, cx| delete(window, cx)),
+            ));
     }
 
     let hint_text = match default_id.and_then(|id| presets.iter().find(|preset| preset.id == id)) {
@@ -313,27 +299,17 @@ fn backgrounds_section(
         let delete = handlers.option(EditorOption::WallpaperDeleteCustom(SharedString::from(
             custom.id.clone(),
         )));
-        actions = actions.child(
-            herogpui::components::Tooltip::new("Delete").child(
-                Button::new("wallpaper-custom-delete")
-                    .child(icon_element("trash-2", px(14.0)))
-                    .variant(Variant::Ghost)
-                    .recipe("compact-icon")
-                    .recipe("muted")
-                    .on_press(move |_event, window, cx| delete(window, cx)),
-            ),
-        );
+        actions = actions.child(icon_button::with_tooltip(
+            "Delete",
+            icon_button::compact_sm_muted("wallpaper-custom-delete", "trash-2")
+                .on_press(move |_event, window, cx| delete(window, cx)),
+        ));
     }
-    actions = actions.child(
-        herogpui::components::Tooltip::new("Add Background").child(
-            Button::new("wallpaper-add-background")
-                .child(icon_element("plus", px(14.0)))
-                .variant(Variant::Ghost)
-                .recipe("compact-icon")
-                .recipe("muted")
-                .on_press(move |_event, window, cx| add(window, cx)),
-        ),
-    );
+    actions = actions.child(icon_button::with_tooltip(
+        "Add Background",
+        icon_button::compact_sm_muted("wallpaper-add-background", "plus")
+            .on_press(move |_event, window, cx| add(window, cx)),
+    ));
 
     let mut tiles: Vec<AnyElement> = Vec::new();
     if crate::system::capabilities::is_supported(

@@ -13,11 +13,23 @@ pub fn ghost_icon(id: impl Into<ElementId>, icon: &'static str, icon_size: f32) 
 }
 
 pub fn compact(id: impl Into<ElementId>, icon: &'static str) -> Button {
-    ghost_icon(id, icon, chrome::TOOL_BUTTON_ICON).recipe("compact-icon")
+    compact_sized(id, icon, chrome::TOOL_BUTTON_ICON)
+}
+
+pub fn compact_sm(id: impl Into<ElementId>, icon: &'static str) -> Button {
+    compact_sized(id, icon, chrome::BUTTON_XS_ICON)
 }
 
 pub fn compact_muted(id: impl Into<ElementId>, icon: &'static str) -> Button {
     compact(id, icon).recipe("muted")
+}
+
+pub fn compact_sm_muted(id: impl Into<ElementId>, icon: &'static str) -> Button {
+    compact_sm(id, icon).recipe("muted")
+}
+
+fn compact_sized(id: impl Into<ElementId>, icon: &'static str, icon_size: f32) -> Button {
+    ghost_icon(id, icon, icon_size).recipe("compact-icon")
 }
 
 pub fn chip(id: impl Into<ElementId>, selected: bool) -> Button {

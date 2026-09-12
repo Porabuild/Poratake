@@ -7,6 +7,7 @@ use herogpui::gpui;
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, spinner_element};
+use crate::ui::icon_button;
 use crate::windows::settings::registry::{Control, Item, PathKind};
 use crate::windows::settings::SettingsWindow;
 use herogpui::components::Slider;
@@ -602,22 +603,16 @@ impl SettingsWindow {
                             .text_color(theme.foreground)
                             .child("Naming Pattern"),
                     )
-                    .child(
-                        herogpui::components::Tooltip::new("Available tokens").child(
-                            Button::new("naming-pattern-help")
-                                .variant(Variant::Ghost)
-                                .is_icon_only(true)
-                                .child(icon_element("help-circle", px(14.0)))
-                                .recipe("compact-icon")
-                                .recipe("muted")
-                                .on_press(cx.listener(|this, _event, _window, cx| {
-                                    if !this.extras_open.remove(NAMING_TOKENS_KEY) {
-                                        this.extras_open.insert(NAMING_TOKENS_KEY);
-                                    }
-                                    cx.notify();
-                                })),
-                        ),
-                    ),
+                    .child(icon_button::with_tooltip(
+                        "Available tokens",
+                        icon_button::compact_sm_muted("naming-pattern-help", "help-circle")
+                            .on_press(cx.listener(|this, _event, _window, cx| {
+                                if !this.extras_open.remove(NAMING_TOKENS_KEY) {
+                                    this.extras_open.insert(NAMING_TOKENS_KEY);
+                                }
+                                cx.notify();
+                            })),
+                    )),
             )
             .child(
                 div()
@@ -695,19 +690,19 @@ impl SettingsWindow {
                     .gap(px(6.0))
                     .child(div().flex_1().child(key_field))
                     .child(div().flex_1().child(value_field))
-                    .child(
-                        herogpui::components::Tooltip::new("Remove header").child(
-                            Button::new(SharedString::from(format!("rest-header-remove-{index}")))
-                                .variant(Variant::Ghost)
-                                .is_icon_only(true)
-                                .child(icon_element("trash-2", px(14.0)))
-                                .recipe("compact-icon")
-                                .recipe("danger")
-                                .on_press(cx.listener(move |this, _event, _window, cx| {
-                                    this.remove_rest_header(index, cx);
-                                })),
-                        ),
-                    ),
+                    .child(icon_button::with_tooltip(
+                        "Remove header",
+                        icon_button::compact_sm(
+                            SharedString::from(format!("rest-header-remove-{index}")),
+                            "trash-2",
+                        )
+                        .recipe("danger")
+                        .on_press(cx.listener(
+                            move |this, _event, _window, cx| {
+                                this.remove_rest_header(index, cx);
+                            },
+                        )),
+                    )),
             );
         }
 

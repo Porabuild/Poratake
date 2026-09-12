@@ -17,7 +17,7 @@ Windows (`src/renderer/windows/`) compose reusable pieces in
 `src/renderer/components/` (`ToolbarButton`, `ToolbarSurface`, history toolbar,
 `ui/button`). GPUI mirrors that: `windows/` and `capture/` views compose
 `ui/toolbar.rs`, `ui/icon_button.rs`, and `ui/preview.rs` instead of painting
-overlay / chip / preview metrics at each call site.
+overlay / chip / preview / compact-icon metrics at each call site.
 
 ---
 

@@ -76,6 +76,23 @@ fn tool_button(tool: Tool, shortcut: &str, active: bool, handlers: &EditorHandle
     )
 }
 
+fn compact_action(
+    id: &'static str,
+    icon: &'static str,
+    tooltip: String,
+    action: EditorAction,
+    handlers: &EditorHandlers,
+    disabled: bool,
+) -> AnyElement {
+    let run = handlers.action(action);
+    icon_button::with_tooltip(
+        tooltip,
+        icon_button::compact(id, icon)
+            .is_disabled(disabled)
+            .on_press(move |_event, window, cx| run(window, cx)),
+    )
+}
+
 fn action_button(
     id: &'static str,
     icon: &'static str,
@@ -190,16 +207,15 @@ impl RenderOnce for TitleBar {
 
         tools = tools
             .child(separator(&theme))
-            .child(action_button(
+            .child(compact_action(
                 "undo",
                 "rotate-ccw",
                 format!("Undo ({})", accelerator::display("CommandOrControl+Z")),
                 EditorAction::Undo,
                 &handlers,
                 !self.can_undo,
-                |button| button.is_icon_only(true).recipe("compact-icon"),
             ))
-            .child(action_button(
+            .child(compact_action(
                 "redo",
                 "rotate-cw",
                 format!(
@@ -209,7 +225,6 @@ impl RenderOnce for TitleBar {
                 EditorAction::Redo,
                 &handlers,
                 !self.can_redo,
-                |button| button.is_icon_only(true).recipe("compact-icon"),
             ))
             .child(action_button(
                 "action-copy",

@@ -4,6 +4,7 @@ use herogpui::gpui;
 use crate::system::accelerator;
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
+use crate::ui::icon_button;
 use crate::windows::video_editor::model::format_time;
 use crate::windows::video_editor::timeline::{MAX_PIXELS_PER_SECOND, MIN_PIXELS_PER_SECOND};
 use crate::windows::video_editor::VideoEditorWindow;
@@ -142,23 +143,14 @@ pub fn render(
                 .flex_row()
                 .items_center()
                 .gap(px(4.0))
-                .child(
-                    Tooltip::new(format!(
-                        "Zoom Out ({})",
-                        accelerator::display("CommandOrControl+-")
-                    ))
-                    .child(
-                        Button::new("timeline-zoom-out")
-                            .child(crate::ui::icon::icon_element("minus", px(14.0)))
-                            .variant(Variant::Ghost)
-                            .is_icon_only(true)
-                            .recipe("compact-icon")
-                            .is_disabled(!can_zoom_out)
-                            .on_press(
-                                cx.listener(|this, _event, _window, cx| this.zoom_timeline_out(cx)),
-                            ),
-                    ),
-                )
+                .child(icon_button::with_tooltip(
+                    format!("Zoom Out ({})", accelerator::display("CommandOrControl+-")),
+                    icon_button::compact_sm("timeline-zoom-out", "minus")
+                        .is_disabled(!can_zoom_out)
+                        .on_press(
+                            cx.listener(|this, _event, _window, cx| this.zoom_timeline_out(cx)),
+                        ),
+                ))
                 .child(
                     div().w(px(96.0)).child(
                         Slider::new("timeline-zoom", state.pixels_per_second)
@@ -171,35 +163,20 @@ pub fn render(
                             })),
                     ),
                 )
-                .child(
-                    Tooltip::new(format!(
-                        "Zoom In ({})",
-                        accelerator::display("CommandOrControl+=")
-                    ))
-                    .child(
-                        Button::new("timeline-zoom-in")
-                            .child(crate::ui::icon::icon_element("plus", px(14.0)))
-                            .variant(Variant::Ghost)
-                            .is_icon_only(true)
-                            .recipe("compact-icon")
-                            .is_disabled(!can_zoom_in)
-                            .on_press(
-                                cx.listener(|this, _event, _window, cx| this.zoom_timeline_in(cx)),
-                            ),
+                .child(icon_button::with_tooltip(
+                    format!("Zoom In ({})", accelerator::display("CommandOrControl+=")),
+                    icon_button::compact_sm("timeline-zoom-in", "plus")
+                        .is_disabled(!can_zoom_in)
+                        .on_press(
+                            cx.listener(|this, _event, _window, cx| this.zoom_timeline_in(cx)),
+                        ),
+                ))
+                .child(icon_button::with_tooltip(
+                    "Fit to View (F)",
+                    icon_button::compact_sm("timeline-fit", "maximize-2").on_press(
+                        cx.listener(|this, _event, _window, cx| this.fit_timeline_to_view(cx)),
                     ),
-                )
-                .child(
-                    Tooltip::new("Fit to View (F)").child(
-                        Button::new("timeline-fit")
-                            .child(crate::ui::icon::icon_element("maximize-2", px(14.0)))
-                            .variant(Variant::Ghost)
-                            .is_icon_only(true)
-                            .recipe("compact-icon")
-                            .on_press(cx.listener(|this, _event, _window, cx| {
-                                this.fit_timeline_to_view(cx)
-                            })),
-                    ),
-                ),
+                )),
         )
         .child(separator(theme))
         .child(

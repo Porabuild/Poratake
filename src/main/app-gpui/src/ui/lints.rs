@@ -190,7 +190,7 @@ mod tests {
             let name = path.file_name().and_then(|name| name.to_str());
             if matches!(
                 name,
-                Some("toolbar.rs" | "preview.rs" | "bridge.rs" | "lints.rs")
+                Some("toolbar.rs" | "preview.rs" | "icon_button.rs" | "bridge.rs" | "lints.rs")
             ) {
                 continue;
             }
@@ -199,6 +199,7 @@ mod tests {
                 if line.contains(".recipe(\"overlay\")")
                     || line.contains(".recipe(\"preview\")")
                     || line.contains(".recipe(\"preview-pill\")")
+                    || line.contains(".recipe(\"compact-icon\")")
                 {
                     offenders.push(format!("{}:{}", path.display(), index + 1));
                 }
@@ -206,8 +207,9 @@ mod tests {
         }
         assert!(
             offenders.is_empty(),
-            "overlay/preview recipes belong on ui/toolbar.rs and ui/preview.rs \
-             so views compose those helpers. Found at:\n  {}",
+            "overlay/preview/compact-icon recipes belong on ui/toolbar.rs, \
+             ui/preview.rs, and ui/icon_button.rs so views compose those \
+             helpers. Found at:\n  {}",
             offenders.join("\n  ")
         );
     }

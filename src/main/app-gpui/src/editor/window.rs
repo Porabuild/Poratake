@@ -22,7 +22,7 @@ use crate::editor::tool_options::ToolOptionsState;
 use crate::theme::vars::active_theme;
 use crate::ui::chrome;
 use crate::ui::colors::Tool;
-use crate::ui::icon::icon_element;
+use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
 use herogpui::components::{Button, InputState, TextField, Variant};
 
@@ -1669,17 +1669,12 @@ fn zoom_control(
         )
         .p(px(chrome::ZOOM_PAD))
         .shadow_lg()
-        .child(
-            herogpui::components::Tooltip::new("Zoom Out").child(
-                Button::new("zoom-out")
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .child(icon_element("minus", px(14.0)))
-                    .is_disabled(zoom <= MIN_ZOOM)
-                    .on_press(move |_event, window, cx| zoom_out(window, cx)),
-            ),
-        )
+        .child(icon_button::with_tooltip(
+            "Zoom Out",
+            icon_button::compact_sm("zoom-out", "minus")
+                .is_disabled(zoom <= MIN_ZOOM)
+                .on_press(move |_event, window, cx| zoom_out(window, cx)),
+        ))
         .child(
             div().min_w(px(chrome::ZOOM_RESET_MIN)).child(
                 herogpui::components::Tooltip::new("Reset Zoom").child(
@@ -1692,17 +1687,12 @@ fn zoom_control(
                 ),
             ),
         )
-        .child(
-            herogpui::components::Tooltip::new("Zoom In").child(
-                Button::new("zoom-in")
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .child(icon_element("plus", px(14.0)))
-                    .is_disabled(zoom >= MAX_ZOOM)
-                    .on_press(move |_event, window, cx| zoom_in(window, cx)),
-            ),
-        )
+        .child(icon_button::with_tooltip(
+            "Zoom In",
+            icon_button::compact_sm("zoom-in", "plus")
+                .is_disabled(zoom >= MAX_ZOOM)
+                .on_press(move |_event, window, cx| zoom_in(window, cx)),
+        ))
         .into_any_element()
 }
 
