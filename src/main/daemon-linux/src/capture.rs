@@ -935,7 +935,7 @@ fn rgba_to_x11(
     let mut native = vec![0; row_bytes * height as usize];
     for (row, pixels) in rgba.chunks_exact(width as usize * 4).enumerate() {
         let output = &mut native[row * row_bytes..][..row_bytes];
-        for (column, pixel) in pixels.chunks_exact(4).enumerate() {
+        for (column, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
             let value = channel_to_mask(pixel[0], format.red_mask)
                 | channel_to_mask(pixel[1], format.green_mask)
                 | channel_to_mask(pixel[2], format.blue_mask);
@@ -1012,7 +1012,9 @@ fn dimensions(width: i32, height: i32, channels: usize, length: usize) -> Result
 fn rgb_to_rgba(width: i32, height: i32, data: &[u8]) -> Result<RgbaImage> {
     let (width, height) = dimensions(width, height, 3, data.len())?;
     let rgba = data
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .take(width as usize * height as usize)
         .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
         .collect();
@@ -1023,7 +1025,7 @@ fn rgb_to_rgba(width: i32, height: i32, data: &[u8]) -> Result<RgbaImage> {
 fn rgbx_to_rgba(width: i32, height: i32, mut data: Vec<u8>) -> Result<RgbaImage> {
     let (width, height) = dimensions(width, height, 4, data.len())?;
     data.truncate(width as usize * height as usize * 4);
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
     RgbaImage::from_raw(width, height, data).ok_or_else(|| anyhow!("capture frame was invalid"))
@@ -1033,7 +1035,7 @@ fn rgbx_to_rgba(width: i32, height: i32, mut data: Vec<u8>) -> Result<RgbaImage>
 fn xbgr_to_rgba(width: i32, height: i32, mut data: Vec<u8>) -> Result<RgbaImage> {
     let (width, height) = dimensions(width, height, 4, data.len())?;
     data.truncate(width as usize * height as usize * 4);
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[pixel[3], pixel[2], pixel[1], 255]);
     }
     RgbaImage::from_raw(width, height, data).ok_or_else(|| anyhow!("capture frame was invalid"))
@@ -1043,7 +1045,7 @@ fn xbgr_to_rgba(width: i32, height: i32, mut data: Vec<u8>) -> Result<RgbaImage>
 fn bgrx_to_rgba(width: i32, height: i32, mut data: Vec<u8>) -> Result<RgbaImage> {
     let (width, height) = dimensions(width, height, 4, data.len())?;
     data.truncate(width as usize * height as usize * 4);
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         pixel[3] = 255;
     }
@@ -1054,7 +1056,7 @@ fn bgrx_to_rgba(width: i32, height: i32, mut data: Vec<u8>) -> Result<RgbaImage>
 fn bgra_to_rgba(width: i32, height: i32, mut data: Vec<u8>) -> Result<RgbaImage> {
     let (width, height) = dimensions(width, height, 4, data.len())?;
     data.truncate(width as usize * height as usize * 4);
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     RgbaImage::from_raw(width, height, data).ok_or_else(|| anyhow!("capture frame was invalid"))

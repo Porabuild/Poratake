@@ -460,10 +460,8 @@ fn listen(
                     scroll_delta: None,
                 });
             }
-            xcb::Event::X(x::Event::DestroyNotify(notify)) => {
-                if notify.window() == wake_window {
-                    return;
-                }
+            xcb::Event::X(x::Event::DestroyNotify(notify)) if notify.window() == wake_window => {
+                return;
             }
             _ => {}
         }

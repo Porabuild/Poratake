@@ -829,7 +829,7 @@ fn convert_pixels(
             let target_row = &mut pixels[row * stride..(row + 1) * stride];
             target_row.copy_from_slice(source_row);
             if !preserve_alpha {
-                for pixel in target_row.chunks_exact_mut(BYTES_PER_PIXEL) {
+                for pixel in target_row.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
                     pixel[3] = u8::MAX;
                 }
             }
@@ -843,8 +843,10 @@ fn convert_pixels(
         let target_row = &mut pixels[row * stride..(row + 1) * stride];
 
         for (channels, pixel) in source_row
-            .chunks_exact(HDR_BYTES_PER_PIXEL)
-            .zip(target_row.chunks_exact_mut(BYTES_PER_PIXEL))
+            .as_chunks::<HDR_BYTES_PER_PIXEL>()
+            .0
+            .iter()
+            .zip(target_row.as_chunks_mut::<BYTES_PER_PIXEL>().0)
         {
             let [red, green, blue] = mapper.map(
                 half_to_f32(u16::from_le_bytes([channels[0], channels[1]])),
@@ -935,8 +937,10 @@ pub fn apply_alpha_mask(frame: &mut DesktopFrame, mask: &DesktopFrame) -> bool {
 
     for (pixel, mask_pixel) in frame
         .pixels
-        .chunks_exact_mut(BYTES_PER_PIXEL)
-        .zip(mask.pixels.chunks_exact(BYTES_PER_PIXEL))
+        .as_chunks_mut::<BYTES_PER_PIXEL>()
+        .0
+        .iter_mut()
+        .zip(mask.pixels.as_chunks::<BYTES_PER_PIXEL>().0)
     {
         pixel[3] = mask_pixel[3];
     }
@@ -1014,7 +1018,7 @@ fn capture_with_gdi(bounds: RECT) -> Option<DesktopFrame> {
         }
     }
 
-    for pixel in pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
+    for pixel in pixels.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
         pixel[3] = u8::MAX;
     }
 
@@ -1289,7 +1293,7 @@ mod tests {
 
         assert_eq!(composed.width, 4);
         assert_eq!(composed.height, 2);
-        for row in composed.pixels.chunks_exact(4 * BYTES_PER_PIXEL) {
+        for row in composed.pixels.as_chunks::<{ 4 * BYTES_PER_PIXEL }>().0 {
             assert!(row[..2 * BYTES_PER_PIXEL].iter().all(|value| *value == 10));
             assert!(row[2 * BYTES_PER_PIXEL..].iter().all(|value| *value == 20));
         }

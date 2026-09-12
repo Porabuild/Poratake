@@ -271,7 +271,7 @@ fn validated_dpi(dpi: f64) -> f64 {
 }
 
 fn composite_onto_white(pixels: &mut [u8]) {
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as u32;
         let inverse_alpha = 255 - alpha;
         for channel in &mut pixel[..3] {

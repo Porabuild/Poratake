@@ -847,7 +847,9 @@ mod gpu_tests {
 
         let read = read_back(&device, &context, &target, 2, 2);
         let expected: Vec<[u8; 3]> = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| [pixel[2], pixel[1], pixel[0]])
             .collect();
 
