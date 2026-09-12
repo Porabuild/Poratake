@@ -131,11 +131,13 @@ fn main() {
                 let system_theme = watcher::spawn();
                 cx.spawn(async move |cx| {
                     while let Ok(mode) = system_theme.recv().await {
-                        let result = cx.update(|cx| watcher::apply_system_mode(mode, cx));
-                        if let Err(error) = result {
+                        #[cfg(not(test))]
+                        if let Err(error) = cx.update(|cx| watcher::apply_system_mode(mode, cx)) {
                             eprintln!("[theme] system-mode update failed: {error}");
                             break;
                         }
+                        #[cfg(test)]
+                        cx.update(|cx| watcher::apply_system_mode(mode, cx));
                     }
                 })
                 .detach();
@@ -191,7 +193,7 @@ fn main() {
                                 .timer(std::time::Duration::from_millis(250))
                                 .await;
                             if system::linux_session::capabilities() != snapshot {
-                                let _ = cx.update(crate::intents::refresh_shell);
+                                cx.update(crate::intents::refresh_shell);
                                 return;
                             }
                         }
