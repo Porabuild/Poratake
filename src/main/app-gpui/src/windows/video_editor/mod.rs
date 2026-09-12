@@ -2711,7 +2711,7 @@ mod keyboard_demo_tests {
         let expected = if cfg!(target_os = "macos") {
             chrome::MACOS_TITLE_LEADING_INSET + chrome::TITLE_BAR_PADDING_X
         } else {
-            chrome::TITLE_BAR_PADDING_X
+            chrome::TITLE_BAR_PADDING_X + crate::ui::window_controls::drag_area_leading_inset()
         };
         assert_eq!(title.left(), px(expected));
         assert!(title.bottom() <= px(chrome::TITLE_BAR_HEIGHT));

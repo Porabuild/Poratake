@@ -1322,7 +1322,7 @@ mod extras_tests {
         let expected = if cfg!(target_os = "macos") {
             80.0
         } else {
-            16.0
+            16.0 + crate::ui::window_controls::drag_area_leading_inset()
         };
         assert_eq!(title.left(), px(expected));
         assert!(title.bottom() <= px(chrome::TITLE_BAR_HEIGHT));
