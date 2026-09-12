@@ -49,19 +49,19 @@ pub fn drag_area_leading_inset() -> f32 {
 }
 
 pub fn drag_area(id: impl Into<ElementId>) -> Stateful<Div> {
-    let area = div().id(id).window_control_area(WindowControlArea::Drag);
+    let area = div()
+        .id(id)
+        .window_control_area(WindowControlArea::Drag)
+        .mx(px(drag_area_leading_inset()));
 
     #[cfg(windows)]
-    return area.mx(px(drag_area_leading_inset())).on_mouse_down(
-        gpui::MouseButton::Left,
-        |event, window, cx| {
-            if event.click_count != 1 {
-                return;
-            }
-            start_window_drag(window);
-            cx.stop_propagation();
-        },
-    );
+    return area.on_mouse_down(gpui::MouseButton::Left, |event, window, cx| {
+        if event.click_count != 1 {
+            return;
+        }
+        start_window_drag(window);
+        cx.stop_propagation();
+    });
 
     #[cfg(not(windows))]
     area
