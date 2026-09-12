@@ -7,22 +7,6 @@ use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
 
-pub fn toolbar_surface(theme: &ThemeVars) -> gpui::Div {
-    div()
-        .relative()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(crate::ui::chrome::OVERLAY_SURFACE_GAP))
-        .rounded(px(crate::ui::chrome::OVERLAY_SURFACE_RADIUS))
-        .border_2()
-        .border_color(theme.muted_foreground.opacity(0.35))
-        .bg(theme.muted_background.opacity(0.95))
-        .shadow_2xl()
-        .p(px(crate::ui::chrome::OVERLAY_SURFACE_PADDING))
-        .text_color(theme.foreground)
-}
-
 /// The painted half of a button that carries both an icon and a label.
 ///
 /// `Button::label` is the button's accessible name, and it *paints* that text

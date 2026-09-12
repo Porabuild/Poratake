@@ -14,13 +14,13 @@ use gpui::{
 use herogpui::gpui;
 
 use crate::capture::overlay::ScreenRect;
-use crate::theme::vars::{active_theme, ThemeVars};
+use crate::theme::vars::active_theme;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuBuilder, MenuEntry, MenuHandle, MenuItem, MenuPlacement};
+use crate::ui::toolbar;
 use crate::video::recorder::{self, RecordingConfig, RecordingTarget};
 use crate::windows::registry::{self, WindowKind as RegistryKind};
-use herogpui::components::{Button, Size, Tooltip, Variant};
 
 const TARGET_LABEL_WIDTH: f32 = chrome::RECORDING_TARGET_LABEL_WIDTH;
 const DEVICE_MENU_WINDOW_WIDTH: f32 = 300.0;
@@ -513,32 +513,28 @@ impl RecordingControl {
                 window,
                 cx,
             ),
-            Button::new("recording-system-audio")
-                .variant(Variant::Ghost)
-                // Deliberately not `.selected()`: `ToolbarButton` is a plain
-                // ghost with `aria-pressed` and no visual pressed state, so the
-                // icon swap below is the entire signal. Marking it selected
-                // promotes the button to `Secondary` and paints a filled chip
-                // the reference never shows.
-                .size(Size::Sm)
-                .is_icon_only(true)
-                .recipe("overlay")
-                .child(icon_element(
+            toolbar::with_tooltip(
+                if self.system_audio {
+                    "Turn system sounds off"
+                } else {
+                    "Turn system sounds on"
+                },
+                toolbar::icon(
+                    "recording-system-audio",
                     if self.system_audio {
                         "volume-2"
                     } else {
                         "volume-x"
                     },
-                    px(16.0),
-                ))
+                )
                 .on_press(cx.listener(|this, _event, _window, cx| {
                     if this.countdown_active {
                         return;
                     }
                     let next = !this.system_audio;
                     this.set_system_audio(next, cx);
-                }))
-                .into_any_element(),
+                })),
+            ),
         ]);
         #[cfg(target_os = "macos")]
         if self.mode == Mode::PreRecording {
@@ -1268,16 +1264,6 @@ fn control_window_metrics(
     (window_width, bar_offset, height)
 }
 
-fn overlay_hairline(theme: &ThemeVars) -> AnyElement {
-    div()
-        .mx(px(chrome::OVERLAY_HAIRLINE_INSET))
-        .h(px(chrome::OVERLAY_HAIRLINE_HEIGHT))
-        .w(px(1.0))
-        .flex_none()
-        .bg(theme.border.opacity(0.7))
-        .into_any_element()
-}
-
 fn overlay_icon(
     id: &'static str,
     icon: &'static str,
@@ -1285,17 +1271,11 @@ fn overlay_icon(
     on_click: impl Fn(&mut RecordingControl, &mut Window, &mut Context<RecordingControl>) + 'static,
     cx: &mut Context<RecordingControl>,
 ) -> AnyElement {
-    Tooltip::new(tooltip)
-        .child(
-            Button::new(id)
-                .variant(Variant::Ghost)
-                .size(Size::Sm)
-                .is_icon_only(true)
-                .recipe("overlay")
-                .child(icon_element(icon, px(16.0)))
-                .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx))),
-        )
-        .into_any_element()
+    toolbar::with_tooltip(
+        tooltip,
+        toolbar::icon(id, icon)
+            .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx))),
+    )
 }
 
 impl Render for RecordingControl {
@@ -1311,7 +1291,7 @@ impl Render for RecordingControl {
         let toggles = self.input_toggles(window, cx);
         let countdown = self.countdown_remaining;
 
-        let mut bar = crate::ui::primitives::toolbar_surface(&theme)
+        let mut bar = toolbar::surface(&theme)
             .id("recording-control-bar")
             .h(px(chrome::recording_inner_bar_height()));
 
@@ -1325,33 +1305,23 @@ impl Render for RecordingControl {
                         .text_size(px(12.0))
                         .child(name.clone()),
                 )
-                .child(overlay_hairline(&theme));
+                .child(toolbar::hairline(&theme));
         }
 
         if self.mode == Mode::PreRecording {
             return recording_shell(
                 &self.focus_handle,
-                bar.child(
-                    Tooltip::new("Start recording").child(
-                        Button::new("recording-start")
-                            .variant(Variant::Ghost)
-                            .size(Size::Sm)
-                            .is_icon_only(true)
-                            .recipe("overlay")
-                            .is_disabled(self.countdown_active)
-                            // `<Circle className="size-3.5 fill-current" />` -- a
-                            // *filled* disc. The lucide icons here are stroke-only,
-                            // so an outline circle is the wrong shape; a filled div
-                            // is what `fill-current` draws.
-                            .child(filled_glyph(theme.accent, true))
-                            .on_press(
-                                cx.listener(|this, _event, window, cx| this.start(window, cx)),
-                            ),
-                    ),
-                )
-                .child(overlay_hairline(&theme))
+                bar.child(toolbar::with_tooltip(
+                    "Start recording",
+                    toolbar::button("recording-start")
+                        .is_disabled(self.countdown_active)
+                        .hover_bg(crate::ui::colors::white(0.15))
+                        .child(filled_glyph(theme.accent, true))
+                        .on_press(cx.listener(|this, _event, window, cx| this.start(window, cx))),
+                ))
+                .child(toolbar::hairline(&theme))
                 .children(toggles)
-                .child(overlay_hairline(&theme))
+                .child(toolbar::hairline(&theme))
                 .child(overlay_icon(
                     "recording-cancel",
                     "x",
@@ -1378,20 +1348,15 @@ impl Render for RecordingControl {
                 |this, _window, cx| this.toggle_pause(cx),
                 cx,
             ))
-            .child(
-                Tooltip::new("Stop recording").child(
-                    Button::new("recording-stop")
-                        .variant(Variant::Ghost)
-                        .size(Size::Sm)
-                        .is_icon_only(true)
-                        .recipe("overlay")
-                        // `<Square className="size-3.5 fill-current text-destructive" />`.
-                        .child(filled_glyph(theme.destructive, false))
-                        .on_press(
-                            cx.listener(|this, _event, window, cx| this.finish(false, window, cx)),
-                        ),
-                ),
-            )
+            .child(toolbar::with_tooltip(
+                "Stop recording",
+                toolbar::button("recording-stop")
+                    .hover_bg(crate::ui::colors::white(0.15))
+                    .child(filled_glyph(theme.destructive, false))
+                    .on_press(
+                        cx.listener(|this, _event, window, cx| this.finish(false, window, cx)),
+                    ),
+            ))
             .child(
                 div()
                     .min_w(px(64.0))
@@ -1401,22 +1366,16 @@ impl Render for RecordingControl {
                     .text_center()
                     .child(recorder::format_elapsed(self.elapsed)),
             )
-            .child(overlay_hairline(&theme))
+            .child(toolbar::hairline(&theme))
             .children(toggles)
-            .child(overlay_hairline(&theme))
-            .child(
-                Tooltip::new("Discard recording").child(
-                    Button::new("recording-discard")
-                        .variant(Variant::Ghost)
-                        .size(Size::Sm)
-                        .is_icon_only(true)
-                        .recipe("overlay")
-                        .child(icon_element("trash-2", px(16.0)))
-                        .on_press(
-                            cx.listener(|this, _event, window, cx| this.finish(true, window, cx)),
-                        ),
-                ),
-            ),
+            .child(toolbar::hairline(&theme))
+            .child(overlay_icon(
+                "recording-discard",
+                "trash-2",
+                "Discard recording",
+                |this, window, cx| this.finish(true, window, cx),
+                cx,
+            )),
             &self.menu,
             None,
             cx,
@@ -1455,7 +1414,7 @@ fn recording_shell(
         .child(bar)
         .when_some(countdown, |el, seconds| {
             el.child(
-                crate::ui::primitives::toolbar_surface(&active_theme(cx))
+                toolbar::surface(&active_theme(cx))
                     .mt(px(8.0))
                     .gap(px(12.0))
                     .px(px(16.0))

@@ -4,8 +4,9 @@ use herogpui::gpui;
 use crate::system::accelerator;
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
+use crate::ui::icon_button;
 use crate::windows::video_editor::VideoEditorWindow;
-use herogpui::components::{Button, Size, Tooltip, Variant};
+use herogpui::components::{Button, Size, Variant};
 
 pub const TITLE_BAR_HEIGHT: f32 = chrome::TITLE_BAR_HEIGHT;
 
@@ -37,17 +38,11 @@ pub fn render(
         .mr(px(chrome::TITLE_BAR_PADDING_X));
 
     if let Some(path) = &state.project_path {
-        actions = actions.child(
-            Tooltip::new(path.clone()).child(
-                Button::new("video-project-path")
-                    .child(crate::ui::icon::icon_element("folder-open", px(14.0)))
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .recipe("muted")
-                    .on_press(cx.listener(|this, _event, _window, cx| this.reveal_project(cx))),
-            ),
-        );
+        actions = actions.child(icon_button::with_tooltip(
+            path.clone(),
+            icon_button::compact_muted("video-project-path", "folder-open")
+                .on_press(cx.listener(|this, _event, _window, cx| this.reveal_project(cx))),
+        ));
     }
 
     if state.is_exporting {
@@ -74,100 +69,60 @@ pub fn render(
                         .text_color(theme.muted_foreground)
                         .child(format!("{}%", (state.export_progress * 100.0) as i32)),
                 )
-                .child(
-                    Tooltip::new("Cancel export").child(
-                        Button::new("video-cancel-export")
-                            .child(crate::ui::icon::icon_element("x", px(14.0)))
-                            .variant(Variant::Ghost)
-                            .is_icon_only(true)
-                            .recipe("compact-icon")
-                            .on_press(
-                                cx.listener(|this, _event, _window, cx| this.cancel_export(cx)),
-                            ),
-                    ),
-                ),
+                .child(icon_button::with_tooltip(
+                    "Cancel export",
+                    icon_button::compact("video-cancel-export", "x")
+                        .on_press(cx.listener(|this, _event, _window, cx| this.cancel_export(cx))),
+                )),
         );
     }
 
     actions = actions
-        .child(
-            Tooltip::new(format!(
-                "Undo ({})",
-                accelerator::display("CommandOrControl+Z")
-            ))
-            .child(
-                Button::new("video-undo")
-                    .child(crate::ui::icon::icon_element("rotate-ccw", px(14.0)))
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .is_disabled(!state.can_undo)
-                    .on_press(cx.listener(|this, _event, _window, cx| this.undo(cx))),
-            ),
-        )
-        .child(
-            Tooltip::new(format!(
+        .child(icon_button::with_tooltip(
+            format!("Undo ({})", accelerator::display("CommandOrControl+Z")),
+            icon_button::compact("video-undo", "rotate-ccw")
+                .is_disabled(!state.can_undo)
+                .on_press(cx.listener(|this, _event, _window, cx| this.undo(cx))),
+        ))
+        .child(icon_button::with_tooltip(
+            format!(
                 "Redo ({})",
                 accelerator::display("CommandOrControl+Shift+Z")
-            ))
-            .child(
-                Button::new("video-redo")
-                    .child(crate::ui::icon::icon_element("rotate-cw", px(14.0)))
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .is_disabled(!state.can_redo)
-                    .on_press(cx.listener(|this, _event, _window, cx| this.redo(cx))),
             ),
-        )
-        .child(
-            Tooltip::new("Reset to Defaults").child(
-                Button::new("video-reset")
-                    .child(crate::ui::icon::icon_element("refresh-ccw", px(14.0)))
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .on_press(cx.listener(|this, _event, _window, cx| this.confirm_reset(cx))),
-            ),
-        )
-        .child(
-            Tooltip::new(format!(
+            icon_button::compact("video-redo", "rotate-cw")
+                .is_disabled(!state.can_redo)
+                .on_press(cx.listener(|this, _event, _window, cx| this.redo(cx))),
+        ))
+        .child(icon_button::with_tooltip(
+            "Reset to Defaults",
+            icon_button::compact("video-reset", "refresh-ccw")
+                .on_press(cx.listener(|this, _event, _window, cx| this.confirm_reset(cx))),
+        ))
+        .child(icon_button::with_tooltip(
+            format!(
                 "Delete Video ({})",
                 accelerator::display("CommandOrControl+Backspace")
-            ))
-            .child(
-                Button::new("video-delete")
-                    .child(crate::ui::icon::icon_element("trash-2", px(14.0)))
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .on_press(
-                        cx.listener(|this, _event, window, cx| this.delete_recording(window, cx)),
-                    ),
             ),
-        )
-        .child(
-            Tooltip::new(if state.is_sidebar_open {
+            icon_button::compact("video-delete", "trash-2").on_press(
+                cx.listener(|this, _event, window, cx| this.delete_recording(window, cx)),
+            ),
+        ))
+        .child(icon_button::with_tooltip(
+            if state.is_sidebar_open {
                 "Hide Sidebar"
             } else {
                 "Show Sidebar"
-            })
-            .child(
-                Button::new("video-toggle-sidebar")
-                    .child(crate::ui::icon::icon_element(
-                        if state.is_sidebar_open {
-                            "panel-right-close"
-                        } else {
-                            "panel-right-open"
-                        },
-                        px(14.0),
-                    ))
-                    .variant(Variant::Ghost)
-                    .is_icon_only(true)
-                    .recipe("compact-icon")
-                    .on_press(cx.listener(|this, _event, _window, cx| this.toggle_sidebar(cx))),
-            ),
-        );
+            },
+            icon_button::compact(
+                "video-toggle-sidebar",
+                if state.is_sidebar_open {
+                    "panel-right-close"
+                } else {
+                    "panel-right-open"
+                },
+            )
+            .on_press(cx.listener(|this, _event, _window, cx| this.toggle_sidebar(cx))),
+        ));
 
     let mut name = crate::ui::window_controls::drag_area("video-title-drag")
         .flex()
@@ -219,22 +174,21 @@ pub fn render(
             )
             .into_any_element()
     } else {
-        Tooltip::new("Rename project")
-            .child(
-                Button::new("video-rename-project")
-                    .child(
-                        div()
-                            .text_size(px(chrome::VIDEO_FILENAME_SIZE))
-                            .child(state.file_name.clone())
-                            .into_any_element(),
-                    )
-                    .variant(Variant::Ghost)
-                    .size(Size::Sm)
-                    .on_press(cx.listener(|this, _event, window, cx| {
-                        this.begin_rename(window, cx);
-                    })),
-            )
-            .into_any_element()
+        icon_button::with_tooltip(
+            "Rename project",
+            Button::new("video-rename-project")
+                .child(
+                    div()
+                        .text_size(px(chrome::VIDEO_FILENAME_SIZE))
+                        .child(state.file_name.clone())
+                        .into_any_element(),
+                )
+                .variant(Variant::Ghost)
+                .size(Size::Sm)
+                .on_press(cx.listener(|this, _event, window, cx| {
+                    this.begin_rename(window, cx);
+                })),
+        )
     };
 
     let mut bar = div()

@@ -14,7 +14,7 @@ use herogpui::theme::{
     ButtonStyle, ComponentColor, ComponentTheme, ComponentThemes, MenuStyle, SelectStyle,
     SliderStyle, SwitchStyle, TextFieldStyle,
 };
-use herogpui::{Color, FieldVariant};
+use herogpui::{Color, FieldVariant, Variant};
 
 fn component_themes() -> ComponentThemes {
     ComponentThemes::default()
@@ -89,11 +89,48 @@ fn component_themes() -> ComponentThemes {
                     "muted",
                     ButtonStyle::default().foreground(ComponentColor::Muted),
                 )
+                .recipe("danger", ButtonStyle::default().variant(Variant::Outline))
                 .recipe(
-                    "danger",
-                    ButtonStyle::default().foreground(ComponentColor::Role(Color::Danger)),
+                    "overlay",
+                    ButtonStyle::default()
+                        .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS)),
                 )
-                .recipe("overlay", ButtonStyle::default().radius(gpui::px(6.0))),
+                .recipe(
+                    "chip",
+                    ButtonStyle::default().style(|el| {
+                        el.h(gpui::px(crate::ui::chrome::HISTORY_CHIP_HEIGHT))
+                            .px(gpui::px(crate::ui::chrome::HISTORY_CHIP_PAD_X))
+                            .text_size(gpui::px(12.0))
+                            .line_height(gpui::px(16.0))
+                            .gap(gpui::px(crate::ui::chrome::HISTORY_CHIP_ICON_GAP))
+                    }),
+                )
+                .recipe(
+                    "chip-icon",
+                    ButtonStyle::default().style(|el| {
+                        el.size(gpui::px(crate::ui::chrome::HISTORY_CHIP_HEIGHT))
+                            .p(gpui::px(0.0))
+                    }),
+                )
+                .recipe(
+                    "preview",
+                    ButtonStyle::default()
+                        .radius(gpui::px(crate::ui::chrome::PREVIEW_CONTROL / 2.0))
+                        .style(|el| {
+                            el.size(gpui::px(crate::ui::chrome::PREVIEW_CONTROL))
+                                .p(gpui::px(0.0))
+                        }),
+                )
+                .recipe(
+                    "preview-pill",
+                    ButtonStyle::default()
+                        .radius(gpui::px(crate::ui::chrome::PREVIEW_PILL_HEIGHT / 2.0))
+                        .style(|el| {
+                            el.h(gpui::px(crate::ui::chrome::PREVIEW_PILL_HEIGHT))
+                                .px(gpui::px(crate::ui::chrome::BUTTON_SM_PAD_X))
+                                .text_size(gpui::px(crate::ui::chrome::BUTTON_XS_TEXT))
+                        }),
+                ),
         )
         .text_field(
             ComponentTheme::new(TextFieldStyle::default())
@@ -102,7 +139,7 @@ fn component_themes() -> ComponentThemes {
                     TextFieldStyle::default()
                         .height(gpui::px(32.0))
                         .padding_x(gpui::px(10.0))
-                        .text_size(gpui::px(13.0)),
+                        .text_size(gpui::px(14.0)),
                 )
                 .recipe(
                     "compact",
@@ -360,12 +397,22 @@ mod tests {
         let search = theme.components.text_field.resolve(&["search".into()]);
         assert_eq!(search.height, Some(gpui::px(32.0)));
         assert_eq!(search.padding_x, Some(gpui::px(10.0)));
+        assert_eq!(search.text_size, Some(gpui::px(14.0)));
         let compact_field = theme.components.text_field.resolve(&["compact".into()]);
         assert_eq!(compact_field.height, Some(gpui::px(28.0)));
         let overlay = theme.components.button.resolve(&["overlay".into()]);
         assert_eq!(
             overlay.radius,
             Some(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS))
+        );
+        let danger = theme.components.button.resolve(&["danger".into()]);
+        assert_eq!(danger.variant, Some(Variant::Outline));
+        let chip = theme.components.button.resolve(&["chip".into()]);
+        assert!(chip.style.is_some());
+        let preview = theme.components.button.resolve(&["preview".into()]);
+        assert_eq!(
+            preview.radius,
+            Some(gpui::px(crate::ui::chrome::PREVIEW_CONTROL / 2.0))
         );
     }
 }

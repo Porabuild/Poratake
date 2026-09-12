@@ -2042,7 +2042,18 @@ impl VideoEditorWindow {
         self.set_playhead(self.playhead + delta, cx);
     }
 
+    fn editing_text(&self, window: &Window, cx: &App) -> bool {
+        [&self.rename_field, &self.prompt_field]
+            .into_iter()
+            .chain(self.data_editor.as_ref().map(|editor| &editor.field))
+            .any(|field| field.read(cx).focus_handle(cx).is_focused(window))
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_text(window, cx) {
+            return;
+        }
+
         let modifiers = event.keystroke.modifiers;
         let primary = modifiers.control || modifiers.platform;
         let shortcuts = crate::state::state(cx).config.get().shortcuts;
@@ -2656,6 +2667,33 @@ mod keyboard_demo_tests {
                 editor.state.ui.sidebar_open && editor.active_tab() == SidebarTab::Export
             })
             .unwrap());
+    }
+
+    #[herogpui::test]
+    fn typing_in_a_text_field_does_not_fire_editor_shortcuts(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let window = cx.add_window(|window, cx| {
+            let editor = VideoEditorWindow::new_for_test(None, cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.refresh().expect("draw editor");
+        cx.run_until_parked();
+
+        window
+            .update(cx, |editor, window, cx| {
+                let focus = editor.rename_field.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
+            })
+            .expect("focus rename field");
+
+        cx.simulate_keystrokes(window.into(), "space");
+        assert!(!window.update(cx, |editor, _, _| editor.is_playing).unwrap());
     }
 
     #[herogpui::test]

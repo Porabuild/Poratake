@@ -566,7 +566,6 @@ impl Render for HistoryWindow {
                     self.filter,
                     self.sort_order,
                     self.layout,
-                    &theme,
                     cx,
                 ))
             })

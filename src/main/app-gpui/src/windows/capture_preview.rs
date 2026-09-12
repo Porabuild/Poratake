@@ -17,31 +17,20 @@ use parking_lot::Mutex;
 use crate::theme::vars::active_theme;
 use crate::ui::chrome::{
     self, PreviewCorner, PREVIEW_CONTROL, PREVIEW_CONTROL_INSET, PREVIEW_HEIGHT,
-    PREVIEW_HOVER_SCALE, PREVIEW_MAX_STACK, PREVIEW_PILL_HEIGHT, PREVIEW_RADIUS,
-    PREVIEW_SHADOW_PADDING, PREVIEW_STACK_GAP, PREVIEW_WIDTH,
+    PREVIEW_HOVER_SCALE, PREVIEW_MAX_STACK, PREVIEW_RADIUS, PREVIEW_SHADOW_PADDING,
+    PREVIEW_STACK_GAP, PREVIEW_WIDTH,
 };
 use crate::ui::icon::icon_element;
+use crate::ui::preview;
 use crate::ui::primitives::{
     OVERLAY_ENTER_MS as PREVIEW_ENTER_MS, OVERLAY_ENTER_SLIDE as PREVIEW_ENTER_OFFSET,
     OVERLAY_EXIT_MS as PREVIEW_EXIT_MS,
 };
-use herogpui::components::{Button, Size, Variant};
 
 static STACK: Mutex<Option<AnyWindowHandle>> = Mutex::new(None);
 static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(1);
 const UPLOAD_DONE_DISPLAY_MS: u64 = 800;
 const PREVIEW_MOVE_MS: u64 = 120;
-
-/// The metrics a preview control carries on top of the shared chip surface.
-/// `base.css` gives the preview's controls their own ladder (`button--xs`),
-/// so the height, type size and padding travel together.
-struct ChipMetrics {
-    height: gpui::Pixels,
-    text_size: gpui::Pixels,
-    padding_x: Option<gpui::Pixels>,
-    radius: Option<gpui::Pixels>,
-    icon_only: bool,
-}
 
 #[derive(Clone, Copy)]
 struct LayoutAnimation {
@@ -885,116 +874,6 @@ impl CapturePreviewWindow {
         )
     }
 
-    fn circle_button(
-        id: impl Into<gpui::ElementId>,
-        icon: &'static str,
-        busy: bool,
-        tooltip: impl Into<gpui::SharedString>,
-        theme: &crate::theme::vars::ThemeVars,
-        hover_bg: gpui::Hsla,
-        on_click: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> gpui::AnyElement {
-        Self::chip(
-            id,
-            ChipMetrics {
-                height: px(PREVIEW_CONTROL),
-                text_size: px(chrome::BUTTON_XS_TEXT),
-                padding_x: None,
-                radius: None,
-                icon_only: true,
-            },
-            theme,
-            hover_bg,
-            busy,
-            tooltip,
-            move |button| {
-                if busy {
-                    button.child(crate::ui::icon::spinner_element(
-                        gpui::ElementId::Name(format!("{icon}-spinner").into()),
-                        px(chrome::BUTTON_XS_ICON),
-                    ))
-                } else {
-                    button.child(icon_element(icon, px(chrome::BUTTON_XS_ICON)))
-                }
-            },
-            on_click,
-        )
-    }
-
-    fn pill_button(
-        id: impl Into<gpui::ElementId>,
-        label: &'static str,
-        tooltip: impl Into<gpui::SharedString>,
-        theme: &crate::theme::vars::ThemeVars,
-        on_click: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> gpui::AnyElement {
-        Self::chip(
-            id,
-            ChipMetrics {
-                height: px(PREVIEW_PILL_HEIGHT),
-                text_size: px(chrome::BUTTON_XS_TEXT),
-                padding_x: Some(px(chrome::BUTTON_SM_PAD_X)),
-                radius: None,
-                icon_only: false,
-            },
-            theme,
-            theme.primary,
-            false,
-            tooltip,
-            move |button| button.label(label),
-            on_click,
-        )
-    }
-
-    fn chip(
-        id: impl Into<gpui::ElementId>,
-        metrics: ChipMetrics,
-        theme: &crate::theme::vars::ThemeVars,
-        hover_bg: gpui::Hsla,
-        disabled: bool,
-        tooltip: impl Into<gpui::SharedString>,
-        content: impl FnOnce(Button) -> Button + 'static,
-        on_click: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> gpui::AnyElement {
-        let ChipMetrics {
-            height,
-            text_size,
-            padding_x,
-            radius,
-            icon_only,
-        } = metrics;
-        let radius = radius.unwrap_or(px(f32::from(height) / 2.0));
-        let surface = theme.background.opacity(0.8);
-        let foreground = theme.foreground;
-        let button = Button::new(id)
-            .variant(Variant::Ghost)
-            .size(Size::Md)
-            .is_icon_only(icon_only)
-            .is_disabled(disabled)
-            .radius(radius)
-            .sx(move |el| {
-                let el = el
-                    .bg(surface)
-                    .h(height)
-                    .text_size(text_size)
-                    .text_color(foreground);
-                match padding_x {
-                    Some(padding) => el.px(padding),
-                    None => el,
-                }
-            })
-            .hover_bg(hover_bg)
-            .on_press(move |_event, window, cx| {
-                on_click(window, cx);
-                cx.stop_propagation();
-            });
-        herogpui::components::Tooltip::new(tooltip)
-            .child(content(button))
-            .into_any_element()
-    }
-}
-
-impl CapturePreviewWindow {
     fn render_preview(
         &mut self,
         index: usize,
@@ -1121,7 +1000,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .top(px(PREVIEW_CONTROL_INSET))
                         .left(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-close", id),
                             "x",
                             false,
@@ -1150,7 +1029,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .top(px(PREVIEW_CONTROL_INSET))
                         .right(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-delete", id),
                             "trash-2",
                             false,
@@ -1190,7 +1069,7 @@ impl CapturePreviewWindow {
                         .gap(px(4.0))
                         .when_some(polish, |el, preset| {
                             let tooltip = format!("Copy with \"{}\"", preset.name);
-                            el.child(Self::pill_button(
+                            el.child(preview::pill(
                                 ("preview-polish", id),
                                 "Polish",
                                 tooltip,
@@ -1214,7 +1093,7 @@ impl CapturePreviewWindow {
                                 },
                             ))
                         })
-                        .child(Self::pill_button(
+                        .child(preview::pill(
                             ("preview-edit", id),
                             "Edit",
                             "Edit",
@@ -1244,7 +1123,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET))
                         .left(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-copy", id),
                             "copy",
                             false,
@@ -1277,7 +1156,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET))
                         .right(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-upload", id),
                             "cloud-upload",
                             busy,
@@ -1393,7 +1272,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET + PREVIEW_CONTROL + 4.0))
                         .right(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-pin-display", id),
                             "monitor",
                             false,
@@ -1765,13 +1644,13 @@ mod tests {
             assert!(control_call(id).contains("theme.primary,"), "{id}");
         }
 
-        let pill_button = source
-            .split_once("fn pill_button")
-            .expect("pill button")
+        let pill = include_str!("../ui/preview.rs")
+            .split_once("pub fn pill")
+            .expect("pill helper")
             .1
             .split_once("fn chip")
-            .expect("pill button body")
+            .expect("pill helper body")
             .0;
-        assert!(pill_button.contains("theme.primary,"));
+        assert!(pill.contains("theme.primary,"));
     }
 }

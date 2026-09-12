@@ -16,6 +16,7 @@ use crate::ui::chrome;
 use crate::ui::color_picker;
 use crate::ui::colors::Tool;
 use crate::ui::icon::{icon_element, spinner_element};
+use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
 use herogpui::components::{Button, Size, Variant};
 
@@ -63,21 +64,16 @@ fn tool_button(tool: Tool, shortcut: &str, active: bool, handlers: &EditorHandle
     } else {
         format!("{name} ({})", shortcut.to_uppercase())
     };
-    herogpui::components::Tooltip::new(tooltip)
-        .child(
-            Button::new(tool.id())
-                // The renderer puts an explicit `size-4` on every tool glyph.
-                .child(icon_element(tool.icon(), px(chrome::TOOL_BUTTON_ICON)))
-                .variant(if active {
-                    Variant::Tertiary
-                } else {
-                    Variant::Ghost
-                })
-                .is_icon_only(true)
-                .recipe("compact-icon")
-                .on_press(move |_event, window, cx| select(window, cx)),
-        )
-        .into_any_element()
+    icon_button::with_tooltip(
+        tooltip,
+        icon_button::compact(tool.id(), tool.icon())
+            .variant(if active {
+                Variant::Tertiary
+            } else {
+                Variant::Ghost
+            })
+            .on_press(move |_event, window, cx| select(window, cx)),
+    )
 }
 
 fn action_button(
@@ -177,25 +173,19 @@ impl RenderOnce for TitleBar {
 
         {
             let capture = handlers.action(EditorAction::CaptureToggle);
-            tools = tools.child(
-                herogpui::components::Tooltip::new(format!(
+            tools = tools.child(icon_button::with_tooltip(
+                format!(
                     "Capture & Attach (hold {} for edge picker)",
                     accelerator::primary_modifier_label()
-                ))
-                .child(
-                    Button::new("tool-capture")
-                        .variant(if self.is_capture_mode {
-                            Variant::Tertiary
-                        } else {
-                            Variant::Ghost
-                        })
-                        .is_icon_only(true)
-                        .recipe("compact-icon")
-                        .child(icon_element("camera", px(chrome::TOOL_BUTTON_ICON)))
-                        .on_press(move |_event, window, cx| capture(window, cx)),
-                )
-                .into_any_element(),
-            );
+                ),
+                icon_button::compact("tool-capture", "camera")
+                    .variant(if self.is_capture_mode {
+                        Variant::Tertiary
+                    } else {
+                        Variant::Ghost
+                    })
+                    .on_press(move |_event, window, cx| capture(window, cx)),
+            ));
         }
 
         tools = tools

@@ -4,8 +4,6 @@
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window};
 use herogpui::gpui;
 
-use herogpui::components::{Button, Size, Variant};
-
 use crate::capture::all_in_one::{Choices, Mode, Target};
 use crate::capture::overlay::AreaOverlay;
 use crate::system::capabilities::{is_supported, Feature};
@@ -13,6 +11,7 @@ use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuBuilder, MenuHandle, MenuItem, MenuPlacement};
+use crate::ui::toolbar;
 
 const TARGET_MENU_ID: &str = "all-in-one-target";
 const TARGET_ICON_GAP: f32 = 4.0;
@@ -42,39 +41,14 @@ pub fn render(
             continue;
         }
         let active = mode_selected(choices, picking_color, mode);
-        let id = format!("all-in-one-mode-{}", mode.id());
-        let focus = crate::ui::primitives::control_focus(&id, false, window, cx);
-        let (mode_hover, mode_hovered) = crate::ui::primitives::hover_flag(&id, window, cx);
-        let mode_text = if mode_hovered {
-            theme.muted_foreground
-        } else if active {
-            theme.foreground
-        } else {
-            theme.muted_foreground.opacity(0.6)
-        };
+        let id = SharedString::from(format!("all-in-one-mode-{}", mode.id()));
         modes = modes.child(
-            div()
-                .id(SharedString::from(id))
-                .track_focus(&focus)
-                .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
-                .size(px(chrome::OVERLAY_BUTTON_SIZE))
-                .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(active, |el| el.bg(theme.muted_foreground.opacity(0.25)))
-                .text_color(mode_text)
-                .on_hover({
-                    let mode_hover = mode_hover.clone();
-                    move |over: &bool, _window, cx| {
-                        crate::ui::primitives::track_hover(&mode_hover, *over, cx);
-                    }
-                })
-                .on_click(cx.listener(move |this, _event, window, cx| {
+            toolbar::mode_tab(id, mode.icon(), active, theme, window, cx).on_click(cx.listener(
+                move |this, _event, window, cx| {
                     this.close_all_in_one_menu(window);
                     this.set_all_in_one_mode(mode, cx);
-                }))
-                .child(icon_element(mode.icon(), px(chrome::TOOL_BUTTON_ICON))),
+                },
+            )),
         );
     }
 
@@ -86,10 +60,10 @@ pub fn render(
         .flex()
         .justify_center()
         .child(
-            crate::ui::primitives::toolbar_surface(theme)
+            toolbar::surface(theme)
                 .child(modes)
                 .child(target_menu(choices, menu, theme, window, cx))
-                .child(hairline(theme))
+                .child(toolbar::hairline(theme))
                 .when(ocr_enabled, |el| {
                     el.child(toolbar_button(
                         "all-in-one-ocr",
@@ -117,7 +91,7 @@ pub fn render(
                         cx,
                     ))
                 })
-                .child(hairline(theme))
+                .child(toolbar::hairline(theme))
                 .child(toolbar_button(
                     "all-in-one-close",
                     "x",
@@ -136,9 +110,6 @@ pub fn render(
     bar.into_any_element()
 }
 
-/// `toolbar-button.tsx`: `size-8 rounded-3xl hover:bg-white/15` with
-/// `--button-fg: rgb(255 255 255 / 0.85)`. The overlay floats over the frozen
-/// desktop, so its chrome is white on every theme rather than themed.
 fn toolbar_button(
     id: &'static str,
     icon: &'static str,
@@ -148,48 +119,15 @@ fn toolbar_button(
     on_click: impl Fn(&mut AreaOverlay, &mut Window, &mut Context<AreaOverlay>) + 'static,
     cx: &mut Context<AreaOverlay>,
 ) -> AnyElement {
-    let (surface, surface_hover) =
-        toolbar_button_surfaces(selected, theme.default, theme.default_hover);
-    let radius = px(chrome::OVERLAY_BUTTON_RADIUS);
-    let foreground = crate::ui::colors::white(0.85);
-    let resting = surface.unwrap_or_else(gpui::transparent_black);
-    let button = Button::new(id)
-        .variant(Variant::Ghost)
-        .size(Size::Sm)
-        .is_icon_only(true)
-        .radius(radius)
-        .sx(move |el| el.bg(resting).text_color(foreground))
-        .hover_bg(surface_hover)
-        .child(icon_element(icon, px(16.0)))
-        .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx)));
-    herogpui::components::Tooltip::new(tooltip)
-        .child(button)
-        .into_any_element()
-}
-
-fn toolbar_button_surfaces(
-    selected: bool,
-    selected_surface: gpui::Hsla,
-    selected_hover: gpui::Hsla,
-) -> (Option<gpui::Hsla>, gpui::Hsla) {
-    if selected {
-        return (Some(selected_surface), selected_hover);
-    }
-    (None, crate::ui::colors::white(0.15))
+    toolbar::with_tooltip(
+        tooltip,
+        toolbar::selected_icon(id, icon, selected, theme)
+            .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx))),
+    )
 }
 
 fn mode_selected(choices: Choices, picking_color: bool, mode: Mode) -> bool {
     !picking_color && choices.mode == mode
-}
-
-fn hairline(theme: &ThemeVars) -> AnyElement {
-    div()
-        .mx(px(chrome::OVERLAY_HAIRLINE_INSET))
-        .h(px(chrome::OVERLAY_HAIRLINE_HEIGHT))
-        .w(px(1.0))
-        .flex_none()
-        .bg(theme.border.opacity(0.7))
-        .into_any_element()
 }
 
 fn target_menu(
@@ -308,16 +246,6 @@ mod tests {
                 - chrome::OVERLAY_TARGET_TRIGGER_PAD_X * 2.0
                 - TARGET_ICON_GROUP_WIDTH,
             4.0
-        );
-    }
-
-    #[test]
-    fn selected_toolbar_buttons_use_the_active_hover_surface() {
-        let selected_surface = gpui::hsla(0.0, 0.0, 0.2, 1.0);
-        let selected_hover = gpui::hsla(0.0, 0.0, 0.3, 1.0);
-        assert_eq!(
-            toolbar_button_surfaces(true, selected_surface, selected_hover),
-            (Some(selected_surface), selected_hover)
         );
     }
 

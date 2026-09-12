@@ -4,6 +4,7 @@ use herogpui::gpui;
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
+use crate::ui::icon_button;
 use crate::windows::history::model::{HistoryFilter, HistoryLayout, HistorySortOrder};
 use crate::windows::history::HistoryWindow;
 use herogpui::components::{Button, Variant};
@@ -19,6 +20,8 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
         actions = actions.child(
             Button::new("history-clear-all")
                 .variant(Variant::Ghost)
+                .recipe("compact")
+                .recipe("muted")
                 .label("Clear All")
                 .content(|_| {
                     crate::ui::primitives::icon_label(
@@ -29,28 +32,15 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
                         false,
                     )
                 })
-                .sx(|el| {
-                    el.h(px(28.0))
-                        .px(px(chrome::HISTORY_CHIP_PAD_X))
-                        .text_size(px(12.0))
-                        .line_height(px(16.0))
-                        .text_color(theme.muted_foreground)
-                })
                 .on_press(cx.listener(|this, _event, _window, cx| this.clear_all(cx))),
         );
     }
 
-    actions = actions.child(
-        herogpui::components::Tooltip::new("Settings").child(
-            Button::new("history-open-settings")
-                .variant(Variant::Ghost)
-                .is_icon_only(true)
-                .child(icon_element("settings", px(chrome::TOOL_BUTTON_ICON)))
-                .recipe("compact-icon")
-                .recipe("muted")
-                .on_press(cx.listener(|this, _event, window, cx| this.open_settings(window, cx))),
-        ),
-    );
+    actions = actions.child(icon_button::with_tooltip(
+        "Settings",
+        icon_button::compact_muted("history-open-settings", "settings")
+            .on_press(cx.listener(|this, _event, window, cx| this.open_settings(window, cx))),
+    ));
 
     div()
         .flex()
@@ -75,29 +65,19 @@ pub fn toolbar(
     filter: HistoryFilter,
     order: HistorySortOrder,
     layout: HistoryLayout,
-    theme: &ThemeVars,
     cx: &mut Context<HistoryWindow>,
 ) -> AnyElement {
     let mut filters = div().flex().items_center().gap(px(2.0));
 
     for option in HistoryFilter::ALL {
-        let mut button = Button::new(ElementId::Name(SharedString::from(format!(
-            "history-filter-{}",
-            option.as_str()
-        ))))
-        .variant(if filter == option {
-            Variant::Secondary
-        } else {
-            Variant::Ghost
-        })
+        let mut button = icon_button::chip(
+            ElementId::Name(SharedString::from(format!(
+                "history-filter-{}",
+                option.as_str()
+            ))),
+            filter == option,
+        )
         .label(option.label())
-        .sx(|el| {
-            el.h(px(chrome::HISTORY_CHIP_HEIGHT))
-                .px(px(chrome::HISTORY_CHIP_PAD_X))
-                .text_size(px(12.0))
-                .line_height(px(16.0))
-                .gap(px(chrome::HISTORY_CHIP_ICON_GAP))
-        })
         .on_press(cx.listener(move |this, _event, _window, cx| {
             this.set_filter(option, cx);
         }));
@@ -120,43 +100,17 @@ pub fn toolbar(
                 .flex()
                 .items_center()
                 .gap(px(2.0))
-                .child(
-                    herogpui::components::Tooltip::new(order.tooltip()).child(
-                        Button::new("history-sort")
-                            .variant(Variant::Ghost)
-                            .is_icon_only(true)
-                            .child(icon_element("arrow-up-down", px(chrome::HISTORY_TOOL_ICON)))
-                            .sx(|el| {
-                                el.h(px(chrome::HISTORY_CHIP_HEIGHT))
-                                    .w(px(28.0))
-                                    .p_0()
-                                    .text_color(theme.muted_foreground)
-                            })
-                            .on_press(
-                                cx.listener(|this, _event, _window, cx| this.toggle_sort_order(cx)),
-                            ),
+                .child(icon_button::with_tooltip(
+                    order.tooltip(),
+                    icon_button::chip_icon("history-sort", "arrow-up-down").on_press(
+                        cx.listener(|this, _event, _window, cx| this.toggle_sort_order(cx)),
                     ),
-                )
-                .child(
-                    herogpui::components::Tooltip::new(layout.toggle_tooltip()).child(
-                        Button::new("history-layout")
-                            .variant(Variant::Ghost)
-                            .is_icon_only(true)
-                            .child(icon_element(
-                                layout.toggle_icon(),
-                                px(chrome::HISTORY_TOOL_ICON),
-                            ))
-                            .sx(|el| {
-                                el.h(px(chrome::HISTORY_CHIP_HEIGHT))
-                                    .w(px(28.0))
-                                    .p_0()
-                                    .text_color(theme.muted_foreground)
-                            })
-                            .on_press(
-                                cx.listener(|this, _event, _window, cx| this.toggle_layout(cx)),
-                            ),
-                    ),
-                ),
+                ))
+                .child(icon_button::with_tooltip(
+                    layout.toggle_tooltip(),
+                    icon_button::chip_icon("history-layout", layout.toggle_icon())
+                        .on_press(cx.listener(|this, _event, _window, cx| this.toggle_layout(cx))),
+                )),
         )
         .into_any_element()
 }

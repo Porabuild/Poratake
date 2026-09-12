@@ -182,4 +182,33 @@ mod tests {
             offenders.join("\n  ")
         );
     }
+
+    #[test]
+    fn overlay_and_preview_recipes_live_on_reusable_helpers() {
+        let mut offenders = Vec::new();
+        for path in rust_sources() {
+            let name = path.file_name().and_then(|name| name.to_str());
+            if matches!(
+                name,
+                Some("toolbar.rs" | "preview.rs" | "bridge.rs" | "lints.rs")
+            ) {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read source");
+            for (index, line) in source.lines().enumerate() {
+                if line.contains(".recipe(\"overlay\")")
+                    || line.contains(".recipe(\"preview\")")
+                    || line.contains(".recipe(\"preview-pill\")")
+                {
+                    offenders.push(format!("{}:{}", path.display(), index + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "overlay/preview recipes belong on ui/toolbar.rs and ui/preview.rs \
+             so views compose those helpers. Found at:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
 }
