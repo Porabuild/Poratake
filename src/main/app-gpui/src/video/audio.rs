@@ -269,7 +269,9 @@ mod backend {
             let bytes = std::slice::from_raw_parts(data, length as usize);
             samples.extend(
                 bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
             );
             let _ = buffer.Unlock();

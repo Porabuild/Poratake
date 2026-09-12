@@ -2,6 +2,7 @@ use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, AnyElement, Context, Hsla,
     MouseDownEvent, MouseMoveEvent, ScrollHandle, SharedString, Styled,
 };
+use herogpui::gpui;
 
 use crate::theme::color::Srgba;
 use crate::theme::vars::ThemeVars;

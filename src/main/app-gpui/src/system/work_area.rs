@@ -13,11 +13,12 @@
 //! the taskbar (and any other appbar).
 
 use gpui::{px, Bounds, Pixels};
+use herogpui::gpui;
 
 pub fn display_bounds(display: &dyn gpui::PlatformDisplay) -> Bounds<Pixels> {
     #[cfg(target_os = "macos")]
     unsafe {
-        let bounds = CGDisplayBounds(u32::from(display.id()));
+        let bounds = CGDisplayBounds(u64::from(display.id()) as u32);
         Bounds {
             origin: gpui::point(px(bounds.origin.x as f32), px(bounds.origin.y as f32)),
             size: gpui::size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
@@ -29,7 +30,7 @@ pub fn display_bounds(display: &dyn gpui::PlatformDisplay) -> Bounds<Pixels> {
 
 pub fn capture_scale_factor(display: &dyn gpui::PlatformDisplay, cx: &mut gpui::App) -> f32 {
     #[cfg(target_os = "macos")]
-    if let Some(scale) = macos_display_scale_factor(u32::from(display.id())) {
+    if let Some(scale) = macos_display_scale_factor(u64::from(display.id()) as u32) {
         return scale;
     }
     #[cfg(windows)]
@@ -353,6 +354,7 @@ fn monitor_rects(_display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
 mod tests {
     use super::*;
     use gpui::{point, size};
+    use herogpui::gpui;
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds {

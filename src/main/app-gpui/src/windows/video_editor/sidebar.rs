@@ -1,10 +1,12 @@
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window};
+use herogpui::gpui;
 
 use crate::config::shortcuts::VideoEditorSidebarShortcuts;
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
+use crate::ui::icon::icon_element;
 use crate::windows::video_editor::VideoEditorWindow;
+use herogpui::components::{Button, Size, Tooltip, Variant};
 
 pub const TAB_RAIL_WIDTH: f32 = chrome::VIDEO_TAB_RAIL_WIDTH;
 #[allow(dead_code)]
@@ -168,18 +170,20 @@ pub fn tab_rail(
             format!("{} ({})", tab.label(), shortcut.to_uppercase())
         };
         rail = rail.child(
-            Button::new(SharedString::from(format!("video-tab-{}", tab.id())))
-                .variant(if active == Some(tab) {
-                    ButtonVariant::Tertiary
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .size(ButtonSize::IconSm)
-                .icon(tab.icon())
-                .tooltip(tooltip)
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.select_tab(tab, cx);
-                })),
+            Tooltip::new(tooltip).child(
+                Button::new(SharedString::from(format!("video-tab-{}", tab.id())))
+                    .variant(if active == Some(tab) {
+                        Variant::Tertiary
+                    } else {
+                        Variant::Ghost
+                    })
+                    .size(Size::Sm)
+                    .is_icon_only(true)
+                    .child(icon_element(tab.icon(), px(16.0)))
+                    .on_press(cx.listener(move |this, _event, _window, cx| {
+                        this.select_tab(tab, cx);
+                    })),
+            ),
         );
     }
 

@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use gpui::{Bounds, Pixels};
+use herogpui::gpui;
 
 /// Tailwind `blur-md` is `blur(12px)`, and CSS filter blur takes a standard
 /// deviation, so this is the sigma directly.
@@ -107,6 +108,7 @@ pub fn build(
 mod tests {
     use super::*;
     use gpui::{px, size};
+    use herogpui::gpui;
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds {

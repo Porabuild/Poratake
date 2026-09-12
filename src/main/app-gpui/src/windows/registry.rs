@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use gpui::{AnyWindowHandle, App, Global};
+use herogpui::gpui;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum WindowKind {

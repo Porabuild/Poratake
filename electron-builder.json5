@@ -23,6 +23,10 @@
       "to": "licenses/FFmpeg-LGPL-2.1.txt"
     },
     {
+      "from": "licenses/HeroGPUI-Apache-2.0.txt",
+      "to": "licenses/HeroGPUI-Apache-2.0.txt"
+    },
+    {
       "from": "licenses/Geist-OFL-1.1.txt",
       "to": "licenses/Geist-OFL-1.1.txt"
     },

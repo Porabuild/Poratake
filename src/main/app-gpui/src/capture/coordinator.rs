@@ -3,6 +3,7 @@
 //! removal and can still open follow-up UI on the main thread.
 
 use gpui::{Context, Entity};
+use herogpui::gpui;
 use poratake_daemon_common::contract::{
     ScrollCaptureStartRequest, ScrollSpeed, SCROLL_CAPTURE_CANCELLED_EVENT,
     SCROLL_CAPTURE_DONE_EVENT, SYSTEM_EXIT_EVENT,
@@ -82,22 +83,15 @@ impl Coordinator {
 /// Port of `capture/screenshot/finalize.ts`: record the capture in history,
 /// honour the clipboard settings, then open the preview or the editor.
 async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui::AsyncApp) {
-    let (history_enabled, max_items, play_sound, screenshot) = cx
-        .update(|cx| {
-            let config = cx.global::<crate::state::AppState>().service.config.get();
-            (
-                config.history.enabled,
-                config.history.max_items as usize,
-                config.general.play_sound_on_screenshot,
-                config.screenshot.clone(),
-            )
-        })
-        .unwrap_or((
-            true,
-            50,
-            false,
-            crate::config::shortcuts::ScreenshotConfig::default(),
-        ));
+    let (history_enabled, max_items, play_sound, screenshot) = cx.update(|cx| {
+        let config = cx.global::<crate::state::AppState>().service.config.get();
+        (
+            config.history.enabled,
+            config.history.max_items as usize,
+            config.general.play_sound_on_screenshot,
+            config.screenshot.clone(),
+        )
+    });
 
     #[cfg(target_os = "macos")]
     if play_sound && !silent {
@@ -127,7 +121,7 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
 
     if screenshot.capture_to_clipboard || screenshot.auto_copy_to_clipboard {
         let clipboard_path = path.clone();
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             if let Ok(bytes) = std::fs::read(&clipboard_path) {
                 crate::system::clipboard::ClipboardService::write_png(cx, bytes);
             }
@@ -138,21 +132,18 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
     }
 
     let open_preview = screenshot.show_preview;
-    let result = cx.update(|cx| {
+    cx.update(|cx| {
         if open_preview {
             crate::windows::capture_preview::CapturePreviewWindow::open(cx, path.clone());
         } else {
             crate::open_editor_for(cx, path.to_string_lossy().as_ref());
         }
     });
-    if let Err(error) = result {
-        show_capture_error(cx, "Capture Failed", &error.to_string());
-    }
 }
 
 fn show_capture_error(cx: &mut gpui::AsyncApp, title: &'static str, body: &str) {
     let body = body.to_string();
-    let _ = cx.update(|cx| crate::windows::toast::Toast::show(cx, title, body));
+    cx.update(|cx| crate::windows::toast::Toast::show(cx, title, body));
 }
 
 impl Coordinator {
@@ -354,7 +345,7 @@ impl Coordinator {
             });
             let outcome = analysis.await;
 
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 if let Some(text) = outcome.clipboard {
                     crate::system::clipboard::ClipboardService::write_text(cx, text);
                 }

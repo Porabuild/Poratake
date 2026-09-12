@@ -1,4 +1,5 @@
 use gpui::App;
+use herogpui::gpui;
 
 pub fn open_clipboard(cx: &mut App) {
     let Some(image) = crate::system::clipboard::ClipboardService::read_image(cx) else {

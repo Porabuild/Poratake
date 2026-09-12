@@ -4,26 +4,26 @@ use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, Animation, AnimationExt, AnyElement,
     App, ClickEvent, ElementId, SharedString, Styled, Window,
 };
+use herogpui::gpui;
 
 use crate::config::schema::{CustomBackground, CustomBackgroundData};
 use crate::editor::options::{EditorHandlers, EditorOption};
 use crate::editor::wallpaper::{self, WallpaperSettings};
 use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, ICON_MD};
+use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
-use crate::ui::primitives::Separator;
-use crate::ui::select::{Select, SelectOption};
-use crate::ui::slider::Slider;
-use crate::ui::switch::{Switch, SwitchSize};
+use herogpui::components::{Button, PickerItem, Select, Size, Switch, Variant};
+use herogpui::components::{Slider, SliderSize};
+use herogpui::Separator;
 
 pub fn render(
     wallpaper: &WallpaperSettings,
     has_layers: bool,
     preset_id: &str,
-    menu: &MenuHandle,
+    _menu: &MenuHandle,
     handlers: &EditorHandlers,
     window: &mut Window,
     cx: &mut App,
@@ -56,11 +56,10 @@ pub fn render(
                     preset_id,
                     &wallpaper_config.presets,
                     wallpaper_config.default_preset_id.as_deref(),
-                    menu,
                     handlers,
                     &theme,
                 ))
-                .child(Separator::horizontal())
+                .child(Separator::new())
                 .child(backgrounds_section(
                     wallpaper,
                     &wallpaper_config.custom_backgrounds,
@@ -69,9 +68,9 @@ pub fn render(
                     window,
                     cx,
                 ))
-                .child(Separator::horizontal())
-                .child(aspect_row(wallpaper, menu, handlers, &theme))
-                .child(Separator::horizontal())
+                .child(Separator::new())
+                .child(aspect_row(wallpaper, handlers, &theme))
+                .child(Separator::new())
                 .child(balance_row(wallpaper, handlers, &theme))
                 .child(slider_control(
                     "wallpaper-padding",
@@ -118,7 +117,7 @@ pub fn render(
                     &theme,
                 ))
                 .child(spacing_control(wallpaper, has_layers, handlers, &theme))
-                .child(Separator::horizontal())
+                .child(Separator::new())
                 .child(window_frames(wallpaper, handlers, &theme)),
         )
         .with_animation(
@@ -157,14 +156,11 @@ fn header(handlers: &EditorHandlers, theme: &ThemeVars) -> AnyElement {
                 .text_color(theme.foreground)
                 .child("Wallpaper"),
         )
-        .child(
-            Button::new("wallpaper-sheet-close")
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconXs)
-                .icon("x")
-                .tooltip("Close")
-                .on_click(move |_event: &ClickEvent, window, cx| close(window, cx)),
-        )
+        .child(icon_button::with_tooltip(
+            "Close",
+            icon_button::compact_sm("wallpaper-sheet-close", "x")
+                .on_press(move |_event: &ClickEvent, window, cx| close(window, cx)),
+        ))
         .into_any_element()
 }
 
@@ -172,7 +168,6 @@ fn preset_manager(
     selected_id: &str,
     presets: &[crate::config::schema::WallpaperPreset],
     default_id: Option<&str>,
-    menu: &MenuHandle,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
 ) -> AnyElement {
@@ -186,12 +181,20 @@ fn preset_manager(
             .child(section_label("Presets", theme, false))
             .child(
                 Button::new("wallpaper-preset-save")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Xs)
-                    .icon("save")
                     .label("Save")
-                    .foreground(theme.muted_foreground)
-                    .on_click(move |_event, window, cx| save(window, cx)),
+                    .content(|_| {
+                        crate::ui::primitives::icon_label(
+                            "save",
+                            "Save".into(),
+                            px(14.0),
+                            px(8.0),
+                            false,
+                        )
+                    })
+                    .variant(Variant::Ghost)
+                    .recipe("compact")
+                    .recipe("muted")
+                    .on_press(move |_event, window, cx| save(window, cx)),
             ),
     );
 
@@ -204,7 +207,7 @@ fn preset_manager(
             .into_any_element();
     }
 
-    let options: Vec<SelectOption> = presets
+    let items: Vec<PickerItem> = presets
         .iter()
         .map(|preset| {
             let label = if default_id == Some(preset.id.as_str()) {
@@ -212,18 +215,22 @@ fn preset_manager(
             } else {
                 preset.name.clone()
             };
-            SelectOption::new(preset.id.clone(), label)
+            PickerItem::new(preset.id.clone(), label)
         })
         .collect();
+    let value = items
+        .iter()
+        .any(|item| item.key().as_str() == selected_id)
+        .then(|| SharedString::from(selected_id));
     let apply = handlers.on_option.clone();
     let mut row = div().flex().flex_row().items_center().gap(px(8.0)).child(
-        Select::new("wallpaper-preset", menu.clone())
-            .selected(selected_id.to_string())
+        Select::new("wallpaper-preset", items)
+            .recipe("compact")
+            .value(value.clone())
             .placeholder("Preset")
-            .options(options)
-            .small()
-            .full_width()
-            .on_select(move |value, window, cx| {
+            .full_width(true)
+            .on_selection_change(move |value, window, cx| {
+                let Some(value) = value else { return };
                 apply(
                     EditorOption::WallpaperApplyPreset(value.clone()),
                     window,
@@ -237,32 +244,27 @@ fn preset_manager(
         let toggle = handlers.option(EditorOption::WallpaperToggleDefaultPreset);
         let delete = handlers.option(EditorOption::WallpaperDeletePreset);
         row = row
-            .child(
-                Button::new("wallpaper-preset-star")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::IconXs)
-                    .icon("star")
-                    .foreground(if is_default {
-                        theme.primary
-                    } else {
-                        theme.muted_foreground
+            .child(icon_button::with_tooltip(
+                if is_default {
+                    "Stop using this preset for Polish"
+                } else {
+                    "Use this preset for Polish"
+                },
+                icon_button::compact_sm("wallpaper-preset-star", "star")
+                    .sx(|el| {
+                        el.text_color(if is_default {
+                            theme.primary
+                        } else {
+                            theme.muted_foreground
+                        })
                     })
-                    .tooltip(if is_default {
-                        "Stop using this preset for Polish"
-                    } else {
-                        "Use this preset for Polish"
-                    })
-                    .on_click(move |_event, window, cx| toggle(window, cx)),
-            )
-            .child(
-                Button::new("wallpaper-preset-delete")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::IconXs)
-                    .icon("trash-2")
-                    .foreground(theme.muted_foreground)
-                    .tooltip("Delete preset")
-                    .on_click(move |_event, window, cx| delete(window, cx)),
-            );
+                    .on_press(move |_event, window, cx| toggle(window, cx)),
+            ))
+            .child(icon_button::with_tooltip(
+                "Delete preset",
+                icon_button::compact_sm_muted("wallpaper-preset-delete", "trash-2")
+                    .on_press(move |_event, window, cx| delete(window, cx)),
+            ));
     }
 
     let hint_text = match default_id.and_then(|id| presets.iter().find(|preset| preset.id == id)) {
@@ -297,25 +299,17 @@ fn backgrounds_section(
         let delete = handlers.option(EditorOption::WallpaperDeleteCustom(SharedString::from(
             custom.id.clone(),
         )));
-        actions = actions.child(
-            Button::new("wallpaper-custom-delete")
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconXs)
-                .icon("trash-2")
-                .foreground(theme.muted_foreground)
-                .tooltip("Delete")
-                .on_click(move |_event, window, cx| delete(window, cx)),
-        );
+        actions = actions.child(icon_button::with_tooltip(
+            "Delete",
+            icon_button::compact_sm_muted("wallpaper-custom-delete", "trash-2")
+                .on_press(move |_event, window, cx| delete(window, cx)),
+        ));
     }
-    actions = actions.child(
-        Button::new("wallpaper-add-background")
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::IconXs)
-            .icon("plus")
-            .foreground(theme.muted_foreground)
-            .tooltip("Add Background")
-            .on_click(move |_event, window, cx| add(window, cx)),
-    );
+    actions = actions.child(icon_button::with_tooltip(
+        "Add Background",
+        icon_button::compact_sm_muted("wallpaper-add-background", "plus")
+            .on_press(move |_event, window, cx| add(window, cx)),
+    ));
 
     let mut tiles: Vec<AnyElement> = Vec::new();
     if crate::system::capabilities::is_supported(
@@ -609,15 +603,18 @@ pub fn gradient_tile(
 
 fn aspect_row(
     wallpaper: &WallpaperSettings,
-    menu: &MenuHandle,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
 ) -> AnyElement {
     let apply = handlers.on_option.clone();
-    let options = wallpaper::ASPECT_RATIOS
+    let items: Vec<PickerItem> = wallpaper::ASPECT_RATIOS
         .iter()
-        .map(|(value, label)| SelectOption::new(*value, *label))
+        .map(|(value, label)| PickerItem::new(*value, *label))
         .collect();
+    let value = items
+        .iter()
+        .any(|item| item.key().as_str() == wallpaper.aspect_ratio)
+        .then(|| SharedString::from(wallpaper.aspect_ratio.clone()));
     div()
         .flex()
         .flex_row()
@@ -625,12 +622,12 @@ fn aspect_row(
         .justify_between()
         .child(label("Aspect Ratio", theme, false))
         .child(
-            Select::new("wallpaper-aspect", menu.clone())
-                .selected(wallpaper.aspect_ratio.clone())
-                .options(options)
-                .small()
-                .width(px(chrome::WALLPAPER_SELECT_WIDTH))
-                .on_select(move |value, window, cx| {
+            Select::new("wallpaper-aspect", items)
+                .recipe("compact")
+                .value(value.clone())
+                .sx(|el| el.w(px(chrome::WALLPAPER_SELECT_WIDTH)))
+                .on_selection_change(move |value, window, cx| {
+                    let Some(value) = value else { return };
                     apply(
                         EditorOption::WallpaperAspectRatio(value.clone()),
                         window,
@@ -654,8 +651,9 @@ fn balance_row(
         .justify_between()
         .child(label("Balance", theme, false))
         .child(
-            Switch::new("wallpaper-balance", wallpaper.balance)
-                .size(SwitchSize::Sm)
+            Switch::new("wallpaper-balance")
+                .is_selected(wallpaper.balance)
+                .size(Size::Sm)
                 .on_change(move |value, window, cx| {
                     apply(EditorOption::WallpaperBalance(*value), window, cx);
                 }),
@@ -724,9 +722,12 @@ pub fn slider_control(
                 ),
         )
         .child(
-            Slider::new(id, value as f32, min as f32, max as f32)
-                .small()
-                .disabled(disabled)
+            Slider::new(id, value as f32)
+                .min_value(min as f32)
+                .max_value(max as f32)
+                .continuous(true)
+                .size(SliderSize::Sm)
+                .is_disabled(disabled)
                 .on_change(move |value, window, cx| {
                     apply(option(*value as f64), window, cx);
                 }),

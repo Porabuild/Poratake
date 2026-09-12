@@ -337,7 +337,7 @@ fn run_gif(
 /// Straight-alpha RGBA, which the GIF encoder quantizes from.
 fn to_rgba_buffer(pixmap: &Pixmap) -> image::RgbaImage {
     let mut buffer = image::RgbaImage::new(pixmap.width(), pixmap.height());
-    for (index, pixel) in pixmap.data().chunks_exact(4).enumerate() {
+    for (index, pixel) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
         let alpha = pixel[3];
         let unpremultiply = |value: u8| -> u8 {
             if alpha == 0 {
@@ -405,7 +405,12 @@ fn to_pixmap(frame: &crate::video::decoder::DecodedFrame) -> Option<Pixmap> {
     if target.len() != frame.bgra.len() {
         return None;
     }
-    for (out, pixel) in target.chunks_exact_mut(4).zip(frame.bgra.chunks_exact(4)) {
+    for (out, pixel) in target
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(frame.bgra.as_chunks::<4>().0)
+    {
         out[0] = pixel[2];
         out[1] = pixel[1];
         out[2] = pixel[0];
@@ -429,7 +434,7 @@ fn scale_to(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
 /// Unpremultiplies into the BGRA layout Media Foundation's RGB32 input expects.
 fn to_bgra(pixmap: &Pixmap) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(pixmap.data().len());
-    for pixel in pixmap.data().chunks_exact(4) {
+    for pixel in pixmap.data().as_chunks::<4>().0 {
         let alpha = pixel[3];
         let unpremultiply = |value: u8| -> u8 {
             if alpha == 0 {

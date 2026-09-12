@@ -7,6 +7,7 @@ use gpui::{
     div, img, prelude::*, px, size, App, Bounds, Context, Render, Styled, Window,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
+use herogpui::gpui;
 
 use crate::ui::chrome;
 
@@ -22,7 +23,7 @@ impl PinWindow {
         };
         let (width, height) = (decoded.width() as f32, decoded.height() as f32);
         let mut buffer = decoded;
-        for pixel in buffer.chunks_exact_mut(4) {
+        for pixel in buffer.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         let frame = image::Frame::new(buffer);

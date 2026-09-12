@@ -171,7 +171,12 @@ fn to_pixmap(frame: &DecodedFrame) -> Option<Pixmap> {
     if target.len() != frame.bgra.len() {
         return None;
     }
-    for (out, pixel) in target.chunks_exact_mut(4).zip(frame.bgra.chunks_exact(4)) {
+    for (out, pixel) in target
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(frame.bgra.as_chunks::<4>().0)
+    {
         out[0] = pixel[2];
         out[1] = pixel[1];
         out[2] = pixel[0];
@@ -183,7 +188,7 @@ fn to_pixmap(frame: &DecodedFrame) -> Option<Pixmap> {
 /// Converts a composed pixmap into the straight-alpha BGRA image GPUI paints.
 pub fn to_render_image(pixmap: &Pixmap) -> Option<Arc<gpui::RenderImage>> {
     let mut buffer = image::RgbaImage::new(pixmap.width(), pixmap.height());
-    for (index, pixel) in pixmap.data().chunks_exact(4).enumerate() {
+    for (index, pixel) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
         let alpha = pixel[3];
         let unpremultiply = |value: u8| -> u8 {
             if alpha == 0 {

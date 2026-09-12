@@ -1,7 +1,8 @@
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled};
+use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
+use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
 use crate::windows::video_editor::data_editor;
 use crate::windows::video_editor::model::{FocusPoint, VideoEditorState};
@@ -11,6 +12,7 @@ use crate::windows::video_editor::styles::{
     self, CameraStyle, CursorStyle, KeyboardStyle, SubtitleStyle,
 };
 use crate::windows::video_editor::VideoEditorWindow;
+use herogpui::components::{Button, Size, Variant};
 
 pub fn render(
     tab: SidebarTab,
@@ -677,12 +679,9 @@ fn drawing_panel(
                     .justify_between()
                     .child(kit::label("Selected Drawing", theme))
                     .child(
-                        Button::new("drawing-delete")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::IconXs)
-                            .icon("trash-2")
-                            .foreground(theme.destructive)
-                            .on_click(cx.listener(|this, _event, _window, cx| {
+                        icon_button::compact_sm("drawing-delete", "trash-2")
+                            .sx(|el| el.text_color(theme.destructive))
+                            .on_press(cx.listener(|this, _event, _window, cx| {
                                 this.delete_selected_drawing(cx)
                             })),
                     )
@@ -708,15 +707,15 @@ fn drawing_tool_grid(
             let selected = tool.id() == active;
             let id = tool.id();
             Button::new(SharedString::from(format!("drawing-tool-{id}")))
+                .child(crate::ui::icon::icon_element(tool.icon(), px(16.0)))
                 .variant(if selected {
-                    ButtonVariant::Tertiary
+                    Variant::Tertiary
                 } else {
-                    ButtonVariant::Ghost
+                    Variant::Ghost
                 })
-                .size(ButtonSize::IconSm)
-                .icon(tool.icon())
-                .tooltip(tool.label())
-                .on_click(cx.listener(move |this, _event, _window, cx| {
+                .size(Size::Sm)
+                .is_icon_only(true)
+                .on_press(cx.listener(move |this, _event, _window, cx| {
                     this.update_drawing_tools(cx, |tools| tools.active_tool = id.to_string());
                 }))
                 .into_any_element()
@@ -1206,14 +1205,11 @@ fn audio_panel(
                         .child("Manage audio tracks in your project"),
                 ),
         )
-        .child(
-            Button::new("audio-add-music")
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconXs)
-                .icon("plus")
-                .tooltip("Add music")
-                .on_click(cx.listener(|this, _event, _window, cx| this.add_music_track(cx))),
-        )
+        .child(icon_button::with_tooltip(
+            "Add music",
+            icon_button::compact_sm("audio-add-music", "plus")
+                .on_press(cx.listener(|this, _event, _window, cx| this.add_music_track(cx))),
+        ))
         .into_any_element()];
 
     let groups = music_groups(&state.music_tracks);
@@ -1257,20 +1253,23 @@ fn audio_panel(
                             })
                         },
                     ))
-                    .child(
-                        Button::new("audio-keyboard-demo")
-                            .variant(ButtonVariant::Tertiary)
-                            .size(ButtonSize::IconXs)
-                            .icon(if demo { "square" } else { "play" })
-                            .tooltip(if demo { "Stop demo" } else { "Play demo" })
-                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                    .child(icon_button::with_tooltip(
+                        if demo { "Stop demo" } else { "Play demo" },
+                        icon_button::compact_sm(
+                            "audio-keyboard-demo",
+                            if demo { "square" } else { "play" },
+                        )
+                        .variant(Variant::Tertiary)
+                        .on_press(cx.listener(
+                            move |this, _event, _window, cx| {
                                 if this.is_keyboard_demo_playing() {
                                     this.stop_keyboard_demo(cx);
                                 } else {
                                     this.play_keyboard_demo(cx);
                                 }
-                            })),
-                    )
+                            },
+                        )),
+                    ))
                     .into_any_element(),
             );
             children.push(kit::slider_row(
@@ -1364,11 +1363,11 @@ fn music_row(
                         .items_center()
                         .gap(px(4.0))
                         .child(
-                            crate::ui::switch::Switch::new(
-                                SharedString::from(format!("music-enabled-{id}")),
-                                track.enabled,
-                            )
-                            .size(crate::ui::switch::SwitchSize::Sm)
+                            herogpui::components::Switch::new(SharedString::from(format!(
+                                "music-enabled-{id}"
+                            )))
+                            .is_selected(track.enabled)
+                            .size(herogpui::components::Size::Sm)
                             .on_change(cx.listener({
                                 let id = id.clone();
                                 move |this, value: &bool, _window, cx| {
@@ -1378,16 +1377,16 @@ fn music_row(
                         )
                         .when(removable, |el| {
                             el.child(
-                                Button::new(SharedString::from(format!("music-remove-{id}")))
-                                    .variant(ButtonVariant::Ghost)
-                                    .size(ButtonSize::IconXs)
-                                    .icon("trash-2")
-                                    .on_click(cx.listener({
-                                        let id = id.clone();
-                                        move |this, _event, _window, cx| {
-                                            this.remove_music_track(id.clone(), cx)
-                                        }
-                                    })),
+                                icon_button::compact_sm(
+                                    SharedString::from(format!("music-remove-{id}")),
+                                    "trash-2",
+                                )
+                                .on_press(cx.listener({
+                                    let id = id.clone();
+                                    move |this, _event, _window, cx| {
+                                        this.remove_music_track(id.clone(), cx)
+                                    }
+                                })),
                             )
                         }),
                 ),
@@ -1565,7 +1564,6 @@ fn video_backgrounds(
     use crate::config::schema::CustomBackgroundData;
     use crate::editor::wallpaper;
     use crate::editor::wallpaper_sheet::{gradient_tile, icon_tile, image_tile};
-    use crate::ui::button::{Button, ButtonSize, ButtonVariant};
     use crate::ui::chrome;
 
     let tile = chrome::wallpaper_tile_size(chrome::VIDEO_SIDEBAR_WIDTH, chrome::VIDEO_PANEL_PAD);
@@ -1772,14 +1770,10 @@ fn video_backgrounds(
                 .items_center()
                 .justify_between()
                 .child(kit::label("Backgrounds", theme))
-                .child(
-                    Button::new("video-wallpaper-add")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::IconXs)
-                        .icon("plus")
-                        .foreground(theme.muted_foreground)
-                        .tooltip("Add Background")
-                        .on_click(move |_event, _window, cx| {
+                .child(icon_button::with_tooltip(
+                    "Add Background",
+                    icon_button::compact_sm_muted("video-wallpaper-add", "plus").on_press(
+                        move |_event, _window, cx| {
                             if let Some(entity) = add.upgrade() {
                                 entity.update(cx, |this, cx| {
                                     if let Some(path) = crate::editor::background::pick_image() {
@@ -1794,8 +1788,9 @@ fn video_backgrounds(
                                     }
                                 });
                             }
-                        }),
-                ),
+                        },
+                    ),
+                )),
         )
         .child(
             div()
@@ -1904,10 +1899,12 @@ fn subtitle_panel(
                 cx,
                 |this, value, cx| this.set_transcription_model(value.to_string(), cx),
             ));
-            let prompt_field = view.prompt_field.clone();
             children.push(kit::field(
                 "Custom Prompt (optional)",
-                prompt_field.into_any_element(),
+                herogpui::components::TextArea::new(view.prompt_field.clone())
+                    .rows(4)
+                    .placeholder("Add context to improve accuracy...")
+                    .into_any_element(),
                 theme,
             ));
             children.push(kit::hint(
@@ -2153,11 +2150,9 @@ fn first_frame_panel(
                         |this, cx| this.pick_first_frame(cx),
                     ))
                     .child(
-                        Button::new("first-frame-remove")
-                            .variant(ButtonVariant::Tertiary)
-                            .size(ButtonSize::IconXs)
-                            .icon("trash-2")
-                            .on_click(
+                        icon_button::compact_sm("first-frame-remove", "trash-2")
+                            .variant(Variant::Tertiary)
+                            .on_press(
                                 cx.listener(|this, _event, _window, cx| this.clear_first_frame(cx)),
                             ),
                     )
@@ -2372,7 +2367,11 @@ fn export_panel(
                             theme,
                         )),
                 )
-                .child(crate::ui::primitives::Progress::new(export_progress).height(px(6.0)))
+                .child(
+                    herogpui::ProgressBar::new("video-export-panel-progress")
+                        .value(export_progress * 100.0)
+                        .sx(|el| el.h(px(6.0))),
+                )
                 .into_any_element(),
         );
         footer.push(kit::tertiary_button(

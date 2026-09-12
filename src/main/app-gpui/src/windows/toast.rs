@@ -9,6 +9,7 @@
 //! WinRT `ToastNotificationManager` like Electron does.
 
 use gpui::{App, SharedString};
+use herogpui::gpui;
 
 pub struct Toast;
 

@@ -1,4 +1,5 @@
 use gpui::{prelude::*, px, size, App, Bounds, WindowBackgroundAppearance};
+use herogpui::gpui;
 
 use crate::capture::intent::CaptureIntent;
 use crate::product;

@@ -6,11 +6,13 @@
 use gpui::{
     div, prelude::*, px, AnyElement, Context, KeyDownEvent, Render, SharedString, Styled, Window,
 };
+use herogpui::gpui;
 
 use crate::system::accelerator;
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
+use crate::ui::icon::icon_element;
+use herogpui::components::{Button, Size, Variant};
 
 /// A window that can put one shortcut field into recording mode. The window
 /// passes its own recording state to [`render`], so the trait only carries the
@@ -65,35 +67,38 @@ pub fn render<V: ShortcutRecorder>(
 
     if !value.is_empty() && !recording {
         row = row.child(
-            Button::new(SharedString::from(format!("{id}-clear")))
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconSm)
-                .icon("x")
-                .icon_size(px(chrome::TOOL_BUTTON_ICON))
-                .tooltip("Clear shortcut")
-                .foreground(theme.muted_foreground)
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    apply(this, String::new(), cx);
-                })),
+            herogpui::components::Tooltip::new("Clear shortcut").child(
+                Button::new(SharedString::from(format!("{id}-clear")))
+                    .variant(Variant::Ghost)
+                    .size(Size::Sm)
+                    .is_icon_only(true)
+                    .child(icon_element("x", px(chrome::TOOL_BUTTON_ICON)))
+                    .sx(|el| el.text_color(theme.muted_foreground))
+                    .on_press(cx.listener(move |this, _event, _window, cx| {
+                        apply(this, String::new(), cx);
+                    })),
+            ),
         );
     }
 
     row.child(
         Button::new(SharedString::from(format!("{id}-shortcut")))
             .variant(if recording {
-                ButtonVariant::Primary
+                Variant::Primary
             } else {
-                ButtonVariant::Outline
+                Variant::Outline
             })
-            .size(ButtonSize::Sm)
+            .size(Size::Sm)
             .label(display)
-            .min_width(px(if single_key {
-                chrome::SHORTCUT_MIN_WIDTH_SINGLE
-            } else {
-                chrome::SHORTCUT_MIN_WIDTH
-            }))
-            .font_weight(gpui::FontWeight::NORMAL)
-            .on_click(cx.listener(move |this, _event, window, cx| {
+            .sx(|el| {
+                el.min_w(px(if single_key {
+                    chrome::SHORTCUT_MIN_WIDTH_SINGLE
+                } else {
+                    chrome::SHORTCUT_MIN_WIDTH
+                }))
+                .font_weight(gpui::FontWeight::NORMAL)
+            })
+            .on_press(cx.listener(move |this, _event, window, cx| {
                 this.start_recording_shortcut(id, window, cx);
             })),
     )
@@ -149,10 +154,8 @@ pub fn combination_from(event: &KeyDownEvent, single_key: bool) -> Option<String
         named.to_uppercase()
     } else {
         let mut chars = named.chars();
-        match chars.next() {
-            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-            None => return None,
-        }
+        let first = chars.next()?;
+        first.to_uppercase().collect::<String>() + chars.as_str()
     };
 
     let mut combination = parts.join("+");
@@ -170,6 +173,7 @@ pub fn combination_from(event: &KeyDownEvent, single_key: bool) -> Option<String
 mod tests {
     use super::*;
     use gpui::{Keystroke, Modifiers};
+    use herogpui::gpui;
 
     /// Most fields are global accelerators, so the tests below exercise the
     /// modifier-required path.
@@ -185,6 +189,7 @@ mod tests {
                 key_char: None,
             },
             is_held: false,
+            prefer_character_input: false,
         }
     }
 

@@ -6,6 +6,7 @@
 //! identical colors.
 
 use gpui::{rgba, Hsla};
+use herogpui::gpui;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Srgba {
@@ -290,21 +291,6 @@ pub fn mix_parsed_weights(
 /// which keeps blends over `transparent` hue-correct.
 pub fn mix_oklab(color_a: &str, percentage: f32, color_b: &str) -> Srgba {
     mix_parsed(Srgba::parse(color_a), percentage, Srgba::parse(color_b))
-}
-
-/// Interpolates two colors in sRGB, which is how a CSS
-/// `transition: background-color` moves between them.
-pub fn lerp_srgb(from: Hsla, to: Hsla, t: f32) -> Hsla {
-    let t = t.clamp(0.0, 1.0);
-    let a = Srgba::from_hsla(from);
-    let b = Srgba::from_hsla(to);
-    Srgba {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
-        b: a.b + (b.b - a.b) * t,
-        a: a.a + (b.a - a.a) * t,
-    }
-    .to_hsla()
 }
 
 /// `color-mix(in oklab, a p%, b)` for two already-resolved theme colors.

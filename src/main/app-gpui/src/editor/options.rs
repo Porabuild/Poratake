@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use gpui::{App, SharedString, Window};
+use herogpui::gpui;
 
 use crate::ui::colors::Tool;
 

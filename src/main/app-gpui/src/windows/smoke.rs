@@ -12,6 +12,7 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::TestAppContext;
+    use herogpui::gpui;
 
     use crate::config::store::ConfigStore;
     use crate::windows::settings::registry::Category;
@@ -37,7 +38,7 @@ mod tests {
     /// Every settings category has to survive a draw. The shortcuts category is
     /// the one that used to panic, so the loop covers all of them rather than
     /// just the default.
-    #[gpui::test]
+    #[herogpui::test]
     fn every_settings_category_renders(cx: &mut TestAppContext) {
         let (_dir, store) = scratch_store();
         install_state(cx, store.clone());
@@ -55,7 +56,7 @@ mod tests {
 
     /// The history popover renders its own item cards, toolbar and empty state.
     /// Both layouts are covered because they are separate render paths.
-    #[gpui::test]
+    #[herogpui::test]
     fn the_history_window_renders_in_both_layouts(cx: &mut TestAppContext) {
         use crate::windows::history::HistoryWindow;
 
@@ -85,7 +86,7 @@ mod tests {
     /// Every video editor sidebar panel has to survive a draw. Seven of these
     /// panels read the owning entity mid-render before this test existed, which
     /// would have panicked the moment the panel was opened.
-    #[gpui::test]
+    #[herogpui::test]
     fn every_video_editor_panel_renders(cx: &mut TestAppContext) {
         use crate::windows::video_editor::sidebar::SidebarTab;
         use crate::windows::video_editor::VideoEditorWindow;
@@ -109,7 +110,7 @@ mod tests {
     /// The image editor, including the zoom control's blurred backdrop, which is
     /// built from the previous frame's measurements and so only exercised by
     /// actually drawing more than one frame.
-    #[gpui::test]
+    #[herogpui::test]
     fn the_image_editor_renders_and_measures_its_zoom_bar(cx: &mut TestAppContext) {
         use crate::editor::window::EditorWindow;
 
@@ -149,7 +150,7 @@ mod tests {
     }
 
     /// The default window has to survive a draw on its own too.
-    #[gpui::test]
+    #[herogpui::test]
     fn the_settings_window_opens(cx: &mut TestAppContext) {
         let (_dir, store) = scratch_store();
         install_state(cx, store.clone());

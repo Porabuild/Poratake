@@ -4,18 +4,21 @@
 //! Layout (Windows): tools | sep | crop·wallpaper·capture | sep |
 //! undo·redo | copy·save·cloud·pin | sep | contextual options · color picker.
 
-use gpui::{div, prelude::*, px, AnyElement, RenderOnce, SharedString, Styled};
+use gpui::{div, prelude::*, px, AnyElement, ElementId, RenderOnce, SharedString, Styled};
+use herogpui::gpui;
 
 use crate::config::shortcuts::EditorShortcuts;
 use crate::editor::options::{EditorAction, EditorHandlers, EditorOption};
 use crate::editor::tool_options::{self, ToolOptionsState};
 use crate::system::accelerator;
 use crate::theme::vars::active_theme;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::color_picker;
 use crate::ui::colors::Tool;
+use crate::ui::icon::{icon_element, spinner_element};
+use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
+use herogpui::components::{Button, Size, Variant};
 
 pub const TITLE_BAR_HEIGHT: f32 = chrome::TITLE_BAR_HEIGHT;
 
@@ -49,13 +52,8 @@ fn tool_shortcut(shortcuts: &EditorShortcuts, tool: Tool) -> &str {
     }
 }
 
-/// The editor's rules are plain `mx-1 h-[18px] w-px bg-border` divs, not the
-/// HeroUI `<Separator>` component, so they take `--border` rather than
-/// `--separator`.
-fn separator(theme: &crate::theme::vars::ThemeVars) -> crate::ui::primitives::Separator {
-    crate::ui::primitives::Separator::vertical(px(chrome::SEPARATOR_HEIGHT))
-        .inset(px(chrome::SEPARATOR_INSET))
-        .color(theme.border)
+fn separator(theme: &crate::theme::vars::ThemeVars) -> herogpui::Separator {
+    crate::ui::primitives::chrome_tick(theme)
 }
 
 fn tool_button(tool: Tool, shortcut: &str, active: bool, handlers: &EditorHandlers) -> AnyElement {
@@ -66,19 +64,33 @@ fn tool_button(tool: Tool, shortcut: &str, active: bool, handlers: &EditorHandle
     } else {
         format!("{name} ({})", shortcut.to_uppercase())
     };
-    Button::new(tool.id())
-        .variant(if active {
-            ButtonVariant::Tertiary
-        } else {
-            ButtonVariant::Ghost
-        })
-        .size(ButtonSize::IconXs)
-        .icon(tool.icon())
-        // The renderer puts an explicit `size-4` on every tool glyph.
-        .icon_size(px(chrome::TOOL_BUTTON_ICON))
-        .tooltip(tooltip)
-        .on_click(move |_event, window, cx| select(window, cx))
-        .into_any_element()
+    icon_button::with_tooltip(
+        tooltip,
+        icon_button::compact(tool.id(), tool.icon())
+            .variant(if active {
+                Variant::Tertiary
+            } else {
+                Variant::Ghost
+            })
+            .on_press(move |_event, window, cx| select(window, cx)),
+    )
+}
+
+fn compact_action(
+    id: &'static str,
+    icon: &'static str,
+    tooltip: String,
+    action: EditorAction,
+    handlers: &EditorHandlers,
+    disabled: bool,
+) -> AnyElement {
+    let run = handlers.action(action);
+    icon_button::with_tooltip(
+        tooltip,
+        icon_button::compact(id, icon)
+            .is_disabled(disabled)
+            .on_press(move |_event, window, cx| run(window, cx)),
+    )
 }
 
 fn action_button(
@@ -88,7 +100,7 @@ fn action_button(
     action: EditorAction,
     handlers: &EditorHandlers,
     disabled: bool,
-    size: ButtonSize,
+    size: impl Fn(Button) -> Button,
 ) -> AnyElement {
     action_button_spinning(id, icon, tooltip, action, handlers, disabled, size, false)
 }
@@ -101,19 +113,26 @@ fn action_button_spinning(
     action: EditorAction,
     handlers: &EditorHandlers,
     disabled: bool,
-    size: ButtonSize,
+    size: impl Fn(Button) -> Button,
     spinning: bool,
 ) -> AnyElement {
     let run = handlers.action(action);
-    Button::new(id)
-        .variant(ButtonVariant::Ghost)
-        .size(size)
-        .icon(icon)
-        .icon_size(px(chrome::TOOL_BUTTON_ICON))
-        .icon_spinning(spinning)
-        .tooltip(tooltip)
-        .disabled(disabled)
-        .on_click(move |_event, window, cx| run(window, cx))
+    let glyph = if spinning {
+        spinner_element(
+            ElementId::Name(format!("{icon}-spinner").into()),
+            px(chrome::TOOL_BUTTON_ICON),
+        )
+    } else {
+        icon_element(icon, px(chrome::TOOL_BUTTON_ICON))
+    };
+    herogpui::components::Tooltip::new(tooltip)
+        .child(
+            size(Button::new(id))
+                .variant(Variant::Ghost)
+                .child(glyph)
+                .is_disabled(disabled)
+                .on_press(move |_event, window, cx| run(window, cx)),
+        )
         .into_any_element()
 }
 
@@ -171,37 +190,32 @@ impl RenderOnce for TitleBar {
 
         {
             let capture = handlers.action(EditorAction::CaptureToggle);
-            tools = tools.child(
-                Button::new("tool-capture")
+            tools = tools.child(icon_button::with_tooltip(
+                format!(
+                    "Capture & Attach (hold {} for edge picker)",
+                    accelerator::primary_modifier_label()
+                ),
+                icon_button::compact("tool-capture", "camera")
                     .variant(if self.is_capture_mode {
-                        ButtonVariant::Tertiary
+                        Variant::Tertiary
                     } else {
-                        ButtonVariant::Ghost
+                        Variant::Ghost
                     })
-                    .size(ButtonSize::IconXs)
-                    .icon("camera")
-                    .icon_size(px(chrome::TOOL_BUTTON_ICON))
-                    .tooltip(format!(
-                        "Capture & Attach (hold {} for edge picker)",
-                        accelerator::primary_modifier_label()
-                    ))
-                    .on_click(move |_event, window, cx| capture(window, cx))
-                    .into_any_element(),
-            );
+                    .on_press(move |_event, window, cx| capture(window, cx)),
+            ));
         }
 
         tools = tools
             .child(separator(&theme))
-            .child(action_button(
+            .child(compact_action(
                 "undo",
                 "rotate-ccw",
                 format!("Undo ({})", accelerator::display("CommandOrControl+Z")),
                 EditorAction::Undo,
                 &handlers,
                 !self.can_undo,
-                ButtonSize::IconXs,
             ))
-            .child(action_button(
+            .child(compact_action(
                 "redo",
                 "rotate-cw",
                 format!(
@@ -211,7 +225,6 @@ impl RenderOnce for TitleBar {
                 EditorAction::Redo,
                 &handlers,
                 !self.can_redo,
-                ButtonSize::IconXs,
             ))
             .child(action_button(
                 "action-copy",
@@ -220,7 +233,7 @@ impl RenderOnce for TitleBar {
                 EditorAction::Copy,
                 &handlers,
                 false,
-                ButtonSize::IconSm,
+                |button| button.size(Size::Sm).is_icon_only(true),
             ))
             .child(action_button(
                 "action-save",
@@ -229,7 +242,7 @@ impl RenderOnce for TitleBar {
                 EditorAction::Save,
                 &handlers,
                 false,
-                ButtonSize::IconSm,
+                |button| button.size(Size::Sm).is_icon_only(true),
             ))
             .child(action_button_spinning(
                 "action-cloud",
@@ -247,7 +260,7 @@ impl RenderOnce for TitleBar {
                 EditorAction::CloudUpload,
                 &handlers,
                 self.is_uploading,
-                ButtonSize::IconSm,
+                |button| button.size(Size::Sm).is_icon_only(true),
                 self.is_uploading,
             ))
             .child(action_button(
@@ -257,7 +270,7 @@ impl RenderOnce for TitleBar {
                 EditorAction::Pin,
                 &handlers,
                 false,
-                ButtonSize::IconSm,
+                |button| button.size(Size::Sm).is_icon_only(true),
             ));
 
         let mut options = div()

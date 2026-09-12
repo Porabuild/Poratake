@@ -230,7 +230,9 @@ mod tests {
         let sprite = sprite("arrow", "#000000", "#ffffff", 49).expect("sprite");
         let covered = sprite
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| pixel[3] > 0)
             .count();
         assert!(covered > 100, "{covered}");

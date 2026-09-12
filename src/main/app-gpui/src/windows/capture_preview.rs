@@ -11,16 +11,17 @@ use gpui::{
     div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Render,
     Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
+use herogpui::gpui;
 use parking_lot::Mutex;
 
 use crate::theme::vars::active_theme;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome::{
     self, PreviewCorner, PREVIEW_CONTROL, PREVIEW_CONTROL_INSET, PREVIEW_HEIGHT,
-    PREVIEW_HOVER_SCALE, PREVIEW_MAX_STACK, PREVIEW_PILL_HEIGHT, PREVIEW_RADIUS,
-    PREVIEW_SHADOW_PADDING, PREVIEW_STACK_GAP, PREVIEW_WIDTH,
+    PREVIEW_HOVER_SCALE, PREVIEW_MAX_STACK, PREVIEW_RADIUS, PREVIEW_SHADOW_PADDING,
+    PREVIEW_STACK_GAP, PREVIEW_WIDTH,
 };
 use crate::ui::icon::icon_element;
+use crate::ui::preview;
 use crate::ui::primitives::{
     OVERLAY_ENTER_MS as PREVIEW_ENTER_MS, OVERLAY_ENTER_SLIDE as PREVIEW_ENTER_OFFSET,
     OVERLAY_EXIT_MS as PREVIEW_EXIT_MS,
@@ -269,32 +270,30 @@ fn schedule_auto_dismiss(
     cx.spawn(async move |cx| {
         cx.background_executor().timer(timeout).await;
         loop {
-            let verdict = cx
-                .update(|cx| dismiss_verdict(handle, id, generation, cx))
-                .unwrap_or(DismissVerdict::Gone);
+            let verdict = cx.update(|cx| dismiss_verdict(handle, id, generation, cx));
             match verdict {
                 DismissVerdict::Gone => return,
                 DismissVerdict::Ready => {
-                    let _ = cx
-                        .update(|cx| {
-                            handle
-                                .downcast::<CapturePreviewWindow>()
-                                .is_some_and(|handle| {
-                                    handle
-                                        .update(cx, |view, window, cx| {
-                                            begin_remove_preview(
-                                                view,
-                                                id,
-                                                DismissBehavior::Automatic,
-                                                window,
-                                                cx,
-                                            )
-                                        })
-                                        .is_ok()
-                                })
-                        })
-                        .unwrap_or(false);
-                    return;
+                    let removed = cx.update(|cx| {
+                        handle
+                            .downcast::<CapturePreviewWindow>()
+                            .is_some_and(|handle| {
+                                handle
+                                    .update(cx, |view, window, cx| {
+                                        begin_remove_preview(
+                                            view,
+                                            id,
+                                            DismissBehavior::Automatic,
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                    .is_ok()
+                            })
+                    });
+                    if removed {
+                        return;
+                    }
                 }
                 DismissVerdict::Blocked => {
                     cx.background_executor().timer(DISMISS_RETRY).await;
@@ -605,7 +604,7 @@ fn load_blurred_thumbnail(path: &PathBuf) -> Option<Arc<gpui::RenderImage>> {
     crate::render::blur::blur(&mut pixmap, BLUR_SIGMA);
     let mut buffer = crate::editor::export::to_rgba(&pixmap);
     // `RenderImage` wants BGRA, the same swap `load_thumbnail` makes.
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     let frame = image::Frame::new(buffer);
@@ -622,7 +621,7 @@ fn load_thumbnail(path: &PathBuf) -> Option<Arc<gpui::RenderImage>> {
             image::imageops::FilterType::Triangle,
         )
         .to_rgba8();
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     let frame = image::Frame::new(buffer);
@@ -748,7 +747,7 @@ fn begin_remove_preview(
         cx.background_executor()
             .timer(Duration::from_millis(PREVIEW_EXIT_MS))
             .await;
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             let Some(handle) = removal_handle.downcast::<CapturePreviewWindow>() else {
                 return;
             };
@@ -763,7 +762,7 @@ fn begin_remove_preview(
         cx.background_executor()
             .timer(Duration::from_millis(PREVIEW_MOVE_MS))
             .await;
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             let Some(handle) = region_handle.downcast::<CapturePreviewWindow>() else {
                 return;
             };
@@ -875,80 +874,6 @@ impl CapturePreviewWindow {
         )
     }
 
-    fn circle_button(
-        id: impl Into<gpui::ElementId>,
-        icon: &'static str,
-        busy: bool,
-        tooltip: impl Into<gpui::SharedString>,
-        theme: &crate::theme::vars::ThemeVars,
-        hover_bg: gpui::Hsla,
-        on_click: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> gpui::AnyElement {
-        Self::chip(
-            id,
-            ButtonSize::IconXs,
-            px(PREVIEW_CONTROL),
-            theme,
-            hover_bg,
-            busy,
-            tooltip,
-            on_click,
-        )
-        .icon(icon)
-        .icon_spinning(busy)
-        .into_any_element()
-    }
-
-    fn pill_button(
-        id: impl Into<gpui::ElementId>,
-        label: &'static str,
-        tooltip: impl Into<gpui::SharedString>,
-        theme: &crate::theme::vars::ThemeVars,
-        on_click: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> gpui::AnyElement {
-        Self::chip(
-            id,
-            ButtonSize::Xs,
-            px(PREVIEW_PILL_HEIGHT),
-            theme,
-            theme.primary,
-            false,
-            tooltip,
-            on_click,
-        )
-        .label(label)
-        .padding_x(px(chrome::BUTTON_SM_PAD_X))
-        .into_any_element()
-    }
-
-    fn chip(
-        id: impl Into<gpui::ElementId>,
-        size: ButtonSize,
-        height: gpui::Pixels,
-        theme: &crate::theme::vars::ThemeVars,
-        hover_bg: gpui::Hsla,
-        disabled: bool,
-        tooltip: impl Into<gpui::SharedString>,
-        on_click: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> Button {
-        Button::new(id)
-            .variant(ButtonVariant::Ghost)
-            .size(size)
-            .height(height)
-            .radius(px(f32::from(height) / 2.0))
-            .surface(theme.background.opacity(0.8))
-            .surface_hover(hover_bg)
-            .foreground(theme.foreground)
-            .disabled(disabled)
-            .tooltip(tooltip)
-            .on_press(move |_event, window, cx| {
-                on_click(window, cx);
-                cx.stop_propagation();
-            })
-    }
-}
-
-impl CapturePreviewWindow {
     fn render_preview(
         &mut self,
         index: usize,
@@ -1075,7 +1000,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .top(px(PREVIEW_CONTROL_INSET))
                         .left(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-close", id),
                             "x",
                             false,
@@ -1104,7 +1029,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .top(px(PREVIEW_CONTROL_INSET))
                         .right(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-delete", id),
                             "trash-2",
                             false,
@@ -1144,7 +1069,7 @@ impl CapturePreviewWindow {
                         .gap(px(4.0))
                         .when_some(polish, |el, preset| {
                             let tooltip = format!("Copy with \"{}\"", preset.name);
-                            el.child(Self::pill_button(
+                            el.child(preview::pill(
                                 ("preview-polish", id),
                                 "Polish",
                                 tooltip,
@@ -1168,7 +1093,7 @@ impl CapturePreviewWindow {
                                 },
                             ))
                         })
-                        .child(Self::pill_button(
+                        .child(preview::pill(
                             ("preview-edit", id),
                             "Edit",
                             "Edit",
@@ -1198,7 +1123,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET))
                         .left(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-copy", id),
                             "copy",
                             false,
@@ -1231,7 +1156,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET))
                         .right(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-upload", id),
                             "cloud-upload",
                             busy,
@@ -1273,7 +1198,7 @@ impl CapturePreviewWindow {
                                             )
                                             .await;
                                         let succeeded = result.is_ok();
-                                        let _ = cx.update(|cx| {
+                                        cx.update(|cx| {
                                             let _ = task_entity.update(cx, |view, cx| {
                                                 if !succeeded {
                                                     if let Some(preview) = view
@@ -1311,7 +1236,7 @@ impl CapturePreviewWindow {
                                                     UPLOAD_DONE_DISPLAY_MS,
                                                 ))
                                                 .await;
-                                            let _ = cx.update(|cx| {
+                                            cx.update(|cx| {
                                                 let Some(preview) =
                                                     handle.downcast::<CapturePreviewWindow>()
                                                 else {
@@ -1328,7 +1253,7 @@ impl CapturePreviewWindow {
                                                 });
                                             });
                                         } else {
-                                            let _ = cx.update(|cx| {
+                                            cx.update(|cx| {
                                                 schedule_auto_dismiss(handle, id, cx, dismiss_token)
                                             });
                                         }
@@ -1347,7 +1272,7 @@ impl CapturePreviewWindow {
                         .opacity(progress)
                         .bottom(px(PREVIEW_CONTROL_INSET + PREVIEW_CONTROL + 4.0))
                         .right(px(PREVIEW_CONTROL_INSET))
-                        .child(Self::circle_button(
+                        .child(preview::circle(
                             ("preview-pin-display", id),
                             "monitor",
                             false,
@@ -1549,7 +1474,7 @@ mod tests {
         assert_eq!(step_hover(0.3, 0.3, 0.016), 0.3, "already there, no drift");
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn the_preview_closes_itself_when_the_dismiss_timer_elapses(cx: &mut gpui::TestAppContext) {
         use crate::config::store::ConfigStore;
 
@@ -1719,13 +1644,13 @@ mod tests {
             assert!(control_call(id).contains("theme.primary,"), "{id}");
         }
 
-        let pill_button = source
-            .split_once("fn pill_button")
-            .expect("pill button")
+        let pill = include_str!("../ui/preview.rs")
+            .split_once("pub fn pill")
+            .expect("pill helper")
             .1
             .split_once("fn chip")
-            .expect("pill button body")
+            .expect("pill helper body")
             .0;
-        assert!(pill_button.contains("theme.primary,"));
+        assert!(pill.contains("theme.primary,"));
     }
 }

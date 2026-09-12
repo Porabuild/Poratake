@@ -1,7 +1,9 @@
 //! Editor actions and key bindings — port of `useEditorToolShortcuts` and the
 //! editor command shortcuts in `screenshot-window.tsx`.
 
-use gpui::{actions, App, KeyBinding};
+use gpui::{App, KeyBinding};
+use herogpui::actions;
+use herogpui::gpui;
 
 use crate::config::shortcuts::EditorShortcuts;
 

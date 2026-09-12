@@ -11,9 +11,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, AnyElement, Context, Entity, FocusHandle, Render, SharedString, Styled,
-    Window,
+    div, prelude::*, px, AnyElement, Context, Entity, FocusHandle, Focusable, Render, SharedString,
+    Styled, Window,
 };
+use herogpui::gpui;
 
 use crate::config::schema::SettingsConfig;
 use crate::config::store::ConfigStore;
@@ -21,9 +22,8 @@ use crate::theme::presets::{resolve_theme_mode, ThemeMode};
 use crate::theme::vars::{active_mode, active_theme, update_theme, ThemeVars};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
-use crate::ui::menu::MenuHandle;
-use crate::ui::text_field::TextField;
 use crate::windows::settings::registry::{Category, Item, PathKind};
+use herogpui::components::{InputState, InputType, TextField};
 
 const SIDEBAR_WIDTH: f32 = chrome::SETTINGS_SIDEBAR_WIDTH;
 const CONTENT_MAX_WIDTH: f32 = chrome::SETTINGS_CONTENT_MAX;
@@ -49,14 +49,13 @@ pub struct SettingsWindow {
     store: Arc<ConfigStore>,
     config: SettingsConfig,
     active: Category,
-    search: Entity<TextField>,
-    shortcut_search: Entity<TextField>,
-    fields: HashMap<String, Entity<TextField>>,
+    search: Entity<InputState>,
+    shortcut_search: Entity<InputState>,
+    fields: HashMap<String, Entity<InputState>>,
     recording_shortcut: Option<&'static str>,
     cloud_test: CloudTest,
     cloud_test_error: Option<String>,
     devices: Option<crate::system::devices::MediaDeviceLists>,
-    menu: MenuHandle,
     focus_handle: FocusHandle,
     #[cfg(windows)]
     acrylic_dark: Option<bool>,
@@ -70,21 +69,8 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     pub fn new(store: Arc<ConfigStore>, active: Category, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| {
-            TextField::new("", cx)
-                .placeholder("Search settings")
-                .leading_icon("search")
-                .full_width(true)
-                .bare()
-        });
-        let shortcut_search = cx.new(|cx| {
-            TextField::new("", cx)
-                .placeholder("Search shortcuts")
-                .leading_icon("search")
-                .full_width(true)
-                .height(px(SHORTCUT_SEARCH_HEIGHT))
-                .pad_x(px(SHORTCUT_SEARCH_PAD_X))
-        });
+        let search = cx.new(|cx| InputState::new(cx));
+        let shortcut_search = cx.new(|cx| InputState::new(cx));
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
         cx.observe(&shortcut_search, |_, _, cx| cx.notify())
             .detach();
@@ -100,7 +86,6 @@ impl SettingsWindow {
             cloud_test: CloudTest::Idle,
             cloud_test_error: None,
             devices: None,
-            menu: MenuHandle::new(),
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::Status::Idle)),
             extras_open: std::collections::HashSet::new(),
             focus_handle: cx.focus_handle(),
@@ -217,7 +202,10 @@ impl SettingsWindow {
             config.storage.naming_pattern = default;
         });
         if let Some(field) = self.fields.get("storage.namingPattern").cloned() {
-            field.update(cx, |field, cx| field.set_value(&value, cx));
+            field.update(cx, |field, cx| {
+                field.set_value(value.clone());
+                cx.notify();
+            });
         }
     }
 
@@ -289,7 +277,10 @@ impl SettingsWindow {
         });
         let value = self.config.storage.naming_pattern.clone();
         if let Some(field) = self.fields.get("storage.namingPattern").cloned() {
-            field.update(cx, |field, cx| field.set_value(&value, cx));
+            field.update(cx, |field, cx| {
+                field.set_value(value.clone());
+                cx.notify();
+            });
         }
     }
 
@@ -391,7 +382,8 @@ impl SettingsWindow {
         }
 
         if control && key == "f" {
-            window.focus(&self.search.read(cx).focus_handle());
+            let focus = self.search.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
             cx.stop_propagation();
         }
     }
@@ -435,7 +427,10 @@ impl SettingsWindow {
     pub fn select_category(&mut self, category: Category, cx: &mut Context<Self>) {
         self.active = category;
         self.recording_shortcut = None;
-        self.search.update(cx, |field, cx| field.set_value("", cx));
+        self.search.update(cx, |field, cx| {
+            field.set_value("");
+            cx.notify();
+        });
         cx.notify();
     }
 
@@ -449,36 +444,40 @@ impl SettingsWindow {
         secret: bool,
         cx: &mut Context<Self>,
         write: impl Fn(&mut SettingsConfig, &str) + 'static,
-    ) -> Entity<TextField> {
-        if let Some(existing) = self.fields.get(&key) {
-            let existing = existing.clone();
-            existing.update(cx, |field, cx| field.set_value(&initial, cx));
-            return existing;
-        }
+    ) -> AnyElement {
+        let existing = self.fields.get(&key).cloned();
+        let field = if let Some(existing) = existing {
+            existing.update(cx, |field, cx| {
+                if field.value() != initial.as_str() {
+                    field.set_value(initial.clone());
+                    cx.notify();
+                }
+            });
+            existing
+        } else {
+            let field = cx.new(|cx| InputState::with_value(cx, initial.clone()));
+            self.fields.insert(key, field.clone());
+            field
+        };
         let owner = cx.entity().downgrade();
-        let field = cx.new(|cx| {
-            TextField::new(initial, cx)
-                .placeholder(placeholder)
-                .secret(secret)
-                .full_width(true)
-                .on_change(move |value, _window, app| {
-                    let value = value.to_string();
-                    if let Some(owner) = owner.upgrade() {
-                        owner.update(app, |this, cx| {
-                            this.mutate(cx, |config| write(config, &value));
-                        });
-                    }
-                })
-        });
-        self.fields.insert(key, field.clone());
-        field
+        let mut input = TextField::new(field)
+            .placeholder(placeholder)
+            .full_width()
+            .on_change(move |value, _window, app| {
+                let value = value.to_string();
+                if let Some(owner) = owner.upgrade() {
+                    owner.update(app, |this, cx| {
+                        this.mutate(cx, |config| write(config, &value));
+                    });
+                }
+            });
+        if secret {
+            input = input.input_type(InputType::Password);
+        }
+        input.into_any_element()
     }
 
-    pub(crate) fn text_field_for(
-        &mut self,
-        item: &Item,
-        cx: &mut Context<Self>,
-    ) -> Entity<TextField> {
+    pub(crate) fn text_field_for(&mut self, item: &Item, cx: &mut Context<Self>) -> AnyElement {
         let registry::Control::Input {
             placeholder,
             secret,
@@ -494,7 +493,7 @@ impl SettingsWindow {
         self.text_field(item.id.to_string(), initial, placeholder, secret, cx, set)
     }
 
-    pub(crate) fn naming_pattern_field(&mut self, cx: &mut Context<Self>) -> Entity<TextField> {
+    pub(crate) fn naming_pattern_field(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let initial = self.config.storage.naming_pattern.clone();
         self.text_field(
             "storage.namingPattern".to_string(),
@@ -510,7 +509,7 @@ impl SettingsWindow {
         &mut self,
         index: usize,
         cx: &mut Context<Self>,
-    ) -> (Entity<TextField>, Entity<TextField>) {
+    ) -> (AnyElement, AnyElement) {
         let header = self
             .config
             .cloud
@@ -623,7 +622,7 @@ impl Render for SettingsWindow {
                     .min_w_0()
                     .h_full()
                     .bg(theme.content_background)
-                    .child(crate::ui::window_controls::drag_strip(
+                    .child(crate::ui::window_controls::content_drag_strip(
                         theme.content_background,
                         window,
                         cx,
@@ -766,13 +765,19 @@ fn sidebar(
                 .h(px(40.0))
                 .flex_shrink_0()
                 .px(px(16.0))
+                .when(chrome::is_macos(), |el| {
+                    el.pl(px(chrome::MACOS_TITLE_LEADING_INSET))
+                })
                 .text_size(px(chrome::TEXT_XS))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme.muted_foreground)
-                .child(crate::ui::primitives::tracked_text(
-                    "SETTINGS",
-                    px(chrome::SETTINGS_TITLE_TRACKING),
-                )),
+                .child(
+                    crate::ui::primitives::tracked_text(
+                        "SETTINGS",
+                        px(chrome::SETTINGS_TITLE_TRACKING),
+                    )
+                    .debug_selector(|| "settings-title".to_string()),
+                ),
         )
         .child({
             let (search_hover, search_hovered) =
@@ -795,7 +800,14 @@ fn sidebar(
                             crate::ui::primitives::track_hover(&search_hover, *over, cx);
                         }
                     })
-                    .child(window.search.clone()),
+                    .child(
+                        TextField::new(window.search.clone())
+                            .placeholder("Search settings")
+                            .start_content(icon_element("search", px(16.0)))
+                            .full_width()
+                            .recipe("search")
+                            .is_bare(true),
+                    ),
             )
         })
         .child(nav)
@@ -823,8 +835,6 @@ fn section_heading(title: &str, theme: &ThemeVars) -> AnyElement {
 }
 
 /// `<label className="h-8 w-64 rounded-field border-0 bg-field px-2.5">`.
-const SHORTCUT_SEARCH_HEIGHT: f32 = 32.0;
-const SHORTCUT_SEARCH_PAD_X: f32 = 10.0;
 const SHORTCUT_SEARCH_WIDTH: f32 = 256.0;
 
 /// Gap between sections: `space-y-6`, or `space-y-4` for shortcuts.
@@ -886,9 +896,13 @@ fn category_page(
     if is_shortcuts {
         // `<label className="h-8 w-64 ...">`.
         header = header.child(
-            div()
-                .w(px(SHORTCUT_SEARCH_WIDTH))
-                .child(window.shortcut_search.clone()),
+            div().w(px(SHORTCUT_SEARCH_WIDTH)).child(
+                TextField::new(window.shortcut_search.clone())
+                    .placeholder("Search shortcuts")
+                    .start_content(icon_element("search", px(16.0)))
+                    .full_width()
+                    .recipe("search"),
+            ),
         );
     }
 
@@ -1157,7 +1171,7 @@ impl crate::ui::shortcut_input::ShortcutRecorder for SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         self.recording_shortcut = Some(id);
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 }
@@ -1267,7 +1281,7 @@ mod extras_tests {
 
     /// The expanded body is a separate render path -- it is not built at all
     /// while the disclosure is closed -- so it needs its own draw.
-    #[gpui::test]
+    #[herogpui::test]
     fn the_expanded_disclosure_renders(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = std::sync::Arc::new(
@@ -1295,7 +1309,29 @@ mod extras_tests {
     /// The disclosure starts closed, which is what makes the page above it match
     /// Electron on first open -- and the row is still registered, so nothing was
     /// removed to get there.
-    #[gpui::test]
+    #[herogpui::test]
+    fn settings_heading_reserves_native_window_controls(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            std::sync::Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let (_, cx) = cx.add_window_view(|_, cx| SettingsWindow::new(store, Category::General, cx));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        let title = cx.debug_bounds("settings-title").unwrap();
+        let expected = if cfg!(target_os = "macos") {
+            80.0
+        } else {
+            16.0 + crate::ui::window_controls::drag_area_leading_inset()
+        };
+        assert_eq!(title.left(), px(expected));
+        assert!(title.bottom() <= px(chrome::TITLE_BAR_HEIGHT));
+        let content_drag = cx.debug_bounds("content-title-drag-strip").unwrap();
+        assert_eq!(content_drag.left(), px(SIDEBAR_WIDTH));
+        assert_eq!(content_drag.top(), px(0.0));
+    }
+
+    #[herogpui::test]
     fn the_disclosure_starts_closed(cx: &mut gpui::TestAppContext) {
         let items = registry::items();
         if crate::system::capabilities::is_supported(

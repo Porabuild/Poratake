@@ -1,10 +1,13 @@
 use gpui::{div, prelude::*, px, AnyElement, Context, ElementId, SharedString, Styled};
+use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
+use crate::ui::icon::icon_element;
+use crate::ui::icon_button;
 use crate::windows::history::model::{HistoryFilter, HistoryLayout, HistorySortOrder};
 use crate::windows::history::HistoryWindow;
+use herogpui::components::{Button, Variant};
 
 pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow>) -> AnyElement {
     let mut actions = div()
@@ -16,30 +19,28 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
     if has_items {
         actions = actions.child(
             Button::new("history-clear-all")
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::Xs)
-                .icon("trash-2")
-                .icon_size(px(chrome::HISTORY_CHIP_ICON))
-                .gap(px(chrome::HISTORY_CHIP_ICON_GAP))
-                .padding_x(px(chrome::HISTORY_CHIP_PAD_X))
+                .variant(Variant::Ghost)
+                .recipe("compact")
+                .recipe("muted")
                 .label("Clear All")
-                .radius(px(chrome::RADIUS_3XL))
-                .foreground(theme.muted_foreground)
-                .on_click(cx.listener(|this, _event, _window, cx| this.clear_all(cx))),
+                .content(|_| {
+                    crate::ui::primitives::icon_label(
+                        "trash-2",
+                        "Clear All".into(),
+                        px(chrome::HISTORY_CHIP_ICON),
+                        px(chrome::HISTORY_CHIP_ICON_GAP),
+                        false,
+                    )
+                })
+                .on_press(cx.listener(|this, _event, _window, cx| this.clear_all(cx))),
         );
     }
 
-    actions = actions.child(
-        Button::new("history-open-settings")
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::IconXs)
-            .icon("settings")
-            .icon_size(px(chrome::TOOL_BUTTON_ICON))
-            .tooltip("Settings")
-            .radius(px(chrome::RADIUS_3XL))
-            .foreground(theme.muted_foreground)
-            .on_click(cx.listener(|this, _event, window, cx| this.open_settings(window, cx))),
-    );
+    actions = actions.child(icon_button::with_tooltip(
+        "Settings",
+        icon_button::compact_muted("history-open-settings", "settings")
+            .on_press(cx.listener(|this, _event, window, cx| this.open_settings(window, cx))),
+    ));
 
     div()
         .flex()
@@ -64,30 +65,24 @@ pub fn toolbar(
     filter: HistoryFilter,
     order: HistorySortOrder,
     layout: HistoryLayout,
-    theme: &ThemeVars,
     cx: &mut Context<HistoryWindow>,
 ) -> AnyElement {
     let mut filters = div().flex().items_center().gap(px(2.0));
 
     for option in HistoryFilter::ALL {
-        let mut button = Button::new(ElementId::Name(SharedString::from(format!(
-            "history-filter-{}",
-            option.as_str()
-        ))))
-        .variant(ButtonVariant::Ghost)
-        .selected(filter == option)
-        .size(ButtonSize::Xs)
-        .height(px(chrome::HISTORY_CHIP_HEIGHT))
-        .padding_x(px(chrome::HISTORY_CHIP_PAD_X))
-        .gap(px(chrome::HISTORY_CHIP_ICON_GAP))
-        .icon_size(px(chrome::HISTORY_CHIP_ICON))
+        let mut button = icon_button::chip(
+            ElementId::Name(SharedString::from(format!(
+                "history-filter-{}",
+                option.as_str()
+            ))),
+            filter == option,
+        )
         .label(option.label())
-        .radius(px(chrome::RADIUS_3XL))
-        .on_click(cx.listener(move |this, _event, _window, cx| {
+        .on_press(cx.listener(move |this, _event, _window, cx| {
             this.set_filter(option, cx);
         }));
         if let Some(icon) = option.icon() {
-            button = button.icon(icon);
+            button = button.child(icon_element(icon, px(chrome::HISTORY_CHIP_ICON)));
         }
         filters = filters.child(button);
     }
@@ -105,32 +100,17 @@ pub fn toolbar(
                 .flex()
                 .items_center()
                 .gap(px(2.0))
-                .child(
-                    Button::new("history-sort")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::IconXs)
-                        .height(px(chrome::HISTORY_CHIP_HEIGHT))
-                        .icon_size(px(chrome::HISTORY_TOOL_ICON))
-                        .icon("arrow-up-down")
-                        .tooltip(order.tooltip())
-                        .radius(px(chrome::RADIUS_3XL))
-                        .foreground(theme.muted_foreground)
-                        .on_click(
-                            cx.listener(|this, _event, _window, cx| this.toggle_sort_order(cx)),
-                        ),
-                )
-                .child(
-                    Button::new("history-layout")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::IconXs)
-                        .height(px(chrome::HISTORY_CHIP_HEIGHT))
-                        .icon_size(px(chrome::HISTORY_TOOL_ICON))
-                        .icon(layout.toggle_icon())
-                        .tooltip(layout.toggle_tooltip())
-                        .radius(px(chrome::RADIUS_3XL))
-                        .foreground(theme.muted_foreground)
-                        .on_click(cx.listener(|this, _event, _window, cx| this.toggle_layout(cx))),
-                ),
+                .child(icon_button::with_tooltip(
+                    order.tooltip(),
+                    icon_button::chip_icon("history-sort", "arrow-up-down").on_press(
+                        cx.listener(|this, _event, _window, cx| this.toggle_sort_order(cx)),
+                    ),
+                ))
+                .child(icon_button::with_tooltip(
+                    layout.toggle_tooltip(),
+                    icon_button::chip_icon("history-layout", layout.toggle_icon())
+                        .on_press(cx.listener(|this, _event, _window, cx| this.toggle_layout(cx))),
+                )),
         )
         .into_any_element()
 }

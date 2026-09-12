@@ -2,17 +2,19 @@ use std::path::PathBuf;
 
 use gpui::{
     div, img, prelude::*, px, AnyElement, Context, ElementId, ObjectFit, SharedString, Styled,
+    Window,
 };
+use herogpui::gpui;
 
 use crate::history_store::{HistoryItem, HistoryItemType};
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::colors::{black, transparent, white};
 use crate::ui::icon::icon_element;
 use crate::video::project::RecordingFeatures;
 use crate::windows::history::model::format_relative_time;
 use crate::windows::history::HistoryWindow;
+use herogpui::components::{Button, Variant};
 
 const POPOVER_WIDTH: f32 = 400.0;
 const CONTENT_PADDING: f32 = 12.0;
@@ -119,6 +121,7 @@ fn selection_shadow(color: gpui::Hsla) -> Vec<gpui::BoxShadow> {
         offset: gpui::point(px(0.0), px(0.0)),
         blur_radius: px(0.0),
         spread_radius: px(spread),
+        inset: false,
     };
     vec![
         ring(transparent(), RING_OFFSET),
@@ -134,24 +137,37 @@ fn overlay_action(
     icon: &'static str,
     tooltip: &'static str,
     danger: bool,
-) -> Button {
-    Button::new(id)
-        .variant(ButtonVariant::Ghost)
-        .size(ButtonSize::IconXs)
-        .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-        .icon(icon)
-        .icon_size(px(chrome::HISTORY_ITEM_ACTION_ICON))
-        .tooltip(tooltip)
-        .radius(px(chrome::RADIUS_3XL))
-        .surface(black(0.6))
-        .surface_hover(if danger {
-            // `hover:bg-red-500/80`, a fixed Tailwind red rather than the
-            // theme's danger token.
-            crate::ui::colors::red_500(0.8)
-        } else {
-            black(0.8)
-        })
-        .foreground(white(1.0))
+    on_click: impl Fn(&mut HistoryWindow, &mut Window, &mut Context<HistoryWindow>) + 'static,
+    cx: &mut Context<HistoryWindow>,
+) -> AnyElement {
+    let radius = px(chrome::RADIUS_3XL);
+    // `hover:bg-red-500/80`, a fixed Tailwind red rather than the theme's
+    // danger token.
+    let surface_hover = if danger {
+        crate::ui::colors::red_500(0.8)
+    } else {
+        black(0.8)
+    };
+    let foreground = white(1.0);
+    let resting = black(0.6);
+    herogpui::components::Tooltip::new(tooltip)
+        .child(
+            Button::new(id)
+                .variant(Variant::Ghost)
+                .is_icon_only(true)
+                .radius(radius)
+                .sx(move |el| {
+                    el.bg(resting)
+                        .h(px(chrome::HISTORY_ITEM_ACTION_SIZE))
+                        .text_color(foreground)
+                })
+                .hover_bg(surface_hover)
+                .child(icon_element(icon, px(chrome::HISTORY_ITEM_ACTION_ICON)))
+                .on_press(cx.listener(move |this, _event, window, cx| {
+                    on_click(this, window, cx);
+                })),
+        )
+        .into_any_element()
 }
 
 pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement {
@@ -258,32 +274,26 @@ pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement
                     .right(px(4.0))
                     .flex()
                     .gap(px(4.0))
-                    .child(
-                        overlay_action(
-                            view.element_id("history-reveal"),
-                            "folder-open",
-                            "Show in folder",
-                            false,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _event, _window, cx| {
-                                this.reveal_index(index, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        overlay_action(
-                            view.element_id("history-delete"),
-                            "trash-2",
-                            "Delete",
-                            true,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _event, _window, cx| {
-                                this.delete_index(index, cx);
-                            },
-                        )),
-                    ),
+                    .child(overlay_action(
+                        view.element_id("history-reveal"),
+                        "folder-open",
+                        "Show in folder",
+                        false,
+                        move |this, _window, cx| {
+                            this.reveal_index(index, cx);
+                        },
+                        cx,
+                    ))
+                    .child(overlay_action(
+                        view.element_id("history-delete"),
+                        "trash-2",
+                        "Delete",
+                        true,
+                        move |this, _window, cx| {
+                            this.delete_index(index, cx);
+                        },
+                        cx,
+                    )),
             )
         });
 
@@ -412,32 +422,43 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
         row = row
             .child(
                 Button::new(view.element_id("history-row-reveal"))
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::IconXs)
-                    .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-                    .icon("folder-open")
-                    .icon_size(px(chrome::HISTORY_ITEM_ACTION_ICON))
-                    .radius(px(chrome::RADIUS_3XL))
-                    .foreground(theme.muted_foreground)
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                    .variant(Variant::Ghost)
+                    .is_icon_only(true)
+                    .child(icon_element(
+                        "folder-open",
+                        px(chrome::HISTORY_ITEM_ACTION_ICON),
+                    ))
+                    .sx(|el| {
+                        el.h(px(chrome::HISTORY_ITEM_ACTION_SIZE))
+                            .w(px(28.0))
+                            .p_0()
+                            .text_color(theme.muted_foreground)
+                    })
+                    .on_press(cx.listener(move |this, _event, _window, cx| {
                         this.reveal_index(index, cx);
                     })),
             )
-            .child(
+            .child({
+                let foreground = crate::ui::colors::red_400(1.0);
+                // `text-red-400 hover:bg-red-500/20`.
+                let surface_hover = crate::ui::colors::red_500(0.2);
                 Button::new(view.element_id("history-row-delete"))
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::IconXs)
-                    .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-                    .icon("trash-2")
-                    .icon_size(px(chrome::HISTORY_ITEM_ACTION_ICON))
+                    .variant(Variant::Ghost)
+                    .is_icon_only(true)
                     .radius(px(chrome::RADIUS_3XL))
-                    // `text-red-400 hover:bg-red-500/20`.
-                    .foreground(crate::ui::colors::red_400(1.0))
-                    .surface_hover(crate::ui::colors::red_500(0.2))
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                    .sx(move |el| {
+                        el.h(px(chrome::HISTORY_ITEM_ACTION_SIZE))
+                            .text_color(foreground)
+                    })
+                    .hover_bg(surface_hover)
+                    .child(icon_element(
+                        "trash-2",
+                        px(chrome::HISTORY_ITEM_ACTION_ICON),
+                    ))
+                    .on_press(cx.listener(move |this, _event, _window, cx| {
                         this.delete_index(index, cx);
-                    })),
-            );
+                    }))
+            });
     }
 
     row.into_any_element()

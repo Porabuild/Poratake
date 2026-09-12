@@ -4,14 +4,15 @@
 //! version's source, and the third-party notices link.
 
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window};
+use herogpui::gpui;
 
 use crate::product;
 use crate::system::desktop;
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::windows::settings::SettingsWindow;
+use herogpui::components::{Button, Size, Variant};
 
 const NOTICES: [&str; 4] = [
     "Poratake is a modified version of Capty. Modifications made in 2026.",
@@ -125,11 +126,19 @@ fn update_section(
             .when(status.shows_check_button(), |el| {
                 el.child(
                     Button::new("about-check-updates")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon("refresh-cw")
+                        .variant(Variant::Ghost)
+                        .size(Size::Sm)
                         .label("Check")
-                        .on_click(cx.listener(|this, _event, _window, cx| {
+                        .content(|_| {
+                            crate::ui::primitives::icon_label(
+                                "refresh-cw",
+                                "Check".into(),
+                                px(16.0),
+                                px(8.0),
+                                false,
+                            )
+                        })
+                        .on_press(cx.listener(|this, _event, _window, cx| {
                             this.check_for_updates(cx);
                         })),
                 )
@@ -201,12 +210,20 @@ fn update_section(
     if matches!(status, Status::Available { .. }) {
         section = section.child(
             Button::new("about-download-update")
-                .variant(ButtonVariant::Primary)
-                .size(ButtonSize::Md)
-                .icon("download")
+                .variant(Variant::Primary)
+                .size(Size::Md)
                 .label("Download Update")
-                .full_width()
-                .on_click(cx.listener(|this, _event, _window, cx| {
+                .content(|_| {
+                    crate::ui::primitives::icon_label(
+                        "download",
+                        "Download Update".into(),
+                        px(16.0),
+                        px(8.0),
+                        false,
+                    )
+                })
+                .full_width(true)
+                .on_press(cx.listener(|this, _event, _window, cx| {
                     this.download_update(cx);
                 })),
         );
@@ -215,12 +232,20 @@ fn update_section(
     if matches!(status, Status::Ready { .. }) {
         section = section.child(
             Button::new("about-install-update")
-                .variant(ButtonVariant::Primary)
-                .size(ButtonSize::Md)
-                .icon("download")
+                .variant(Variant::Primary)
+                .size(Size::Md)
                 .label("Install Update")
-                .full_width()
-                .on_click(cx.listener(|this, _event, _window, cx| {
+                .content(|_| {
+                    crate::ui::primitives::icon_label(
+                        "download",
+                        "Install Update".into(),
+                        px(16.0),
+                        px(8.0),
+                        false,
+                    )
+                })
+                .full_width(true)
+                .on_press(cx.listener(|this, _event, _window, cx| {
                     this.install_update(cx);
                 })),
         );
@@ -239,9 +264,7 @@ fn update_section(
 }
 
 fn separator(_theme: &ThemeVars) -> AnyElement {
-    crate::ui::primitives::Separator::horizontal()
-        .inset(px(12.0))
-        .into_any_element()
+    herogpui::Separator::new().my(px(12.0)).into_any_element()
 }
 
 pub fn render(
@@ -399,30 +422,34 @@ pub fn render(
                 .pt(px(12.0))
                 .child(
                     Button::new("about-source-button")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon("code-2")
+                        .variant(Variant::Ghost)
+                        .size(Size::Sm)
                         .label("This Version's Source")
-                        .on_click(move |_event, _window, _cx| {
+                        .content(|_| {
+                            crate::ui::primitives::icon_label("code-2", "This Version's Source".into(), px(16.0), px(8.0), false)
+                        })
+                        .on_press(move |_event, _window, _cx| {
                             desktop::open_url(&source_url);
                         }),
                 )
                 .child(
                     Button::new("about-license-button")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon("scale")
+                        .variant(Variant::Ghost)
+                        .size(Size::Sm)
                         .label("GNU AGPL v3.0")
-                        .on_click(move |_event, _window, _cx| {
+                        .content(|_| {
+                            crate::ui::primitives::icon_label("scale", "GNU AGPL v3.0".into(), px(16.0), px(8.0), false)
+                        })
+                        .on_press(move |_event, _window, _cx| {
                             desktop::open_url(&license_url);
                         }),
                 )
                 .child(
                     Button::new("about-notices-button")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
+                        .variant(Variant::Ghost)
+                        .size(Size::Sm)
                         .label(SharedString::from("Third-party Notices"))
-                        .on_click(move |_event, _window, _cx| {
+                        .on_press(move |_event, _window, _cx| {
                             desktop::open_url(&notices_url);
                         }),
                 ),

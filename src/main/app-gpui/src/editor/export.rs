@@ -411,7 +411,7 @@ pub fn render_backdrop(
 
     let mut buffer = to_rgba(canvas.pixmap());
     // GPUI composites in BGRA.
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Some(std::sync::Arc::new(gpui::RenderImage::new(
@@ -438,7 +438,7 @@ pub fn from_rgba(source: &RgbaImage) -> Option<Pixmap> {
 /// Converts a premultiplied pixmap back into straight-alpha RGBA.
 pub fn to_rgba(source: &Pixmap) -> RgbaImage {
     let mut target = RgbaImage::new(source.width(), source.height());
-    for (index, pixel) in source.data().chunks_exact(4).enumerate() {
+    for (index, pixel) in source.data().as_chunks::<4>().0.iter().enumerate() {
         let alpha = pixel[3];
         let unpremultiply = |value: u8| -> u8 {
             if alpha == 0 {

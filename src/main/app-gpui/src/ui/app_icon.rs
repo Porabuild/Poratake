@@ -8,6 +8,7 @@
 use std::sync::{Arc, OnceLock};
 
 use gpui::{img, prelude::*, AnyElement, Pixels, RenderImage};
+use herogpui::gpui;
 
 /// The same file the renderer imports as `@build/icon.png`.
 const ICON_PNG: &[u8] = include_bytes!("../../../../../build/icon.png");

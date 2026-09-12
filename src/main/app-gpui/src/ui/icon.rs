@@ -5,6 +5,7 @@
 use gpui::{
     canvas, div, prelude::*, px, App, PathBuilder, Pixels, RenderOnce, StrokeOptions, Window,
 };
+use herogpui::gpui;
 
 use crate::ui::svg_path::{parse_path, PathCommand};
 
@@ -209,6 +210,7 @@ pub fn icon_element(name: &str, size: Pixels) -> gpui::AnyElement {
 /// `animate-spin` (`1s linear infinite`) on the renderer's spinners.
 pub fn spinner_element(id: impl Into<gpui::ElementId>, size: Pixels) -> gpui::AnyElement {
     use gpui::AnimationExt;
+    use herogpui::gpui;
 
     let Some(glyph) = Icon::new("loader-2") else {
         return div().into_any_element();

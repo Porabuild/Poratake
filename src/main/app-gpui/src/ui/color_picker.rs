@@ -1,34 +1,25 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, App, Bounds, Context, ElementId,
-    FocusHandle, Hsla, MouseDownEvent, MouseMoveEvent, Pixels, Point, Render, SharedString, Styled,
-    Window,
+    div, prelude::*, px, App, Context, FocusHandle, Hsla, Render, SharedString, Styled, Window,
+};
+use herogpui::gpui;
+use herogpui::{
+    ColorArea, ColorChannel, ColorSlider, ColorSpace, ColorSwatchPicker, PickerColor, SizeXl,
+    SwatchShape,
 };
 
 use crate::theme::color::Srgba;
 use crate::theme::vars::active_theme;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
-use crate::ui::colors::transparent;
+use crate::ui::icon::icon_element;
 use crate::ui::menu::DismissHandler;
+use herogpui::components::{Button, Size, Variant};
 
-/// `HeroColorPicker.Popover className="w-64 rounded-2xl! ... p-3!"`.
 const POPOVER_WIDTH: f32 = 256.0;
 const POPOVER_PAD: f32 = 12.0;
-/// `<ColorArea className="aspect-4/3 max-w-none">` inside the padded popover.
 const AREA_HEIGHT: f32 = (POPOVER_WIDTH - POPOVER_PAD * 2.0) * 3.0 / 4.0;
-/// `.color-area__thumb { size-4 rounded-xl border-3 border-white }`.
-const AREA_THUMB: f32 = 16.0;
-/// `.color-slider__track { h-5 }` with a `size-4` thumb.
-const HUE_TRACK_HEIGHT: f32 = 20.0;
-const HUE_THUMB: f32 = 16.0;
-/// `<ColorSwatchPicker size="xs">`: `size-4 rounded-lg border`.
-const SWATCH_SIZE: f32 = 16.0;
-/// `.color-swatch-picker__item[data-selected] .swatch { scale(0.77) }`.
-const SWATCH_SELECTED_INSET: f32 = SWATCH_SIZE * (1.0 - 0.77) / 2.0;
-/// `.color-input-group { h-9 }` with `rounded-xl!` and an `ms-3` prefix.
+const SHUFFLE_SIZE: f32 = 32.0;
 const HEX_ROW_HEIGHT: f32 = 36.0;
 
 pub type ColorHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
@@ -97,18 +88,23 @@ impl Hsv {
         let (r, g, b) = self.to_rgb();
         Srgba { r, g, b, a: alpha }.to_hsla()
     }
+
+    fn to_picker(self) -> PickerColor {
+        PickerColor::hsb(self.hue, self.saturation, self.value)
+    }
+
+    fn from_picker(color: PickerColor) -> Self {
+        Self {
+            hue: color.hue,
+            saturation: color.saturation,
+            value: color.brightness,
+        }
+    }
 }
 
 pub fn hsv_from_hex(hex: &str) -> Hsv {
     let parsed = Srgba::parse(hex);
     Hsv::from_rgb(parsed.r, parsed.g, parsed.b)
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Dragging {
-    None,
-    Area,
-    Hue,
 }
 
 pub struct ColorPickerPopover {
@@ -117,9 +113,6 @@ pub struct ColorPickerPopover {
     swatch_opacity: f32,
     on_change: ColorHandler,
     on_dismiss: DismissHandler,
-    dragging: Dragging,
-    area_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
-    hue_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
     focus_handle: FocusHandle,
 }
 
@@ -138,9 +131,6 @@ impl ColorPickerPopover {
             swatch_opacity,
             on_change,
             on_dismiss,
-            dragging: Dragging::None,
-            area_bounds: Rc::new(RefCell::new(None)),
-            hue_bounds: Rc::new(RefCell::new(None)),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -156,23 +146,8 @@ impl ColorPickerPopover {
         cx.notify();
     }
 
-    fn apply_area(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(bounds) = *self.area_bounds.borrow() else {
-            return;
-        };
-        let width = f32::from(bounds.size.width).max(1.0);
-        let height = f32::from(bounds.size.height).max(1.0);
-        self.hsv.saturation = (f32::from(position.x - bounds.left()) / width).clamp(0.0, 1.0);
-        self.hsv.value = 1.0 - (f32::from(position.y - bounds.top()) / height).clamp(0.0, 1.0);
-        self.emit(window, cx);
-    }
-
-    fn apply_hue(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(bounds) = *self.hue_bounds.borrow() else {
-            return;
-        };
-        let width = f32::from(bounds.size.width).max(1.0);
-        self.hsv.hue = (f32::from(position.x - bounds.left()) / width).clamp(0.0, 1.0) * 360.0;
+    fn apply(&mut self, color: PickerColor, window: &mut Window, cx: &mut Context<Self>) {
+        self.hsv = Hsv::from_picker(color);
         self.emit(window, cx);
     }
 
@@ -191,66 +166,20 @@ impl ColorPickerPopover {
 }
 
 impl Render for ColorPickerPopover {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
-        let current = self.hsv;
-        let hue_color = Hsv {
-            hue: current.hue,
-            saturation: 1.0,
-            value: 1.0,
-        }
-        .to_hsla(1.0);
-        let selected_hex = current.to_hex();
-
-        let mut swatches = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap(px(4.0));
-        for (index, entry) in self.palette.iter().enumerate() {
-            let color = Srgba::parse(entry).to_hsla();
-            let value = entry.clone();
-            let active = entry.eq_ignore_ascii_case(&selected_hex);
-            let swatch_key = format!("color-swatch-fill-{index}");
-            let (swatch_hover, swatch_hovered) =
-                crate::ui::primitives::hover_flag(&swatch_key, window, cx);
-            swatches = swatches.child(
-                // A selected item borders itself in its own colour and shrinks
-                // the swatch inside it, which reads as a ring with a gap.
-                div()
-                    .id(ElementId::NamedInteger("color-swatch".into(), index as u64))
-                    .size(px(SWATCH_SIZE))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(chrome::RADIUS_LG))
-                    .border_1()
-                    .border_color(if active { color } else { transparent() })
-                    .when(active, |el| el.p(px(SWATCH_SELECTED_INSET)))
-                    .child(
-                        div()
-                            .id(SharedString::from(swatch_key))
-                            .size_full()
-                            .rounded(px(chrome::RADIUS_LG))
-                            .bg(color)
-                            .when(swatch_hovered, |el| el.opacity(0.85))
-                            .on_hover({
-                                let swatch_hover = swatch_hover.clone();
-                                move |over: &bool, _window, cx| {
-                                    crate::ui::primitives::track_hover(&swatch_hover, *over, cx);
-                                }
-                            }),
-                    )
-                    .on_click(cx.listener(move |this, _event, window, cx| {
-                        this.hsv = hsv_from_hex(&value);
-                        this.emit(window, cx);
-                    })),
-            );
-        }
-
-        let area_bounds = self.area_bounds.clone();
-        let hue_bounds = self.hue_bounds.clone();
+        let current = self.hsv.to_picker();
+        let selected_hex = self.hsv.to_hex();
+        let area_width = POPOVER_WIDTH - POPOVER_PAD * 2.0;
+        let swatches = self
+            .palette
+            .iter()
+            .filter_map(|entry| PickerColor::from_hex(entry))
+            .collect::<Vec<_>>();
+        let entity = cx.entity().downgrade();
+        let area_entity = entity.clone();
+        let hue_entity = entity.clone();
+        let swatch_entity = entity;
 
         div()
             .id("color-picker-popover")
@@ -260,23 +189,6 @@ impl Render for ColorPickerPopover {
                 let dismiss = this.on_dismiss.clone();
                 dismiss(window, cx);
             }))
-            .on_mouse_up_out(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, _cx| this.dragging = Dragging::None),
-            )
-            .on_mouse_move(
-                cx.listener(
-                    move |this, event: &MouseMoveEvent, window, cx| match this.dragging {
-                        Dragging::Area => this.apply_area(event.position, window, cx),
-                        Dragging::Hue => this.apply_hue(event.position, window, cx),
-                        Dragging::None => {}
-                    },
-                ),
-            )
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, _cx| this.dragging = Dragging::None),
-            )
             .flex()
             .flex_col()
             .gap(px(12.0))
@@ -289,54 +201,27 @@ impl Render for ColorPickerPopover {
             .bg(theme.overlay)
             .shadow_xl()
             .p(px(POPOVER_PAD))
-            .child(swatches)
             .child(
-                div()
-                    .id("color-area")
-                    .relative()
-                    .w_full()
-                    .h(px(AREA_HEIGHT))
-                    .rounded(px(chrome::RADIUS_2XL))
-                    .overflow_hidden()
-                    .bg(hue_color)
-                    .child(div().absolute().inset_0().bg(linear_gradient(
-                        90.0,
-                        linear_color_stop(crate::ui::colors::white(1.0), 0.0),
-                        linear_color_stop(crate::ui::colors::white(0.0), 1.0),
-                    )))
-                    .child(div().absolute().inset_0().bg(linear_gradient(
-                        180.0,
-                        linear_color_stop(crate::ui::colors::black(0.0), 0.0),
-                        linear_color_stop(crate::ui::colors::black(1.0), 1.0),
-                    )))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px((POPOVER_WIDTH - POPOVER_PAD * 2.0) * current.saturation
-                                - AREA_THUMB / 2.0))
-                            .top(px(AREA_HEIGHT * (1.0 - current.value) - AREA_THUMB / 2.0))
-                            .size(px(AREA_THUMB))
-                            .rounded(px(chrome::RADIUS_XL))
-                            .border_3()
-                            .border_color(crate::ui::colors::white(1.0)),
-                    )
-                    .child(
-                        gpui::canvas(
-                            move |bounds, _window, _cx| {
-                                *area_bounds.borrow_mut() = Some(bounds);
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            this.dragging = Dragging::Area;
-                            this.apply_area(event.position, window, cx);
-                        }),
-                    ),
+                ColorSwatchPicker::new("color-swatches", swatches)
+                    .size(SizeXl::Xs)
+                    .shape(SwatchShape::Square)
+                    .value(current)
+                    .on_change(move |color, window, cx| {
+                        if let Some(entity) = swatch_entity.upgrade() {
+                            entity.update(cx, |this, cx| this.apply(*color, window, cx));
+                        }
+                    }),
+            )
+            .child(
+                ColorArea::new("color-area", current)
+                    .color_space(ColorSpace::Hsb)
+                    .size(px(area_width), px(AREA_HEIGHT))
+                    .sx(|el| el.rounded(px(chrome::RADIUS_2XL)))
+                    .on_change(move |color, window, cx| {
+                        if let Some(entity) = area_entity.upgrade() {
+                            entity.update(cx, |this, cx| this.apply(*color, window, cx));
+                        }
+                    }),
             )
             .child(
                 div()
@@ -345,55 +230,27 @@ impl Render for ColorPickerPopover {
                     .items_center()
                     .gap(px(8.0))
                     .child(
-                        div()
-                            .id("color-hue")
-                            .relative()
-                            .flex_1()
-                            .h(px(HUE_TRACK_HEIGHT))
-                            .rounded(px(chrome::RADIUS_2XL))
-                            .overflow_hidden()
-                            .bg(hue_gradient())
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px((HUE_TRACK_HEIGHT - HUE_THUMB) / 2.0))
-                                    .left(gpui::relative((current.hue / 360.0).clamp(0.0, 1.0)))
-                                    .size(px(HUE_THUMB))
-                                    .ml(px(-HUE_THUMB / 2.0))
-                                    .rounded(px(chrome::RADIUS_2XL))
-                                    .border_3()
-                                    .border_color(crate::ui::colors::white(1.0))
-                                    .bg(hue_color),
-                            )
-                            .child(
-                                gpui::canvas(
-                                    move |bounds, _window, _cx| {
-                                        *hue_bounds.borrow_mut() = Some(bounds);
-                                    },
-                                    |_, _, _, _| {},
-                                )
-                                .absolute()
-                                .inset_0(),
-                            )
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                    this.dragging = Dragging::Hue;
-                                    this.apply_hue(event.position, window, cx);
-                                }),
-                            ),
+                        ColorSlider::new("color-hue", current, ColorChannel::Hue)
+                            .show_label(false)
+                            .length(px(area_width - SHUFFLE_SIZE - 8.0))
+                            .on_change(move |color, window, cx| {
+                                if let Some(entity) = hue_entity.upgrade() {
+                                    entity.update(cx, |this, cx| this.apply(*color, window, cx));
+                                }
+                            }),
                     )
                     .child(
-                        Button::new("color-random")
-                            .variant(ButtonVariant::Tertiary)
-                            .size(ButtonSize::IconSm)
-                            .radius(px(9999.0))
-                            .icon("shuffle")
-                            .icon_size(px(chrome::TOOL_OPTION_CHEVRON))
-                            .tooltip("Choose a random color")
-                            .on_click(
-                                cx.listener(|this, _event, window, cx| this.randomize(window, cx)),
-                            ),
+                        herogpui::components::Tooltip::new("Choose a random color").child(
+                            Button::new("color-random")
+                                .variant(Variant::Tertiary)
+                                .size(Size::Sm)
+                                .is_icon_only(true)
+                                .sx(|el| el.rounded(px(9999.0)))
+                                .child(icon_element("shuffle", px(chrome::TOOL_OPTION_CHEVRON)))
+                                .on_press(cx.listener(|this, _event, window, cx| {
+                                    this.randomize(window, cx)
+                                })),
+                        ),
                     ),
             )
             .child(
@@ -410,7 +267,7 @@ impl Render for ColorPickerPopover {
                         div()
                             .size(px(chrome::COLOR_SWATCH_XS))
                             .rounded(px(chrome::RADIUS_LG))
-                            .bg(current.to_hsla(self.swatch_opacity)),
+                            .bg(self.hsv.to_hsla(self.swatch_opacity)),
                     )
                     .child(
                         div()
@@ -423,16 +280,6 @@ impl Render for ColorPickerPopover {
     }
 }
 
-fn hue_gradient() -> gpui::Background {
-    linear_gradient(
-        90.0,
-        linear_color_stop(gpui::hsla(0.0, 1.0, 0.5, 1.0), 0.0),
-        linear_color_stop(gpui::hsla(1.0, 1.0, 0.5, 1.0), 1.0),
-    )
-}
-
-/// The trigger pill that opens the picker, matching the renderer's
-/// `HeroColorPicker.Trigger`.
 pub fn trigger(
     id: &'static str,
     color: &str,
@@ -508,5 +355,14 @@ mod tests {
 
         let grey = hsv_from_hex("#808080");
         assert!(grey.saturation < 0.01);
+    }
+
+    #[test]
+    fn picker_color_round_trips_hsv() {
+        let hsv = hsv_from_hex("#3b82f6");
+        let back = Hsv::from_picker(hsv.to_picker());
+        assert!((back.hue - hsv.hue).abs() < 0.5);
+        assert!((back.saturation - hsv.saturation).abs() < 0.01);
+        assert!((back.value - hsv.value).abs() < 0.01);
     }
 }

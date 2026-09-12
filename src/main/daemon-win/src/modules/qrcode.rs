@@ -293,7 +293,7 @@ mod tests {
             idat_raw.push(0);
             let start = (row * width * 4) as usize;
             let end = start + (width * 4) as usize;
-            for px in raw[start..end].chunks_exact(4) {
+            for px in raw[start..end].as_chunks::<4>().0 {
                 idat_raw.extend_from_slice(&px[..3]);
             }
         }

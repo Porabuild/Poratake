@@ -6,9 +6,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, App, Context, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Render, ScrollWheelEvent, Styled, Subscription, Window,
+    div, prelude::*, px, App, Context, Focusable, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Render, ScrollWheelEvent, Styled, Subscription, Window,
 };
+use herogpui::gpui;
 
 use crate::editor::actions;
 use crate::editor::annotations::{self, Annotation, AnnotationHistory, Point};
@@ -19,10 +20,11 @@ use crate::editor::options::{
 use crate::editor::title_bar::TitleBar;
 use crate::editor::tool_options::ToolOptionsState;
 use crate::theme::vars::active_theme;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::colors::Tool;
+use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
+use herogpui::components::{Button, InputState, TextField, Variant};
 
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,7 +68,7 @@ pub struct EditorWindow {
     pointer_update_scheduled: bool,
     pub menu: MenuHandle,
     /// The inline field shown while a text annotation is being typed.
-    text_editor: Option<(String, gpui::Entity<crate::ui::text_field::TextField>)>,
+    text_editor: Option<(String, gpui::Entity<InputState>)>,
     /// The pending crop rectangle in image coordinates.
     crop: Option<(f64, f64, f64, f64)>,
     /// The zoom control's measured rect, so its `backdrop-blur-md` can sample
@@ -908,7 +910,7 @@ impl EditorWindow {
             self.image_height = cropped.height() as f32;
 
             let mut bgra = cropped.clone();
-            for pixel in bgra.chunks_exact_mut(4) {
+            for pixel in bgra.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
             self.image = Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
@@ -962,42 +964,7 @@ impl EditorWindow {
             rotation: None,
         });
 
-        let owner = cx.entity().downgrade();
-        let cancel_owner = owner.clone();
-        let field = cx.new(|cx| {
-            crate::ui::text_field::TextField::new("", cx)
-                .placeholder("Type\u{2026}")
-                .on_change({
-                    let owner = owner.clone();
-                    move |value, _window, app| {
-                        let value = value.to_string();
-                        if let Some(owner) = owner.upgrade() {
-                            owner.update(app, |editor, cx| {
-                                if let Some(Annotation::Text { text, .. }) = &mut editor.draft {
-                                    *text = value.clone();
-                                }
-                                editor.sync_snapshot();
-                                cx.notify();
-                            });
-                        }
-                    }
-                })
-                .on_submit(move |_value, _window, app| {
-                    if let Some(owner) = owner.upgrade() {
-                        owner.update(app, |editor, cx| editor.commit_text(cx));
-                    }
-                })
-                .on_cancel(move |_value, _window, app| {
-                    if let Some(owner) = cancel_owner.upgrade() {
-                        owner.update(app, |editor, cx| {
-                            editor.text_editor = None;
-                            editor.draft = None;
-                            editor.sync_snapshot();
-                            cx.notify();
-                        });
-                    }
-                })
-        });
+        let field = cx.new(|cx| InputState::new(cx));
         self.text_editor = Some((id, field));
         self.sync_snapshot();
         cx.notify();
@@ -1024,7 +991,7 @@ impl EditorWindow {
         cx.notify();
     }
 
-    fn text_editor_overlay(&self) -> Option<gpui::AnyElement> {
+    fn text_editor_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let (_, field) = self.text_editor.as_ref()?;
         let Some(Annotation::Text {
             x, y, font_size, ..
@@ -1033,13 +1000,55 @@ impl EditorWindow {
             return None;
         };
         let bounds = (*self.bounds.borrow())?;
+        let owner = cx.entity().downgrade();
+        let submit_owner = owner.clone();
+        let cancel_owner = owner.clone();
         Some(
             div()
                 .absolute()
                 .left(bounds.left() + px(*x as f32 * self.zoom))
                 .top(bounds.top() + px(*y as f32 * self.zoom))
                 .w(px((*font_size as f32 * self.zoom * 12.0).max(160.0)))
-                .child(field.clone())
+                .on_key_down(move |event, _window, cx| {
+                    if event.keystroke.key != "escape" {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    if let Some(owner) = cancel_owner.upgrade() {
+                        owner.update(cx, |editor, cx| {
+                            editor.text_editor = None;
+                            editor.draft = None;
+                            editor.sync_snapshot();
+                            cx.notify();
+                        });
+                    }
+                })
+                .child(
+                    TextField::new(field.clone())
+                        .placeholder("Type\u{2026}")
+                        .on_change({
+                            let owner = owner.clone();
+                            move |value, _window, app| {
+                                let value = value.to_string();
+                                if let Some(owner) = owner.upgrade() {
+                                    owner.update(app, |editor, cx| {
+                                        if let Some(Annotation::Text { text, .. }) =
+                                            &mut editor.draft
+                                        {
+                                            *text = value.clone();
+                                        }
+                                        editor.sync_snapshot();
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                        })
+                        .on_submit(move |_value, _window, app| {
+                            if let Some(owner) = submit_owner.upgrade() {
+                                owner.update(app, |editor, cx| editor.commit_text(cx));
+                            }
+                        }),
+                )
                 .into_any_element(),
         )
     }
@@ -1113,7 +1122,7 @@ fn render_redact_patch(
     crate::editor::export::redact_region(&mut patch, 0, 0, w as i64, h as i64, style, intensity);
 
     // GPUI composites in BGRA.
-    for pixel in patch.chunks_exact_mut(4) {
+    for pixel in patch.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
@@ -1552,7 +1561,7 @@ impl Render for EditorWindow {
                         )),
                 ),
         )
-        .children(self.text_editor_overlay())
+        .children(self.text_editor_overlay(cx))
     }
 }
 
@@ -1660,35 +1669,30 @@ fn zoom_control(
         )
         .p(px(chrome::ZOOM_PAD))
         .shadow_lg()
-        .child(
-            Button::new("zoom-out")
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconXs)
-                .icon("minus")
-                .tooltip("Zoom Out")
-                .disabled(zoom <= MIN_ZOOM)
-                .on_click(move |_event, window, cx| zoom_out(window, cx)),
-        )
+        .child(icon_button::with_tooltip(
+            "Zoom Out",
+            icon_button::compact_sm("zoom-out", "minus")
+                .is_disabled(zoom <= MIN_ZOOM)
+                .on_press(move |_event, window, cx| zoom_out(window, cx)),
+        ))
         .child(
             div().min_w(px(chrome::ZOOM_RESET_MIN)).child(
-                Button::new("zoom-reset")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Xs)
-                    .foreground(theme.muted_foreground)
-                    .label(format!("{}%", (zoom * 100.0).round() as i32))
-                    .tooltip("Reset Zoom")
-                    .on_click(move |_event, window, cx| zoom_reset(window, cx)),
+                herogpui::components::Tooltip::new("Reset Zoom").child(
+                    Button::new("zoom-reset")
+                        .variant(Variant::Ghost)
+                        .recipe("compact")
+                        .recipe("muted")
+                        .label(format!("{}%", (zoom * 100.0).round() as i32))
+                        .on_press(move |_event, window, cx| zoom_reset(window, cx)),
+                ),
             ),
         )
-        .child(
-            Button::new("zoom-in")
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconXs)
-                .icon("plus")
-                .tooltip("Zoom In")
-                .disabled(zoom >= MAX_ZOOM)
-                .on_click(move |_event, window, cx| zoom_in(window, cx)),
-        )
+        .child(icon_button::with_tooltip(
+            "Zoom In",
+            icon_button::compact_sm("zoom-in", "plus")
+                .is_disabled(zoom >= MAX_ZOOM)
+                .on_press(move |_event, window, cx| zoom_in(window, cx)),
+        ))
         .into_any_element()
 }
 
@@ -1955,7 +1959,8 @@ impl EditorWindow {
         let Some((_, field)) = &self.text_editor else {
             return;
         };
-        window.focus(&field.read(cx).focus_handle());
+        let focus = field.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
     }
 
     fn undo(&mut self) {
@@ -1986,7 +1991,7 @@ fn load_image(
 
     // GPUI composites in BGRA; swap channels once at decode time.
     let mut buffer = decoded.to_rgba8();
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
 
@@ -2032,7 +2037,7 @@ impl EditorWindow {
                         .timer(std::time::Duration::from_secs(2))
                         .await;
                     if let Some(entity) = entity.upgrade() {
-                        let _ = entity.update(cx, |editor, cx| {
+                        entity.update(cx, |editor, cx| {
                             editor.is_copied = false;
                             cx.notify();
                         });
@@ -2086,7 +2091,7 @@ impl EditorWindow {
                 Err(error) => (UploadState::Error, "Upload failed", error.to_string()),
             };
 
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 if state == UploadState::Success {
                     crate::system::clipboard::ClipboardService::write_text(cx, body.clone());
                 }
@@ -2135,7 +2140,7 @@ impl EditorWindow {
                 .spawn(async move { daemon.print().image(encoded) })
                 .await;
             if let Err(error) = result {
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     crate::windows::toast::Toast::show(cx, "Printing failed", error.to_string())
                 });
             }

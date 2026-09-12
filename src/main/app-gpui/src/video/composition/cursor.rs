@@ -543,7 +543,9 @@ mod tests {
         let covered = canvas
             .pixmap()
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| pixel[3] > 0)
             .count();
         assert!(covered > 50, "{covered}");

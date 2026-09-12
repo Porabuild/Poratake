@@ -2,6 +2,7 @@ use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Render, Window, WindowBounds, WindowKind,
     WindowOptions,
 };
+use herogpui::gpui;
 
 /// Poratake is a tray-first app with no main window, but the Windows backend
 /// quits the process when its last window closes. This hidden 1x1 window keeps
