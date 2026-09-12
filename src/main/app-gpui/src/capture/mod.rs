@@ -341,7 +341,7 @@ fn with_frozen_screen(
         }
         #[cfg(windows)]
         let opened = {
-            let _ = cx.update(|cx| overlay::raise_all(generation, cx));
+            cx.update(|cx| overlay::raise_all(generation, cx));
             opened
         };
         #[cfg(not(windows))]

@@ -131,12 +131,6 @@ fn main() {
                 let system_theme = watcher::spawn();
                 cx.spawn(async move |cx| {
                     while let Ok(mode) = system_theme.recv().await {
-                        #[cfg(not(test))]
-                        if let Err(error) = cx.update(|cx| watcher::apply_system_mode(mode, cx)) {
-                            eprintln!("[theme] system-mode update failed: {error}");
-                            break;
-                        }
-                        #[cfg(test)]
                         cx.update(|cx| watcher::apply_system_mode(mode, cx));
                     }
                 })
