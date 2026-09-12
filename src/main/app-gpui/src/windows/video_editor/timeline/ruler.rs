@@ -1,6 +1,7 @@
 use gpui::{
     div, prelude::*, px, AnyElement, Context, MouseDownEvent, MouseMoveEvent, ScrollHandle, Styled,
 };
+use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
 use crate::windows::video_editor::model::format_time;

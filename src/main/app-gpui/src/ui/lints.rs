@@ -86,4 +86,100 @@ mod tests {
             offenders.join("\n  ")
         );
     }
+
+    /// The argument of the call whose `(` is at `open`, as (start, end) byte
+    /// offsets of the whole call including its name.
+    fn call_end(source: &str, open: usize) -> usize {
+        let bytes = source.as_bytes();
+        let mut depth = 0i32;
+        let mut i = open;
+        while i < source.len() {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        source.len()
+    }
+
+    /// Every `.method(..)` in a `Button::new(..)` builder chain, as one string.
+    ///
+    /// Chain order carries no meaning — `Button` is a builder — so the guard
+    /// has to read the whole chain rather than a line or two around a match.
+    fn button_chains(source: &str) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(found) = source[from..].find("Button::new") {
+            let start = from + found;
+            let Some(paren) = source[start..].find('(') else {
+                break;
+            };
+            let mut end = call_end(source, start + paren);
+            loop {
+                let tail = &source[end..];
+                let trimmed = tail.trim_start();
+                let Some(paren) = trimmed.find('(') else {
+                    break;
+                };
+                let name = &trimmed[1..paren];
+                let is_method = trimmed.starts_with('.')
+                    && !name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+                if !is_method {
+                    break;
+                }
+                end = call_end(source, end + (tail.len() - trimmed.len()) + paren);
+            }
+            let line = source[..start].matches('\n').count() + 1;
+            out.push((line, source[start..end].to_string()));
+            from = end;
+        }
+        out
+    }
+
+    /// A button showing an icon *and* text must still carry an accessible name.
+    ///
+    /// `Button::label` is the name, and it paints before every child — so an
+    /// icon written first still lands after the text, and moving the text into
+    /// a child to fix the order silently drops the name. `content` is the only
+    /// path that gives both, so a chain with an icon and a text child has to
+    /// have gone through `label`. Sixteen buttons were nameless this way.
+    #[test]
+    fn buttons_with_an_icon_and_a_label_still_name_themselves() {
+        let mut offenders = Vec::new();
+        for path in rust_sources() {
+            let source = std::fs::read_to_string(&path).expect("read source");
+            for (line, chain) in button_chains(&source) {
+                if !chain.contains("icon_element(") || chain.contains("label(") {
+                    continue;
+                }
+                let has_text_child = chain
+                    .match_indices(".child(")
+                    .map(|(at, _)| {
+                        &chain[at + ".child(".len()..call_end(&chain, at + ".child(".len() - 1)]
+                    })
+                    .any(|arg| {
+                        let arg = arg.trim();
+                        !arg.contains("icon_element(") && !arg.contains('(') && arg.starts_with('"')
+                    });
+                if has_text_child {
+                    offenders.push(format!("{}:{}", path.display(), line));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these buttons show an icon and text but have no accessible name; \
+             add `.label(text)` for the name and `.content(|_| \
+             primitives::icon_label(..))` for the painted row. Found at:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
 }

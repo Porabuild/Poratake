@@ -3,10 +3,12 @@
 //! cancel, release to confirm and capture.
 
 use gpui::{
-    actions, div, prelude::*, px, AnyWindowHandle, App, Bounds, Context, DisplayId, Global,
-    KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
-    Styled, Window, WindowBackgroundAppearance, WindowKind, WindowOptions,
+    div, prelude::*, px, AnyWindowHandle, App, Bounds, Context, DisplayId, Global, KeyBinding,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, Styled,
+    Window, WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
+use herogpui::actions;
+use herogpui::gpui;
 #[cfg(not(test))]
 use poratake_daemon_common::contract::RecordingOverlayShowWindowRequest;
 use poratake_daemon_common::geometry::{CaptureRect, DisplayOrigin};
@@ -629,7 +631,7 @@ fn open_overlay_window(
                 let window_list_generation = overlay.window_list_generation.wrapping_add(1);
                 let color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
                 let mut replacement = build(scale, focus_handle);
-                replacement.display_id = Some(u32::from(display_id));
+                replacement.display_id = Some(u64::from(display_id) as u32);
                 replacement.window_list_generation = window_list_generation;
                 replacement.color_frame_generation = color_frame_generation;
                 *overlay = replacement;
@@ -639,7 +641,7 @@ fn open_overlay_window(
                 if launch.focus && shown {
                     window.activate_window();
                 }
-                window.focus(&overlay.focus_handle);
+                window.focus(&overlay.focus_handle, cx);
             });
             if let Err(failure) = updated {
                 eprintln!("[overlay] failed to reuse {error}: {failure}");
@@ -664,7 +666,7 @@ fn open_overlay_window(
             let focus_handle = cx.focus_handle();
             let view = cx.new(|_| {
                 let mut view = build(scale, focus_handle);
-                view.display_id = Some(u32::from(display_id));
+                view.display_id = Some(u64::from(display_id) as u32);
                 view
             });
             view.update(cx, after_new);
@@ -672,7 +674,8 @@ fn open_overlay_window(
             if launch.focus && shown {
                 window.activate_window();
             }
-            window.focus(&view.read(cx).focus_handle);
+            let focus = view.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
             view
         },
     );
@@ -1149,7 +1152,7 @@ impl AreaOverlay {
 
     pub fn start_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.close(window);
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         self.activate_color_picker(cx);
         sync_color_picker(true, cx);
     }
@@ -1832,6 +1835,7 @@ impl Render for AreaOverlay {
                                 offset: point(px(0.0), px(0.0)),
                                 blur_radius: px(0.0),
                                 spread_radius: px(1.0),
+                                inset: false,
                             }]);
                         for (handle_x, handle_y, handle_w, handle_h) in
                             crate::ui::chrome::overlay_handle_rects(
@@ -1853,6 +1857,7 @@ impl Render for AreaOverlay {
                                         offset: point(px(0.0), px(0.0)),
                                         blur_radius: px(0.0),
                                         spread_radius: px(1.0),
+                                        inset: false,
                                     }]),
                             );
                         }
@@ -2067,6 +2072,7 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{px, size, TestAppContext};
+    use herogpui::gpui;
     use poratake_daemon_common::contract::RecordingOverlayShowWindowRequest;
 
     use crate::config::store::ConfigStore;
@@ -2151,7 +2157,7 @@ mod tests {
         assert_eq!(capture.display_id, Some(73));
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn opened_overlay_keeps_the_selected_display_id(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
@@ -2181,7 +2187,7 @@ mod tests {
             opened
                 .update(cx, |overlay, _, _| overlay.display_id)
                 .expect("read display id"),
-            Some(u32::from(display_id))
+            Some(u64::from(display_id) as u32)
         );
     }
 
@@ -2234,7 +2240,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn resizing_reaches_the_outer_screen_edge(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
@@ -2289,7 +2295,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[gpui::test]
+    #[herogpui::test]
     fn prewarmed_overlay_window_is_reused(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
@@ -2391,9 +2397,10 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn pending_window_list_does_not_start_an_area_selection(cx: &mut TestAppContext) {
         use gpui::{point, Modifiers, MouseButton};
+        use herogpui::gpui;
 
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
@@ -2406,7 +2413,7 @@ mod tests {
         };
         let (overlay, cx) = cx.add_window_view(|window, cx| {
             let focus = cx.focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2468,7 +2475,7 @@ mod tests {
         ));
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn escape_closes_the_focused_overlay(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
@@ -2484,7 +2491,7 @@ mod tests {
         };
         let window = cx.add_window(|window, cx| {
             let focus_handle = cx.focus_handle();
-            window.focus(&focus_handle);
+            window.focus(&focus_handle, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2501,9 +2508,10 @@ mod tests {
         assert!(window.update(cx, |_, _, _| ()).is_err());
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn all_in_one_area_capture_closes_the_overlay(cx: &mut TestAppContext) {
         use gpui::{point, Modifiers, MouseButton};
+        use herogpui::gpui;
 
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
@@ -2516,7 +2524,7 @@ mod tests {
         };
         let (_overlay, cx) = cx.add_window_view(|window, cx| {
             let focus_handle = cx.focus_handle();
-            window.focus(&focus_handle);
+            window.focus(&focus_handle, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2552,9 +2560,10 @@ mod tests {
         }));
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn video_area_selection_opens_the_recording_control(cx: &mut TestAppContext) {
         use gpui::{point, Modifiers, MouseButton};
+        use herogpui::gpui;
 
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
@@ -2567,7 +2576,7 @@ mod tests {
         };
         let (overlay, cx) = cx.add_window_view(|window, cx| {
             let focus_handle = cx.focus_handle();
-            window.focus(&focus_handle);
+            window.focus(&focus_handle, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2604,7 +2613,7 @@ mod tests {
             .is_some())));
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn video_window_selection_releases_the_freeze_and_removes_the_selector(
         cx: &mut TestAppContext,
     ) {
@@ -2626,7 +2635,7 @@ mod tests {
         };
         let overlay = cx.add_window(|window, cx| {
             let focus = cx.focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2675,7 +2684,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn all_in_one_mode_and_intent_stay_in_sync(cx: &mut TestAppContext) {
         use crate::capture::all_in_one::{Choices, Mode, Target};
         use crate::capture::intent::CaptureIntent;
@@ -2691,7 +2700,7 @@ mod tests {
         };
         let (overlay, cx) = cx.add_window_view(|window, cx| {
             let focus_handle = cx.focus_handle();
-            window.focus(&focus_handle);
+            window.focus(&focus_handle, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2744,7 +2753,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn dedicated_display_picker_reuses_the_screen_target_state(cx: &mut TestAppContext) {
         use crate::capture::intent::CaptureIntent;
 
@@ -2759,7 +2768,7 @@ mod tests {
         };
         let (overlay, cx) = cx.add_window_view(|window, cx| {
             let focus_handle = cx.focus_handle();
-            window.focus(&focus_handle);
+            window.focus(&focus_handle, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2782,7 +2791,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn all_in_one_mode_syncs_across_overlay_windows(cx: &mut TestAppContext) {
         use crate::capture::all_in_one::{Choices, Mode};
         use crate::capture::intent::CaptureIntent;
@@ -2798,7 +2807,7 @@ mod tests {
         };
         let first = cx.add_window(|window, cx| {
             let focus = cx.focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2810,7 +2819,7 @@ mod tests {
         });
         let second = cx.add_window(|window, cx| {
             let focus = cx.focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             super::AreaOverlay::with_focus(bounds, 1.0, service, CaptureIntent::Screenshot, focus)
                 .with_all_in_one(Choices::default())
         });
@@ -2836,7 +2845,7 @@ mod tests {
         assert_eq!(intent, CaptureIntent::Recording);
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn color_picker_is_exclusive_and_escape_closes_the_overlay(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
@@ -2852,7 +2861,7 @@ mod tests {
         };
         let first = cx.add_window(|window, cx| {
             let focus = cx.focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             super::AreaOverlay::with_focus(
                 bounds,
                 1.0,
@@ -2867,7 +2876,7 @@ mod tests {
         first
             .update(cx, |overlay, window, cx| {
                 let toolbar_focus = cx.focus_handle();
-                window.focus(&toolbar_focus);
+                window.focus(&toolbar_focus, cx);
                 overlay.start_color_picker(window, cx);
                 assert!(overlay.focus_handle.is_focused(window));
             })

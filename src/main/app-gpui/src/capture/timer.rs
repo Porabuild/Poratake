@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::Hsla;
+use herogpui::gpui;
 use poratake_daemon_common::contract::{
     TimerShowRequest, TIMER_CONTROL_HEIGHT, TIMER_CONTROL_TOP_MARGIN, TIMER_CONTROL_WIDTH,
 };

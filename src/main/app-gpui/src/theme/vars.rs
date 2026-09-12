@@ -2,6 +2,7 @@
 //! properties the whole design system is built on into concrete colors.
 
 use gpui::{App, Hsla};
+use herogpui::gpui;
 
 use crate::theme::color::{mix_oklab, mix_parsed, mix_parsed_weights, Srgba};
 use crate::theme::presets::{
@@ -212,8 +213,10 @@ impl gpui::Global for ActiveMode {}
 pub fn init_theme(cx: &mut App, appearance_mode: ThemeMode, theme_id: &str) {
     let preset = get_theme_preset(theme_id);
     let vars = ThemeVars::for_preset(preset, appearance_mode);
-    cx.set_global(ActiveTheme(vars));
+    cx.set_global(ActiveTheme(vars.clone()));
     cx.set_global(ActiveMode(appearance_mode));
+    let dark = matches!(appearance_mode, ThemeMode::Dark);
+    herogpui::theme::set_theme(super::bridge::to_herogpui(&vars, dark), cx);
 }
 
 pub fn update_theme(cx: &mut App, appearance_mode: ThemeMode, theme_id: &str) {
@@ -241,6 +244,7 @@ mod tests {
         get_theme_preset, ThemeMode, ThemeVariant, APP_THEME_PRESETS, DEFAULT_THEME_ID,
     };
     use gpui::Hsla;
+    use herogpui::gpui;
 
     fn expected_content(variant: &ThemeVariant) -> Hsla {
         match variant.content {

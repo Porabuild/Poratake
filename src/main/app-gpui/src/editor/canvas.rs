@@ -8,6 +8,7 @@ use std::rc::Rc;
 use gpui::{
     canvas, div, img, prelude::*, px, App, PathBuilder, Pixels, RenderOnce, ScrollHandle, Styled,
 };
+use herogpui::gpui;
 
 use crate::editor::annotations::{
     arrow_head_size, normalize_rect, points_to_coordinates, Annotation, Point, DEFAULT_TEXT_FONT,
@@ -182,6 +183,7 @@ impl RenderOnce for EditorCanvas {
                                     ),
                                 };
                                 let _ = window.paint_image(
+                                    region,
                                     region,
                                     gpui::Corners::default(),
                                     patch.clone(),

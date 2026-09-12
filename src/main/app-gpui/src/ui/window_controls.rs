@@ -2,6 +2,7 @@ use gpui::{
     canvas, div, point, prelude::*, px, AnyElement, App, Div, ElementId, Hsla, PathBuilder, Pixels,
     Point, Stateful, Styled, Window, WindowControlArea,
 };
+use herogpui::gpui;
 
 use crate::theme::color::Srgba;
 use crate::theme::vars::ThemeVars;
@@ -83,18 +84,47 @@ pub fn drag_strip(
     cx: &mut App,
     theme: &ThemeVars,
 ) -> AnyElement {
+    paint_drag_strip(
+        "title-drag",
+        background,
+        window,
+        cx,
+        theme,
+        chrome::is_macos(),
+    )
+}
+
+pub fn content_drag_strip(
+    background: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+    theme: &ThemeVars,
+) -> AnyElement {
+    paint_drag_strip("content-title-drag", background, window, cx, theme, false)
+}
+
+fn paint_drag_strip(
+    id: &'static str,
+    background: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+    theme: &ThemeVars,
+    reserve_leading: bool,
+) -> AnyElement {
     let mut strip = div()
+        .id(format!("{id}-strip"))
         .flex()
         .flex_row()
         .h(px(chrome::TITLE_BAR_HEIGHT))
         .w_full()
         .flex_none()
-        .bg(background);
-    if chrome::is_macos() {
+        .bg(background)
+        .debug_selector(|| format!("{id}-strip"));
+    if reserve_leading {
         strip = strip.child(leading_inset());
     }
     strip
-        .child(drag_area("title-drag").flex_1().h_full())
+        .child(drag_area(id).flex_1().h_full())
         .child(render(window, cx, theme))
         .into_any_element()
 }

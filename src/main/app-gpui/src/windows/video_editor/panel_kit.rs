@@ -3,15 +3,15 @@
 //! `renderer/components/video-editor/components/`.
 
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled};
+use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::menu::MenuHandle;
-use crate::ui::select::{Select, SelectOption};
-use crate::ui::slider::Slider;
-use crate::ui::switch::{Switch, SwitchSize};
-use crate::ui::tabs::{TabItem, Tabs};
 use crate::windows::video_editor::VideoEditorWindow;
+use herogpui::components::{
+    Button, PickerItem, Select, Size, Switch, TabItem, Tabs, TabsVariant, Variant,
+};
+use herogpui::components::{Slider, SliderSize};
 
 pub fn panel(children: Vec<AnyElement>) -> AnyElement {
     div()
@@ -70,8 +70,9 @@ pub fn header(
 
     if let Some(enabled) = toggle {
         row = row.child(
-            Switch::new(SharedString::from(format!("panel-toggle-{title}")), enabled)
-                .size(SwitchSize::Sm)
+            Switch::new(SharedString::from(format!("panel-toggle-{title}")))
+                .is_selected(enabled)
+                .size(Size::Sm)
                 .on_change(cx.listener(move |this, value: &bool, _window, cx| {
                     on_toggle(this, *value, cx);
                 })),
@@ -156,8 +157,9 @@ pub fn switch_row(
         .gap(px(8.0))
         .child(label(text, theme))
         .child(
-            Switch::new(id, checked)
-                .size(SwitchSize::Sm)
+            Switch::new(id)
+                .is_selected(checked)
+                .size(Size::Sm)
                 .on_change(cx.listener(move |this, value: &bool, _window, cx| {
                     on_change(this, *value, cx);
                 })),
@@ -170,26 +172,31 @@ pub fn select_row(
     text: &'static str,
     value: &str,
     options: &[(&'static str, &'static str)],
-    menu: &MenuHandle,
+    _menu: &MenuHandle,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
     on_change: impl Fn(&mut VideoEditorWindow, String, &mut Context<VideoEditorWindow>) + 'static,
 ) -> AnyElement {
+    let items: Vec<PickerItem> = options
+        .iter()
+        .map(|(value, label)| PickerItem::new(*value, *label))
+        .collect();
+    let value = items
+        .iter()
+        .any(|item| item.key().as_str() == value)
+        .then(|| SharedString::from(value));
     field(
         text,
-        Select::new(id, menu.clone())
-            .selected(value.to_string())
-            .options(
-                options
-                    .iter()
-                    .map(|(value, label)| SelectOption::new(*value, *label))
-                    .collect(),
-            )
-            .small()
-            .full_width()
-            .on_select(cx.listener(move |this, value: &SharedString, _window, cx| {
-                on_change(this, value.to_string(), cx);
-            }))
+        Select::new(id, items)
+            .recipe("compact")
+            .value(value.clone())
+            .full_width(true)
+            .on_selection_change(cx.listener(
+                move |this, value: &Option<SharedString>, _window, cx| {
+                    let Some(value) = value else { return };
+                    on_change(this, value.to_string(), cx);
+                },
+            ))
             .into_any_element(),
         theme,
     )
@@ -208,19 +215,21 @@ pub fn tab_row(
 ) -> AnyElement {
     field(
         text,
-        Tabs::new(id)
-            .items(
-                options
-                    .iter()
-                    .map(|(value, label)| TabItem::new(*value, *label))
-                    .collect(),
-            )
-            .selected(value.to_string())
-            .full_width()
-            .on_select(cx.listener(move |this, value: &SharedString, _window, cx| {
-                on_change(this, value.to_string(), cx);
-            }))
-            .into_any_element(),
+        Tabs::new(
+            id,
+            options
+                .iter()
+                .map(|(value, label)| TabItem::new(*value, *label))
+                .collect(),
+            value,
+        )
+        .variant(TabsVariant::Secondary)
+        .selected_key(value)
+        .full_width(true)
+        .on_selection_change(cx.listener(move |this, value: &SharedString, _window, cx| {
+            on_change(this, value.to_string(), cx);
+        }))
+        .into_any_element(),
         theme,
     )
 }
@@ -258,8 +267,11 @@ pub fn slider_row(
                 ),
         )
         .child(
-            Slider::new(id, value as f32, min as f32, max as f32)
-                .small()
+            Slider::new(id, value as f32)
+                .min_value(min as f32)
+                .max_value(max as f32)
+                .continuous(true)
+                .size(SliderSize::Sm)
                 .on_drag_start(move |_window, cx| {
                     let _ = drag_view.update(cx, |this, _cx| this.begin_slider_gesture());
                 })
@@ -285,17 +297,17 @@ pub fn reset_button(
 pub fn reset_named(
     id: &'static str,
     label: &'static str,
-    theme: &ThemeVars,
+    _theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
     on_click: impl Fn(&mut VideoEditorWindow, &mut Context<VideoEditorWindow>) + 'static,
 ) -> AnyElement {
     Button::new(id)
-        .variant(ButtonVariant::Ghost)
-        .size(ButtonSize::Xs)
-        .full_width()
+        .variant(Variant::Ghost)
+        .recipe("compact")
+        .recipe("muted")
         .label(label)
-        .foreground(theme.muted_foreground)
-        .on_click(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
+        .full_width(true)
+        .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
         .into_any_element()
 }
 
@@ -311,13 +323,15 @@ pub fn tertiary_button(
 ) -> AnyElement {
     let _ = theme;
     Button::new(id)
-        .variant(ButtonVariant::Tertiary)
-        .size(ButtonSize::Xs)
-        .full_width()
-        .icon(icon)
         .label(label)
-        .disabled(disabled)
-        .on_click(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
+        .content(move |_| {
+            crate::ui::primitives::icon_label(icon, label.into(), px(14.0), px(8.0), false)
+        })
+        .variant(Variant::Tertiary)
+        .recipe("compact")
+        .is_disabled(disabled)
+        .full_width(true)
+        .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
         .into_any_element()
 }
 
@@ -332,12 +346,14 @@ pub fn action_button(
 ) -> AnyElement {
     let _ = theme;
     Button::new(id)
-        .variant(ButtonVariant::Primary)
-        .size(ButtonSize::Sm)
-        .full_width()
-        .icon(icon)
         .label(label)
-        .on_click(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
+        .content(move |_| {
+            crate::ui::primitives::icon_label(icon, label.into(), px(16.0), px(8.0), false)
+        })
+        .variant(Variant::Primary)
+        .size(Size::Sm)
+        .full_width(true)
+        .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
         .into_any_element()
 }
 
@@ -353,12 +369,14 @@ pub fn secondary_button(
 ) -> AnyElement {
     let _ = theme;
     Button::new(id)
-        .variant(ButtonVariant::Secondary)
-        .size(ButtonSize::Xs)
-        .full_width()
-        .icon(icon)
         .label(label)
-        .on_click(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
+        .content(move |_| {
+            crate::ui::primitives::icon_label(icon, label.into(), px(14.0), px(8.0), false)
+        })
+        .variant(Variant::Secondary)
+        .recipe("compact")
+        .full_width(true)
+        .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
         .into_any_element()
 }
 

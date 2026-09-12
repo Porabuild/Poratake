@@ -12,9 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 poratake-daemon-common = { path = "../daemon-common" }
-gpui = { version = "0.2.2", default-features = false, features = [
-  "windows-manifest",
-] }
+herogpui.workspace = true
+gpui = { package = "gpui-pre", version = "=0.3.3" }
 raw-window-handle = "0.6"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -89,20 +88,10 @@ objc2-user-notifications = { version = "0.3.2", default-features = false, featur
 dbus = "0.9.12"
 glib = "0.18.5"
 gtk = "0.18.2"
-gpui = { version = "0.2.2", default-features = false, features = [
-  "wayland",
-  "x11",
-] }
 tray-icon = { version = "0.24.2", default-features = false, features = ["gtk"] }
 
 [dev-dependencies]
-# `TestAppContext` and the `gpui::test` macro live behind this feature. It is a
-# dev-dependency only, so the shipped binary is unaffected — it exists so the
-# windows can be rendered headlessly and a panic on a render path fails CI
-# instead of the user.
-gpui = { version = "0.2.2", default-features = false, features = [
-  "test-support",
-] }
+herogpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 
 [lints]

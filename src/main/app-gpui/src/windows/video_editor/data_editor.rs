@@ -5,14 +5,14 @@
 use std::path::PathBuf;
 
 use gpui::{div, prelude::*, px, AnyElement, Context, Entity, SharedString, Styled};
+use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::icon::icon_element;
-use crate::ui::text_area::TextArea;
 use crate::video::project;
 use crate::video::sidecars::{CursorData, SubtitleData};
 use crate::windows::video_editor::VideoEditorWindow;
+use herogpui::components::{Button, InputState, Size, TextArea, Variant};
 
 /// Which sidecar an open editor is editing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,7 +148,7 @@ impl DataKind {
 /// The open editor's state, owned by the video editor window.
 pub struct DataEditor {
     pub kind: DataKind,
-    pub field: Entity<TextArea>,
+    pub field: Entity<InputState>,
     pub error: Option<SharedString>,
 }
 
@@ -163,11 +163,7 @@ impl DataEditor {
     ) -> Self {
         let existing = std::fs::read_to_string(kind.path(project)).ok();
         let initial = existing.unwrap_or_else(|| kind.template(width, height, duration));
-        let field = cx.new(|cx| {
-            TextArea::new(initial, cx)
-                .rows(16)
-                .placeholder("Enter data as JSON\u{2026}")
-        });
+        let field = cx.new(|cx| InputState::with_value(cx, initial));
         Self {
             kind,
             field,
@@ -238,25 +234,30 @@ pub fn render(
                                 .gap(px(4.0))
                                 .child(
                                     Button::new("data-editor-template")
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Xs)
+                                        .variant(Variant::Ghost)
+                                        .recipe("compact")
                                         .label("Load Template")
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                        .on_press(cx.listener(|this, _event, _window, cx| {
                                             this.load_data_editor_template(cx)
                                         })),
                                 )
                                 .child(
                                     Button::new("data-editor-example")
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Xs)
+                                        .variant(Variant::Ghost)
+                                        .recipe("compact")
                                         .label("Load Example")
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                        .on_press(cx.listener(|this, _event, _window, cx| {
                                             this.load_data_editor_example(cx)
                                         })),
                                 ),
                         ),
                 )
-                .child(editor.field.clone())
+                .child(
+                    TextArea::new(editor.field.clone())
+                        .rows(16)
+                        .placeholder("Enter data as JSON\u{2026}")
+                        .font_family(crate::ui::colors::MONO_FONT),
+                )
                 .when_some(error, |el, error| {
                     el.child(
                         div()
@@ -281,19 +282,19 @@ pub fn render(
                         .gap(px(8.0))
                         .child(
                             Button::new("data-editor-cancel")
-                                .variant(ButtonVariant::Secondary)
-                                .size(ButtonSize::Sm)
+                                .variant(Variant::Secondary)
+                                .size(Size::Sm)
                                 .label("Cancel")
-                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                .on_press(cx.listener(|this, _event, _window, cx| {
                                     this.close_data_editor(cx)
                                 })),
                         )
                         .child(
                             Button::new("data-editor-save")
-                                .variant(ButtonVariant::Primary)
-                                .size(ButtonSize::Sm)
+                                .variant(Variant::Primary)
+                                .size(Size::Sm)
                                 .label("Save")
-                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                .on_press(cx.listener(|this, _event, _window, cx| {
                                     this.save_data_editor(cx)
                                 })),
                         ),

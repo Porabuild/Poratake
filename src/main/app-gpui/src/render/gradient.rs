@@ -115,7 +115,7 @@ pub fn overlay_noise(canvas: &mut Canvas, width: f32, height: f32, noise: f64, s
     // A xorshift keeps the grain reproducible without pulling in a random
     // number generator; the renderer's `Math.random()` only has to look random.
     let mut state = seed | 1;
-    for pixel in grain.data_mut().chunks_exact_mut(4) {
+    for pixel in grain.data_mut().as_chunks_mut::<4>().0 {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
@@ -209,7 +209,9 @@ mod tests {
         assert!(canvas
             .pixmap()
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|pixel| pixel[3] == 255));
     }
 
@@ -243,7 +245,9 @@ mod tests {
         assert!(canvas
             .pixmap()
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|pixel| pixel[3] == 255));
     }
 }

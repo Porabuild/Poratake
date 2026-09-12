@@ -2,12 +2,14 @@
 //! `renderer/components/area-overlay/all-in-one-toolbar.tsx`.
 
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled, Window};
+use herogpui::gpui;
+
+use herogpui::components::{Button, Size, Variant};
 
 use crate::capture::all_in_one::{Choices, Mode, Target};
 use crate::capture::overlay::AreaOverlay;
 use crate::system::capabilities::{is_supported, Feature};
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuBuilder, MenuHandle, MenuItem, MenuPlacement};
@@ -89,46 +91,44 @@ pub fn render(
                 .child(target_menu(choices, menu, theme, window, cx))
                 .child(hairline(theme))
                 .when(ocr_enabled, |el| {
-                    el.child(
-                        toolbar_button(
-                            "all-in-one-ocr",
-                            "scan-text",
-                            "Capture text",
-                            mode_selected(choices, picking_color, Mode::Ocr),
-                            theme,
-                        )
-                        .on_click(cx.listener(
-                            |this, _event, window, cx| {
-                                this.close_all_in_one_menu(window);
-                                this.set_all_in_one_mode(Mode::Ocr, cx);
-                            },
-                        )),
-                    )
+                    el.child(toolbar_button(
+                        "all-in-one-ocr",
+                        "scan-text",
+                        "Capture text",
+                        mode_selected(choices, picking_color, Mode::Ocr),
+                        theme,
+                        |this, window, cx| {
+                            this.close_all_in_one_menu(window);
+                            this.set_all_in_one_mode(Mode::Ocr, cx);
+                        },
+                        cx,
+                    ))
                 })
                 .when(color_picker_enabled, |el| {
-                    el.child(
-                        toolbar_button(
-                            "all-in-one-pick-color",
-                            "pipette",
-                            "Pick color",
-                            picking_color,
-                            theme,
-                        )
-                        .on_click(cx.listener(
-                            |this, _event, window, cx| {
-                                this.start_color_picker(window, cx);
-                            },
-                        )),
-                    )
+                    el.child(toolbar_button(
+                        "all-in-one-pick-color",
+                        "pipette",
+                        "Pick color",
+                        picking_color,
+                        theme,
+                        |this, window, cx| {
+                            this.start_color_picker(window, cx);
+                        },
+                        cx,
+                    ))
                 })
                 .child(hairline(theme))
-                .child(
-                    toolbar_button("all-in-one-close", "x", "Close", false, theme).on_click(
-                        cx.listener(|_this, _event, window, cx| {
-                            crate::capture::overlay::dismiss(window, cx);
-                        }),
-                    ),
-                ),
+                .child(toolbar_button(
+                    "all-in-one-close",
+                    "x",
+                    "Close",
+                    false,
+                    theme,
+                    |_this, window, cx| {
+                        crate::capture::overlay::dismiss(window, cx);
+                    },
+                    cx,
+                )),
         );
     bar = bar.on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
         cx.stop_propagation();
@@ -145,22 +145,26 @@ fn toolbar_button(
     tooltip: &'static str,
     selected: bool,
     theme: &ThemeVars,
-) -> Button {
+    on_click: impl Fn(&mut AreaOverlay, &mut Window, &mut Context<AreaOverlay>) + 'static,
+    cx: &mut Context<AreaOverlay>,
+) -> AnyElement {
     let (surface, surface_hover) =
         toolbar_button_surfaces(selected, theme.default, theme.default_hover);
+    let radius = px(chrome::OVERLAY_BUTTON_RADIUS);
+    let foreground = crate::ui::colors::white(0.85);
+    let resting = surface.unwrap_or_else(gpui::transparent_black);
     let button = Button::new(id)
-        .variant(ButtonVariant::Ghost)
-        .size(ButtonSize::IconSm)
-        .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
-        .foreground(crate::ui::colors::white(0.85))
-        .surface_hover(surface_hover)
-        .selected(selected)
-        .icon(icon)
-        .tooltip(tooltip);
-    match surface {
-        Some(surface) => button.surface(surface),
-        None => button,
-    }
+        .variant(Variant::Ghost)
+        .size(Size::Sm)
+        .is_icon_only(true)
+        .radius(radius)
+        .sx(move |el| el.bg(resting).text_color(foreground))
+        .hover_bg(surface_hover)
+        .child(icon_element(icon, px(16.0)))
+        .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx)));
+    herogpui::components::Tooltip::new(tooltip)
+        .child(button)
+        .into_any_element()
 }
 
 fn toolbar_button_surfaces(

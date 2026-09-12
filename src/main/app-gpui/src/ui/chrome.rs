@@ -31,7 +31,6 @@ pub const RADIUS_4XL: f32 = ROOT_RADIUS * 4.0;
 pub const TITLE_BAR_HEIGHT: f32 = 40.0;
 pub const TITLE_BAR_PADDING_X: f32 = 8.0;
 pub const TITLE_BAR_GAP: f32 = 4.0;
-pub const TOOL_BUTTON_SIZE: f32 = 28.0;
 pub const TOOL_BUTTON_ICON: f32 = 16.0;
 pub const TOOL_OPTION_HEIGHT: f32 = 28.0;
 pub const TOOL_OPTION_RADIUS: f32 = RADIUS_3XL;
@@ -61,31 +60,20 @@ pub const WINDOW_CONTROL_WIDTH: f32 = 46.0;
 #[allow(dead_code)]
 pub const WINDOW_CONTROLS_SPACER: f32 = WINDOW_CONTROL_WIDTH * 3.0;
 pub const TRAFFIC_LIGHT_INSET: f32 = 120.0;
-pub const VIDEO_TRAFFIC_LIGHT_PAD: f32 = 80.0;
+pub const MACOS_TITLE_LEADING_INSET: f32 = 80.0;
 
 pub fn is_macos() -> bool {
     cfg!(target_os = "macos")
 }
 
 pub const BUTTON_RADIUS: f32 = RADIUS_3XL;
-pub const BUTTON_MD_HEIGHT: f32 = 36.0;
-pub const BUTTON_SM_HEIGHT: f32 = 32.0;
-pub const BUTTON_LG_HEIGHT: f32 = 40.0;
 pub const BUTTON_XS_HEIGHT: f32 = 28.0;
-pub const BUTTON_MD_PAD_X: f32 = 16.0;
 pub const BUTTON_SM_PAD_X: f32 = 12.0;
 pub const BUTTON_XS_PAD_X: f32 = 10.0;
-pub const BUTTON_MD_TEXT: f32 = 14.0;
-pub const BUTTON_LG_TEXT: f32 = 16.0;
 pub const BUTTON_XS_TEXT: f32 = 12.0;
+#[allow(dead_code)]
+pub const BUTTON_XS_LINE: f32 = 16.0;
 pub const BUTTON_XS_ICON: f32 = 14.0;
-/// `.button { gap-2 }`.
-pub const BUTTON_GAP: f32 = 8.0;
-/// `.button { transition: background-color 100ms var(--ease-out) }`.
-pub const BUTTON_HOVER_MS: u64 = 100;
-pub const BUTTON_PRESS_SCALE_MD: f32 = 0.97;
-pub const BUTTON_PRESS_SCALE_SM: f32 = 0.98;
-pub const BUTTON_PRESS_SCALE_LG: f32 = 0.96;
 /// `button.css` presses scale the button: `0.97` at `md`, `0.98` at `sm`,
 /// `0.96` at `lg`.
 /// `shortcut-input.tsx`: `gap-1` compact, `min-w-36` / `min-w-16` for the
@@ -94,53 +82,8 @@ pub const SHORTCUT_GAP: f32 = 4.0;
 pub const SHORTCUT_MIN_WIDTH: f32 = 144.0;
 pub const SHORTCUT_MIN_WIDTH_SINGLE: f32 = 64.0;
 
-pub const FIELD_MIN_HEIGHT: f32 = 36.0;
-pub const FIELD_RADIUS: f32 = RADIUS_3XL;
 pub const FIELD_PAD_X: f32 = 12.0;
-pub const FIELD_PAD_Y: f32 = 8.0;
 pub const FIELD_TEXT: f32 = 14.0;
-/// Fields and select triggers transition their background over 150ms.
-pub const FIELD_HOVER_MS: u64 = 150;
-
-pub const SLIDER_TRACK: f32 = 20.0;
-pub const SLIDER_KNOB_WIDTH: f32 = 24.0;
-pub const SLIDER_KNOB_HEIGHT: f32 = 16.0;
-pub const SLIDER_SM_TRACK: f32 = 6.0;
-pub const SLIDER_SM_KNOB: f32 = 12.0;
-
-pub const SWITCH_SM_TRACK: (f32, f32) = (32.0, 16.0);
-pub const SWITCH_MD_TRACK: (f32, f32) = (40.0, 20.0);
-pub const SWITCH_LG_TRACK: (f32, f32) = (48.0, 24.0);
-// `switch.css` sizes the small thumb `1.03125rem` wide. Its code comment reads
-// "~14.4px on desktop", which assumes a 14px root font; this app never changes
-// the root size, so the rem resolves against 16px.
-pub const SWITCH_SM_THUMB: (f32, f32) = (16.5, 12.0);
-pub const SWITCH_MD_THUMB: (f32, f32) = (22.0, 16.0);
-pub const SWITCH_LG_THUMB: (f32, f32) = (27.5, 20.0);
-pub const SWITCH_MARGIN: f32 = 2.0;
-pub const SWITCH_RADIUS: f32 = 9999.0;
-#[allow(dead_code)]
-pub const SWITCH_TRAVEL_MS: u64 = 200;
-
-pub const TABS_RADIUS: f32 = 0.0;
-pub const TABS_PAD: f32 = 0.0;
-pub const TABS_GAP: f32 = 0.0;
-pub const TAB_MIN_HEIGHT: f32 = 32.0;
-pub const TAB_PAD_X: f32 = 16.0;
-pub const TAB_RADIUS: f32 = 0.0;
-pub const TAB_TEXT: f32 = 14.0;
-pub const TAB_INDICATOR: f32 = 2.0;
-/// `.tabs__indicator { transition-duration: 250ms }`.
-pub const TAB_INDICATOR_MS: u64 = 250;
-/// An unselected tab fades to `opacity-70` over 150ms while hovered.
-pub const TAB_HOVER_OPACITY: f32 = 0.7;
-pub const TAB_HOVER_MS: u64 = 150;
-
-pub const TOOLTIP_RADIUS: f32 = RADIUS_XL;
-pub const TOOLTIP_PAD: f32 = 8.0;
-pub const TOOLTIP_TEXT: f32 = 12.0;
-/// `.tooltip { max-w-xs }`.
-pub const TOOLTIP_MAX_WIDTH: f32 = 320.0;
 
 #[allow(dead_code)]
 pub const DIALOG_FADE_MS: u64 = 200;
@@ -208,8 +151,6 @@ pub const WALLPAPER_FRAME_PREVIEW_H: f32 = 48.0;
 pub const WALLPAPER_FRAME_TITLE_H: f32 = 14.0;
 pub const WALLPAPER_FRAME_PAD: f32 = 8.0;
 pub const WALLPAPER_FRAME_GAP: f32 = 6.0;
-pub const SELECT_SM_HEIGHT: f32 = 28.0;
-pub const SELECT_SM_TEXT: f32 = 12.0;
 pub const TEXT_SM: f32 = 14.0;
 pub const TEXT_XS: f32 = 12.0;
 pub const VIDEO_ASPECT_COLS: u32 = 4;
@@ -527,8 +468,11 @@ pub fn preview_origin(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::button::ButtonSize;
+    use gpui::px;
+    use herogpui::gpui;
+
     use crate::windows::video_editor::timeline::TRACK_HEIGHT;
+    use herogpui::components::Size;
 
     /// The renderer's corner radii are not the stock Tailwind scale: HeroUI
     /// rebinds `--radius-*` onto `--radius`, which `base.css` pins at
@@ -547,7 +491,6 @@ mod tests {
         assert_eq!(RADIUS_4XL, 8.0);
         // `--field-radius: calc(var(--radius) * 3)` is the same 6px as
         // `rounded-3xl`, which is why fields read as button-like.
-        assert_eq!(FIELD_RADIUS, RADIUS_3XL);
         assert_eq!(BUTTON_RADIUS, RADIUS_3XL);
         // Every scale step is a quarter of the stock Tailwind value.
         for (ours, stock) in [
@@ -566,12 +509,10 @@ mod tests {
     #[test]
     fn editor_chrome_matches_electron() {
         assert_eq!(TITLE_BAR_HEIGHT, 40.0);
-        assert_eq!(TOOL_BUTTON_SIZE, 28.0);
         assert_eq!(ACTION_BUTTON_SIZE, 32.0);
         assert_eq!(TITLE_BAR_PADDING_X, 8.0);
         assert_eq!(TITLE_BAR_GAP, 4.0);
-        assert_eq!(ButtonSize::IconXs.chrome_size(), TOOL_BUTTON_SIZE);
-        assert_eq!(ButtonSize::IconSm.chrome_size(), ACTION_BUTTON_SIZE);
+        assert_eq!(Size::Sm.icon_control_size(), px(ACTION_BUTTON_SIZE));
         assert_eq!(TOOL_OPTION_HEIGHT, 28.0);
         assert_eq!(TOOL_OPTION_RADIUS, RADIUS_3XL);
         assert_eq!(TOOL_OPTION_PAD_X, 8.0);
@@ -589,7 +530,7 @@ mod tests {
         assert_eq!(WINDOW_CONTROL_WIDTH, 46.0);
         assert_eq!(WINDOW_CONTROLS_SPACER, 138.0);
         assert_eq!(TRAFFIC_LIGHT_INSET, 120.0);
-        assert_eq!(VIDEO_TRAFFIC_LIGHT_PAD, 80.0);
+        assert_eq!(MACOS_TITLE_LEADING_INSET, 80.0);
         assert_eq!(
             editor_window_size(200.0, 140.0, 1920.0, 1080.0, None),
             (950.0, 650.0)
@@ -630,7 +571,7 @@ mod tests {
         assert_eq!(OVERLAY_BUTTON_RADIUS, RADIUS_3XL);
         assert_eq!(OVERLAY_BORDER_WIDTH, 2.0);
         assert_eq!(overlay_bar_height(), 44.0);
-        assert_eq!(ButtonSize::IconSm.chrome_size(), OVERLAY_BUTTON_SIZE);
+        assert_eq!(Size::Sm.icon_control_size(), px(OVERLAY_BUTTON_SIZE));
         assert_eq!(OVERLAY_DIM, 0.5);
         assert_eq!(OVERLAY_PROMPT_SIZE, 14.0);
         assert_eq!(OVERLAY_HANDLE_THICKNESS, 4.0);
@@ -663,8 +604,6 @@ mod tests {
         assert_eq!(VIDEO_TAB_RAIL_WIDTH, 40.0);
         assert_eq!(VIDEO_TAB_BUTTON_SIZE, 32.0);
         assert_eq!(video_timeline_tracks_height(TRACK_HEIGHT), 132.0);
-        assert_eq!(ButtonSize::IconXs.chrome_size(), 28.0);
-        assert_eq!(ButtonSize::IconSm.chrome_size(), 32.0);
         assert_eq!(VIDEO_SIDEBAR_MIN, 240.0);
         assert_eq!(VIDEO_SIDEBAR_MAX, 560.0);
         assert_eq!(VIDEO_SIDEBAR_RESIZE, 6.0);
@@ -692,7 +631,10 @@ mod tests {
         assert_eq!(HISTORY_LIST_GAP, 8.0);
         assert_eq!(HISTORY_ACTION_SIZE, 28.0);
         assert_eq!(HISTORY_CHIP_HEIGHT, 24.0);
-        assert_eq!(ButtonSize::Xs.chrome_size(), HISTORY_ACTION_SIZE);
+        assert_eq!(BUTTON_XS_HEIGHT, HISTORY_ACTION_SIZE);
+        assert_eq!(BUTTON_XS_PAD_X, 10.0);
+        assert_eq!(BUTTON_XS_TEXT, 12.0);
+        assert_eq!(BUTTON_XS_LINE, 16.0);
         assert_eq!(ONBOARDING_WINDOW_WIDTH, 500.0);
         assert_eq!(ONBOARDING_WINDOW_HEIGHT, 650.0);
         assert_eq!(ONBOARDING_CARD_RADIUS, RADIUS_MD);
@@ -745,44 +687,24 @@ mod tests {
         );
     }
 
+    /// The button ladder is HeroGPUI's now (`Size::control_height`), so these
+    /// pin the heights this app's chrome is built against. A HeroGPUI bump that
+    /// moved a size would otherwise silently resize every button.
+    #[test]
+    fn herogpui_button_ladder_matches_the_renderer() {
+        assert_eq!(Size::Sm.control_height(), px(32.0));
+        assert_eq!(Size::Md.control_height(), px(36.0));
+        assert_eq!(Size::Lg.control_height(), px(40.0));
+        assert_eq!(Size::Sm.control_height(), px(ACTION_BUTTON_SIZE));
+        assert_eq!(Size::Sm.icon_control_size(), px(OVERLAY_BUTTON_SIZE));
+    }
+
     #[test]
     fn widget_metrics_match_electron() {
         assert_eq!(BUTTON_RADIUS, RADIUS_3XL);
-        assert_eq!(BUTTON_MD_HEIGHT, 36.0);
-        assert_eq!(BUTTON_SM_HEIGHT, OVERLAY_BUTTON_SIZE);
-        assert_eq!(BUTTON_LG_HEIGHT, TITLE_BAR_HEIGHT);
-        assert_eq!(BUTTON_XS_HEIGHT, TOOL_BUTTON_SIZE);
-        assert_eq!(ButtonSize::Md.chrome_size(), BUTTON_MD_HEIGHT);
-        assert_eq!(ButtonSize::Sm.chrome_size(), BUTTON_SM_HEIGHT);
-        assert_eq!(ButtonSize::Lg.chrome_size(), BUTTON_LG_HEIGHT);
-        assert_eq!(ButtonSize::Xs.chrome_size(), BUTTON_XS_HEIGHT);
-        assert_eq!(ButtonSize::IconXs.chrome_size(), TOOL_BUTTON_SIZE);
-        assert_eq!(ButtonSize::IconSm.chrome_size(), OVERLAY_BUTTON_SIZE);
-        assert_eq!(FIELD_MIN_HEIGHT, 36.0);
-        assert_eq!(FIELD_RADIUS, RADIUS_3XL);
+        assert_eq!(Size::Sm.icon_control_size(), px(OVERLAY_BUTTON_SIZE));
         assert_eq!(FIELD_PAD_X, 12.0);
-        assert_eq!(FIELD_PAD_Y, 8.0);
         assert_eq!(FIELD_TEXT, 14.0);
-        assert_eq!(SLIDER_TRACK, 20.0);
-        assert_eq!(SLIDER_KNOB_WIDTH, 24.0);
-        assert_eq!(SLIDER_KNOB_HEIGHT, 16.0);
-        assert_eq!(SLIDER_SM_TRACK, 6.0);
-        assert_eq!(SLIDER_SM_KNOB, 12.0);
-        assert_eq!(TABS_RADIUS, 0.0);
-        assert_eq!(TABS_PAD, 0.0);
-        assert_eq!(TABS_GAP, 0.0);
-        assert_eq!(TAB_MIN_HEIGHT, 32.0);
-        assert_eq!(TAB_PAD_X, 16.0);
-        assert_eq!(TAB_RADIUS, 0.0);
-        assert_eq!(TAB_TEXT, 14.0);
-        assert_eq!(TAB_INDICATOR, 2.0);
-        assert_eq!(TOOLTIP_RADIUS, RADIUS_XL);
-        assert_eq!(TOOLTIP_PAD, 8.0);
-        assert_eq!(TOOLTIP_TEXT, 12.0);
-        assert_eq!(SWITCH_RADIUS, 9999.0);
-        assert_eq!(SWITCH_MD_TRACK, (40.0, 20.0));
-        assert_eq!(SWITCH_SM_TRACK, (32.0, 16.0));
-        assert_eq!(SWITCH_LG_TRACK, (48.0, 24.0));
     }
 
     #[test]
@@ -867,7 +789,6 @@ mod tests {
     fn animation_constants_match_electron() {
         assert_eq!(PREVIEW_HOVER_SCALE, 1.05);
         assert_eq!(PREVIEW_HOVER_MS, 200);
-        assert_eq!(SWITCH_TRAVEL_MS, 200);
         assert_eq!(DIALOG_FADE_MS, 200);
         assert_eq!(DIALOG_ZOOM, 0.95);
     }

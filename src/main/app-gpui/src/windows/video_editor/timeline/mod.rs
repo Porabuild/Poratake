@@ -62,6 +62,7 @@ pub fn time_at_position(
 mod scrub_tests {
     use super::*;
     use gpui::{px, ScrollHandle};
+    use herogpui::gpui;
 
     #[test]
     fn an_unscrolled_lane_maps_pixels_to_seconds() {

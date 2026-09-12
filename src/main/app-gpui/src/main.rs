@@ -16,7 +16,9 @@ mod update;
 mod video;
 mod windows;
 
-use gpui::{prelude::*, px, size, App, Application, Bounds};
+use gpui::{prelude::*, px, size, App, Bounds};
+use herogpui::application;
+use herogpui::gpui;
 
 #[cfg(windows)]
 use crate::system::native::NativeCommand;
@@ -102,234 +104,240 @@ fn main() {
     #[cfg(target_os = "linux")]
     let display_environment = system::linux_session::configure();
 
-    Application::new().run(move |cx: &mut App| {
-        #[cfg(target_os = "linux")]
-        display_environment.restore();
+    // `HeroGpuiAssets` carries the SVGs HeroGPUI's own chrome draws — the
+    // select chevron, the menu check mark, the close glyphs. Without it those
+    // resolve to nothing and the migrated components lose their indicators.
+    // The app's own images are decoded to `RenderImage` rather than loaded
+    // through an asset source, so there is nothing to fall back to.
+    application()
+        .with_assets(herogpui::HeroGpuiAssets)
+        .run(move |cx: &mut App| {
+            #[cfg(target_os = "linux")]
+            display_environment.restore();
 
-        native::configure_app();
-        let config = state::init(cx);
-        let settings = config.get();
-        let mode = resolve_theme_mode(ThemeMode::parse(&settings.appearance.mode));
-        theme::vars::init_theme(cx, mode, &settings.appearance.theme);
-        // Electron's `nativeTheme.on('updated', ...)` follows the OS light/dark
-        // switch live; the watcher reports the same switches so open windows
-        // repaint when the user's appearance mode is `system`.
-        #[cfg(windows)]
-        {
-            let system_theme = watcher::spawn();
-            cx.spawn(async move |cx| {
-                while let Ok(mode) = system_theme.recv().await {
-                    let result = cx.update(|cx| watcher::apply_system_mode(mode, cx));
-                    if let Err(error) = result {
-                        eprintln!("[theme] system-mode update failed: {error}");
-                        break;
-                    }
-                }
-            })
-            .detach();
-        }
-        editor::actions::init_bindings(cx);
-        capture::overlay::init_bindings(cx);
-        // `capture/index.ts` prewarms the freeze pipeline at startup so the
-        // first capture does not pay for initialising it.
-        capture::prewarm_freeze_screen(cx);
-        // `applyLoginItemSetting()` in the Electron shell reconciles the Run
-        // entry with the stored preference on launch; this is the GPUI
-        // shell's half of that, so both shells agree on one entry. Comparing
-        // first keeps every launch from rewriting a registry value that is
-        // already correct.
-        if system::startup::is_open_at_login() != settings.general.start_on_login {
-            system::startup::set_open_at_login(settings.general.start_on_login);
-        }
-
-        let bridge = native::spawn(
-            TrayMenuState::from_config(&settings),
-            system::hotkeys::bindings(&settings),
-        );
-        #[cfg(windows)]
-        if settings.general.hide_menu_bar_icon {
-            bridge.send(NativeCommand::SetTrayVisible(false));
-        }
-        let events = bridge.events();
-        state::set_native(cx, bridge);
-
-        cx.spawn(async move |cx| {
-            while let Ok(event) = events.recv().await {
-                let result = cx.update(|cx| dispatch_native_event(event, cx));
-                if let Err(error) = result {
-                    eprintln!("[intent] dispatch failed: {error}");
-                    break;
-                }
-            }
-        })
-        .detach();
-
-        #[cfg(target_os = "linux")]
-        {
-            // Probe verdicts arrive from background threads, but the native
-            // tray menu above was built once up front; refresh it when a
-            // pending verdict flips so late-starting backends are picked up.
-            let session = system::linux_session::current();
-            let snapshot = system::linux_session::capabilities();
-            let pending = match session {
-                system::linux_session::LinuxSession::Wayland if !snapshot.screen_cast => true,
-                system::linux_session::LinuxSession::X11 if !snapshot.ffmpeg_encoder => true,
-                _ => false,
-            };
-            if pending {
+            native::configure_app();
+            let config = state::init(cx);
+            let settings = config.get();
+            let mode = resolve_theme_mode(ThemeMode::parse(&settings.appearance.mode));
+            // `ThemeProvider` must exist before any HeroGPUI component renders;
+            // the first `init_theme` below publishes the app's resolved tokens.
+            herogpui::init(cx);
+            theme::vars::init_theme(cx, mode, &settings.appearance.theme);
+            // Electron's `nativeTheme.on('updated', ...)` follows the OS light/dark
+            // switch live; the watcher reports the same switches so open windows
+            // repaint when the user's appearance mode is `system`.
+            #[cfg(windows)]
+            {
+                let system_theme = watcher::spawn();
                 cx.spawn(async move |cx| {
-                    for _ in 0..120 {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(250))
-                            .await;
-                        if system::linux_session::capabilities() != snapshot {
-                            let _ = cx.update(crate::intents::refresh_shell);
-                            return;
+                    while let Ok(mode) = system_theme.recv().await {
+                        let result = cx.update(|cx| watcher::apply_system_mode(mode, cx));
+                        if let Err(error) = result {
+                            eprintln!("[theme] system-mode update failed: {error}");
+                            break;
                         }
                     }
                 })
                 .detach();
             }
-        }
+            editor::actions::init_bindings(cx);
+            capture::overlay::init_bindings(cx);
+            // `capture/index.ts` prewarms the freeze pipeline at startup so the
+            // first capture does not pay for initialising it.
+            capture::prewarm_freeze_screen(cx);
+            // `applyLoginItemSetting()` in the Electron shell reconciles the Run
+            // entry with the stored preference on launch; this is the GPUI
+            // shell's half of that, so both shells agree on one entry. Comparing
+            // first keeps every launch from rewriting a registry value that is
+            // already correct.
+            if system::startup::is_open_at_login() != settings.general.start_on_login {
+                system::startup::set_open_at_login(settings.general.start_on_login);
+            }
 
-        windows::keepalive::KeepAlive::open(cx);
-        #[cfg(windows)]
-        if !settings.general.hide_menu_bar_icon {
-            windows::tray_menu::TrayMenuWindow::prewarm(cx);
-        }
-        #[cfg(windows)]
-        capture::overlay::prewarm(cx);
+            let bridge = native::spawn(
+                TrayMenuState::from_config(&settings),
+                system::hotkeys::bindings(&settings),
+            );
+            #[cfg(windows)]
+            if settings.general.hide_menu_bar_icon {
+                bridge.send(NativeCommand::SetTrayVisible(false));
+            }
+            let events = bridge.events();
+            state::set_native(cx, bridge);
 
-        if windows::onboarding::OnboardingWindow::should_show(&config) {
-            windows::onboarding::OnboardingWindow::open(cx, config.clone());
-        }
+            cx.spawn(async move |cx| {
+                while let Ok(event) = events.recv().await {
+                    cx.update(|cx| dispatch_native_event(event, cx));
+                }
+            })
+            .detach();
 
-        // A screenshot path passed on the CLI opens the editor directly,
-        // mirroring Electron's open-file flow. A tray intent id instead --
-        // `--intent open-settings` -- runs that menu item, which is the only
-        // way to reach the settings and history windows without clicking the
-        // tray, and so the only way to screenshot them for a parity check.
-        let mut args = std::env::args().skip(1);
-        match args.next().as_deref() {
-            Some("--intent") => {
-                let id = args.next();
-                // An optional second argument: a settings category, or a project
-                // path for the video editor.
-                let extra = args.next();
-                match id.as_deref().and_then(Intent::from_id) {
-                    // `--intent open-settings shortcuts` is the CLI form of
-                    // `settings-window.tsx` reading its tab from the URL hash.
-                    Some(Intent::OpenSettings) => {
-                        let category = extra
-                            .as_deref()
-                            .and_then(windows::settings::registry::Category::from_id)
-                            .unwrap_or(windows::settings::registry::Category::General);
-                        intents::open_settings(category, cx);
-                        cx.activate(true);
-                    }
-                    // The tray item opens a file picker, which a script cannot
-                    // answer, so the CLI takes the path directly -- or nothing,
-                    // for the editor's own empty state.
-                    Some(Intent::OpenInVideoEditor) => {
-                        windows::video_editor::VideoEditorWindow::open(cx, extra);
-                        cx.activate(true);
-                    }
-                    Some(intent) => {
-                        intents::dispatch(intent, None, cx);
-                        cx.activate(true);
-                    }
-                    None => eprintln!("[cli] --intent needs a tray intent id"),
+            #[cfg(target_os = "linux")]
+            {
+                // Probe verdicts arrive from background threads, but the native
+                // tray menu above was built once up front; refresh it when a
+                // pending verdict flips so late-starting backends are picked up.
+                let session = system::linux_session::current();
+                let snapshot = system::linux_session::capabilities();
+                let pending = match session {
+                    system::linux_session::LinuxSession::Wayland if !snapshot.screen_cast => true,
+                    system::linux_session::LinuxSession::X11 if !snapshot.ffmpeg_encoder => true,
+                    _ => false,
+                };
+                if pending {
+                    cx.spawn(async move |cx| {
+                        for _ in 0..120 {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(250))
+                                .await;
+                            if system::linux_session::capabilities() != snapshot {
+                                let _ = cx.update(crate::intents::refresh_shell);
+                                return;
+                            }
+                        }
+                    })
+                    .detach();
                 }
             }
-            // Opens one of the transient windows for inspection. Several of
-            // them only ever appear mid-capture or mid-recording, so there is
-            // no other way to look at them without driving a real capture.
-            Some("--preview-window") => match args.next().as_deref() {
-                Some("capture-preview") => {
-                    let Some(path) = args.next() else {
-                        eprintln!("[cli] --preview-window capture-preview needs an image path");
+
+            windows::keepalive::KeepAlive::open(cx);
+            #[cfg(windows)]
+            if !settings.general.hide_menu_bar_icon {
+                windows::tray_menu::TrayMenuWindow::prewarm(cx);
+            }
+            #[cfg(windows)]
+            capture::overlay::prewarm(cx);
+
+            if windows::onboarding::OnboardingWindow::should_show(&config) {
+                windows::onboarding::OnboardingWindow::open(cx, config.clone());
+            }
+
+            // A screenshot path passed on the CLI opens the editor directly,
+            // mirroring Electron's open-file flow. A tray intent id instead --
+            // `--intent open-settings` -- runs that menu item, which is the only
+            // way to reach the settings and history windows without clicking the
+            // tray, and so the only way to screenshot them for a parity check.
+            let mut args = std::env::args().skip(1);
+            match args.next().as_deref() {
+                Some("--intent") => {
+                    let id = args.next();
+                    // An optional second argument: a settings category, or a project
+                    // path for the video editor.
+                    let extra = args.next();
+                    match id.as_deref().and_then(Intent::from_id) {
+                        // `--intent open-settings shortcuts` is the CLI form of
+                        // `settings-window.tsx` reading its tab from the URL hash.
+                        Some(Intent::OpenSettings) => {
+                            let category = extra
+                                .as_deref()
+                                .and_then(windows::settings::registry::Category::from_id)
+                                .unwrap_or(windows::settings::registry::Category::General);
+                            intents::open_settings(category, cx);
+                            cx.activate(true);
+                        }
+                        // The tray item opens a file picker, which a script cannot
+                        // answer, so the CLI takes the path directly -- or nothing,
+                        // for the editor's own empty state.
+                        Some(Intent::OpenInVideoEditor) => {
+                            windows::video_editor::VideoEditorWindow::open(cx, extra);
+                            cx.activate(true);
+                        }
+                        Some(intent) => {
+                            intents::dispatch(intent, None, cx);
+                            cx.activate(true);
+                        }
+                        None => eprintln!("[cli] --intent needs a tray intent id"),
+                    }
+                }
+                // Opens one of the transient windows for inspection. Several of
+                // them only ever appear mid-capture or mid-recording, so there is
+                // no other way to look at them without driving a real capture.
+                Some("--preview-window") => match args.next().as_deref() {
+                    Some("capture-preview") => {
+                        let Some(path) = args.next() else {
+                            eprintln!("[cli] --preview-window capture-preview needs an image path");
+                            return;
+                        };
+                        windows::capture_preview::CapturePreviewWindow::open(cx, path.into());
+                    }
+                    Some("pin") => {
+                        let Some(path) = args.next() else {
+                            eprintln!("[cli] --preview-window pin needs an image path");
+                            return;
+                        };
+                        match std::fs::read(&path) {
+                            Ok(bytes) => windows::pin::PinWindow::open(cx, bytes),
+                            Err(error) => eprintln!("[cli] cannot read {path}: {error}"),
+                        }
+                    }
+                    Some("toast") => {
+                        windows::toast::Toast::show(cx, "Capture failed", "No display available")
+                    }
+                    Some("tray-menu") => windows::tray_menu::TrayMenuWindow::toggle(None, cx),
+                    Some("recording-control") => {
+                        windows::recording_control::RecordingControl::open(
+                            cx,
+                            video::recorder::RecordingTarget::Screen,
+                            capture::overlay::ScreenRect {
+                                x: 0,
+                                y: 0,
+                                width: 1920,
+                                height: 1080,
+                            },
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                    other => eprintln!("[cli] unknown --preview-window target: {other:?}"),
+                },
+                // Renders the area overlay in a small, unfocused window: no frozen
+                // screen, no full-screen cover, no input grab. The overlay is
+                // otherwise unreachable for inspection, because it exists only
+                // during a live capture that takes over the display.
+                Some("--preview-overlay") => {
+                    let service = state::state(cx);
+                    let Some(display) = cx.primary_display() else {
+                        eprintln!("[cli] no display to preview the overlay on");
                         return;
                     };
-                    windows::capture_preview::CapturePreviewWindow::open(cx, path.into());
-                }
-                Some("pin") => {
-                    let Some(path) = args.next() else {
-                        eprintln!("[cli] --preview-window pin needs an image path");
-                        return;
+                    let bounds = Bounds {
+                        origin: gpui::point(px(120.0), px(120.0)),
+                        size: size(px(900.0), px(600.0)),
                     };
-                    match std::fs::read(&path) {
-                        Ok(bytes) => windows::pin::PinWindow::open(cx, bytes),
-                        Err(error) => eprintln!("[cli] cannot read {path}: {error}"),
+                    if args.next().as_deref() == Some("all-in-one") {
+                        capture::overlay::AreaOverlay::open_all_in_one(
+                            service,
+                            display.id(),
+                            bounds,
+                            capture::all_in_one::Choices::default(),
+                            capture::overlay::OverlayLaunch {
+                                focus: false,
+                                deferred_show: false,
+                                generation: 0,
+                            },
+                            cx,
+                        );
+                    } else {
+                        capture::overlay::AreaOverlay::open(
+                            service,
+                            display.id(),
+                            bounds,
+                            capture::intent::CaptureIntent::Screenshot,
+                            capture::overlay::OverlayLaunch {
+                                focus: false,
+                                deferred_show: false,
+                                generation: 0,
+                            },
+                            cx,
+                        );
                     }
                 }
-                Some("toast") => {
-                    windows::toast::Toast::show(cx, "Capture failed", "No display available")
+                Some(path) => {
+                    open_editor_for(cx, path);
+                    cx.activate(true);
                 }
-                Some("tray-menu") => windows::tray_menu::TrayMenuWindow::toggle(None, cx),
-                Some("recording-control") => {
-                    windows::recording_control::RecordingControl::open(
-                        cx,
-                        video::recorder::RecordingTarget::Screen,
-                        capture::overlay::ScreenRect {
-                            x: 0,
-                            y: 0,
-                            width: 1920,
-                            height: 1080,
-                        },
-                        None,
-                        None,
-                        None,
-                    );
-                }
-                other => eprintln!("[cli] unknown --preview-window target: {other:?}"),
-            },
-            // Renders the area overlay in a small, unfocused window: no frozen
-            // screen, no full-screen cover, no input grab. The overlay is
-            // otherwise unreachable for inspection, because it exists only
-            // during a live capture that takes over the display.
-            Some("--preview-overlay") => {
-                let service = state::state(cx);
-                let Some(display) = cx.primary_display() else {
-                    eprintln!("[cli] no display to preview the overlay on");
-                    return;
-                };
-                let bounds = Bounds {
-                    origin: gpui::point(px(120.0), px(120.0)),
-                    size: size(px(900.0), px(600.0)),
-                };
-                if args.next().as_deref() == Some("all-in-one") {
-                    capture::overlay::AreaOverlay::open_all_in_one(
-                        service,
-                        display.id(),
-                        bounds,
-                        capture::all_in_one::Choices::default(),
-                        capture::overlay::OverlayLaunch {
-                            focus: false,
-                            deferred_show: false,
-                            generation: 0,
-                        },
-                        cx,
-                    );
-                } else {
-                    capture::overlay::AreaOverlay::open(
-                        service,
-                        display.id(),
-                        bounds,
-                        capture::intent::CaptureIntent::Screenshot,
-                        capture::overlay::OverlayLaunch {
-                            focus: false,
-                            deferred_show: false,
-                            generation: 0,
-                        },
-                        cx,
-                    );
-                }
+                None => {}
             }
-            Some(path) => {
-                open_editor_for(cx, path);
-                cx.activate(true);
-            }
-            None => {}
-        }
-    });
+        });
 }

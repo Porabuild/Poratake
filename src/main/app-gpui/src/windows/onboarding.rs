@@ -6,15 +6,16 @@ use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, FocusHandle, KeyDownEvent, Render,
     ScrollHandle, Styled, Window,
 };
+use herogpui::gpui;
 
 use crate::config::store::ConfigStore;
 use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
-use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::shortcut_input::{self, ShortcutRecorder};
 use crate::windows::registry::{self, WindowKind};
+use herogpui::components::{Button, Variant};
 
 /// `ONBOARDING_STEPS` for a non-macOS platform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,7 +92,8 @@ impl OnboardingWindow {
                         permission_polling: false,
                         focus_handle: cx.focus_handle(),
                     });
-                    window.focus(&view.read(cx).focus_handle);
+                    let focus = view.read(cx).focus_handle.clone();
+                    window.focus(&focus, cx);
                     view
                 },
             )
@@ -420,11 +422,13 @@ impl OnboardingWindow {
             .child(
                 div().mt(px(12.0)).child(
                     Button::new("onboarding-open-keyboard-settings")
-                        .variant(ButtonVariant::Secondary)
+                        .variant(Variant::Secondary)
                         .label("Open Keyboard Settings")
-                        .icon("external-link")
-                        .full_width()
-                        .on_click(|_event, _window, _cx| {
+                        .content(|_| {
+                            crate::ui::primitives::icon_label("external-link", "Open Keyboard Settings".into(), px(16.0), px(8.0), false)
+                        })
+                        .full_width(true)
+                        .on_press(|_event, _window, _cx| {
                             crate::system::permissions::open_keyboard_shortcut_preferences();
                         }),
                 ),
@@ -627,9 +631,9 @@ fn permission_card(
                     el.child(
                         div().mt(px(12.0)).child(
                             Button::new(id)
-                                .variant(ButtonVariant::Secondary)
+                                .variant(Variant::Secondary)
                                 .label("Open System Preferences")
-                                .on_click(move |_event, _window, _cx| open()),
+                                .on_press(move |_event, _window, _cx| open()),
                         ),
                     )
                 }),
@@ -680,31 +684,43 @@ impl Render for OnboardingWindow {
         if self.step > 0 {
             actions = actions.child(
                 Button::new("onboarding-back")
-                    .variant(ButtonVariant::Ghost)
-                    .icon("chevron-left")
-                    .icon_size(px(chrome::TOOL_BUTTON_ICON))
-                    .gap(px(4.0))
+                    .variant(Variant::Ghost)
                     .label("Back")
-                    .flex_1()
-                    .on_click(cx.listener(|this, _event, _window, cx| this.back(cx))),
+                    .content(|_| {
+                        crate::ui::primitives::icon_label(
+                            "chevron-left",
+                            "Back".into(),
+                            px(chrome::TOOL_BUTTON_ICON),
+                            px(4.0),
+                            false,
+                        )
+                    })
+                    .sx(|el| el.flex_1().w_0())
+                    .on_press(cx.listener(|this, _event, _window, cx| this.back(cx))),
             );
         }
         actions = actions.child(if self.is_last_step() {
             Button::new("onboarding-continue")
-                .variant(ButtonVariant::Primary)
+                .variant(Variant::Primary)
                 .label("Get Started")
-                .flex_1()
-                .disabled(step == Step::Permissions && !all_permissions_granted)
-                .on_click(cx.listener(|this, _event, window, cx| this.finish(window, cx)))
+                .is_disabled(step == Step::Permissions && !all_permissions_granted)
+                .sx(|el| el.flex_1().w_0())
+                .on_press(cx.listener(|this, _event, window, cx| this.finish(window, cx)))
         } else {
             Button::new("onboarding-next")
-                .variant(ButtonVariant::Tertiary)
+                .variant(Variant::Tertiary)
                 .label("Next")
-                .trailing_icon("chevron-right")
-                .icon_size(px(chrome::TOOL_BUTTON_ICON))
-                .gap(px(4.0))
-                .flex_1()
-                .on_click(cx.listener(|this, _event, window, cx| this.next(window, cx)))
+                .content(|_| {
+                    crate::ui::primitives::icon_label(
+                        "chevron-right",
+                        "Next".into(),
+                        px(chrome::TOOL_BUTTON_ICON),
+                        px(4.0),
+                        true,
+                    )
+                })
+                .sx(|el| el.flex_1().w_0())
+                .on_press(cx.listener(|this, _event, window, cx| this.next(window, cx)))
         });
 
         div()
@@ -744,11 +760,11 @@ impl Render for OnboardingWindow {
                             .child(actions)
                             .child(
                                 Button::new("onboarding-skip")
-                                    .variant(ButtonVariant::Ghost)
+                                    .variant(Variant::Ghost)
                                     .label("Skip for now")
-                                    .full_width()
-                                    .foreground(theme.muted_foreground)
-                                    .on_click(cx.listener(|this, _event, window, cx| {
+                                    .full_width(true)
+                                    .sx(|el| el.text_color(theme.muted_foreground))
+                                    .on_press(cx.listener(|this, _event, window, cx| {
                                         this.skip(window, cx)
                                     })),
                             ),
@@ -765,7 +781,7 @@ impl ShortcutRecorder for OnboardingWindow {
         cx: &mut Context<Self>,
     ) {
         self.recording_shortcut = Some(id);
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 }

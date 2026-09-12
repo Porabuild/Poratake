@@ -4,6 +4,7 @@
 //! clamping everything to the display.
 
 use gpui::CursorStyle;
+use herogpui::gpui;
 
 /// `MIN_SELECTION_SIZE` — a freshly drawn box smaller than this is discarded
 /// rather than committed.

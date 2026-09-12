@@ -1,3 +1,4 @@
+mod library;
 mod model;
 mod view;
 
@@ -5,9 +6,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    anchored, deferred, div, point, prelude::*, px, AnyElement, AnyView, App, Corner, Pixels,
+    anchored, deferred, div, point, prelude::*, px, Anchor, AnyElement, AnyView, App, Pixels,
     Point, SharedString, Window,
 };
+use herogpui::gpui;
 
 pub use model::{MenuBuilder, MenuEntry, MenuItem};
 pub use view::{DismissHandler, MenuEntrance, MenuView};
@@ -16,7 +18,7 @@ struct MenuPopup {
     view: AnyView,
     owner: Option<SharedString>,
     position: Option<Point<Pixels>>,
-    anchor: Corner,
+    anchor: Anchor,
     offset: Point<Pixels>,
     animation_id: u64,
     closing_at: Option<std::time::Instant>,
@@ -41,7 +43,7 @@ pub struct MenuHandle(Rc<RefCell<MenuState>>);
 pub struct MenuPlacement {
     owner: Option<SharedString>,
     position: Option<Point<Pixels>>,
-    anchor: Corner,
+    anchor: Anchor,
     offset: Point<Pixels>,
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
@@ -56,7 +58,7 @@ impl MenuPlacement {
         Self {
             owner: None,
             position: Some(position),
-            anchor: Corner::TopLeft,
+            anchor: Anchor::TopLeft,
             offset: point(px(0.0), px(0.0)),
             min_width: None,
             max_width: None,
@@ -71,7 +73,7 @@ impl MenuPlacement {
         Self {
             owner: Some(owner.into()),
             position: None,
-            anchor: Corner::TopLeft,
+            anchor: Anchor::TopLeft,
             offset: point(px(0.0), px(8.0)),
             min_width: None,
             max_width: None,
@@ -87,7 +89,7 @@ impl MenuPlacement {
         Self {
             owner: Some(owner.into()),
             position: None,
-            anchor: Corner::BottomLeft,
+            anchor: Anchor::BottomLeft,
             offset: point(px(0.0), px(-8.0)),
             min_width: None,
             max_width: None,
@@ -100,8 +102,8 @@ impl MenuPlacement {
     #[allow(dead_code)]
     pub fn aligned_right(mut self) -> Self {
         self.anchor = match self.anchor {
-            Corner::TopLeft => Corner::TopRight,
-            Corner::BottomLeft => Corner::BottomRight,
+            Anchor::TopLeft => Anchor::TopRight,
+            Anchor::BottomLeft => Anchor::BottomRight,
             other => other,
         };
         self
@@ -124,13 +126,6 @@ impl MenuPlacement {
 
     pub fn offset(mut self, offset: Point<Pixels>) -> Self {
         self.offset = offset;
-        self
-    }
-
-    /// The app pins `.select__popover--sm` to tighter metrics (28px rows, 4px
-    /// padding, 12px text) for the compact editor-panel selects.
-    pub fn compact(mut self, compact: bool) -> Self {
-        self.compact = compact;
         self
     }
 }
@@ -289,7 +284,7 @@ impl MenuHandle {
         });
         let (view, focus) = build(dismiss, cx);
         if let Some(focus) = focus {
-            window.focus(&focus);
+            window.focus(&focus, cx);
         }
         let mut state = self.0.borrow_mut();
         state.suppressed = None;
@@ -361,7 +356,7 @@ impl MenuHandle {
             self.clear_stale_suppression();
             return div().into_any_element();
         };
-        let hangs_below = matches!(popup.anchor, Corner::TopLeft | Corner::TopRight);
+        let hangs_below = matches!(popup.anchor, Anchor::TopLeft | Anchor::TopRight);
         div()
             .absolute()
             .left_0()

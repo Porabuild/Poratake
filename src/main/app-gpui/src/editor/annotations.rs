@@ -171,7 +171,9 @@ pub fn normalize_rect(x: f64, y: f64, width: f64, height: f64) -> (f64, f64, f64
 /// `pointsToCoordinates` — the flat wire array as pairs.
 pub fn points_to_coordinates(points: &[f64]) -> Vec<(f64, f64)> {
     points
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0], pair[1]))
         .collect()
 }

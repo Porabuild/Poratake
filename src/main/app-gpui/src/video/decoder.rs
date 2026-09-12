@@ -389,7 +389,7 @@ mod backend {
             std::ptr::copy_nonoverlapping(source, target.as_mut_ptr(), row_bytes);
         }
         // RGB32 has no alpha channel; force it opaque.
-        for pixel in bgra.chunks_exact_mut(4) {
+        for pixel in bgra.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
 

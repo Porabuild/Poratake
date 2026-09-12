@@ -11,15 +11,16 @@ use gpui::{
     Render, SharedString, Styled, Subscription, WeakEntity, Window, WindowBackgroundAppearance,
     WindowBounds, WindowKind, WindowOptions,
 };
+use herogpui::gpui;
 
 use crate::capture::overlay::ScreenRect;
 use crate::theme::vars::{active_theme, ThemeVars};
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuBuilder, MenuEntry, MenuHandle, MenuItem, MenuPlacement};
 use crate::video::recorder::{self, RecordingConfig, RecordingTarget};
 use crate::windows::registry::{self, WindowKind as RegistryKind};
+use herogpui::components::{Button, Size, Tooltip, Variant};
 
 const TARGET_LABEL_WIDTH: f32 = chrome::RECORDING_TARGET_LABEL_WIDTH;
 const DEVICE_MENU_WINDOW_WIDTH: f32 = 300.0;
@@ -178,7 +179,8 @@ impl RecordingControl {
                                 this.open_pending_device_menu(window, cx);
                             }));
                     });
-                    window.focus(&view.read(cx).focus_handle);
+                    let focus = view.read(cx).focus_handle.clone();
+                    window.focus(&focus, cx);
                     view
                 },
             )
@@ -512,26 +514,24 @@ impl RecordingControl {
                 cx,
             ),
             Button::new("recording-system-audio")
-                .variant(ButtonVariant::Ghost)
+                .variant(Variant::Ghost)
                 // Deliberately not `.selected()`: `ToolbarButton` is a plain
                 // ghost with `aria-pressed` and no visual pressed state, so the
                 // icon swap below is the entire signal. Marking it selected
                 // promotes the button to `Secondary` and paints a filled chip
                 // the reference never shows.
-                .size(ButtonSize::IconSm)
-                .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
-                .animate_press(false)
-                .icon(if self.system_audio {
-                    "volume-2"
-                } else {
-                    "volume-x"
-                })
-                .tooltip(if self.system_audio {
-                    "Turn system sounds off"
-                } else {
-                    "Turn system sounds on"
-                })
-                .on_click(cx.listener(|this, _event, _window, cx| {
+                .size(Size::Sm)
+                .is_icon_only(true)
+                .recipe("overlay")
+                .child(icon_element(
+                    if self.system_audio {
+                        "volume-2"
+                    } else {
+                        "volume-x"
+                    },
+                    px(16.0),
+                ))
+                .on_press(cx.listener(|this, _event, _window, cx| {
                     if this.countdown_active {
                         return;
                     }
@@ -572,58 +572,66 @@ impl RecordingControl {
         let focus = crate::ui::primitives::control_focus(&owner, false, window, cx);
         let (trigger_hover, trigger_hovered) =
             crate::ui::primitives::hover_flag(&owner, window, cx);
-        div()
-            .id(SharedString::from(owner.clone()))
-            .track_focus(&focus)
-            .focus(move |style| style.shadow(crate::ui::primitives::focus_ring(&theme, 2.0)))
-            .relative()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_center()
-            .gap(px(4.0))
-            .h(px(chrome::OVERLAY_BUTTON_SIZE))
-            .w(px(48.0))
-            .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-            .opacity(if self.countdown_active { 0.35 } else { 1.0 })
-            .when(trigger_hovered, |el| el.bg(crate::ui::colors::white(0.15)))
-            .on_hover({
-                let trigger_hover = trigger_hover.clone();
-                move |over: &bool, _window, cx| {
-                    crate::ui::primitives::track_hover(&trigger_hover, *over, cx);
-                }
-            })
-            .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
-            .child(icon_element("chevron-down", px(12.0)))
-            .child(self.menu.render_dropdown(&menu_id))
-            .tooltip(move |_window, cx| {
-                cx.new(|_| crate::ui::tooltip::Tooltip::new(tooltip)).into()
-            })
-            .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-                if let Some(entity) = entity.upgrade() {
-                    entity.update(cx, |this, cx| {
-                        if this.countdown_active {
+        herogpui::components::Tooltip::new(tooltip)
+            .id(SharedString::from(format!("{owner}-tip")))
+            .child(
+                div()
+                    .id(SharedString::from(owner.clone()))
+                    .track_focus(&focus)
+                    .focus(move |style| {
+                        style.shadow(crate::ui::primitives::focus_ring(&theme, 2.0))
+                    })
+                    .relative()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(4.0))
+                    .h(px(chrome::OVERLAY_BUTTON_SIZE))
+                    .w(px(48.0))
+                    .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
+                    .opacity(if self.countdown_active { 0.35 } else { 1.0 })
+                    .when(trigger_hovered, |el| el.bg(crate::ui::colors::white(0.15)))
+                    .on_hover({
+                        let trigger_hover = trigger_hover.clone();
+                        move |over: &bool, _window, cx| {
+                            crate::ui::primitives::track_hover(&trigger_hover, *over, cx);
+                        }
+                    })
+                    .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
+                    .child(icon_element("chevron-down", px(12.0)))
+                    .child(self.menu.render_dropdown(&menu_id))
+                    .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                        if let Some(entity) = entity.upgrade() {
+                            entity.update(cx, |this, cx| {
+                                if this.countdown_active {
+                                    return;
+                                }
+                                this.toggle_device_menu(kind, menu_id.clone().into(), window, cx);
+                            });
+                        }
+                        cx.stop_propagation();
+                    })
+                    .on_key_down(move |event, window, cx| {
+                        if !activates_device_menu(event.keystroke.key.as_str()) {
                             return;
                         }
-                        this.toggle_device_menu(kind, menu_id.clone().into(), window, cx);
-                    });
-                }
-                cx.stop_propagation();
-            })
-            .on_key_down(move |event, window, cx| {
-                if !activates_device_menu(event.keystroke.key.as_str()) {
-                    return;
-                }
-                if let Some(entity) = key_entity.upgrade() {
-                    entity.update(cx, |this, cx| {
-                        if this.countdown_active {
-                            return;
+                        if let Some(entity) = key_entity.upgrade() {
+                            entity.update(cx, |this, cx| {
+                                if this.countdown_active {
+                                    return;
+                                }
+                                this.toggle_device_menu(
+                                    kind,
+                                    key_menu_id.clone().into(),
+                                    window,
+                                    cx,
+                                );
+                            });
                         }
-                        this.toggle_device_menu(kind, key_menu_id.clone().into(), window, cx);
-                    });
-                }
-                cx.stop_propagation();
-            })
+                        cx.stop_propagation();
+                    }),
+            )
             .into_any_element()
     }
 
@@ -1277,14 +1285,16 @@ fn overlay_icon(
     on_click: impl Fn(&mut RecordingControl, &mut Window, &mut Context<RecordingControl>) + 'static,
     cx: &mut Context<RecordingControl>,
 ) -> AnyElement {
-    Button::new(id)
-        .variant(ButtonVariant::Ghost)
-        .size(ButtonSize::IconSm)
-        .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
-        .animate_press(false)
-        .icon(icon)
-        .tooltip(tooltip)
-        .on_click(cx.listener(move |this, _event, window, cx| on_click(this, window, cx)))
+    Tooltip::new(tooltip)
+        .child(
+            Button::new(id)
+                .variant(Variant::Ghost)
+                .size(Size::Sm)
+                .is_icon_only(true)
+                .recipe("overlay")
+                .child(icon_element(icon, px(16.0)))
+                .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx))),
+        )
         .into_any_element()
 }
 
@@ -1322,19 +1332,22 @@ impl Render for RecordingControl {
             return recording_shell(
                 &self.focus_handle,
                 bar.child(
-                    Button::new("recording-start")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::IconSm)
-                        .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
-                        .animate_press(false)
-                        .disabled(self.countdown_active)
-                        // `<Circle className="size-3.5 fill-current" />` -- a
-                        // *filled* disc. The lucide icons here are stroke-only,
-                        // so an outline circle is the wrong shape; a filled div
-                        // is what `fill-current` draws.
-                        .child(filled_glyph(theme.accent, true))
-                        .tooltip("Start recording")
-                        .on_click(cx.listener(|this, _event, window, cx| this.start(window, cx))),
+                    Tooltip::new("Start recording").child(
+                        Button::new("recording-start")
+                            .variant(Variant::Ghost)
+                            .size(Size::Sm)
+                            .is_icon_only(true)
+                            .recipe("overlay")
+                            .is_disabled(self.countdown_active)
+                            // `<Circle className="size-3.5 fill-current" />` -- a
+                            // *filled* disc. The lucide icons here are stroke-only,
+                            // so an outline circle is the wrong shape; a filled div
+                            // is what `fill-current` draws.
+                            .child(filled_glyph(theme.accent, true))
+                            .on_press(
+                                cx.listener(|this, _event, window, cx| this.start(window, cx)),
+                            ),
+                    ),
                 )
                 .child(overlay_hairline(&theme))
                 .children(toggles)
@@ -1366,17 +1379,18 @@ impl Render for RecordingControl {
                 cx,
             ))
             .child(
-                Button::new("recording-stop")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::IconSm)
-                    .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
-                    .animate_press(false)
-                    // `<Square className="size-3.5 fill-current text-destructive" />`.
-                    .child(filled_glyph(theme.destructive, false))
-                    .tooltip("Stop recording")
-                    .on_click(
-                        cx.listener(|this, _event, window, cx| this.finish(false, window, cx)),
-                    ),
+                Tooltip::new("Stop recording").child(
+                    Button::new("recording-stop")
+                        .variant(Variant::Ghost)
+                        .size(Size::Sm)
+                        .is_icon_only(true)
+                        .recipe("overlay")
+                        // `<Square className="size-3.5 fill-current text-destructive" />`.
+                        .child(filled_glyph(theme.destructive, false))
+                        .on_press(
+                            cx.listener(|this, _event, window, cx| this.finish(false, window, cx)),
+                        ),
+                ),
             )
             .child(
                 div()
@@ -1391,16 +1405,17 @@ impl Render for RecordingControl {
             .children(toggles)
             .child(overlay_hairline(&theme))
             .child(
-                Button::new("recording-discard")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::IconSm)
-                    .radius(px(chrome::OVERLAY_BUTTON_RADIUS))
-                    .animate_press(false)
-                    .icon("trash-2")
-                    .tooltip("Discard recording")
-                    .on_click(
-                        cx.listener(|this, _event, window, cx| this.finish(true, window, cx)),
-                    ),
+                Tooltip::new("Discard recording").child(
+                    Button::new("recording-discard")
+                        .variant(Variant::Ghost)
+                        .size(Size::Sm)
+                        .is_icon_only(true)
+                        .recipe("overlay")
+                        .child(icon_element("trash-2", px(16.0)))
+                        .on_press(
+                            cx.listener(|this, _event, window, cx| this.finish(true, window, cx)),
+                        ),
+                ),
             ),
             &self.menu,
             None,
@@ -1572,7 +1587,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn microphone_menu_matches_electron_rows(cx: &mut gpui::TestAppContext) {
         let control = cx.update(|cx| {
             cx.new(|cx| RecordingControl {
@@ -1709,7 +1724,7 @@ mod tests {
         assert!(pending.is_none());
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn bounds_notification_opens_the_pending_device_menu(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = std::sync::Arc::new(
@@ -1882,17 +1897,5 @@ mod toolbar_tests {
             "no button in the recording bar may paint a selected background, found `{}`",
             call.unwrap_or_default().trim()
         );
-    }
-
-    #[test]
-    fn the_bar_keeps_button_glyphs_stationary_while_pressed() {
-        let here = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/windows/recording_control.rs"),
-        )
-        .expect("read recording_control.rs");
-        let production = here.split("#[cfg(test)]").next().unwrap_or_default();
-
-        assert_eq!(production.matches(".animate_press(false)").count(), 5);
     }
 }

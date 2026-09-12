@@ -31,8 +31,9 @@ use std::time::Duration;
 
 use gpui::{
     canvas, div, img, prelude::*, px, size, App, Bounds, Context, DispatchPhase, Entity,
-    FocusHandle, KeyDownEvent, Render, ScrollHandle, SharedString, Styled, Window,
+    FocusHandle, Focusable, KeyDownEvent, Render, ScrollHandle, SharedString, Styled, Window,
 };
+use herogpui::gpui;
 
 use crate::system::desktop;
 use crate::theme::vars::active_theme;
@@ -118,8 +119,8 @@ pub struct VideoEditorWindow {
     is_transcribing: bool,
     transcription_model: String,
     transcription_prompt: String,
-    prompt_field: Entity<crate::ui::text_area::TextArea>,
-    rename_field: Entity<crate::ui::text_field::TextField>,
+    prompt_field: Entity<herogpui::components::InputState>,
+    rename_field: Entity<herogpui::components::InputState>,
     renaming: bool,
     upload_to_cloud: bool,
     cloud_upload: crate::cloud::UploadState,
@@ -151,7 +152,8 @@ impl VideoEditorWindow {
                         editor.load_desktop_wallpaper(cx);
                         editor
                     });
-                    window.focus(&view.read(cx).focus_handle);
+                    let focus = view.read(cx).focus_handle.clone();
+                    window.focus(&focus, cx);
                     view
                 },
             )
@@ -211,24 +213,8 @@ impl VideoEditorWindow {
             .as_deref()
             .map(model::project_display_name)
             .unwrap_or_else(|| "Untitled".to_string());
-        let submit_owner = cx.entity().downgrade();
-        let cancel_owner = submit_owner.clone();
-        let rename_field = cx.new(|cx| {
-            crate::ui::text_field::TextField::new(initial_name, cx)
-                .bare()
-                .on_submit(move |value, window, app| {
-                    let value = value.to_string();
-                    let _ = submit_owner.update(app, |this, cx| {
-                        this.rename_project(&value, window, cx);
-                    });
-                })
-                .on_cancel(move |_value, _window, app| {
-                    let _ = cancel_owner.update(app, |this, cx| {
-                        this.renaming = false;
-                        cx.notify();
-                    });
-                })
-        });
+        let rename_field =
+            cx.new(|cx| herogpui::components::InputState::with_value(cx, initial_name));
         Self {
             path,
             state,
@@ -267,11 +253,7 @@ impl VideoEditorWindow {
             is_transcribing: false,
             transcription_model: "base".to_string(),
             transcription_prompt: String::new(),
-            prompt_field: cx.new(|cx| {
-                crate::ui::text_area::TextArea::new(String::new(), cx)
-                    .placeholder("Add context to improve accuracy...")
-                    .rows(4)
-            }),
+            prompt_field: cx.new(|cx| herogpui::components::InputState::new(cx)),
             rename_field,
             renaming: false,
             upload_to_cloud: false,
@@ -369,7 +351,7 @@ impl VideoEditorWindow {
                 }
                 Err(error) => ("Export failed", error.clone()),
             };
-            let _ = cx.update(|cx| crate::windows::toast::Toast::show(cx, title, &body));
+            cx.update(|cx| crate::windows::toast::Toast::show(cx, title, &body));
             let output = result.ok();
             let _ = entity.update(cx, |this, cx| {
                 this.is_exporting = false;
@@ -1364,7 +1346,7 @@ impl VideoEditorWindow {
                 ),
                 Err(error) => ("Transcription failed", error.clone()),
             };
-            let _ = cx.update(|cx| crate::windows::toast::Toast::show(cx, title, &body));
+            cx.update(|cx| crate::windows::toast::Toast::show(cx, title, &body));
             let _ = entity.update(cx, |this, cx| {
                 this.is_transcribing = false;
                 this.refresh_subtitle_count();
@@ -1615,7 +1597,10 @@ impl VideoEditorWindow {
             .unwrap_or((1920.0, 1080.0));
         let value = editor.kind.template(width, height, self.total_duration());
         let field = editor.field.clone();
-        field.update(cx, |field, cx| field.set_value(&value, cx));
+        field.update(cx, |field, cx| {
+            field.set_value(value);
+            cx.notify();
+        });
         if let Some(editor) = self.data_editor.as_mut() {
             editor.error = None;
         }
@@ -1628,7 +1613,10 @@ impl VideoEditorWindow {
         };
         let value = editor.kind.example();
         let field = editor.field.clone();
-        field.update(cx, |field, cx| field.set_value(&value, cx));
+        field.update(cx, |field, cx| {
+            field.set_value(value);
+            cx.notify();
+        });
         if let Some(editor) = self.data_editor.as_mut() {
             editor.error = None;
         }
@@ -1779,10 +1767,13 @@ impl VideoEditorWindow {
             return;
         }
         let name = model::project_display_name(path);
-        self.rename_field
-            .update(cx, |field, cx| field.set_value(&name, cx));
+        self.rename_field.update(cx, |field, cx| {
+            field.set_value(&name);
+            cx.notify();
+        });
         self.renaming = true;
-        window.focus(&self.rename_field.read(cx).focus_handle());
+        let focus = self.rename_field.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
         cx.notify();
     }
 
@@ -1817,7 +1808,7 @@ impl VideoEditorWindow {
         self.renaming = false;
         self.persist(cx);
         self.load_preview(cx);
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 
@@ -2387,6 +2378,7 @@ impl Render for VideoEditorWindow {
         );
 
         use gpui::AnimationExt as _;
+        use herogpui::gpui;
 
         let sidebar_open = self.state.ui.sidebar_open;
         let sidebar_width = self.sidebar_width;
@@ -2489,8 +2481,8 @@ impl Render for VideoEditorWindow {
             .text_color(theme.foreground)
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _event: &gpui::MouseDownEvent, window, _cx| {
-                    window.focus(&this.focus_handle);
+                cx.listener(|this, _event: &gpui::MouseDownEvent, window, cx| {
+                    window.focus(&this.focus_handle, cx);
                 }),
             )
             .on_mouse_move(
@@ -2637,8 +2629,9 @@ fn play_keyboard_demo_loop(kind: &str, stop: Arc<AtomicBool>) {
 #[cfg(test)]
 mod keyboard_demo_tests {
     use super::*;
+    use crate::ui::chrome;
 
-    #[gpui::test]
+    #[herogpui::test]
     fn editor_hotkeys_reach_the_focused_window(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = Arc::new(
@@ -2648,7 +2641,7 @@ mod keyboard_demo_tests {
         cx.update(|cx| crate::state::set_test_state(cx, config));
         let window = cx.add_window(|window, cx| {
             let editor = VideoEditorWindow::new_for_test(None, cx);
-            window.focus(&editor.focus_handle);
+            window.focus(&editor.focus_handle, cx);
             editor
         });
         cx.refresh().expect("draw editor");
@@ -2665,7 +2658,28 @@ mod keyboard_demo_tests {
             .unwrap());
     }
 
-    #[gpui::test]
+    #[herogpui::test]
+    fn title_reserves_native_window_controls(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (_, cx) = cx.add_window_view(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        cx.refresh().expect("draw editor");
+        cx.run_until_parked();
+        let title = cx.debug_bounds("video-title").unwrap();
+        let expected = if cfg!(target_os = "macos") {
+            chrome::MACOS_TITLE_LEADING_INSET + chrome::TITLE_BAR_PADDING_X
+        } else {
+            chrome::TITLE_BAR_PADDING_X
+        };
+        assert_eq!(title.left(), px(expected));
+        assert!(title.bottom() <= px(chrome::TITLE_BAR_HEIGHT));
+    }
+
+    #[herogpui::test]
     fn mouse_release_outside_the_window_ends_scrubbing(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = Arc::new(
@@ -2675,7 +2689,7 @@ mod keyboard_demo_tests {
         cx.update(|cx| crate::state::set_test_state(cx, config));
         let (editor, cx) = cx.add_window_view(|window, cx| {
             let editor = VideoEditorWindow::new_for_test(None, cx);
-            window.focus(&editor.focus_handle);
+            window.focus(&editor.focus_handle, cx);
             editor
         });
         cx.update(|_window, cx| {
@@ -2700,7 +2714,7 @@ mod keyboard_demo_tests {
         });
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn sidebar_content_is_retained_until_collapse_finishes(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = Arc::new(

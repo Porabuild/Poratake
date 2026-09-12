@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use gpui::{prelude::*, Entity};
+use herogpui::gpui;
 
 use crate::capture::coordinator::{Coordinator, CoordinatorHandle};
 use crate::capture::CaptureService;
@@ -50,6 +51,15 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
 /// touching the real configuration. Used by the headless render tests.
 #[cfg(test)]
 pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
+    // HeroGPUI components read their tokens from the `ThemeProvider` global and
+    // panic without it, so the harness installs the same provider `main` does
+    // and publishes the app's resolved tokens into it.
+    herogpui::init(cx);
+    let settings = config.get();
+    let mode = crate::theme::presets::resolve_theme_mode(crate::theme::presets::ThemeMode::parse(
+        &settings.appearance.mode,
+    ));
+    crate::theme::vars::init_theme(cx, mode, &settings.appearance.theme);
     let service = CaptureService::new(DaemonHandle::new(), config);
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));

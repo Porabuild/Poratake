@@ -1,15 +1,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[cfg(not(windows))]
 use gpui::AnyWindowHandle;
-#[cfg(windows)]
-use gpui::Global;
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Render,
     Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
     WindowKind, WindowOptions,
 };
+use herogpui::gpui;
 
 use crate::system::native::TrayRect;
 use crate::system::tray::TrayMenuState;
@@ -180,7 +178,7 @@ impl TrayMenuWindow {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(OVERLAY_EXIT_MS))
                 .await;
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
                 registry::forget(RegistryKind::TrayMenu, cx);
             });
@@ -293,7 +291,7 @@ impl TrayMenuWindow {
                 };
                 let menu = cx.new(|cx| build_menu(entries, dismiss.clone(), max_height, cx));
                 if visible {
-                    window.focus(&menu.read(cx).focus_handle());
+                    window.focus(&menu.read(cx).focus_handle(), cx);
                 }
                 let view = cx.new(|cx| Self::new(menu, dismiss, visible, window, cx));
                 *owner.borrow_mut() = Some(view.downgrade());
@@ -330,7 +328,7 @@ impl TrayMenuWindow {
         self.visibility = TrayMenuVisibility::Revealing;
         self.reveal_generation = self.reveal_generation.wrapping_add(1);
         let generation = self.reveal_generation;
-        window.focus(&self.menu.read(cx).focus_handle());
+        window.focus(&self.menu.read(cx).focus_handle(), cx);
         cx.notify();
         Self::schedule_reveal(cx.entity(), window, generation);
         window.activate_window();

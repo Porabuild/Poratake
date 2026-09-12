@@ -21,9 +21,11 @@ use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-#[cfg(not(test))]
 use gpui::Point;
 use gpui::{Bounds, Pixels};
+#[cfg(not(test))]
+use herogpui::gpui;
+use herogpui::gpui;
 use smallvec::SmallVec;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, POINT, RECT};

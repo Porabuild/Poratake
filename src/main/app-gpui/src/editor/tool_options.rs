@@ -1,4 +1,5 @@
 use gpui::{div, prelude::*, px, AnyElement, App, Hsla, SharedString, Styled};
+use herogpui::gpui;
 
 use crate::editor::options::{
     self, EditorHandlers, EditorOption, ARROW_STYLES, FONT_FAMILIES, FONT_SIZES,
@@ -196,13 +197,8 @@ fn trigger_base(
         })
 }
 
-/// `<div className="mx-1 h-[18px] w-px bg-border" />` — `--border`, not
-/// `--separator`.
 fn separator(theme: &ThemeVars) -> AnyElement {
-    crate::ui::primitives::Separator::vertical(px(chrome::SEPARATOR_HEIGHT))
-        .inset(px(chrome::SEPARATOR_INSET))
-        .color(theme.border)
-        .into_any_element()
+    crate::ui::primitives::chrome_tick(theme).into_any_element()
 }
 
 fn thickness_entries(state: &ToolOptionsState, handlers: &EditorHandlers) -> Vec<MenuEntry> {

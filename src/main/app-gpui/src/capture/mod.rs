@@ -345,9 +345,7 @@ fn with_frozen_screen(
             opened
         };
         #[cfg(not(windows))]
-        let opened = cx
-            .update(|cx| open(cx, deferred_show, generation))
-            .unwrap_or(false);
+        let opened = cx.update(|cx| open(cx, deferred_show, generation));
         if !opened {
             cx.background_executor()
                 .spawn(async move { freezing.release_screen(generation) })
@@ -437,7 +435,7 @@ pub fn start_screen_recording(cx: &mut gpui::App) {
     };
     let scale = overlay::display_scale_factor(display.as_ref(), cx);
     #[cfg(target_os = "macos")]
-    let display_id = Some(u32::from(display.id()));
+    let display_id = Some(u64::from(display.id()) as u32);
     #[cfg(not(target_os = "macos"))]
     let display_id = None;
     crate::windows::recording_control::RecordingControl::open(
@@ -489,7 +487,7 @@ fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
             .background_executor()
             .spawn(async move { windows_list::list(&daemon) })
             .await;
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             let mut applied = false;
             for (handle, request_generation) in pending {
                 let window_list = windows.clone();
@@ -580,7 +578,7 @@ fn screen_targets(cx: &mut gpui::App) -> Result<Vec<ScreenTarget>> {
     for display in cx.displays() {
         let scale = overlay::display_scale_factor(display.as_ref(), cx);
         #[cfg(target_os = "macos")]
-        let capture_display_id = Some(u32::from(display.id()));
+        let capture_display_id = Some(u64::from(display.id()) as u32);
         #[cfg(not(target_os = "macos"))]
         let capture_display_id = None;
         targets.push(ScreenTarget {
@@ -723,7 +721,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[gpui::test]
+    #[herogpui::test]
     fn frozen_overlay_opens_before_the_freeze_task_runs(cx: &mut gpui::TestAppContext) {
         use std::sync::atomic::{AtomicBool, Ordering};
 

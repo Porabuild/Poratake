@@ -469,7 +469,7 @@ fn tint(pixmap: &mut Pixmap, color: tiny_skia::Color) {
         color.blue() as u32,
         color.alpha() as u32,
     );
-    for pixel in pixmap.data_mut().chunks_exact_mut(4) {
+    for pixel in pixmap.data_mut().as_chunks_mut::<4>().0 {
         let coverage = pixel[3] as u32 * a / 255;
         pixel[0] = (r * coverage / 255) as u8;
         pixel[1] = (g * coverage / 255) as u8;

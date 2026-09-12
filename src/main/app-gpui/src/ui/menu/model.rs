@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use gpui::{AnyElement, App, SharedString, Window};
+use herogpui::gpui;
 
 pub type MenuAction = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -124,10 +125,6 @@ impl MenuItem {
 
     pub fn is_interactive(&self) -> bool {
         !self.disabled && (self.action.is_some() || !self.submenu.is_empty())
-    }
-
-    pub fn is_row(&self) -> bool {
-        self.row_label.is_some()
     }
 }
 

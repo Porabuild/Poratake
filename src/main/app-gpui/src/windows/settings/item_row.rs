@@ -1,16 +1,16 @@
 //! Port of `renderer/components/settings/setting-item-renderer.tsx` — one row
 //! per registry item, rendered from the item's control shape.
 
-use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled};
+use gpui::{div, prelude::*, px, AnyElement, Context, ElementId, SharedString, Styled};
+use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
-use crate::ui::select::{Select, SelectOption};
-use crate::ui::slider::Slider;
-use crate::ui::switch::Switch;
+use crate::ui::icon::{icon_element, spinner_element};
 use crate::windows::settings::registry::{Control, Item, PathKind};
 use crate::windows::settings::SettingsWindow;
+use herogpui::components::Slider;
+use herogpui::components::{Button, FieldVariant, PickerItem, Select, Size, Switch, Variant};
 
 /// `SettingsSelect` is `w-40 shrink-0`.
 const CONTROL_WIDTH: f32 = 160.0;
@@ -61,45 +61,49 @@ impl SettingsWindow {
             _ => {}
         }
 
-        let menu = self.menu.clone();
         let control: AnyElement = match &item.control {
             Control::Switch { get, set, disabled } => {
                 let set = *set;
                 let requires_accessibility = item.id == "screenshot.hideDesktopIcons";
-                Switch::new(
-                    SharedString::from(format!("{}-switch", item.id)),
-                    get(self.config()),
-                )
-                .disabled(disabled.is_some_and(|predicate| predicate(self.config())))
-                .on_change(cx.listener(move |this, value: &bool, _window, cx| {
-                    let value = *value;
-                    if value
-                        && requires_accessibility
-                        && !crate::system::permissions::accessibility_granted()
-                    {
-                        crate::system::permissions::open_accessibility_preferences();
-                        return;
-                    }
-                    this.mutate(cx, move |config| set(config, value));
-                }))
-                .into_any_element()
+                Switch::new(SharedString::from(format!("{}-switch", item.id)))
+                    .is_selected(get(self.config()))
+                    .is_disabled(disabled.is_some_and(|predicate| predicate(self.config())))
+                    .on_change(cx.listener(move |this, value: &bool, _window, cx| {
+                        let value = *value;
+                        if value
+                            && requires_accessibility
+                            && !crate::system::permissions::accessibility_granted()
+                        {
+                            crate::system::permissions::open_accessibility_preferences();
+                            return;
+                        }
+                        this.mutate(cx, move |config| set(config, value));
+                    }))
+                    .into_any_element()
             }
             Control::Select { options, get, set } => {
                 let set = *set;
-                Select::new(SharedString::from(format!("{}-select", item.id)), menu)
-                    .selected(get(self.config()))
-                    .options(
-                        options
-                            .resolve()
-                            .into_iter()
-                            .map(|(value, label)| SelectOption::new(value, label))
-                            .collect(),
-                    )
-                    .width(px(CONTROL_WIDTH))
-                    .on_select(cx.listener(move |this, value: &SharedString, _window, cx| {
-                        let value = value.to_string();
-                        this.mutate(cx, move |config| set(config, &value));
-                    }))
+                let items: Vec<PickerItem> = options
+                    .resolve()
+                    .into_iter()
+                    .map(|(value, label)| PickerItem::new(value, label))
+                    .collect();
+                let current = get(self.config());
+                let value = items
+                    .iter()
+                    .any(|item| item.key().as_str() == current)
+                    .then(|| SharedString::from(current));
+                Select::new(SharedString::from(format!("{}-select", item.id)), items)
+                    .variant(FieldVariant::Secondary)
+                    .value(value.clone())
+                    .sx(|el| el.w(px(CONTROL_WIDTH)))
+                    .on_selection_change(cx.listener(
+                        move |this, value: &Option<SharedString>, _window, cx| {
+                            let Some(value) = value else { return };
+                            let value = value.to_string();
+                            this.mutate(cx, move |config| set(config, &value));
+                        },
+                    ))
                     .into_any_element()
             }
             Control::Slider {
@@ -137,9 +141,10 @@ impl SettingsWindow {
                         Slider::new(
                             SharedString::from(format!("{}-slider", item.id)),
                             value as f32,
-                            *min as f32,
-                            *max as f32,
                         )
+                        .min_value(*min as f32)
+                        .max_value(*max as f32)
+                        .continuous(true)
                         .on_change(cx.listener(
                             move |this, value: &f32, _window, cx| {
                                 let snapped = if step > 0.0 {
@@ -193,22 +198,40 @@ impl SettingsWindow {
                     .items_center()
                     .gap(px(12.0))
                     .py(px(STACK_PAD_Y))
-                    .child(
+                    .child({
+                        let icon_name = status.icon;
+                        let spinning = status.spinning;
                         Button::new(SharedString::from(format!("{}-test", item.id)))
-                            .variant(ButtonVariant::Outline)
-                            .size(ButtonSize::Md)
-                            .when_some(status.icon, |button, icon| {
-                                button
-                                    .icon(icon)
-                                    .icon_size(px(chrome::TOOL_BUTTON_ICON))
-                                    .icon_spinning(status.spinning)
-                            })
+                            .variant(Variant::Outline)
+                            .size(Size::Md)
                             .label("Test Connection")
-                            .disabled(status.disabled)
-                            .on_click(cx.listener(|this, _event, _window, cx| {
+                            .content(move |_| {
+                                let glyph: Option<AnyElement> = match icon_name {
+                                    Some(icon) if spinning => Some(spinner_element(
+                                        ElementId::Name(format!("{icon}-spinner").into()),
+                                        px(chrome::TOOL_BUTTON_ICON),
+                                    )),
+                                    Some(icon) => {
+                                        Some(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
+                                    }
+                                    None => None,
+                                };
+                                match glyph {
+                                    Some(glyph) => div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.0))
+                                        .child(glyph)
+                                        .child("Test Connection")
+                                        .into_any_element(),
+                                    None => "Test Connection".into_any_element(),
+                                }
+                            })
+                            .is_disabled(status.disabled)
+                            .on_press(cx.listener(|this, _event, _window, cx| {
                                 this.test_cloud_connection(cx)
-                            })),
-                    );
+                            }))
+                    });
                 if let Some((message, tone)) = status.message {
                     row = row.child(
                         div()
@@ -265,11 +288,11 @@ impl SettingsWindow {
                 .gap(px(12.0))
                 .child(
                     Button::new("devices-mic-test")
-                        .variant(ButtonVariant::Secondary)
-                        .size(ButtonSize::Sm)
-                        .min_width(px(DEVICE_TEST_BUTTON_WIDTH))
+                        .variant(Variant::Secondary)
+                        .size(Size::Sm)
                         .label(if testing { "Stop Test" } else { "Mic Test" })
-                        .on_click(cx.listener(|this, _event, _window, cx| {
+                        .sx(|el| el.min_w(px(DEVICE_TEST_BUTTON_WIDTH)))
+                        .on_press(cx.listener(|this, _event, _window, cx| {
                             this.toggle_mic_test(cx);
                         })),
                 )
@@ -330,14 +353,14 @@ impl SettingsWindow {
                             ),
                     )
                     .child(
-                        crate::ui::switch::Switch::new("devices-camera-mirror", flipped).on_change(
-                            cx.listener(|this, checked: &bool, _window, cx| {
+                        Switch::new("devices-camera-mirror")
+                            .is_selected(flipped)
+                            .on_change(cx.listener(|this, checked: &bool, _window, cx| {
                                 let flipped = *checked;
                                 this.mutate(cx, move |config| {
                                     config.recording.camera.flipped = flipped;
                                 });
-                            }),
-                        ),
+                            })),
                     ),
             )
             .child(
@@ -348,11 +371,11 @@ impl SettingsWindow {
                     .gap(px(12.0))
                     .child(
                         Button::new("devices-camera-test")
-                            .variant(ButtonVariant::Secondary)
-                            .size(ButtonSize::Sm)
-                            .min_width(px(DEVICE_TEST_BUTTON_WIDTH))
+                            .variant(Variant::Secondary)
+                            .size(Size::Sm)
                             .label(if testing { "Stop Test" } else { "Test Video" })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
+                            .sx(|el| el.min_w(px(DEVICE_TEST_BUTTON_WIDTH)))
+                            .on_press(cx.listener(|this, _event, _window, cx| {
                                 this.toggle_camera_test(cx);
                             })),
                     )
@@ -391,36 +414,46 @@ impl SettingsWindow {
             ),
         };
 
-        let options: Vec<SelectOption> =
+        let items: Vec<PickerItem> =
             crate::system::devices::options_with_selection(&devices, selected.as_deref())
                 .into_iter()
-                .map(|(value, label)| SelectOption::new(value, label))
+                .map(|(value, label)| PickerItem::new(value, label))
                 .collect();
         let labels: std::collections::HashMap<String, String> = devices
             .iter()
             .map(|d| (d.id.clone(), d.label.clone()))
             .collect();
+        let current = selected.unwrap_or_default();
+        let value = items
+            .iter()
+            .any(|item| item.key().as_str() == current)
+            .then(|| SharedString::from(current));
 
-        Select::new(SharedString::from(id), self.menu.clone())
-            .selected(selected.unwrap_or_default())
-            .options(options)
-            .full_width()
+        Select::new(SharedString::from(id), items)
+            .variant(FieldVariant::Secondary)
+            .value(value.clone())
+            .full_width(true)
             .placeholder("System Default")
-            .on_select(cx.listener(move |this, value: &SharedString, _window, cx| {
-                let id = value.to_string();
-                let selected = (!id.is_empty()).then_some(id.clone());
-                let label = selected.as_ref().and_then(|id| labels.get(id).cloned());
-                this.mutate(cx, move |config| match kind {
-                    DeviceKind::Microphone => {
-                        config.recording.selected_mic_id = selected.clone();
-                        config.recording.selected_mic_name = label.clone();
-                    }
-                    DeviceKind::Camera => {
-                        config.recording.camera.selected_device_id = selected.clone();
-                        config.recording.camera.selected_device_name = label.clone();
-                    }
-                });
-            }))
+            .on_selection_change(cx.listener(
+                move |this, value: &Option<SharedString>, _window, cx| {
+                    let id = value
+                        .as_ref()
+                        .map(|value| value.to_string())
+                        .unwrap_or_default();
+                    let selected = (!id.is_empty()).then_some(id.clone());
+                    let label = selected.as_ref().and_then(|id| labels.get(id).cloned());
+                    this.mutate(cx, move |config| match kind {
+                        DeviceKind::Microphone => {
+                            config.recording.selected_mic_id = selected.clone();
+                            config.recording.selected_mic_name = label.clone();
+                        }
+                        DeviceKind::Camera => {
+                            config.recording.camera.selected_device_id = selected.clone();
+                            config.recording.camera.selected_device_name = label.clone();
+                        }
+                    });
+                },
+            ))
             .into_any_element()
     }
 
@@ -466,26 +499,30 @@ impl SettingsWindow {
                     }),
             )
             .child(
-                Button::new(SharedString::from(format!("{}-browse", item.id)))
-                    .variant(ButtonVariant::Tertiary)
-                    .size(ButtonSize::Icon)
-                    .icon("folder-open")
-                    .tooltip("Choose folder")
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.pick_path(kind, cx);
-                    })),
+                herogpui::components::Tooltip::new("Choose folder").child(
+                    Button::new(SharedString::from(format!("{}-browse", item.id)))
+                        .variant(Variant::Tertiary)
+                        .size(Size::Md)
+                        .is_icon_only(true)
+                        .child(icon_element("folder-open", px(16.0)))
+                        .on_press(cx.listener(move |this, _event, _window, cx| {
+                            this.pick_path(kind, cx);
+                        })),
+                ),
             );
         // The reset button only exists while a custom path is set.
         if custom {
             row = row.child(
-                Button::new(SharedString::from(format!("{}-reset", item.id)))
-                    .variant(ButtonVariant::Tertiary)
-                    .size(ButtonSize::Icon)
-                    .icon("rotate-ccw")
-                    .tooltip("Reset to default")
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.reset_path(kind, cx);
-                    })),
+                herogpui::components::Tooltip::new("Reset to default").child(
+                    Button::new(SharedString::from(format!("{}-reset", item.id)))
+                        .variant(Variant::Tertiary)
+                        .size(Size::Md)
+                        .is_icon_only(true)
+                        .child(icon_element("rotate-ccw", px(16.0)))
+                        .on_press(cx.listener(move |this, _event, _window, cx| {
+                            this.reset_path(kind, cx);
+                        })),
+                ),
             );
         }
 
@@ -526,16 +563,20 @@ impl SettingsWindow {
         for token in crate::editor::filename::available_tokens(chrono::Local::now()) {
             let insert = token.token;
             tokens = tokens.child(
-                Button::new(SharedString::from(format!("naming-token-{insert}")))
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Xs)
-                    .radius(px(6.0))
-                    .label(insert)
-                    .tooltip(format!("{} \u{2192} {}", token.description, token.example))
-                    .foreground(theme.muted_foreground)
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.append_naming_token(insert, cx);
-                    })),
+                herogpui::components::Tooltip::new(format!(
+                    "{} \u{2192} {}",
+                    token.description, token.example
+                ))
+                .child(
+                    Button::new(SharedString::from(format!("naming-token-{insert}")))
+                        .variant(Variant::Ghost)
+                        .label(insert)
+                        .recipe("compact")
+                        .recipe("muted")
+                        .on_press(cx.listener(move |this, _event, _window, cx| {
+                            this.append_naming_token(insert, cx);
+                        })),
+                ),
             );
         }
 
@@ -562,18 +603,20 @@ impl SettingsWindow {
                             .child("Naming Pattern"),
                     )
                     .child(
-                        Button::new("naming-pattern-help")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::IconXs)
-                            .icon("help-circle")
-                            .tooltip("Available tokens")
-                            .foreground(theme.muted_foreground)
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                if !this.extras_open.remove(NAMING_TOKENS_KEY) {
-                                    this.extras_open.insert(NAMING_TOKENS_KEY);
-                                }
-                                cx.notify();
-                            })),
+                        herogpui::components::Tooltip::new("Available tokens").child(
+                            Button::new("naming-pattern-help")
+                                .variant(Variant::Ghost)
+                                .is_icon_only(true)
+                                .child(icon_element("help-circle", px(14.0)))
+                                .recipe("compact-icon")
+                                .recipe("muted")
+                                .on_press(cx.listener(|this, _event, _window, cx| {
+                                    if !this.extras_open.remove(NAMING_TOKENS_KEY) {
+                                        this.extras_open.insert(NAMING_TOKENS_KEY);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
                     ),
             )
             .child(
@@ -584,14 +627,16 @@ impl SettingsWindow {
                     .gap(px(8.0))
                     .child(div().flex_1().min_w_0().child(field))
                     .child(
-                        Button::new("naming-pattern-reset")
-                            .variant(ButtonVariant::Tertiary)
-                            .size(ButtonSize::Icon)
-                            .icon("rotate-ccw")
-                            .tooltip("Reset to default")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.reset_naming_pattern(cx);
-                            })),
+                        herogpui::components::Tooltip::new("Reset to default").child(
+                            Button::new("naming-pattern-reset")
+                                .variant(Variant::Tertiary)
+                                .size(Size::Md)
+                                .is_icon_only(true)
+                                .child(icon_element("rotate-ccw", px(16.0)))
+                                .on_press(cx.listener(|this, _event, _window, cx| {
+                                    this.reset_naming_pattern(cx);
+                                })),
+                        ),
                     ),
             );
         if tokens_open {
@@ -651,15 +696,17 @@ impl SettingsWindow {
                     .child(div().flex_1().child(key_field))
                     .child(div().flex_1().child(value_field))
                     .child(
-                        Button::new(SharedString::from(format!("rest-header-remove-{index}")))
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::IconXs)
-                            .icon("trash-2")
-                            .foreground(theme.danger)
-                            .tooltip("Remove header")
-                            .on_click(cx.listener(move |this, _event, _window, cx| {
-                                this.remove_rest_header(index, cx);
-                            })),
+                        herogpui::components::Tooltip::new("Remove header").child(
+                            Button::new(SharedString::from(format!("rest-header-remove-{index}")))
+                                .variant(Variant::Ghost)
+                                .is_icon_only(true)
+                                .child(icon_element("trash-2", px(14.0)))
+                                .recipe("compact-icon")
+                                .recipe("danger")
+                                .on_press(cx.listener(move |this, _event, _window, cx| {
+                                    this.remove_rest_header(index, cx);
+                                })),
+                        ),
                     ),
             );
         }
@@ -668,11 +715,19 @@ impl SettingsWindow {
             .child(list)
             .child(
                 Button::new("rest-header-add")
-                    .variant(ButtonVariant::Secondary)
-                    .size(ButtonSize::Xs)
-                    .icon("plus")
+                    .variant(Variant::Secondary)
                     .label("Add header")
-                    .on_click(cx.listener(|this, _event, _window, cx| this.add_rest_header(cx))),
+                    .content(|_| {
+                        crate::ui::primitives::icon_label(
+                            "plus",
+                            "Add header".into(),
+                            px(14.0),
+                            px(8.0),
+                            false,
+                        )
+                    })
+                    .recipe("compact")
+                    .on_press(cx.listener(|this, _event, _window, cx| this.add_rest_header(cx))),
             )
             .into_any_element()
     }

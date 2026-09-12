@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
+use herogpui::gpui;
 use image::{DynamicImage, RgbaImage};
 
 pub struct ClipboardService;
@@ -7,10 +8,6 @@ pub struct ClipboardService;
 impl ClipboardService {
     pub fn write_text(cx: &gpui::App, text: String) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-    }
-
-    pub fn read_text(cx: &gpui::App) -> Option<String> {
-        cx.read_from_clipboard()?.text()
     }
 
     pub fn write_png(cx: &gpui::App, bytes: Vec<u8>) {
@@ -32,7 +29,7 @@ impl ClipboardService {
             .into_entries()
             .find_map(|entry| match entry {
                 ClipboardEntry::Image(image) => Some(image),
-                ClipboardEntry::String(_) => None,
+                ClipboardEntry::String(_) | ClipboardEntry::ExternalPaths(_) => None,
             })
     }
 }
@@ -41,15 +38,7 @@ impl ClipboardService {
 mod tests {
     use super::*;
 
-    #[gpui::test]
-    fn text_uses_the_app_clipboard(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            ClipboardService::write_text(cx, "Poratake".to_string());
-            assert_eq!(ClipboardService::read_text(cx).as_deref(), Some("Poratake"));
-        });
-    }
-
-    #[gpui::test]
+    #[herogpui::test]
     fn images_use_the_app_clipboard(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             ClipboardService::write_png(cx, vec![1, 2, 3]);

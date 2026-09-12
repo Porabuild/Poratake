@@ -6,13 +6,15 @@ use gpui::{
     FocusHandle, Hsla, MouseDownEvent, MouseMoveEvent, Pixels, Point, Render, SharedString, Styled,
     Window,
 };
+use herogpui::gpui;
 
 use crate::theme::color::Srgba;
 use crate::theme::vars::active_theme;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::chrome;
 use crate::ui::colors::transparent;
+use crate::ui::icon::icon_element;
 use crate::ui::menu::DismissHandler;
+use herogpui::components::{Button, Size, Variant};
 
 /// `HeroColorPicker.Popover className="w-64 rounded-2xl! ... p-3!"`.
 const POPOVER_WIDTH: f32 = 256.0;
@@ -384,16 +386,17 @@ impl Render for ColorPickerPopover {
                             ),
                     )
                     .child(
-                        Button::new("color-random")
-                            .variant(ButtonVariant::Tertiary)
-                            .size(ButtonSize::IconSm)
-                            .radius(px(9999.0))
-                            .icon("shuffle")
-                            .icon_size(px(chrome::TOOL_OPTION_CHEVRON))
-                            .tooltip("Choose a random color")
-                            .on_click(
-                                cx.listener(|this, _event, window, cx| this.randomize(window, cx)),
-                            ),
+                        herogpui::components::Tooltip::new("Choose a random color").child(
+                            Button::new("color-random")
+                                .variant(Variant::Tertiary)
+                                .size(Size::Sm)
+                                .is_icon_only(true)
+                                .sx(|el| el.rounded(px(9999.0)))
+                                .child(icon_element("shuffle", px(chrome::TOOL_OPTION_CHEVRON)))
+                                .on_press(cx.listener(|this, _event, window, cx| {
+                                    this.randomize(window, cx)
+                                })),
+                        ),
                     ),
             )
             .child(

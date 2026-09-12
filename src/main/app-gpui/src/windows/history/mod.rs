@@ -10,6 +10,7 @@ use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, FocusHandle, KeyDownEvent, Pixels, Point,
     Render, ScrollHandle, Styled, Window, WindowBounds, WindowKind, WindowOptions,
 };
+use herogpui::gpui;
 
 use crate::config::store::ConfigStore;
 use crate::history_store::{self, HistoryItem, HistoryItemType};
@@ -118,7 +119,8 @@ impl HistoryWindow {
                         );
                     }
                     let view = cx.new(|cx| Self::new(store, window, cx));
-                    window.focus(&view.read(cx).focus_handle);
+                    let focus = view.read(cx).focus_handle.clone();
+                    window.focus(&focus, cx);
                     #[cfg(windows)]
                     {
                         let settled = view.clone();

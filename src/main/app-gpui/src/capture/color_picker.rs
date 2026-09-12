@@ -1,4 +1,5 @@
 use gpui::{div, prelude::*, px, AnyElement, Pixels, Point, Styled};
+use herogpui::gpui;
 
 use crate::capture::selection;
 use crate::theme::color::Srgba;
@@ -97,6 +98,7 @@ pub fn render(
                 offset: gpui::point(px(0.0), px(0.0)),
                 blur_radius: px(0.0),
                 spread_radius: px(1.0),
+                inset: false,
             }]),
     );
 

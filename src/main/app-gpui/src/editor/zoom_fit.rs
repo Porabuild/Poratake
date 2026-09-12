@@ -7,6 +7,7 @@
 //! existed.
 
 use gpui::{Pixels, Size};
+use herogpui::gpui;
 
 /// A fit never enlarges past 2x, however small the capture.
 pub const MAX_FIT_ZOOM: f32 = 2.0;
@@ -52,6 +53,7 @@ pub fn optimal_zoom(
 mod tests {
     use super::*;
     use gpui::{px, size};
+    use herogpui::gpui;
 
     #[test]
     fn a_capture_larger_than_the_window_is_scaled_down_to_fit() {
@@ -105,7 +107,7 @@ mod window_tests {
     /// The editor has to fit the capture on the first frame. Nothing else in the
     /// suite would notice if the hook stopped firing -- the maths above would
     /// still pass while the window sat at 100%.
-    #[gpui::test]
+    #[herogpui::test]
     fn opening_a_capture_fits_it_to_the_window(cx: &mut gpui::TestAppContext) {
         use crate::editor::window::EditorWindow;
 
@@ -140,9 +142,10 @@ mod window_tests {
         );
     }
 
-    #[gpui::test]
+    #[herogpui::test]
     fn secondary_scroll_zooms_the_editor(cx: &mut gpui::TestAppContext) {
         use gpui::{point, px, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+        use herogpui::gpui;
 
         use crate::editor::window::EditorWindow;
 

@@ -15,6 +15,7 @@ use gpui::{
     point, px, Bounds, Pixels, Point, Size, TitlebarOptions, WindowBackgroundAppearance,
     WindowBounds, WindowOptions,
 };
+use herogpui::gpui;
 
 #[cfg(all(windows, not(test)))]
 pub(crate) fn window_hwnd(window: &gpui::Window) -> Option<windows::Win32::Foundation::HWND> {
