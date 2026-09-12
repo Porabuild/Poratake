@@ -1036,7 +1036,8 @@ fn xbgr_to_rgba(width: i32, height: i32, mut data: Vec<u8>) -> Result<RgbaImage>
     let (width, height) = dimensions(width, height, 4, data.len())?;
     data.truncate(width as usize * height as usize * 4);
     for pixel in data.as_chunks_mut::<4>().0 {
-        pixel.copy_from_slice(&[pixel[3], pixel[2], pixel[1], 255]);
+        let channels = *pixel;
+        pixel.copy_from_slice(&[channels[3], channels[2], channels[1], 255]);
     }
     RgbaImage::from_raw(width, height, data).ok_or_else(|| anyhow!("capture frame was invalid"))
 }

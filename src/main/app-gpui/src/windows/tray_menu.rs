@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::AnyWindowHandle;
+#[cfg(windows)]
+use gpui::Global;
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Render,
-    Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
-    WindowKind, WindowOptions,
+    div, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, DisplayId, Entity, Pixels,
+    Render, Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowHandle, WindowKind, WindowOptions,
 };
 use herogpui::gpui;
 
