@@ -1,7 +1,4 @@
-use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, Render, Window, WindowBounds, WindowKind,
-    WindowOptions,
-};
+use gpui::{div, prelude::*, px, size, App, Bounds, Context, Render, Window};
 use herogpui::gpui;
 
 /// Poratake is a tray-first app with no main window, but the Windows backend
@@ -18,17 +15,15 @@ impl KeepAlive {
             size: size(px(1.0), px(1.0)),
         };
         let opened = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: None,
-                focus: false,
-                show: false,
-                kind: WindowKind::PopUp,
-                is_movable: false,
-                is_resizable: false,
-                is_minimizable: false,
-                ..Default::default()
-            },
+            super::popup_window_options(
+                bounds,
+                super::PopupWindowConfig {
+                    focus: false,
+                    show: false,
+                    background: gpui::WindowBackgroundAppearance::Opaque,
+                    ..Default::default()
+                },
+            ),
             |window, cx| {
                 cx.new(|cx| {
                     crate::theme::watcher::apply_system_mode(

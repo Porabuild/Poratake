@@ -16,7 +16,7 @@ use herogpui::theme::{
 };
 use herogpui::{Color, FieldVariant, Variant};
 
-fn component_themes() -> ComponentThemes {
+fn component_themes(vars: &ThemeVars) -> ComponentThemes {
     ComponentThemes::default()
         .slider(ComponentTheme::new(
             SliderStyle::default().radius(gpui::px(9999.0)),
@@ -90,6 +90,10 @@ fn component_themes() -> ComponentThemes {
                     ButtonStyle::default().foreground(ComponentColor::Muted),
                 )
                 .recipe("danger", ButtonStyle::default().variant(Variant::Outline))
+                .recipe(
+                    "danger-text",
+                    ButtonStyle::default().foreground(ComponentColor::Literal(vars.destructive)),
+                )
                 .recipe(
                     "overlay",
                     ButtonStyle::default()
@@ -191,7 +195,7 @@ pub fn to_herogpui(vars: &ThemeVars, dark: bool) -> herogpui::theme::Theme {
         .field(vars.field_background, vars.field_foreground)
         .field_placeholder(vars.field_placeholder)
         .field_border(vars.field_border)
-        .components(component_themes())
+        .components(component_themes(vars))
         .build();
 
     // Tokens with no builder method: `foreground` derives scrollbar at 15%
@@ -407,6 +411,11 @@ mod tests {
         );
         let danger = theme.components.button.resolve(&["danger".into()]);
         assert_eq!(danger.variant, Some(Variant::Outline));
+        let danger_text = theme.components.button.resolve(&["danger-text".into()]);
+        assert_eq!(
+            danger_text.foreground,
+            Some(ComponentColor::Literal(vars.destructive))
+        );
         let chip = theme.components.button.resolve(&["chip".into()]);
         assert!(chip.style.is_some());
         let preview = theme.components.button.resolve(&["preview".into()]);

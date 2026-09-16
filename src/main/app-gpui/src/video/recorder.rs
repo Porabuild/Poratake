@@ -250,11 +250,6 @@ fn set_camera_content_protection(daemon: &DaemonHandle, enabled: bool) -> anyhow
     daemon.camera_preview().set_content_protection(enabled)
 }
 
-/// Port of `formatDuration` in the recording control bar: `M:SS`.
-pub fn format_elapsed(seconds: u64) -> String {
-    format!("{}:{:02}", seconds / 60, seconds % 60)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,14 +266,6 @@ mod tests {
         assert!(name.ends_with(PROJECT_EXTENSION), "{name}");
         assert!(name.starts_with("Recording "), "{name}");
         assert!(!name.contains(".poratake."), "{name}");
-    }
-
-    #[test]
-    fn formats_elapsed_time() {
-        assert_eq!(format_elapsed(0), "0:00");
-        assert_eq!(format_elapsed(9), "0:09");
-        assert_eq!(format_elapsed(75), "1:15");
-        assert_eq!(format_elapsed(3600), "60:00");
     }
 
     #[test]

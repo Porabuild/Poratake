@@ -5,10 +5,12 @@ use crate::system::accelerator;
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon_button;
-use crate::windows::video_editor::model::format_time;
+use crate::ui::rows;
+use crate::ui::toolbar;
+use crate::util::format::format_time;
 use crate::windows::video_editor::timeline::{MAX_PIXELS_PER_SECOND, MIN_PIXELS_PER_SECOND};
 use crate::windows::video_editor::VideoEditorWindow;
-use herogpui::components::{Button, Size, Switch, Tooltip, Variant};
+use herogpui::components::{Button, Size, Tooltip, Variant};
 use herogpui::components::{Slider, SliderSize};
 
 const CUT_TOOL_HINT: &str =
@@ -96,7 +98,7 @@ pub fn render(
                     .variant(Variant::Ghost)
                     .size(Size::Md)
                     .is_icon_only(true)
-                    .sx(|el| el.text_color(theme.destructive))
+                    .recipe("danger-text")
                     .on_press(
                         cx.listener(|this, _event, _window, cx| this.delete_selected_segment(cx)),
                     ),
@@ -143,39 +145,38 @@ pub fn render(
                 .flex_row()
                 .items_center()
                 .gap(px(4.0))
-                .child(icon_button::with_tooltip(
-                    format!("Zoom Out ({})", accelerator::display("CommandOrControl+-")),
+                .child(toolbar::tooltip_button(
                     icon_button::compact_sm("timeline-zoom-out", "minus")
-                        .is_disabled(!can_zoom_out)
-                        .on_press(
-                            cx.listener(|this, _event, _window, cx| this.zoom_timeline_out(cx)),
-                        ),
+                        .is_disabled(!can_zoom_out),
+                    format!("Zoom Out ({})", accelerator::display("CommandOrControl+-")),
+                    cx,
+                    |this, _window, cx| this.zoom_timeline_out(cx),
                 ))
                 .child(
                     div().w(px(96.0)).child(
-                        Slider::new("timeline-zoom", state.pixels_per_second)
-                            .min_value(MIN_PIXELS_PER_SECOND)
-                            .max_value(MAX_PIXELS_PER_SECOND)
-                            .continuous(true)
-                            .size(SliderSize::Sm)
-                            .on_change(cx.listener(|this, value: &f32, _window, cx| {
-                                this.set_timeline_zoom(*value, cx);
-                            })),
+                        rows::slider_control(
+                            "timeline-zoom",
+                            state.pixels_per_second as f64,
+                            MIN_PIXELS_PER_SECOND as f64,
+                            MAX_PIXELS_PER_SECOND as f64,
+                            0.0,
+                            cx,
+                            |this, next, cx| this.set_timeline_zoom(next as f32, cx),
+                        )
+                        .size(SliderSize::Sm),
                     ),
                 )
-                .child(icon_button::with_tooltip(
+                .child(toolbar::tooltip_button(
+                    icon_button::compact_sm("timeline-zoom-in", "plus").is_disabled(!can_zoom_in),
                     format!("Zoom In ({})", accelerator::display("CommandOrControl+=")),
-                    icon_button::compact_sm("timeline-zoom-in", "plus")
-                        .is_disabled(!can_zoom_in)
-                        .on_press(
-                            cx.listener(|this, _event, _window, cx| this.zoom_timeline_in(cx)),
-                        ),
+                    cx,
+                    |this, _window, cx| this.zoom_timeline_in(cx),
                 ))
-                .child(icon_button::with_tooltip(
+                .child(toolbar::tooltip_button(
+                    icon_button::compact_sm("timeline-fit", "maximize-2"),
                     "Fit to View (F)",
-                    icon_button::compact_sm("timeline-fit", "maximize-2").on_press(
-                        cx.listener(|this, _event, _window, cx| this.fit_timeline_to_view(cx)),
-                    ),
+                    cx,
+                    |this, _window, cx| this.fit_timeline_to_view(cx),
                 )),
         )
         .child(separator(theme))
@@ -192,13 +193,14 @@ pub fn render(
                         .child("Scrub Audio"),
                 )
                 .child(
-                    Switch::new("timeline-scrub-audio")
-                        .is_selected(state.scrub_audio_enabled)
-                        .size(Size::Sm)
-                        .is_disabled(!state.is_scrub_audio_available)
-                        .on_change(cx.listener(|this, value: &bool, _window, cx| {
-                            this.set_scrub_audio(*value, cx)
-                        })),
+                    rows::switch(
+                        "timeline-scrub-audio",
+                        state.scrub_audio_enabled,
+                        cx,
+                        |this, enabled, cx| this.set_scrub_audio(enabled, cx),
+                    )
+                    .size(Size::Sm)
+                    .is_disabled(!state.is_scrub_audio_available),
                 ),
         )
         .child(separator(theme))
@@ -214,7 +216,7 @@ pub fn render(
                     .variant(Variant::Ghost)
                     .size(Size::Md)
                     .is_icon_only(true)
-                    .sx(|el| el.text_color(theme.muted_foreground)),
+                    .recipe("muted"),
             ),
         )
         .into_any_element()
@@ -253,7 +255,6 @@ fn speed_selector(
     let drag_view = cx.entity().downgrade();
     let drop_view = drag_view.clone();
     let radius = px(6.0);
-    let foreground = theme.muted_foreground;
     let speed_label: SharedString = format!("{}x", (speed * 20.0).round() / 20.0).into();
     let content_label = speed_label.clone();
     let mut selector = div().id("timeline-speed-selector").relative().child(
@@ -274,14 +275,9 @@ fn speed_selector(
                         true,
                     )
                 })
-                .sx(move |el| {
-                    el.h(px(chrome::BUTTON_XS_HEIGHT))
-                        .px(px(chrome::BUTTON_XS_PAD_X))
-                        .text_size(px(chrome::BUTTON_XS_TEXT))
-                        .line_height(px(16.0))
-                        .rounded(radius)
-                        .text_color(foreground)
-                })
+                .recipe("compact")
+                .recipe("muted")
+                .sx(move |el| el.rounded(radius))
                 .on_press(cx.listener(|this, _event, _window, cx| this.press_speed_selector(cx))),
         ),
     );

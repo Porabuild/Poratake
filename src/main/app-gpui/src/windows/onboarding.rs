@@ -9,7 +9,6 @@ use gpui::{
 use herogpui::gpui;
 
 use crate::config::store::ConfigStore;
-use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
@@ -269,14 +268,14 @@ impl OnboardingWindow {
                         "monitor",
                         status_title,
                         status_description,
-                        Srgba::parse("#3b82f6").to_hsla(),
+                        crate::ui::colors::blue_500(1.0),
                         theme,
                     ))
                     .child(feature_card(
                         "keyboard",
                         "Powerful Shortcuts",
                         "Capture screenshots instantly with customizable keyboard shortcuts for area, window, and full screen captures.",
-                        Srgba::parse("#a855f7").to_hsla(),
+                        crate::ui::colors::purple_500(1.0),
                         theme,
                     )),
             )
@@ -316,7 +315,6 @@ impl OnboardingWindow {
                         &value,
                         false,
                         self.recording_shortcut == Some(id),
-                        theme,
                         cx,
                         move |this, next, cx| this.set_shortcut(id, next, cx),
                     )),
@@ -341,8 +339,8 @@ impl OnboardingWindow {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(Srgba::parse("#22c55e").to_hsla().opacity(0.1))
-                            .text_color(Srgba::parse("#22c55e").to_hsla())
+                            .bg(crate::ui::colors::green_500(0.1))
+                            .text_color(crate::ui::colors::green_500(1.0))
                             .child(icon_element("keyboard", px(32.0))),
                     )
                     .child(
@@ -392,8 +390,8 @@ impl OnboardingWindow {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(Srgba::parse("#f97316").to_hsla().opacity(0.1))
-                            .text_color(Srgba::parse("#f97316").to_hsla())
+                            .bg(crate::ui::colors::orange_500(0.1))
+                            .text_color(crate::ui::colors::orange_500(1.0))
                             .child(icon_element("keyboard", px(32.0))),
                     )
                     .child(
@@ -421,13 +419,15 @@ impl OnboardingWindow {
             )
             .child(
                 div().mt(px(12.0)).child(
-                    Button::new("onboarding-open-keyboard-settings")
-                        .variant(Variant::Secondary)
-                        .label("Open Keyboard Settings")
-                        .content(|_| {
-                            crate::ui::primitives::icon_label("external-link", "Open Keyboard Settings".into(), px(16.0), px(8.0), false)
-                        })
-                        .full_width(true)
+                    crate::ui::rows::icon_text_button(
+                        "onboarding-open-keyboard-settings",
+                        "Open Keyboard Settings",
+                        "external-link",
+                        16.0,
+                        8.0,
+                    )
+                    .variant(Variant::Secondary)
+                    .full_width(true)
                         .on_press(|_event, _window, _cx| {
                             crate::system::permissions::open_keyboard_shortcut_preferences();
                         }),
@@ -567,7 +567,7 @@ fn permission_card(
 ) -> gpui::AnyElement {
     let status = if granted { "check" } else { "x" };
     let status_color = if granted {
-        Srgba::parse("#22c55e").to_hsla()
+        crate::ui::colors::green_500(1.0)
     } else {
         theme.destructive
     };
@@ -683,20 +683,16 @@ impl Render for OnboardingWindow {
         let mut actions = div().flex().flex_row().w_full().gap(px(8.0));
         if self.step > 0 {
             actions = actions.child(
-                Button::new("onboarding-back")
-                    .variant(Variant::Ghost)
-                    .label("Back")
-                    .content(|_| {
-                        crate::ui::primitives::icon_label(
-                            "chevron-left",
-                            "Back".into(),
-                            px(chrome::TOOL_BUTTON_ICON),
-                            px(4.0),
-                            false,
-                        )
-                    })
-                    .sx(|el| el.flex_1().w_0())
-                    .on_press(cx.listener(|this, _event, _window, cx| this.back(cx))),
+                crate::ui::rows::icon_text_button(
+                    "onboarding-back",
+                    "Back",
+                    "chevron-left",
+                    chrome::TOOL_BUTTON_ICON,
+                    4.0,
+                )
+                .variant(Variant::Ghost)
+                .sx(|el| el.flex_1().w_0())
+                .on_press(cx.listener(|this, _event, _window, cx| this.back(cx))),
             );
         }
         actions = actions.child(if self.is_last_step() {
@@ -763,7 +759,7 @@ impl Render for OnboardingWindow {
                                     .variant(Variant::Ghost)
                                     .label("Skip for now")
                                     .full_width(true)
-                                    .sx(|el| el.text_color(theme.muted_foreground))
+                                    .recipe("muted")
                                     .on_press(cx.listener(|this, _event, window, cx| {
                                         this.skip(window, cx)
                                     })),

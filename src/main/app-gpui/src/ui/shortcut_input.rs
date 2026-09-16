@@ -9,7 +9,6 @@ use gpui::{
 use herogpui::gpui;
 
 use crate::system::accelerator;
-use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use herogpui::components::{Button, Size, Variant};
@@ -36,7 +35,6 @@ pub fn render<V: ShortcutRecorder>(
     // The owner is mid-render, so it cannot be read back out of the context:
     // `Entity::read` panics while an entity is being updated.
     recording: bool,
-    theme: &ThemeVars,
     cx: &mut Context<V>,
     apply: impl Fn(&mut V, String, &mut Context<V>) + 'static,
 ) -> AnyElement {
@@ -73,7 +71,7 @@ pub fn render<V: ShortcutRecorder>(
                     .size(Size::Sm)
                     .is_icon_only(true)
                     .child(icon_element("x", px(chrome::TOOL_BUTTON_ICON)))
-                    .sx(|el| el.text_color(theme.muted_foreground))
+                    .recipe("muted")
                     .on_press(cx.listener(move |this, _event, _window, cx| {
                         apply(this, String::new(), cx);
                     })),

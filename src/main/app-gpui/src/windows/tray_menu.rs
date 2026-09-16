@@ -7,8 +7,7 @@ use gpui::AnyWindowHandle;
 use gpui::Global;
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Render,
-    Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
-    WindowKind, WindowOptions,
+    Subscription, WeakEntity, Window, WindowHandle,
 };
 use herogpui::gpui;
 
@@ -257,19 +256,15 @@ impl TrayMenuWindow {
             window_bounds
         };
         cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(initial_bounds)),
-                titlebar: None,
-                focus: visible,
-                show: !cfg!(windows) || !visible,
-                kind: WindowKind::PopUp,
-                is_movable: false,
-                is_resizable: false,
-                is_minimizable: false,
-                display_id: geometry.display_id,
-                window_background: WindowBackgroundAppearance::Transparent,
-                ..Default::default()
-            },
+            super::popup_window_options(
+                initial_bounds,
+                super::PopupWindowConfig {
+                    focus: visible,
+                    show: !cfg!(windows) || !visible,
+                    display_id: geometry.display_id,
+                    ..Default::default()
+                },
+            ),
             |window, cx| {
                 configure_tray_menu_window(window);
                 #[cfg(windows)]

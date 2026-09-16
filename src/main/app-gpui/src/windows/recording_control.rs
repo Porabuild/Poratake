@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     div, point, prelude::*, px, size, AnyElement, App, Bounds, Context, FocusHandle, Pixels,
-    Render, SharedString, Styled, Subscription, WeakEntity, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowKind, WindowOptions,
+    Render, SharedString, Styled, Subscription, WeakEntity, Window,
 };
 use herogpui::gpui;
 
@@ -124,19 +123,13 @@ impl RecordingControl {
 
         registry::open_or_activate(RegistryKind::RecordingControl, cx, move |cx| {
             cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-                    titlebar: None,
-                    focus: true,
-                    show: true,
-                    kind: WindowKind::PopUp,
-                    is_movable: false,
-                    is_resizable: false,
-                    is_minimizable: false,
-                    display_id: platform_display_id,
-                    window_background: WindowBackgroundAppearance::Transparent,
-                    ..Default::default()
-                },
+                super::popup_window_options(
+                    window_bounds,
+                    super::PopupWindowConfig {
+                        display_id: platform_display_id,
+                        ..Default::default()
+                    },
+                ),
                 |window, cx| {
                     configure_toolbar_window(window);
                     let view = cx.new(|cx| Self {
@@ -513,27 +506,26 @@ impl RecordingControl {
                 window,
                 cx,
             ),
-            toolbar::with_tooltip(
+            overlay_icon(
+                "recording-system-audio",
+                if self.system_audio {
+                    "volume-2"
+                } else {
+                    "volume-x"
+                },
                 if self.system_audio {
                     "Turn system sounds off"
                 } else {
                     "Turn system sounds on"
                 },
-                toolbar::icon(
-                    "recording-system-audio",
-                    if self.system_audio {
-                        "volume-2"
-                    } else {
-                        "volume-x"
-                    },
-                )
-                .on_press(cx.listener(|this, _event, _window, cx| {
+                |this, _window, cx| {
                     if this.countdown_active {
                         return;
                     }
                     let next = !this.system_audio;
                     this.set_system_audio(next, cx);
-                })),
+                },
+                cx,
             ),
         ]);
         #[cfg(target_os = "macos")]
@@ -1271,11 +1263,7 @@ fn overlay_icon(
     on_click: impl Fn(&mut RecordingControl, &mut Window, &mut Context<RecordingControl>) + 'static,
     cx: &mut Context<RecordingControl>,
 ) -> AnyElement {
-    toolbar::with_tooltip(
-        tooltip,
-        toolbar::icon(id, icon)
-            .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx))),
-    )
+    toolbar::tooltip_button(toolbar::icon(id, icon), tooltip, cx, on_click)
 }
 
 impl Render for RecordingControl {
@@ -1311,13 +1299,14 @@ impl Render for RecordingControl {
         if self.mode == Mode::PreRecording {
             return recording_shell(
                 &self.focus_handle,
-                bar.child(toolbar::with_tooltip(
-                    "Start recording",
+                bar.child(toolbar::tooltip_button(
                     toolbar::button("recording-start")
                         .is_disabled(self.countdown_active)
                         .hover_bg(crate::ui::colors::white(0.15))
-                        .child(filled_glyph(theme.accent, true))
-                        .on_press(cx.listener(|this, _event, window, cx| this.start(window, cx))),
+                        .child(filled_glyph(theme.accent, true)),
+                    "Start recording",
+                    cx,
+                    |this, window, cx| this.start(window, cx),
                 ))
                 .child(toolbar::hairline(&theme))
                 .children(toggles)
@@ -1348,14 +1337,13 @@ impl Render for RecordingControl {
                 |this, _window, cx| this.toggle_pause(cx),
                 cx,
             ))
-            .child(toolbar::with_tooltip(
-                "Stop recording",
+            .child(toolbar::tooltip_button(
                 toolbar::button("recording-stop")
                     .hover_bg(crate::ui::colors::white(0.15))
-                    .child(filled_glyph(theme.destructive, false))
-                    .on_press(
-                        cx.listener(|this, _event, window, cx| this.finish(false, window, cx)),
-                    ),
+                    .child(filled_glyph(theme.destructive, false)),
+                "Stop recording",
+                cx,
+                |this, window, cx| this.finish(false, window, cx),
             ))
             .child(
                 div()
@@ -1364,7 +1352,7 @@ impl Render for RecordingControl {
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_center()
-                    .child(recorder::format_elapsed(self.elapsed)),
+                    .child(crate::util::format::format_elapsed(self.elapsed)),
             )
             .child(toolbar::hairline(&theme))
             .children(toggles)

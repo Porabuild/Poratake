@@ -8,6 +8,7 @@ mod lints;
 pub mod menu;
 pub mod preview;
 pub mod primitives;
+pub mod rows;
 pub mod shortcut_input;
 pub mod svg_path;
 pub mod toolbar;

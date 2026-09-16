@@ -13,6 +13,7 @@ mod theme;
 mod thumbnails;
 mod ui;
 mod update;
+mod util;
 mod video;
 mod windows;
 

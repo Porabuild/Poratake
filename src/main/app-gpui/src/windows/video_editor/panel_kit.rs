@@ -1,17 +1,19 @@
 //! The shared row vocabulary the video editor's side panels are built from —
 //! `SettingsPanelHeader`, `Label`, the small selects, sliders and switches in
-//! `renderer/components/video-editor/components/`.
+//! `renderer/components/video-editor/components`. The row atoms live in
+//! `ui::rows` and are shared with the settings window; this module keeps the
+//! panel layouts and the `VideoEditorWindow`-bound wiring on top of them.
 
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled};
-use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
 use crate::ui::menu::MenuHandle;
+use crate::ui::rows;
 use crate::windows::video_editor::VideoEditorWindow;
-use herogpui::components::{
-    Button, PickerItem, Select, Size, Switch, TabItem, Tabs, TabsVariant, Variant,
-};
-use herogpui::components::{Slider, SliderSize};
+use herogpui::components::SliderSize;
+use herogpui::components::{Button, Select, Size, TabItem, Tabs, TabsVariant, Variant};
+
+pub use crate::ui::rows::{hint, label, note};
 
 pub fn panel(children: Vec<AnyElement>) -> AnyElement {
     div()
@@ -46,60 +48,29 @@ pub fn header(
         .justify_between()
         .gap(px(8.0))
         .child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_w_0()
-                .gap(px(2.0))
-                .child(
-                    div()
-                        .text_size(px(crate::ui::chrome::SETTINGS_HEADER_TITLE))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(theme.foreground)
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .text_size(px(crate::ui::chrome::SETTINGS_HEADER_DESC))
-                        .text_color(theme.muted_foreground)
-                        .child(description),
-                ),
+            rows::title_desc_stack(
+                title,
+                description,
+                herogpui::gpui::FontWeight::MEDIUM,
+                theme,
+            )
+            .flex_1()
+            .min_w_0(),
         );
 
     if let Some(enabled) = toggle {
         row = row.child(
-            Switch::new(SharedString::from(format!("panel-toggle-{title}")))
-                .is_selected(enabled)
-                .size(Size::Sm)
-                .on_change(cx.listener(move |this, value: &bool, _window, cx| {
-                    on_toggle(this, *value, cx);
-                })),
+            rows::switch(
+                SharedString::from(format!("panel-toggle-{title}")),
+                enabled,
+                cx,
+                on_toggle,
+            )
+            .size(Size::Sm),
         );
     }
 
     row.into_any_element()
-}
-
-pub fn note(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
-    div()
-        .w_full()
-        .min_w_0()
-        .text_size(px(crate::ui::chrome::TEXT_SM))
-        .text_color(theme.muted_foreground)
-        .child(text.into())
-        .into_any_element()
-}
-
-pub fn hint(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
-    div()
-        .w_full()
-        .min_w_0()
-        .text_size(px(crate::ui::chrome::TEXT_XS))
-        .text_color(theme.muted_foreground)
-        .child(text.into())
-        .into_any_element()
 }
 
 pub fn empty_state(message: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
@@ -118,16 +89,6 @@ pub fn empty_state(message: impl Into<SharedString>, theme: &ThemeVars) -> AnyEl
                 .text_color(theme.muted_foreground)
                 .child(message.into()),
         )
-        .into_any_element()
-}
-
-/// `<Label className="text-sm">`, which HeroUI renders `font-medium`.
-pub fn label(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
-    div()
-        .text_size(px(crate::ui::chrome::TEXT_SM))
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(theme.foreground)
-        .child(text.into())
         .into_any_element()
 }
 
@@ -156,14 +117,7 @@ pub fn switch_row(
         .justify_between()
         .gap(px(8.0))
         .child(label(text, theme))
-        .child(
-            Switch::new(id)
-                .is_selected(checked)
-                .size(Size::Sm)
-                .on_change(cx.listener(move |this, value: &bool, _window, cx| {
-                    on_change(this, *value, cx);
-                })),
-        )
+        .child(rows::switch(id, checked, cx, on_change).size(Size::Sm))
         .into_any_element()
 }
 
@@ -177,14 +131,8 @@ pub fn select_row(
     cx: &mut Context<VideoEditorWindow>,
     on_change: impl Fn(&mut VideoEditorWindow, String, &mut Context<VideoEditorWindow>) + 'static,
 ) -> AnyElement {
-    let items: Vec<PickerItem> = options
-        .iter()
-        .map(|(value, label)| PickerItem::new(*value, *label))
-        .collect();
-    let value = items
-        .iter()
-        .any(|item| item.key().as_str() == value)
-        .then(|| SharedString::from(value));
+    let items = rows::picker_items(options.iter().copied());
+    let value = rows::selected_value(&items, value);
     field(
         text,
         Select::new(id, items)
@@ -267,20 +215,14 @@ pub fn slider_row(
                 ),
         )
         .child(
-            Slider::new(id, value as f32)
-                .min_value(min as f32)
-                .max_value(max as f32)
-                .continuous(true)
+            rows::slider_control(id, value, min, max, 0.0, cx, on_change)
                 .size(SliderSize::Sm)
                 .on_drag_start(move |_window, cx| {
                     let _ = drag_view.update(cx, |this, _cx| this.begin_slider_gesture());
                 })
                 .on_drag_end(move |_window, cx| {
                     let _ = drop_view.update(cx, |this, cx| this.end_slider_gesture(cx));
-                })
-                .on_change(cx.listener(move |this, value: &f32, _window, cx| {
-                    on_change(this, *value as f64, cx);
-                })),
+                }),
         )
         .into_any_element()
 }
@@ -322,59 +264,10 @@ pub fn tertiary_button(
     on_click: impl Fn(&mut VideoEditorWindow, &mut Context<VideoEditorWindow>) + 'static,
 ) -> AnyElement {
     let _ = theme;
-    Button::new(id)
-        .label(label)
-        .content(move |_| {
-            crate::ui::primitives::icon_label(icon, label.into(), px(14.0), px(8.0), false)
-        })
+    rows::icon_text_button(id, label, icon, 14.0, 8.0)
         .variant(Variant::Tertiary)
         .recipe("compact")
         .is_disabled(disabled)
-        .full_width(true)
-        .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
-        .into_any_element()
-}
-
-#[allow(dead_code)]
-pub fn action_button(
-    id: &'static str,
-    label: &'static str,
-    icon: &'static str,
-    theme: &ThemeVars,
-    cx: &mut Context<VideoEditorWindow>,
-    on_click: impl Fn(&mut VideoEditorWindow, &mut Context<VideoEditorWindow>) + 'static,
-) -> AnyElement {
-    let _ = theme;
-    Button::new(id)
-        .label(label)
-        .content(move |_| {
-            crate::ui::primitives::icon_label(icon, label.into(), px(16.0), px(8.0), false)
-        })
-        .variant(Variant::Primary)
-        .size(Size::Sm)
-        .full_width(true)
-        .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
-        .into_any_element()
-}
-
-/// A secondary action, for the panel's supporting buttons.
-#[allow(dead_code)]
-pub fn secondary_button(
-    id: &'static str,
-    label: &'static str,
-    icon: &'static str,
-    theme: &ThemeVars,
-    cx: &mut Context<VideoEditorWindow>,
-    on_click: impl Fn(&mut VideoEditorWindow, &mut Context<VideoEditorWindow>) + 'static,
-) -> AnyElement {
-    let _ = theme;
-    Button::new(id)
-        .label(label)
-        .content(move |_| {
-            crate::ui::primitives::icon_label(icon, label.into(), px(14.0), px(8.0), false)
-        })
-        .variant(Variant::Secondary)
-        .recipe("compact")
         .full_width(true)
         .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
         .into_any_element()
@@ -392,9 +285,4 @@ pub fn separator(theme: &ThemeVars) -> AnyElement {
 
 pub fn percent(value: f64) -> String {
     format!("{}%", (value * 100.0).round() as i32)
-}
-
-#[allow(dead_code)]
-pub fn seconds(value: f64) -> String {
-    format!("{:.1}s", value)
 }

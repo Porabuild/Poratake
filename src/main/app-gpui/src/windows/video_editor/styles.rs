@@ -5,9 +5,15 @@
 
 use serde::{Deserialize, Serialize};
 
-fn t() -> bool {
-    true
+macro_rules! default_value {
+    ($name:ident, $ty:ty, $value:expr) => {
+        fn $name() -> $ty {
+            $value
+        }
+    };
 }
+
+default_value!(t, bool, true);
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,57 +56,41 @@ pub struct CursorStyle {
     pub custom_cursor_image: Option<String>,
 }
 
-fn cursor_size() -> f64 {
-    100.0
-}
-fn black() -> String {
-    "#000000".into()
-}
-fn white() -> String {
-    "#ffffff".into()
-}
-fn two() -> f64 {
-    2.0
-}
-fn half() -> f64 {
-    0.5
-}
-fn click_highlight_color() -> String {
+default_value!(cursor_size, f64, 100.0);
+default_value!(black, String, "#000000".into());
+default_value!(white, String, "#ffffff".into());
+default_value!(two, f64, 2.0);
+default_value!(half, f64, 0.5);
+default_value!(
+    click_highlight_color,
+    String,
     "rgba(255, 200, 0, 0.5)".into()
-}
-fn thirty() -> f64 {
-    30.0
-}
-fn fifteen() -> f64 {
-    15.0
-}
-fn ten() -> f64 {
-    10.0
-}
-fn point_eight() -> f64 {
-    0.8
-}
+);
+default_value!(thirty, f64, 30.0);
+default_value!(fifteen, f64, 15.0);
+default_value!(ten, f64, 10.0);
+default_value!(point_eight, f64, 0.8);
 
 impl Default for CursorStyle {
     fn default() -> Self {
         Self {
             enabled: true,
-            size: 100.0,
+            size: cursor_size(),
             color: black(),
             border_color: white(),
-            border_width: 2.0,
-            smoothing: 0.5,
+            border_width: two(),
+            smoothing: half(),
             show_click_highlight: true,
             click_highlight_color: click_highlight_color(),
-            click_highlight_radius: 30.0,
-            click_highlight_duration: 15.0,
+            click_highlight_radius: thirty(),
+            click_highlight_duration: fifteen(),
             hide_on_idle: false,
-            hide_on_idle_timeout: 2.0,
+            hide_on_idle_timeout: two(),
             show_trail: false,
-            trail_length: 10.0,
-            trail_opacity_decay: 0.8,
+            trail_length: ten(),
+            trail_opacity_decay: point_eight(),
             motion_blur: true,
-            motion_blur_strength: 0.5,
+            motion_blur_strength: half(),
             custom_cursor_image: None,
         }
     }
@@ -127,24 +117,12 @@ pub struct CameraStyle {
     pub mirrored: bool,
 }
 
-fn camera_position() -> String {
-    "bottom-right".into()
-}
-fn camera_shape() -> String {
-    "square".into()
-}
-fn medium() -> String {
-    "medium".into()
-}
-fn fifty() -> f64 {
-    50.0
-}
-fn three() -> f64 {
-    3.0
-}
-fn hundred() -> f64 {
-    100.0
-}
+default_value!(camera_position, String, "bottom-right".into());
+default_value!(camera_shape, String, "square".into());
+default_value!(medium, String, "medium".into());
+default_value!(fifty, f64, 50.0);
+default_value!(three, f64, 3.0);
+default_value!(hundred, f64, 100.0);
 
 impl Default for CameraStyle {
     fn default() -> Self {
@@ -153,9 +131,9 @@ impl Default for CameraStyle {
             position: camera_position(),
             shape: camera_shape(),
             size: medium(),
-            border_radius: 50.0,
-            padding: 3.0,
-            shadow: 100.0,
+            border_radius: fifty(),
+            padding: three(),
+            shadow: hundred(),
             mirrored: true,
         }
     }
@@ -176,24 +154,18 @@ pub struct KeyboardStyle {
     pub opacity: f64,
 }
 
-fn one() -> f64 {
-    1.0
-}
-fn bottom_center() -> String {
-    "bottom-center".into()
-}
-fn point_seven_five() -> f64 {
-    0.75
-}
+default_value!(one, f64, 1.0);
+default_value!(bottom_center, String, "bottom-center".into());
+default_value!(point_seven_five, f64, 0.75);
 
 impl Default for KeyboardStyle {
     fn default() -> Self {
         Self {
             visible: false,
-            display_duration: 1.0,
+            display_duration: one(),
             position: bottom_center(),
             font_size: medium(),
-            opacity: 0.75,
+            opacity: point_seven_five(),
         }
     }
 }
@@ -213,15 +185,9 @@ pub struct SubtitleStyle {
     pub opacity: f64,
 }
 
-fn bottom() -> String {
-    "bottom".into()
-}
-fn dark() -> String {
-    "dark".into()
-}
-fn point_nine() -> f64 {
-    0.9
-}
+default_value!(bottom, String, "bottom".into());
+default_value!(dark, String, "dark".into());
+default_value!(point_nine, f64, 0.9);
 
 impl Default for SubtitleStyle {
     fn default() -> Self {
@@ -230,7 +196,7 @@ impl Default for SubtitleStyle {
             font_size: medium(),
             position: bottom(),
             background_color: dark(),
-            opacity: 0.9,
+            opacity: point_nine(),
         }
     }
 }
@@ -254,22 +220,18 @@ pub struct AudioStyle {
     pub keyboard_sound_type: String,
 }
 
-fn point_seven() -> f64 {
-    0.7
-}
-fn cherry_blue() -> String {
-    "cherry-blue".into()
-}
+default_value!(point_seven, f64, 0.7);
+default_value!(cherry_blue, String, "cherry-blue".into());
 
 impl Default for AudioStyle {
     fn default() -> Self {
         Self {
             system_audio_enabled: true,
             mic_audio_enabled: true,
-            system_audio_volume: 1.0,
-            mic_audio_volume: 1.0,
+            system_audio_volume: one(),
+            mic_audio_volume: one(),
             keyboard_sound_enabled: false,
-            keyboard_sound_volume: 0.7,
+            keyboard_sound_volume: point_seven(),
             keyboard_sound_type: cherry_blue(),
         }
     }
@@ -307,9 +269,7 @@ pub struct FirstFrameSettings {
     pub fit: String,
 }
 
-fn cover() -> String {
-    "cover".into()
-}
+default_value!(cover, String, "cover".into());
 
 impl Default for FirstFrameSettings {
     fn default() -> Self {
@@ -336,18 +296,10 @@ pub struct ExportSettings {
     pub open_in_finder: bool,
 }
 
-fn mp4() -> String {
-    "mp4".into()
-}
-fn original() -> String {
-    "original".into()
-}
-fn studio() -> String {
-    "studio".into()
-}
-fn sixty() -> String {
-    "60".into()
-}
+default_value!(mp4, String, "mp4".into());
+default_value!(original, String, "original".into());
+default_value!(studio, String, "studio".into());
+default_value!(sixty, String, "60".into());
 
 impl Default for ExportSettings {
     fn default() -> Self {
@@ -376,43 +328,22 @@ pub struct ZoomSettings {
     pub look_ahead: f64,
 }
 
-fn one_point_two() -> f64 {
-    1.2
-}
-fn ease_in_out() -> String {
-    "ease-in-out".into()
-}
-fn point_three() -> f64 {
-    0.3
-}
-fn point_one_two() -> f64 {
-    0.12
-}
+default_value!(one_point_two, f64, 1.2);
+default_value!(ease_in_out, String, "ease-in-out".into());
+default_value!(point_three, f64, 0.3);
+default_value!(point_one_two, f64, 0.12);
 
 impl Default for ZoomSettings {
     fn default() -> Self {
         Self {
-            transition_in_duration: 1.2,
-            transition_out_duration: 1.2,
+            transition_in_duration: one_point_two(),
+            transition_out_duration: one_point_two(),
             easing: ease_in_out(),
-            follow_smoothness: 0.3,
-            look_ahead: 0.12,
+            follow_smoothness: point_three(),
+            look_ahead: point_one_two(),
         }
     }
 }
-
-#[allow(dead_code)]
-pub const CAMERA_POSITIONS: [(&str, &str); 9] = [
-    ("top-left", "Top Left"),
-    ("top-center", "Top Center"),
-    ("top-right", "Top Right"),
-    ("middle-left", "Middle Left"),
-    ("middle-center", "Middle Center"),
-    ("middle-right", "Middle Right"),
-    ("bottom-left", "Bottom Left"),
-    ("bottom-center", "Bottom Center"),
-    ("bottom-right", "Bottom Right"),
-];
 
 pub const CAMERA_SHAPES: [(&str, &str); 3] = [
     ("rectangle", "Rectangle"),

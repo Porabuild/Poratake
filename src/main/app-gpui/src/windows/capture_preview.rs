@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Render,
-    Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    Styled, Window,
 };
 use herogpui::gpui;
 use parking_lot::Mutex;
@@ -158,19 +158,16 @@ impl CapturePreviewWindow {
         #[cfg(windows)]
         let bottom_aligned = preview_bottom_aligned(cx);
         let opened = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-                titlebar: None,
-                focus: false,
-                show: !cfg!(windows),
-                kind: WindowKind::PopUp,
-                is_movable: true,
-                is_resizable: false,
-                is_minimizable: false,
-                display_id,
-                window_background: WindowBackgroundAppearance::Transparent,
-                ..Default::default()
-            },
+            super::popup_window_options(
+                window_bounds,
+                super::PopupWindowConfig {
+                    focus: false,
+                    show: !cfg!(windows),
+                    movable: true,
+                    display_id,
+                    ..Default::default()
+                },
+            ),
             |window, cx| {
                 #[cfg(not(windows))]
                 let _ = window;

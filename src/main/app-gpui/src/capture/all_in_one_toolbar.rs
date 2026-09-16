@@ -119,10 +119,11 @@ fn toolbar_button(
     on_click: impl Fn(&mut AreaOverlay, &mut Window, &mut Context<AreaOverlay>) + 'static,
     cx: &mut Context<AreaOverlay>,
 ) -> AnyElement {
-    toolbar::with_tooltip(
+    toolbar::tooltip_button(
+        toolbar::selected_icon(id, icon, selected, theme),
         tooltip,
-        toolbar::selected_icon(id, icon, selected, theme)
-            .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx))),
+        cx,
+        on_click,
     )
 }
 

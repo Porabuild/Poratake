@@ -1,5 +1,5 @@
 use gpui::{prelude::*, px, AnyElement, ElementId, SharedString};
-use herogpui::components::{Button, Variant};
+use herogpui::components::{Button, Size, Variant};
 use herogpui::gpui;
 
 use crate::ui::chrome;
@@ -26,6 +26,14 @@ pub fn compact_muted(id: impl Into<ElementId>, icon: &'static str) -> Button {
 
 pub fn compact_sm_muted(id: impl Into<ElementId>, icon: &'static str) -> Button {
     compact_sm(id, icon).recipe("muted")
+}
+
+pub fn tertiary_md_icon(id: impl Into<ElementId>, icon: &'static str) -> Button {
+    Button::new(id)
+        .variant(Variant::Tertiary)
+        .size(Size::Md)
+        .is_icon_only(true)
+        .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
 }
 
 fn compact_sized(id: impl Into<ElementId>, icon: &'static str, icon_size: f32) -> Button {

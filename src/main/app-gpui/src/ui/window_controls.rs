@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use gpui::{
     canvas, div, point, prelude::*, px, AnyElement, App, Div, ElementId, Hsla, PathBuilder, Pixels,
     Point, Stateful, Styled, Window, WindowControlArea,
@@ -9,7 +11,7 @@ use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::colors;
 
-const CLOSE_HOVER: &str = "#c42b1c";
+static CLOSE_HOVER: LazyLock<Hsla> = LazyLock::new(|| Srgba::parse("#c42b1c").to_hsla());
 const GLYPH: f32 = 10.0;
 const STROKE: f32 = 1.25;
 
@@ -177,7 +179,7 @@ fn windows_captions(window: &mut Window, cx: &mut App, theme: &ThemeVars) -> Any
             WindowControlArea::Close,
             Glyph::Close,
             ink,
-            Srgba::parse(CLOSE_HOVER).to_hsla(),
+            *CLOSE_HOVER,
             Some(colors::white(1.0)),
             window,
             cx,

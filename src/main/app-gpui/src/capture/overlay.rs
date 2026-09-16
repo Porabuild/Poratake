@@ -5,7 +5,7 @@
 use gpui::{
     div, prelude::*, px, AnyWindowHandle, App, Bounds, Context, DisplayId, Global, KeyBinding,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, Styled,
-    Window, WindowBackgroundAppearance, WindowKind, WindowOptions,
+    Window, WindowOptions,
 };
 use herogpui::actions;
 use herogpui::gpui;
@@ -15,7 +15,6 @@ use poratake_daemon_common::geometry::{CaptureRect, DisplayOrigin};
 
 use crate::capture::selection;
 use crate::capture::CaptureService;
-use crate::theme::color::Srgba;
 
 actions!(overlay, [Cancel]);
 
@@ -424,19 +423,15 @@ fn overlay_options(
     };
     #[cfg(not(target_os = "macos"))]
     let window_bounds = display_bounds;
-    WindowOptions {
-        window_bounds: Some(gpui::WindowBounds::Windowed(window_bounds)),
-        titlebar: None,
-        focus,
-        show: !cfg!(windows),
-        kind: WindowKind::PopUp,
-        is_movable: false,
-        is_resizable: false,
-        is_minimizable: false,
-        display_id: Some(display_id),
-        window_background: WindowBackgroundAppearance::Transparent,
-        ..Default::default()
-    }
+    crate::windows::popup_window_options(
+        window_bounds,
+        crate::windows::PopupWindowConfig {
+            focus,
+            show: !cfg!(windows),
+            display_id: Some(display_id),
+            ..Default::default()
+        },
+    )
 }
 
 #[cfg(windows)]
@@ -1434,7 +1429,7 @@ fn prompt(text: &'static str, toolbar: bool) -> gpui::AnyElement {
         .child(
             div()
                 .rounded_full()
-                .bg(Srgba::parse("#000000").to_hsla().opacity(0.7))
+                .bg(crate::ui::colors::black(0.7))
                 .px(px(chrome::OVERLAY_PROMPT_PX))
                 .py(px(chrome::OVERLAY_PROMPT_PY))
                 .text_size(px(chrome::OVERLAY_PROMPT_SIZE))
@@ -1664,9 +1659,7 @@ impl Render for AreaOverlay {
         let accent = theme.primary;
 
         let selection = self.selection();
-        let dim = Srgba::parse("#000000")
-            .to_hsla()
-            .opacity(crate::ui::chrome::OVERLAY_DIM);
+        let dim = crate::ui::colors::black(crate::ui::chrome::OVERLAY_DIM);
 
         let root = div()
             .id("area-overlay")
