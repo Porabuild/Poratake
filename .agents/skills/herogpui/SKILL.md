@@ -1,16 +1,16 @@
 ---
 name: herogpui
-description: 'HeroGPUI — native Rust/GPUI port of HeroUI v3.2.4. Use when building GPUI UIs with HeroGPUI: ThemeProvider, ThemeBuilder::components, named recipes, Buttons, forms, overlays, or reading crate docs. Keywords: HeroGPUI, herogpui, GPUI, HeroUI, ThemeBuilder, recipe.'
+description: 'HeroGPUI — native Rust/GPUI port of HeroUI v3.2.5. Use when building GPUI UIs with HeroGPUI: ThemeProvider, ThemeBuilder::components, named recipes, Buttons, forms, overlays, or reading crate docs. Keywords: HeroGPUI, herogpui, GPUI, HeroUI, ThemeBuilder, recipe.'
 metadata:
   author: herogpui
-  version: '0.1.0'
+  version: '0.9.0'
 ---
 
 # HeroGPUI Development Guide
 
-HeroGPUI is a native Rust/GPUI port of **HeroUI v3.2.4**. Depend on the `herogpui` facade. It re-exports GPUI at its root and the theme/component layers behind features.
+HeroGPUI is a native Rust/GPUI port of **HeroUI v3.2.5**. Depend on the `herogpui` facade. It re-exports GPUI at its root and the theme/component layers behind features.
 
-This skill is for HeroGPUI only. Do not apply HeroUI v2 APIs, do not invent a CSS/`className` layer, and do not treat latest HeroUI docs as the contract. The pinned source of truth is this repository: implementations, tests, and `llms.txt`.
+This skill is for HeroGPUI only. Do not apply HeroUI v2 APIs, do not invent a CSS/`className` layer, and do not treat latest HeroUI docs as the contract. The pinned source of truth is the HeroGPUI repository (https://github.com/Porabuild/HeroGPUI): implementations, tests, and `llms.txt`.
 
 ---
 
@@ -40,8 +40,10 @@ Do not invent Poratake-specific or app-specific field names in the library. App 
 ## Installation
 
 ```toml
-herogpui = { git = "https://github.com/Porabuild/HeroGPUI" }
+herogpui = "0.9.0"
 ```
+
+`cargo add herogpui` writes the same line. The facade pulls the matching `herogpui-core`, `herogpui-theme`, and `herogpui-components` releases from crates.io.
 
 ```rust
 use herogpui::*;
@@ -187,19 +189,19 @@ Input::new(&state).recipe("search");
 
 There is no separate HeroGPUI documentation site to scrape. Read:
 
-1. **`llms.txt`** at the repository root — the public component API reference.
-2. **Rustdoc** for the workspace crates:
+1. **`llms.txt`** at the HeroGPUI repository root — the public component API reference.
+2. **Rustdoc** for the published crates, from this repository's GPUI workspace:
 
 ```bash
-cargo doc -p herogpui --no-deps --open
-cargo doc -p herogpui-theme --no-deps --open
-cargo doc -p herogpui-components --no-deps --open
+cargo doc --manifest-path src/main/Cargo.toml --package herogpui --no-deps --open
+cargo doc --manifest-path src/main/Cargo.toml --package herogpui-theme --no-deps --open
+cargo doc --manifest-path src/main/Cargo.toml --package herogpui-components --no-deps --open
 ```
 
-3. Implementation and focused tests under `crates/herogpui-components/` and `crates/herogpui-theme/`.
-4. Gallery examples under `gallery/src/pages/components/` and getting-started pages under `gallery/src/pages/docs.rs`.
+3. Implementation and focused tests under `crates/herogpui-components/` and `crates/herogpui-theme/` in that repository.
+4. Gallery examples under `gallery/src/pages/components/` and getting-started pages under `gallery/src/pages/docs.rs` in that repository.
 
-Do not invent URLs, fetch scripts, or a CSS class catalog. HeroUI's `heroui.com` MDX is the React product; use tagged HeroUI **v3.2.4** source only when checking port parity, never as the Rust API.
+Do not invent URLs, fetch scripts, or a CSS class catalog. HeroUI's `heroui.com` MDX is the React product; use tagged HeroUI **v3.2.5** source only when checking port parity, never as the Rust API.
 
 ---
 

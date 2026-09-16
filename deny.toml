@@ -51,4 +51,3 @@ multiple-versions = "warn"
 unknown-registry = "warn"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/Porabuild/HeroGPUI"]

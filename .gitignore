@@ -63,7 +63,8 @@ src/main/daemon/poratake-daemon.exe
 # Agent and editor tooling
 .poracode/worktrees/
 .plans/
-.agents/
+.agents/*
+!.agents/skills/
 .claude/
 .commandcode/
 .poracode/
