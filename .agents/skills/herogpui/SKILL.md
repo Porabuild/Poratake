@@ -3,6 +3,7 @@ name: herogpui
 description: 'HeroGPUI — native Rust/GPUI port of HeroUI v3.2.5. Use when building GPUI UIs with HeroGPUI: ThemeProvider, ThemeBuilder::components, named recipes, Buttons, forms, overlays, or reading crate docs. Keywords: HeroGPUI, herogpui, GPUI, HeroUI, ThemeBuilder, recipe.'
 metadata:
   author: herogpui
+  source: https://github.com/Porabuild/HeroGPUI/blob/master/skills/herogpui/SKILL.md
   version: '0.9.0'
 ---
 
