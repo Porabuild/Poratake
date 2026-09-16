@@ -15,7 +15,7 @@ use crate::ui::chrome;
 use crate::ui::icon::{icon_element, ICON_MD};
 use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
-use herogpui::components::{Button, PickerItem, Select, Size, Switch, Variant};
+use herogpui::components::{Select, Size, Switch, Variant};
 use herogpui::components::{Slider, SliderSize};
 use herogpui::Separator;
 
@@ -180,48 +180,38 @@ fn preset_manager(
             .gap(px(8.0))
             .child(section_label("Presets", theme, false))
             .child(
-                Button::new("wallpaper-preset-save")
-                    .label("Save")
-                    .content(|_| {
-                        crate::ui::primitives::icon_label(
-                            "save",
-                            "Save".into(),
-                            px(14.0),
-                            px(8.0),
-                            false,
-                        )
-                    })
-                    .variant(Variant::Ghost)
-                    .recipe("compact")
-                    .recipe("muted")
-                    .on_press(move |_event, window, cx| save(window, cx)),
+                crate::ui::rows::icon_text_button(
+                    "wallpaper-preset-save",
+                    "Save",
+                    "save",
+                    14.0,
+                    8.0,
+                )
+                .variant(Variant::Ghost)
+                .recipe("compact")
+                .recipe("muted")
+                .on_press(move |_event, window, cx| save(window, cx)),
             ),
     );
 
     if presets.is_empty() {
         return block
-            .child(hint(
+            .child(crate::ui::rows::description(
                 "No presets saved yet. Use the Save button to create one.",
                 theme,
             ))
             .into_any_element();
     }
 
-    let items: Vec<PickerItem> = presets
-        .iter()
-        .map(|preset| {
-            let label = if default_id == Some(preset.id.as_str()) {
-                format!("{} (default)", preset.name)
-            } else {
-                preset.name.clone()
-            };
-            PickerItem::new(preset.id.clone(), label)
-        })
-        .collect();
-    let value = items
-        .iter()
-        .any(|item| item.key().as_str() == selected_id)
-        .then(|| SharedString::from(selected_id));
+    let items = crate::ui::rows::picker_items(presets.iter().map(|preset| {
+        let label = if default_id == Some(preset.id.as_str()) {
+            format!("{} (default)", preset.name)
+        } else {
+            preset.name.clone()
+        };
+        (preset.id.clone(), label)
+    }));
+    let value = crate::ui::rows::selected_value(&items, selected_id);
     let apply = handlers.on_option.clone();
     let mut row = div().flex().flex_row().items_center().gap(px(8.0)).child(
         Select::new("wallpaper-preset", items)
@@ -277,7 +267,7 @@ fn preset_manager(
 
     block
         .child(row)
-        .child(hint(hint_text, theme))
+        .child(crate::ui::rows::description(hint_text, theme))
         .into_any_element()
 }
 
@@ -607,14 +597,8 @@ fn aspect_row(
     theme: &ThemeVars,
 ) -> AnyElement {
     let apply = handlers.on_option.clone();
-    let items: Vec<PickerItem> = wallpaper::ASPECT_RATIOS
-        .iter()
-        .map(|(value, label)| PickerItem::new(*value, *label))
-        .collect();
-    let value = items
-        .iter()
-        .any(|item| item.key().as_str() == wallpaper.aspect_ratio)
-        .then(|| SharedString::from(wallpaper.aspect_ratio.clone()));
+    let items = crate::ui::rows::picker_items(wallpaper::ASPECT_RATIOS.iter().copied());
+    let value = crate::ui::rows::selected_value(&items, wallpaper.aspect_ratio.as_str());
     div()
         .flex()
         .flex_row()
@@ -684,7 +668,10 @@ fn spacing_control(
             .flex_col()
             .gap(px(chrome::WALLPAPER_SECTION_GAP))
             .child(block)
-            .child(hint("Drop another image to enable spacing", theme))
+            .child(crate::ui::rows::description(
+                "Drop another image to enable spacing",
+                theme,
+            ))
             .into_any_element();
         return block;
     }
@@ -925,14 +912,6 @@ fn label(text: impl Into<SharedString>, theme: &ThemeVars, muted: bool) -> AnyEl
         } else {
             theme.foreground
         })
-        .child(text.into())
-        .into_any_element()
-}
-
-fn hint(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
-    div()
-        .text_size(px(chrome::TEXT_XS))
-        .text_color(theme.muted_foreground)
         .child(text.into())
         .into_any_element()
 }

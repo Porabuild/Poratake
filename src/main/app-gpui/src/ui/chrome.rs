@@ -67,12 +67,8 @@ pub fn is_macos() -> bool {
 }
 
 pub const BUTTON_RADIUS: f32 = RADIUS_3XL;
-pub const BUTTON_XS_HEIGHT: f32 = 28.0;
 pub const BUTTON_SM_PAD_X: f32 = 12.0;
-pub const BUTTON_XS_PAD_X: f32 = 10.0;
 pub const BUTTON_XS_TEXT: f32 = 12.0;
-#[allow(dead_code)]
-pub const BUTTON_XS_LINE: f32 = 16.0;
 pub const BUTTON_XS_ICON: f32 = 14.0;
 /// `button.css` presses scale the button: `0.97` at `md`, `0.98` at `sm`,
 /// `0.96` at `lg`.
@@ -631,10 +627,7 @@ mod tests {
         assert_eq!(HISTORY_LIST_GAP, 8.0);
         assert_eq!(HISTORY_ACTION_SIZE, 28.0);
         assert_eq!(HISTORY_CHIP_HEIGHT, 24.0);
-        assert_eq!(BUTTON_XS_HEIGHT, HISTORY_ACTION_SIZE);
-        assert_eq!(BUTTON_XS_PAD_X, 10.0);
         assert_eq!(BUTTON_XS_TEXT, 12.0);
-        assert_eq!(BUTTON_XS_LINE, 16.0);
         assert_eq!(ONBOARDING_WINDOW_WIDTH, 500.0);
         assert_eq!(ONBOARDING_WINDOW_HEIGHT, 650.0);
         assert_eq!(ONBOARDING_CARD_RADIUS, RADIUS_MD);

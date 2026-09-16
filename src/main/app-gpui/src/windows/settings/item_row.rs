@@ -8,15 +8,14 @@ use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, spinner_element};
 use crate::ui::icon_button;
+use crate::ui::rows;
+use crate::ui::toolbar;
 use crate::windows::settings::registry::{Control, Item, PathKind};
 use crate::windows::settings::SettingsWindow;
-use herogpui::components::Slider;
-use herogpui::components::{Button, FieldVariant, PickerItem, Select, Size, Switch, Variant};
+use herogpui::components::{Button, FieldVariant, Select, Size, Variant};
 
 /// `SettingsSelect` is `w-40 shrink-0`.
 const CONTROL_WIDTH: f32 = 160.0;
-#[allow(dead_code)]
-const INPUT_WIDTH: f32 = 280.0;
 /// `space-y-3` between the label row, the slider and the description.
 const STACK_GAP: f32 = 12.0;
 /// `py-2` on the stacked rows (slider, input, path picker, headers).
@@ -47,16 +46,9 @@ impl SettingsWindow {
                     .flex_col()
                     .gap(px(8.0))
                     .py(px(STACK_PAD_Y))
-                    .child(field_label(item.label, theme))
+                    .child(rows::label(item.label, theme))
                     .child(field)
-                    .when_some(hint, |el, hint| {
-                        el.child(
-                            div()
-                                .text_size(px(chrome::TEXT_XS))
-                                .text_color(theme.muted_foreground)
-                                .child(hint),
-                        )
-                    })
+                    .when_some(hint, |el, hint| el.child(rows::description(hint, theme)))
                     .into_any_element();
             }
             _ => {}
@@ -66,11 +58,11 @@ impl SettingsWindow {
             Control::Switch { get, set, disabled } => {
                 let set = *set;
                 let requires_accessibility = item.id == "screenshot.hideDesktopIcons";
-                Switch::new(SharedString::from(format!("{}-switch", item.id)))
-                    .is_selected(get(self.config()))
-                    .is_disabled(disabled.is_some_and(|predicate| predicate(self.config())))
-                    .on_change(cx.listener(move |this, value: &bool, _window, cx| {
-                        let value = *value;
+                rows::switch(
+                    SharedString::from(format!("{}-switch", item.id)),
+                    get(self.config()),
+                    cx,
+                    move |this, value, cx| {
                         if value
                             && requires_accessibility
                             && !crate::system::permissions::accessibility_granted()
@@ -79,21 +71,16 @@ impl SettingsWindow {
                             return;
                         }
                         this.mutate(cx, move |config| set(config, value));
-                    }))
-                    .into_any_element()
+                    },
+                )
+                .is_disabled(disabled.is_some_and(|predicate| predicate(self.config())))
+                .into_any_element()
             }
             Control::Select { options, get, set } => {
                 let set = *set;
-                let items: Vec<PickerItem> = options
-                    .resolve()
-                    .into_iter()
-                    .map(|(value, label)| PickerItem::new(value, label))
-                    .collect();
+                let items = rows::picker_items(options.resolve());
                 let current = get(self.config());
-                let value = items
-                    .iter()
-                    .any(|item| item.key().as_str() == current)
-                    .then(|| SharedString::from(current));
+                let value = rows::selected_value(&items, &current);
                 Select::new(SharedString::from(format!("{}-select", item.id)), items)
                     .variant(FieldVariant::Secondary)
                     .value(value.clone())
@@ -130,7 +117,7 @@ impl SettingsWindow {
                             .flex_row()
                             .items_center()
                             .justify_between()
-                            .child(field_label(item.label, theme))
+                            .child(rows::label(item.label, theme))
                             .child(
                                 div()
                                     .text_size(px(chrome::TEXT_SM))
@@ -138,31 +125,18 @@ impl SettingsWindow {
                                     .child(format!("{}", value.round() as i64)),
                             ),
                     )
-                    .child(
-                        Slider::new(
-                            SharedString::from(format!("{}-slider", item.id)),
-                            value as f32,
-                        )
-                        .min_value(*min as f32)
-                        .max_value(*max as f32)
-                        .continuous(true)
-                        .on_change(cx.listener(
-                            move |this, value: &f32, _window, cx| {
-                                let snapped = if step > 0.0 {
-                                    (*value as f64 / step).round() * step
-                                } else {
-                                    *value as f64
-                                };
-                                this.mutate(cx, move |config| set(config, snapped));
-                            },
-                        )),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(chrome::TEXT_XS))
-                            .text_color(theme.muted_foreground)
-                            .child(item.description),
-                    )
+                    .child(rows::slider_control(
+                        SharedString::from(format!("{}-slider", item.id)),
+                        value,
+                        *min,
+                        *max,
+                        step,
+                        cx,
+                        move |this, next, cx| {
+                            this.mutate(cx, move |config| set(config, next));
+                        },
+                    ))
+                    .child(rows::description(item.description, theme))
                     .into_any_element();
             }
             Control::Shortcut {
@@ -178,7 +152,6 @@ impl SettingsWindow {
                     &value,
                     *single_key,
                     recording,
-                    theme,
                     cx,
                     move |this, next, cx| {
                         this.mutate(cx, move |config| set(config, &next));
@@ -287,27 +260,19 @@ impl SettingsWindow {
                 .flex_row()
                 .items_center()
                 .gap(px(12.0))
-                .child(
-                    Button::new("devices-mic-test")
-                        .variant(Variant::Secondary)
-                        .size(Size::Sm)
-                        .label(if testing { "Stop Test" } else { "Mic Test" })
-                        .sx(|el| el.min_w(px(DEVICE_TEST_BUTTON_WIDTH)))
-                        .on_press(cx.listener(|this, _event, _window, cx| {
-                            this.toggle_mic_test(cx);
-                        })),
-                )
+                .child(device_test_button(
+                    "devices-mic-test",
+                    if testing { "Stop Test" } else { "Mic Test" },
+                    cx,
+                    |this, cx| this.toggle_mic_test(cx),
+                ))
                 .child(level_meter(level, testing, theme)),
         );
         if testing {
-            block = block.child(
-                div()
-                    .text_size(px(chrome::TEXT_XS))
-                    .text_color(theme.muted_foreground)
-                    .child(
-                        "Speak into your microphone \u{2014} the meter should react to your voice",
-                    ),
-            );
+            block = block.child(rows::description(
+                "Speak into your microphone \u{2014} the meter should react to your voice",
+                theme,
+            ));
         }
         block.into_any_element()
     }
@@ -332,37 +297,22 @@ impl SettingsWindow {
                     .items_center()
                     .justify_between()
                     .gap(px(16.0))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.foreground)
-                                    .child("Mirror camera"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(chrome::TEXT_XS))
-                                    .text_color(theme.muted_foreground)
-                                    .child(
-                                        "Flip the camera horizontally in previews and recordings",
-                                    ),
-                            ),
-                    )
-                    .child(
-                        Switch::new("devices-camera-mirror")
-                            .is_selected(flipped)
-                            .on_change(cx.listener(|this, checked: &bool, _window, cx| {
-                                let flipped = *checked;
-                                this.mutate(cx, move |config| {
-                                    config.recording.camera.flipped = flipped;
-                                });
-                            })),
-                    ),
+                    .child(rows::title_desc_stack(
+                        "Mirror camera",
+                        "Flip the camera horizontally in previews and recordings",
+                        gpui::FontWeight::MEDIUM,
+                        theme,
+                    ))
+                    .child(rows::switch(
+                        "devices-camera-mirror",
+                        flipped,
+                        cx,
+                        |this, flipped, cx| {
+                            this.mutate(cx, move |config| {
+                                config.recording.camera.flipped = flipped;
+                            });
+                        },
+                    )),
             )
             .child(
                 div()
@@ -370,26 +320,18 @@ impl SettingsWindow {
                     .flex_row()
                     .items_center()
                     .gap(px(12.0))
-                    .child(
-                        Button::new("devices-camera-test")
-                            .variant(Variant::Secondary)
-                            .size(Size::Sm)
-                            .label(if testing { "Stop Test" } else { "Test Video" })
-                            .sx(|el| el.min_w(px(DEVICE_TEST_BUTTON_WIDTH)))
-                            .on_press(cx.listener(|this, _event, _window, cx| {
-                                this.toggle_camera_test(cx);
-                            })),
-                    )
+                    .child(device_test_button(
+                        "devices-camera-test",
+                        if testing { "Stop Test" } else { "Test Video" },
+                        cx,
+                        |this, cx| this.toggle_camera_test(cx),
+                    ))
                     .when(testing, |el| {
-                        el.child(
-                            div()
-                                .text_size(px(chrome::TEXT_XS))
-                                .text_color(theme.muted_foreground)
-                                .child(
-                                    "The camera preview opens in a floating window \u{2014} the \
-                                     same one shown while recording",
-                                ),
-                        )
+                        el.child(rows::description(
+                            "The camera preview opens in a floating window \u{2014} the \
+                             same one shown while recording",
+                            theme,
+                        ))
                     }),
             )
             .into_any_element()
@@ -415,20 +357,16 @@ impl SettingsWindow {
             ),
         };
 
-        let items: Vec<PickerItem> =
-            crate::system::devices::options_with_selection(&devices, selected.as_deref())
-                .into_iter()
-                .map(|(value, label)| PickerItem::new(value, label))
-                .collect();
+        let items = rows::picker_items(crate::system::devices::options_with_selection(
+            &devices,
+            selected.as_deref(),
+        ));
         let labels: std::collections::HashMap<String, String> = devices
             .iter()
             .map(|d| (d.id.clone(), d.label.clone()))
             .collect();
         let current = selected.unwrap_or_default();
-        let value = items
-            .iter()
-            .any(|item| item.key().as_str() == current)
-            .then(|| SharedString::from(current));
+        let value = rows::selected_value(&items, &current);
 
         Select::new(SharedString::from(id), items)
             .variant(FieldVariant::Secondary)
@@ -499,45 +437,37 @@ impl SettingsWindow {
                         "Default location".to_string()
                     }),
             )
-            .child(
-                herogpui::components::Tooltip::new("Choose folder").child(
-                    Button::new(SharedString::from(format!("{}-browse", item.id)))
-                        .variant(Variant::Tertiary)
-                        .size(Size::Md)
-                        .is_icon_only(true)
-                        .child(icon_element("folder-open", px(16.0)))
-                        .on_press(cx.listener(move |this, _event, _window, cx| {
-                            this.pick_path(kind, cx);
-                        })),
+            .child(toolbar::tooltip_button(
+                icon_button::tertiary_md_icon(
+                    SharedString::from(format!("{}-browse", item.id)),
+                    "folder-open",
                 ),
-            );
+                "Choose folder",
+                cx,
+                move |this, _window, cx| {
+                    this.pick_path(kind, cx);
+                },
+            ));
         // The reset button only exists while a custom path is set.
         if custom {
-            row = row.child(
-                herogpui::components::Tooltip::new("Reset to default").child(
-                    Button::new(SharedString::from(format!("{}-reset", item.id)))
-                        .variant(Variant::Tertiary)
-                        .size(Size::Md)
-                        .is_icon_only(true)
-                        .child(icon_element("rotate-ccw", px(16.0)))
-                        .on_press(cx.listener(move |this, _event, _window, cx| {
-                            this.reset_path(kind, cx);
-                        })),
+            row = row.child(toolbar::tooltip_button(
+                icon_button::tertiary_md_icon(
+                    SharedString::from(format!("{}-reset", item.id)),
+                    "rotate-ccw",
                 ),
-            );
+                "Reset to default",
+                cx,
+                move |this, _window, cx| {
+                    this.reset_path(kind, cx);
+                },
+            ));
         }
 
         div()
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.foreground)
-                    .child("Save Location"),
-            )
+            .child(rows::label("Save Location", theme))
             .child(row)
             .into_any_element()
     }
@@ -596,22 +526,17 @@ impl SettingsWindow {
                     .flex_row()
                     .items_center()
                     .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.foreground)
-                            .child("Naming Pattern"),
-                    )
-                    .child(icon_button::with_tooltip(
+                    .child(rows::label("Naming Pattern", theme))
+                    .child(toolbar::tooltip_button(
+                        icon_button::compact_sm_muted("naming-pattern-help", "help-circle"),
                         "Available tokens",
-                        icon_button::compact_sm_muted("naming-pattern-help", "help-circle")
-                            .on_press(cx.listener(|this, _event, _window, cx| {
-                                if !this.extras_open.remove(NAMING_TOKENS_KEY) {
-                                    this.extras_open.insert(NAMING_TOKENS_KEY);
-                                }
-                                cx.notify();
-                            })),
+                        cx,
+                        |this, _window, cx| {
+                            if !this.extras_open.remove(NAMING_TOKENS_KEY) {
+                                this.extras_open.insert(NAMING_TOKENS_KEY);
+                            }
+                            cx.notify();
+                        },
                     )),
             )
             .child(
@@ -621,18 +546,14 @@ impl SettingsWindow {
                     .items_center()
                     .gap(px(8.0))
                     .child(div().flex_1().min_w_0().child(field))
-                    .child(
-                        herogpui::components::Tooltip::new("Reset to default").child(
-                            Button::new("naming-pattern-reset")
-                                .variant(Variant::Tertiary)
-                                .size(Size::Md)
-                                .is_icon_only(true)
-                                .child(icon_element("rotate-ccw", px(16.0)))
-                                .on_press(cx.listener(|this, _event, _window, cx| {
-                                    this.reset_naming_pattern(cx);
-                                })),
-                        ),
-                    ),
+                    .child(toolbar::tooltip_button(
+                        icon_button::tertiary_md_icon("naming-pattern-reset", "rotate-ccw"),
+                        "Reset to default",
+                        cx,
+                        |this, _window, cx| {
+                            this.reset_naming_pattern(cx);
+                        },
+                    )),
             );
         if tokens_open {
             block = block.child(tokens);
@@ -690,18 +611,17 @@ impl SettingsWindow {
                     .gap(px(6.0))
                     .child(div().flex_1().child(key_field))
                     .child(div().flex_1().child(value_field))
-                    .child(icon_button::with_tooltip(
-                        "Remove header",
+                    .child(toolbar::tooltip_button(
                         icon_button::compact_sm(
                             SharedString::from(format!("rest-header-remove-{index}")),
                             "trash-2",
                         )
-                        .recipe("danger")
-                        .on_press(cx.listener(
-                            move |this, _event, _window, cx| {
-                                this.remove_rest_header(index, cx);
-                            },
-                        )),
+                        .recipe("danger"),
+                        "Remove header",
+                        cx,
+                        move |this, _window, cx| {
+                            this.remove_rest_header(index, cx);
+                        },
                     )),
             );
         }
@@ -709,33 +629,13 @@ impl SettingsWindow {
         stacked(item, theme)
             .child(list)
             .child(
-                Button::new("rest-header-add")
+                rows::icon_text_button("rest-header-add", "Add header", "plus", 14.0, 8.0)
                     .variant(Variant::Secondary)
-                    .label("Add header")
-                    .content(|_| {
-                        crate::ui::primitives::icon_label(
-                            "plus",
-                            "Add header".into(),
-                            px(14.0),
-                            px(8.0),
-                            false,
-                        )
-                    })
                     .recipe("compact")
                     .on_press(cx.listener(|this, _event, _window, cx| this.add_rest_header(cx))),
             )
             .into_any_element()
     }
-}
-
-/// The `<Label className="text-sm">` every settings row leads with.
-fn field_label(text: &'static str, theme: &ThemeVars) -> AnyElement {
-    div()
-        .text_size(px(chrome::TEXT_SM))
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(theme.foreground)
-        .child(text)
-        .into_any_element()
 }
 
 /// `<div className="flex items-center justify-between gap-4">`. The vertical
@@ -765,20 +665,9 @@ fn labelled(item: &Item, theme: &ThemeVars, control: AnyElement, compact: bool) 
                 .gap(px(2.0))
                 .flex_1()
                 .min_w_0()
-                .child(
-                    div()
-                        .text_size(px(14.0))
-                        .font_weight(label_weight(item))
-                        .text_color(theme.foreground)
-                        .child(item.label),
-                )
+                .child(rows::label_weighted(item.label, label_weight(item), theme))
                 .when(!compact, |el| {
-                    el.child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.muted_foreground)
-                            .child(item.description),
-                    )
+                    el.child(rows::description(item.description, theme))
                 }),
         )
         .child(control)
@@ -786,52 +675,49 @@ fn labelled(item: &Item, theme: &ThemeVars, control: AnyElement, compact: bool) 
 }
 
 fn stacked(item: &Item, theme: &ThemeVars) -> gpui::Div {
-    div().flex().flex_col().gap(px(8.0)).child(
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.foreground)
-                    .child(item.label),
-            )
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(theme.muted_foreground)
-                    .child(item.description),
-            ),
-    )
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(rows::title_desc_stack(
+            item.label,
+            item.description,
+            gpui::FontWeight::MEDIUM,
+            theme,
+        ))
 }
 
 /// `className="w-24 shrink-0"` on both test buttons.
 const DEVICE_TEST_BUTTON_WIDTH: f32 = 96.0;
 
+fn device_test_button(
+    id: &'static str,
+    label: &'static str,
+    cx: &mut Context<SettingsWindow>,
+    on_press: impl Fn(&mut SettingsWindow, &mut Context<SettingsWindow>) + 'static,
+) -> Button {
+    Button::new(id)
+        .variant(Variant::Secondary)
+        .size(Size::Sm)
+        .label(label)
+        .sx(|el| el.min_w(px(DEVICE_TEST_BUTTON_WIDTH)))
+        .on_press(cx.listener(move |this, _event, _window, cx| on_press(this, cx)))
+}
+
 /// `<div className="space-y-3 py-2">` with the `space-y-0.5` label block both
 /// device settings open with.
 fn device_block(item: &Item, theme: &ThemeVars) -> gpui::Div {
-    div().flex().flex_col().gap(px(12.0)).py(px(8.0)).child(
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.foreground)
-                    .child(item.label),
-            )
-            .child(
-                div()
-                    .text_size(px(chrome::TEXT_XS))
-                    .text_color(theme.muted_foreground)
-                    .child(item.description),
-            ),
-    )
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .py(px(8.0))
+        .child(rows::title_desc_stack(
+            item.label,
+            item.description,
+            gpui::FontWeight::MEDIUM,
+            theme,
+        ))
 }
 
 /// `level-meter.tsx`: 32 segments, `h-5 flex-1 gap-0.5`, each `rounded-sm` and

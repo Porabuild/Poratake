@@ -78,7 +78,7 @@ Poratake is a rebranded fork of Capty (https://github.com/capty-app/capty) and i
 ## General Guidelines
 
 - Don't implement hacky solutions to just make it work. We need proper solutions.
-- Launch a dev app when you need to verify a change: `bun run dev` for the Electron shell, `bun run dev:gpui` for the GPUI shell. `cargo check`/`cargo test`/`cargo fmt` against `src/main/daemon-win/Cargo.toml` and `src/main/app-gpui/Cargo.toml` may be run directly, because no other local gate compiles Rust. Never run `build-win`, `build-mac`, or any packaged build.
+- Launch a dev app when you need to verify a change: `bun run dev` for the Electron shell, `bun run dev:gpui` for the GPUI shell. `cargo check`/`cargo test`/`cargo fmt` against `src/main/daemon-win/Cargo.toml` and `src/main/app-gpui/Cargo.toml` may be run directly, because no other local gate compiles Rust. When updating the HeroGPUI pin in `src/main/Cargo.toml`, keep the `gpui-pre` version in `src/main/app-gpui/Cargo.toml` in lockstep with the version HeroGPUI's workspace depends on. Never run `build-win`, `build-mac`, or any packaged build.
 - Write less code and maintainable code
 - Always put modularity and reusability in priority
 - Prefer tailwind's built-in classes over custom sizes like px[20px]

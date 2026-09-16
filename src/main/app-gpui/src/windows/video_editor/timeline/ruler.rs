@@ -4,7 +4,7 @@ use gpui::{
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::windows::video_editor::model::format_time;
+use crate::util::format::format_time;
 use crate::windows::video_editor::timeline::{time_at_position, RULER_HEIGHT, TRACK_GUTTER_WIDTH};
 use crate::windows::video_editor::VideoEditorWindow;
 

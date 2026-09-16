@@ -8,7 +8,7 @@ use crate::theme::color::Srgba;
 use crate::theme::vars::ThemeVars;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuBuilder, MenuEntry, MenuHandle, MenuItem};
-use crate::windows::video_editor::model::format_duration;
+use crate::util::format::format_duration;
 use crate::windows::video_editor::timeline::{time_at_position, TRACK_GUTTER_WIDTH, TRACK_HEIGHT};
 use crate::windows::video_editor::{ClipDrag, DragMode, VideoEditorWindow};
 

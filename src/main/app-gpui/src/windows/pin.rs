@@ -3,10 +3,7 @@
 
 use std::sync::Arc;
 
-use gpui::{
-    div, img, prelude::*, px, size, App, Bounds, Context, Render, Styled, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
-};
+use gpui::{div, img, prelude::*, px, size, App, Bounds, Context, Render, Styled, Window};
 use herogpui::gpui;
 
 use crate::ui::chrome;
@@ -46,27 +43,23 @@ impl PinWindow {
             origin: gpui::point(px(origin_x.max(0.0)), px(origin_y.max(0.0))),
             size: size(px(window_width), px(window_height)),
         };
-        cx.open_window(pin_window_options(bounds), |_, cx| {
-            cx.new(|_| Self {
-                image: render_image.clone(),
-            })
-        })
+        cx.open_window(
+            super::popup_window_options(
+                bounds,
+                super::PopupWindowConfig {
+                    movable: true,
+                    resizable: true,
+                    background: gpui::WindowBackgroundAppearance::Opaque,
+                    ..Default::default()
+                },
+            ),
+            |_, cx| {
+                cx.new(|_| Self {
+                    image: render_image.clone(),
+                })
+            },
+        )
         .ok();
-    }
-}
-
-pub(crate) fn pin_window_options(bounds: Bounds<gpui::Pixels>) -> WindowOptions {
-    WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: None,
-        focus: true,
-        show: true,
-        kind: WindowKind::PopUp,
-        is_movable: true,
-        is_resizable: true,
-        is_minimizable: false,
-        window_background: WindowBackgroundAppearance::Opaque,
-        ..Default::default()
     }
 }
 
@@ -91,13 +84,23 @@ impl Render for PinWindow {
 mod tests {
     use super::*;
     use crate::ui::chrome;
+    use crate::windows::{popup_window_options, PopupWindowConfig};
+    use gpui::{WindowBackgroundAppearance, WindowKind};
 
     #[test]
     fn pin_window_is_frameless_and_always_on_top() {
-        let options = pin_window_options(Bounds {
-            origin: gpui::point(px(0.0), px(0.0)),
-            size: size(px(200.0), px(100.0)),
-        });
+        let options = popup_window_options(
+            Bounds {
+                origin: gpui::point(px(0.0), px(0.0)),
+                size: size(px(200.0), px(100.0)),
+            },
+            PopupWindowConfig {
+                movable: true,
+                resizable: true,
+                background: gpui::WindowBackgroundAppearance::Opaque,
+                ..Default::default()
+            },
+        );
         assert!(options.titlebar.is_none());
         assert_eq!(options.kind, WindowKind::PopUp);
         assert!(options.is_movable);

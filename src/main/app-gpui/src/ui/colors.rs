@@ -1,6 +1,8 @@
 //! Shared annotation colors — port of
 //! `renderer/components/editor/shared/colors.ts` and `types/editor.ts`.
 
+use std::sync::LazyLock;
+
 pub const COLOR_PALETTE: &[&str] = &[
     "#f43f5e", "#f97316", "#f59e0b", "#22c55e", "#10b981", "#3b82f6", "#8b5cf6", "#a855f7",
     "#6366f1", "#64748b", "#000000", "#ffffff",
@@ -107,22 +109,39 @@ pub const MONO_FONT: &str = "Consolas";
 /// Tailwind `red-500` / `red-400`. The history item actions use these fixed
 /// palette colours rather than the theme's `--danger`.
 /// Tailwind `green-500`, used by the cloud connection test message.
+fn parsed(hex: &str) -> gpui::Hsla {
+    crate::theme::color::Srgba::parse(hex).to_hsla()
+}
+
+static GREEN_500: LazyLock<gpui::Hsla> = LazyLock::new(|| parsed("#22c55e"));
+static RED_500: LazyLock<gpui::Hsla> = LazyLock::new(|| parsed("#ef4444"));
+static RED_400: LazyLock<gpui::Hsla> = LazyLock::new(|| parsed("#f87171"));
+static ORANGE_500: LazyLock<gpui::Hsla> = LazyLock::new(|| parsed("#f97316"));
+static BLUE_500: LazyLock<gpui::Hsla> = LazyLock::new(|| parsed("#3b82f6"));
+static PURPLE_500: LazyLock<gpui::Hsla> = LazyLock::new(|| parsed("#a855f7"));
+
 pub fn green_500(alpha: f32) -> gpui::Hsla {
-    crate::theme::color::Srgba::parse("#22c55e")
-        .to_hsla()
-        .opacity(alpha)
+    GREEN_500.opacity(alpha)
+}
+
+pub fn orange_500(alpha: f32) -> gpui::Hsla {
+    ORANGE_500.opacity(alpha)
+}
+
+pub fn blue_500(alpha: f32) -> gpui::Hsla {
+    BLUE_500.opacity(alpha)
+}
+
+pub fn purple_500(alpha: f32) -> gpui::Hsla {
+    PURPLE_500.opacity(alpha)
 }
 
 pub fn red_500(alpha: f32) -> gpui::Hsla {
-    crate::theme::color::Srgba::parse("#ef4444")
-        .to_hsla()
-        .opacity(alpha)
+    RED_500.opacity(alpha)
 }
 
 pub fn red_400(alpha: f32) -> gpui::Hsla {
-    crate::theme::color::Srgba::parse("#f87171")
-        .to_hsla()
-        .opacity(alpha)
+    RED_400.opacity(alpha)
 }
 
 pub fn black(alpha: f32) -> gpui::Hsla {

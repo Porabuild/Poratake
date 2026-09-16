@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, FocusHandle, KeyDownEvent, Pixels, Point,
-    Render, ScrollHandle, Styled, Window, WindowBounds, WindowKind, WindowOptions,
+    Render, ScrollHandle, Styled, Window,
 };
 use herogpui::gpui;
 
@@ -95,18 +95,15 @@ impl HistoryWindow {
             let store = crate::state::state(cx).config;
             let (bounds, display_id) = popover_placement(tray_rect, cx);
             cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: None,
-                    focus: true,
-                    show: !cfg!(windows),
-                    kind: WindowKind::PopUp,
-                    is_movable: false,
-                    is_resizable: false,
-                    is_minimizable: false,
-                    display_id,
-                    ..Default::default()
-                },
+                super::popup_window_options(
+                    bounds,
+                    super::PopupWindowConfig {
+                        show: !cfg!(windows),
+                        display_id,
+                        background: gpui::WindowBackgroundAppearance::Opaque,
+                        ..Default::default()
+                    },
+                ),
                 |window, cx| {
                     #[cfg(windows)]
                     if let Some(hwnd) = crate::windows::window_hwnd(window) {

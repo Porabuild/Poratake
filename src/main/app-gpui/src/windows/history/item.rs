@@ -428,12 +428,8 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                         "folder-open",
                         px(chrome::HISTORY_ITEM_ACTION_ICON),
                     ))
-                    .sx(|el| {
-                        el.h(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-                            .w(px(28.0))
-                            .p_0()
-                            .text_color(theme.muted_foreground)
-                    })
+                    .recipe("muted")
+                    .sx(|el| el.h(px(chrome::HISTORY_ITEM_ACTION_SIZE)).w(px(28.0)).p_0())
                     .on_press(cx.listener(move |this, _event, _window, cx| {
                         this.reveal_index(index, cx);
                     })),

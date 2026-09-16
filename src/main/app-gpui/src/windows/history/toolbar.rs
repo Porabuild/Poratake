@@ -5,9 +5,10 @@ use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::icon_button;
+use crate::ui::toolbar;
 use crate::windows::history::model::{HistoryFilter, HistoryLayout, HistorySortOrder};
 use crate::windows::history::HistoryWindow;
-use herogpui::components::{Button, Variant};
+use herogpui::components::Variant;
 
 pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow>) -> AnyElement {
     let mut actions = div()
@@ -18,28 +19,25 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
 
     if has_items {
         actions = actions.child(
-            Button::new("history-clear-all")
-                .variant(Variant::Ghost)
-                .recipe("compact")
-                .recipe("muted")
-                .label("Clear All")
-                .content(|_| {
-                    crate::ui::primitives::icon_label(
-                        "trash-2",
-                        "Clear All".into(),
-                        px(chrome::HISTORY_CHIP_ICON),
-                        px(chrome::HISTORY_CHIP_ICON_GAP),
-                        false,
-                    )
-                })
-                .on_press(cx.listener(|this, _event, _window, cx| this.clear_all(cx))),
+            crate::ui::rows::icon_text_button(
+                "history-clear-all",
+                "Clear All",
+                "trash-2",
+                chrome::HISTORY_CHIP_ICON,
+                chrome::HISTORY_CHIP_ICON_GAP,
+            )
+            .variant(Variant::Ghost)
+            .recipe("compact")
+            .recipe("muted")
+            .on_press(cx.listener(|this, _event, _window, cx| this.clear_all(cx))),
         );
     }
 
-    actions = actions.child(icon_button::with_tooltip(
+    actions = actions.child(toolbar::tooltip_button(
+        icon_button::compact_muted("history-open-settings", "settings"),
         "Settings",
-        icon_button::compact_muted("history-open-settings", "settings")
-            .on_press(cx.listener(|this, _event, window, cx| this.open_settings(window, cx))),
+        cx,
+        |this, window, cx| this.open_settings(window, cx),
     ));
 
     div()
@@ -100,16 +98,17 @@ pub fn toolbar(
                 .flex()
                 .items_center()
                 .gap(px(2.0))
-                .child(icon_button::with_tooltip(
+                .child(toolbar::tooltip_button(
+                    icon_button::chip_icon("history-sort", "arrow-up-down"),
                     order.tooltip(),
-                    icon_button::chip_icon("history-sort", "arrow-up-down").on_press(
-                        cx.listener(|this, _event, _window, cx| this.toggle_sort_order(cx)),
-                    ),
+                    cx,
+                    |this, _window, cx| this.toggle_sort_order(cx),
                 ))
-                .child(icon_button::with_tooltip(
+                .child(toolbar::tooltip_button(
+                    icon_button::chip_icon("history-layout", layout.toggle_icon()),
                     layout.toggle_tooltip(),
-                    icon_button::chip_icon("history-layout", layout.toggle_icon())
-                        .on_press(cx.listener(|this, _event, _window, cx| this.toggle_layout(cx))),
+                    cx,
+                    |this, _window, cx| this.toggle_layout(cx),
                 )),
         )
         .into_any_element()

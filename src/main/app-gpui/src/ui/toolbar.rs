@@ -1,5 +1,6 @@
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Div, ElementId, SharedString, Stateful, Styled, Window,
+    div, prelude::*, px, AnyElement, App, Context, Div, ElementId, SharedString, Stateful, Styled,
+    Window,
 };
 use herogpui::components::{Button, Size, Variant};
 use herogpui::gpui;
@@ -76,8 +77,18 @@ pub fn selected_icon(
     )
 }
 
-pub fn with_tooltip(tooltip: impl Into<SharedString>, child: impl IntoElement) -> AnyElement {
-    icon_button::with_tooltip(tooltip, child)
+pub fn tooltip_button<V: 'static>(
+    button: Button,
+    tooltip: impl Into<SharedString>,
+    cx: &mut Context<V>,
+    on_click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> AnyElement {
+    icon_button::with_tooltip(
+        tooltip,
+        button.on_press(cx.listener(move |this, _event, window, cx| {
+            on_click(this, window, cx);
+        })),
+    )
 }
 
 pub fn selected_surfaces(

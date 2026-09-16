@@ -12,8 +12,8 @@ pub mod tray_menu;
 pub mod video_editor;
 
 use gpui::{
-    point, px, Bounds, Pixels, Point, Size, TitlebarOptions, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions,
+    point, px, Bounds, DisplayId, Pixels, Point, Size, TitlebarOptions, WindowBackgroundAppearance,
+    WindowBounds, WindowKind, WindowOptions,
 };
 use herogpui::gpui;
 
@@ -53,6 +53,44 @@ pub fn app_window_options_with_lights(
         }),
         window_min_size: min_size,
         window_background: WindowBackgroundAppearance::Opaque,
+        ..Default::default()
+    }
+}
+
+pub struct PopupWindowConfig {
+    pub focus: bool,
+    pub show: bool,
+    pub movable: bool,
+    pub resizable: bool,
+    pub display_id: Option<DisplayId>,
+    pub background: WindowBackgroundAppearance,
+}
+
+impl Default for PopupWindowConfig {
+    fn default() -> Self {
+        Self {
+            focus: true,
+            show: true,
+            movable: false,
+            resizable: false,
+            display_id: None,
+            background: WindowBackgroundAppearance::Transparent,
+        }
+    }
+}
+
+pub fn popup_window_options(bounds: Bounds<Pixels>, config: PopupWindowConfig) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: None,
+        focus: config.focus,
+        show: config.show,
+        kind: WindowKind::PopUp,
+        is_movable: config.movable,
+        is_resizable: config.resizable,
+        is_minimizable: false,
+        display_id: config.display_id,
+        window_background: config.background,
         ..Default::default()
     }
 }

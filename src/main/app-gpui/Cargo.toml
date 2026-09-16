@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 poratake-daemon-common = { path = "../daemon-common" }
 herogpui.workspace = true
-gpui = { package = "gpui-pre", version = "=0.3.3" }
+gpui = { package = "gpui-pre", version = "=0.3.5" }
 raw-window-handle = "0.6"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

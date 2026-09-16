@@ -11,6 +11,7 @@ use crate::system::desktop;
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
+use crate::ui::rows;
 use crate::windows::settings::SettingsWindow;
 use herogpui::components::{Button, Size, Variant};
 
@@ -125,19 +126,9 @@ fn update_section(
             )
             .when(status.shows_check_button(), |el| {
                 el.child(
-                    Button::new("about-check-updates")
+                    rows::icon_text_button("about-check-updates", "Check", "refresh-cw", 16.0, 8.0)
                         .variant(Variant::Ghost)
                         .size(Size::Sm)
-                        .label("Check")
-                        .content(|_| {
-                            crate::ui::primitives::icon_label(
-                                "refresh-cw",
-                                "Check".into(),
-                                px(16.0),
-                                px(8.0),
-                                false,
-                            )
-                        })
                         .on_press(cx.listener(|this, _event, _window, cx| {
                             this.check_for_updates(cx);
                         })),
@@ -209,45 +200,37 @@ fn update_section(
     // the artifact is verified.
     if matches!(status, Status::Available { .. }) {
         section = section.child(
-            Button::new("about-download-update")
-                .variant(Variant::Primary)
-                .size(Size::Md)
-                .label("Download Update")
-                .content(|_| {
-                    crate::ui::primitives::icon_label(
-                        "download",
-                        "Download Update".into(),
-                        px(16.0),
-                        px(8.0),
-                        false,
-                    )
-                })
-                .full_width(true)
-                .on_press(cx.listener(|this, _event, _window, cx| {
-                    this.download_update(cx);
-                })),
+            rows::icon_text_button(
+                "about-download-update",
+                "Download Update",
+                "download",
+                16.0,
+                8.0,
+            )
+            .variant(Variant::Primary)
+            .size(Size::Md)
+            .full_width(true)
+            .on_press(cx.listener(|this, _event, _window, cx| {
+                this.download_update(cx);
+            })),
         );
     }
 
     if matches!(status, Status::Ready { .. }) {
         section = section.child(
-            Button::new("about-install-update")
-                .variant(Variant::Primary)
-                .size(Size::Md)
-                .label("Install Update")
-                .content(|_| {
-                    crate::ui::primitives::icon_label(
-                        "download",
-                        "Install Update".into(),
-                        px(16.0),
-                        px(8.0),
-                        false,
-                    )
-                })
-                .full_width(true)
-                .on_press(cx.listener(|this, _event, _window, cx| {
-                    this.install_update(cx);
-                })),
+            rows::icon_text_button(
+                "about-install-update",
+                "Install Update",
+                "download",
+                16.0,
+                8.0,
+            )
+            .variant(Variant::Primary)
+            .size(Size::Md)
+            .full_width(true)
+            .on_press(cx.listener(|this, _event, _window, cx| {
+                this.install_update(cx);
+            })),
         );
     }
 
@@ -421,28 +404,32 @@ pub fn render(
                 .gap(px(8.0))
                 .pt(px(12.0))
                 .child(
-                    Button::new("about-source-button")
-                        .variant(Variant::Ghost)
-                        .size(Size::Sm)
-                        .label("This Version's Source")
-                        .content(|_| {
-                            crate::ui::primitives::icon_label("code-2", "This Version's Source".into(), px(16.0), px(8.0), false)
-                        })
-                        .on_press(move |_event, _window, _cx| {
-                            desktop::open_url(&source_url);
-                        }),
+                    rows::icon_text_button(
+                        "about-source-button",
+                        "This Version's Source",
+                        "code-2",
+                        16.0,
+                        8.0,
+                    )
+                    .variant(Variant::Ghost)
+                    .size(Size::Sm)
+                    .on_press(move |_event, _window, _cx| {
+                        desktop::open_url(&source_url);
+                    }),
                 )
                 .child(
-                    Button::new("about-license-button")
-                        .variant(Variant::Ghost)
-                        .size(Size::Sm)
-                        .label("GNU AGPL v3.0")
-                        .content(|_| {
-                            crate::ui::primitives::icon_label("scale", "GNU AGPL v3.0".into(), px(16.0), px(8.0), false)
-                        })
-                        .on_press(move |_event, _window, _cx| {
-                            desktop::open_url(&license_url);
-                        }),
+                    rows::icon_text_button(
+                        "about-license-button",
+                        "GNU AGPL v3.0",
+                        "scale",
+                        16.0,
+                        8.0,
+                    )
+                    .variant(Variant::Ghost)
+                    .size(Size::Sm)
+                    .on_press(move |_event, _window, _cx| {
+                        desktop::open_url(&license_url);
+                    }),
                 )
                 .child(
                     Button::new("about-notices-button")

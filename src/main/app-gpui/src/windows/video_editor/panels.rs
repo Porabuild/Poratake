@@ -4,6 +4,7 @@ use herogpui::gpui;
 use crate::theme::vars::ThemeVars;
 use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
+use crate::ui::toolbar;
 use crate::windows::video_editor::data_editor;
 use crate::windows::video_editor::model::{FocusPoint, VideoEditorState};
 use crate::windows::video_editor::panel_kit as kit;
@@ -680,7 +681,7 @@ fn drawing_panel(
                     .child(kit::label("Selected Drawing", theme))
                     .child(
                         icon_button::compact_sm("drawing-delete", "trash-2")
-                            .sx(|el| el.text_color(theme.destructive))
+                            .recipe("danger-text")
                             .on_press(cx.listener(|this, _event, _window, cx| {
                                 this.delete_selected_drawing(cx)
                             })),
@@ -1205,10 +1206,11 @@ fn audio_panel(
                         .child("Manage audio tracks in your project"),
                 ),
         )
-        .child(icon_button::with_tooltip(
+        .child(toolbar::tooltip_button(
+            icon_button::compact_sm("audio-add-music", "plus"),
             "Add music",
-            icon_button::compact_sm("audio-add-music", "plus")
-                .on_press(cx.listener(|this, _event, _window, cx| this.add_music_track(cx))),
+            cx,
+            |this, _window, cx| this.add_music_track(cx),
         ))
         .into_any_element()];
 
@@ -1253,22 +1255,21 @@ fn audio_panel(
                             })
                         },
                     ))
-                    .child(icon_button::with_tooltip(
-                        if demo { "Stop demo" } else { "Play demo" },
+                    .child(toolbar::tooltip_button(
                         icon_button::compact_sm(
                             "audio-keyboard-demo",
                             if demo { "square" } else { "play" },
                         )
-                        .variant(Variant::Tertiary)
-                        .on_press(cx.listener(
-                            move |this, _event, _window, cx| {
-                                if this.is_keyboard_demo_playing() {
-                                    this.stop_keyboard_demo(cx);
-                                } else {
-                                    this.play_keyboard_demo(cx);
-                                }
-                            },
-                        )),
+                        .variant(Variant::Tertiary),
+                        if demo { "Stop demo" } else { "Play demo" },
+                        cx,
+                        move |this, _window, cx| {
+                            if this.is_keyboard_demo_playing() {
+                                this.stop_keyboard_demo(cx);
+                            } else {
+                                this.play_keyboard_demo(cx);
+                            }
+                        },
                     ))
                     .into_any_element(),
             );
@@ -1363,17 +1364,18 @@ fn music_row(
                         .items_center()
                         .gap(px(4.0))
                         .child(
-                            herogpui::components::Switch::new(SharedString::from(format!(
-                                "music-enabled-{id}"
-                            )))
-                            .is_selected(track.enabled)
-                            .size(herogpui::components::Size::Sm)
-                            .on_change(cx.listener({
-                                let id = id.clone();
-                                move |this, value: &bool, _window, cx| {
-                                    this.set_music_enabled(id.clone(), *value, cx)
-                                }
-                            })),
+                            crate::ui::rows::switch(
+                                SharedString::from(format!("music-enabled-{id}")),
+                                track.enabled,
+                                cx,
+                                {
+                                    let id = id.clone();
+                                    move |this, enabled, cx| {
+                                        this.set_music_enabled(id.clone(), enabled, cx)
+                                    }
+                                },
+                            )
+                            .size(herogpui::components::Size::Sm),
                         )
                         .when(removable, |el| {
                             el.child(
