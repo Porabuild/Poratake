@@ -1696,6 +1696,12 @@ impl Render for AreaOverlay {
                 if this.intent == crate::capture::intent::CaptureIntent::Recording {
                     crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
                 }
+                if this.intent == crate::capture::intent::CaptureIntent::EditorAttach {
+                    let coordinator = crate::state::coordinator(cx);
+                    coordinator.update(cx, |coordinator, cx| {
+                        coordinator.cancel_editor_attach(cx);
+                    });
+                }
                 dismiss(window, cx);
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))

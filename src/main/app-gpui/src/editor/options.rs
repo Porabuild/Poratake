@@ -89,8 +89,6 @@ pub enum EditorOption {
     ClearAttachedImages,
     /// Loads the desktop wallpaper through the daemon.
     WallpaperUseDesktop,
-    /// Opens the image picker.
-    WallpaperPickImage,
     /// Clears both the gradient and the background image.
     WallpaperClear,
     WallpaperCustom(SharedString),
@@ -99,6 +97,19 @@ pub enum EditorOption {
     WallpaperSavePreset,
     WallpaperDeletePreset,
     WallpaperToggleDefaultPreset,
+    /// Opens the gradient authoring panel, blank or loaded from a saved
+    /// custom background — the `BackgroundEditor` flow.
+    WallpaperEditorOpen(Option<SharedString>),
+    WallpaperEditorClose,
+    WallpaperEditorColor(usize, SharedString),
+    WallpaperEditorAddColor,
+    WallpaperEditorRemoveColor(usize),
+    WallpaperEditorActiveColor(usize),
+    WallpaperEditorPickColor(SharedString),
+    WallpaperEditorAngle(f64),
+    WallpaperEditorTab(SharedString),
+    WallpaperEditorPickImage,
+    WallpaperEditorSave,
     Zoom(f32),
 }
 

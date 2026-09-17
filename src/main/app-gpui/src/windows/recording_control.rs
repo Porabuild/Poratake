@@ -12,7 +12,10 @@ use gpui::{
     Render, SharedString, Styled, Subscription, WeakEntity, Window,
 };
 use herogpui::gpui;
-use poratake_daemon_common::contract::{RECORDING_TARGET_CLOSED, SCREEN_RECORDER_ERROR_EVENT};
+use poratake_daemon_common::contract::{
+    CameraPreviewRequest, CameraPreviewUpdateRequest, RECORDING_TARGET_CLOSED,
+    SCREEN_RECORDER_ERROR_EVENT,
+};
 
 use crate::capture::overlay::ScreenRect;
 use crate::theme::vars::active_theme;
@@ -70,6 +73,7 @@ pub struct RecordingControl {
     microphone: bool,
     camera: bool,
     camera_locked: bool,
+    camera_preview_visible: bool,
     selected_mic_id: Option<String>,
     selected_camera_id: Option<String>,
     selected_ios_id: Option<String>,
@@ -147,6 +151,7 @@ impl RecordingControl {
                         microphone: config.mic_enabled,
                         camera: config.camera.enabled,
                         camera_locked: false,
+                        camera_preview_visible: false,
                         selected_mic_id: config.selected_mic_id.clone(),
                         selected_camera_id: config.camera.selected_device_id.clone(),
                         selected_ios_id: config.ios_device.as_ref().map(|device| device.id.clone()),
@@ -175,6 +180,16 @@ impl RecordingControl {
                             Some(cx.observe_window_bounds(window, |this, window, cx| {
                                 this.open_pending_device_menu(window, cx);
                             }));
+                        if this.camera {
+                            if let Err(error) = this.show_camera_preview(cx) {
+                                this.camera = false;
+                                crate::windows::toast::Toast::show(
+                                    cx,
+                                    "Camera preview failed",
+                                    error.to_string(),
+                                );
+                            }
+                        }
                     });
                     let focus = view.read(cx).focus_handle.clone();
                     window.focus(&focus, cx);
@@ -205,6 +220,7 @@ impl RecordingControl {
                     this.countdown_generation += 1;
                     this.countdown_active = false;
                     this.countdown_remaining = None;
+                    this.hide_camera_preview(cx);
                     window.remove_window();
                     true
                 })
@@ -269,6 +285,7 @@ impl RecordingControl {
                     this.display_id = display_id;
                     this.window_id = window_id;
                     this.target_name = target_name.clone().map(SharedString::from);
+                    this.reposition_camera_preview(cx);
                     this.sync_window_bounds(window, cx, false);
                     cx.notify();
                     true
@@ -390,6 +407,11 @@ impl RecordingControl {
             crate::windows::toast::Toast::show(cx, "Recording failed", error.to_string());
             return;
         }
+        if self.camera && !self.camera_preview_visible {
+            if let Err(error) = self.show_camera_preview(cx) {
+                eprintln!("[recorder] camera-preview show failed: {error}");
+            }
+        }
         self.watch_recorder_errors(window, cx);
         set_pre_recording_escape(false, cx);
         #[cfg(not(target_os = "macos"))]
@@ -478,9 +500,20 @@ impl RecordingControl {
         {
             return false;
         }
+        if enabled {
+            if let Err(error) = self.show_camera_preview(cx) {
+                report_toggle_failure(cx, &error);
+                return false;
+            }
+        } else {
+            self.hide_camera_preview(cx);
+        }
         if self.mode == Mode::Recording {
             let result = recorder::set_camera(&crate::state::state(cx).daemon, enabled);
             if let Err(error) = result {
+                if enabled {
+                    self.hide_camera_preview(cx);
+                }
                 report_toggle_failure(cx, &error);
                 return false;
             }
@@ -488,6 +521,69 @@ impl RecordingControl {
         self.camera = enabled;
         cx.notify();
         true
+    }
+
+    fn show_camera_preview(&mut self, cx: &mut App) -> anyhow::Result<()> {
+        let service = crate::state::state(cx);
+        let camera = service.config.get().recording.camera;
+        let (x, y) = camera
+            .position
+            .map(|position| (position.x as i32, position.y as i32))
+            .unwrap_or_else(|| camera_preview_position(self.rect));
+        let device_name = self
+            .selected_camera_id
+            .as_ref()
+            .and_then(|id| {
+                self.devices
+                    .cameras
+                    .iter()
+                    .find(|device| &device.id == id)
+                    .map(|device| device.label.clone())
+            })
+            .or(camera.selected_device_name.clone());
+        let request = CameraPreviewRequest {
+            device_id: self
+                .selected_camera_id
+                .clone()
+                .or(camera.selected_device_id),
+            device_name,
+            resolution: Some(camera.resolution),
+            flipped: Some(camera.flipped),
+            x: Some(x),
+            y: Some(y),
+        };
+        service.daemon.camera_preview().show(&request)?;
+        self.camera_preview_visible = true;
+        Ok(())
+    }
+
+    fn hide_camera_preview(&mut self, cx: &mut App) {
+        if !self.camera_preview_visible {
+            return;
+        }
+        self.camera_preview_visible = false;
+        if let Err(error) = crate::state::state(cx).daemon.camera_preview().hide() {
+            eprintln!("[recorder] camera-preview hide failed: {error}");
+        }
+    }
+
+    fn reposition_camera_preview(&self, cx: &mut App) {
+        if !self.camera_preview_visible {
+            return;
+        }
+        let (x, y) = camera_preview_position(self.rect);
+        let request = CameraPreviewUpdateRequest {
+            x: Some(x),
+            y: Some(y),
+            ..Default::default()
+        };
+        if let Err(error) = crate::state::state(cx)
+            .daemon
+            .camera_preview()
+            .update(&request)
+        {
+            eprintln!("[recorder] camera-preview update failed: {error}");
+        }
     }
 
     fn input_toggles(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1004,6 +1100,7 @@ impl RecordingControl {
     /// failure surfaced, with no stop call issued.
     fn fail_recording(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
         self.recorder_error_subscription = None;
+        self.hide_camera_preview(cx);
         recorder::force_idle();
         if let Some(project) = self.project.take() {
             let _ = std::fs::remove_dir_all(&project);
@@ -1021,6 +1118,7 @@ impl RecordingControl {
 
     fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.recorder_error_subscription = None;
+        self.hide_camera_preview(cx);
         let duration = self.recording_duration().as_secs_f64();
         let service = crate::state::state(cx);
         let stopped = recorder::stop(&service.daemon);
@@ -1226,6 +1324,16 @@ fn activates_device_menu(key: &str) -> bool {
 
 fn report_toggle_failure(cx: &mut Context<RecordingControl>, error: &anyhow::Error) {
     crate::windows::toast::Toast::show(cx, "Recording control failed", error.to_string());
+}
+
+const CAMERA_PREVIEW_SIZE: i32 = 270;
+const CAMERA_PREVIEW_MARGIN: i32 = 32;
+
+fn camera_preview_position(rect: ScreenRect) -> (i32, i32) {
+    (
+        rect.x + (rect.width - CAMERA_PREVIEW_SIZE - CAMERA_PREVIEW_MARGIN).max(0),
+        rect.y + (rect.height - CAMERA_PREVIEW_SIZE - CAMERA_PREVIEW_MARGIN).max(0),
+    )
 }
 
 fn configure_toolbar_window(window: &Window) {
@@ -1525,6 +1633,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn camera_bubble_sits_in_the_recording_area_bottom_right() {
+        assert_eq!(
+            camera_preview_position(ScreenRect {
+                x: 100,
+                y: 50,
+                width: 1920,
+                height: 1080,
+            }),
+            (100 + 1920 - 270 - 32, 50 + 1080 - 270 - 32)
+        );
+        assert_eq!(
+            camera_preview_position(ScreenRect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            }),
+            (0, 0)
+        );
+    }
+
+    #[test]
     fn bar_width_follows_mode_and_target_label() {
         assert_eq!(chrome::recording_control_width(false, false), 236.0);
         assert_eq!(chrome::recording_control_width(true, false), 400.0);
@@ -1632,6 +1762,7 @@ mod tests {
                 microphone: true,
                 camera: false,
                 camera_locked: false,
+                camera_preview_visible: false,
                 selected_mic_id: Some("mic-1".into()),
                 selected_camera_id: None,
                 selected_ios_id: None,
@@ -1776,6 +1907,7 @@ mod tests {
                 microphone: true,
                 camera: false,
                 camera_locked: false,
+                camera_preview_visible: false,
                 selected_mic_id: None,
                 selected_camera_id: None,
                 selected_ios_id: None,

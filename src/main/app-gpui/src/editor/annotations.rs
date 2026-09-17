@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::options::EditorOption;
+
 /// A point in image coordinates. The wire format stores pairs in a flat
 /// `points` array; this is the shape the editor's input handling works in.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -213,6 +215,25 @@ pub fn arrow_head_points(
     )
 }
 
+/// `getArrowControlPoint` — an explicit bend wins over the style's own curve.
+/// Returns the quadratic control point when the shaft is curved.
+pub fn arrow_curve_control(
+    points: &[f64; 4],
+    arrow_style: Option<&str>,
+    bend: Option<Offset>,
+) -> Option<(f64, f64)> {
+    let [x1, y1, x2, y2] = *points;
+    if has_arrow_bend(bend) {
+        let bend = bend.unwrap_or(Offset { x: 0.0, y: 0.0 });
+        return Some(((x1 + x2) / 2.0 + bend.x, (y1 + y2) / 2.0 + bend.y));
+    }
+    let style = arrow_style.unwrap_or("standard");
+    if style != "curved" && style != "double-curved" {
+        return None;
+    }
+    Some(curved_control_point(x1, y1, x2, y2))
+}
+
 /// `curvedControlPoint`.
 pub fn curved_control_point(x1: f64, y1: f64, x2: f64, y2: f64) -> (f64, f64) {
     let distance = ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt();
@@ -386,6 +407,286 @@ impl Annotation {
         }
         *points = constrained;
     }
+
+    pub fn apply_option(&mut self, option: &EditorOption) -> bool {
+        match option {
+            EditorOption::Color(color) => {
+                let color = color.to_string();
+                match self {
+                    Self::Pen { stroke, .. }
+                    | Self::Line { stroke, .. }
+                    | Self::Arrow { stroke, .. } => {
+                        *stroke = color;
+                        true
+                    }
+                    Self::Rectangle { stroke, fill, .. } | Self::Circle { stroke, fill, .. } => {
+                        if fill.is_some() {
+                            *fill = Some(color.clone());
+                        }
+                        *stroke = color;
+                        true
+                    }
+                    Self::Highlight { fill, .. }
+                    | Self::Text { fill, .. }
+                    | Self::Number { fill, .. } => {
+                        *fill = color;
+                        true
+                    }
+                    Self::Redact { .. } => false,
+                }
+            }
+            EditorOption::StrokeWidth(width) => match self {
+                Self::Pen { stroke_width, .. }
+                | Self::Highlight { stroke_width, .. }
+                | Self::Rectangle { stroke_width, .. }
+                | Self::Circle { stroke_width, .. }
+                | Self::Line { stroke_width, .. }
+                | Self::Arrow { stroke_width, .. } => {
+                    *stroke_width = *width;
+                    true
+                }
+                Self::Text { .. } | Self::Number { .. } | Self::Redact { .. } => false,
+            },
+            EditorOption::ArrowStyle(style) => match self {
+                Self::Arrow { arrow_style, .. } => {
+                    *arrow_style = Some(style.to_string());
+                    true
+                }
+                _ => false,
+            },
+            EditorOption::HighlightColor(color) => {
+                let color = color.to_string();
+                match self {
+                    Self::Highlight { fill, .. }
+                    | Self::Text { fill, .. }
+                    | Self::Number { fill, .. } => {
+                        *fill = color;
+                        true
+                    }
+                    Self::Rectangle { fill, .. } | Self::Circle { fill, .. } => {
+                        if fill.is_some() {
+                            *fill = Some(color);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Self::Pen { .. }
+                    | Self::Line { .. }
+                    | Self::Arrow { .. }
+                    | Self::Redact { .. } => false,
+                }
+            }
+            EditorOption::NumberSize(size) => match self {
+                Self::Number { size: current, .. } => {
+                    *current = size.to_string();
+                    true
+                }
+                _ => false,
+            },
+            EditorOption::TextBackground(enabled) => match self {
+                Self::Text {
+                    background_color,
+                    background_padding,
+                    background_radius,
+                    ..
+                } => {
+                    if *enabled {
+                        *background_color = Some(TEXT_BG_COLOR.to_string());
+                        *background_padding = Some(Offset {
+                            x: TEXT_BG_PADDING_X,
+                            y: TEXT_BG_PADDING_Y,
+                        });
+                        *background_radius = Some(TEXT_BG_RADIUS);
+                    } else {
+                        *background_color = None;
+                        *background_padding = None;
+                        *background_radius = None;
+                    }
+                    true
+                }
+                _ => false,
+            },
+            EditorOption::TextFontSize(size) => match self {
+                Self::Text { font_size, .. } => {
+                    *font_size = *size;
+                    true
+                }
+                _ => false,
+            },
+            EditorOption::TextFontFamily(family) => match self {
+                Self::Text { font_family, .. } => {
+                    *font_family = Some(family.to_string());
+                    true
+                }
+                _ => false,
+            },
+            EditorOption::RedactStyle(style) => match self {
+                Self::Redact { style: current, .. } => {
+                    *current = style.to_string();
+                    true
+                }
+                _ => false,
+            },
+            EditorOption::RedactIntensity(intensity) => match self {
+                Self::Redact {
+                    intensity: current, ..
+                } => {
+                    *current = *intensity;
+                    true
+                }
+                _ => false,
+            },
+            EditorOption::ShapeFillMode(mode) => match self {
+                Self::Rectangle { stroke, fill, .. } | Self::Circle { stroke, fill, .. } => {
+                    *fill = (*mode == "filled").then(|| stroke.clone());
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    pub fn text_box(&self) -> Option<TextBox> {
+        let Self::Text {
+            x,
+            y,
+            text,
+            font_size,
+            font_family,
+            background_color,
+            background_padding,
+            rotation,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let family = font_family.as_deref().unwrap_or(DEFAULT_TEXT_FONT);
+        let (measured_width, measured_height) =
+            crate::editor::text_render::measure(text, family, *font_size as f32)
+                .map(|metrics| (f64::from(metrics.width), f64::from(metrics.height())))
+                .unwrap_or((text.chars().count() as f64 * font_size * 0.6, *font_size));
+        let (pad_x, pad_y) = if background_color.is_some() {
+            background_padding
+                .map(|padding| (padding.x, padding.y))
+                .unwrap_or((TEXT_BG_PADDING_X, TEXT_BG_PADDING_Y))
+        } else {
+            (0.0, 0.0)
+        };
+        let width = measured_width + pad_x * 2.0;
+        let height = measured_height + pad_y * 2.0;
+        let left = x - pad_x;
+        let top = y - pad_y;
+        Some(TextBox {
+            x: left,
+            y: top,
+            width,
+            height,
+            center_x: left + width / 2.0,
+            center_y: top + height / 2.0,
+            rotation: rotation.unwrap_or(0.0),
+        })
+    }
+
+    pub fn handles(&self) -> Vec<(ResizeHandle, f64, f64)> {
+        match self {
+            Self::Rectangle { .. } | Self::Redact { .. } => {
+                let (left, top, right, bottom) = self.bounds();
+                vec![
+                    (ResizeHandle::TopLeft, left, top),
+                    (ResizeHandle::TopRight, right, top),
+                    (ResizeHandle::BottomLeft, left, bottom),
+                    (ResizeHandle::BottomRight, right, bottom),
+                ]
+            }
+            Self::Circle { x, y, radius, .. } => {
+                let offset = radius * std::f64::consts::FRAC_1_SQRT_2;
+                vec![
+                    (ResizeHandle::TopLeft, x - offset, y - offset),
+                    (ResizeHandle::TopRight, x + offset, y - offset),
+                    (ResizeHandle::BottomLeft, x - offset, y + offset),
+                    (ResizeHandle::BottomRight, x + offset, y + offset),
+                ]
+            }
+            Self::Line { points, .. } => vec![
+                (ResizeHandle::Start, points[0], points[1]),
+                (ResizeHandle::End, points[2], points[3]),
+            ],
+            Self::Arrow {
+                points,
+                bend_offset,
+                ..
+            } => {
+                let mid_x = (points[0] + points[2]) / 2.0;
+                let mid_y = (points[1] + points[3]) / 2.0;
+                let bend = bend_offset.unwrap_or(Offset { x: 0.0, y: 0.0 });
+                vec![
+                    (ResizeHandle::Start, points[0], points[1]),
+                    (ResizeHandle::End, points[2], points[3]),
+                    (ResizeHandle::Bend, mid_x + bend.x, mid_y + bend.y),
+                ]
+            }
+            Self::Text { .. } => {
+                let Some(text_box) = self.text_box() else {
+                    return Vec::new();
+                };
+                let rotation = text_box.rotation.to_radians();
+                let (sin, cos) = rotation.sin_cos();
+                let half_w = text_box.width / 2.0;
+                let half_h = text_box.height / 2.0;
+                let distance = half_h + TEXT_ROTATE_HANDLE_DISTANCE;
+                vec![
+                    (
+                        ResizeHandle::Rotate,
+                        text_box.center_x + sin * distance,
+                        text_box.center_y - cos * distance,
+                    ),
+                    (
+                        ResizeHandle::BottomRight,
+                        text_box.center_x + half_w * cos - half_h * sin,
+                        text_box.center_y + half_w * sin + half_h * cos,
+                    ),
+                ]
+            }
+            Self::Pen { .. } | Self::Highlight { .. } | Self::Number { .. } => Vec::new(),
+        }
+    }
+
+    pub fn handle_at(&self, point: Point, radius: f64) -> Option<ResizeHandle> {
+        self.handles()
+            .into_iter()
+            .find(|(_, x, y)| {
+                (f64::from(point.x) - x).abs() <= radius && (f64::from(point.y) - y).abs() <= radius
+            })
+            .map(|(handle, _, _)| handle)
+    }
+}
+
+pub const TEXT_ROTATE_HANDLE_DISTANCE: f64 = 24.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextBox {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub center_x: f64,
+    pub center_y: f64,
+    pub rotation: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizeHandle {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    Start,
+    End,
+    Bend,
+    Rotate,
 }
 
 /// Undo/redo history over the annotation list — port of `useHistory`.
@@ -451,6 +752,169 @@ impl AnnotationHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::options::EditorOption;
+
+    #[test]
+    fn handles_sit_on_corners_endpoints_and_text_controls() {
+        let rect = Annotation::Rectangle {
+            id: "rect-1".into(),
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 50.0,
+            stroke: "#000".into(),
+            stroke_width: 2.0,
+            fill: None,
+        };
+        assert_eq!(
+            rect.handles(),
+            vec![
+                (ResizeHandle::TopLeft, 10.0, 20.0),
+                (ResizeHandle::TopRight, 110.0, 20.0),
+                (ResizeHandle::BottomLeft, 10.0, 70.0),
+                (ResizeHandle::BottomRight, 110.0, 70.0),
+            ]
+        );
+        assert_eq!(
+            rect.handle_at(Point { x: 111.0, y: 19.0 }, 6.0),
+            Some(ResizeHandle::TopRight)
+        );
+        assert_eq!(rect.handle_at(Point { x: 60.0, y: 45.0 }, 6.0), None);
+
+        let arrow = Annotation::Arrow {
+            id: "arrow-1".into(),
+            points: [0.0, 0.0, 10.0, 0.0],
+            stroke: "#000".into(),
+            stroke_width: 2.0,
+            arrow_style: None,
+            bend_offset: Some(Offset { x: 0.0, y: 5.0 }),
+        };
+        let handles = arrow.handles();
+        assert_eq!(handles.len(), 3);
+        assert!(handles.contains(&(ResizeHandle::Bend, 5.0, 5.0)));
+
+        let text = Annotation::Text {
+            id: "text-1".into(),
+            x: 0.0,
+            y: 0.0,
+            text: "hi".into(),
+            font_size: 16.0,
+            fill: "#000".into(),
+            font_family: None,
+            background_color: None,
+            background_opacity: None,
+            background_padding: None,
+            background_radius: None,
+            rotation: None,
+        };
+        let handles = text.handles();
+        assert_eq!(handles.len(), 2);
+        assert!(handles
+            .iter()
+            .any(|(handle, _, _)| *handle == ResizeHandle::Rotate));
+        assert!(handles
+            .iter()
+            .any(|(handle, _, _)| *handle == ResizeHandle::BottomRight));
+
+        let pen = Annotation::Pen {
+            id: "pen-1".into(),
+            points: vec![0.0, 0.0, 10.0, 10.0],
+            stroke: "#000".into(),
+            stroke_width: 2.0,
+        };
+        assert!(pen.handles().is_empty());
+    }
+
+    #[test]
+    fn option_changes_apply_to_the_matching_annotation_kind() {
+        let mut rect = Annotation::Rectangle {
+            id: "rect-1".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+            fill: None,
+        };
+        assert!(rect.apply_option(&EditorOption::Color("red".into())));
+        assert!(
+            matches!(rect, Annotation::Rectangle { ref stroke, fill: None, .. } if stroke == "red")
+        );
+        assert!(rect.apply_option(&EditorOption::StrokeWidth(6.0)));
+        assert!(matches!(rect, Annotation::Rectangle { stroke_width, .. } if stroke_width == 6.0));
+        assert!(!rect.apply_option(&EditorOption::ArrowStyle("double".into())));
+        assert!(rect.apply_option(&EditorOption::ShapeFillMode("filled".into())));
+        assert!(
+            matches!(rect, Annotation::Rectangle { fill: Some(ref fill), .. } if fill == "red")
+        );
+        assert!(rect.apply_option(&EditorOption::ShapeFillMode("outline".into())));
+        assert!(matches!(rect, Annotation::Rectangle { fill: None, .. }));
+
+        let mut arrow = Annotation::Arrow {
+            id: "arrow-1".into(),
+            points: [0.0, 0.0, 10.0, 10.0],
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+            arrow_style: None,
+            bend_offset: None,
+        };
+        assert!(arrow.apply_option(&EditorOption::ArrowStyle("double".into())));
+        assert!(
+            matches!(arrow, Annotation::Arrow { arrow_style: Some(ref style), .. } if style == "double")
+        );
+        assert!(!arrow.apply_option(&EditorOption::NumberSize("large".into())));
+
+        let mut text = Annotation::Text {
+            id: "text-1".into(),
+            x: 0.0,
+            y: 0.0,
+            text: "hi".into(),
+            font_size: 16.0,
+            fill: "#000000".into(),
+            font_family: None,
+            background_color: None,
+            background_opacity: None,
+            background_padding: None,
+            background_radius: None,
+            rotation: None,
+        };
+        assert!(text.apply_option(&EditorOption::TextBackground(true)));
+        assert!(
+            matches!(text, Annotation::Text { ref background_color, ref background_padding, ref background_radius, .. }
+                if background_color.as_deref() == Some(TEXT_BG_COLOR)
+                    && background_padding == &Some(Offset { x: TEXT_BG_PADDING_X, y: TEXT_BG_PADDING_Y })
+                    && background_radius == &Some(TEXT_BG_RADIUS))
+        );
+        assert!(text.apply_option(&EditorOption::TextFontSize(24.0)));
+        assert!(matches!(text, Annotation::Text { font_size, .. } if font_size == 24.0));
+
+        let mut highlight = Annotation::Highlight {
+            id: "hl-1".into(),
+            points: vec![0.0, 0.0, 10.0, 0.0],
+            fill: "yellow".into(),
+            opacity: 0.5,
+            stroke_width: 8.0,
+        };
+        assert!(highlight.apply_option(&EditorOption::HighlightColor("green".into())));
+        assert!(matches!(highlight, Annotation::Highlight { ref fill, .. } if fill == "green"));
+        assert!(!highlight.apply_option(&EditorOption::HighlightOpacity(0.8)));
+
+        let mut redact = Annotation::Redact {
+            id: "redact-1".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            style: "pixelate".into(),
+            intensity: 5.0,
+        };
+        assert!(!redact.apply_option(&EditorOption::Color("red".into())));
+        assert!(redact.apply_option(&EditorOption::RedactStyle("blur".into())));
+        assert!(matches!(redact, Annotation::Redact { ref style, .. } if style == "blur"));
+        assert!(redact.apply_option(&EditorOption::RedactIntensity(8.0)));
+        assert!(matches!(redact, Annotation::Redact { intensity, .. } if intensity == 8.0));
+    }
 
     #[test]
     fn serializes_the_shape_the_electron_shell_persists() {

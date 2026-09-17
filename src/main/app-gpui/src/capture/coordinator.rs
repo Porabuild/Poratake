@@ -2,7 +2,7 @@
 //! so work started by short-lived windows (the area overlay) survives their
 //! removal and can still open follow-up UI on the main thread.
 
-use gpui::{Context, Entity};
+use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
 use poratake_daemon_common::contract::{
     ScrollCaptureStartRequest, ScrollSpeed, SCROLL_CAPTURE_CANCELLED_EVENT,
@@ -26,11 +26,21 @@ fn uuid_simple() -> String {
 
 pub struct Coordinator {
     pub service: CaptureService,
+    pending_attach: Option<PendingEditorAttach>,
+}
+
+struct PendingEditorAttach {
+    window: AnyWindowHandle,
+    editor: WeakEntity<crate::editor::window::EditorWindow>,
+    edge: crate::editor::layers::Edge,
 }
 
 impl Coordinator {
     pub fn new(service: CaptureService) -> Self {
-        Self { service }
+        Self {
+            service,
+            pending_attach: None,
+        }
     }
 
     /// Captures a display-bound region and routes the pixels according to `intent`: the
@@ -54,6 +64,9 @@ impl Coordinator {
         reservation: Option<CachedCaptureReservation>,
         cx: &mut Context<Self>,
     ) {
+        if intent == CaptureIntent::EditorAttach {
+            return self.attach_area(capture, reservation, cx);
+        }
         if !intent.saves_to_library() {
             return self.analyze_area(capture, intent, reservation, cx);
         }
@@ -146,7 +159,109 @@ fn show_capture_error(cx: &mut gpui::AsyncApp, title: &'static str, body: &str) 
     cx.update(|cx| crate::windows::toast::Toast::show(cx, title, body));
 }
 
+fn restore_editor_window(window: AnyWindowHandle, cx: &mut gpui::App) {
+    let _ = window.update(cx, |_, window, _| {
+        crate::system::window_visibility::show(window);
+        window.activate_window();
+    });
+}
+
 impl Coordinator {
+    /// Remembers which editor edge a pending attach capture belongs to. The
+    /// editor hides itself before the overlay opens, so the frozen frame and
+    /// the pixels both come out without it — the `screenshot:capture-for-editor`
+    /// contract.
+    pub fn begin_editor_attach(
+        &mut self,
+        window: AnyWindowHandle,
+        editor: WeakEntity<crate::editor::window::EditorWindow>,
+        edge: crate::editor::layers::Edge,
+    ) {
+        self.pending_attach = Some(PendingEditorAttach {
+            window,
+            editor,
+            edge,
+        });
+    }
+
+    /// Re-shows the editor after the attach overlay is dismissed without a
+    /// selection. The `finally` branch of `screenshot:capture-for-editor`.
+    pub fn cancel_editor_attach(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_attach.take() else {
+            return;
+        };
+        restore_editor_window(pending.window, cx);
+    }
+
+    fn attach_area(
+        &mut self,
+        capture: DisplayCapture,
+        reservation: Option<CachedCaptureReservation>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.pending_attach.take() else {
+            return;
+        };
+        let service = self.service.clone();
+        let path = std::env::temp_dir().join(format!(
+            "{}-{}.png",
+            CaptureIntent::EditorAttach.temp_prefix(),
+            uuid_simple()
+        ));
+        let task = cx.background_executor().spawn(async move {
+            service
+                .capture_area_cached(capture, &path, reservation)
+                .map(|_| path)
+        });
+        cx.spawn(async move |_entity, cx| {
+            let captured = match task.await {
+                Ok(path) => path,
+                Err(error) => {
+                    cx.update(|cx| {
+                        restore_editor_window(pending.window, cx);
+                        crate::windows::toast::Toast::show(cx, "Capture Failed", error.to_string());
+                    });
+                    return;
+                }
+            };
+            let attached = cx.background_executor().spawn({
+                let captured = captured.clone();
+                async move {
+                    let bytes = std::fs::read(&captured).ok();
+                    let size = bytes
+                        .as_ref()
+                        .and_then(|bytes| image::load_from_memory(bytes).ok())
+                        .map(|image| (image.width() as f64, image.height() as f64));
+                    let _ = std::fs::remove_file(&captured);
+                    bytes.zip(size)
+                }
+            });
+            let Some((bytes, (width, height))) = attached.await else {
+                cx.update(|cx| {
+                    restore_editor_window(pending.window, cx);
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Capture Failed",
+                        "The capture produced no image",
+                    );
+                });
+                return;
+            };
+            use base64::Engine;
+            let image_url = format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            );
+            cx.update(|cx| {
+                restore_editor_window(pending.window, cx);
+                let _ = pending.editor.update(cx, |editor, cx| {
+                    editor.push_image_layer(image_url, width, height, pending.edge, cx);
+                });
+            });
+        })
+        .detach();
+    }
+
     /// Captures a picked window through the daemon and routes the file the
     /// same way an area capture is routed.
     pub fn capture_window(&mut self, window_id: i64, cx: &mut Context<Self>) {

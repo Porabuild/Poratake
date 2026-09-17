@@ -85,6 +85,11 @@ pub fn state(cx: &gpui::App) -> CaptureService {
     cx.global::<AppState>().service.clone()
 }
 
+pub fn try_state(cx: &gpui::App) -> Option<CaptureService> {
+    cx.try_global::<AppState>()
+        .map(|state| state.service.clone())
+}
+
 pub fn coordinator(cx: &gpui::App) -> Entity<Coordinator> {
     cx.global::<CoordinatorHandle>().0.clone()
 }

@@ -14,4 +14,5 @@ pub mod single_instance;
 pub mod startup;
 pub mod tray;
 pub mod window_composition;
+pub mod window_visibility;
 pub mod work_area;

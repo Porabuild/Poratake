@@ -11,6 +11,7 @@ pub enum CaptureIntent {
     Timer,
     ScrollCapture,
     Recording,
+    EditorAttach,
 }
 
 /// `'Drag to select an area \u{b7} Esc to cancel'`.
@@ -38,6 +39,7 @@ impl CaptureIntent {
             Self::Timer => "poratake-timer",
             Self::ScrollCapture => "poratake-scroll",
             Self::Recording => "poratake-recording",
+            Self::EditorAttach => "poratake-editor",
         }
     }
 
@@ -70,6 +72,7 @@ mod tests {
             CaptureIntent::Timer.temp_prefix(),
             CaptureIntent::ScrollCapture.temp_prefix(),
             CaptureIntent::Recording.temp_prefix(),
+            CaptureIntent::EditorAttach.temp_prefix(),
         ];
         prefixes.sort_unstable();
         let total = prefixes.len();
@@ -119,6 +122,7 @@ mod prompt_tests {
             super::CaptureIntent::Timer,
             super::CaptureIntent::ScrollCapture,
             super::CaptureIntent::Recording,
+            super::CaptureIntent::EditorAttach,
         ] {
             assert!(
                 reference.contains(intent.prompt()),

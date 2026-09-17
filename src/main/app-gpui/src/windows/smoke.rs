@@ -149,6 +149,122 @@ mod tests {
         }
     }
 
+    /// The editor restores its last tool and options from the shared config,
+    /// and writes them back when they change.
+    #[herogpui::test]
+    fn the_image_editor_persists_its_preferences(cx: &mut TestAppContext) {
+        use crate::editor::options::EditorOption;
+        use crate::editor::window::EditorWindow;
+        use crate::ui::colors::Tool;
+
+        let (dir, store) = scratch_store();
+        store.update(|settings| {
+            settings.editor.last_tool = "arrow".to_string();
+            settings.editor.color = "#00FF00".to_string();
+            settings.editor.stroke_width = 7.0;
+        });
+        install_state(cx, store.clone());
+
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(600, 400, image::Rgba([90, 120, 200, 255]))
+            .save(&path)
+            .expect("write a capture to open");
+        let path = path.to_string_lossy().to_string();
+
+        let window = cx.add_window(|window, cx| EditorWindow::from_file(&path, window, cx));
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+
+        let restored = window
+            .update(cx, |view, _window, _cx| {
+                (view.tool, view.color_hex.clone(), view.stroke_width)
+            })
+            .expect("read the restored options");
+        assert_eq!(restored.0, Tool::Arrow);
+        assert_eq!(restored.1, "#00FF00");
+        assert_eq!(restored.2, 7.0);
+
+        window
+            .update(cx, |view, _window, cx| {
+                view.apply_option_for_test(EditorOption::Color("#0000FF".into()), cx);
+            })
+            .expect("change the color");
+        cx.run_until_parked();
+        assert_eq!(store.get().editor.color, "#0000FF");
+        assert_eq!(store.get().editor.last_tool, "arrow");
+    }
+
+    /// The wallpaper sheet authors custom gradients: blank or loaded from a
+    /// saved custom, colors clamped to two-to-five, and the save applied
+    /// immediately like `handleSaveBackground`.
+    #[herogpui::test]
+    fn the_wallpaper_sheet_authors_custom_gradients(cx: &mut TestAppContext) {
+        use crate::editor::options::EditorOption;
+        use crate::editor::window::EditorWindow;
+
+        let (dir, store) = scratch_store();
+        install_state(cx, store.clone());
+
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(600, 400, image::Rgba([90, 120, 200, 255]))
+            .save(&path)
+            .expect("write a capture to open");
+        let path = path.to_string_lossy().to_string();
+
+        let window = cx.add_window(|window, cx| EditorWindow::from_file(&path, window, cx));
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _window, cx| {
+                view.apply_option_for_test(EditorOption::WallpaperEditorOpen(None), cx);
+                view.apply_option_for_test(
+                    EditorOption::WallpaperEditorColor(0, gpui::SharedString::from("#000000")),
+                    cx,
+                );
+                view.apply_option_for_test(EditorOption::WallpaperEditorAddColor, cx);
+                view.apply_option_for_test(EditorOption::WallpaperEditorSave, cx);
+            })
+            .expect("author a gradient");
+
+        let backgrounds = store.get().wallpaper.custom_backgrounds;
+        assert_eq!(backgrounds.len(), 1);
+        let id = backgrounds[0].id.clone();
+        assert!(
+            matches!(
+                &backgrounds[0].data,
+                crate::config::schema::CustomBackgroundData::Gradient { data }
+                    if data.gradient.colors.len() == 3
+                        && data.gradient.colors[0] == "#000000"
+            ),
+            "the edited colors are saved"
+        );
+        let applied = window
+            .update(cx, |view, _window, _cx| view.wallpaper.gradient.clone())
+            .expect("read the applied gradient");
+        assert_eq!(applied.map(|gradient| gradient.id), Some(id.clone()));
+
+        window
+            .update(cx, |view, _window, cx| {
+                view.apply_option_for_test(
+                    EditorOption::WallpaperEditorOpen(Some(gpui::SharedString::from(id))),
+                    cx,
+                );
+                view.apply_option_for_test(EditorOption::WallpaperEditorRemoveColor(0), cx);
+                view.apply_option_for_test(EditorOption::WallpaperEditorRemoveColor(0), cx);
+                view.apply_option_for_test(EditorOption::WallpaperEditorSave, cx);
+            })
+            .expect("edit the gradient");
+
+        let backgrounds = store.get().wallpaper.custom_backgrounds;
+        assert_eq!(backgrounds.len(), 1, "editing replaces rather than adds");
+        assert!(matches!(
+            &backgrounds[0].data,
+            crate::config::schema::CustomBackgroundData::Gradient { data }
+                if data.gradient.colors.len() == 2
+        ));
+    }
+
     /// The default window has to survive a draw on its own too.
     #[herogpui::test]
     fn the_settings_window_opens(cx: &mut TestAppContext) {

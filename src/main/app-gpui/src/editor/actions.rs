@@ -29,6 +29,7 @@ actions!(
         CopyAnnotation,
         CutAnnotation,
         PasteAnnotation,
+        SelectAllAnnotations,
         DeleteAnnotation,
         SaveScreenshot,
         DeleteScreenshot,
@@ -83,6 +84,7 @@ fn command_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-c", CopyAnnotation, editor),
         KeyBinding::new("ctrl-x", CutAnnotation, editor),
         KeyBinding::new("ctrl-v", PasteAnnotation, editor),
+        KeyBinding::new("ctrl-a", SelectAllAnnotations, editor),
         KeyBinding::new("delete", DeleteAnnotation, editor),
         KeyBinding::new("backspace", DeleteAnnotation, editor),
         KeyBinding::new("ctrl-s", SaveScreenshot, editor),
@@ -103,6 +105,7 @@ fn command_bindings() -> Vec<KeyBinding> {
             KeyBinding::new("cmd-c", CopyAnnotation, editor),
             KeyBinding::new("cmd-x", CutAnnotation, editor),
             KeyBinding::new("cmd-v", PasteAnnotation, editor),
+            KeyBinding::new("cmd-a", SelectAllAnnotations, editor),
             KeyBinding::new("cmd-s", SaveScreenshot, editor),
             KeyBinding::new("cmd-equal", ZoomIn, editor),
             KeyBinding::new("cmd-minus", ZoomOut, editor),
@@ -145,9 +148,9 @@ mod tests {
     #[test]
     fn the_command_bindings_are_fixed() {
         let expected = if cfg!(target_os = "macos") {
-            15 + 11
+            16 + 12
         } else {
-            15
+            16
         };
         assert_eq!(command_bindings().len(), expected);
     }
