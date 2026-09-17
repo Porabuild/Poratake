@@ -1,16 +1,11 @@
 //! Checking for a newer release.
 //!
 //! `src/main/update/index.ts` drives `electron-updater` against the GitHub
-//! releases of `UPDATE_OWNER/UPDATE_REPOSITORY` with `autoDownload = false`, and
-//! `about-tab.tsx` renders its state. This shell had neither, so the About page
-//! was missing the whole row.
-//!
-//! What is implemented here is the *check*: ask the releases feed for the latest
-//! tag and compare it with this build. Downloading and installing an update are
-//! not -- that needs a signed artifact and an installer handoff, and a button
-//! that pretended to do it would be worse than no button. `Status::Available`
-//! therefore offers the release page rather than an in-app download, which is
-//! the one honest action available.
+//! releases of `UPDATE_OWNER/UPDATE_REPOSITORY` with `autoDownload = false`, then
+//! calls `downloadUpdate()` from the `update-available` handler. About renders
+//! the same states. This shell checks the releases feed, starts the verified
+//! download as soon as a newer installer exists, and hands off to that installer
+//! from Ready.
 
 use std::sync::{Arc, Mutex};
 
@@ -262,7 +257,105 @@ async fn auto_check_once(cx: &mut gpui::AsyncApp) {
         }
         sync_tray_status(cx);
         notify_about_status_changed(cx);
+        start_download(cx);
     });
+}
+
+/// Moves `Available` into `Downloading` at 0% and returns the artifact to
+/// fetch. `None` when nothing is waiting or a download is already running.
+pub fn begin_download(cell: &mut UpdateCell) -> Option<(String, Artifact, String, Option<String>)> {
+    let Status::Available {
+        version,
+        artifact,
+        sha512,
+        notes,
+    } = cell.status()
+    else {
+        return None;
+    };
+    cell.publish(Status::Downloading {
+        version: version.clone(),
+        progress: 0.0,
+        notes: notes.clone(),
+    });
+    Some((version, artifact, sha512, notes))
+}
+
+/// `autoUpdater.downloadUpdate()` after `update-available`. No-op unless the
+/// cell is `Available`.
+pub fn start_download(cx: &mut gpui::App) {
+    let Some(state) = cx.try_global::<crate::state::UpdateState>() else {
+        return;
+    };
+    let shared = state.0.clone();
+    let Some((version, artifact, sha512, notes)) = shared
+        .lock()
+        .ok()
+        .and_then(|mut cell| begin_download(&mut cell))
+    else {
+        return;
+    };
+    sync_tray_status(cx);
+    notify_about_status_changed(cx);
+    spawn_download_progress_poll(cx);
+
+    let progress_cell = shared.clone();
+    let result_cell = shared;
+    cx.spawn(async move |cx| {
+        let version_for_progress = version.clone();
+        let notes_for_progress = notes.clone();
+        let result = cx
+            .background_executor()
+            .spawn(async move {
+                download(&artifact, &sha512, move |fraction| {
+                    if let Ok(mut cell) = progress_cell.lock() {
+                        cell.publish(Status::Downloading {
+                            version: version_for_progress.clone(),
+                            progress: fraction,
+                            notes: notes_for_progress.clone(),
+                        });
+                    }
+                })
+            })
+            .await;
+        cx.update(|cx| {
+            if let Ok(mut cell) = result_cell.lock() {
+                cell.publish(match result {
+                    Ok(installer) => Status::Ready {
+                        version,
+                        installer,
+                        notes,
+                    },
+                    Err(message) => Status::Error { message },
+                });
+            }
+            sync_tray_status(cx);
+            notify_about_status_changed(cx);
+        });
+    })
+    .detach();
+}
+
+/// The `update:download-progress` broadcast: while a download runs, About and
+/// the tray row repaint at 10Hz from the shared cell.
+fn spawn_download_progress_poll(cx: &mut gpui::App) {
+    cx.spawn(async move |cx| loop {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(100))
+            .await;
+        let downloading = cx.update(|cx| {
+            let downloading = matches!(current_status(cx), Status::Downloading { .. });
+            if downloading {
+                sync_tray_status(cx);
+                notify_about_status_changed(cx);
+            }
+            downloading
+        });
+        if !downloading {
+            break;
+        }
+    })
+    .detach();
 }
 
 /// The `update:status-changed` broadcast for the one window that renders the
@@ -358,9 +451,8 @@ pub fn check(current: &str) -> Status {
         return Status::UpToDate;
     }
 
-    // `autoDownload = false`: the check stops here and the user decides. Both
-    // the artifact and the digest published beside it are resolved now, so the
-    // download has nothing left to discover.
+    // `autoDownload = false` on electron-updater: the check still resolves the
+    // artifact and digest here so `start_download` has nothing left to discover.
     let assets = parsed.get("assets").cloned().unwrap_or_default();
     let Some(artifact) = find_installer(&assets, installer_suffix()) else {
         return Status::Error {
@@ -835,6 +927,31 @@ mod tests {
             installer: std::path::PathBuf::from("installer.exe"),
             notes: None,
         }));
+    }
+
+    #[test]
+    fn begin_download_only_from_available() {
+        let available = Status::Available {
+            version: "1.0".into(),
+            artifact: Artifact {
+                name: "a".into(),
+                url: "u".into(),
+                size: 0,
+            },
+            sha512: "s".into(),
+            notes: Some("notes".into()),
+        };
+        let mut cell = UpdateCell::default();
+        assert!(begin_download(&mut cell).is_none());
+        cell.publish(available);
+        let started = begin_download(&mut cell).expect("available starts");
+        assert_eq!(started.0, "1.0");
+        assert_eq!(started.3.as_deref(), Some("notes"));
+        assert!(matches!(
+            cell.status(),
+            Status::Downloading { progress, .. } if progress == 0.0
+        ));
+        assert!(begin_download(&mut cell).is_none());
     }
 }
 

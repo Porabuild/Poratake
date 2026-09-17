@@ -35,6 +35,44 @@ pub fn accessibility_granted() -> bool {
     true
 }
 
+/// `systemPreferences.isTrustedAccessibilityClient(true)`: asks the system,
+/// which prompts ("Poratake would like to control this computer") when access
+/// is missing instead of just reporting the state.
+pub fn accessibility_request() -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        accessibility_prompt_trusted() != 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+/// `AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: true})` over
+/// raw CoreFoundation FFI — no wrapper crate exposes it, and a one-dictionary
+/// call does not justify a new dependency.
+#[cfg(target_os = "macos")]
+unsafe fn accessibility_prompt_trusted() -> u8 {
+    use std::ffi::c_void;
+    use std::ptr::{addr_of, null};
+
+    let keys = [kAXTrustedCheckOptionPrompt];
+    let values = [kCFBooleanTrue];
+    let options = CFDictionaryCreate(
+        null(),
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        addr_of!(kCFTypeDictionaryKeyCallBacks) as *const c_void,
+        addr_of!(kCFTypeDictionaryValueCallBacks) as *const c_void,
+    );
+    if options.is_null() {
+        return AXIsProcessTrusted();
+    }
+    let trusted = AXIsProcessTrustedWithOptions(options);
+    CFRelease(options);
+    trusted
+}
+
 pub fn open_screen_recording_preferences() {
     #[cfg(target_os = "macos")]
     unsafe {
@@ -68,6 +106,25 @@ unsafe extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> u8;
+    fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> u8;
+    static kAXTrustedCheckOptionPrompt: *const std::ffi::c_void;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFDictionaryCreate(
+        allocator: *const std::ffi::c_void,
+        keys: *const *const std::ffi::c_void,
+        values: *const *const std::ffi::c_void,
+        num_values: isize,
+        key_callbacks: *const std::ffi::c_void,
+        value_callbacks: *const std::ffi::c_void,
+    ) -> *const std::ffi::c_void;
+    fn CFRelease(cf: *const std::ffi::c_void);
+    static kCFTypeDictionaryKeyCallBacks: u8;
+    static kCFTypeDictionaryValueCallBacks: u8;
+    static kCFBooleanTrue: *const std::ffi::c_void;
 }
 
 #[cfg(any(windows, test))]

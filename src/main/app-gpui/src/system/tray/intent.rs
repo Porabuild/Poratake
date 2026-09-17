@@ -21,6 +21,7 @@ pub enum Intent {
     OpenAbout,
     HideTrayIcon,
     OpenIssues,
+    StopRecording,
     Quit,
 }
 
@@ -46,6 +47,7 @@ const INTENT_IDS: &[(Intent, &str)] = &[
     (Intent::OpenAbout, "open-about"),
     (Intent::HideTrayIcon, "hide-tray-icon"),
     (Intent::OpenIssues, "open-issues"),
+    (Intent::StopRecording, "stop-recording"),
     (Intent::Quit, "quit"),
 ];
 
@@ -79,6 +81,7 @@ impl Intent {
             Self::ScanQrCode => Some(Feature::QrCode),
             Self::TimerCapture => Some(Feature::TimerCapture),
             Self::RecordScreen | Self::RecordArea | Self::RecordWindow => Some(Feature::Recording),
+            Self::StopRecording => Some(Feature::Recording),
             Self::OpenInVideoEditor => Some(Feature::VideoEditor),
             Self::ToggleDesktopIcons => Some(Feature::DesktopIcons),
             _ => None,

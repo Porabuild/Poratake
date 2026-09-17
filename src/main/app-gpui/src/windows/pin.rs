@@ -76,7 +76,7 @@ impl PinWindow {
                 ..Default::default()
             },
         );
-        options.window_min_size = Some(size(px(100.0), px(100.0)));
+        options.window_min_size = Some(size(px(chrome::PIN_MIN_SIZE), px(chrome::PIN_MIN_SIZE)));
         cx.open_window(options, |_, cx| {
             cx.new(|_| Self {
                 image: render_image.clone(),
@@ -184,6 +184,8 @@ mod tests {
     #[test]
     fn pin_has_no_padded_chrome() {
         assert_eq!(chrome::PIN_PAD, 0.0);
+        assert_eq!(chrome::PIN_MIN_SIZE, 100.0);
+        assert_eq!(chrome::PIN_OFFSET, 30.0);
         let electron_scale = |image_w: f32, image_h: f32, work_w: f32, work_h: f32| {
             1.0_f32
                 .min((work_w * 0.5) / image_w)

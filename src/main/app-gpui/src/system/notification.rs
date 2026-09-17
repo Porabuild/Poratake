@@ -6,9 +6,11 @@
 //! the Action Center and respects Focus Assist and per-app notification
 //! settings instead of being a borderless popup only the shell knows about.
 //!
-//! This matches `showNotification`. Electron's `showTransientNotification` also
-//! closes the toast after 5s via a JS timer; that is not mirrored, because the
-//! WinRT equivalent (an `ExpirationTime` that near) silently prevents delivery.
+//! `show` matches `showNotification`. `show_transient` matches
+//! `showTransientNotification`: silent, dismissed after 5s — on Windows by
+//! removing the toast's tag from the notification history on a main-thread
+//! timer (the JS-timer `close()` equivalent), on macOS by removing the
+//! delivered identifier, on Linux through the Notify `expire_timeout`.
 
 #[cfg(target_os = "macos")]
 use block2::RcBlock;
@@ -38,7 +40,7 @@ const APP_USER_MODEL_ID: &str = "electron.app.Poratake";
 
 pub fn show(title: &str, body: &str) {
     #[cfg(windows)]
-    if let Err(error) = show_toast(title, body) {
+    if let Err(error) = show_toast(title, body, None) {
         eprintln!("[notification] failed to show the toast: {error}");
     }
     #[cfg(target_os = "macos")]
@@ -48,7 +50,7 @@ pub fn show(title: &str, body: &str) {
         let title = title.to_owned();
         let body = body.to_owned();
         std::thread::spawn(move || {
-            if let Err(error) = show_linux_notification(&title, &body) {
+            if let Err(error) = show_linux_notification(&title, &body, false) {
                 eprintln!("[notification] failed to show notification: {error}");
             }
         });
@@ -57,8 +59,67 @@ pub fn show(title: &str, body: &str) {
     let _ = (title, body);
 }
 
+/// Electron's `TRANSIENT_NOTIFICATION_DURATION_MS`.
+const TRANSIENT_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `showTransientNotification`: silent like `show`, dismissed after 5s. The
+/// dismissal runs on the main thread — on Windows the history call needs the
+/// COM apartment `show_toast` already runs in.
+pub fn show_transient(cx: &mut gpui::App, title: &str, body: &str) {
+    #[cfg(windows)]
+    {
+        let tag = format!(
+            "poratake-transient-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        match show_toast(title, body, Some(&tag)) {
+            Ok(()) => {
+                cx.spawn(async move |cx| dismiss_transient(cx, tag).await)
+                    .detach();
+            }
+            Err(error) => eprintln!("[notification] failed to show the toast: {error}"),
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(identifier) = show_macos_notification(title, body) {
+            cx.spawn(async move |cx| dismiss_transient(cx, identifier).await)
+                .detach();
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = cx;
+        let title = title.to_owned();
+        let body = body.to_owned();
+        std::thread::spawn(move || {
+            if let Err(error) = show_linux_notification(&title, &body, true) {
+                eprintln!("[notification] failed to show notification: {error}");
+            }
+        });
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    let _ = (cx, title, body);
+}
+
+#[cfg(windows)]
+async fn dismiss_transient(cx: &mut gpui::AsyncApp, tag: String) {
+    cx.background_executor().timer(TRANSIENT_DURATION).await;
+    cx.update(|_| {
+        if let Err(error) = remove_toast(&tag) {
+            eprintln!("[notification] failed to dismiss the toast: {error}");
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+async fn dismiss_transient(cx: &mut gpui::AsyncApp, identifier: String) {
+    cx.background_executor().timer(TRANSIENT_DURATION).await;
+    cx.update(|_| remove_macos_notification(&identifier));
+}
+
 #[cfg(target_os = "linux")]
-fn show_linux_notification(title: &str, body: &str) -> Result<(), dbus::Error> {
+fn show_linux_notification(title: &str, body: &str, transient: bool) -> Result<(), dbus::Error> {
     use std::collections::HashMap;
     use std::time::Duration;
 
@@ -82,24 +143,31 @@ fn show_linux_notification(title: &str, body: &str) -> Result<(), dbus::Error> {
             body,
             Vec::<String>::new(),
             HashMap::<String, Variant<Box<dyn RefArg>>>::new(),
-            -1_i32,
+            if transient {
+                TRANSIENT_DURATION.as_millis() as i32
+            } else {
+                -1_i32
+            },
         ),
     )?;
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn show_macos_notification(title: &str, body: &str) {
+fn show_macos_notification(title: &str, body: &str) -> Option<String> {
     // `currentNotificationCenter` throws an Objective-C exception when the
     // process has no bundle identifier (a bare binary, as in `cargo test`),
     // and Rust cannot catch Objective-C exceptions — the process aborts.
-    if NSBundle::mainBundle().bundleIdentifier().is_none() {
-        return;
-    }
+    NSBundle::mainBundle().bundleIdentifier()?;
+    let identifier = format!(
+        "poratake-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
     let center = UNUserNotificationCenter::currentNotificationCenter();
     let title = title.to_owned();
     let body = body.to_owned();
     let center_for_authorization = center.clone();
+    let identifier_for_request = identifier.clone();
     let authorization = RcBlock::new(move |granted: Bool, error: *mut NSError| {
         if !error.is_null() {
             eprintln!("[notification] failed to request notification authorization");
@@ -112,12 +180,8 @@ fn show_macos_notification(title: &str, body: &str) {
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(&title));
         content.setBody(&NSString::from_str(&body));
-        let identifier = NSString::from_str(&format!(
-            "poratake-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-            &identifier,
+            &NSString::from_str(&identifier_for_request),
             &content,
             None,
         );
@@ -133,13 +197,30 @@ fn show_macos_notification(title: &str, body: &str) {
         UNAuthorizationOptions::Alert,
         &authorization,
     );
+    Some(identifier)
+}
+
+#[cfg(target_os = "macos")]
+fn remove_macos_notification(identifier: &str) {
+    use objc2_foundation::NSArray;
+
+    if NSBundle::mainBundle().bundleIdentifier().is_none() {
+        return;
+    }
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    let identifier = NSString::from_str(identifier);
+    let identifiers = NSArray::from_slice(&[&*identifier]);
+    center.removeDeliveredNotificationsWithIdentifiers(&identifiers);
 }
 
 #[cfg(windows)]
-fn show_toast(title: &str, body: &str) -> windows::core::Result<()> {
+fn show_toast(title: &str, body: &str, tag: Option<&str>) -> windows::core::Result<()> {
     let document = XmlDocument::new()?;
     document.LoadXml(&HSTRING::from(toast_xml(title, body)))?;
     let notification = ToastNotification::CreateToastNotification(&document)?;
+    if let Some(tag) = tag {
+        notification.SetTag(&HSTRING::from(tag))?;
+    }
     // No `SetExpirationTime` here, deliberately. An expiry only seconds out
     // makes Windows drop the toast outright: `Show` still returns `Ok` and
     // nothing is delivered, which is close to impossible to notice. Verified by
@@ -148,12 +229,18 @@ fn show_toast(title: &str, body: &str) -> windows::core::Result<()> {
     //
     // Electron does not set an OS expiry either. `showNotification` sets none,
     // and `showTransientNotification` closes the toast from a JS `setTimeout`,
-    // which is a different mechanism. `Toast::show` mirrors `showNotification`:
-    // Windows dismisses the banner on its own and the entry stays in the Action
-    // Center, exactly as Electron's does.
+    // which is a different mechanism. `show_transient` mirrors it by removing
+    // the toast's tag from the notification history after 5s; `Toast::show`
+    // mirrors `showNotification`: Windows dismisses the banner on its own and
+    // the entry stays in the Action Center, exactly as Electron's does.
     let notifier =
         ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_USER_MODEL_ID))?;
     notifier.Show(&notification)
+}
+
+#[cfg(windows)]
+fn remove_toast(tag: &str) -> windows::core::Result<()> {
+    ToastNotificationManager::History()?.Remove(&HSTRING::from(tag))
 }
 
 /// A ToastGeneric toast with the title and body as the two `<text>` nodes and

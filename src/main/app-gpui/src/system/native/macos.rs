@@ -19,7 +19,7 @@ impl Driver {
 
         Self {
             shell: parking_lot::Mutex::new(Shell {
-                tray: super::create_tray(state.dark_mode),
+                tray: super::create_tray(state.dark_mode, state.is_recording),
                 hotkeys,
             }),
         }

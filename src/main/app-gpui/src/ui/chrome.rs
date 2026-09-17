@@ -225,8 +225,14 @@ pub const RECORDING_TARGET_LABEL_WIDTH: f32 = 140.0;
 pub const RECORDING_WINDOW_HEIGHT: f32 = 52.0;
 pub const RECORDING_BAR_PAD_TOP: f32 = 4.0;
 
+/// Electron's `CONTROL_TOP_MARGIN`: the bar sits 24px below the work-area top
+/// on every platform — the work area already excludes the menu bar and taskbar,
+/// so no per-OS offset is needed.
+pub const RECORDING_TOP_MARGIN: f32 = 24.0;
+
 pub const PIN_PAD: f32 = 0.0;
 pub const PIN_OFFSET: f32 = 30.0;
+pub const PIN_MIN_SIZE: f32 = 100.0;
 pub const PIN_ORIGIN_Y: f32 = 20.0;
 pub const PIN_RIGHT_MARGIN: f32 = 20.0;
 pub const PIN_MIN_RIGHT: f32 = 120.0;
@@ -301,7 +307,7 @@ pub fn recording_bar_origin(
     bar_width: f32,
 ) -> (f32, f32) {
     let x = (work_x + (work_width - bar_width) / 2.0).round();
-    let y = work_y + overlay_toolbar_top() - RECORDING_BAR_PAD_TOP;
+    let y = work_y + RECORDING_TOP_MARGIN - RECORDING_BAR_PAD_TOP;
     (x, y)
 }
 
@@ -658,7 +664,7 @@ mod tests {
             recording_bar_origin(0.0, 10.0, 1920.0, 236.0),
             (
                 ((1920.0_f32 - 236.0) / 2.0).round(),
-                10.0 + overlay_toolbar_top() - RECORDING_BAR_PAD_TOP
+                10.0 + RECORDING_TOP_MARGIN - RECORDING_BAR_PAD_TOP
             )
         );
         assert_eq!(
@@ -670,6 +676,8 @@ mod tests {
             Some((1920.0, 0.0, 1920.0, 1080.0))
         );
         assert_eq!(PIN_PAD, 0.0);
+        assert_eq!(PIN_MIN_SIZE, 100.0);
+        assert_eq!(PIN_OFFSET, 30.0);
         assert_eq!(
             pin_window_size(400.0, 300.0, 1920.0, 1080.0),
             (400.0, 300.0)
@@ -755,7 +763,7 @@ mod tests {
             RECORDING_WIDTH + RECORDING_TARGET_LABEL_WIDTH
         );
         let (x, y) = recording_bar_origin(100.0, 40.0, 800.0, 236.0);
-        assert_eq!(y + RECORDING_BAR_PAD_TOP, 40.0 + overlay_toolbar_top());
+        assert_eq!(y + RECORDING_BAR_PAD_TOP, 40.0 + RECORDING_TOP_MARGIN);
         assert_eq!(x, (100.0_f32 + (800.0 - 236.0) / 2.0).round());
     }
 

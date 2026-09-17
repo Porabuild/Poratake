@@ -66,6 +66,7 @@ pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
         Intent::RecordScreen => start_recording(Recording::Screen, cx),
         Intent::RecordArea => start_recording(Recording::Area, cx),
         Intent::RecordWindow => start_recording(Recording::Window, cx),
+        Intent::StopRecording => stop_recording_from_tray(cx),
         Intent::ToggleDesktopIcons => toggle_desktop_icons(cx),
         Intent::Quit => quit(cx),
     }
@@ -81,6 +82,21 @@ fn start_recording(target: Recording, cx: &mut App) {
         Recording::Screen => crate::capture::start_screen_recording(cx),
         Recording::Area => crate::capture::start_area_selection(CaptureIntent::Recording, cx),
         Recording::Window => crate::capture::start_window_recording(cx),
+    }
+}
+
+/// Electron's recording-tray click: stopping from the menu finalizes through
+/// the same `finish` as the control bar's stop button.
+fn stop_recording_from_tray(cx: &mut App) {
+    if !crate::video::recorder::is_recording() {
+        return;
+    }
+    if let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) {
+        if let Some(control) =
+            handle.downcast::<crate::windows::recording_control::RecordingControl>()
+        {
+            let _ = control.update(cx, |view, window, cx| view.finish(false, window, cx));
+        }
     }
 }
 

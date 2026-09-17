@@ -1225,7 +1225,11 @@ impl AreaOverlay {
         let pixel = frame.get_pixel(x, y).0;
         let hex = format!("#{:02x}{:02x}{:02x}", pixel[0], pixel[1], pixel[2]);
         crate::system::clipboard::ClipboardService::write_text(cx, hex.clone());
-        crate::windows::toast::Toast::show(cx, "Color copied", hex);
+        crate::windows::toast::Toast::show_transient(
+            cx,
+            "Color copied",
+            format!("{} copied to the clipboard", hex.to_uppercase()),
+        );
         true
     }
 

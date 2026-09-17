@@ -214,6 +214,41 @@ fn is_image_path(path: &std::path::Path) -> bool {
     )
 }
 
+/// The inline text editor tracks its content like Electron's measured input
+/// (`measureText` in `text-utils.ts`): the draft is shaped in the annotation's
+/// font and the box hugs it.
+///
+/// Two deliberate differences: the field keeps the fixed 14px input text —
+/// HeroGPUI's `TextField` pins its text size, so annotation-sized edit text
+/// would need a custom editor — and the full-size draft still renders live on
+/// the canvas behind it, so the committed result is always visible.
+fn text_field_width(text: &str, font_family: &str, cx: &gpui::App) -> f32 {
+    const FIELD_TEXT_SIZE: f32 = 14.0;
+    const FIELD_PADDING: f32 = 32.0;
+    const MIN_WIDTH: f32 = 160.0;
+
+    let measurable: String = text.chars().filter(|ch| *ch != '\n').collect();
+    let font = match font_family {
+        "serif" => gpui::font("Georgia"),
+        "mono" => gpui::font("Consolas"),
+        "comic" => gpui::font("Comic Sans MS"),
+        _ => gpui::Font::default(),
+    };
+    let system = cx.text_system();
+    let font_id = system.resolve_font(&font);
+    let size = gpui::px(FIELD_TEXT_SIZE);
+    let measured: f32 = measurable
+        .chars()
+        .map(|ch| {
+            system
+                .advance(font_id, size, ch)
+                .map(|advance| f32::from(advance.width))
+                .unwrap_or(0.0)
+        })
+        .sum();
+    (measured + FIELD_PADDING).max(MIN_WIDTH)
+}
+
 fn resize_crop_rect(
     rect: (f64, f64, f64, f64),
     corner: CropCorner,
@@ -1760,7 +1795,11 @@ impl EditorWindow {
     fn text_editor_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let (_, field) = self.text_editor.as_ref()?;
         let Some(Annotation::Text {
-            x, y, font_size, ..
+            x,
+            y,
+            text,
+            font_family,
+            ..
         }) = &self.draft
         else {
             return None;
@@ -1769,12 +1808,14 @@ impl EditorWindow {
         let owner = cx.entity().downgrade();
         let submit_owner = owner.clone();
         let cancel_owner = owner.clone();
+        let family = font_family.as_deref().unwrap_or("sans");
+        let width = text_field_width(text, family, cx);
         Some(
             div()
                 .absolute()
                 .left(bounds.left() + px(*x as f32 * self.zoom))
                 .top(bounds.top() + px(*y as f32 * self.zoom))
-                .w(px((*font_size as f32 * self.zoom * 12.0).max(160.0)))
+                .w(px(width))
                 .on_key_down(move |event, _window, cx| {
                     if event.keystroke.key != "escape" {
                         return;
@@ -1792,6 +1833,12 @@ impl EditorWindow {
                 .child(
                     TextField::new(field.clone())
                         .placeholder("Type\u{2026}")
+                        .font_family(match family {
+                            "serif" => "Georgia",
+                            "mono" => "Consolas",
+                            "comic" => "Comic Sans MS",
+                            _ => ".SystemUIFont",
+                        })
                         .on_change({
                             let owner = owner.clone();
                             move |value, _window, app| {
@@ -3444,16 +3491,24 @@ impl EditorWindow {
                 })
                 .await;
 
-            let (state, title, body) = match uploaded {
-                Ok(url) => (UploadState::Success, "Link copied", url),
-                Err(error) => (UploadState::Error, "Upload failed", error.to_string()),
+            let state = if uploaded.is_ok() {
+                UploadState::Success
+            } else {
+                UploadState::Error
             };
 
-            cx.update(|cx| {
-                if state == UploadState::Success {
-                    crate::system::clipboard::ClipboardService::write_text(cx, body.clone());
+            cx.update(|cx| match uploaded {
+                Ok(url) => {
+                    crate::system::clipboard::ClipboardService::write_text(cx, url);
+                    crate::windows::toast::Toast::show_transient(
+                        cx,
+                        "Image Uploaded",
+                        "Link copied to clipboard",
+                    );
                 }
-                crate::windows::toast::Toast::show(cx, title, body)
+                Err(error) => {
+                    crate::windows::toast::Toast::show(cx, "Upload failed", error.to_string());
+                }
             });
             let _ = entity.update(cx, |editor, cx| {
                 editor.cloud_upload = state;

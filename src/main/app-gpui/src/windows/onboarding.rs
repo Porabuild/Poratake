@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, FocusHandle, KeyDownEvent, Render,
-    ScrollHandle, Styled, Window,
+    div, prelude::*, px, size, Animation, AnimationExt, App, Bounds, Context, ElementId,
+    FocusHandle, KeyDownEvent, Render, ScrollHandle, SharedString, Styled, Window,
 };
 use herogpui::gpui;
 
@@ -55,6 +55,43 @@ pub struct OnboardingWindow {
     scroll: ScrollHandle,
     permission_polling: bool,
     focus_handle: FocusHandle,
+}
+
+/// One row of the macOS shortcut-conflict `<ol>`: a primary number badge with
+/// the step text beside it, `<strong>` segments in bold.
+fn shortcut_conflict_step(
+    number: &'static str,
+    segments: &[(&'static str, bool)],
+    theme: &ThemeVars,
+) -> gpui::AnyElement {
+    let mut text = div().flex().flex_row().flex_wrap().flex_1();
+    for (segment, strong) in segments {
+        text = text.child(
+            div()
+                .when(*strong, |el| el.font_weight(gpui::FontWeight::BOLD))
+                .child(*segment),
+        );
+    }
+    div()
+        .flex()
+        .flex_row()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .size(px(16.0))
+                .rounded_full()
+                .bg(theme.primary)
+                .text_color(theme.primary_foreground)
+                .text_size(px(12.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(number),
+        )
+        .child(text)
+        .into_any_element()
 }
 
 impl OnboardingWindow {
@@ -413,9 +450,34 @@ impl OnboardingWindow {
                     .rounded(px(chrome::ONBOARDING_CARD_RADIUS))
                     .bg(theme.muted_background)
                     .p(px(chrome::ONBOARDING_CARD_PAD))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
                     .text_size(px(chrome::ONBOARDING_HINT_SIZE))
                     .text_color(theme.muted_foreground)
-                    .child("1. Open Keyboard Settings\n2. Select Screenshots in the sidebar\n3. Uncheck all screenshot shortcuts (⌘⇧3, ⌘⇧4, ⌘⇧5)"),
+                    .child(shortcut_conflict_step(
+                        "1",
+                        &[("Click the button below to open Keyboard Settings", false)],
+                        theme,
+                    ))
+                    .child(shortcut_conflict_step(
+                        "2",
+                        &[
+                            ("Select ", false),
+                            ("Screenshots", true),
+                            (" in the left sidebar", false),
+                        ],
+                        theme,
+                    ))
+                    .child(shortcut_conflict_step(
+                        "3",
+                        &[
+                            ("Uncheck ", false),
+                            ("all screenshot shortcuts", true),
+                            (" (⌘⇧3, ⌘⇧4, ⌘⇧5)", false),
+                        ],
+                        theme,
+                    )),
             )
             .child(
                 div().mt(px(12.0)).child(
@@ -657,11 +719,29 @@ fn step_indicator(current: usize, theme: &ThemeVars) -> gpui::AnyElement {
         } else {
             theme.default
         };
+        let phase = if position == current {
+            "current"
+        } else if position < current {
+            "past"
+        } else {
+            "upcoming"
+        };
         row = row.child(
             div()
+                .id(SharedString::from(format!(
+                    "onboarding-dot-{position}-{phase}"
+                )))
                 .size(px(chrome::ONBOARDING_DOT))
                 .rounded_full()
-                .bg(color),
+                .bg(color)
+                .with_animation(
+                    ElementId::Name(format!("onboarding-dot-fade-{position}-{phase}").into()),
+                    Animation::new(std::time::Duration::from_millis(
+                        crate::ui::primitives::OVERLAY_ENTER_MS,
+                    ))
+                    .with_easing(crate::ui::primitives::ease_out()),
+                    |dot, delta| dot.opacity(delta.max(0.01)),
+                ),
         );
     }
     row.into_any_element()

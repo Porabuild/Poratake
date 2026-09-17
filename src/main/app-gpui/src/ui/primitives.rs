@@ -243,6 +243,42 @@ pub fn ease_out() -> impl Fn(f32) -> f32 {
     cubic_bezier(0.0, 0.0, 0.2, 1.0)
 }
 
+/// CSS `ease-in-out`: `cubic-bezier(0.42, 0, 0.58, 1)`.
+pub fn ease_in_out() -> impl Fn(f32) -> f32 {
+    cubic_bezier(0.42, 0.0, 0.58, 1.0)
+}
+
+/// `progress-indeterminate` in `base.css`: a 33% fill that travels from
+/// `translateX(-100%)` to `translateX(400%)` over 1.2s.
+pub const INDETERMINATE_MS: u64 = 1200;
+
+pub fn indeterminate_progress(id: impl Into<gpui::ElementId>, theme: &ThemeVars) -> gpui::Div {
+    use gpui::AnimationExt;
+    use herogpui::gpui;
+
+    let fill = theme.primary;
+    div()
+        .h(px(6.0))
+        .w_full()
+        .overflow_hidden()
+        .rounded_full()
+        .bg(theme.muted_background)
+        .child(
+            div()
+                .h_full()
+                .w(gpui::relative(0.33))
+                .rounded_full()
+                .bg(fill)
+                .with_animation(
+                    id.into(),
+                    gpui::Animation::new(std::time::Duration::from_millis(INDETERMINATE_MS))
+                        .repeat()
+                        .with_easing(ease_in_out()),
+                    |bar, delta| bar.ml(gpui::relative(delta * 1.65 - 0.33)),
+                ),
+        )
+}
+
 /// `focus-ring` is `ring-2`.
 pub const FOCUS_RING_WIDTH: f32 = 2.0;
 /// `--ring-offset-width: 2px`, used by `focus-ring` but not by
@@ -274,6 +310,15 @@ mod tests {
             previous = value;
         }
         assert!((curve(0.5) - 0.839).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_indeterminate_travel_matches_css() {
+        assert_eq!(INDETERMINATE_MS, 1200);
+        let curve = ease_in_out();
+        assert!(curve(0.0).abs() < 1e-3);
+        assert!((curve(1.0) - 1.0).abs() < 1e-3);
+        assert!((0.33_f32 * 4.0 - 0.33 - 0.99).abs() < 1e-3);
     }
 
     #[test]

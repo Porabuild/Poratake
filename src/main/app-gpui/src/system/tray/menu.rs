@@ -140,6 +140,11 @@ fn specs(state: &TrayMenuState) -> Vec<Spec> {
     let recording = &shortcuts.recording;
     let mut specs: Vec<Spec> = Vec::new();
 
+    if state.is_recording {
+        specs.push(item(Intent::StopRecording, "Stop Recording", "square"));
+        specs.push(Spec::Separator);
+    }
+
     match &state.update {
         UpdateStatus::Ready(version) => {
             specs.push(item(
@@ -446,6 +451,13 @@ mod tests {
         let mut current = state();
         current.is_recording = true;
         let built = specs(&current);
+        let stop = built.iter().find(
+            |spec| matches!(spec, Spec::Item { intent, .. } if *intent == Intent::StopRecording),
+        );
+        assert!(
+            matches!(stop, Some(Spec::Item { label, .. }) if label == "Stop Recording"),
+            "a stop entry leads the menu while recording"
+        );
         let record_screen = built.iter().find(
             |spec| matches!(spec, Spec::Item { intent, .. } if *intent == Intent::RecordScreen),
         );

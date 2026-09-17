@@ -41,6 +41,33 @@ enum PreviewKind {
     Video,
 }
 
+/// The `capture-preview:start-drag` payload: dragging a screenshot preview out
+/// of the window hands the file to the OS, like Electron's `startDrag`.
+/// Videos are excluded on both shells.
+struct PreviewDrag {
+    path: PathBuf,
+    image: Option<Arc<gpui::RenderImage>>,
+}
+
+struct PreviewDragGhost {
+    image: Option<Arc<gpui::RenderImage>>,
+}
+
+impl Render for PreviewDragGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let mut ghost = div()
+            .w(px(PREVIEW_WIDTH))
+            .h(px(PREVIEW_HEIGHT))
+            .overflow_hidden()
+            .rounded(px(PREVIEW_RADIUS))
+            .opacity(0.9);
+        if let Some(image) = self.image.clone() {
+            ghost = ghost.child(img(image).size_full().object_fit(gpui::ObjectFit::Cover));
+        }
+        ghost
+    }
+}
+
 struct VideoPlayback {
     decoder: Arc<crate::video::decoder::VideoDecoder>,
     duration: f64,
@@ -98,6 +125,7 @@ struct CapturePreview {
 pub struct CapturePreviewWindow {
     previews: Vec<CapturePreview>,
     layout_generation: u64,
+    display_menu: crate::ui::menu::MenuHandle,
 }
 
 impl CapturePreviewWindow {
@@ -315,6 +343,7 @@ impl CapturePreviewWindow {
                 let view = cx.new(|_| Self {
                     previews,
                     layout_generation: 0,
+                    display_menu: crate::ui::menu::MenuHandle::new(),
                 });
                 #[cfg(windows)]
                 if !cfg!(test) {
@@ -1341,6 +1370,23 @@ impl CapturePreviewWindow {
         } else {
             preview.image.as_ref()
         };
+        if !is_video {
+            let drag = PreviewDrag {
+                path: path.clone(),
+                image: preview.image.clone(),
+            };
+            root = root
+                .on_drag(drag, |drag, _, _, cx| {
+                    cx.new(|_| PreviewDragGhost {
+                        image: drag.image.clone(),
+                    })
+                })
+                .external_drag_payload(|drag: &PreviewDrag, _, _| {
+                    Some(gpui::ExternalDragPayload::Files(gpui::FileDragPaths::new(
+                        [(drag.path.clone(), false)],
+                    )))
+                });
+        }
         root = root.child(match thumbnail {
             Some(render_image) => div()
                 .absolute()
@@ -1683,13 +1729,12 @@ impl CapturePreviewWindow {
                                             match result {
                                                 Ok(url) => {
                                                     crate::system::clipboard::ClipboardService::write_text(
-                                                        cx,
-                                                        url.clone(),
+                                                        cx, url,
                                                     );
-                                                    crate::windows::toast::Toast::show(
+                                                    crate::windows::toast::Toast::show_transient(
                                                         cx,
-                                                        "Link copied",
-                                                        url,
+                                                        "Image Uploaded",
+                                                        "Link copied to clipboard",
                                                     );
                                                 }
                                                 Err(error) => crate::windows::toast::Toast::show(
@@ -1736,6 +1781,40 @@ impl CapturePreviewWindow {
                 });
 
             if has_multiple_displays {
+                let owner = format!("preview-display-menu-{id}");
+                let current = crate::state::state(cx)
+                    .config
+                    .get()
+                    .preview
+                    .display_id
+                    .unwrap_or(0);
+                let mut builder = crate::ui::menu::MenuBuilder::new();
+                for (index, display) in cx.displays().iter().enumerate() {
+                    let bounds = crate::system::work_area::display_bounds(display.as_ref());
+                    let primary =
+                        f32::from(bounds.origin.x) == 0.0 && f32::from(bounds.origin.y) == 0.0;
+                    let label = format!(
+                        "Display {}{}",
+                        index + 1,
+                        if primary { " (Primary)" } else { "" }
+                    );
+                    builder = builder.item(
+                        crate::ui::menu::MenuItem::new(label)
+                            .trailing_check(current == index as i64)
+                            .on_select(move |_window, app| {
+                                let config = crate::state::state(app).config.clone();
+                                config.update(|settings| {
+                                    settings.preview.display_id = Some(index as i64);
+                                });
+                                crate::windows::capture_preview::CapturePreviewWindow::reposition(
+                                    app,
+                                );
+                            }),
+                    );
+                }
+                let entries = builder.build();
+                let handle = self.display_menu.clone();
+                let placement = owner.clone();
                 root = root.child(
                     div()
                         .absolute()
@@ -1743,25 +1822,23 @@ impl CapturePreviewWindow {
                         .bottom(px(PREVIEW_CONTROL_INSET + PREVIEW_CONTROL + 4.0))
                         .right(px(PREVIEW_CONTROL_INSET))
                         .child(preview::circle(
-                            ("preview-pin-display", id),
+                            owner.clone(),
                             "monitor",
                             false,
                             "Move previews to another display",
                             theme,
                             theme.primary,
-                            {
-                                let count = display_count;
-                                move |_, cx| {
-                                    let config = crate::state::state(cx).config.clone();
-                                    config.update(|settings| {
-                                        let current = settings.preview.display_id.unwrap_or(0);
-                                        settings.preview.display_id =
-                                            Some((current + 1).rem_euclid(count as i64));
-                                    });
-                                    cx.stop_propagation();
-                                }
+                            move |window, cx| {
+                                handle.toggle(
+                                    crate::ui::menu::MenuPlacement::above(placement.clone()),
+                                    entries.clone(),
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
                             },
-                        )),
+                        ))
+                        .child(self.display_menu.render_dropdown(&owner)),
                 );
             }
         }
@@ -1892,6 +1969,7 @@ mod tests {
         let mut view = CapturePreviewWindow {
             previews: Vec::new(),
             layout_generation: 0,
+            display_menu: crate::ui::menu::MenuHandle::new(),
         };
         let first = start_layout_transition(&mut view, true, Instant::now());
         let second = start_layout_transition(&mut view, true, Instant::now());
@@ -2177,7 +2255,21 @@ mod tests {
         for id in ["preview-close", "preview-delete"] {
             assert!(control_call(id).contains("theme.destructive,"), "{id}");
         }
-        for id in ["preview-copy", "preview-upload", "preview-pin-display"] {
+        for id in ["preview-copy", "preview-upload"] {
+            assert!(control_call(id).contains("theme.primary,"), "{id}");
+        }
+        let display = source
+            .split_once("preview-display-menu")
+            .unwrap_or_else(|| panic!("missing preview-display-menu"))
+            .1
+            .split_once("cx.stop_propagation")
+            .unwrap_or_else(|| panic!("missing display menu listener"))
+            .0;
+        assert!(
+            display.contains("theme.primary,"),
+            "display menu hover is primary"
+        );
+        for id in ["preview-show-in-folder"] {
             assert!(control_call(id).contains("theme.primary,"), "{id}");
         }
 

@@ -547,11 +547,14 @@ impl Coordinator {
             });
             let outcome = analysis.await;
 
-            cx.update(|cx| {
-                if let Some(text) = outcome.clipboard {
+            cx.update(|cx| match outcome.clipboard {
+                Some(text) => {
                     crate::system::clipboard::ClipboardService::write_text(cx, text);
+                    crate::windows::toast::Toast::show_transient(cx, outcome.title, outcome.body);
                 }
-                crate::windows::toast::Toast::show(cx, outcome.title, outcome.body);
+                None => {
+                    crate::windows::toast::Toast::show(cx, outcome.title, outcome.body);
+                }
             });
         })
         .detach();

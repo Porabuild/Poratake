@@ -623,86 +623,182 @@ the working tree but uncommitted — verify, don't rebuild.
 
 ## P2 — design / motion / polish deltas (decide per surface, don't just build)
 
-Capture / preview: 51. **Window pick doesn't lock the box** — Electron locks post-pick
-(`use-area-selection.ts:277-280`); GPUI confirms/hands off immediately
-(`capture/overlay.rs:916-967`). Decide whether area-screenshot window picks need
-the locked readout state. 52. **All-in-one target menu visible in OCR mode** — Electron hides it
-(`all-in-one-toolbar.tsx:100-102`); GPUI always renders (`all_in_one_toolbar.rs:65`). 53. **Preview lacks Show-in-Finder/Explorer** — Electron
-(`capture-preview-window.tsx:240-243`, `index.ts:497`); absent in
-`capture_preview.rs`. 54. **Preview lacks drag-out** — Electron (`capture-preview-window.tsx:273-279`,
-`index.ts:625`); absent in GPUI. 55. **Move-preview UX differs** — Electron labeled menu
-(`capture-preview-window.tsx:394-412`); GPUI cycles `display_id`
-(`capture_preview.rs:1265-1287`). 56. **Overlay reveal timing** — Electron disables WM animations + reveal timing
-(`window-pool.ts:95-105`); GPUI `deferred_show`/`raise_all`
-(`capture/overlay.rs:40,248-260,511-603`). Verify no flash on Windows HDR/multi-DPI. 57. **All-in-one tab indicator static** — Electron `TabsIndicator`
-(`all-in-one-toolbar.tsx:82`); GPUI static `mode_tab`
-(`all_in_one_toolbar.rs:46-51`). 58. **Recording outline re-assert** — Electron calls `showRecordedWindowOutline` at
-daemon start (`recorder.ts:290-291`); GPUI only at pick
-(`capture/overlay.rs:144-176,948-949`), not in `recording_control.rs:329-387`.
-Pick-time outline usually suffices; verify no flicker/loss at start. 59. **Recording tray indicator** — Electron (`recorder.ts:326`, `recording-tray.ts:60-74`);
-absent in GPUI. Decide whether recording needs a tray icon + stop action.
+### 51. Window pick doesn't lock the box
 
-Recording bar geometry: 60. **Control-bar width is constant** — Electron measures via ResizeObserver
-(`recording-control-window.tsx:364-377`, `recording-control-window.ts:53,86-89,177,338`);
-GPUI uses `chrome::recording_control_width` (`recording_control.rs:1136-1142`,
-`ui/chrome.rs:284-294`). Locales/device menus may clip or pad. 61. **Control-bar top offset differs** — Electron 24px (`recording-control.ts:69-91`);
-GPUI 48px on macOS (`ui/chrome.rs:115-117,128-133,297-305`).
+- Electron locks post-pick (`use-area-selection.ts:277-280`); GPUI confirms/hands
+  off immediately (`capture/overlay.rs:916-967`).
+- Status: decided — no lock. Window screenshots auto-confirm; recording hands off
+  to the control bar. The Electron locked readout exists because its overlay stays
+  up after a pick; GPUI does not keep that surface.
 
-Editor: 62. **Text inline editor sizing** — Electron measures text bounds
-(`text-edit-input.tsx:56-63,111-137`); GPUI fixed heuristic
-(`editor/window.rs:1019`). Box should track rendered text. 63. **Title bar vs split toolbar** — Electron embeds the toolbar in the app TitleBar
-(`screenshot-window.tsx:1249-1295`); GPUI one unified bar (`title_bar.rs:3-5`).
-Visual match claimed by the audit; keep unless drift is found. 64. **Wallpaper sheet eager + no animation** — Electron lazy Suspense + slide
-(`screenshot-window.tsx:1298-1321`, `wallpaper/index.tsx:70-78`); GPUI eager when
-tool = Wallpaper. Decide whether open/close motion matters.
+### 52. All-in-one target menu visible in OCR mode
 
-Video editor: 65. **Post-recording goes straight to editor** — Electron shows the capture preview
-first when enabled (`recording-actions.ts:249-259`); GPUI opens the editor
-directly (`recording_control.rs:1029-1033`). Reconcile with item 14. 66. **Pre-export time/size estimation** — Electron computes it but keeps the UI
-hidden (`export-estimation.ts:9-246`, `export-settings-panel.tsx:258-277`); GPUI
-absent. Build only when Electron unhides it.
+- Status: done. Target menu is omitted while OCR is selected
+  (`all_in_one_toolbar.rs`).
 
-Settings / history / misc: 67. **Settings search lacks clear (x)** — Electron (`settings-sidebar.tsx:58-66`);
-absent (`settings/mod.rs:803-810`). 68. **No URL hash routing** — Electron (`settings-window.tsx:10-16,37-41,55-57`);
-GPUI `from_id` exists (`registry.rs:49-57`) with no hash read/write. 69. **Hide-icons permission gate differs** — Electron async accessibility request
-(`screenshot.ts:68-72`, `permissions.ts:283-285`); GPUI opens prefs and returns
-(`settings/item_row.rs:60-72`). Also: no runtime auto-disable of the setting when
-denied (`desktop-icons/preference.ts:10-16`). 70. **Update auto-download** — Electron downloads on available (`update/index.ts:64,81`);
-GPUI manual (`settings/about.rs:201-216`, `settings/mod.rs:1365-1409`). Decide
-manual vs auto; tray progress wiring (`menu.rs:133-142` state exists, no
-progress feed) follows the decision. 71. **Tray menu icons** — Electron bundled PNG/template images
-(`menu/index.ts:104-185`); GPUI stroked Lucide (`system/tray/menu.rs:288-290`). 72. **Tray icon tint on theme change** — Electron rebuilds (`menu/index.ts:496-502`);
-no GPUI equivalent. Pairs with item 50. → Done (was already implemented;
-verified with item 50): `tray_icon(dark_mode)` re-tints the monochrome pixels
-(test-covered), every `RebuildMenu` re-sets the icon, and theme changes
-(settings + watcher) call `refresh_shell`. Menu-item icons are GPUI-rendered
-Lucide strokes, so they follow the theme by construction. 73. **History Clear All confirms** — Electron immediate
-(`history-window.tsx:150-164`); GPUI `rfd::MessageDialog`
-(`history/mod.rs:326-337`). Match Electron (no modal) or keep the guard deliberately. 74. **Pin cascade offset** — Electron 30px (`pin.ts:62-64,71-72`); GPUI count always 0
-(`pin.rs:41`). 75. **Pin minimum size 100x100** — Electron (`pin.ts:69-70`); absent in GPUI. 76. **Onboarding dots static** — Electron `transition-colors`
-(`onboarding-window.tsx:84-90`); GPUI static (`onboarding.rs:645-667`). 77. **Onboarding macOS shortcuts step** — Electron styled `<ol>`
-(`onboarding-window.tsx:179-203`); GPUI plain string (`onboarding.rs:411-418`). 78. **Toast durations/setting** — Electron 5s transient
-(`notification.ts:3-24`); GPUI `toast.rs:17-18` undocumented. History delete
-ignores `showDeletionNotifications` (`history/mod.rs:307-311` vs editor/video
-which read it).
+### 53. Preview lacks Show-in-Finder/Explorer
 
-Motion (Electron animation is modest — mostly hover `transition-*`, `animate-spin`,
-dialog `animate-in/out`, one `progress-indeterminate` keyframe in `base.css:349-360`;
-GPUI flips hover states instantly and has no CSS transitions): 79. **Settings nav/search hover** — add ~150ms ease or record as accepted static
-(`settings-sidebar.tsx:49,84` vs `settings/mod.rs:710-711,795-796`). 80. **History cards/keys** — `transition-all` hover (`history-item.tsx:46` vs
-`history/item.rs:244-247`); smooth `scrollIntoView` on keyboard nav
-(`history-window.tsx:180-188` vs `history/mod.rs:431`). 81. **Spinners** — Tailwind `animate-spin` vs GPUI `loader-2` 1s rotation
-(`about-tab.tsx:89`, `history-item.tsx:58` vs `ui/icon.rs:211-227`). 82. **Indeterminate progress** — `base.css:349-361` keyframe absent in GPUI. 83. **Dialog fade/zoom** — `ui/dialog.tsx:39,57` 200ms; GPUI uses native `rfd`
-dialogs; `chrome.rs:85-87` `DIALOG_FADE_MS` unused for in-app modals. 84. **Select chevron rotation** — instant `rotate_180` (`ui/icon.rs:232-241`).
+- Status: done (was already implemented; verified). Preview hover chrome calls
+  `reveal_in_file_manager`.
+
+### 54. Preview lacks drag-out
+
+- Status: done. Screenshot previews use `on_drag` + `external_drag_payload(Files)`.
+
+### 55. Move-preview UX differs
+
+- Status: done. Preview exposes a labeled display menu instead of cycling ids.
+
+### 56. Overlay reveal timing
+
+- Status: decided — `deferred_show` / `raise_all` on Windows is the equivalent of
+  Electron disabling WM animations then revealing. Flash on HDR/multi-DPI is a
+  runtime check for the screenshot round, not a missing API.
+
+### 57. All-in-one tab indicator static
+
+- Status: accepted static. Active `mode_tab` uses the muted fill; HeroUI
+  `TabsIndicator` slide is motion-only and GPUI has no sliding tab thumb.
+
+### 58. Recording outline re-assert
+
+- Status: done. `recording_control` re-calls `show_window_recording_outline` when
+  the recorder actually starts.
+
+### 59. Recording tray indicator
+
+- Status: done. One tray icon swaps to the recording glyph (non-Windows) and the
+  menu gains Stop Recording. Not a second tray icon.
+
+### 60. Control-bar width is constant
+
+- Status: accepted. GPUI has no post-layout ResizeObserver; width stays the
+  `recording_control_width` estimate and long device names truncate.
+
+### 61. Control-bar top offset differs
+
+- Status: done. `RECORDING_TOP_MARGIN` is 24px below the work-area origin on every
+  platform.
+
+### 62. Text inline editor sizing
+
+- Status: done. `text_field_width` sums `TextSystem::advance` plus pad, min 160px.
+
+### 63. Title bar vs split toolbar
+
+- Status: decided — keep the unified GPUI title bar. Visual match claimed by the
+  audit; no drift found.
+
+### 64. Wallpaper sheet eager + no animation
+
+- Status: done. Sheet already slides in over 300ms (`wallpaper_sheet.rs`). Eager
+  load is accepted: no React Suspense in GPUI.
+
+### 65. Post-recording goes straight to editor
+
+- Status: done (was already implemented; verified). Capture preview opens first
+  when enabled, matching item 14.
+
+### 66. Pre-export time/size estimation
+
+- Status: decided — do not build. Electron computes it but keeps the UI hidden.
+
+### 67. Settings search lacks clear (x)
+
+- Status: done. Search field shows a clear control when the query is non-empty.
+
+### 68. No URL hash routing
+
+- Status: done. `Category::from_id` plus `--intent open-settings <tab>` is the
+  native equivalent of Electron's hash; an open Settings window already keeps the
+  selected category.
+
+### 69. Hide-icons permission gate differs
+
+- Status: done. `accessibility_request` prompts via
+  `AXIsProcessTrustedWithOptions`; the settings switch uses that path.
+
+### 70. Update auto-download
+
+- Status: done. `Available` starts `start_download` (Electron's
+  `downloadUpdate()` from `update-available`). Tray progress still rebuilds on
+  10% buckets.
+
+### 71. Tray menu icons
+
+- Status: accepted. GPUI paints Lucide strokes; Electron ships PNG/templates.
+  Theme follows by construction (pairs with 72).
+
+### 72. Tray icon tint on theme change
+
+- Status: done (was already implemented; verified with item 50): `tray_icon(dark,
+recording)` re-tints the monochrome pixels (test-covered), every `RebuildMenu`
+  re-sets the icon, and theme changes call `refresh_shell`.
+
+### 73. History Clear All confirms
+
+- Status: done. Matches Electron: Clear All deletes immediately, no modal.
+
+### 74. Pin cascade offset
+
+- Status: done (was already implemented; verified). `PIN_OFFSET` is 30px and
+  origin counts existing pin windows.
+
+### 75. Pin minimum size 100x100
+
+- Status: done. `PIN_MIN_SIZE` is 100 and `window_min_size` uses it.
+
+### 76. Onboarding dots static
+
+- Status: done. Dot fills fade over 150ms (`transition-colors`) when the current
+  step changes.
+
+### 77. Onboarding macOS shortcuts step
+
+- Status: done. Numbered rows with bold segments, matching the styled `<ol>`.
+
+### 78. Toast durations/setting
+
+- Status: done. Transient toasts use the 5s notification path (`show_transient`);
+  history delete stays silent in both shells.
+
+### 79. Settings nav/search hover
+
+- Status: accepted static. `hover_flag` already drives the hover fill; GPUI has
+  no CSS `transition-*` on background.
+
+### 80. History cards/keys
+
+- Status: accepted hover (instant `muted_background`); keyboard nav already
+  `scroll_to_item`.
+
+### 81. Spinners
+
+- Status: done (was already implemented; verified). `spinner_element` is a 1s
+  linear `loader-2` rotation.
+
+### 82. Indeterminate progress
+
+- Status: done. `indeterminate_progress` ports the 1.2s `progress-indeterminate`
+  keyframe; cloud upload uses it.
+
+### 83. Dialog fade/zoom
+
+- Status: accepted. In-app confirms stay native `rfd`; `DIALOG_FADE_MS` is unused
+  because there is no GPUI dialog surface to fade.
+
+### 84. Select chevron rotation
+
+- Status: done. Opening animates a half turn over 150ms; closing snaps so a first
+  paint of a closed chevron does not spin.
 
 Platform limits (accepted, no action unless revisited):
 
 - **Backdrop blur is baked** (12px stand-in; settings sidebar mixes opacity instead
   of `blur(18px) saturate(125%)`). GPUI has no live backdrop-filter.
 - **Geist fonts** — Electron `base.css:4-16,115-123`; GPUI uses system/HeroGPUI fonts.
-- **Updater is check+manual-download** — needs a signed-artifact + installer-handoff
-  story before full parity (Electron downloads + installs:
-  `src/main/update/index.ts:81,175`).
+- **Updater auto-downloads** a verified installer and installs from Ready
+  (`start_download` / `quitAndInstall`). Linux stays `unsupported`.
 - **Wayland multi-display capture blocked** (`capture/mod.rs:411-421`) — documented
   limitation, not Electron drift.
 - **Linux session matrix** (X11/Wayland/headless gating) is GPUI-only by design.

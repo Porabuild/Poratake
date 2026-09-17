@@ -2324,6 +2324,10 @@ fn export_panel(
     match cloud_upload {
         crate::cloud::UploadState::Uploading => {
             footer.push(kit::hint("Uploading to cloud...", theme));
+            footer.push(
+                crate::ui::primitives::indeterminate_progress("export-cloud-progress", theme)
+                    .into_any_element(),
+            );
             footer.push(kit::tertiary_button(
                 "export-cloud-cancel",
                 "Cancel",

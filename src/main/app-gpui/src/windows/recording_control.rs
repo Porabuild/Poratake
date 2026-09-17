@@ -412,6 +412,13 @@ impl RecordingControl {
                 eprintln!("[recorder] camera-preview show failed: {error}");
             }
         }
+        if self.target == RecordingTarget::Window {
+            if let Some(window_id) = self.window_id {
+                if !crate::capture::overlay::show_window_recording_outline(window_id, cx) {
+                    eprintln!("[recording-overlay] failed to outline window {window_id}");
+                }
+            }
+        }
         self.watch_recorder_errors(window, cx);
         set_pre_recording_escape(false, cx);
         #[cfg(not(target_os = "macos"))]
@@ -1116,7 +1123,7 @@ impl RecordingControl {
         crate::windows::toast::Toast::show(cx, "Recording failed", message);
     }
 
-    fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.recorder_error_subscription = None;
         self.hide_camera_preview(cx);
         let duration = self.recording_duration().as_secs_f64();
@@ -1376,7 +1383,9 @@ fn bar_bounds(
 ) -> Bounds<gpui::Pixels> {
     let (work_x, work_y, work_width) = display_for_rect(cx, rect)
         .map(|display| {
-            let bounds = crate::system::work_area::display_bounds(display.as_ref());
+            let bounds = crate::system::work_area::work_area(
+                crate::system::work_area::display_bounds(display.as_ref()),
+            );
             (
                 f32::from(bounds.origin.x),
                 f32::from(bounds.origin.y),
@@ -1685,7 +1694,7 @@ mod tests {
         let (x, y) = chrome::recording_bar_origin(0.0, 10.0, 1920.0, 236.0);
         assert_eq!(
             y + chrome::RECORDING_BAR_PAD_TOP,
-            10.0 + chrome::overlay_toolbar_top()
+            10.0 + chrome::RECORDING_TOP_MARGIN
         );
         assert_eq!(x, ((1920.0_f32 - 236.0) / 2.0).round());
     }

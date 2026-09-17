@@ -91,7 +91,11 @@ fn run(
         let mut hotkeys = crate::system::hotkeys::HotkeyRegistry::new();
         hotkeys.apply(&hotkey_bindings);
         let mut shell = Shell {
-            tray: super::create_tray(state.dark_mode, Some(native_menu(&state))),
+            tray: super::create_tray(
+                state.dark_mode,
+                state.is_recording,
+                Some(native_menu(&state)),
+            ),
             hotkeys,
             events,
         };

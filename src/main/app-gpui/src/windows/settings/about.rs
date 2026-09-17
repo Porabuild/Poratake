@@ -89,8 +89,8 @@ fn brand_logo(theme: &ThemeVars) -> AnyElement {
 
 /// `renderUpdateSection` in `about-tab.tsx`: a status line with its icon, a
 /// `Check` button for the resting states, and a card naming the new version when
-/// there is one. The reference's `Install Update` button has no counterpart --
-/// see `crate::update` for why -- so an available update offers its release page.
+/// there is one. Download starts on `Available` the same way Electron calls
+/// `downloadUpdate()`; the button remains for the brief window before that.
 fn update_section(
     theme: &ThemeVars,
     status: crate::update::Status,
@@ -198,9 +198,8 @@ fn update_section(
         }
     }
 
-    // `Download update` is this shell's name for the step Electron takes when
-    // `autoDownload` is off; the reference's own `Install Update` follows once
-    // the artifact is verified.
+    // Electron downloads from the `update-available` handler; this button is
+    // the same action if that start has not run yet.
     if matches!(status, Status::Available { .. }) {
         section = section.child(
             rows::icon_text_button(
