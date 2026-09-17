@@ -408,6 +408,11 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: implement video edge-drag → source in/out (`trimMinStart`/`trimMaxEnd`
   equivalent); preview and export must match.
 - Accept: dragging a video clip edge trims it; preview-equals-export holds.
+- Status: done — `timeline/edit.rs::trim_video` ports `handleTrimMove`
+  (pointer timeline time back to source time through the segment offset and
+  speed, Electron's clamp nesting, 0.5s minimum), wired into the
+  `TrackKind::Video` resize arm with a seek-to-segment-start on gesture end.
+  Preview and export both map through `to_video_segments`, so trims match.
 
 ### 36. Preview playback is silent
 
@@ -416,6 +421,14 @@ the working tree but uncommitted — verify, don't rebuild.
   requests frames only (`video_editor/mod.rs:828-838,571-595`).
 - Fix: native audio playback path for preview (mixer for mic/system + music).
 - Accept: pressing play produces synced audio with the preview frames.
+- Status: done — new `video/preview_audio.rs` renders system/mic/music stems
+  with the export's own decode/segment/placement pipeline (preview hears what
+  export writes) and plays one rodio player per stem, so volumes and mutes
+  apply live without re-rendering. The playhead timer stays master; the
+  transport pauses through the silent first-frame section and re-anchors on
+  jumps or drift past Electron's 0.3s threshold. No audio device degrades to
+  silent preview. New `rodio` dependency (MIT/Apache, notices + Linux CI
+  ALSA dep included).
 
 ### 37. Scrub audio toggle does nothing
 
@@ -425,6 +438,10 @@ the working tree but uncommitted — verify, don't rebuild.
   toggle at `timeline/controls.rs:197-203`).
 - Fix: requires item 36, then scrub-position audio while paused.
 - Accept: with scrub audio on, scrubbing while paused plays mixed audio.
+- Status: done — `set_playhead` while paused scrubs the program stems (music
+  stays silent like Electron) and a 120ms generation-tagged timer stops them
+  after the pointer goes quiet; play, pause and the toggle all cancel the
+  scrub correctly.
 
 ### 38. No Whisper model download/readiness UI
 
@@ -435,6 +452,18 @@ the working tree but uncommitted — verify, don't rebuild.
   (`video/transcription.rs:294+`).
 - Fix: readiness state + percent progress events/UI before first transcribe.
 - Accept: first transcribe shows check state and download % like Electron.
+- Status: done. `download_model` streams the response body and reports the
+  content-length percent (100 on completion); a cached model returns silently
+  with no phantom percent. The panel shows the model description, download
+  size, and memory usage under the tabs (same copy as Electron) and the
+  button renders `Downloading model (N%)` from a `TranscriptionStatus` enum
+  pumped through one ordered channel. The Electron `checking` flash has no
+  equivalent — readiness is two synchronous file-exists probes, so the button
+  jumps straight to downloading/generating. Model tabs are guarded against
+  mid-flight changes in `set_transcription_model` (behaviorally the disabled
+  tabs; no greyed visual since `tab_row` has no disabled flag across its 11
+  callers) and the prompt stays editable (snapshotted at click; HeroGPUI
+  `TextArea` has no disabled state).
 
 ### 39. No transcription generation progress
 
@@ -444,6 +473,14 @@ the working tree but uncommitted — verify, don't rebuild.
   `video/transcription.rs:433+` has no callback).
 - Fix: 0-100% progress callback from the transcription path to the panel.
 - Accept: transcribe shows live percent matching daemon/whisper stages.
+- Status: done. `transcribe` takes a progress callback with the exact Electron
+  stages (5 convert, 15 whisper start, 15-95 from stderr `progress = N%` via
+  `Math.round(15 + N*0.8)`, 95 parse, 100 written); `run_whisper` pipes stderr
+  (stdout nulled — nothing ever read it) and both the main and DTW-fallback
+  attempts stream. Failures surface as an inline destructive error line plus
+  the existing toast, cleared on model change. Parser covered by
+  `whisper_progress_lines_parse_like_the_electron_regex` (first-hit-wins,
+  case-insensitive, clamped to 100).
 
 ### 40. Export shows percent only (no elapsed/ETA)
 
@@ -453,6 +490,13 @@ the working tree but uncommitted — verify, don't rebuild.
   permille poll).
 - Fix: track start time + rate; show elapsed and ETA in panel and title bar.
 - Accept: export shows elapsed and remaining like Electron.
+- Status: done (was already implemented; verified + regression-tested).
+  `update_export_eta` ports `useExportProgress` exactly (5% gate, raw
+  projection, 0.1 smoothing, rounded read), the footer renders `{m:ss} elapsed`
+  / `{m:ss} remaining` / `Calculating...` with the same copy and `m:ss`
+  format, and start/finish/cancel reset the state. Added
+  `export_eta_matches_the_electron_estimator` covering the gate, the raw
+  projection, and the smoothing step.
 
 ## P1 — settings / updater / tray / pin / theme
 

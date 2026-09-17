@@ -13,7 +13,7 @@ use crate::windows::video_editor::VideoEditorWindow;
 use herogpui::components::SliderSize;
 use herogpui::components::{Button, Select, Size, TabItem, Tabs, TabsVariant, Variant};
 
-pub use crate::ui::rows::{hint, label, note};
+pub use crate::ui::rows::{error, hint, label, note};
 
 pub fn panel(children: Vec<AnyElement>) -> AnyElement {
     div()
@@ -256,7 +256,7 @@ pub fn reset_named(
 /// The panel's primary action, sitting above the reset row.
 pub fn tertiary_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: &'static str,
     disabled: bool,
     theme: &ThemeVars,

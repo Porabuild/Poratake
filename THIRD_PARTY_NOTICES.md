@@ -168,6 +168,7 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `raw-window-handle`        |     0.6.2 | MIT OR Apache-2.0 OR Zlib |
 | `resvg`                    |    0.45.1 | Apache-2.0 OR MIT         |
 | `rfd`                      |    0.15.4 | MIT                       |
+| `rodio`                    |    0.22.2 | MIT OR Apache-2.0         |
 | `rqrr`                     |    0.10.1 | MIT                       |
 | `sha2`                     |    0.11.0 | MIT OR Apache-2.0         |
 | `smallvec`                 |    1.15.2 | MIT OR Apache-2.0         |

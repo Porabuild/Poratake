@@ -1901,6 +1901,15 @@ fn subtitle_panel(
                 cx,
                 |this, value, cx| this.set_transcription_model(value.to_string(), cx),
             ));
+            if let Some((_, description, download, memory)) =
+                WHISPER_MODEL_META.iter().find(|meta| meta.0 == model)
+            {
+                children.push(kit::hint(*description, theme));
+                children.push(kit::hint(
+                    format!("Download: {download} (first time only) · Memory: {memory}"),
+                    theme,
+                ));
+            }
             children.push(kit::field(
                 "Custom Prompt (optional)",
                 herogpui::components::TextArea::new(view.prompt_field.clone())
@@ -1915,17 +1924,16 @@ fn subtitle_panel(
             ));
             children.push(kit::tertiary_button(
                 "subtitle-generate",
-                if is_transcribing {
-                    "Generating..."
-                } else {
-                    "Generate Subtitles"
-                },
+                view.transcription_label(),
                 "subtitles",
                 is_transcribing,
                 theme,
                 cx,
                 |this, cx| this.generate_subtitles(cx),
             ));
+            if let Some(error) = view.transcription_error() {
+                children.push(kit::error(error.to_string(), theme));
+            }
             children.push(kit::separator(theme));
         }
         children.push(kit::note(
@@ -2093,6 +2101,13 @@ fn subtitle_panel(
 /// `WHISPER_MODELS` in `types/subtitle.ts`.
 const WHISPER_MODELS: [(&str, &str); 3] =
     [("base", "Base"), ("small", "Small"), ("medium", "Medium")];
+
+/// The description, download size and memory usage behind each model id.
+const WHISPER_MODEL_META: [(&str, &str, &str, &str); 3] = [
+    ("base", "Fast, basic accuracy", "~142 MB", "~500 MB"),
+    ("small", "Balanced speed and accuracy", "~466 MB", "~1 GB"),
+    ("medium", "Slower, higher accuracy", "~1.5 GB", "~2.6 GB"),
+];
 
 fn first_frame_panel(
     state: &VideoEditorState,

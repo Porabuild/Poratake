@@ -4,7 +4,9 @@
 //! either shell is the same file. Audio is converted to whisper's 16 kHz mono
 //! WAV with Media Foundation rather than FFmpeg, so this shell bundles nothing.
 
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use crate::video::sidecars::{SubtitleData, SubtitleMeta, SubtitleSegment, SubtitleWord};
 
@@ -290,8 +292,9 @@ const MODEL_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resol
 
 /// Downloads a whisper model into the shared whisper directory. Blocking, so
 /// callers run it on the background executor. The download goes to the same
-/// public model host the Electron shell uses.
-pub fn download_model(model: &str) -> Result<PathBuf, String> {
+/// public model host the Electron shell uses, and reports the same 0-100
+/// `whisper:download-progress` percent the Electron panel renders.
+pub fn download_model(model: &str, on_progress: impl Fn(u8) + Send) -> Result<PathBuf, String> {
     let target = model_path(model);
     if target.is_file() {
         return Ok(target);
@@ -322,12 +325,61 @@ pub fn download_model(model: &str) -> Result<PathBuf, String> {
     let partial = folder.join(format!("{}.part", model_file(model)));
     let mut file = std::fs::File::create(&partial)
         .map_err(|error| format!("could not write the model: {error}"))?;
-    std::io::copy(&mut response.body_mut().as_reader(), &mut file)
-        .map_err(|error| format!("could not write the model: {error}"))?;
+    let total: Option<u64> = response
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok());
+    let mut reader = response.body_mut().as_reader();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut written: u64 = 0;
+    let mut reported = 0u8;
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("could not write the model: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        file.write_all(&buffer[..count])
+            .map_err(|error| format!("could not write the model: {error}"))?;
+        written += count as u64;
+        if let Some(total) = total.filter(|total| *total > 0) {
+            let percent = (written.min(total) * 100 / total) as u8;
+            if percent != reported {
+                reported = percent;
+                on_progress(percent);
+            }
+        }
+    }
     drop(file);
     std::fs::rename(&partial, &target)
         .map_err(|error| format!("could not save the model: {error}"))?;
+    on_progress(100);
     Ok(target)
+}
+
+/// The `/progress\s*=\s*(\d+)%/i` match in `subtitle-handlers.ts` — the first
+/// hit in the chunk wins, exactly like the Electron regex.
+pub(crate) fn parse_whisper_progress(chunk: &str) -> Option<u8> {
+    const NEEDLE: &str = "progress";
+    let lowered = chunk.to_lowercase();
+    let mut rest = lowered.as_str();
+    while let Some(index) = rest.find(NEEDLE) {
+        let mut tail = rest[index + NEEDLE.len()..].trim_start_matches([' ', '\t', '\r', '\n']);
+        if let Some(stripped) = tail.strip_prefix('=') {
+            tail = stripped.trim_start_matches([' ', '\t', '\r', '\n']);
+            let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+            let after = tail[digits.len()..].trim_start_matches([' ', '\t']);
+            if !digits.is_empty() && after.starts_with('%') {
+                if let Ok(value) = digits.parse::<u16>() {
+                    return Some(value.min(100) as u8);
+                }
+            }
+        }
+        rest = &rest[index + NEEDLE.len()..];
+    }
+    None
 }
 
 /// `parseSrtTimestamp` — `HH:MM:SS,mmm`.
@@ -429,8 +481,15 @@ impl Default for Options {
 }
 
 /// Transcribes the project's audio, writing `subtitle.json` next to it.
-/// Blocking, so callers run it on the background executor.
-pub fn transcribe(project: &Path, options: &Options) -> Result<SubtitleData, String> {
+/// Blocking, so callers run it on the background executor. Progress follows
+/// the Electron stages: 5 while the audio converts, 15 when whisper starts,
+/// 15-95 from its stderr `progress = N%` lines, 95 while the JSON parses and
+/// 100 when the transcript is written.
+pub fn transcribe(
+    project: &Path,
+    options: &Options,
+    on_progress: impl Fn(u8) + Send,
+) -> Result<SubtitleData, String> {
     let cli = cli_path();
     if !cli.is_file() {
         return Err("Whisper binary not found".to_string());
@@ -440,6 +499,7 @@ pub fn transcribe(project: &Path, options: &Options) -> Result<SubtitleData, Str
         return Err(format!("Model {} not found", options.model));
     }
 
+    on_progress(5);
     let samples = audio_for(project).ok_or_else(|| "Audio file not found".to_string())?;
     let mono = to_whisper_pcm(&samples, crate::video::encoder::AUDIO_SAMPLE_RATE);
     if mono.is_empty() {
@@ -454,9 +514,11 @@ pub fn transcribe(project: &Path, options: &Options) -> Result<SubtitleData, Str
     std::fs::write(&wav_path, wav_bytes(&mono, WHISPER_SAMPLE_RATE))
         .map_err(|error| format!("could not write the audio: {error}"))?;
 
-    let result = run_whisper(&cli, &model, &wav_path, &json_stem, options);
+    on_progress(15);
+    let result = run_whisper(&cli, &model, &wav_path, &json_stem, options, &on_progress);
     let _ = std::fs::remove_file(&wav_path);
 
+    on_progress(95);
     result?;
 
     let contents = std::fs::read_to_string(&json_path)
@@ -486,6 +548,7 @@ pub fn transcribe(project: &Path, options: &Options) -> Result<SubtitleData, Str
     std::fs::write(&path, serialized)
         .map_err(|error| format!("the transcript could not be saved: {error}"))?;
 
+    on_progress(100);
     Ok(data)
 }
 
@@ -506,6 +569,7 @@ fn run_whisper(
     wav: &Path,
     json_stem: &Path,
     options: &Options,
+    on_progress: &dyn Fn(u8),
 ) -> Result<(), String> {
     let base_args: Vec<String> = vec![
         "-m".into(),
@@ -533,17 +597,13 @@ fn run_whisper(
         args.push(prompt.clone());
     }
 
-    let output = std::process::Command::new(cli)
-        .args(&args)
-        .output()
-        .map_err(|error| format!("Whisper could not be started: {error}"))?;
-    if output.status.success() {
+    let (success, stderr) = spawn_whisper(cli, &args, on_progress)?;
+    if success {
         return Ok(());
     }
 
     // Builds without DTW support reject `-dtw`; drop it and use the plain JSON
     // output, exactly as the Electron path falls back.
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if !is_dtw_unsupported(&stderr) {
         return Err(format!("Whisper failed: {}", stderr.trim()));
     }
@@ -566,17 +626,49 @@ fn run_whisper(
         });
     }
 
-    let output = std::process::Command::new(cli)
-        .args(&fallback)
-        .output()
-        .map_err(|error| format!("Whisper could not be started: {error}"))?;
-    if output.status.success() {
+    let (success, stderr) = spawn_whisper(cli, &fallback, on_progress)?;
+    if success {
         return Ok(());
     }
-    Err(format!(
-        "Whisper failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    ))
+    Err(format!("Whisper failed: {}", stderr.trim()))
+}
+
+/// Runs whisper with piped stderr so the `progress = N%` lines stream live,
+/// mapped to 15-95 with the Electron formula. Stdout is discarded — the
+/// transcript lands in the `-of` file and nothing ever read the pipe.
+fn spawn_whisper(
+    cli: &Path,
+    args: &[String],
+    on_progress: &dyn Fn(u8),
+) -> Result<(bool, String), String> {
+    let mut child = std::process::Command::new(cli)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Whisper could not be started: {error}"))?;
+    let mut stderr_text = String::new();
+    if let Some(stderr) = child.stderr.take() {
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = reader
+                .read(&mut buffer)
+                .map_err(|error| format!("Whisper could not be started: {error}"))?;
+            if count == 0 {
+                break;
+            }
+            let chunk = String::from_utf8_lossy(&buffer[..count]);
+            stderr_text.push_str(&chunk);
+            if let Some(percent) = parse_whisper_progress(&chunk) {
+                on_progress(15 + (f64::from(percent) * 0.8).round() as u8);
+            }
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("Whisper could not be started: {error}"))?;
+    Ok((status.success(), stderr_text))
 }
 
 fn is_dtw_unsupported(stderr: &str) -> bool {
@@ -703,6 +795,20 @@ mod tests {
         assert_eq!(parse_srt_timestamp("00:00:01,500"), Some(1.5));
         assert_eq!(parse_srt_timestamp(" 01:02:03,000 "), Some(3723.0));
         assert_eq!(parse_srt_timestamp("00:00:01.500"), None);
+    }
+
+    #[test]
+    fn whisper_progress_lines_parse_like_the_electron_regex() {
+        assert_eq!(parse_whisper_progress("progress = 42%"), Some(42));
+        assert_eq!(parse_whisper_progress("[whisper] Progress=100%"), Some(100));
+        assert_eq!(parse_whisper_progress("PROGRESS  =  7  %"), Some(7));
+        assert_eq!(
+            parse_whisper_progress("progress = 10% ... progress = 20%"),
+            Some(10)
+        );
+        assert_eq!(parse_whisper_progress("progress = 999%"), Some(100));
+        assert_eq!(parse_whisper_progress("loading model..."), None);
+        assert_eq!(parse_whisper_progress("progress = soon"), None);
     }
 
     #[test]

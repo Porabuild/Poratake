@@ -50,6 +50,18 @@ pub fn hint(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
         .into_any_element()
 }
 
+pub fn error(text: impl Into<SharedString>, theme: &ThemeVars) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .justify_center()
+        .text_size(px(chrome::TEXT_XS))
+        .text_color(theme.destructive)
+        .child(text.into())
+        .into_any_element()
+}
+
 pub fn title_desc_stack(
     title: impl Into<SharedString>,
     desc: impl Into<SharedString>,

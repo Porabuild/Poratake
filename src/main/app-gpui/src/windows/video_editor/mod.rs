@@ -76,6 +76,29 @@ enum PreviewStatus {
     Unavailable,
 }
 
+/// The subtitle panel's generation state — the `downloadStatus` /
+/// `generationStatus` pair in `subtitle-settings-panel.tsx` merged into one.
+/// The readiness check is synchronous here (two file-exists probes), so the
+/// Electron `checking` flash has no equivalent: the panel renders the model
+/// metadata and the button jumps straight to `Downloading` or `Generating`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum TranscriptionStatus {
+    #[default]
+    Idle,
+    Downloading(u8),
+    Generating(u8),
+    Failed(String),
+}
+
+/// One step of a generation run, pumped from the background worker to the
+/// window in order — the `Finished` event always lands last, so the terminal
+/// state can never be overwritten by a late percent.
+enum TranscriptionEvent {
+    Download(u8),
+    Generate(u8),
+    Finished(Result<usize, String>),
+}
+
 pub struct VideoEditorWindow {
     path: Option<PathBuf>,
     state: VideoEditorState,
@@ -107,6 +130,9 @@ pub struct VideoEditorWindow {
     preview_state_in_flight: bool,
     preview_state_queued: bool,
     playback_generation: u64,
+    preview_audio: crate::video::preview_audio::PreviewAudio,
+    audio_generation: u64,
+    scrub_audio_generation: u64,
     /// The export runs on the background executor; progress is published in
     /// permille and cancellation is a flag the render loop checks per frame.
     export_progress_permille: Arc<AtomicU32>,
@@ -120,7 +146,7 @@ pub struct VideoEditorWindow {
     subtitle_count: usize,
     /// The open JSON data editor, if any.
     data_editor: Option<data_editor::DataEditor>,
-    is_transcribing: bool,
+    transcription: TranscriptionStatus,
     transcription_model: String,
     transcription_prompt: String,
     prompt_field: Entity<herogpui::components::InputState>,
@@ -154,6 +180,7 @@ impl VideoEditorWindow {
                         let mut editor = Self::new(path.map(PathBuf::from), cx);
                         editor.load_preview(cx);
                         editor.load_desktop_wallpaper(cx);
+                        editor.request_audio_sync(cx);
                         editor
                     });
                     let focus = view.read(cx).focus_handle.clone();
@@ -248,6 +275,9 @@ impl VideoEditorWindow {
             preview_state_in_flight: false,
             preview_state_queued: false,
             playback_generation: 0,
+            preview_audio: crate::video::preview_audio::PreviewAudio::new(),
+            audio_generation: 0,
+            scrub_audio_generation: 0,
             export_progress_permille: Arc::new(AtomicU32::new(0)),
             export_cancelled: Arc::new(AtomicBool::new(false)),
             export_started_at: None,
@@ -256,7 +286,7 @@ impl VideoEditorWindow {
             gesture_snapshot: None,
             subtitle_count: 0,
             data_editor: None,
-            is_transcribing: false,
+            transcription: TranscriptionStatus::Idle,
             transcription_model: "base".to_string(),
             transcription_prompt: String::new(),
             prompt_field: cx.new(|cx| herogpui::components::InputState::new(cx)),
@@ -629,11 +659,13 @@ impl VideoEditorWindow {
                 if next >= total {
                     this.playhead = total;
                     this.is_playing = false;
+                    this.preview_audio.pause_all();
                     this.request_frame(cx);
                     cx.notify();
                     return false;
                 }
                 this.playhead = next;
+                this.sync_audio_transport();
                 this.request_frame(cx);
                 cx.notify();
                 true
@@ -662,6 +694,7 @@ impl VideoEditorWindow {
         if self.state.segments.is_empty() {
             self.state.segments = vec![model::Segment::spanning(duration)];
         }
+        self.request_audio_sync(cx);
         cx.notify();
     }
 
@@ -688,6 +721,7 @@ impl VideoEditorWindow {
         }
         if self.gesture_snapshot.is_some() {
             self.sync_preview_state(cx);
+            self.request_audio_sync(cx);
             cx.notify();
             return;
         }
@@ -698,6 +732,7 @@ impl VideoEditorWindow {
         self.future.clear();
         self.persist(cx);
         self.sync_preview_state(cx);
+        self.request_audio_sync(cx);
         cx.notify();
     }
 
@@ -733,6 +768,7 @@ impl VideoEditorWindow {
         self.future.clear();
         self.persist(cx);
         self.sync_preview_state(cx);
+        self.request_audio_sync(cx);
         cx.notify();
     }
 
@@ -763,6 +799,7 @@ impl VideoEditorWindow {
             .push(std::mem::replace(&mut self.state, previous));
         self.persist(cx);
         self.sync_preview_state(cx);
+        self.request_audio_sync(cx);
         cx.notify();
     }
 
@@ -773,6 +810,7 @@ impl VideoEditorWindow {
         self.history.push(std::mem::replace(&mut self.state, next));
         self.persist(cx);
         self.sync_preview_state(cx);
+        self.request_audio_sync(cx);
         cx.notify();
     }
 
@@ -811,6 +849,7 @@ impl VideoEditorWindow {
         self.selected_clip = None;
         self.persist(cx);
         self.sync_preview_state(cx);
+        self.request_audio_sync(cx);
         cx.notify();
     }
 
@@ -872,8 +911,11 @@ impl VideoEditorWindow {
             if self.playhead >= self.total_duration() {
                 self.playhead = 0.0;
             }
+            self.scrub_audio_generation += 1;
+            self.sync_audio_transport();
             self.drive_playback(cx);
         } else {
+            self.preview_audio.pause_all();
             self.request_frame(cx);
         }
         cx.notify();
@@ -937,7 +979,12 @@ impl VideoEditorWindow {
         self.playhead = time.clamp(0.0, total);
         self.request_frame(cx);
         if self.is_playing {
+            self.sync_audio_transport();
             self.drive_playback(cx);
+        } else if self.state.ui.scrub_audio_enabled {
+            self.scrub_audio_to(self.playhead - first_frame_duration(&self.state), cx);
+        } else {
+            self.preview_audio.stop_scrub();
         }
         cx.notify();
     }
@@ -953,6 +1000,71 @@ impl VideoEditorWindow {
         self.request_frame(cx);
     }
 
+    /// Anchors the preview audio to the playhead. The stems are video-time,
+    /// so the silent first-frame section maps to a negative offset.
+    fn sync_audio_transport(&mut self) {
+        let offset = self.playhead - first_frame_duration(&self.state);
+        self.preview_audio.transport(self.is_playing, offset);
+    }
+
+    /// Scrub audio while paused: the program stems play from the scrub
+    /// position and stop 120ms after the pointer goes quiet, the way the
+    /// player's scrub loop does.
+    fn scrub_audio_to(&mut self, offset: f64, cx: &mut Context<Self>) {
+        if offset < 0.0 {
+            self.preview_audio.stop_scrub();
+            return;
+        }
+        self.preview_audio.scrub_to(offset);
+        self.scrub_audio_generation += 1;
+        let generation = self.scrub_audio_generation;
+        cx.spawn(async move |entity, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(120))
+                .await;
+            let _ = entity.update(cx, |this, _| {
+                if this.scrub_audio_generation == generation {
+                    this.preview_audio.stop_scrub();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Applies volumes live and rebuilds the stems on the background executor
+    /// when the structure changed. Called from every state mutation; the
+    /// signature check keeps volume-only commits free.
+    fn request_audio_sync(&mut self, cx: &mut Context<Self>) {
+        self.preview_audio.apply_volumes(&self.state);
+        let Some(project) = self.path.clone() else {
+            return;
+        };
+        if !self.preview_audio.needs_rebuild(&self.state) {
+            return;
+        }
+        self.audio_generation += 1;
+        let generation = self.audio_generation;
+        let inputs = crate::video::preview_audio::RebuildInputs::capture(
+            &project,
+            &self.state,
+            self.preview_audio.cache(),
+        );
+        let task = cx
+            .background_executor()
+            .spawn(async move { crate::video::preview_audio::build_stems(inputs) });
+        cx.spawn(async move |entity, cx| {
+            let built = task.await;
+            let _ = entity.update(cx, |this, _| {
+                if this.audio_generation != generation {
+                    return;
+                }
+                let offset = this.playhead - first_frame_duration(&this.state);
+                this.preview_audio.install(built, &this.state, offset);
+            });
+        })
+        .detach();
+    }
+
     pub fn toggle_cut_tool(&mut self, cx: &mut Context<Self>) {
         self.is_cut_tool_active = !self.is_cut_tool_active;
         cx.notify();
@@ -960,6 +1072,10 @@ impl VideoEditorWindow {
 
     pub fn set_scrub_audio(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.state.ui.scrub_audio_enabled = enabled;
+        if !enabled {
+            self.scrub_audio_generation += 1;
+            self.preview_audio.stop_scrub();
+        }
         self.persist(cx);
         cx.notify();
     }
@@ -1314,7 +1430,31 @@ impl VideoEditorWindow {
     }
 
     pub fn is_transcribing(&self) -> bool {
-        self.is_transcribing
+        matches!(
+            self.transcription,
+            TranscriptionStatus::Downloading(_) | TranscriptionStatus::Generating(_)
+        )
+    }
+
+    /// The generate button's label — the same `Downloading model (N%)` /
+    /// `Generating (N%)` strings the Electron panel renders.
+    pub fn transcription_label(&self) -> String {
+        match &self.transcription {
+            TranscriptionStatus::Downloading(percent) => {
+                format!("Downloading model ({percent}%)")
+            }
+            TranscriptionStatus::Generating(percent) => format!("Generating ({percent}%)"),
+            TranscriptionStatus::Idle | TranscriptionStatus::Failed(_) => {
+                "Generate Subtitles".to_string()
+            }
+        }
+    }
+
+    pub fn transcription_error(&self) -> Option<&str> {
+        match &self.transcription {
+            TranscriptionStatus::Failed(error) => Some(error),
+            _ => None,
+        }
     }
 
     pub fn transcription_model(&self) -> &str {
@@ -1322,7 +1462,11 @@ impl VideoEditorWindow {
     }
 
     pub fn set_transcription_model(&mut self, model: String, cx: &mut Context<Self>) {
+        if self.is_transcribing() {
+            return;
+        }
         self.transcription_model = model;
+        self.transcription = TranscriptionStatus::Idle;
         cx.notify();
     }
 
@@ -1337,9 +1481,10 @@ impl VideoEditorWindow {
 
     /// Downloads the model if it is missing, transcribes the recording and
     /// writes `subtitle.json`, then reloads the composition so the captions
-    /// show in the preview.
+    /// show in the preview. Progress streams through one ordered channel, so
+    /// the button shows the same download/generate percents as Electron.
     pub fn generate_subtitles(&mut self, cx: &mut Context<Self>) {
-        if self.is_transcribing {
+        if self.is_transcribing() {
             return;
         }
         let Some(project) = self.path.clone() else {
@@ -1357,43 +1502,72 @@ impl VideoEditorWindow {
         let model = self.transcription_model.clone();
         let prompt = self.prompt_field.read(cx).value().trim().to_string();
         self.transcription_prompt = prompt.clone();
-        self.is_transcribing = true;
+        self.transcription = TranscriptionStatus::Generating(0);
         cx.notify();
 
         cx.spawn(async move |entity, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    crate::video::transcription::download_model(&model)?;
-                    crate::video::transcription::transcribe(
-                        &project,
-                        &crate::video::transcription::Options {
-                            model,
-                            prompt: if prompt.is_empty() {
-                                None
-                            } else {
-                                Some(prompt)
-                            },
-                            ..crate::video::transcription::Options::default()
+            let (tx, rx) = smol::channel::unbounded::<TranscriptionEvent>();
+            let work = cx.background_executor().spawn(async move {
+                let download_tx = tx.clone();
+                if let Err(error) = crate::video::transcription::download_model(&model, |percent| {
+                    let _ = download_tx.try_send(TranscriptionEvent::Download(percent));
+                }) {
+                    let _ = tx.try_send(TranscriptionEvent::Finished(Err(error)));
+                    return;
+                }
+                let generate_tx = tx.clone();
+                let result = crate::video::transcription::transcribe(
+                    &project,
+                    &crate::video::transcription::Options {
+                        model,
+                        prompt: if prompt.is_empty() {
+                            None
+                        } else {
+                            Some(prompt)
                         },
-                    )
-                })
-                .await;
-
-            let (title, body) = match &result {
-                Ok(data) => (
-                    "Subtitles ready",
-                    format!("{} segments transcribed.", data.segments.len()),
-                ),
-                Err(error) => ("Transcription failed", error.clone()),
-            };
-            cx.update(|cx| crate::windows::toast::Toast::show(cx, title, &body));
-            let _ = entity.update(cx, |this, cx| {
-                this.is_transcribing = false;
-                this.refresh_subtitle_count();
-                this.reload_preview(cx);
-                cx.notify();
+                        ..crate::video::transcription::Options::default()
+                    },
+                    |percent| {
+                        let _ = generate_tx.try_send(TranscriptionEvent::Generate(percent));
+                    },
+                );
+                let _ = tx.try_send(TranscriptionEvent::Finished(
+                    result.map(|data| data.segments.len()),
+                ));
             });
+            while let Ok(event) = rx.recv().await {
+                let finished = matches!(event, TranscriptionEvent::Finished(_));
+                if let TranscriptionEvent::Finished(result) = &event {
+                    let (title, body) = match result {
+                        Ok(count) => ("Subtitles ready", format!("{count} segments transcribed.")),
+                        Err(error) => ("Transcription failed", error.clone()),
+                    };
+                    cx.update(|cx| crate::windows::toast::Toast::show(cx, title, &body));
+                }
+                let applied = entity.update(cx, |this, cx| {
+                    match event {
+                        TranscriptionEvent::Download(percent) => {
+                            this.transcription = TranscriptionStatus::Downloading(percent);
+                        }
+                        TranscriptionEvent::Generate(percent) => {
+                            this.transcription = TranscriptionStatus::Generating(percent);
+                        }
+                        TranscriptionEvent::Finished(result) => {
+                            this.transcription = match result {
+                                Ok(_) => TranscriptionStatus::Idle,
+                                Err(error) => TranscriptionStatus::Failed(error),
+                            };
+                            this.refresh_subtitle_count();
+                            this.reload_preview(cx);
+                        }
+                    }
+                    cx.notify();
+                });
+                if finished || applied.is_err() {
+                    break;
+                }
+            }
+            work.await;
         })
         .detach();
     }
@@ -1747,17 +1921,37 @@ impl VideoEditorWindow {
             TrackKind::Camera => apply!(&mut state.camera_segments[..]),
             TrackKind::Drawing => apply!(&mut state.drawing_segments[..]),
             TrackKind::Music => apply!(&mut state.music_tracks[..]),
-            // Video clips are trimmed through their own segment controls, not
-            // by dragging, because their extents are video time.
-            TrackKind::Video => {}
+            TrackKind::Video => match drag.mode {
+                DragMode::ResizeStart => {
+                    edit::trim_video(&mut state.segments, &id, time, true);
+                }
+                DragMode::ResizeEnd => {
+                    edit::trim_video(&mut state.segments, &id, time, false);
+                }
+                DragMode::Move => {}
+            },
         }
         self.sync_preview_state(cx);
         cx.notify();
     }
 
     pub fn end_clip_drag(&mut self, cx: &mut Context<Self>) {
-        if self.clip_drag.take().is_none() {
+        let Some(drag) = self.clip_drag.take() else {
             return;
+        };
+        if drag.kind == TrackKind::Video {
+            if let Some(index) = self
+                .state
+                .segments
+                .iter()
+                .position(|segment| segment.id.as_str() == drag.id.as_ref())
+            {
+                let start: f64 = self.state.segments[..index]
+                    .iter()
+                    .map(|segment| segment.timeline_duration())
+                    .sum();
+                self.set_playhead(start, cx);
+            }
         }
         self.end_gesture(cx);
     }
@@ -2883,5 +3077,32 @@ mod keyboard_demo_tests {
         let path = keyboard_sound_file("cherry-blue", 1).expect("bundled keyboard sample");
         assert!(path.ends_with("press-1.mp3"));
         assert!(path.is_file());
+    }
+
+    #[herogpui::test]
+    fn export_eta_matches_the_electron_estimator(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (editor, cx) = cx.add_window_view(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        cx.update(|_window, cx| {
+            editor.update(cx, |editor, _cx| {
+                editor.export_started_at =
+                    Some(std::time::Instant::now() - Duration::from_secs(10));
+                editor.export_progress = 0.01;
+                editor.update_export_eta();
+                assert_eq!(editor.export_remaining_secs(), None);
+                editor.export_progress = 0.5;
+                editor.update_export_eta();
+                assert_eq!(editor.export_remaining_secs(), Some(10));
+                editor.export_progress = 0.75;
+                editor.update_export_eta();
+                let smoothed = editor.export_remaining.expect("smoothed eta");
+                assert!((smoothed - 9.33).abs() < 0.5, "smoothed eta {smoothed}");
+            });
+        });
     }
 }
