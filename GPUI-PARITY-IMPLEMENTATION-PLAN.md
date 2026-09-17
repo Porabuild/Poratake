@@ -15,9 +15,10 @@ input / broken take; P1 = missing feature or wrong behavior; P2 = design /
 motion / polish delta. Items 1–84 are closed (done, decided, or accepted).
 
 Working tree leftovers from the first audit (Cmd+S, crop undo, TARGET_CLOSED,
-arrow style, fill, Cmd bindings) were implemented in checkpoints 1–2. Mac
-auto-download looks up `-universal-mac.zip` and `latest-mac.yml`; Linux never
-hits the feed.
+arrow style, fill, Cmd bindings) were implemented in checkpoints 1–2. The
+updater looks up `-universal-mac.zip` / `latest-mac.yml` on macOS,
+`*-win-${arch}.exe` / `latest.yml` on Windows, and `*-linux-${arch}.tar.gz` /
+`latest-linux.yml` on Linux.
 
 ## P0 — correctness bugs (fix first, in order)
 
@@ -560,10 +561,9 @@ hits the feed.
   (`settings/about.rs:94-247`, `update.rs:19-40`).
 - Fix: show "Automatic updates are not available on this platform" on Linux.
 - Accept: Linux About never runs a broken check flow.
-- Status: done. `Status::Unsupported` with Electron's text, `alert-circle` in
-  muted (matching `getStatusIcon`), no Check button; `check` returns it without
-  touching the network on Linux and fresh windows start there via
-  `Status::initial`. The reference-string test covers the new text.
+- Status: done. Electron Linux stays `unsupported` (no Electron Linux package).
+  GPUI Linux checks `latest-linux.yml` and installs `*-linux-${arch}.tar.gz`.
+  `Status::Unsupported` remains for OS without an installer suffix.
 
 ### 45. No automatic update check (startup + interval)
 
@@ -738,9 +738,10 @@ hits the feed.
 
 - Status: done. `Available` starts `start_download` (Electron's
   `downloadUpdate()` from `update-available`). Tray progress still rebuilds on
-  10% buckets. macOS fetches `-universal-mac.zip` + `latest-mac.yml` and `open`s
-  the verified zip; Windows keeps `*-win-${arch}.exe` + `latest.yml`; Linux stays
-  `unsupported` and never hits the feed.
+  10% buckets. macOS fetches `-universal-mac.zip` + `latest-mac.yml` and opens
+  the unpacked `Poratake.app`; Windows keeps `*-win-${arch}.exe` + `latest.yml`;
+  Linux fetches `*-linux-${arch}.tar.gz` + `latest-linux.yml` and replaces the
+  install directory after quit.
 
 ### 71. Tray menu icons
 
@@ -817,7 +818,9 @@ Platform limits (accepted, no action unless revisited):
 - **Geist fonts** — Electron `base.css:4-16,115-123`; GPUI uses system/HeroGPUI fonts.
 - **Updater auto-downloads** a verified installer and installs from Ready
   (`start_download` / `quitAndInstall`). macOS uses the electron-updater zip
-  (`-universal-mac.zip` + `latest-mac.yml`); Linux stays `unsupported`.
+  (`-universal-mac.zip` + `latest-mac.yml`); Linux GPUI uses
+  `*-linux-${arch}.tar.gz` + `latest-linux.yml`. Electron Linux stays
+  `unsupported` because there is no Electron Linux package.
 - **Wayland multi-display capture blocked** (`capture/mod.rs:411-421`) — documented
   limitation, not Electron drift.
 - **Linux session matrix** (X11/Wayland/headless gating) is GPUI-only by design.

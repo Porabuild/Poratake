@@ -37,15 +37,17 @@ pub enum Status {
     Error {
         message: String,
     },
-    /// `status: 'unsupported'` — Linux, where there is no installer to fetch.
+    /// `status: 'unsupported'` — Electron Linux, and any OS without a
+    /// published installer suffix.
     Unsupported,
 }
 
 impl Status {
     /// The status a fresh window starts from: Electron sets `unsupported` at
-    /// init on platforms without an updater, and stays `idle` elsewhere.
+    /// init on platforms without an updater, and stays `idle` elsewhere. This
+    /// shell is idle wherever `installer_suffix` names a published artifact.
     pub fn initial() -> Self {
-        if cfg!(target_os = "linux") {
+        if installer_suffix().is_empty() {
             Self::Unsupported
         } else {
             Self::Idle
@@ -163,8 +165,8 @@ impl UpdateCell {
 
 /// The interval skips while a download is running or an installer is ready —
 /// `startPeriodicUpdateChecks` — plus while a check is already in flight, so a
-/// manual click and the timer never fetch the feed twice. Linux stays
-/// `unsupported` and never hits the feed.
+/// manual click and the timer never fetch the feed twice. Platforms with no
+/// installer stay `unsupported` and never hit the feed.
 pub fn should_auto_check(status: &Status) -> bool {
     !matches!(
         status,
@@ -406,10 +408,11 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 /// Runs the check synchronously. Callers put it on a background thread.
-/// Linux has no installer to fetch, so it reports `unsupported` without
-/// touching the network — the `!isSupportedPlatform` guard in `checkForUpdate`.
+/// Platforms with no installer suffix stay `unsupported` without touching
+/// the network — the `!isSupportedPlatform` guard in `checkForUpdate`.
 pub fn check(current: &str) -> Status {
-    if cfg!(target_os = "linux") {
+    let suffix = installer_suffix();
+    if suffix.is_empty() {
         return Status::Unsupported;
     }
     let response = ureq::get(&latest_release_url())
@@ -455,17 +458,12 @@ pub fn check(current: &str) -> Status {
     // `autoDownload = false` on electron-updater: the check still resolves the
     // artifact and digest here so `start_download` has nothing left to discover.
     let assets = parsed.get("assets").cloned().unwrap_or_default();
-    let Some(artifact) = find_installer(&assets, installer_suffix()) else {
+    let Some(manifest_url) = find_manifest(&assets, manifest_name()) else {
+        return Status::Unsupported;
+    };
+    let Some(artifact) = find_installer(&assets, suffix) else {
         return Status::Error {
             message: format!("release {latest} has no installer for this platform"),
-        };
-    };
-    let Some(manifest_url) = find_manifest(&assets, manifest_name()) else {
-        return Status::Error {
-            message: format!(
-                "release {latest} publishes no {} to verify against",
-                manifest_name()
-            ),
         };
     };
     let sha512 = match fetch_text(&manifest_url) {
@@ -685,12 +683,14 @@ fn squash_blank_lines(text: &str) -> String {
     out
 }
 
-/// The `latest.yml` / `latest-mac.yml` beside the installer. Without it there
-/// is nothing to verify against, and an unverified installer is not something
-/// to run.
+/// The `latest.yml` / `latest-mac.yml` / `latest-linux.yml` beside the installer.
+/// Without it there is nothing to verify against, and an unverified installer
+/// is not something to run.
 pub fn manifest_name() -> &'static str {
     if cfg!(target_os = "macos") {
         "latest-mac.yml"
+    } else if cfg!(target_os = "linux") {
+        "latest-linux.yml"
     } else {
         "latest.yml"
     }
@@ -979,9 +979,10 @@ pub struct Artifact {
     pub size: u64,
 }
 
-/// The installer electron-builder publishes for this OS:
+/// The installer this OS installs from the GitHub release:
 /// Windows NSIS `*-win-${arch}.exe`, macOS `*-universal-mac.zip` (the zip
-/// `electron-updater` applies; the dmg sits beside it in the same feed).
+/// `electron-updater` applies; the dmg sits beside it in the same feed),
+/// Linux GPUI `*-linux-${arch}.tar.gz`.
 pub fn installer_suffix() -> &'static str {
     if cfg!(target_os = "macos") {
         "-universal-mac.zip"
@@ -990,6 +991,12 @@ pub fn installer_suffix() -> &'static str {
             "-win-arm64.exe"
         } else {
             "-win-x64.exe"
+        }
+    } else if cfg!(target_os = "linux") {
+        if cfg!(target_arch = "aarch64") {
+            "-linux-arm64.tar.gz"
+        } else {
+            "-linux-x64.tar.gz"
         }
     } else {
         ""
@@ -1028,16 +1035,29 @@ pub fn sha512_for(manifest: &str, name: &str) -> Option<String> {
             .or_else(|| trimmed.strip_prefix("url:"))
             .or_else(|| trimmed.strip_prefix("path:"))
         {
-            current = Some(url.trim());
+            current = Some(yaml_scalar(url));
             continue;
         }
         if let Some(digest) = trimmed.strip_prefix("sha512:") {
             if current == Some(name) {
-                return Some(digest.trim().to_string());
+                return Some(yaml_scalar(digest).to_string());
             }
         }
     }
     None
+}
+
+fn yaml_scalar(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        if (bytes[0] == b'\'' && bytes[trimmed.len() - 1] == b'\'')
+            || (bytes[0] == b'"' && bytes[trimmed.len() - 1] == b'"')
+        {
+            return &trimmed[1..trimmed.len() - 1];
+        }
+    }
+    trimmed
 }
 
 /// Constant-time-ish comparison is not the point here -- this is an integrity
@@ -1155,24 +1175,168 @@ fn installer_path(name: &str) -> Result<std::path::PathBuf, String> {
 }
 
 /// `quitAndInstall`: hand over to the installer and leave. The caller quits
-/// afterwards, because NSIS cannot replace a running binary. On macOS `open`
-/// reveals the verified zip (electron-updater would apply it in place).
+/// afterwards, because a running binary cannot replace itself. Windows launches
+/// NSIS. macOS unpacks the electron-updater zip and opens `Poratake.app`. Linux
+/// unpacks the GPUI tarball next to this binary after the process exits.
 pub fn launch_installer(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(path)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        launch_macos(path)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        launch_linux(path)
+    }
+    #[cfg(target_os = "windows")]
     {
         std::process::Command::new(path)
             .spawn()
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = path;
+        Err("automatic updates are not available on this platform".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn launch_macos(path: &std::path::Path) -> Result<(), String> {
+    if path.extension().is_some_and(|ext| ext == "zip") {
+        if let Some(app) = extract_mac_app(path)? {
+            return std::process::Command::new("open")
+                .arg(app)
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+        }
+    }
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn extract_mac_app(zip: &std::path::Path) -> Result<Option<std::path::PathBuf>, String> {
+    let dest = std::env::temp_dir().join(format!("poratake-update-{}", std::process::id()));
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).map_err(|error| error.to_string())?;
+    }
+    std::fs::create_dir_all(&dest).map_err(|error| error.to_string())?;
+    let status = std::process::Command::new("ditto")
+        .args(["-xk", "--"])
+        .arg(zip)
+        .arg(&dest)
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err("failed to unpack the macOS update".to_string());
+    }
+    Ok(find_app_bundle(&dest))
+}
+
+#[cfg(any(target_os = "macos", test))]
+pub fn find_app_bundle(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, depth: usize) -> Option<std::path::PathBuf> {
+        if depth > 4 {
+            return None;
+        }
+        let entries = std::fs::read_dir(dir).ok()?;
+        let mut fallback = None;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "app") && path.is_dir() {
+                if path.file_name().is_some_and(|name| name == "Poratake.app") {
+                    return Some(path);
+                }
+                fallback = Some(path);
+            } else if path.is_dir() {
+                if let Some(found) = walk(&path, depth + 1) {
+                    return Some(found);
+                }
+            }
+        }
+        fallback
+    }
+    walk(root, 0)
+}
+
+#[cfg(target_os = "linux")]
+fn launch_linux(path: &std::path::Path) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let install_dir = current_install_dir()?;
+    let staging = std::env::temp_dir().join(format!("poratake-update-{}", std::process::id()));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|error| error.to_string())?;
+    }
+    std::fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
+    let status = std::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(path)
+        .arg("-C")
+        .arg(&staging)
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err("failed to unpack the Linux update".to_string());
+    }
+    if !staging.join("poratake-gpui").is_file() {
+        return Err("the Linux update is missing poratake-gpui".to_string());
+    }
+    let script = std::env::temp_dir().join(format!("poratake-apply-{}.sh", std::process::id()));
+    let mut file = std::fs::File::create(&script).map_err(|error| error.to_string())?;
+    file.write_all(LINUX_APPLY_SH.as_bytes())
+        .map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    drop(file);
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .map_err(|error| error.to_string())?;
+    std::process::Command::new("nohup")
+        .arg("sh")
+        .arg(&script)
+        .arg(std::process::id().to_string())
+        .arg(&staging)
+        .arg(&install_dir)
+        .arg("poratake-gpui")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_APPLY_SH: &str = r#"#!/bin/sh
+pid="$1"
+src="$2"
+dst="$3"
+bin="$4"
+i=0
+while kill -0 "$pid" 2>/dev/null; do
+  i=$((i + 1))
+  if [ "$i" -gt 300 ]; then
+    exit 1
+  fi
+  sleep 0.2
+done
+cp -a "$src"/. "$dst"/
+rm -rf "$src"
+exec "$dst/$bin"
+"#;
+
+#[cfg(target_os = "linux")]
+fn current_install_dir() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    exe.parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| "the running binary has no install directory".to_string())
 }
 
 #[cfg(test)]
@@ -1200,6 +1364,7 @@ mod artifact_tests {
     #[test]
     fn installer_downloads_stay_in_the_temp_directory() {
         assert!(installer_path("Poratake-0.9.6-win-x64.exe").is_ok());
+        assert!(installer_path("Poratake-0.9.6-linux-x64.tar.gz").is_ok());
         assert!(installer_path("../Poratake.exe").is_err());
         assert!(installer_path("C:\\Poratake.exe").is_err());
     }
@@ -1218,7 +1383,9 @@ mod artifact_tests {
         }
         #[cfg(target_os = "linux")]
         {
-            assert_eq!(installer_suffix(), "");
+            assert!(installer_suffix().starts_with("-linux-"));
+            assert!(installer_suffix().ends_with(".tar.gz"));
+            assert_eq!(manifest_name(), "latest-linux.yml");
         }
     }
 
@@ -1227,7 +1394,9 @@ mod artifact_tests {
         let assets = json!([
             { "name": "latest.yml", "browser_download_url": "https://x/win", "size": 1 },
             { "name": "latest-mac.yml", "browser_download_url": "https://x/mac", "size": 2 },
-            { "name": "Poratake-0.9.6-universal-mac.zip", "browser_download_url": "https://x/zip", "size": 3 },
+            { "name": "latest-linux.yml", "browser_download_url": "https://x/linux", "size": 3 },
+            { "name": "Poratake-0.9.6-universal-mac.zip", "browser_download_url": "https://x/zip", "size": 4 },
+            { "name": "Poratake-0.9.6-linux-x64.tar.gz", "browser_download_url": "https://x/tgz", "size": 5 },
         ]);
         assert_eq!(
             find_manifest(&assets, "latest-mac.yml").as_deref(),
@@ -1237,7 +1406,12 @@ mod artifact_tests {
             find_manifest(&assets, "latest.yml").as_deref(),
             Some("https://x/win")
         );
+        assert_eq!(
+            find_manifest(&assets, "latest-linux.yml").as_deref(),
+            Some("https://x/linux")
+        );
         assert!(find_installer(&assets, "-universal-mac.zip").is_some());
+        assert!(find_installer(&assets, "-linux-x64.tar.gz").is_some());
     }
 
     #[test]
@@ -1260,6 +1434,26 @@ mod artifact_tests {
             Some("BBBBarm")
         );
         assert_eq!(sha512_for(manifest, "nothing.exe"), None);
+
+        let quoted = "files:\n\
+                      \x20 - url: 'Poratake-0.9.6-linux-x64.tar.gz'\n\
+                      \x20   sha512: 'CCCClinux'\n";
+        assert_eq!(
+            sha512_for(quoted, "Poratake-0.9.6-linux-x64.tar.gz").as_deref(),
+            Some("CCCClinux")
+        );
+    }
+
+    #[test]
+    fn an_app_bundle_is_the_poratake_app_when_present() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let nested = root.path().join("Poratake-0.9.6").join("Poratake.app");
+        std::fs::create_dir_all(&nested).expect("app bundle");
+        std::fs::create_dir_all(root.path().join("Other.app")).expect("other bundle");
+        assert_eq!(
+            find_app_bundle(root.path()).as_deref(),
+            Some(nested.as_path())
+        );
     }
 
     #[test]
