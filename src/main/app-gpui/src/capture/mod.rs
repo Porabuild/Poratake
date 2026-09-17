@@ -298,12 +298,15 @@ pub fn prewarm_freeze_screen(cx: &mut gpui::App) {
 fn with_frozen_screen(
     cx: &mut gpui::App,
     release_first: Option<u64>,
+    freeze: bool,
     open: impl FnOnce(&mut gpui::App, bool, u64) -> bool + 'static,
 ) {
     let service = crate::state::state(cx);
-    if !crate::system::capabilities::is_supported(
-        crate::system::capabilities::Feature::FreezeScreen,
-    ) || !service.config.get().screenshot.freeze_screen
+    if !freeze
+        || !crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::FreezeScreen,
+        )
+        || !service.config.get().screenshot.freeze_screen
     {
         if let Some(generation) = release_first {
             let releasing = service.clone();
@@ -348,11 +351,26 @@ fn with_frozen_screen(
         let opened = cx.update(|cx| open(cx, deferred_show, generation));
         if !opened {
             cx.background_executor()
-                .spawn(async move { freezing.release_screen(generation) })
+                .spawn(async move {
+                    desktop_icons::restore_after_capture(&freezing.daemon);
+                    freezing.release_screen(generation)
+                })
                 .detach();
         }
     })
     .detach();
+}
+
+/// A new overlay abandons whatever flow was open, so a capture hide it left
+/// behind is released before this flow hides for itself. Recording and window
+/// flows never hide, matching Electron (`recording-actions.ts` and the
+/// unwrapped `captureWindowToFile` in `screenshot.ts`).
+fn restart_capture_hide(intent: Option<intent::CaptureIntent>, cx: &mut gpui::App) {
+    let service = crate::state::state(cx);
+    desktop_icons::restore_after_capture(&service.daemon);
+    if intent.is_some_and(|intent| intent != intent::CaptureIntent::Recording) {
+        desktop_icons::hide_for_capture(&service.daemon, &service.config);
+    }
 }
 
 /// Opens the shared area overlay for one of the selection-driven flows.
@@ -361,23 +379,30 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
         return;
     }
     let release_first = overlay::replace_all(cx);
-    with_frozen_screen(cx, release_first, move |cx, deferred_show, generation| {
-        each_display(cx, |service, id, bounds, focus, cx| {
-            overlay::AreaOverlay::open(
-                service,
-                id,
-                bounds,
-                intent,
-                overlay::OverlayLaunch {
-                    focus,
-                    deferred_show,
-                    generation,
-                },
-                cx,
-            )
-            .is_some()
-        })
-    });
+    restart_capture_hide(Some(intent), cx);
+    let freeze = intent.allows_freeze();
+    with_frozen_screen(
+        cx,
+        release_first,
+        freeze,
+        move |cx, deferred_show, generation| {
+            each_display(cx, |service, id, bounds, focus, cx| {
+                overlay::AreaOverlay::open(
+                    service,
+                    id,
+                    bounds,
+                    intent,
+                    overlay::OverlayLaunch {
+                        focus,
+                        deferred_show,
+                        generation,
+                    },
+                    cx,
+                )
+                .is_some()
+            })
+        },
+    );
 }
 
 /// Opens the all-in-one overlay: one surface that switches between the
@@ -388,23 +413,29 @@ pub fn start_all_in_one(cx: &mut gpui::App) {
     }
     let choices = all_in_one::restore(&crate::state::state(cx).config);
     let release_first = overlay::replace_all(cx);
-    with_frozen_screen(cx, release_first, move |cx, deferred_show, generation| {
-        each_display(cx, |service, id, bounds, focus, cx| {
-            overlay::AreaOverlay::open_all_in_one(
-                service,
-                id,
-                bounds,
-                choices,
-                overlay::OverlayLaunch {
-                    focus,
-                    deferred_show,
-                    generation,
-                },
-                cx,
-            )
-            .is_some()
-        })
-    });
+    restart_capture_hide(None, cx);
+    with_frozen_screen(
+        cx,
+        release_first,
+        true,
+        move |cx, deferred_show, generation| {
+            each_display(cx, |service, id, bounds, focus, cx| {
+                overlay::AreaOverlay::open_all_in_one(
+                    service,
+                    id,
+                    bounds,
+                    choices,
+                    overlay::OverlayLaunch {
+                        focus,
+                        deferred_show,
+                        generation,
+                    },
+                    cx,
+                )
+                .is_some()
+            })
+        },
+    );
 }
 
 fn capture_topology_supported(_cx: &mut gpui::App) -> bool {
@@ -423,29 +454,83 @@ fn capture_topology_supported(_cx: &mut gpui::App) -> bool {
     true
 }
 
+#[cfg(target_os = "linux")]
 fn selected_display(cx: &mut gpui::App) -> Option<std::rc::Rc<dyn gpui::PlatformDisplay>> {
     cx.primary_display()
         .or_else(|| cx.displays().into_iter().next())
 }
 
-/// Starts a recording of the primary display.
+/// Starts a screen recording: with several displays the user picks one
+/// through the same click-to-pick overlay the screen screenshot flow uses
+/// (`recordScreen` picks through the overlay too); a click opens the
+/// pre-recording bar for that display.
 pub fn start_screen_recording(cx: &mut gpui::App) {
-    let Some(display) = selected_display(cx) else {
-        return;
+    let targets = match screen_targets(cx) {
+        Ok(targets) if !targets.is_empty() => targets,
+        Ok(_) => {
+            crate::windows::toast::Toast::show(cx, "Recording failed", "No display available");
+            return;
+        }
+        Err(error) => {
+            crate::windows::toast::Toast::show(cx, "Recording failed", error.to_string());
+            return;
+        }
     };
-    let scale = overlay::display_scale_factor(display.as_ref(), cx);
-    #[cfg(target_os = "macos")]
-    let display_id = Some(u64::from(display.id()) as u32);
-    #[cfg(not(target_os = "macos"))]
-    let display_id = None;
+
+    if targets.len() > 1
+        && crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::DisplaySelector,
+        )
+    {
+        let fallback = targets[0].clone();
+        let release_first = overlay::replace_all(cx);
+        with_frozen_screen(
+            cx,
+            release_first,
+            false,
+            move |cx, deferred_show, generation| {
+                let service = crate::state::state(cx);
+                let target_count = targets.len();
+                let mut opened = 0;
+                for target in targets {
+                    if overlay::AreaOverlay::open_screen_picker(
+                        service.clone(),
+                        target.display_id,
+                        target.bounds,
+                        intent::CaptureIntent::Recording,
+                        overlay::OverlayLaunch {
+                            focus: opened == 0,
+                            deferred_show,
+                            generation,
+                        },
+                        cx,
+                    )
+                    .is_some()
+                    {
+                        opened += 1;
+                    }
+                }
+                if all_screen_targets_opened(opened, target_count) {
+                    return true;
+                }
+                let _ = overlay::replace_all(cx);
+                let fallback = fallback.clone();
+                cx.defer(move |cx| open_screen_recording_bar(&fallback, cx));
+                false
+            },
+        );
+        return;
+    }
+
+    open_screen_recording_bar(&targets[0], cx);
+}
+
+fn open_screen_recording_bar(target: &ScreenTarget, cx: &mut gpui::App) {
     crate::windows::recording_control::RecordingControl::open(
         cx,
         crate::video::recorder::RecordingTarget::Screen,
-        overlay::physical_rect(
-            crate::system::work_area::display_bounds(display.as_ref()),
-            scale,
-        ),
-        display_id,
+        overlay::physical_rect(target.bounds, target.scale),
+        target.capture_display_id,
         None,
         None,
     );
@@ -459,6 +544,7 @@ fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
             .spawn(async move { releasing.release_screen(generation) })
             .detach();
     }
+    restart_capture_hide(None, cx);
     let mut pending = Vec::new();
     each_display(cx, |service, id, bounds, focus, cx| {
         let Some(handle) = overlay::AreaOverlay::open_with_windows(
@@ -594,6 +680,8 @@ fn screen_targets(cx: &mut gpui::App) -> Result<Vec<ScreenTarget>> {
 }
 
 fn capture_screen_target(target: ScreenTarget, cx: &mut gpui::App) {
+    let service = crate::state::state(cx);
+    desktop_icons::hide_for_capture(&service.daemon, &service.config);
     let capture = overlay::display_capture(target.bounds, target.scale, target.capture_display_id);
     let coordinator = crate::state::coordinator(cx);
     coordinator.update(cx, |coordinator, cx| {
@@ -613,6 +701,7 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
     if close_overlays {
         let _ = overlay::replace_all(cx);
     }
+    desktop_icons::hide_for_capture(&service.daemon, &service.config);
     cx.defer(move |cx| {
         coordinator.update(cx, |coordinator, cx| {
             coordinator.capture_area_reserved(
@@ -646,6 +735,8 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
         }
     };
 
+    restart_capture_hide(None, cx);
+
     if targets.len() > 1
         && crate::system::capabilities::is_supported(
             crate::system::capabilities::Feature::DisplaySelector,
@@ -653,33 +744,39 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
     {
         let fallback = targets[0].clone();
         let release_first = overlay::replace_all(cx);
-        with_frozen_screen(cx, release_first, move |cx, deferred_show, generation| {
-            let service = crate::state::state(cx);
-            let target_count = targets.len();
-            let mut opened = 0;
-            for target in targets {
-                if overlay::AreaOverlay::open_screen_picker(
-                    service.clone(),
-                    target.display_id,
-                    target.bounds,
-                    overlay::OverlayLaunch {
-                        focus: opened == 0,
-                        deferred_show,
-                        generation,
-                    },
-                    cx,
-                )
-                .is_some()
-                {
-                    opened += 1;
+        with_frozen_screen(
+            cx,
+            release_first,
+            true,
+            move |cx, deferred_show, generation| {
+                let service = crate::state::state(cx);
+                let target_count = targets.len();
+                let mut opened = 0;
+                for target in targets {
+                    if overlay::AreaOverlay::open_screen_picker(
+                        service.clone(),
+                        target.display_id,
+                        target.bounds,
+                        intent::CaptureIntent::Screenshot,
+                        overlay::OverlayLaunch {
+                            focus: opened == 0,
+                            deferred_show,
+                            generation,
+                        },
+                        cx,
+                    )
+                    .is_some()
+                    {
+                        opened += 1;
+                    }
                 }
-            }
-            if all_screen_targets_opened(opened, target_count) {
-                return true;
-            }
-            fallback_screen_target(fallback.clone(), opened > 0, cx);
-            false
-        });
+                if all_screen_targets_opened(opened, target_count) {
+                    return true;
+                }
+                fallback_screen_target(fallback.clone(), opened > 0, cx);
+                false
+            },
+        );
         return;
     }
 
@@ -734,7 +831,7 @@ mod tests {
         let observed = opened.clone();
 
         cx.update(|cx| {
-            super::with_frozen_screen(cx, None, move |_, deferred_show, generation| {
+            super::with_frozen_screen(cx, None, true, move |_, deferred_show, generation| {
                 assert!(deferred_show);
                 assert_eq!(generation, 1);
                 observed.store(true, Ordering::SeqCst);

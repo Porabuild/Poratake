@@ -4,6 +4,6 @@ mod menu;
 
 pub use icons::tray_icon;
 pub use intent::Intent;
-pub use menu::{entries, TrayMenuState};
+pub use menu::{entries, TrayMenuState, UpdateStatus};
 #[cfg(target_os = "linux")]
 pub(crate) use menu::{native_entries, NativeMenuEntry};

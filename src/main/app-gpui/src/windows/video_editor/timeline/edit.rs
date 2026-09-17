@@ -9,6 +9,8 @@ use crate::windows::video_editor::model::{
 pub const MIN_SPLIT_DURATION: f64 = 0.1;
 /// `MIN_DRAWING_SEGMENT_DURATION` in `types/drawing.ts`.
 pub const MIN_DRAWING_SEGMENT_DURATION: f64 = 0.1;
+/// `minDuration` in `use-segment-operations.ts`.
+pub const MIN_VIDEO_TRIM_DURATION: f64 = 0.5;
 
 /// Ids are derived from the cut so a split is reproducible; the renderer uses
 /// `crypto.randomUUID`, which only has to be unique within the document.
@@ -234,6 +236,35 @@ pub fn remove_range<T: TimelineRange>(items: &mut Vec<T>, id: &str) -> bool {
     items.len() != before
 }
 
+/// Port of `handleTrimMove` in `use-segment-operations.ts`: drags one edge of
+/// a video segment to the pointer's timeline time. The pointer time is
+/// converted back to source time through the segment's timeline offset and
+/// speed — the exact form of Electron's `(deltaX / pixelsPerSecond) * speed`
+/// delta — then clamped to the neighbor bounds with Electron's nesting
+/// (`Math.min(hi, v)` first, then `Math.max(lo, ...)`).
+pub fn trim_video(segments: &mut [Segment], id: &str, time: f64, start_edge: bool) -> bool {
+    let Some(index) = segments.iter().position(|segment| segment.id == id) else {
+        return false;
+    };
+    let start_on_timeline: f64 = segments[..index]
+        .iter()
+        .map(|segment| segment.timeline_duration())
+        .sum();
+    let segment = &mut segments[index];
+    let speed = segment.speed.unwrap_or(1.0).max(0.01);
+    let source_time = segment.original_start + (time - start_on_timeline) * speed;
+    if start_edge {
+        segment.original_start = source_time
+            .min(segment.original_end - MIN_VIDEO_TRIM_DURATION)
+            .max(segment.trim_min_start);
+    } else {
+        segment.original_end = source_time
+            .min(segment.trim_max_end)
+            .max(segment.original_start + MIN_VIDEO_TRIM_DURATION);
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +360,37 @@ mod tests {
         };
         assert!(!split_all(&mut state, 5.0, 5.0));
         assert_eq!(state.segments.len(), 1);
+    }
+
+    #[test]
+    fn trimming_a_video_edge_follows_the_pointer_in_source_time() {
+        let mut segments = vec![segment("a", 2.0, 10.0)];
+        assert!(trim_video(&mut segments, "a", 3.0, true));
+        assert_eq!(segments[0].original_start, 5.0);
+        assert!(trim_video(&mut segments, "a", 4.5, false));
+        assert_eq!(segments[0].original_end, 9.5);
+    }
+
+    #[test]
+    fn trimming_scales_with_segment_speed() {
+        let mut segments = vec![Segment {
+            speed: Some(2.0),
+            ..segment("a", 0.0, 10.0)
+        }];
+        assert!(trim_video(&mut segments, "a", 1.0, false));
+        assert_eq!(segments[0].original_end, 2.0);
+    }
+
+    #[test]
+    fn trimming_clamps_to_the_neighbor_bounds_and_minimum_duration() {
+        let mut segments = vec![segment("a", 2.0, 10.0)];
+        assert!(trim_video(&mut segments, "a", -5.0, true));
+        assert_eq!(segments[0].original_start, 2.0);
+        assert!(trim_video(&mut segments, "a", 50.0, false));
+        assert_eq!(segments[0].original_end, 10.0);
+        assert!(trim_video(&mut segments, "a", 9.9, true));
+        assert_eq!(segments[0].original_start, 9.5);
+        assert!(!trim_video(&mut segments, "missing", 1.0, true));
     }
 
     #[test]

@@ -46,6 +46,8 @@ pub struct HotkeyRegistry {
     registered: Vec<HotKey>,
     intents: HashMap<u32, Intent>,
     pre_recording_escape: Option<HotKey>,
+    scroll_capture_done: Option<HotKey>,
+    scroll_capture_cancel: Option<HotKey>,
 }
 
 impl HotkeyRegistry {
@@ -56,6 +58,8 @@ impl HotkeyRegistry {
                 registered: Vec::new(),
                 intents: HashMap::new(),
                 pre_recording_escape: None,
+                scroll_capture_done: None,
+                scroll_capture_cancel: None,
             };
         }
         let manager = match GlobalHotKeyManager::new() {
@@ -70,6 +74,8 @@ impl HotkeyRegistry {
             registered: Vec::new(),
             intents: HashMap::new(),
             pre_recording_escape: None,
+            scroll_capture_done: None,
+            scroll_capture_cancel: None,
         }
     }
 
@@ -105,6 +111,52 @@ impl HotkeyRegistry {
             return;
         }
         self.pre_recording_escape = None;
+    }
+
+    pub fn is_scroll_capture_done(&self, id: u32) -> bool {
+        self.scroll_capture_done
+            .is_some_and(|hotkey| hotkey.id() == id)
+    }
+
+    pub fn is_scroll_capture_cancel(&self, id: u32) -> bool {
+        self.scroll_capture_cancel
+            .is_some_and(|hotkey| hotkey.id() == id)
+    }
+
+    pub fn set_scroll_capture_shortcuts(&mut self, enabled: bool) {
+        let Some(manager) = &self.manager else {
+            return;
+        };
+        if enabled {
+            if self.scroll_capture_done.is_some() {
+                return;
+            }
+            let done = HotKey::new(None, Code::Enter);
+            let cancel = HotKey::new(None, Code::Escape);
+            match manager.register(done).and(manager.register(cancel)) {
+                Ok(()) => {
+                    self.scroll_capture_done = Some(done);
+                    self.scroll_capture_cancel = Some(cancel);
+                }
+                Err(error) => {
+                    eprintln!("[hotkey] register scroll-capture shortcuts failed: {error}");
+                    let _ = manager.unregister(done);
+                }
+            }
+            return;
+        }
+        if let Some(hotkey) = self.scroll_capture_done.take() {
+            if let Err(error) = manager.unregister(hotkey) {
+                eprintln!("[hotkey] unregister scroll-capture Enter failed: {error}");
+                self.scroll_capture_done = Some(hotkey);
+            }
+        }
+        if let Some(hotkey) = self.scroll_capture_cancel.take() {
+            if let Err(error) = manager.unregister(hotkey) {
+                eprintln!("[hotkey] unregister scroll-capture Escape failed: {error}");
+                self.scroll_capture_cancel = Some(hotkey);
+            }
+        }
     }
 
     pub fn apply(&mut self, bindings: &[(Intent, String)]) {

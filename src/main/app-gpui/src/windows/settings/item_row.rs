@@ -67,7 +67,7 @@ impl SettingsWindow {
                             && requires_accessibility
                             && !crate::system::permissions::accessibility_granted()
                         {
-                            crate::system::permissions::open_accessibility_preferences();
+                            crate::system::permissions::accessibility_request();
                             return;
                         }
                         this.mutate(cx, move |config| set(config, value));

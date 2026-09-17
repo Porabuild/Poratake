@@ -228,14 +228,33 @@ pub fn spinner_element(id: impl Into<gpui::ElementId>, size: Pixels) -> gpui::An
 }
 
 /// The select / popover indicator: `chevron-down`, carrying the renderer's
-/// `rotate-180` while the menu is open.
+/// `rotate-180` while the menu is open. Opening animates a half turn; closing
+/// snaps back so a first paint of a closed chevron does not spin from 180.
 pub fn chevron_element(size: Pixels, open: bool) -> gpui::AnyElement {
+    use gpui::AnimationExt;
+    use herogpui::gpui;
+
     match Icon::with_size("chevron-down", size) {
+        Some(element) if open => div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                element.with_animation(
+                    gpui::ElementId::Name("chevron-open".into()),
+                    gpui::Animation::new(std::time::Duration::from_millis(
+                        crate::ui::primitives::OVERLAY_ENTER_MS,
+                    ))
+                    .with_easing(crate::ui::primitives::ease_out()),
+                    |icon, delta| icon.rotate_turns(0.5 * delta),
+                ),
+            )
+            .into_any_element(),
         Some(element) => div()
             .flex()
             .items_center()
             .justify_center()
-            .child(element.rotate_180(open))
+            .child(element.rotate_180(false))
             .into_any_element(),
         None => div().into_any_element(),
     }

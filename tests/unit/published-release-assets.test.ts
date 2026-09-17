@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  linuxAssetNames,
   macAssetNames,
   publishedAssetNames,
   windowsAssetNames,
@@ -34,8 +35,16 @@ describe('published release assets', () => {
       'Poratake-1.0.0-win-arm64.exe.blockmap',
       'latest.yml',
     ]);
+    expect(linuxAssetNames(version)).toEqual([
+      'Poratake-1.0.0-linux-x64.tar.gz',
+      'Poratake-1.0.0-linux-arm64.tar.gz',
+      'latest-linux.yml',
+    ]);
     expect(publishedAssetNames(version)).toContain(
       'Poratake-1.0.0-win-arm64.exe'
+    );
+    expect(publishedAssetNames(version)).toContain(
+      'Poratake-1.0.0-linux-x64.tar.gz'
     );
     expect(publishedAssetNames(version)).not.toEqual(
       publishedAssetNames(version).filter(name => !name.includes('win-arm64'))
@@ -83,5 +92,32 @@ describe('published release assets', () => {
     expect(yaml).toContain('Poratake-1.0.0-win-x64.exe');
     expect(yaml).toContain('Poratake-1.0.0-win-arm64.exe');
     expect(yaml).toContain('version: ');
+  });
+
+  it('writes a linux updater feed from both architectures', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'poratake-linux-yml-'));
+    roots.push(root);
+    const x64Path = path.join(root, 'Poratake-1.0.0-linux-x64.tar.gz');
+    const arm64Path = path.join(root, 'Poratake-1.0.0-linux-arm64.tar.gz');
+    const outputPath = path.join(root, 'latest-linux.yml');
+    writeFileSync(x64Path, 'x64-tarball');
+    writeFileSync(arm64Path, 'arm64-tarball-bytes');
+
+    const written = spawnSync(
+      process.execPath,
+      [
+        path.join(process.cwd(), 'scripts', 'write-updater-yml.mjs'),
+        '1.0.0',
+        outputPath,
+        x64Path,
+        arm64Path,
+      ],
+      { encoding: 'utf8' }
+    );
+    expect(written.status).toBe(0);
+    const yaml = readFileSync(outputPath, 'utf8');
+    expect(yaml).toContain('Poratake-1.0.0-linux-x64.tar.gz');
+    expect(yaml).toContain('Poratake-1.0.0-linux-arm64.tar.gz');
+    expect(yaml).toContain('version: 1.0.0');
   });
 });

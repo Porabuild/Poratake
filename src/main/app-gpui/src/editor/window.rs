@@ -6,13 +6,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, App, Context, Focusable, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Render, ScrollWheelEvent, Styled, Subscription, Window,
+    div, prelude::*, px, App, Context, DragMoveEvent, ExternalPaths, FileDropEvent, Focusable,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollWheelEvent, Styled,
+    Subscription, Window,
 };
 use herogpui::gpui;
 
 use crate::editor::actions;
-use crate::editor::annotations::{self, Annotation, AnnotationHistory, Point};
+use crate::editor::annotations::{self, Annotation, AnnotationHistory, Point, ResizeHandle};
 use crate::editor::canvas::{CanvasSnapshot, EditorCanvas};
 use crate::editor::options::{
     EditorAction, EditorHandlers, EditorOption, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,
@@ -35,6 +36,316 @@ struct PersistedEditorState {
     wallpaper: crate::editor::wallpaper::WallpaperSettings,
     #[serde(default)]
     layers: Vec<crate::editor::layers::ImageLayer>,
+}
+
+struct PreCropState {
+    base_image: Arc<image::DynamicImage>,
+    width: f32,
+    height: f32,
+    annotations: Vec<Annotation>,
+}
+
+/// The in-progress custom background — port of `BackgroundEditor`'s state,
+/// gradient or image, blank or loaded from a saved custom for editing.
+pub struct BackgroundDraft {
+    pub id: Option<String>,
+    pub draft_type: BackgroundDraftType,
+    pub colors: Vec<String>,
+    pub angle: f64,
+    pub active_color: Option<usize>,
+    pub fields: Vec<gpui::Entity<InputState>>,
+    pub image_url: Option<String>,
+    pub preview: Option<Arc<gpui::RenderImage>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackgroundDraftType {
+    Gradient,
+    Image,
+}
+
+impl BackgroundDraft {
+    fn new(id: Option<String>, colors: Vec<String>, angle: f64, cx: &mut App) -> Self {
+        let fields = colors
+            .iter()
+            .map(|color| cx.new(|cx| InputState::with_value(cx, color.clone())))
+            .collect();
+        Self {
+            id,
+            draft_type: BackgroundDraftType::Gradient,
+            colors,
+            angle,
+            active_color: None,
+            fields,
+            image_url: None,
+            preview: None,
+        }
+    }
+}
+
+pub const BACKGROUND_DEFAULT_COLORS: [&str; 2] = ["#f97316", "#ec4899"];
+
+pub const BACKGROUND_PALETTE: [&str; 16] = [
+    "#ef4444", "#f97316", "#f59e0b", "#84cc16", "#22c55e", "#14b8a6", "#06b6d4", "#0ea5e9",
+    "#3b82f6", "#6366f1", "#8b5cf6", "#a855f7", "#d946ef", "#ec4899", "#f43f5e", "#1e293b",
+];
+
+pub const BACKGROUND_MAX_COLORS: usize = 5;
+pub const BACKGROUND_MIN_COLORS: usize = 2;
+
+#[derive(Clone)]
+struct RotatedTextEntry {
+    key: String,
+    image: Arc<gpui::RenderImage>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+struct ResizeState {
+    handle: ResizeHandle,
+    start: Point,
+    last: Point,
+    anchor: Option<(f64, f64)>,
+    initial_drag: Option<(f64, f64)>,
+    initial_font_size: Option<f64>,
+    initial_size: Option<(f64, f64)>,
+    center: Option<(f64, f64)>,
+    initial_rotation: Option<f64>,
+    start_angle: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CropCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CropDrag {
+    Move {
+        start: Point,
+        rect: (f64, f64, f64, f64),
+    },
+    Resize {
+        corner: CropCorner,
+        start: Point,
+        rect: (f64, f64, f64, f64),
+    },
+}
+
+const CROP_MIN_SIZE: f64 = 20.0;
+
+fn normalize_crop_rect(rect: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let (x, y, width, height) = rect;
+    (
+        if width < 0.0 { x + width } else { x },
+        if height < 0.0 { y + height } else { y },
+        width.abs(),
+        height.abs(),
+    )
+}
+
+fn crop_handle_at(rect: (f64, f64, f64, f64), point: Point, tolerance: f64) -> Option<CropCorner> {
+    let (x, y, width, height) = rect;
+    let (px, py) = (f64::from(point.x), f64::from(point.y));
+    for (corner, hx, hy) in [
+        (CropCorner::TopLeft, x, y),
+        (CropCorner::TopRight, x + width, y),
+        (CropCorner::BottomLeft, x, y + height),
+        (CropCorner::BottomRight, x + width, y + height),
+    ] {
+        if (px - hx).abs() <= tolerance && (py - hy).abs() <= tolerance {
+            return Some(corner);
+        }
+    }
+    None
+}
+
+fn point_in_crop_rect(rect: (f64, f64, f64, f64), point: Point) -> bool {
+    let (x, y, width, height) = rect;
+    let (px, py) = (f64::from(point.x), f64::from(point.y));
+    px >= x && px <= x + width && py >= y && py <= y + height
+}
+
+/// Port of `getDropEdge` in `useImageDrop.ts`: the dragged image attaches to
+/// whichever edge of the stage the pointer is nearest to.
+fn drop_edge_for_point(
+    position: gpui::Point<Pixels>,
+    bounds: gpui::Bounds<Pixels>,
+) -> crate::editor::layers::Edge {
+    use crate::editor::layers::Edge;
+
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    if width <= 0.0 || height <= 0.0 {
+        return Edge::Right;
+    }
+    let rel_x = f32::from(position.x - bounds.origin.x) / width;
+    let rel_y = f32::from(position.y - bounds.origin.y) / height;
+    let dist_top = rel_y;
+    let dist_bottom = 1.0 - rel_y;
+    let dist_left = rel_x;
+    let dist_right = 1.0 - rel_x;
+    let min = dist_top.min(dist_bottom).min(dist_left).min(dist_right);
+    if min == dist_top {
+        Edge::Top
+    } else if min == dist_bottom {
+        Edge::Bottom
+    } else if min == dist_left {
+        Edge::Left
+    } else {
+        Edge::Right
+    }
+}
+
+/// The `hasImageFile` gate: only drops carrying a decodable image light up
+/// the stage. The decoder only builds png, jpeg and gif support.
+fn is_image_path(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif")
+    )
+}
+
+/// The inline text editor tracks its content like Electron's measured input
+/// (`measureText` in `text-utils.ts`): the draft is shaped in the annotation's
+/// font and the box hugs it.
+///
+/// Two deliberate differences: the field keeps the fixed 14px input text —
+/// HeroGPUI's `TextField` pins its text size, so annotation-sized edit text
+/// would need a custom editor — and the full-size draft still renders live on
+/// the canvas behind it, so the committed result is always visible.
+fn text_field_width(text: &str, font_family: &str, cx: &gpui::App) -> f32 {
+    const FIELD_TEXT_SIZE: f32 = 14.0;
+    const FIELD_PADDING: f32 = 32.0;
+    const MIN_WIDTH: f32 = 160.0;
+
+    let measurable: String = text.chars().filter(|ch| *ch != '\n').collect();
+    let font = match font_family {
+        "serif" => gpui::font("Georgia"),
+        "mono" => gpui::font("Consolas"),
+        "comic" => gpui::font("Comic Sans MS"),
+        _ => gpui::Font::default(),
+    };
+    let system = cx.text_system();
+    let font_id = system.resolve_font(&font);
+    let size = gpui::px(FIELD_TEXT_SIZE);
+    let measured: f32 = measurable
+        .chars()
+        .map(|ch| {
+            system
+                .advance(font_id, size, ch)
+                .map(|advance| f32::from(advance.width))
+                .unwrap_or(0.0)
+        })
+        .sum();
+    (measured + FIELD_PADDING).max(MIN_WIDTH)
+}
+
+fn resize_crop_rect(
+    rect: (f64, f64, f64, f64),
+    corner: CropCorner,
+    dx: f64,
+    dy: f64,
+    image_width: f64,
+    image_height: f64,
+) -> (f64, f64, f64, f64) {
+    let (x, y, width, height) = rect;
+    let mut rect = rect;
+    match corner {
+        CropCorner::TopLeft => {
+            let new_width = width - dx;
+            if new_width < CROP_MIN_SIZE {
+                rect.0 = x + width - CROP_MIN_SIZE;
+                rect.2 = CROP_MIN_SIZE;
+            } else if x + dx < 0.0 {
+                rect.0 = 0.0;
+                rect.2 = x + width;
+            } else {
+                rect.0 = x + dx;
+                rect.2 = new_width;
+            }
+            let new_height = height - dy;
+            if new_height < CROP_MIN_SIZE {
+                rect.1 = y + height - CROP_MIN_SIZE;
+                rect.3 = CROP_MIN_SIZE;
+            } else if y + dy < 0.0 {
+                rect.1 = 0.0;
+                rect.3 = y + height;
+            } else {
+                rect.1 = y + dy;
+                rect.3 = new_height;
+            }
+        }
+        CropCorner::TopRight => {
+            let new_width = width + dx;
+            rect.2 = if new_width < CROP_MIN_SIZE {
+                CROP_MIN_SIZE
+            } else if x + new_width > image_width {
+                image_width - x
+            } else {
+                new_width
+            };
+            let new_height = height - dy;
+            if new_height < CROP_MIN_SIZE {
+                rect.1 = y + height - CROP_MIN_SIZE;
+                rect.3 = CROP_MIN_SIZE;
+            } else if y + dy < 0.0 {
+                rect.1 = 0.0;
+                rect.3 = y + height;
+            } else {
+                rect.1 = y + dy;
+                rect.3 = new_height;
+            }
+        }
+        CropCorner::BottomLeft => {
+            let new_width = width - dx;
+            if new_width < CROP_MIN_SIZE {
+                rect.0 = x + width - CROP_MIN_SIZE;
+                rect.2 = CROP_MIN_SIZE;
+            } else if x + dx < 0.0 {
+                rect.0 = 0.0;
+                rect.2 = x + width;
+            } else {
+                rect.0 = x + dx;
+                rect.2 = new_width;
+            }
+            let new_height = height + dy;
+            rect.3 = if new_height < CROP_MIN_SIZE {
+                CROP_MIN_SIZE
+            } else if y + new_height > image_height {
+                image_height - y
+            } else {
+                new_height
+            };
+        }
+        CropCorner::BottomRight => {
+            let new_width = width + dx;
+            rect.2 = if new_width < CROP_MIN_SIZE {
+                CROP_MIN_SIZE
+            } else if x + new_width > image_width {
+                image_width - x
+            } else {
+                new_width
+            };
+            let new_height = height + dy;
+            rect.3 = if new_height < CROP_MIN_SIZE {
+                CROP_MIN_SIZE
+            } else if y + new_height > image_height {
+                image_height - y
+            } else {
+                new_height
+            };
+        }
+    }
+    rect
 }
 
 pub struct EditorWindow {
@@ -65,12 +376,20 @@ pub struct EditorWindow {
     pub drag_start: Option<Point>,
     pending_pointer_update: Option<Point>,
     pending_stroke_points: Vec<Point>,
+    pending_stroke_shift: bool,
     pointer_update_scheduled: bool,
     pub menu: MenuHandle,
     /// The inline field shown while a text annotation is being typed.
     text_editor: Option<(String, gpui::Entity<InputState>)>,
     /// The pending crop rectangle in image coordinates.
     crop: Option<(f64, f64, f64, f64)>,
+    /// An in-progress crop move or corner resize, mirroring `DragState` in
+    /// `svg-crop-overlay.tsx`. Set on mousedown so the move path runs ahead
+    /// of the new-rectangle drag.
+    crop_drag: Option<CropDrag>,
+    /// Pre-crop pixels, dimensions and annotations — port of Electron's
+    /// `lastCropStateRef`, so undo after crop restores the image too.
+    pre_crop: Option<PreCropState>,
     /// The zoom control's measured rect, so its `backdrop-blur-md` can sample
     /// the capture underneath it. Measured rather than computed because the
     /// bar's width follows its label.
@@ -83,20 +402,27 @@ pub struct EditorWindow {
     fit_for: Option<(gpui::Size<Pixels>, bool)>,
     pub wallpaper: crate::editor::wallpaper::WallpaperSettings,
     wallpaper_preset_id: String,
+    background_editor: Option<BackgroundDraft>,
     pub cloud_upload: crate::cloud::UploadState,
     redact_patches: std::collections::HashMap<String, Arc<gpui::RenderImage>>,
+    rotated_text: std::collections::HashMap<String, RotatedTextEntry>,
     pub snapshot: SnapshotCell,
     pub bounds: Rc<RefCell<Option<gpui::Bounds<Pixels>>>>,
     /// Images attached to the capture's edges.
     layers: Vec<crate::editor::layers::ImageLayer>,
     /// Whether the edge overlay for attaching a capture is showing.
     capture_mode: bool,
+    /// The edge a dragged image would attach to, while an OS drag hovers the
+    /// stage — the `useImageDrop` state.
+    drop_edge: Option<crate::editor::layers::Edge>,
     /// The margin the balance option trims, recomputed when it is turned on.
     balance_crop: Option<(f32, f32, f32, f32)>,
     /// The annotation the select tool has picked, and the point a move drag
     /// started from. One history entry is pushed when the drag ends.
-    selected_annotation: Option<String>,
+    selected_annotations: Vec<String>,
     move_origin: Option<Point>,
+    resize_state: Option<ResizeState>,
+    marquee: Option<(Point, Point)>,
     /// Annotations on the editor's own clipboard, from copy or cut.
     annotation_clipboard: Vec<Annotation>,
     /// The rasterized wallpaper backdrop and the settings it was made for,
@@ -137,6 +463,9 @@ impl EditorWindow {
         let persisted = crate::history_store::editor_state_for_path(std::path::Path::new(path))
             .and_then(|state| serde_json::from_value::<PersistedEditorState>(state).ok())
             .unwrap_or_default();
+        let prefs = crate::state::try_state(cx)
+            .map(|service| service.config.get().editor)
+            .unwrap_or_default();
         let persisted_value = serde_json::to_value(&persisted).ok();
         let next_id = persisted
             .annotations
@@ -150,9 +479,12 @@ impl EditorWindow {
             base_image: base.map(Arc::new),
             layers: persisted.layers,
             capture_mode: false,
+            drop_edge: None,
             balance_crop: None,
-            selected_annotation: None,
+            selected_annotations: Vec::new(),
             move_origin: None,
+            resize_state: None,
+            marquee: None,
             annotation_clipboard: Vec::new(),
             backdrop: None,
             backdrop_key: None,
@@ -165,53 +497,65 @@ impl EditorWindow {
             image_width: width,
             image_height: height,
             file_path: path.to_string(),
-            tool: Tool::Select,
-            color_hex: "#FF3B30".to_string(),
-            stroke_width: 3.0,
-            arrow_style: "standard".to_string(),
-            highlight_color: "#FFFF00".to_string(),
-            highlight_opacity: 0.4,
-            number_style: "numeric".to_string(),
-            number_size: "medium".to_string(),
-            number_start_value: 1.0,
-            text_background: true,
-            text_font_size: 20.0,
-            text_font_family: "sans".to_string(),
-            redact_style: "pixelate".to_string(),
-            redact_intensity: 5.0,
-            shape_fill_mode: "outline".to_string(),
+            tool: Tool::from_id(&prefs.last_tool)
+                .filter(|tool| *tool != Tool::Wallpaper)
+                .unwrap_or(Tool::Select),
+            color_hex: prefs.color.clone(),
+            stroke_width: prefs.stroke_width,
+            arrow_style: prefs.arrow_style.clone(),
+            highlight_color: prefs.highlight_color.clone(),
+            highlight_opacity: prefs.highlight_opacity,
+            number_style: prefs.number_style.clone(),
+            number_size: prefs.number_size.clone(),
+            number_start_value: prefs.number_start_value,
+            text_background: prefs.text_background,
+            text_font_size: prefs.text_font_size,
+            text_font_family: prefs.text_font_family.clone(),
+            redact_style: prefs.redact_style.clone(),
+            redact_intensity: prefs.redact_intensity,
+            shape_fill_mode: prefs.shape_fill_mode.clone(),
             zoom: 1.0,
             history: AnnotationHistory::new(persisted.annotations),
             draft: None,
             drag_start: None,
             pending_pointer_update: None,
             pending_stroke_points: Vec::new(),
+            pending_stroke_shift: false,
             pointer_update_scheduled: false,
             menu: MenuHandle::new(),
             text_editor: None,
             crop: None,
+            crop_drag: None,
+            pre_crop: None,
             zoom_bar_bounds: Rc::new(RefCell::new(None)),
             fit_for: None,
             zoom_backdrop: None,
             wallpaper: persisted.wallpaper,
             wallpaper_preset_id: String::new(),
+            background_editor: None,
             cloud_upload: crate::cloud::UploadState::Idle,
             redact_patches: std::collections::HashMap::new(),
+            rotated_text: std::collections::HashMap::new(),
             snapshot: Rc::new(RefCell::new(CanvasSnapshot {
                 image: None,
                 redact_patches: std::collections::HashMap::new(),
+                rotated_text: std::collections::HashMap::new(),
                 image_width: width,
                 image_height: height,
                 zoom: 1.0,
                 annotations: Vec::new(),
                 draft: None,
-                tool: Tool::Select,
-                color_hex: "#FF3B30".to_string(),
-                stroke_width: 3.0,
+                tool: Tool::from_id(&prefs.last_tool)
+                    .filter(|tool| *tool != Tool::Wallpaper)
+                    .unwrap_or(Tool::Select),
+                color_hex: prefs.color.clone(),
+                stroke_width: prefs.stroke_width,
                 crop: None,
                 wallpaper: crate::editor::wallpaper::WallpaperSettings::default(),
                 backdrop: None,
-                selected: None,
+                selected: Vec::new(),
+                editing_text: None,
+                marquee: None,
                 balance_crop: None,
                 layers: Vec::new(),
                 spacing: 0.0,
@@ -240,36 +584,58 @@ impl EditorWindow {
 
     /// Rasterizes the redacted pixels for every committed redaction once, so
     /// the canvas can show the exported result instead of a placeholder.
-    fn refresh_redact_patches(&mut self) {
-        let Some(base) = self.base_image.as_ref() else {
-            return;
-        };
+    /// Rotated text is rasterized the same way: GPUI cannot rotate elements,
+    /// so the export renderer draws those annotations offscreen.
+    fn refresh_raster_patches(&mut self) {
+        if let Some(base) = self.base_image.clone() {
+            let mut live = std::collections::HashMap::new();
+            for annotation in self.history.current() {
+                let Annotation::Redact {
+                    id,
+                    x,
+                    y,
+                    width,
+                    height,
+                    style,
+                    intensity,
+                } = annotation
+                else {
+                    continue;
+                };
+                let key = format!("{id}:{x}:{y}:{width}:{height}:{style}:{intensity}");
+                if let Some(existing) = self.redact_patches.get(&key) {
+                    live.insert(key, existing.clone());
+                    continue;
+                }
+                if let Some(patch) =
+                    render_redact_patch(&base, *x, *y, *width, *height, style, *intensity)
+                {
+                    live.insert(key, patch);
+                }
+            }
+            self.redact_patches = live;
+        }
+        self.refresh_rotated_text();
+    }
+
+    fn refresh_rotated_text(&mut self) {
         let mut live = std::collections::HashMap::new();
         for annotation in self.history.current() {
-            let Annotation::Redact {
-                id,
-                x,
-                y,
-                width,
-                height,
-                style,
-                intensity,
-            } = annotation
-            else {
+            let Annotation::Text { id, .. } = annotation else {
                 continue;
             };
-            let key = format!("{id}:{x}:{y}:{width}:{height}:{style}:{intensity}");
-            if let Some(existing) = self.redact_patches.get(&key) {
-                live.insert(key, existing.clone());
-                continue;
+            let key = format!("{annotation:?}");
+            if let Some(existing) = self.rotated_text.get(id) {
+                if existing.key == key {
+                    live.insert(id.clone(), existing.clone());
+                    continue;
+                }
             }
-            if let Some(patch) =
-                render_redact_patch(base, *x, *y, *width, *height, style, *intensity)
-            {
-                live.insert(key, patch);
+            if let Some(patch) = render_rotated_text_patch(annotation) {
+                live.insert(id.clone(), patch);
             }
         }
-        self.redact_patches = live;
+        self.rotated_text = live;
     }
 
     fn redact_patches_by_id(&self) -> std::collections::HashMap<String, Arc<gpui::RenderImage>> {
@@ -409,10 +775,34 @@ impl EditorWindow {
         {
             let mut snap = self.snapshot.borrow_mut();
             snap.redact_patches = self.redact_patches_by_id();
+            snap.rotated_text = self
+                .rotated_text
+                .iter()
+                .map(|(id, entry)| {
+                    (
+                        id.clone(),
+                        (
+                            entry.image.clone(),
+                            entry.x,
+                            entry.y,
+                            entry.width,
+                            entry.height,
+                        ),
+                    )
+                })
+                .collect();
             snap.crop = self.crop;
             snap.wallpaper = self.wallpaper.clone();
             snap.backdrop = self.backdrop.clone();
-            snap.selected = self.selected_annotation.clone();
+            snap.selected = self.selected_annotations.clone();
+            snap.editing_text = self.text_editor.as_ref().map(|(id, _)| id.clone());
+            snap.marquee = self.marquee.map(|(start, current)| {
+                let left = f64::from(start.x).min(f64::from(current.x));
+                let top = f64::from(start.y).min(f64::from(current.y));
+                let right = f64::from(start.x).max(f64::from(current.x));
+                let bottom = f64::from(start.y).max(f64::from(current.y));
+                (left, top, right - left, bottom - top)
+            });
             snap.balance_crop = self.balance_crop;
             snap.layers = self.layers.clone();
             snap.spacing = self.wallpaper.spacing;
@@ -509,32 +899,100 @@ impl EditorWindow {
         cx.notify();
     }
 
-    /// Attaches an image to one of the capture's edges — the picker
-    /// counterpart of the renderer's capture-and-attach.
-    pub fn attach_layer(&mut self, edge: crate::editor::layers::Edge, cx: &mut Context<Self>) {
+    /// Captures a fresh area and attaches it to one of the capture's edges —
+    /// the `handleCaptureAndAttach` flow. The editor hides itself first so the
+    /// new pixels never contain it, and the coordinator re-shows it once the
+    /// capture lands or the overlay is dismissed.
+    pub fn attach_layer(
+        &mut self,
+        edge: crate::editor::layers::Edge,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.capture_mode = false;
-        let Some(path) = crate::editor::background::pick_image() else {
-            cx.notify();
-            return;
-        };
-        let Some(size) = image::image_dimensions(&path).ok() else {
-            crate::windows::toast::Toast::show(
-                cx,
-                "Could not attach",
-                "That file could not be read as an image.",
-            );
-            return;
-        };
+        let handle = window.window_handle();
+        let editor = cx.entity().downgrade();
+        let coordinator = crate::state::coordinator(cx);
+        coordinator.update(cx, |coordinator, _| {
+            coordinator.begin_editor_attach(handle, editor, edge);
+        });
+        crate::system::window_visibility::hide(window);
+        crate::capture::start_area_selection(
+            crate::capture::intent::CaptureIntent::EditorAttach,
+            cx,
+        );
+        cx.notify();
+    }
+
+    pub fn push_image_layer(
+        &mut self,
+        image_url: String,
+        natural_width: f64,
+        natural_height: f64,
+        edge: crate::editor::layers::Edge,
+        cx: &mut Context<Self>,
+    ) {
+        let id = format!("layer-{}-{}", self.layers.len() + 1, self.next_layer_id());
         self.layers.push(crate::editor::layers::ImageLayer {
-            id: format!("layer-{}", self.layers.len() + 1),
-            image_url: path,
-            natural_width: size.0 as f64,
-            natural_height: size.1 as f64,
+            id,
+            image_url,
+            natural_width,
+            natural_height,
             edge,
         });
         self.refresh_backdrop(cx);
         self.sync_snapshot();
         cx.notify();
+    }
+
+    fn next_layer_id(&mut self) -> u32 {
+        self.next_id = self.next_id.wrapping_add(1);
+        self.next_id
+    }
+
+    fn update_drop_edge(&mut self, position: gpui::Point<Pixels>, bounds: gpui::Bounds<Pixels>) {
+        let edge = drop_edge_for_point(position, bounds);
+        if self.drop_edge != Some(edge) {
+            self.drop_edge = Some(edge);
+        }
+    }
+
+    /// Attaches the first image from an OS file drop to the hovered edge —
+    /// the `handleImageDrop` flow.
+    fn handle_image_drop(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
+        let edge = self.drop_edge.take();
+        let Some(edge) = edge else {
+            cx.notify();
+            return;
+        };
+        let Some(path) = paths.0.iter().find(|path| is_image_path(path)) else {
+            cx.notify();
+            return;
+        };
+        let bytes = std::fs::read(path).ok();
+        let image = bytes
+            .as_ref()
+            .and_then(|bytes| image::load_from_memory(bytes).ok());
+        let (Some(bytes), Some(image)) = (bytes, image) else {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Could not attach",
+                "That file could not be read as an image.",
+            );
+            cx.notify();
+            return;
+        };
+        use base64::Engine;
+        self.push_image_layer(
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ),
+            image.width() as f64,
+            image.height() as f64,
+            edge,
+            cx,
+        );
     }
 
     pub fn clear_layers(&mut self, cx: &mut Context<Self>) {
@@ -547,22 +1005,64 @@ impl EditorWindow {
         cx.notify();
     }
 
-    /// Moves the selected annotation without touching history; the gesture is
-    /// committed when the pointer is released.
-    fn move_selected(&mut self, point: Point) {
-        let (Some(id), Some(origin)) = (self.selected_annotation.clone(), self.move_origin) else {
+    fn update_crop_drag(&mut self, point: Point) {
+        let Some(drag) = self.crop_drag else {
             return;
         };
+        let image_width = f64::from(self.image_width);
+        let image_height = f64::from(self.image_height);
+        match drag {
+            CropDrag::Move { start, rect } => {
+                let dx = f64::from(point.x) - f64::from(start.x);
+                let dy = f64::from(point.y) - f64::from(start.y);
+                self.crop = Some((
+                    (rect.0 + dx).clamp(0.0, image_width - rect.2),
+                    (rect.1 + dy).clamp(0.0, image_height - rect.3),
+                    rect.2,
+                    rect.3,
+                ));
+            }
+            CropDrag::Resize {
+                corner,
+                start,
+                rect,
+            } => {
+                let dx = f64::from(point.x) - f64::from(start.x);
+                let dy = f64::from(point.y) - f64::from(start.y);
+                self.crop = Some(resize_crop_rect(
+                    rect,
+                    corner,
+                    dx,
+                    dy,
+                    image_width,
+                    image_height,
+                ));
+            }
+        }
+    }
+
+    /// Moves the selected annotations without touching history; the gesture is
+    /// committed when the pointer is released.
+    fn move_selected(&mut self, point: Point) {
+        let Some(origin) = self.move_origin else {
+            return;
+        };
+        if self.selected_annotations.is_empty() {
+            return;
+        }
         let (dx, dy) = ((point.x - origin.x) as f64, (point.y - origin.y) as f64);
         if dx == 0.0 && dy == 0.0 {
             return;
         }
         let mut annotations = self.history.current().to_vec();
-        if let Some(annotation) = annotations
-            .iter_mut()
-            .find(|annotation| annotation.id() == id)
-        {
-            annotation.translate(dx, dy);
+        for annotation in annotations.iter_mut() {
+            if self
+                .selected_annotations
+                .iter()
+                .any(|id| annotation.id() == id)
+            {
+                annotation.translate(dx, dy);
+            }
         }
         // The move replaces the current revision rather than stacking one entry
         // per pointer sample; `finish_stroke` records the final position.
@@ -570,19 +1070,166 @@ impl EditorWindow {
         self.move_origin = Some(point);
     }
 
-    pub fn delete_selected_annotation(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected_annotation.take() else {
-            return;
+    fn selected_handle_at(&self, point: Point) -> Option<ResizeHandle> {
+        let [id] = self.selected_annotations.as_slice() else {
+            return None;
         };
-        let annotations: Vec<Annotation> = self
+        let annotation = self
             .history
             .current()
             .iter()
-            .filter(|annotation| annotation.id() != id)
+            .find(|annotation| annotation.id() == id)?;
+        annotation.handle_at(point, 6.0 / f64::from(self.zoom))
+    }
+
+    fn begin_resize(&mut self, handle: ResizeHandle, point: Point) {
+        let [id] = self.selected_annotations.as_slice() else {
+            return;
+        };
+        let id = id.clone();
+        let Some(annotation) = self
+            .history
+            .current()
+            .iter()
+            .find(|annotation| annotation.id() == id)
+            .cloned()
+        else {
+            return;
+        };
+        let mut state = ResizeState {
+            handle,
+            start: point,
+            last: point,
+            anchor: None,
+            initial_drag: None,
+            initial_font_size: None,
+            initial_size: None,
+            center: None,
+            initial_rotation: None,
+            start_angle: None,
+        };
+        match &annotation {
+            Annotation::Rectangle {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }
+            | Annotation::Redact {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
+                let (visual_left, visual_top, visual_right, visual_bottom) = (
+                    width.min(0.0) + x,
+                    height.min(0.0) + y,
+                    width.max(0.0) + x,
+                    height.max(0.0) + y,
+                );
+                let (anchor, drag) = match handle {
+                    ResizeHandle::TopLeft => {
+                        ((visual_right, visual_bottom), (visual_left, visual_top))
+                    }
+                    ResizeHandle::TopRight => {
+                        ((visual_left, visual_bottom), (visual_right, visual_top))
+                    }
+                    ResizeHandle::BottomLeft => {
+                        ((visual_right, visual_top), (visual_left, visual_bottom))
+                    }
+                    ResizeHandle::BottomRight => {
+                        ((visual_left, visual_top), (visual_right, visual_bottom))
+                    }
+                    _ => return,
+                };
+                state.anchor = Some(anchor);
+                state.initial_drag = Some(drag);
+            }
+            Annotation::Text { .. } => {
+                let Some(text_box) = annotation.text_box() else {
+                    return;
+                };
+                state.initial_font_size = match &annotation {
+                    Annotation::Text { font_size, .. } => Some(*font_size),
+                    _ => None,
+                };
+                state.initial_size = Some((text_box.width, text_box.height));
+                state.center = Some((text_box.center_x, text_box.center_y));
+                state.initial_rotation = Some(text_box.rotation);
+                if handle == ResizeHandle::Rotate {
+                    state.start_angle = Some(
+                        (f64::from(point.y) - text_box.center_y)
+                            .atan2(f64::from(point.x) - text_box.center_x),
+                    );
+                } else if handle != ResizeHandle::BottomRight {
+                    return;
+                }
+            }
+            Annotation::Circle { .. } => match handle {
+                ResizeHandle::TopLeft
+                | ResizeHandle::TopRight
+                | ResizeHandle::BottomLeft
+                | ResizeHandle::BottomRight => {}
+                _ => return,
+            },
+            Annotation::Line { .. } => match handle {
+                ResizeHandle::Start | ResizeHandle::End => {}
+                _ => return,
+            },
+            Annotation::Arrow { .. } => match handle {
+                ResizeHandle::Start | ResizeHandle::End | ResizeHandle::Bend => {}
+                _ => return,
+            },
+            Annotation::Pen { .. } | Annotation::Highlight { .. } | Annotation::Number { .. } => {
+                return;
+            }
+        }
+        let annotations = self.history.current().to_vec();
+        self.history.push(annotations);
+        self.resize_state = Some(state);
+    }
+
+    /// Applies the active resize to the selection without touching history;
+    /// the gesture is committed when the pointer is released.
+    fn resize_selected(&mut self, point: Point) {
+        let Some(mut state) = self.resize_state.take() else {
+            return;
+        };
+        let dx = f64::from(point.x) - f64::from(state.last.x);
+        let dy = f64::from(point.y) - f64::from(state.last.y);
+        let total_dx = f64::from(point.x) - f64::from(state.start.x);
+        let total_dy = f64::from(point.y) - f64::from(state.start.y);
+        if let [id] = self.selected_annotations.as_slice() {
+            let mut annotations = self.history.current().to_vec();
+            if let Some(annotation) = annotations
+                .iter_mut()
+                .find(|annotation| annotation.id() == id)
+            {
+                apply_resize(annotation, &state, dx, dy, total_dx, total_dy, point);
+            }
+            self.history.replace_current(annotations);
+        }
+        state.last = point;
+        self.resize_state = Some(state);
+    }
+
+    pub fn delete_selected_annotation(&mut self, cx: &mut Context<Self>) {
+        if self.selected_annotations.is_empty() {
+            return;
+        }
+        let selected = std::mem::take(&mut self.selected_annotations);
+        let mut annotations: Vec<Annotation> = self
+            .history
+            .current()
+            .iter()
+            .filter(|annotation| !selected.iter().any(|id| annotation.id() == id))
             .cloned()
             .collect();
-        self.history.push(annotations);
-        self.refresh_redact_patches();
+        self.renumber_annotations(&mut annotations);
+        self.push_annotations(annotations);
+        self.refresh_raster_patches();
         self.sync_snapshot();
         cx.notify();
     }
@@ -590,18 +1237,24 @@ impl EditorWindow {
     /// `handleCopyAnnotations` — returns false when nothing was selected, so
     /// the caller can fall back to copying the image.
     pub fn copy_selected_annotation(&mut self) -> bool {
-        let Some(id) = self.selected_annotation.clone() else {
+        if self.selected_annotations.is_empty() {
             return false;
-        };
-        let Some(annotation) = self
+        }
+        let copied: Vec<Annotation> = self
             .history
             .current()
             .iter()
-            .find(|annotation| annotation.id() == id)
-        else {
+            .filter(|annotation| {
+                self.selected_annotations
+                    .iter()
+                    .any(|id| annotation.id() == id)
+            })
+            .cloned()
+            .collect();
+        if copied.is_empty() {
             return false;
-        };
-        self.annotation_clipboard = vec![annotation.clone()];
+        }
+        self.annotation_clipboard = copied;
         true
     }
 
@@ -613,6 +1266,20 @@ impl EditorWindow {
         true
     }
 
+    pub fn select_all_annotations(&mut self, cx: &mut Context<Self>) {
+        if self.text_editor.is_some() {
+            return;
+        }
+        self.selected_annotations = self
+            .history
+            .current()
+            .iter()
+            .map(|annotation| annotation.id().to_string())
+            .collect();
+        self.sync_snapshot();
+        cx.notify();
+    }
+
     /// `handlePasteAnnotations` — a pasted copy is offset so it does not hide
     /// the original.
     pub fn paste_annotations(&mut self, cx: &mut Context<Self>) {
@@ -621,7 +1288,7 @@ impl EditorWindow {
         }
         const PASTE_OFFSET: f64 = 12.0;
         let mut annotations = self.history.current().to_vec();
-        let mut last_id = None;
+        let mut pasted_ids = Vec::new();
         for source in self.annotation_clipboard.clone() {
             let mut copy = source;
             let id = self.annotation_id();
@@ -637,18 +1304,32 @@ impl EditorWindow {
                 | Annotation::Redact { id: value, .. } => *value = id.clone(),
             }
             copy.translate(PASTE_OFFSET, PASTE_OFFSET);
-            last_id = Some(id);
+            pasted_ids.push(id);
             annotations.push(copy);
         }
-        self.history.push(annotations);
-        self.selected_annotation = last_id;
-        self.refresh_redact_patches();
+        self.push_annotations(annotations);
+        self.selected_annotations = pasted_ids;
+        self.refresh_raster_patches();
         self.sync_snapshot();
         cx.notify();
     }
 
-    fn start_stroke(&mut self, point: Point, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_stroke(
+        &mut self,
+        point: Point,
+        shift: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let tool = self.tool;
+        if tool != Tool::Crop {
+            if let Some(handle) = self.selected_handle_at(point) {
+                self.begin_resize(handle, point);
+                self.sync_snapshot();
+                cx.notify();
+                return;
+            }
+        }
         let (color, stroke_width) = if tool == Tool::Highlight {
             (self.highlight_color.clone(), self.stroke_width * 2.5)
         } else {
@@ -691,7 +1372,7 @@ impl EditorWindow {
                 };
                 let mut annotations = self.history.current().to_vec();
                 annotations.push(annotation);
-                self.history.push(annotations);
+                self.push_annotations(annotations);
             }
             Tool::Text => {
                 self.drag_start = None;
@@ -699,13 +1380,40 @@ impl EditorWindow {
                 self.focus_text_editor(window, cx);
             }
             Tool::Crop => {
-                self.drag_start = Some(point);
-                self.crop = Some((
-                    point.x.clamp(0.0, self.image_width) as f64,
-                    point.y.clamp(0.0, self.image_height) as f64,
-                    0.0,
-                    0.0,
-                ));
+                if let Some(rect) = self.crop {
+                    let normalized = normalize_crop_rect(rect);
+                    let tolerance = 8.0 / f64::from(self.zoom);
+                    if let Some(corner) = crop_handle_at(normalized, point, tolerance) {
+                        self.crop = Some(normalized);
+                        self.crop_drag = Some(CropDrag::Resize {
+                            corner,
+                            start: point,
+                            rect: normalized,
+                        });
+                    } else if point_in_crop_rect(normalized, point) {
+                        self.crop = Some(normalized);
+                        self.crop_drag = Some(CropDrag::Move {
+                            start: point,
+                            rect: normalized,
+                        });
+                    } else {
+                        self.drag_start = Some(point);
+                        self.crop = Some((
+                            point.x.clamp(0.0, self.image_width) as f64,
+                            point.y.clamp(0.0, self.image_height) as f64,
+                            0.0,
+                            0.0,
+                        ));
+                    }
+                } else {
+                    self.drag_start = Some(point);
+                    self.crop = Some((
+                        point.x.clamp(0.0, self.image_width) as f64,
+                        point.y.clamp(0.0, self.image_height) as f64,
+                        0.0,
+                        0.0,
+                    ));
+                }
             }
             Tool::Redact => {
                 self.drag_start = Some(point);
@@ -721,6 +1429,7 @@ impl EditorWindow {
             }
             Tool::Rectangle | Tool::Circle => {
                 self.drag_start = Some(point);
+                let fill = (self.shape_fill_mode == "filled").then(|| color.clone());
                 self.draft = Some(build_shape(
                     tool,
                     self.annotation_id(),
@@ -728,10 +1437,12 @@ impl EditorWindow {
                     point,
                     &color,
                     stroke_width,
+                    fill,
                 ));
             }
             Tool::Line | Tool::Arrow => {
                 self.drag_start = Some(point);
+                let arrow_style = (tool == Tool::Arrow).then(|| self.arrow_style.clone());
                 self.draft = Some(build_segment(
                     tool,
                     self.annotation_id(),
@@ -739,16 +1450,33 @@ impl EditorWindow {
                     point,
                     &color,
                     stroke_width,
+                    arrow_style,
                 ));
             }
             Tool::Select => {
-                self.selected_annotation = self.annotation_at(point);
-                self.move_origin = self.selected_annotation.as_ref().map(|_| point);
-                if self.selected_annotation.is_some() {
+                if shift {
+                    if let Some(id) = self.annotation_at(point) {
+                        if let Some(index) = self
+                            .selected_annotations
+                            .iter()
+                            .position(|selected| selected == &id)
+                        {
+                            self.selected_annotations.remove(index);
+                        } else {
+                            self.selected_annotations.push(id);
+                        }
+                    }
+                } else if let Some(id) = self.annotation_at(point) {
+                    if !self.selected_annotations.contains(&id) {
+                        self.selected_annotations = vec![id];
+                    }
+                    self.move_origin = Some(point);
                     // A move is one undo step, so the pre-move revision is kept
                     // by pushing a copy the drag then edits in place.
                     let annotations = self.history.current().to_vec();
                     self.history.push(annotations);
+                } else {
+                    self.marquee = Some((point, point));
                 }
             }
             _ => {}
@@ -763,6 +1491,8 @@ impl EditorWindow {
         let tool = self.tool;
         let color = self.color_hex.clone();
         let stroke_width = self.stroke_width;
+        let shape_fill = (self.shape_fill_mode == "filled").then(|| color.clone());
+        let arrow_style = self.arrow_style.clone();
         if tool == Tool::Crop {
             if let Some((x, y, width, height)) = &mut self.crop {
                 let clamped_x = point.x.clamp(0.0, self.image_width) as f64;
@@ -804,6 +1534,7 @@ impl EditorWindow {
                     point,
                     &color,
                     stroke_width,
+                    shape_fill.clone(),
                 );
             }
             (Some(draft @ Annotation::Line { .. }), Tool::Line)
@@ -815,6 +1546,7 @@ impl EditorWindow {
                     point,
                     &color,
                     stroke_width,
+                    (tool == Tool::Arrow).then(|| arrow_style.clone()),
                 );
             }
             _ => {}
@@ -825,6 +1557,7 @@ impl EditorWindow {
     fn queue_pointer_update(
         &mut self,
         point: Point,
+        shift: bool,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
@@ -833,6 +1566,7 @@ impl EditorWindow {
             Some(Annotation::Pen { .. } | Annotation::Highlight { .. })
         ) {
             self.pending_stroke_points.push(point);
+            self.pending_stroke_shift = shift;
         } else {
             self.pending_pointer_update = Some(point);
         }
@@ -853,8 +1587,25 @@ impl EditorWindow {
     fn apply_pending_pointer_update(&mut self) {
         self.pointer_update_scheduled = false;
         if let Some(point) = self.pending_pointer_update.take() {
+            if self.resize_state.is_some() {
+                self.resize_selected(point);
+                self.sync_snapshot();
+                return;
+            }
             if self.move_origin.is_some() {
                 self.move_selected(point);
+                self.sync_snapshot();
+                return;
+            }
+            if self.marquee.is_some() {
+                if let Some((_, current)) = self.marquee.as_mut() {
+                    *current = point;
+                }
+                self.sync_snapshot();
+                return;
+            }
+            if self.crop_drag.is_some() {
+                self.update_crop_drag(point);
                 self.sync_snapshot();
                 return;
             }
@@ -867,13 +1618,21 @@ impl EditorWindow {
             return;
         }
         let points = std::mem::take(&mut self.pending_stroke_points);
+        let shift = std::mem::replace(&mut self.pending_stroke_shift, false);
         let Some(draft @ (Annotation::Pen { .. } | Annotation::Highlight { .. })) = &mut self.draft
         else {
             return;
         };
         let mut changed = false;
-        for point in points {
-            changed |= draft.push_point(point);
+        if shift {
+            if let Some(last) = points.last() {
+                draft.constrain_to_axis(*last);
+                changed = true;
+            }
+        } else {
+            for point in points {
+                changed |= draft.push_point(point);
+            }
         }
         if changed {
             self.sync_snapshot();
@@ -897,6 +1656,13 @@ impl EditorWindow {
             return;
         }
 
+        let pre_crop = self.base_image.clone().map(|base_image| PreCropState {
+            base_image,
+            width: self.image_width,
+            height: self.image_height,
+            annotations: self.history.current().to_vec(),
+        });
+
         if let Some(base) = &self.base_image {
             let cropped = image::imageops::crop_imm(
                 base.as_ref(),
@@ -909,14 +1675,9 @@ impl EditorWindow {
             self.image_width = cropped.width() as f32;
             self.image_height = cropped.height() as f32;
 
-            let mut bgra = cropped.clone();
-            for pixel in bgra.as_chunks_mut::<4>().0 {
-                pixel.swap(0, 2);
-            }
-            self.image = Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-                image::Frame::new(bgra)
-            ])));
-            self.base_image = Some(Arc::new(image::DynamicImage::ImageRgba8(cropped)));
+            let base = image::DynamicImage::ImageRgba8(cropped);
+            self.image = Some(render_image_from_base(&base));
+            self.base_image = Some(Arc::new(base));
             self.inset_color = None;
         }
 
@@ -929,14 +1690,17 @@ impl EditorWindow {
             max_x >= 0.0 && max_y >= 0.0 && min_x <= crop_width && min_y <= crop_height
         });
         self.history.push(annotations);
+        self.pre_crop = pre_crop;
 
-        self.refresh_redact_patches();
+        self.refresh_raster_patches();
         self.sync_snapshot();
         cx.notify();
     }
 
     pub fn cancel_crop(&mut self, cx: &mut Context<Self>) {
         self.crop = None;
+        self.crop_drag = None;
+        self.drag_start = None;
         self.sync_snapshot();
         cx.notify();
     }
@@ -971,6 +1735,8 @@ impl EditorWindow {
     }
 
     /// Commits the in-progress text annotation, dropping it when empty.
+    /// A draft that matches a committed annotation is a re-edit: the text is
+    /// replaced, or the annotation deleted when emptied.
     pub fn commit_text(&mut self, cx: &mut Context<Self>) {
         let Some((_, _)) = self.text_editor.take() else {
             return;
@@ -980,21 +1746,60 @@ impl EditorWindow {
             cx.notify();
             return;
         };
-        if let Annotation::Text { text, .. } = &draft {
-            if !text.trim().is_empty() {
-                let mut annotations = self.history.current().to_vec();
+        if let Annotation::Text { id, text, .. } = &draft {
+            let mut annotations = self.history.current().to_vec();
+            if annotations.iter().any(|annotation| annotation.id() == id) {
+                if text.trim().is_empty() {
+                    annotations.retain(|annotation| annotation.id() != id);
+                    self.selected_annotations.retain(|selected| selected != id);
+                } else if let Some(existing) = annotations
+                    .iter_mut()
+                    .find(|annotation| annotation.id() == id)
+                {
+                    *existing = draft;
+                }
+                self.push_annotations(annotations);
+                self.refresh_raster_patches();
+            } else if !text.trim().is_empty() {
                 annotations.push(draft);
-                self.history.push(annotations);
+                self.push_annotations(annotations);
             }
         }
         self.sync_snapshot();
         cx.notify();
     }
 
+    fn begin_text_reedit(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_text(cx);
+        let Some(existing) = self
+            .history
+            .current()
+            .iter()
+            .find(|annotation| annotation.id() == id)
+            .cloned()
+        else {
+            return;
+        };
+        let Annotation::Text { text, .. } = &existing else {
+            return;
+        };
+        let text = text.clone();
+        self.draft = Some(existing);
+        let field = cx.new(|cx| InputState::with_value(cx, text));
+        self.text_editor = Some((id.to_string(), field));
+        self.sync_snapshot();
+        cx.notify();
+        self.focus_text_editor(window, cx);
+    }
+
     fn text_editor_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let (_, field) = self.text_editor.as_ref()?;
         let Some(Annotation::Text {
-            x, y, font_size, ..
+            x,
+            y,
+            text,
+            font_family,
+            ..
         }) = &self.draft
         else {
             return None;
@@ -1003,12 +1808,14 @@ impl EditorWindow {
         let owner = cx.entity().downgrade();
         let submit_owner = owner.clone();
         let cancel_owner = owner.clone();
+        let family = font_family.as_deref().unwrap_or("sans");
+        let width = text_field_width(text, family, cx);
         Some(
             div()
                 .absolute()
                 .left(bounds.left() + px(*x as f32 * self.zoom))
                 .top(bounds.top() + px(*y as f32 * self.zoom))
-                .w(px((*font_size as f32 * self.zoom * 12.0).max(160.0)))
+                .w(px(width))
                 .on_key_down(move |event, _window, cx| {
                     if event.keystroke.key != "escape" {
                         return;
@@ -1026,6 +1833,12 @@ impl EditorWindow {
                 .child(
                     TextField::new(field.clone())
                         .placeholder("Type\u{2026}")
+                        .font_family(match family {
+                            "serif" => "Georgia",
+                            "mono" => "Consolas",
+                            "comic" => "Comic Sans MS",
+                            _ => ".SystemUIFont",
+                        })
                         .on_change({
                             let owner = owner.clone();
                             move |value, _window, app| {
@@ -1066,8 +1879,39 @@ impl EditorWindow {
     }
 
     fn finish_stroke(&mut self) {
+        if self.crop_drag.take().is_some() {
+            self.sync_snapshot();
+            return;
+        }
         if self.move_origin.take().is_some() {
-            self.refresh_redact_patches();
+            self.refresh_raster_patches();
+            self.sync_snapshot();
+            return;
+        }
+        if self.resize_state.take().is_some() {
+            self.refresh_raster_patches();
+            self.sync_snapshot();
+            return;
+        }
+        if let Some((start, current)) = self.marquee.take() {
+            let left = f64::from(start.x).min(f64::from(current.x));
+            let top = f64::from(start.y).min(f64::from(current.y));
+            let right = f64::from(start.x).max(f64::from(current.x));
+            let bottom = f64::from(start.y).max(f64::from(current.y));
+            if right - left > 5.0 || bottom - top > 5.0 {
+                self.selected_annotations = self
+                    .history
+                    .current()
+                    .iter()
+                    .filter(|annotation| {
+                        let (a_left, a_top, a_right, a_bottom) = annotation.bounds();
+                        a_left <= right && a_right >= left && a_top <= bottom && a_bottom >= top
+                    })
+                    .map(|annotation| annotation.id().to_string())
+                    .collect();
+            } else {
+                self.selected_annotations.clear();
+            }
             self.sync_snapshot();
             return;
         }
@@ -1090,8 +1934,8 @@ impl EditorWindow {
             if has_extent {
                 let mut annotations = self.history.current().to_vec();
                 annotations.push(draft);
-                self.history.push(annotations);
-                self.refresh_redact_patches();
+                self.push_annotations(annotations);
+                self.refresh_raster_patches();
             }
         }
         self.drag_start = None;
@@ -1130,6 +1974,25 @@ fn render_redact_patch(
     ])))
 }
 
+fn render_rotated_text_patch(annotation: &Annotation) -> Option<RotatedTextEntry> {
+    let patch = crate::render::annotations::rotated_text_patch(annotation)?;
+    let key = format!("{annotation:?}");
+    let mut buffer = crate::editor::export::to_rgba(&patch.pixmap);
+    for pixel in buffer.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    Some(RotatedTextEntry {
+        key,
+        image: Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(buffer)
+        ])),
+        x: patch.x,
+        y: patch.y,
+        width: patch.pixmap.width() as f64,
+        height: patch.pixmap.height() as f64,
+    })
+}
+
 /// Port of the rectangle and circle branches of `useDrawingTools`: a
 /// rectangle keeps the signed drag extent, a circle takes the drag's midpoint
 /// and half its diagonal.
@@ -1140,6 +2003,7 @@ fn build_shape(
     end: Point,
     color: &str,
     stroke_width: f64,
+    fill: Option<String>,
 ) -> Annotation {
     let stroke = color.to_string();
 
@@ -1152,7 +2016,7 @@ fn build_shape(
             radius,
             stroke,
             stroke_width,
-            fill: None,
+            fill,
         };
     }
     Annotation::Rectangle {
@@ -1163,7 +2027,113 @@ fn build_shape(
         height: (end.y - start.y) as f64,
         stroke,
         stroke_width,
-        fill: None,
+        fill,
+    }
+}
+
+fn apply_resize(
+    annotation: &mut Annotation,
+    state: &ResizeState,
+    dx: f64,
+    dy: f64,
+    total_dx: f64,
+    total_dy: f64,
+    point: Point,
+) {
+    match annotation {
+        Annotation::Rectangle {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } => {
+            let (Some((anchor_x, anchor_y)), Some((drag_x, drag_y))) =
+                (state.anchor, state.initial_drag)
+            else {
+                return;
+            };
+            *x = anchor_x;
+            *y = anchor_y;
+            *width = drag_x + total_dx - anchor_x;
+            *height = drag_y + total_dy - anchor_y;
+        }
+        Annotation::Circle { radius, .. } => {
+            let delta = match state.handle {
+                ResizeHandle::BottomRight => (dx + dy) / 2.0,
+                ResizeHandle::TopLeft => (-dx - dy) / 2.0,
+                ResizeHandle::TopRight => (dx - dy) / 2.0,
+                ResizeHandle::BottomLeft => (-dx + dy) / 2.0,
+                _ => return,
+            };
+            *radius = (*radius + delta).max(5.0);
+        }
+        Annotation::Line { points, .. } => match state.handle {
+            ResizeHandle::Start => {
+                points[0] += dx;
+                points[1] += dy;
+            }
+            ResizeHandle::End => {
+                points[2] += dx;
+                points[3] += dy;
+            }
+            _ => {}
+        },
+        Annotation::Arrow {
+            points,
+            bend_offset,
+            ..
+        } => match state.handle {
+            ResizeHandle::Start => {
+                points[0] += dx;
+                points[1] += dy;
+            }
+            ResizeHandle::End => {
+                points[2] += dx;
+                points[3] += dy;
+            }
+            ResizeHandle::Bend => {
+                let bend = bend_offset.get_or_insert(annotations::Offset { x: 0.0, y: 0.0 });
+                bend.x += dx;
+                bend.y += dy;
+            }
+            _ => {}
+        },
+        Annotation::Text {
+            font_size,
+            rotation,
+            ..
+        } => match state.handle {
+            ResizeHandle::Rotate => {
+                let (Some((center_x, center_y)), Some(initial), Some(start_angle)) =
+                    (state.center, state.initial_rotation, state.start_angle)
+                else {
+                    return;
+                };
+                let current = (f64::from(point.y) - center_y).atan2(f64::from(point.x) - center_x);
+                *rotation = Some(initial + (current - start_angle) * 180.0 / std::f64::consts::PI);
+            }
+            ResizeHandle::BottomRight => {
+                let (Some(initial_font), Some((initial_width, initial_height))) =
+                    (state.initial_font_size, state.initial_size)
+                else {
+                    return;
+                };
+                let scale = ((initial_width + total_dx) / initial_width)
+                    .max((initial_height + total_dy) / initial_height)
+                    .max(0.1);
+                *font_size = (initial_font * scale).round().max(8.0);
+            }
+            _ => {}
+        },
+        Annotation::Pen { .. } | Annotation::Highlight { .. } | Annotation::Number { .. } => {}
     }
 }
 
@@ -1174,6 +2144,7 @@ fn build_segment(
     end: Point,
     color: &str,
     stroke_width: f64,
+    arrow_style: Option<String>,
 ) -> Annotation {
     let stroke = color.to_string();
     let points = [start.x as f64, start.y as f64, end.x as f64, end.y as f64];
@@ -1183,7 +2154,7 @@ fn build_segment(
             points,
             stroke,
             stroke_width,
-            arrow_style: None,
+            arrow_style,
             bend_offset: None,
         }
     } else {
@@ -1350,6 +2321,11 @@ impl Render for EditorWindow {
         )
         .on_action(cx.listener(|this, _: &actions::Undo, _, _cx| this.undo()))
         .on_action(cx.listener(|this, _: &actions::Redo, _, _cx| this.redo()))
+        .on_action(
+            cx.listener(|this, _: &actions::SaveScreenshot, window, cx| {
+                this.save_as(window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::PrintScreenshot, _, cx| {
             this.print(cx);
         }))
@@ -1368,9 +2344,15 @@ impl Render for EditorWindow {
         .on_action(cx.listener(|this, _: &actions::CancelCrop, _, cx| {
             if this.crop.is_some() {
                 this.cancel_crop(cx);
-            } else {
+            } else if this.text_editor.is_some() || this.draft.is_some() {
                 this.text_editor = None;
                 this.draft = None;
+                this.sync_snapshot();
+                cx.notify();
+            } else {
+                this.selected_annotations.clear();
+                this.move_origin = None;
+                this.resize_state = None;
                 this.sync_snapshot();
                 cx.notify();
             }
@@ -1393,6 +2375,11 @@ impl Render for EditorWindow {
         .on_action(cx.listener(|this, _: &actions::PasteAnnotation, _, cx| {
             this.paste_annotations(cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &actions::SelectAllAnnotations, _, cx| {
+                this.select_all_annotations(cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::DeleteAnnotation, _, cx| {
             this.delete_selected_annotation(cx);
         }))
@@ -1435,6 +2422,7 @@ impl Render for EditorWindow {
                         &self.wallpaper,
                         !self.layers.is_empty(),
                         &self.wallpaper_preset_id,
+                        self.background_editor.as_ref(),
                         &self.menu,
                         &handlers,
                         window,
@@ -1459,14 +2447,48 @@ impl Render for EditorWindow {
                             let entity = cx.entity().downgrade();
                             el.child(crate::editor::canvas::capture_edge_overlay(
                                 &theme,
-                                std::rc::Rc::new(move |edge, _window, cx| {
+                                std::rc::Rc::new(move |edge, window, cx| {
                                     if let Some(entity) = entity.upgrade() {
-                                        entity
-                                            .update(cx, |editor, cx| editor.attach_layer(edge, cx));
+                                        entity.update(cx, |editor, cx| {
+                                            editor.attach_layer(edge, window, cx)
+                                        });
                                     }
                                 }),
                             ))
                         })
+                        .when(self.drop_edge.is_some(), |el| {
+                            el.child(crate::editor::canvas::drop_zone_overlay(
+                                self.drop_edge,
+                                &theme,
+                            ))
+                        })
+                        .on_drag_move::<ExternalPaths>(cx.listener(
+                            |this, event: &DragMoveEvent<ExternalPaths>, _window, cx| {
+                                if !event.drag(cx).0.iter().any(|path| is_image_path(path)) {
+                                    if this.drop_edge.take().is_some() {
+                                        cx.notify();
+                                    }
+                                    return;
+                                }
+                                let before = this.drop_edge;
+                                this.update_drop_edge(event.event.position, event.bounds);
+                                if this.drop_edge != before {
+                                    cx.notify();
+                                }
+                            },
+                        ))
+                        .on_drop::<ExternalPaths>(cx.listener(
+                            |this, paths: &ExternalPaths, _window, cx| {
+                                this.handle_image_drop(paths, cx);
+                            },
+                        ))
+                        .on_file_drop_exit(cx.listener(
+                            |this, _event: &FileDropEvent, _window, cx| {
+                                if this.drop_edge.take().is_some() {
+                                    cx.notify();
+                                }
+                            },
+                        ))
                         .on_mouse_down(gpui::MouseButton::Left, {
                             let entity = down_entity;
                             move |event: &MouseDownEvent, window, cx| {
@@ -1484,7 +2506,28 @@ impl Render for EditorWindow {
                                         let bounds = *editor.bounds.borrow();
                                         let point =
                                             to_canvas_point(event.position, bounds, editor.zoom);
-                                        editor.start_stroke(point, window, cx);
+                                        if event.click_count >= 2 {
+                                            if let Some(id) = editor.annotation_at(point) {
+                                                let is_text =
+                                                    matches!(
+                                                        editor.history.current().iter().find(
+                                                            |annotation| annotation.id() == id
+                                                        ),
+                                                        Some(Annotation::Text { .. })
+                                                    );
+                                                if is_text {
+                                                    editor.begin_text_reedit(&id, window, cx);
+                                                    cx.notify();
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        editor.start_stroke(
+                                            point,
+                                            event.modifiers.shift,
+                                            window,
+                                            cx,
+                                        );
                                         cx.notify();
                                     })
                                     .ok();
@@ -1506,11 +2549,18 @@ impl Render for EditorWindow {
                                         }
                                         if editor.move_origin.is_some()
                                             || editor.drag_start.is_some()
+                                            || editor.resize_state.is_some()
+                                            || editor.marquee.is_some()
                                         {
                                             let bounds = *editor.bounds.borrow();
                                             let point =
                                                 to_canvas_point(position, bounds, editor.zoom);
-                                            editor.queue_pointer_update(point, window, cx);
+                                            editor.queue_pointer_update(
+                                                point,
+                                                event.modifiers.shift,
+                                                window,
+                                                cx,
+                                            );
                                         }
                                     })
                                     .ok();
@@ -1593,9 +2643,12 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
                 return;
             };
             if action == EditorAction::Pin {
-                let png = entity.read(cx).export_png().ok();
+                let editor = entity.read(cx);
+                let png = editor.export_png().ok();
+                let file_path = editor.file_path.clone();
                 if let Some(bytes) = png {
-                    crate::windows::pin::PinWindow::open(cx, bytes);
+                    crate::windows::pin::PinWindow::open_for_editor(cx, bytes, file_path);
+                    window.remove_window();
                 }
                 return;
             }
@@ -1724,6 +2777,25 @@ impl EditorWindow {
     }
 
     fn apply_option(&mut self, option: EditorOption, cx: &mut Context<Self>) {
+        self.apply_option_to_selection(&option);
+        let persist = matches!(
+            option,
+            EditorOption::Tool(_)
+                | EditorOption::Color(_)
+                | EditorOption::StrokeWidth(_)
+                | EditorOption::ArrowStyle(_)
+                | EditorOption::HighlightOpacity(_)
+                | EditorOption::HighlightColor(_)
+                | EditorOption::NumberStyle(_)
+                | EditorOption::NumberSize(_)
+                | EditorOption::NumberStartValue(_)
+                | EditorOption::TextBackground(_)
+                | EditorOption::TextFontSize(_)
+                | EditorOption::TextFontFamily(_)
+                | EditorOption::RedactStyle(_)
+                | EditorOption::RedactIntensity(_)
+                | EditorOption::ShapeFillMode(_)
+        );
         match option {
             EditorOption::Tool(tool) => self.set_tool(tool),
             EditorOption::Color(value) => self.color_hex = value.to_string(),
@@ -1731,9 +2803,15 @@ impl EditorWindow {
             EditorOption::ArrowStyle(value) => self.arrow_style = value.to_string(),
             EditorOption::HighlightOpacity(value) => self.highlight_opacity = value,
             EditorOption::HighlightColor(value) => self.highlight_color = value.to_string(),
-            EditorOption::NumberStyle(value) => self.number_style = value.to_string(),
+            EditorOption::NumberStyle(value) => {
+                self.number_style = value.to_string();
+                self.renumber_current_without_history();
+            }
             EditorOption::NumberSize(value) => self.number_size = value.to_string(),
-            EditorOption::NumberStartValue(value) => self.number_start_value = value,
+            EditorOption::NumberStartValue(value) => {
+                self.number_start_value = value;
+                self.renumber_current_without_history();
+            }
             EditorOption::TextBackground(value) => self.text_background = value,
             EditorOption::TextFontSize(value) => self.text_font_size = value,
             EditorOption::TextFontFamily(value) => self.text_font_family = value.to_string(),
@@ -1786,29 +2864,6 @@ impl EditorWindow {
                     });
                 })
                 .detach();
-            }
-            EditorOption::WallpaperPickImage => {
-                if let Some(path) = crate::editor::background::pick_image() {
-                    let id = format!(
-                        "custom-{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|duration| duration.as_millis())
-                            .unwrap_or(0)
-                    );
-                    let background = crate::config::schema::CustomBackground {
-                        id: id.clone(),
-                        data: crate::config::schema::CustomBackgroundData::Image {
-                            data: crate::config::schema::ImageBackgroundData {
-                                image_url: path.clone(),
-                            },
-                        },
-                    };
-                    crate::state::state(cx).config.update(|settings| {
-                        settings.wallpaper.custom_backgrounds.push(background);
-                    });
-                    self.wallpaper.set_background_image(Some(path));
-                }
             }
             EditorOption::WallpaperClear => {
                 self.wallpaper.set_background_image(None);
@@ -1933,8 +2988,293 @@ impl EditorWindow {
                     });
                 }
             }
+            EditorOption::WallpaperEditorOpen(id) => {
+                self.open_background_editor(id.map(|id| id.to_string()), cx);
+            }
+            EditorOption::WallpaperEditorClose => {
+                self.background_editor = None;
+            }
+            EditorOption::WallpaperEditorColor(index, value) => {
+                if let Some(draft) = self.background_editor.as_mut() {
+                    if let Some(color) = draft.colors.get_mut(index) {
+                        *color = value.to_string();
+                    }
+                }
+            }
+            EditorOption::WallpaperEditorAddColor => {
+                if let Some(draft) = self.background_editor.as_mut() {
+                    if draft.colors.len() < BACKGROUND_MAX_COLORS {
+                        let color = BACKGROUND_PALETTE
+                            .iter()
+                            .find(|candidate| !draft.colors.iter().any(|c| c == *candidate))
+                            .unwrap_or(&"#3b82f6")
+                            .to_string();
+                        draft
+                            .fields
+                            .push(cx.new(|cx| InputState::with_value(cx, color.clone())));
+                        draft.colors.push(color);
+                    }
+                }
+            }
+            EditorOption::WallpaperEditorRemoveColor(index) => {
+                if let Some(draft) = self.background_editor.as_mut() {
+                    if draft.colors.len() > BACKGROUND_MIN_COLORS && index < draft.colors.len() {
+                        draft.colors.remove(index);
+                        if index < draft.fields.len() {
+                            draft.fields.remove(index);
+                        }
+                        draft.active_color = None;
+                    }
+                }
+            }
+            EditorOption::WallpaperEditorActiveColor(index) => {
+                if let Some(draft) = self.background_editor.as_mut() {
+                    draft.active_color = if draft.active_color == Some(index) {
+                        None
+                    } else {
+                        Some(index)
+                    };
+                }
+            }
+            EditorOption::WallpaperEditorPickColor(value) => {
+                if let Some(draft) = self.background_editor.as_mut() {
+                    if let Some(index) = draft.active_color {
+                        if let Some(color) = draft.colors.get_mut(index) {
+                            *color = value.to_string();
+                            if index < draft.fields.len() {
+                                draft.fields[index] =
+                                    cx.new(|cx| InputState::with_value(cx, value.to_string()));
+                            }
+                        }
+                        draft.active_color = None;
+                    }
+                }
+            }
+            EditorOption::WallpaperEditorAngle(value) => {
+                if let Some(draft) = self.background_editor.as_mut() {
+                    draft.angle = value.round().clamp(0.0, 360.0);
+                }
+            }
+            EditorOption::WallpaperEditorTab(value) => {
+                if let Some(draft) = self.background_editor.as_mut() {
+                    draft.draft_type = if value.as_ref() == "image" {
+                        BackgroundDraftType::Image
+                    } else {
+                        BackgroundDraftType::Gradient
+                    };
+                }
+            }
+            EditorOption::WallpaperEditorPickImage => {
+                if let Some(draft) = self.background_editor.as_mut() {
+                    if let Some(path) = crate::editor::background::pick_image() {
+                        draft.preview =
+                            draft_preview_image(&path).map(|image| render_image_from_base(&image));
+                        draft.image_url = Some(path);
+                    }
+                }
+            }
+            EditorOption::WallpaperEditorSave => {
+                self.save_background_editor(cx);
+            }
             EditorOption::Zoom(value) => self.set_zoom(value),
         }
+        if persist {
+            self.persist_preferences(cx);
+        }
+        self.sync_snapshot();
+    }
+
+    #[cfg(test)]
+    pub fn apply_option_for_test(&mut self, option: EditorOption, cx: &mut Context<Self>) {
+        self.apply_option(option, cx);
+    }
+
+    fn open_background_editor(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        if let Some(id) = id {
+            let config = crate::state::state(cx).config.get();
+            let existing = config
+                .wallpaper
+                .custom_backgrounds
+                .iter()
+                .find(|background| background.id == id);
+            match existing.map(|existing| &existing.data) {
+                Some(crate::config::schema::CustomBackgroundData::Gradient { data }) => {
+                    let gradient = &data.gradient;
+                    self.background_editor = Some(BackgroundDraft::new(
+                        Some(id),
+                        gradient.colors.clone(),
+                        gradient.angle,
+                        cx,
+                    ));
+                    return;
+                }
+                Some(crate::config::schema::CustomBackgroundData::Image { data }) => {
+                    let mut draft = BackgroundDraft::new(
+                        Some(id),
+                        BACKGROUND_DEFAULT_COLORS
+                            .iter()
+                            .map(|color| color.to_string())
+                            .collect(),
+                        135.0,
+                        cx,
+                    );
+                    draft.draft_type = BackgroundDraftType::Image;
+                    draft.image_url = Some(data.image_url.clone());
+                    draft.preview = draft_preview_image(&data.image_url)
+                        .map(|image| render_image_from_base(&image));
+                    self.background_editor = Some(draft);
+                    return;
+                }
+                None => {}
+            }
+        }
+        self.background_editor = Some(BackgroundDraft::new(
+            None,
+            BACKGROUND_DEFAULT_COLORS
+                .iter()
+                .map(|color| color.to_string())
+                .collect(),
+            135.0,
+            cx,
+        ));
+    }
+
+    fn save_background_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.background_editor.take() else {
+            return;
+        };
+        let id = draft.id.clone().unwrap_or_else(|| {
+            format!(
+                "custom-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis())
+                    .unwrap_or(0)
+            )
+        });
+        if draft.draft_type == BackgroundDraftType::Image {
+            let Some(image_url) = draft.image_url.clone() else {
+                self.background_editor = Some(draft);
+                return;
+            };
+            let background = crate::config::schema::CustomBackground {
+                id: id.clone(),
+                data: crate::config::schema::CustomBackgroundData::Image {
+                    data: crate::config::schema::ImageBackgroundData {
+                        image_url: image_url.clone(),
+                    },
+                },
+            };
+            crate::state::state(cx).config.update(|settings| {
+                if let Some(existing) = settings
+                    .wallpaper
+                    .custom_backgrounds
+                    .iter_mut()
+                    .find(|existing| existing.id == id)
+                {
+                    *existing = background;
+                } else {
+                    settings.wallpaper.custom_backgrounds.push(background);
+                }
+            });
+            self.wallpaper.set_gradient(None);
+            self.wallpaper.set_background_image(Some(image_url));
+            return;
+        }
+        let background = crate::config::schema::CustomBackground {
+            id: id.clone(),
+            data: crate::config::schema::CustomBackgroundData::Gradient {
+                data: crate::config::schema::GradientBackgroundData {
+                    gradient: crate::config::schema::GradientOption {
+                        id: id.clone(),
+                        colors: draft.colors.clone(),
+                        angle: draft.angle,
+                    },
+                },
+            },
+        };
+        crate::state::state(cx).config.update(|settings| {
+            if let Some(existing) = settings
+                .wallpaper
+                .custom_backgrounds
+                .iter_mut()
+                .find(|existing| existing.id == id)
+            {
+                *existing = background;
+            } else {
+                settings.wallpaper.custom_backgrounds.push(background);
+            }
+        });
+        self.wallpaper.set_background_image(None);
+        self.wallpaper
+            .set_gradient(Some(crate::editor::wallpaper::GradientOption {
+                id,
+                colors: draft.colors,
+                angle: draft.angle,
+            }));
+    }
+
+    fn persist_preferences(&self, cx: &mut Context<Self>) {
+        let Some(service) = crate::state::try_state(cx) else {
+            return;
+        };
+        let tool = self.tool;
+        let color = self.color_hex.clone();
+        let stroke_width = self.stroke_width;
+        let arrow_style = self.arrow_style.clone();
+        let highlight_color = self.highlight_color.clone();
+        let highlight_opacity = self.highlight_opacity;
+        let number_style = self.number_style.clone();
+        let number_size = self.number_size.clone();
+        let number_start_value = self.number_start_value;
+        let text_background = self.text_background;
+        let text_font_size = self.text_font_size;
+        let text_font_family = self.text_font_family.clone();
+        let redact_style = self.redact_style.clone();
+        let redact_intensity = self.redact_intensity;
+        let shape_fill_mode = self.shape_fill_mode.clone();
+        service.config.update(|settings| {
+            let editor = &mut settings.editor;
+            editor.color = color;
+            editor.stroke_width = stroke_width;
+            editor.arrow_style = arrow_style;
+            editor.highlight_color = highlight_color;
+            editor.highlight_opacity = highlight_opacity;
+            editor.number_style = number_style;
+            editor.number_size = number_size;
+            editor.number_start_value = number_start_value;
+            editor.text_background = text_background;
+            editor.text_font_size = text_font_size;
+            editor.text_font_family = text_font_family;
+            editor.redact_style = redact_style;
+            editor.redact_intensity = redact_intensity;
+            editor.shape_fill_mode = shape_fill_mode;
+            if !matches!(tool, Tool::Crop | Tool::Wallpaper) {
+                editor.last_tool = tool.id().to_string();
+            }
+        });
+    }
+
+    fn apply_option_to_selection(&mut self, option: &EditorOption) {
+        if self.selected_annotations.is_empty() {
+            return;
+        }
+        let mut annotations = self.history.current().to_vec();
+        let mut changed = false;
+        for annotation in &mut annotations {
+            if self
+                .selected_annotations
+                .iter()
+                .any(|id| annotation.id() == id)
+            {
+                changed |= annotation.apply_option(option);
+            }
+        }
+        if !changed {
+            return;
+        }
+        self.push_annotations(annotations);
+        self.refresh_raster_patches();
         self.sync_snapshot();
     }
 
@@ -1964,15 +3304,64 @@ impl EditorWindow {
     }
 
     fn undo(&mut self) {
+        if let Some(pre) = self.pre_crop.take() {
+            self.image_width = pre.width;
+            self.image_height = pre.height;
+            self.image = Some(render_image_from_base(&pre.base_image));
+            self.base_image = Some(pre.base_image);
+            self.inset_color = None;
+            self.history.push(pre.annotations);
+            self.refresh_raster_patches();
+            self.sync_snapshot();
+            return;
+        }
         self.history.undo();
-        self.refresh_redact_patches();
+        self.refresh_raster_patches();
         self.sync_snapshot();
     }
 
     fn redo(&mut self) {
         self.history.redo();
-        self.refresh_redact_patches();
+        self.refresh_raster_patches();
         self.sync_snapshot();
+    }
+
+    /// Port of `renumberAnnotations`: number badges count up from the start
+    /// value in list order.
+    fn renumber_annotations(&self, annotations: &mut [Annotation]) {
+        let mut value = self.number_start_value;
+        for annotation in annotations.iter_mut() {
+            if let Annotation::Number {
+                value: badge,
+                display_value,
+                ..
+            } = annotation
+            {
+                *badge = value;
+                *display_value =
+                    crate::editor::options::number_display_value(value, &self.number_style);
+                value += 1.0;
+            }
+        }
+    }
+
+    /// Port of the auto-renumber effect: style/start changes resequence
+    /// badges in place, without pushing an undo step.
+    fn renumber_current_without_history(&mut self) {
+        let mut annotations = self.history.current().to_vec();
+        let before = annotations.clone();
+        self.renumber_annotations(&mut annotations);
+        if annotations != before {
+            self.history.replace_current(annotations);
+            self.refresh_raster_patches();
+        }
+    }
+
+    /// Pushes an annotation revision from an add/delete path, dropping the
+    /// pre-crop state the way Electron clears `lastCropStateRef` there.
+    fn push_annotations(&mut self, annotations: Vec<Annotation>) {
+        self.pre_crop = None;
+        self.history.push(annotations);
     }
 }
 fn load_image(
@@ -1988,17 +3377,33 @@ fn load_image(
     let (width, height) = (decoded.width() as f32, decoded.height() as f32);
 
     let base = image::DynamicImage::ImageRgba8(decoded.to_rgba8());
+    let render_image = render_image_from_base(&base);
 
+    Ok((Some(render_image), Some(base), width, height))
+}
+
+fn draft_preview_image(source: &str) -> Option<image::DynamicImage> {
+    if let Some(encoded) = source.split_once("base64,").map(|(_, tail)| tail) {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .ok()?;
+        image::load_from_memory(&bytes).ok()
+    } else {
+        let bytes = std::fs::read(source).ok()?;
+        image::load_from_memory(&bytes).ok()
+    }
+}
+
+fn render_image_from_base(base: &image::DynamicImage) -> Arc<gpui::RenderImage> {
     // GPUI composites in BGRA; swap channels once at decode time.
-    let mut buffer = decoded.to_rgba8();
+    let mut buffer = base.to_rgba8();
     for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-
-    let frame = image::Frame::new(buffer);
-    let render_image = gpui::RenderImage::new(smallvec::smallvec![frame]);
-
-    Ok((Some(Arc::new(render_image)), Some(base), width, height))
+    Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+        image::Frame::new(buffer)
+    ]))
 }
 
 impl EditorWindow {
@@ -2086,16 +3491,24 @@ impl EditorWindow {
                 })
                 .await;
 
-            let (state, title, body) = match uploaded {
-                Ok(url) => (UploadState::Success, "Link copied", url),
-                Err(error) => (UploadState::Error, "Upload failed", error.to_string()),
+            let state = if uploaded.is_ok() {
+                UploadState::Success
+            } else {
+                UploadState::Error
             };
 
-            cx.update(|cx| {
-                if state == UploadState::Success {
-                    crate::system::clipboard::ClipboardService::write_text(cx, body.clone());
+            cx.update(|cx| match uploaded {
+                Ok(url) => {
+                    crate::system::clipboard::ClipboardService::write_text(cx, url);
+                    crate::windows::toast::Toast::show_transient(
+                        cx,
+                        "Image Uploaded",
+                        "Link copied to clipboard",
+                    );
                 }
-                crate::windows::toast::Toast::show(cx, title, body)
+                Err(error) => {
+                    crate::windows::toast::Toast::show(cx, "Upload failed", error.to_string());
+                }
             });
             let _ = entity.update(cx, |editor, cx| {
                 editor.cloud_upload = state;
@@ -2256,5 +3669,313 @@ impl EditorWindow {
                 Err(error) => eprintln!("[editor] save failed: {error}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn point(x: f32, y: f32) -> Point {
+        Point { x, y }
+    }
+
+    fn resize_state(handle: ResizeHandle) -> ResizeState {
+        ResizeState {
+            handle,
+            start: point(0.0, 0.0),
+            last: point(0.0, 0.0),
+            anchor: None,
+            initial_drag: None,
+            initial_font_size: None,
+            initial_size: None,
+            center: None,
+            initial_rotation: None,
+            start_angle: None,
+        }
+    }
+
+    #[test]
+    fn corner_resize_keeps_the_anchor_and_signed_extent() {
+        let mut rect = Annotation::Rectangle {
+            id: "rect-1".into(),
+            x: 10.0,
+            y: 10.0,
+            width: 100.0,
+            height: 50.0,
+            stroke: "#000".into(),
+            stroke_width: 2.0,
+            fill: None,
+        };
+        let mut state = resize_state(ResizeHandle::BottomRight);
+        state.anchor = Some((10.0, 10.0));
+        state.initial_drag = Some((110.0, 60.0));
+        apply_resize(
+            &mut rect,
+            &state,
+            20.0,
+            10.0,
+            20.0,
+            10.0,
+            point(130.0, 70.0),
+        );
+        assert!(matches!(
+            rect,
+            Annotation::Rectangle { x, y, width, height, .. }
+            if x == 10.0 && y == 10.0 && width == 120.0 && height == 60.0
+        ));
+
+        let mut state = resize_state(ResizeHandle::TopLeft);
+        state.anchor = Some((110.0, 60.0));
+        state.initial_drag = Some((10.0, 10.0));
+        apply_resize(
+            &mut rect,
+            &state,
+            150.0,
+            0.0,
+            150.0,
+            0.0,
+            point(160.0, 10.0),
+        );
+        assert!(matches!(
+            rect,
+            Annotation::Rectangle { x, width, .. } if x == 110.0 && width == 50.0
+        ));
+    }
+
+    #[test]
+    fn circle_resize_grows_the_radius_with_a_floor() {
+        let mut circle = Annotation::Circle {
+            id: "circle-1".into(),
+            x: 50.0,
+            y: 50.0,
+            radius: 20.0,
+            stroke: "#000".into(),
+            stroke_width: 2.0,
+            fill: None,
+        };
+        let state = resize_state(ResizeHandle::BottomRight);
+        apply_resize(&mut circle, &state, 6.0, 4.0, 6.0, 4.0, point(0.0, 0.0));
+        assert!(matches!(circle, Annotation::Circle { radius, .. } if radius == 25.0));
+        apply_resize(
+            &mut circle,
+            &state,
+            -100.0,
+            -100.0,
+            -100.0,
+            -100.0,
+            point(0.0, 0.0),
+        );
+        assert!(matches!(circle, Annotation::Circle { radius, .. } if radius == 5.0));
+    }
+
+    #[test]
+    fn segment_endpoints_and_arrow_bend_follow_the_pointer() {
+        let mut line = Annotation::Line {
+            id: "line-1".into(),
+            points: [0.0, 0.0, 10.0, 10.0],
+            stroke: "#000".into(),
+            stroke_width: 2.0,
+        };
+        let state = resize_state(ResizeHandle::End);
+        apply_resize(&mut line, &state, 5.0, -5.0, 5.0, -5.0, point(0.0, 0.0));
+        assert!(matches!(
+            line,
+            Annotation::Line { points, .. } if points == [0.0, 0.0, 15.0, 5.0]
+        ));
+
+        let mut arrow = Annotation::Arrow {
+            id: "arrow-1".into(),
+            points: [0.0, 0.0, 10.0, 0.0],
+            stroke: "#000".into(),
+            stroke_width: 2.0,
+            arrow_style: None,
+            bend_offset: None,
+        };
+        let state = resize_state(ResizeHandle::Bend);
+        apply_resize(&mut arrow, &state, 3.0, 4.0, 3.0, 4.0, point(0.0, 0.0));
+        assert!(matches!(
+            arrow,
+            Annotation::Arrow { bend_offset: Some(offset), .. }
+            if offset.x == 3.0 && offset.y == 4.0
+        ));
+    }
+
+    #[test]
+    fn text_resize_scales_the_font_and_rotate_sets_the_angle() {
+        let mut text = Annotation::Text {
+            id: "text-1".into(),
+            x: 0.0,
+            y: 0.0,
+            text: "hi".into(),
+            font_size: 16.0,
+            fill: "#000".into(),
+            font_family: None,
+            background_color: None,
+            background_opacity: None,
+            background_padding: None,
+            background_radius: None,
+            rotation: None,
+        };
+        let mut state = resize_state(ResizeHandle::BottomRight);
+        state.initial_font_size = Some(16.0);
+        state.initial_size = Some((100.0, 50.0));
+        apply_resize(&mut text, &state, 50.0, 0.0, 50.0, 0.0, point(0.0, 0.0));
+        assert!(matches!(text, Annotation::Text { font_size, .. } if font_size == 24.0));
+
+        let mut state = resize_state(ResizeHandle::Rotate);
+        state.center = Some((50.0, 25.0));
+        state.initial_rotation = Some(0.0);
+        state.start_angle = Some(-std::f64::consts::FRAC_PI_2);
+        apply_resize(&mut text, &state, 0.0, 0.0, 0.0, 0.0, point(100.0, 25.0));
+        assert!(matches!(
+            text,
+            Annotation::Text { rotation: Some(angle), .. } if (angle - 90.0).abs() < 1e-9
+        ));
+    }
+
+    #[test]
+    fn shape_builders_keep_the_selected_fill() {
+        let filled = Some("#ff0000".to_string());
+        let rectangle = build_shape(
+            Tool::Rectangle,
+            "rect".into(),
+            point(0.0, 0.0),
+            point(10.0, 20.0),
+            "#ff0000",
+            4.0,
+            filled.clone(),
+        );
+        assert!(matches!(rectangle, Annotation::Rectangle { fill, .. } if fill == filled));
+        let circle = build_shape(
+            Tool::Circle,
+            "circle".into(),
+            point(0.0, 0.0),
+            point(10.0, 0.0),
+            "#ff0000",
+            4.0,
+            filled.clone(),
+        );
+        assert!(matches!(circle, Annotation::Circle { fill, .. } if fill == filled));
+    }
+
+    #[test]
+    fn shape_builders_stay_unfilled_in_outline_mode() {
+        let rectangle = build_shape(
+            Tool::Rectangle,
+            "rect".into(),
+            point(0.0, 0.0),
+            point(10.0, 20.0),
+            "#ff0000",
+            4.0,
+            None,
+        );
+        assert!(matches!(
+            rectangle,
+            Annotation::Rectangle { fill: None, .. }
+        ));
+    }
+
+    #[test]
+    fn segment_builder_keeps_the_selected_arrow_style() {
+        let arrow = build_segment(
+            Tool::Arrow,
+            "arrow".into(),
+            point(0.0, 0.0),
+            point(10.0, 10.0),
+            "#00ff00",
+            4.0,
+            Some("double-curved".to_string()),
+        );
+        assert!(
+            matches!(arrow, Annotation::Arrow { arrow_style, bend_offset: None, .. } if arrow_style.as_deref() == Some("double-curved"))
+        );
+    }
+
+    #[test]
+    fn crop_rect_normalizes_backwards_drags() {
+        assert_eq!(
+            normalize_crop_rect((120.0, 100.0, -40.0, -30.0)),
+            (80.0, 70.0, 40.0, 30.0)
+        );
+        assert_eq!(
+            normalize_crop_rect((10.0, 20.0, 30.0, 40.0)),
+            (10.0, 20.0, 30.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn crop_handles_hit_their_corners() {
+        let rect = (10.0, 20.0, 100.0, 60.0);
+        assert_eq!(
+            crop_handle_at(rect, point(10.0, 20.0), 8.0),
+            Some(CropCorner::TopLeft)
+        );
+        assert_eq!(
+            crop_handle_at(rect, point(110.0, 80.0), 8.0),
+            Some(CropCorner::BottomRight)
+        );
+        assert_eq!(crop_handle_at(rect, point(60.0, 50.0), 8.0), None);
+        assert!(point_in_crop_rect(rect, point(60.0, 50.0)));
+        assert!(!point_in_crop_rect(rect, point(200.0, 50.0)));
+    }
+
+    #[test]
+    fn crop_resize_clamps_to_min_size_and_image_bounds() {
+        let rect = resize_crop_rect(
+            (10.0, 10.0, 100.0, 100.0),
+            CropCorner::BottomRight,
+            1000.0,
+            1000.0,
+            200.0,
+            150.0,
+        );
+        assert_eq!(rect, (10.0, 10.0, 190.0, 140.0));
+
+        let rect = resize_crop_rect(
+            (10.0, 10.0, 100.0, 100.0),
+            CropCorner::TopLeft,
+            95.0,
+            95.0,
+            200.0,
+            200.0,
+        );
+        assert_eq!(rect, (90.0, 90.0, 20.0, 20.0));
+    }
+
+    #[test]
+    fn dropped_images_attach_to_the_nearest_edge() {
+        use crate::editor::layers::Edge;
+
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: gpui::size(px(400.0), px(400.0)),
+        };
+        assert_eq!(
+            drop_edge_for_point(gpui::point(px(200.0), px(10.0)), bounds),
+            Edge::Top
+        );
+        assert_eq!(
+            drop_edge_for_point(gpui::point(px(200.0), px(390.0)), bounds),
+            Edge::Bottom
+        );
+        assert_eq!(
+            drop_edge_for_point(gpui::point(px(10.0), px(200.0)), bounds),
+            Edge::Left
+        );
+        assert_eq!(
+            drop_edge_for_point(gpui::point(px(390.0), px(200.0)), bounds),
+            Edge::Right
+        );
+    }
+
+    #[test]
+    fn only_decodable_images_light_up_the_drop_zone() {
+        assert!(is_image_path(std::path::Path::new("shot.PNG")));
+        assert!(is_image_path(std::path::Path::new("shot.jpeg")));
+        assert!(is_image_path(std::path::Path::new("shot.gif")));
+        assert!(!is_image_path(std::path::Path::new("shot.webp")));
+        assert!(!is_image_path(std::path::Path::new("notes.txt")));
+        assert!(!is_image_path(std::path::Path::new("no-extension")));
     }
 }

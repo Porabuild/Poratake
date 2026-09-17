@@ -29,6 +29,7 @@
     "dev:gpui": "bun scripts/dev-gpui.mjs",
     "build:gpui:mac": "bun run build-native-mac && bash scripts/build-gpui-mac.sh",
     "build:gpui:linux": "bun run check:daemon-contract && cargo build --release --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --package poratake-gpui",
+    "package:gpui:linux": "bash scripts/package-gpui-linux.sh",
     "build-mac": "bun run build-native-mac && bun run package-mac",
     "package-mac": "rm -rf ./dist && rm -rf ./dist-electron && tsc && bunx --bun vite build && electron-builder --mac --universal -p never",
     "build-mac:local": "bun run build-native-mac && rm -rf ./dist && rm -rf ./dist-electron && tsc && bunx --bun vite build && electron-builder --mac --universal -c.mac.identity=null -p never",

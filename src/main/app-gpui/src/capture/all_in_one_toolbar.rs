@@ -62,7 +62,9 @@ pub fn render(
         .child(
             toolbar::surface(theme)
                 .child(modes)
-                .child(target_menu(choices, menu, theme, window, cx))
+                .when(!mode_selected(choices, picking_color, Mode::Ocr), |el| {
+                    el.child(target_menu(choices, menu, theme, window, cx))
+                })
                 .child(toolbar::hairline(theme))
                 .when(ocr_enabled, |el| {
                     el.child(toolbar_button(

@@ -17,4 +17,14 @@ impl Toast {
     pub fn show(_cx: &mut App, title: impl Into<SharedString>, body: impl Into<SharedString>) {
         crate::system::notification::show(&title.into(), &body.into());
     }
+
+    pub fn show_transient(
+        cx: &mut App,
+        title: impl Into<SharedString>,
+        body: impl Into<SharedString>,
+    ) {
+        let title = title.into();
+        let body = body.into();
+        crate::system::notification::show_transient(cx, &title, &body);
+    }
 }

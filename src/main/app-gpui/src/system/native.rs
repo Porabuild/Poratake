@@ -49,6 +49,8 @@ pub enum NativeEvent {
         tray_rect: Option<TrayRect>,
     },
     CancelPreRecording,
+    FinishScrollCapture,
+    CancelScrollCapture,
 }
 
 pub enum NativeCommand {
@@ -56,6 +58,7 @@ pub enum NativeCommand {
     SetTrayVisible(bool),
     SetHotkeys(Vec<(Intent, String)>),
     SetPreRecordingEscape(bool),
+    SetScrollCaptureShortcuts(bool),
 }
 
 pub struct NativeBridge {
@@ -163,6 +166,12 @@ impl Shell {
         if self.hotkeys.is_pre_recording_escape(id) {
             return Some(NativeEvent::CancelPreRecording);
         }
+        if self.hotkeys.is_scroll_capture_done(id) {
+            return Some(NativeEvent::FinishScrollCapture);
+        }
+        if self.hotkeys.is_scroll_capture_cancel(id) {
+            return Some(NativeEvent::CancelScrollCapture);
+        }
         self.hotkeys
             .intent_for(id)
             .map(|intent| NativeEvent::Intent {
@@ -190,16 +199,27 @@ impl Shell {
             NativeCommand::SetPreRecordingEscape(enabled) => {
                 self.hotkeys.set_pre_recording_escape(enabled)
             }
+            NativeCommand::SetScrollCaptureShortcuts(enabled) => {
+                self.hotkeys.set_scroll_capture_shortcuts(enabled)
+            }
         }
     }
 
     fn rebuild_menu(&mut self, state: &TrayMenuState) {
         match &self.tray {
             Some(tray) => {
-                if let Some(icon) = tray::tray_icon(state.dark_mode) {
+                if let Some(icon) = tray::tray_icon(state.dark_mode, state.is_recording) {
                     if let Err(error) = tray.set_icon(Some(icon)) {
                         eprintln!("[tray] icon update failed: {error}");
                     }
+                }
+                let tooltip = if state.is_recording {
+                    "Recording — open the menu to stop"
+                } else {
+                    "Poratake"
+                };
+                if let Err(error) = tray.set_tooltip(Some(tooltip)) {
+                    eprintln!("[tray] tooltip update failed: {error}");
                 }
                 #[cfg(target_os = "linux")]
                 tray.set_menu(Some(linux::native_menu(state)));
@@ -207,11 +227,15 @@ impl Shell {
             None => {
                 #[cfg(target_os = "linux")]
                 {
-                    self.tray = create_tray(state.dark_mode, Some(linux::native_menu(state)));
+                    self.tray = create_tray(
+                        state.dark_mode,
+                        state.is_recording,
+                        Some(linux::native_menu(state)),
+                    );
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
-                    self.tray = create_tray(state.dark_mode);
+                    self.tray = create_tray(state.dark_mode, state.is_recording);
                 }
             }
         }
@@ -233,9 +257,10 @@ impl Shell {
 #[cfg(target_os = "linux")]
 fn create_tray(
     dark_mode: bool,
+    recording: bool,
     menu: Option<Box<dyn tray_icon::menu::ContextMenu>>,
 ) -> Option<tray_icon::TrayIcon> {
-    create_tray_builder(dark_mode)
+    create_tray_builder(dark_mode, recording)
         .with_menu(menu?)
         .build()
         .map_err(|error| {
@@ -246,20 +271,24 @@ fn create_tray(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn create_tray(dark_mode: bool) -> Option<tray_icon::TrayIcon> {
-    build_tray(create_tray_builder(dark_mode))
+fn create_tray(dark_mode: bool, recording: bool) -> Option<tray_icon::TrayIcon> {
+    build_tray(create_tray_builder(dark_mode, recording))
 }
 
-fn create_tray_builder(dark_mode: bool) -> tray_icon::TrayIconBuilder {
+fn create_tray_builder(dark_mode: bool, recording: bool) -> tray_icon::TrayIconBuilder {
     let mut builder = tray_icon::TrayIconBuilder::new()
-        .with_tooltip("Poratake")
+        .with_tooltip(if recording {
+            "Recording — open the menu to stop"
+        } else {
+            "Poratake"
+        })
         .with_menu_on_left_click(false)
         .with_menu_on_right_click(false);
     #[cfg(target_os = "macos")]
     {
         builder = builder.with_icon_as_template(true);
     }
-    if let Some(icon) = tray::tray_icon(dark_mode) {
+    if let Some(icon) = tray::tray_icon(dark_mode, recording) {
         builder = builder.with_icon(icon);
     }
     builder

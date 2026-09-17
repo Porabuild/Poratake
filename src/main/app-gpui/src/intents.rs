@@ -66,6 +66,7 @@ pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
         Intent::RecordScreen => start_recording(Recording::Screen, cx),
         Intent::RecordArea => start_recording(Recording::Area, cx),
         Intent::RecordWindow => start_recording(Recording::Window, cx),
+        Intent::StopRecording => stop_recording_from_tray(cx),
         Intent::ToggleDesktopIcons => toggle_desktop_icons(cx),
         Intent::Quit => quit(cx),
     }
@@ -81,6 +82,21 @@ fn start_recording(target: Recording, cx: &mut App) {
         Recording::Screen => crate::capture::start_screen_recording(cx),
         Recording::Area => crate::capture::start_area_selection(CaptureIntent::Recording, cx),
         Recording::Window => crate::capture::start_window_recording(cx),
+    }
+}
+
+/// Electron's recording-tray click: stopping from the menu finalizes through
+/// the same `finish` as the control bar's stop button.
+fn stop_recording_from_tray(cx: &mut App) {
+    if !crate::video::recorder::is_recording() {
+        return;
+    }
+    if let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) {
+        if let Some(control) =
+            handle.downcast::<crate::windows::recording_control::RecordingControl>()
+        {
+            let _ = control.update(cx, |view, window, cx| view.finish(false, window, cx));
+        }
     }
 }
 
@@ -124,7 +140,11 @@ pub fn refresh_shell(cx: &mut App) {
     let config = crate::state::state(cx).config.get();
     let bridge = crate::state::native(cx);
     bridge.send(crate::system::native::NativeCommand::RebuildMenu(
-        crate::system::tray::TrayMenuState::from_config(&config).into(),
+        crate::system::tray::TrayMenuState::from_config(
+            &config,
+            &crate::update::current_status(cx),
+        )
+        .into(),
     ));
     bridge.send(crate::system::native::NativeCommand::SetHotkeys(
         crate::system::hotkeys::bindings(&config),
@@ -132,6 +152,11 @@ pub fn refresh_shell(cx: &mut App) {
 }
 
 pub fn open_settings(category: Category, cx: &mut App) {
+    if let Some(handle) = registry::handle(WindowKind::Settings, cx) {
+        if let Some(settings) = handle.downcast::<SettingsWindow>() {
+            let _ = settings.update(cx, |view, _, cx| view.select_category(category, cx));
+        }
+    }
     registry::open_or_activate(WindowKind::Settings, cx, |cx| {
         let store = crate::state::state(cx).config;
         #[cfg(windows)]
@@ -204,7 +229,7 @@ fn hide_tray_icon(cx: &mut App) {
         "Hide Tray Icon"
     };
     let detail = if cfg!(target_os = "macos") {
-        "The app will continue running in the background. To restore the menu bar icon, launch the app again."
+        "The app will continue running in the background. To restore the menu bar icon, launch the app again (double-click Poratake in Applications)."
     } else {
         "The app will continue running in the background. To restore the tray icon, launch Poratake again from the Start menu."
     };

@@ -6,12 +6,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    canvas, div, img, prelude::*, px, App, PathBuilder, Pixels, RenderOnce, ScrollHandle, Styled,
+    canvas, div, img, prelude::*, px, App, Hsla, PathBuilder, Pixels, RenderOnce, ScrollHandle,
+    Styled,
 };
 use herogpui::gpui;
 
 use crate::editor::annotations::{
-    arrow_head_size, normalize_rect, points_to_coordinates, Annotation, Point, DEFAULT_TEXT_FONT,
+    arrow_curve_control, arrow_head_size, normalize_rect, points_to_coordinates, Annotation, Point,
+    ResizeHandle, DEFAULT_TEXT_FONT,
 };
 use crate::theme::color::Srgba;
 use crate::theme::vars::active_theme;
@@ -26,6 +28,11 @@ pub struct CanvasSnapshot {
     /// Redacted pixels for committed redactions, rendered from the same code
     /// the export uses so the preview shows exactly what is written out.
     pub redact_patches: std::collections::HashMap<String, std::sync::Arc<gpui::RenderImage>>,
+    /// Rotated text, rasterized by the export renderer with its image-space
+    /// origin and size. GPUI cannot rotate elements, so these annotations
+    /// paint as images instead of text overlays.
+    pub rotated_text:
+        std::collections::HashMap<String, (std::sync::Arc<gpui::RenderImage>, f64, f64, f64, f64)>,
     pub image_width: f32,
     pub image_height: f32,
     pub zoom: f32,
@@ -46,7 +53,11 @@ pub struct CanvasSnapshot {
     /// blur and grain could not, and preview and export have to agree.
     pub backdrop: Option<std::sync::Arc<gpui::RenderImage>>,
     /// The annotation the select tool has picked, outlined on the canvas.
-    pub selected: Option<String>,
+    pub selected: Vec<String>,
+    /// The text annotation being re-edited, hidden while its draft shows.
+    pub editing_text: Option<String>,
+    /// The in-progress marquee selection in image coordinates.
+    pub marquee: Option<(f64, f64, f64, f64)>,
     /// `(left, top, right, bottom)` the balance option trims from the image.
     /// The frame is shifted and clipped by it so the preview matches the file.
     pub balance_crop: Option<(f32, f32, f32, f32)>,
@@ -107,41 +118,91 @@ impl RenderOnce for EditorCanvas {
 
         drop(snap);
 
-        for annotation in self
-            .snapshot
-            .borrow()
-            .annotations
-            .iter()
-            .chain(self.snapshot.borrow().draft.iter())
-        {
-            if let Annotation::Text {
-                id,
+        let text_overlays: Vec<(
+            String,
+            f64,
+            f64,
+            String,
+            String,
+            f64,
+            Option<String>,
+            Option<String>,
+        )> = {
+            let snapshot = self.snapshot.borrow();
+            let committed = snapshot
+                .annotations
+                .iter()
+                .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()));
+            committed
+                .chain(snapshot.draft.iter())
+                .filter(|annotation| {
+                    !snapshot.rotated_text.contains_key(annotation.id())
+                        || snapshot
+                            .draft
+                            .as_ref()
+                            .is_some_and(|draft| draft.id() == annotation.id())
+                })
+                .filter_map(|annotation| {
+                    if let Annotation::Text {
+                        id,
+                        x,
+                        y,
+                        text,
+                        fill,
+                        font_size,
+                        font_family,
+                        background_color,
+                        ..
+                    } = annotation
+                    {
+                        Some((
+                            id.clone(),
+                            *x,
+                            *y,
+                            text.clone(),
+                            fill.clone(),
+                            *font_size,
+                            font_family.clone(),
+                            background_color.clone(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        let zoom = self.snapshot.borrow().zoom;
+        for (id, x, y, text, fill, font_size, font_family, background_color) in text_overlays {
+            frame = frame.child(text_overlay(
+                &id,
                 x,
                 y,
-                text,
-                fill,
+                &text,
+                &fill,
                 font_size,
-                font_family,
-                background_color,
-                ..
-            } = annotation
-            {
-                frame = frame.child(text_overlay(
-                    id,
-                    *x,
-                    *y,
-                    text,
-                    fill,
-                    *font_size,
-                    font_family.as_deref().unwrap_or(DEFAULT_TEXT_FONT),
-                    background_color.as_deref(),
-                    self.snapshot.borrow().zoom,
-                ));
-            }
+                font_family.as_deref().unwrap_or(DEFAULT_TEXT_FONT),
+                background_color.as_deref(),
+                zoom,
+            ));
         }
 
-        if let Some(outline) = selection_outline(&self.snapshot.borrow(), &theme) {
+        for outline in selection_outlines(&self.snapshot.borrow(), &theme) {
             frame = frame.child(outline);
+        }
+
+        if let Some((x, y, width, height)) = self.snapshot.borrow().marquee {
+            let zoom = self.snapshot.borrow().zoom;
+            frame = frame.child(
+                div()
+                    .absolute()
+                    .left(px(x as f32 * zoom))
+                    .top(px(y as f32 * zoom))
+                    .w(px(width as f32 * zoom))
+                    .h(px(height as f32 * zoom))
+                    .bg(theme.primary.opacity(0.1))
+                    .border_1()
+                    .border_color(theme.primary),
+            );
         }
 
         if let Some((x, y, width, height)) = self.snapshot.borrow().crop {
@@ -152,6 +213,7 @@ impl RenderOnce for EditorCanvas {
         // Annotation overlay paints every committed annotation plus the draft.
         let overlay_snapshot = self.snapshot.clone();
         let recorder = self.bounds_cell.clone();
+        let (primary, primary_fg) = (theme.primary, theme.primary_foreground);
         frame = frame.child(
             canvas(
                 move |bounds, _window, _cx| {
@@ -193,7 +255,51 @@ impl RenderOnce for EditorCanvas {
                                 continue;
                             }
                         }
+                        if let Annotation::Text { id, .. } = annotation {
+                            if snapshot.editing_text.as_deref() == Some(id.as_str()) {
+                                continue;
+                            }
+                            if let Some((patch, x, y, width, height)) =
+                                snapshot.rotated_text.get(id)
+                            {
+                                let scale = snapshot.zoom;
+                                let region = gpui::Bounds {
+                                    origin: gpui::point(
+                                        bounds.origin.x + px(*x as f32 * scale),
+                                        bounds.origin.y + px(*y as f32 * scale),
+                                    ),
+                                    size: gpui::size(
+                                        px(*width as f32 * scale),
+                                        px(*height as f32 * scale),
+                                    ),
+                                };
+                                let _ = window.paint_image(
+                                    region,
+                                    region,
+                                    gpui::Corners::default(),
+                                    patch.clone(),
+                                    0,
+                                    false,
+                                );
+                                continue;
+                            }
+                        }
                         draw_annotation(window, annotation, snapshot.zoom);
+                    }
+                    if let [selected] = snapshot.selected.as_slice() {
+                        if let Some(annotation) = snapshot
+                            .annotations
+                            .iter()
+                            .find(|annotation| annotation.id() == selected)
+                        {
+                            draw_selection_handles(
+                                window,
+                                annotation,
+                                snapshot.zoom,
+                                primary,
+                                primary_fg,
+                            );
+                        }
                     }
                     set_paint_origin(gpui::point(px(0.0), px(0.0)));
                 },
@@ -447,12 +553,6 @@ pub fn draw_annotation(window: &mut gpui::Window, annotation: &Annotation, scale
             stroke,
             stroke_width,
             ..
-        }
-        | Annotation::Arrow {
-            points,
-            stroke,
-            stroke_width,
-            ..
         } => {
             let start = Point {
                 x: points[0] as f32,
@@ -467,14 +567,51 @@ pub fn draw_annotation(window: &mut gpui::Window, annotation: &Annotation, scale
             builder.move_to(at_point(&start, scale));
             builder.line_to(at_point(&end, scale));
 
-            if matches!(annotation, Annotation::Arrow { .. }) {
-                push_arrow_head(
-                    &mut builder,
-                    &start,
-                    &end,
-                    arrow_head_size(*stroke_width) as f32,
-                    scale,
-                );
+            finish(builder, window, stroke);
+        }
+        Annotation::Arrow {
+            points,
+            stroke,
+            stroke_width,
+            arrow_style,
+            bend_offset,
+            ..
+        } => {
+            let start = Point {
+                x: points[0] as f32,
+                y: points[1] as f32,
+            };
+            let end = Point {
+                x: points[2] as f32,
+                y: points[3] as f32,
+            };
+            let control =
+                arrow_curve_control(points, arrow_style.as_deref(), *bend_offset).map(|(x, y)| {
+                    Point {
+                        x: x as f32,
+                        y: y as f32,
+                    }
+                });
+
+            let mut builder = stroked(*stroke_width as f32 * scale);
+            builder.move_to(at_point(&start, scale));
+            match &control {
+                Some(control) => builder.curve_to(at_point(&end, scale), at_point(control, scale)),
+                None => builder.line_to(at_point(&end, scale)),
+            }
+
+            let head_length = arrow_head_size(*stroke_width) as f32;
+            let end_angle = match &control {
+                Some(control) => (end.y - control.y).atan2(end.x - control.x),
+                None => (end.y - start.y).atan2(end.x - start.x),
+            };
+            push_arrow_head(&mut builder, &end, end_angle, head_length, scale);
+            if matches!(arrow_style.as_deref(), Some("double" | "double-curved")) {
+                let start_angle = match &control {
+                    Some(control) => (start.y - control.y).atan2(start.x - control.x),
+                    None => (start.y - end.y).atan2(start.x - end.x),
+                };
+                push_arrow_head(&mut builder, &start, start_angle, head_length, scale);
             }
 
             finish(builder, window, stroke);
@@ -535,6 +672,146 @@ pub fn draw_annotation(window: &mut gpui::Window, annotation: &Annotation, scale
                 window.paint_path(path, Srgba::parse(stroke).to_hsla());
             }
         }
+    }
+}
+
+fn draw_selection_handles(
+    window: &mut gpui::Window,
+    annotation: &Annotation,
+    scale: f32,
+    primary: Hsla,
+    primary_fg: Hsla,
+) {
+    const HANDLE_SIZE: f32 = 12.0;
+    const HANDLE_STROKE: f32 = 2.0;
+    if scale <= 0.0 {
+        return;
+    }
+    let half = HANDLE_SIZE / 2.0 / scale;
+    let stroke = HANDLE_STROKE / scale;
+    for (handle, x, y) in annotation.handles() {
+        let (x, y) = (x as f32, y as f32);
+        match handle {
+            ResizeHandle::TopLeft
+            | ResizeHandle::TopRight
+            | ResizeHandle::BottomLeft
+            | ResizeHandle::BottomRight => {
+                let rotation = match annotation {
+                    Annotation::Text { .. } => annotation
+                        .text_box()
+                        .map(|text_box| text_box.rotation)
+                        .unwrap_or(0.0) as f32,
+                    _ => 0.0,
+                };
+                handle_square(
+                    window, x, y, half, rotation, scale, primary_fg, primary, stroke,
+                );
+            }
+            ResizeHandle::Start | ResizeHandle::End => {
+                handle_circle(window, x, y, half, scale, primary_fg, primary, stroke);
+            }
+            ResizeHandle::Bend => {
+                if let Annotation::Arrow { points, .. } = annotation {
+                    let mid = Point {
+                        x: ((points[0] + points[2]) / 2.0) as f32,
+                        y: ((points[1] + points[3]) / 2.0) as f32,
+                    };
+                    connector_line(window, &mid, &Point { x, y }, scale, primary);
+                }
+                handle_circle(
+                    window,
+                    x,
+                    y,
+                    half - 1.0 / scale,
+                    scale,
+                    primary,
+                    primary_fg,
+                    stroke,
+                );
+            }
+            ResizeHandle::Rotate => {
+                if let Some(text_box) = annotation.text_box() {
+                    let rotation = text_box.rotation.to_radians();
+                    let (sin, cos) = rotation.sin_cos();
+                    let top = Point {
+                        x: (text_box.center_x + sin * text_box.height / 2.0) as f32,
+                        y: (text_box.center_y - cos * text_box.height / 2.0) as f32,
+                    };
+                    connector_line(window, &top, &Point { x, y }, scale, primary);
+                }
+                handle_circle(window, x, y, half, scale, primary, primary_fg, stroke);
+            }
+        }
+    }
+}
+
+fn handle_square(
+    window: &mut gpui::Window,
+    x: f32,
+    y: f32,
+    half: f32,
+    rotation_deg: f32,
+    scale: f32,
+    fill: Hsla,
+    stroke: Hsla,
+    stroke_width: f32,
+) {
+    let rotation = rotation_deg.to_radians();
+    let (sin, cos) = rotation.sin_cos();
+    let corners =
+        [(-half, -half), (half, -half), (half, half), (-half, half)].map(|(dx, dy)| Point {
+            x: x + dx * cos - dy * sin,
+            y: y + dx * sin + dy * cos,
+        });
+    let mut filled = PathBuilder::fill();
+    for (index, corner) in corners.iter().enumerate() {
+        if index == 0 {
+            filled.move_to(at_point(corner, scale));
+        } else {
+            filled.line_to(at_point(corner, scale));
+        }
+    }
+    filled.close();
+    if let Ok(path) = filled.build() {
+        window.paint_path(path, fill);
+    }
+    let mut outlined = PathBuilder::stroke(px(stroke_width * scale));
+    for (index, corner) in corners.iter().chain(corners.first()).enumerate() {
+        if index == 0 {
+            outlined.move_to(at_point(corner, scale));
+        } else {
+            outlined.line_to(at_point(corner, scale));
+        }
+    }
+    if let Ok(path) = outlined.build() {
+        window.paint_path(path, stroke);
+    }
+}
+
+fn handle_circle(
+    window: &mut gpui::Window,
+    x: f32,
+    y: f32,
+    radius: f32,
+    scale: f32,
+    fill: Hsla,
+    stroke: Hsla,
+    stroke_width: f32,
+) {
+    if let Some(path) = ellipse_path(x, y, radius, radius, scale) {
+        window.paint_path(path, fill);
+    }
+    if let Some(path) = ellipse_stroke_path(x, y, radius, radius, scale, stroke_width) {
+        window.paint_path(path, stroke);
+    }
+}
+
+fn connector_line(window: &mut gpui::Window, from: &Point, to: &Point, scale: f32, color: Hsla) {
+    let mut builder = PathBuilder::stroke(px(1.0));
+    builder.move_to(at_point(from, scale));
+    builder.line_to(at_point(to, scale));
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
     }
 }
 
@@ -632,21 +909,20 @@ fn ellipse_stroke_path(
 
 fn push_arrow_head(
     builder: &mut PathBuilder,
-    start: &Point,
-    end: &Point,
+    tip_image: &Point,
+    angle: f32,
     head_length: f32,
     scale: f32,
 ) {
-    let angle = (end.y - start.y).atan2(end.x - start.x);
     let spread = 0.5_f32; // ~28.6°, matches lucide-style arrow heads
-    let tip = at_point(end, scale);
+    let tip = at_point(tip_image, scale);
     for delta in [
         angle + std::f32::consts::PI - spread,
         angle + std::f32::consts::PI + spread,
     ] {
         let wing = Point {
-            x: end.x + head_length * delta.cos(),
-            y: end.y + head_length * delta.sin(),
+            x: tip_image.x + head_length * delta.cos(),
+            y: tip_image.y + head_length * delta.sin(),
         };
         builder.move_to(tip);
         builder.line_to(at_point(&wing, scale));
@@ -759,34 +1035,100 @@ pub fn capture_edge_overlay(
     overlay.into_any_element()
 }
 
-/// A dashed box around the selected annotation, matching `SELECTION_STROKE`
-/// in the renderer's annotation layer.
-fn selection_outline(
-    snapshot: &CanvasSnapshot,
+/// Port of `drop-zone-overlay.tsx` — the dashed frame shown while an image
+/// drag hovers the stage, with the hovered edge's quarter tinted.
+pub fn drop_zone_overlay(
+    edge: Option<crate::editor::layers::Edge>,
     theme: &crate::theme::vars::ThemeVars,
-) -> Option<gpui::AnyElement> {
-    let id = snapshot.selected.as_ref()?;
-    let annotation = snapshot
-        .annotations
-        .iter()
-        .find(|annotation| annotation.id() == id)?;
-    let (left, top, right, bottom) = annotation.bounds();
-    let zoom = snapshot.zoom;
-    const PADDING: f32 = 4.0;
+) -> gpui::AnyElement {
+    use crate::editor::layers::Edge;
 
-    let _ = theme;
-    Some(
+    let overlay = div().absolute().inset_0().child(
         div()
             .absolute()
-            .left(px(left as f32 * zoom - PADDING))
-            .top(px(top as f32 * zoom - PADDING))
-            .w(px((right - left) as f32 * zoom + PADDING * 2.0))
-            .h(px((bottom - top) as f32 * zoom + PADDING * 2.0))
-            .rounded(px(3.0))
-            .border_1()
-            .border_color(theme.primary)
-            .into_any_element(),
-    )
+            .inset_0()
+            .rounded(px(8.0))
+            .border_2()
+            .border_color(theme.primary.opacity(0.5))
+            .bg(theme.primary.opacity(0.05)),
+    );
+    let Some(edge) = edge else {
+        return overlay.into_any_element();
+    };
+    let zone = match edge {
+        Edge::Top => div().absolute().top_0().left_0().right_0().h_1_4(),
+        Edge::Bottom => div().absolute().bottom_0().left_0().right_0().h_1_4(),
+        Edge::Left => div().absolute().left_0().top_0().bottom_0().w_1_4(),
+        Edge::Right => div().absolute().right_0().top_0().bottom_0().w_1_4(),
+        Edge::Primary => div().absolute().inset_0(),
+    }
+    .bg(theme.primary.opacity(0.15));
+    let indicator = match edge {
+        Edge::Top => div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(4.0))
+            .rounded_b(px(4.0)),
+        Edge::Bottom => div()
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .h(px(4.0))
+            .rounded_t(px(4.0)),
+        Edge::Left => div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .w(px(4.0))
+            .rounded_r(px(4.0)),
+        Edge::Right => div()
+            .absolute()
+            .right_0()
+            .top_0()
+            .bottom_0()
+            .w(px(4.0))
+            .rounded_l(px(4.0)),
+        Edge::Primary => div().absolute().inset_0(),
+    }
+    .bg(theme.primary);
+    overlay.child(zone).child(indicator).into_any_element()
+}
+
+/// A dashed box around the selected annotation, matching `SELECTION_STROKE`
+/// in the renderer's annotation layer.
+fn selection_outlines(
+    snapshot: &CanvasSnapshot,
+    theme: &crate::theme::vars::ThemeVars,
+) -> Vec<gpui::AnyElement> {
+    const PADDING: f32 = 4.0;
+    let zoom = snapshot.zoom;
+    snapshot
+        .selected
+        .iter()
+        .filter_map(|id| {
+            snapshot
+                .annotations
+                .iter()
+                .find(|annotation| annotation.id() == id)
+        })
+        .map(|annotation| {
+            let (left, top, right, bottom) = annotation.bounds();
+            div()
+                .absolute()
+                .left(px(left as f32 * zoom - PADDING))
+                .top(px(top as f32 * zoom - PADDING))
+                .w(px((right - left) as f32 * zoom + PADDING * 2.0))
+                .h(px((bottom - top) as f32 * zoom + PADDING * 2.0))
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(theme.primary)
+                .into_any_element()
+        })
+        .collect()
 }
 
 /// Dims everything outside the pending crop and outlines the kept region,
@@ -800,8 +1142,22 @@ fn crop_overlay(
     theme: &crate::theme::vars::ThemeVars,
 ) -> gpui::AnyElement {
     let dim = crate::ui::colors::black(0.5);
-    let (left, top) = (px(x as f32 * zoom), px(y as f32 * zoom));
-    let (w, h) = (px(width as f32 * zoom), px(height as f32 * zoom));
+    let (nx, ny, nw, nh) = (
+        if width < 0.0 { x + width } else { x },
+        if height < 0.0 { y + height } else { y },
+        width.abs(),
+        height.abs(),
+    );
+    let (left, top) = (px(nx as f32 * zoom), px(ny as f32 * zoom));
+    let (w, h) = (px(nw as f32 * zoom), px(nh as f32 * zoom));
+    let handle = px(12.0);
+    let half_handle = px(6.0);
+    let corners = [
+        (left - half_handle, top - half_handle),
+        (left + w - half_handle, top - half_handle),
+        (left - half_handle, top + h - half_handle),
+        (left + w - half_handle, top + h - half_handle),
+    ];
 
     div()
         .absolute()
@@ -836,6 +1192,18 @@ fn crop_overlay(
                 .border_1()
                 .border_color(theme.accent),
         )
+        .children(corners.into_iter().map(|(hx, hy)| {
+            div()
+                .absolute()
+                .left(hx)
+                .top(hy)
+                .w(handle)
+                .h(handle)
+                .rounded(px(2.0))
+                .bg(theme.primary_foreground)
+                .border_2()
+                .border_color(theme.primary)
+        }))
         .child(
             div()
                 .absolute()

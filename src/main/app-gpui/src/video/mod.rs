@@ -5,6 +5,7 @@ pub mod decoder;
 pub mod encoder;
 pub mod export;
 pub mod music;
+pub mod preview_audio;
 pub mod project;
 pub mod recorder;
 pub mod sidecars;

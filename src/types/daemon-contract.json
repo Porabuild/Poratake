@@ -362,12 +362,18 @@
       "requestSchemas": {
         "start": {
           "captureContext": "displayCaptureContext",
-          "fields": ["autoScrollSpeed", "maxHeight", "nativeControls"],
+          "fields": [
+            "autoScrollSpeed",
+            "maxHeight",
+            "nativeControls",
+            "boundaryOnly"
+          ],
           "required": [],
           "types": {
             "autoScrollSpeed": "slow-or-medium-or-fast",
             "maxHeight": "integer-clamped-min-1",
-            "nativeControls": "optional-boolean"
+            "nativeControls": "optional-boolean",
+            "boundaryOnly": "optional-boolean-macos-frame-only"
           },
           "defaults": {
             "autoScrollSpeed": "medium",

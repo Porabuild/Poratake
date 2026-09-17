@@ -9,13 +9,17 @@ use herogpui::gpui;
 use crate::config::schema::{CustomBackground, CustomBackgroundData};
 use crate::editor::options::{EditorHandlers, EditorOption};
 use crate::editor::wallpaper::{self, WallpaperSettings};
+use crate::editor::window::{
+    BackgroundDraft, BackgroundDraftType, BACKGROUND_MAX_COLORS, BACKGROUND_MIN_COLORS,
+    BACKGROUND_PALETTE,
+};
 use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, ICON_MD};
 use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
-use herogpui::components::{Select, Size, Switch, Variant};
+use herogpui::components::{Button, Select, Size, Switch, TextField, Variant};
 use herogpui::components::{Slider, SliderSize};
 use herogpui::Separator;
 
@@ -23,6 +27,7 @@ pub fn render(
     wallpaper: &WallpaperSettings,
     has_layers: bool,
     preset_id: &str,
+    draft: Option<&BackgroundDraft>,
     _menu: &MenuHandle,
     handlers: &EditorHandlers,
     window: &mut Window,
@@ -32,20 +37,15 @@ pub fn render(
     let config = crate::state::state(cx).config.get();
     let wallpaper_config = config.wallpaper;
 
-    let sheet = div()
-        .id("wallpaper-sheet")
+    if let Some(draft) = draft {
+        return sheet_shell(background_editor_panel(draft, handlers, &theme), &theme);
+    }
+
+    let content = div()
         .flex()
         .flex_col()
-        .flex_none()
-        .h_full()
-        .w(px(chrome::WALLPAPER_SHEET_WIDTH))
+        .w_full()
         .gap(px(chrome::WALLPAPER_SHEET_GAP))
-        .overflow_y_scroll()
-        .border_r_1()
-        .border_color(theme.border)
-        .bg(theme.popover)
-        .p(px(chrome::WALLPAPER_SHEET_PAD))
-        .shadow_lg()
         .child(header(handlers, &theme))
         .child(
             div()
@@ -119,7 +119,26 @@ pub fn render(
                 .child(spacing_control(wallpaper, has_layers, handlers, &theme))
                 .child(Separator::new())
                 .child(window_frames(wallpaper, handlers, &theme)),
-        )
+        );
+    sheet_shell(content.into_any_element(), &theme)
+}
+
+fn sheet_shell(content: AnyElement, theme: &ThemeVars) -> AnyElement {
+    let sheet = div()
+        .id("wallpaper-sheet")
+        .flex()
+        .flex_col()
+        .flex_none()
+        .h_full()
+        .w(px(chrome::WALLPAPER_SHEET_WIDTH))
+        .gap(px(chrome::WALLPAPER_SHEET_GAP))
+        .overflow_y_scroll()
+        .border_r_1()
+        .border_color(theme.border)
+        .bg(theme.popover)
+        .p(px(chrome::WALLPAPER_SHEET_PAD))
+        .shadow_lg()
+        .child(content)
         .with_animation(
             ElementId::Name("wallpaper-sheet-enter".into()),
             Animation::new(std::time::Duration::from_millis(300))
@@ -139,6 +158,432 @@ pub fn render(
         .w(px(chrome::WALLPAPER_SHEET_WIDTH))
         .overflow_hidden()
         .child(sheet)
+        .into_any_element()
+}
+
+/// Port of `background-editor.tsx` — authors a custom gradient (up to five
+/// colors, angle, palette picker, live preview) or picks a custom image.
+fn background_editor_panel(
+    draft: &BackgroundDraft,
+    handlers: &EditorHandlers,
+    theme: &ThemeVars,
+) -> AnyElement {
+    let close = handlers.option(EditorOption::WallpaperEditorClose);
+    let save = handlers.option(EditorOption::WallpaperEditorSave);
+    let is_gradient = draft.draft_type == BackgroundDraftType::Gradient;
+    let mut panel = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .gap(px(16.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(chrome::TEXT_SM))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.foreground)
+                        .child(if draft.id.is_some() {
+                            "Edit Background"
+                        } else {
+                            "New Background"
+                        }),
+                )
+                .child(
+                    icon_button::compact_sm_muted("wallpaper-editor-close", "x")
+                        .on_press(move |_event, window, cx| close(window, cx)),
+                ),
+        )
+        .child(editor_preview(draft, theme))
+        .child(editor_type_toggle(draft, handlers, theme));
+    panel = if is_gradient {
+        panel
+            .child(editor_colors(draft, handlers, theme))
+            .child(editor_angle(draft, handlers, theme))
+    } else {
+        panel.child(editor_image(draft, handlers, theme))
+    };
+    let save_disabled = !is_gradient && draft.image_url.is_none();
+    panel
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(8.0))
+                .child(
+                    div().flex_1().child(
+                        Button::new("wallpaper-editor-cancel")
+                            .variant(Variant::Ghost)
+                            .size(Size::Sm)
+                            .label("Cancel")
+                            .on_press({
+                                let close = handlers.option(EditorOption::WallpaperEditorClose);
+                                move |_event, window, cx| close(window, cx)
+                            }),
+                    ),
+                )
+                .child(
+                    div().flex_1().child(
+                        Button::new("wallpaper-editor-save")
+                            .size(Size::Sm)
+                            .label(if draft.id.is_some() { "Update" } else { "Save" })
+                            .is_disabled(save_disabled)
+                            .on_press(move |_event, window, cx| save(window, cx)),
+                    ),
+                ),
+        )
+        .into_any_element()
+}
+
+fn editor_preview(draft: &BackgroundDraft, theme: &ThemeVars) -> AnyElement {
+    if draft.draft_type == BackgroundDraftType::Gradient {
+        let from = Srgba::parse(
+            draft
+                .colors
+                .first()
+                .map(String::as_str)
+                .unwrap_or("#000000"),
+        )
+        .to_hsla();
+        let to =
+            Srgba::parse(draft.colors.last().map(String::as_str).unwrap_or("#ffffff")).to_hsla();
+        return div()
+            .w_full()
+            .h(px(64.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(linear_gradient(
+                draft.angle as f32,
+                linear_color_stop(from, 0.0),
+                linear_color_stop(to, 1.0),
+            ))
+            .into_any_element();
+    }
+    match draft.preview.clone() {
+        Some(preview) => div()
+            .w_full()
+            .h(px(64.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.border)
+            .overflow_hidden()
+            .child(
+                gpui::img(preview)
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover),
+            )
+            .into_any_element(),
+        None => div().into_any_element(),
+    }
+}
+
+fn editor_type_toggle(
+    draft: &BackgroundDraft,
+    handlers: &EditorHandlers,
+    theme: &ThemeVars,
+) -> AnyElement {
+    let row = div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(label("Type", theme, false));
+    let mut buttons = div().flex().flex_row().gap(px(8.0));
+    for (value, text) in [
+        (BackgroundDraftType::Gradient, "Gradient"),
+        (BackgroundDraftType::Image, "Image"),
+    ] {
+        let selected = draft.draft_type == value;
+        let apply = handlers.option(EditorOption::WallpaperEditorTab(SharedString::from(
+            if value == BackgroundDraftType::Image {
+                "image"
+            } else {
+                "gradient"
+            },
+        )));
+        buttons = buttons.child(
+            div()
+                .id(ElementId::Name(SharedString::from(format!(
+                    "wallpaper-editor-tab-{text}"
+                ))))
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(if selected { theme.primary } else { theme.input })
+                .bg(if selected {
+                    theme.primary.opacity(0.1)
+                } else {
+                    theme.popover
+                })
+                .text_size(px(chrome::TEXT_SM))
+                .text_color(if selected {
+                    theme.primary
+                } else {
+                    theme.foreground
+                })
+                .px(px(12.0))
+                .py(px(6.0))
+                .cursor_pointer()
+                .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                    apply(window, cx);
+                })
+                .child(text),
+        );
+    }
+    row.child(buttons).into_any_element()
+}
+
+fn editor_colors(
+    draft: &BackgroundDraft,
+    handlers: &EditorHandlers,
+    theme: &ThemeVars,
+) -> AnyElement {
+    let mut section = div().flex().flex_col().gap(px(8.0)).child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(label("Colors", theme, false))
+            .child(if draft.colors.len() < BACKGROUND_MAX_COLORS {
+                let add = handlers.option(EditorOption::WallpaperEditorAddColor);
+                div()
+                    .id("wallpaper-editor-add-color")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .text_size(px(chrome::TEXT_XS))
+                    .text_color(theme.muted_foreground)
+                    .cursor_pointer()
+                    .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                        add(window, cx);
+                    })
+                    .child(icon_element("plus", px(12.0)))
+                    .child("Add")
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            }),
+    );
+    let mut rows = div().flex().flex_col().gap(px(8.0));
+    for (index, color) in draft.colors.iter().enumerate() {
+        let active = draft.active_color == Some(index);
+        let toggle = handlers.option(EditorOption::WallpaperEditorActiveColor(index));
+        let mut row = div().flex().flex_row().items_center().gap(px(8.0)).child(
+            div()
+                .id(ElementId::Name(SharedString::from(format!(
+                    "wallpaper-editor-swatch-{index}"
+                ))))
+                .w(px(32.0))
+                .h(px(32.0))
+                .rounded(px(6.0))
+                .border_2()
+                .border_color(if active { theme.ring } else { theme.border })
+                .bg(Srgba::parse(color).to_hsla())
+                .cursor_pointer()
+                .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                    toggle(window, cx);
+                }),
+        );
+        if let Some(field) = draft.fields.get(index) {
+            let apply = handlers.on_option.clone();
+            row = row.child(
+                div()
+                    .flex_1()
+                    .child(
+                        TextField::new(field.clone()).on_change(move |value, window, cx| {
+                            apply(
+                                EditorOption::WallpaperEditorColor(
+                                    index,
+                                    SharedString::from(value),
+                                ),
+                                window,
+                                cx,
+                            );
+                        }),
+                    ),
+            );
+        }
+        if draft.colors.len() > BACKGROUND_MIN_COLORS {
+            let remove = handlers.option(EditorOption::WallpaperEditorRemoveColor(index));
+            row = row.child(
+                icon_button::compact_sm_muted(
+                    ElementId::Name(SharedString::from(format!(
+                        "wallpaper-editor-remove-{index}"
+                    ))),
+                    "trash-2",
+                )
+                .on_press(move |_event, window, cx| remove(window, cx)),
+            );
+        }
+        rows = rows.child(row);
+    }
+    section = section.child(rows);
+    if draft.active_color.is_some() {
+        let mut grid = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(6.0))
+            .rounded(px(6.0))
+            .bg(theme.muted.opacity(0.5))
+            .p(px(8.0));
+        for palette in BACKGROUND_PALETTE {
+            let selected = draft
+                .active_color
+                .and_then(|index| draft.colors.get(index))
+                .is_some_and(|color| color == palette);
+            let pick = handlers.option(EditorOption::WallpaperEditorPickColor(SharedString::from(
+                palette,
+            )));
+            grid = grid.child(
+                div()
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "wallpaper-editor-palette-{palette}"
+                    ))))
+                    .w(px(24.0))
+                    .h(px(24.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(if selected { theme.ring } else { theme.border })
+                    .bg(Srgba::parse(palette).to_hsla())
+                    .cursor_pointer()
+                    .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                        pick(window, cx);
+                    }),
+            );
+        }
+        section = section.child(grid);
+    }
+    section.into_any_element()
+}
+
+fn editor_angle(
+    draft: &BackgroundDraft,
+    handlers: &EditorHandlers,
+    theme: &ThemeVars,
+) -> AnyElement {
+    let apply = handlers.on_option.clone();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(label("Angle", theme, false))
+                .child(
+                    div()
+                        .text_size(px(chrome::TEXT_XS))
+                        .text_color(theme.muted_foreground)
+                        .child(format!("{}°", draft.angle.round() as i32)),
+                ),
+        )
+        .child(
+            Slider::new("wallpaper-editor-angle", draft.angle as f32)
+                .min_value(0.0)
+                .max_value(360.0)
+                .continuous(true)
+                .size(SliderSize::Sm)
+                .on_change(move |value, window, cx| {
+                    apply(
+                        EditorOption::WallpaperEditorAngle(*value as f64),
+                        window,
+                        cx,
+                    );
+                }),
+        )
+        .into_any_element()
+}
+
+fn editor_image(
+    draft: &BackgroundDraft,
+    handlers: &EditorHandlers,
+    theme: &ThemeVars,
+) -> AnyElement {
+    let pick = handlers.option(EditorOption::WallpaperEditorPickImage);
+    let mut box_el = div()
+        .id("wallpaper-editor-pick-image")
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(8.0))
+        .h(px(96.0))
+        .w_full()
+        .rounded(px(8.0))
+        .border_2()
+        .border_color(theme.border)
+        .overflow_hidden()
+        .cursor_pointer()
+        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+            pick(window, cx);
+        });
+    if let Some(preview) = draft.preview.clone() {
+        box_el = box_el.child(
+            gpui::img(preview)
+                .size_full()
+                .object_fit(gpui::ObjectFit::Cover),
+        );
+    } else {
+        box_el = box_el.child(icon_element("upload", px(24.0))).child(
+            div()
+                .text_size(px(chrome::TEXT_XS))
+                .text_color(theme.muted_foreground)
+                .child("Click to select image"),
+        );
+    }
+    let mut section = div().flex().flex_col().gap(px(12.0)).child(box_el);
+    if draft.image_url.is_some() {
+        let change = handlers.option(EditorOption::WallpaperEditorPickImage);
+        section = section.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .text_size(px(chrome::TEXT_XS))
+                        .text_color(theme.muted_foreground)
+                        .child(icon_element("image", px(12.0)))
+                        .child("Image selected"),
+                )
+                .child(
+                    div()
+                        .id("wallpaper-editor-change-image")
+                        .text_size(px(chrome::TEXT_XS))
+                        .text_color(theme.primary)
+                        .cursor_pointer()
+                        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                            change(window, cx)
+                        })
+                        .child("Change"),
+                ),
+        );
+    }
+    section
+        .child(
+            div()
+                .text_size(px(chrome::TEXT_XS))
+                .text_color(theme.muted_foreground)
+                .child("Supports PNG, JPEG, and GIF"),
+        )
         .into_any_element()
 }
 
@@ -283,9 +728,17 @@ fn backgrounds_section(
         chrome::wallpaper_tile_size(chrome::WALLPAPER_SHEET_WIDTH, chrome::WALLPAPER_SHEET_PAD);
     let has_background = wallpaper.has_background();
     let selected_custom = selected_custom(wallpaper, customs);
-    let add = handlers.option(EditorOption::WallpaperPickImage);
+    let add = handlers.option(EditorOption::WallpaperEditorOpen(None));
     let mut actions = div().flex().flex_row().items_center().gap(px(4.0));
     if let Some(custom) = selected_custom {
+        let edit = handlers.option(EditorOption::WallpaperEditorOpen(Some(SharedString::from(
+            custom.id.clone(),
+        ))));
+        actions = actions.child(icon_button::with_tooltip(
+            "Edit",
+            icon_button::compact_sm_muted("wallpaper-custom-edit", "pencil")
+                .on_press(move |_event, window, cx| edit(window, cx)),
+        ));
         let delete = handlers.option(EditorOption::WallpaperDeleteCustom(SharedString::from(
             custom.id.clone(),
         )));

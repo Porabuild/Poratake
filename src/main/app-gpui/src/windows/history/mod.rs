@@ -324,18 +324,6 @@ impl HistoryWindow {
     }
 
     pub fn clear_all(&mut self, cx: &mut Context<Self>) {
-        let confirmed = rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Warning)
-            .set_title("Clear History")
-            .set_description("Permanently delete all screenshots and videos from history?")
-            .set_buttons(rfd::MessageButtons::OkCancelCustom(
-                "Clear History".into(),
-                "Cancel".into(),
-            ))
-            .show();
-        if confirmed != rfd::MessageDialogResult::Custom("Clear History".into()) {
-            return;
-        }
         if !history_store::clear_history() {
             self.reload(cx);
             crate::windows::toast::Toast::show(

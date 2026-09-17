@@ -5,9 +5,8 @@
 use tiny_skia::{BlendMode, Color, FillRule, LineCap, LineJoin, PathBuilder, Pixmap, Rect, Stroke};
 
 use crate::editor::annotations::{
-    arrow_head_points, arrow_head_size, curved_control_point, has_arrow_bend, normalize_rect,
-    number_size_config, points_to_coordinates, redact_intensity, Annotation, Offset,
-    DEFAULT_TEXT_FONT, TEXT_BG_RADIUS,
+    arrow_curve_control, arrow_head_points, arrow_head_size, normalize_rect, number_size_config,
+    points_to_coordinates, redact_intensity, Annotation, Offset, DEFAULT_TEXT_FONT, TEXT_BG_RADIUS,
 };
 use crate::render::canvas::{circle_path, rounded_rect_path, Canvas};
 use crate::render::freehand::{self, Vec2};
@@ -17,6 +16,46 @@ pub fn draw_all(canvas: &mut Canvas, annotations: &[Annotation]) {
     for annotation in annotations {
         draw(canvas, annotation);
     }
+}
+
+pub struct RotatedTextPatch {
+    pub pixmap: Pixmap,
+    pub x: f64,
+    pub y: f64,
+}
+
+pub fn rotated_text_patch(annotation: &Annotation) -> Option<RotatedTextPatch> {
+    let Annotation::Text { text, rotation, .. } = annotation else {
+        return None;
+    };
+    let angle = rotation.unwrap_or(0.0);
+    if angle == 0.0 || text.is_empty() {
+        return None;
+    }
+    let text_box = annotation.text_box()?;
+    let radians = angle.to_radians();
+    let (sin, cos) = (radians.sin().abs(), radians.cos().abs());
+    const PAD: f64 = 2.0;
+    let width = (text_box.width * cos + text_box.height * sin + PAD * 2.0)
+        .ceil()
+        .max(1.0) as u32;
+    let height = (text_box.width * sin + text_box.height * cos + PAD * 2.0)
+        .ceil()
+        .max(1.0) as u32;
+    let origin_x = text_box.center_x - width as f64 / 2.0;
+    let origin_y = text_box.center_y - height as f64 / 2.0;
+    let mut shifted = (*annotation).clone();
+    if let Annotation::Text { x, y, .. } = &mut shifted {
+        *x -= origin_x;
+        *y -= origin_y;
+    }
+    let mut canvas = Canvas::new(width, height)?;
+    draw(&mut canvas, &shifted);
+    Some(RotatedTextPatch {
+        pixmap: canvas.into_pixmap(),
+        x: origin_x,
+        y: origin_y,
+    })
 }
 
 pub fn draw(canvas: &mut Canvas, annotation: &Annotation) {
@@ -311,18 +350,10 @@ fn arrow_control_point(
     bend: Option<Offset>,
 ) -> (f64, f64, bool) {
     let [x1, y1, x2, y2] = *points;
-    let middle = ((x1 + x2) / 2.0, (y1 + y2) / 2.0);
-
-    if has_arrow_bend(bend) {
-        let bend = bend.unwrap_or(Offset { x: 0.0, y: 0.0 });
-        return (middle.0 + bend.x, middle.1 + bend.y, true);
+    match arrow_curve_control(points, arrow_style, bend) {
+        Some(control) => (control.0, control.1, true),
+        None => ((x1 + x2) / 2.0, (y1 + y2) / 2.0, false),
     }
-    let style = arrow_style.unwrap_or("standard");
-    if style != "curved" && style != "double-curved" {
-        return (middle.0, middle.1, false);
-    }
-    let control = curved_control_point(x1, y1, x2, y2);
-    (control.0, control.1, true)
 }
 
 fn draw_arrow(
@@ -873,6 +904,40 @@ pub fn scale_to_composition(annotation: &Annotation, scale_x: f64, scale_y: f64)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_rotated_text_gets_a_raster_patch() {
+        let plain = Annotation::Text {
+            id: "text-1".into(),
+            x: 10.0,
+            y: 10.0,
+            text: "hi".into(),
+            font_size: 16.0,
+            fill: "#000000".into(),
+            font_family: None,
+            background_color: None,
+            background_opacity: None,
+            background_padding: None,
+            background_radius: None,
+            rotation: None,
+        };
+        assert!(rotated_text_patch(&plain).is_none());
+        let mut rotated = plain.clone();
+        if let Annotation::Text { rotation, .. } = &mut rotated {
+            *rotation = Some(45.0);
+        }
+        let patch = rotated_text_patch(&rotated).expect("rotated patch");
+        assert!(patch.pixmap.width() > 0);
+        assert!(patch.pixmap.height() > 0);
+        assert!(patch.pixmap.data().iter().any(|byte| *byte > 0));
+        let line = Annotation::Line {
+            id: "line-1".into(),
+            points: [0.0, 0.0, 10.0, 10.0],
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+        };
+        assert!(rotated_text_patch(&line).is_none());
+    }
 
     fn covered(canvas: &Canvas) -> usize {
         canvas

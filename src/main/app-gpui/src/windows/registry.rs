@@ -54,6 +54,17 @@ pub fn open_or_activate(
     }
 }
 
+/// Returns the live handle for an open window, pruning it when dead, so
+/// callers can forward state (like a settings category) before activating.
+pub fn handle(kind: WindowKind, cx: &mut App) -> Option<AnyWindowHandle> {
+    let handle = registry(cx).handles.get(&kind).copied()?;
+    if handle.update(cx, |_, _, _| ()).is_err() {
+        registry(cx).handles.remove(&kind);
+        return None;
+    }
+    Some(handle)
+}
+
 pub fn close(kind: WindowKind, cx: &mut App) {
     let Some(handle) = registry(cx).handles.remove(&kind) else {
         return;

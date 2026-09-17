@@ -17,8 +17,20 @@ export function windowsAssetNames(version) {
   ];
 }
 
+export function linuxAssetNames(version) {
+  return [
+    `Poratake-${version}-linux-x64.tar.gz`,
+    `Poratake-${version}-linux-arm64.tar.gz`,
+    'latest-linux.yml',
+  ];
+}
+
 export function publishedAssetNames(version) {
-  return [...macAssetNames(version), ...windowsAssetNames(version)].toSorted();
+  return [
+    ...macAssetNames(version),
+    ...windowsAssetNames(version),
+    ...linuxAssetNames(version),
+  ].toSorted();
 }
 
 const [command, version] = process.argv.slice(2);

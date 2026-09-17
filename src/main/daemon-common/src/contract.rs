@@ -1,9 +1,14 @@
 include!("generated_methods.rs");
 
 pub const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+pub const RECORDING_TARGET_CLOSED: &str = "TARGET_CLOSED";
+pub const SCREEN_RECORDER_ERROR_EVENT: &str = "screen-recorder:error";
 pub const SCROLL_CAPTURE_CANCELLED_EVENT: &str = "scroll-capture:cancelled";
 pub const SCROLL_CAPTURE_DONE_EVENT: &str = "scroll-capture:done";
 pub const SCROLL_CAPTURE_FRAME_EVENT: &str = "scroll-capture:frame-captured";
+pub const SCROLL_CAPTURE_FRAME_PREVIEW_EVENT: &str = "scroll-capture:frame";
+pub const SCROLL_CAPTURE_AUTO_SCROLL_EVENT: &str = "scroll-capture:auto-scroll";
+pub const SCROLL_CAPTURE_CURSOR_EVENT: &str = "scroll-capture:cursor";
 pub const SCROLL_CAPTURE_SCROLL_ENDED_EVENT: &str = "scroll-capture:scroll-ended";
 pub const SYSTEM_EXIT_EVENT: &str = "system:exit";
 pub const TIMER_CONTROL_CANCEL_EVENT: &str = "timer-control:cancel";
@@ -292,6 +297,8 @@ pub struct ScrollCaptureStartRequest {
     pub max_height: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_controls: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary_only: Option<bool>,
 }
 
 fn default_scroll_max_height() -> i32 {
@@ -740,6 +747,7 @@ mod tests {
             auto_scroll_speed: ScrollSpeed::Fast,
             max_height: 20_000,
             native_controls: Some(true),
+            boundary_only: None,
         };
         assert_eq!(request.normalized_max_height(), 20_000);
         assert_eq!(
@@ -769,6 +777,7 @@ mod tests {
         assert_eq!(defaults.auto_scroll_speed, ScrollSpeed::Medium);
         assert_eq!(defaults.max_height, 20_000);
         assert_eq!(defaults.native_controls, None);
+        assert_eq!(defaults.boundary_only, None);
     }
 
     #[test]

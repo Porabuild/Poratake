@@ -18,19 +18,19 @@ use parking_lot::Mutex;
 #[cfg(target_os = "linux")]
 use poratake_daemon_common::contract::ScreenshotLinuxMethod;
 use poratake_daemon_common::contract::{
-    CameraPreviewMethod, CameraPreviewRequest, ContentProtectionRequest, DesktopHelperMethod,
-    DesktopWallpaperMethod, DesktopWallpaperResult, FreezeScreenMethod, IosDeviceList, MediaDevice,
-    MediaDeviceKind, MediaDeviceListRequest, MediaDeviceLists, MediaDevicesMethod,
-    MicrophoneTestRequest, OcrMethod, OcrRecognizeRequest, OcrRecognizeResult, PrintImageRequest,
-    PrintMethod, QrCodeMethod, RecordingControlMethod, RecordingOverlayMethod,
-    RecordingOverlayShowWindowRequest, RecordingOverlayVisibilityResult, ScreenRecorderMethod,
-    ScreenRecorderMicrophoneRequest, ScreenRecorderStartRequest, ScreenRecorderToggleRequest,
-    ScreenshotMethod, ScrollCaptureFinishRequest, ScrollCaptureFinishResult, ScrollCaptureMethod,
-    ScrollCaptureStartRequest, TimerControlMethod, TimerShowRequest, WindowSelectorMethod,
-    CAMERA_PREVIEW_MODULE, DESKTOP_HELPER_MODULE, DESKTOP_WALLPAPER_MODULE, FREEZE_SCREEN_MODULE,
-    MEDIA_DEVICES_MODULE, OCR_MODULE, PRINT_MODULE, QRCODE_MODULE, RECORDING_CONTROL_MODULE,
-    RECORDING_OVERLAY_MODULE, SCREENSHOT_MODULE, SCREEN_RECORDER_MODULE, SCROLL_CAPTURE_MODULE,
-    TIMER_CONTROL_MODULE, WINDOW_SELECTOR_MODULE,
+    CameraPreviewMethod, CameraPreviewRequest, CameraPreviewUpdateRequest,
+    ContentProtectionRequest, DesktopHelperMethod, DesktopWallpaperMethod, DesktopWallpaperResult,
+    FreezeScreenMethod, IosDeviceList, MediaDevice, MediaDeviceKind, MediaDeviceListRequest,
+    MediaDeviceLists, MediaDevicesMethod, MicrophoneTestRequest, OcrMethod, OcrRecognizeRequest,
+    OcrRecognizeResult, PrintImageRequest, PrintMethod, QrCodeMethod, RecordingControlMethod,
+    RecordingOverlayMethod, RecordingOverlayShowWindowRequest, RecordingOverlayVisibilityResult,
+    ScreenRecorderMethod, ScreenRecorderMicrophoneRequest, ScreenRecorderStartRequest,
+    ScreenRecorderToggleRequest, ScreenshotMethod, ScrollCaptureFinishRequest,
+    ScrollCaptureFinishResult, ScrollCaptureMethod, ScrollCaptureStartRequest, TimerControlMethod,
+    TimerShowRequest, WindowSelectorMethod, CAMERA_PREVIEW_MODULE, DESKTOP_HELPER_MODULE,
+    DESKTOP_WALLPAPER_MODULE, FREEZE_SCREEN_MODULE, MEDIA_DEVICES_MODULE, OCR_MODULE, PRINT_MODULE,
+    QRCODE_MODULE, RECORDING_CONTROL_MODULE, RECORDING_OVERLAY_MODULE, SCREENSHOT_MODULE,
+    SCREEN_RECORDER_MODULE, SCROLL_CAPTURE_MODULE, TIMER_CONTROL_MODULE, WINDOW_SELECTOR_MODULE,
 };
 #[cfg(target_os = "macos")]
 use poratake_daemon_common::geometry::CaptureRect;
@@ -534,6 +534,14 @@ impl CameraPreviewClient<'_> {
         self.call(CameraPreviewMethod::Hide, None)
     }
 
+    pub fn update(&self, request: &CameraPreviewUpdateRequest) -> Result<()> {
+        self.daemon.ensure_running()?;
+        self.call(
+            CameraPreviewMethod::Update,
+            Some(serde_json::to_value(request)?),
+        )
+    }
+
     pub fn set_content_protection(&self, enabled: bool) -> Result<()> {
         self.daemon.ensure_running()?;
         self.call(
@@ -778,6 +786,28 @@ impl ScrollCaptureClient<'_> {
             .call(
                 SCROLL_CAPTURE_MODULE,
                 ScrollCaptureMethod::Cancel.id(),
+                None,
+            )
+            .map(|_| ())
+    }
+
+    pub fn start_auto_scroll(&self) -> Result<()> {
+        self.daemon.ensure_running()?;
+        self.daemon
+            .call(
+                SCROLL_CAPTURE_MODULE,
+                ScrollCaptureMethod::StartAutoScroll.id(),
+                None,
+            )
+            .map(|_| ())
+    }
+
+    pub fn stop_auto_scroll(&self) -> Result<()> {
+        self.daemon.ensure_running()?;
+        self.daemon
+            .call(
+                SCROLL_CAPTURE_MODULE,
+                ScrollCaptureMethod::StopAutoScroll.id(),
                 None,
             )
             .map(|_| ())

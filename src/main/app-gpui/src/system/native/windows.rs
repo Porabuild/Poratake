@@ -75,7 +75,7 @@ fn run(
     hotkeys.apply(&hotkey_bindings);
 
     let mut shell = Shell {
-        tray: super::create_tray(state.dark_mode),
+        tray: super::create_tray(state.dark_mode, state.is_recording),
         hotkeys,
         events,
     };

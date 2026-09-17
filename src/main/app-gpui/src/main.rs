@@ -26,7 +26,7 @@ use crate::system::native::NativeCommand;
 use crate::system::native::{self, NativeEvent};
 use crate::system::tray::{Intent, TrayMenuState};
 use crate::theme::presets::{resolve_theme_mode, ThemeMode};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use crate::theme::watcher;
 use crate::ui::chrome;
 
@@ -45,6 +45,16 @@ fn dispatch_native_event(event: NativeEvent, cx: &mut App) {
         NativeEvent::CancelPreRecording => {
             windows::recording_control::RecordingControl::cancel_pre_recording(cx);
         }
+        #[cfg(target_os = "macos")]
+        NativeEvent::FinishScrollCapture => {
+            windows::scroll_capture::ScrollCaptureSession::finish_requested(cx);
+        }
+        #[cfg(target_os = "macos")]
+        NativeEvent::CancelScrollCapture => {
+            windows::scroll_capture::ScrollCaptureSession::cancel_requested(cx);
+        }
+        #[cfg(not(target_os = "macos"))]
+        NativeEvent::FinishScrollCapture | NativeEvent::CancelScrollCapture => {}
     }
 }
 
@@ -127,7 +137,7 @@ fn main() {
             // Electron's `nativeTheme.on('updated', ...)` follows the OS light/dark
             // switch live; the watcher reports the same switches so open windows
             // repaint when the user's appearance mode is `system`.
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 let system_theme = watcher::spawn();
                 cx.spawn(async move |cx| {
@@ -152,7 +162,7 @@ fn main() {
             }
 
             let bridge = native::spawn(
-                TrayMenuState::from_config(&settings),
+                TrayMenuState::from_config(&settings, &crate::update::current_status(cx)),
                 system::hotkeys::bindings(&settings),
             );
             #[cfg(windows)]
@@ -161,6 +171,7 @@ fn main() {
             }
             let events = bridge.events();
             state::set_native(cx, bridge);
+            crate::update::spawn_auto_check(cx);
 
             cx.spawn(async move |cx| {
                 while let Ok(event) = events.recv().await {

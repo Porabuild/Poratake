@@ -280,6 +280,8 @@ describe('Poratake rebrand compliance', () => {
     expect(workflow).toContain('win-arm64');
     expect(workflow).toContain('win-x64');
     expect(workflow).toContain('arch: arm64');
+    expect(workflow).toContain('linux-x64.tar.gz');
+    expect(workflow).toContain('latest-linux.yml');
     expect(packageWinScript).toContain("new Set(['x64', 'arm64'])");
     expect(packageWinScript).toContain('`--${arch}`');
     expect(workflow).toContain('test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"');

@@ -11,6 +11,7 @@ pub enum CaptureIntent {
     Timer,
     ScrollCapture,
     Recording,
+    EditorAttach,
 }
 
 /// `'Drag to select an area \u{b7} Esc to cancel'`.
@@ -38,6 +39,7 @@ impl CaptureIntent {
             Self::Timer => "poratake-timer",
             Self::ScrollCapture => "poratake-scroll",
             Self::Recording => "poratake-recording",
+            Self::EditorAttach => "poratake-editor",
         }
     }
 
@@ -45,6 +47,12 @@ impl CaptureIntent {
     /// work from a temp file they delete afterwards.
     pub fn saves_to_library(self) -> bool {
         matches!(self, Self::Screenshot | Self::Timer | Self::ScrollCapture)
+    }
+
+    /// Scroll selection always runs over live pixels (`scroll-capture/index.ts`
+    /// passes `freeze: false`); every other flow honors the freeze setting.
+    pub fn allows_freeze(self) -> bool {
+        !matches!(self, Self::ScrollCapture)
     }
 }
 
@@ -62,6 +70,14 @@ mod tests {
     }
 
     #[test]
+    fn scroll_selection_always_runs_over_live_pixels() {
+        assert!(!CaptureIntent::ScrollCapture.allows_freeze());
+        assert!(CaptureIntent::Screenshot.allows_freeze());
+        assert!(CaptureIntent::Recording.allows_freeze());
+        assert!(CaptureIntent::EditorAttach.allows_freeze());
+    }
+
+    #[test]
     fn temp_prefixes_are_distinct() {
         let mut prefixes = [
             CaptureIntent::Screenshot.temp_prefix(),
@@ -70,6 +86,7 @@ mod tests {
             CaptureIntent::Timer.temp_prefix(),
             CaptureIntent::ScrollCapture.temp_prefix(),
             CaptureIntent::Recording.temp_prefix(),
+            CaptureIntent::EditorAttach.temp_prefix(),
         ];
         prefixes.sort_unstable();
         let total = prefixes.len();
@@ -119,6 +136,7 @@ mod prompt_tests {
             super::CaptureIntent::Timer,
             super::CaptureIntent::ScrollCapture,
             super::CaptureIntent::Recording,
+            super::CaptureIntent::EditorAttach,
         ] {
             assert!(
                 reference.contains(intent.prompt()),

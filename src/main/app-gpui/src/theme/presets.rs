@@ -74,15 +74,9 @@ fn read_apps_use_light_theme() -> Option<bool> {
 
 #[cfg(target_os = "macos")]
 pub fn system_theme_mode() -> ThemeMode {
-    let dark = std::process::Command::new("defaults")
-        .args(["read", "-g", "AppleInterfaceStyle"])
-        .output()
-        .is_ok_and(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .eq_ignore_ascii_case("dark")
-        });
+    let dark = objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .stringForKey(&objc2_foundation::NSString::from_str("AppleInterfaceStyle"))
+        .is_some_and(|style| style.to_string().eq_ignore_ascii_case("dark"));
     if dark {
         ThemeMode::Dark
     } else {
@@ -492,5 +486,29 @@ mod tests {
             system_theme_mode(),
             ThemeMode::Light | ThemeMode::Dark
         ));
+    }
+
+    /// The `NSUserDefaults` read agrees with the `defaults` CLI on the same
+    /// key — the CLI is the old implementation, kept here as ground truth.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_probe_matches_the_defaults_key() {
+        let expected_dark = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout)
+                        .trim()
+                        .eq_ignore_ascii_case("dark")
+            });
+        assert_eq!(
+            system_theme_mode(),
+            if expected_dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            }
+        );
     }
 }

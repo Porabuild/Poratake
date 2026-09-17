@@ -287,8 +287,61 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-linux-gpui:
+    needs: prepare
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libpipewire-0.3-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev libxcb-xfixes0-dev libasound2-dev
+
+      - name: Cache Rust target
+        if: ${{ !inputs.skip_cache }}
+        uses: actions/cache@v5
+        with:
+          path: src/main/target
+          key: ${{ runner.os }}-${{ matrix.arch }}-gpui-release-${{ hashFiles('src/main/Cargo.lock') }}
+
+      - name: Build GPUI Linux package
+        run: cargo build --release --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --package poratake-gpui
+
+      - name: Package GPUI Linux tarball
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          RELEASE_DIR="release/$VERSION"
+          mkdir -p "$RELEASE_DIR"
+          ARCHIVE=$(bash scripts/package-gpui-linux.sh "$VERSION" "$RELEASE_DIR")
+          test -f "$RELEASE_DIR/Poratake-$VERSION-linux-${{ matrix.arch }}.tar.gz"
+          test "$ARCHIVE" = "$RELEASE_DIR/Poratake-$VERSION-linux-${{ matrix.arch }}.tar.gz"
+
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: release/${{ needs.prepare.outputs.version }}/Poratake-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
-    needs: [prepare, build-macos, build-windows]
+    needs: [prepare, build-macos, build-windows, build-linux-gpui]
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -362,7 +415,7 @@ jobs:
           echo -e "$RELEASE_NOTES" > release_notes.txt
           cat release_notes.txt
 
-      - name: Merge Windows updater metadata
+      - name: Merge updater metadata
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -372,6 +425,11 @@ jobs:
             "$ASSET_DIR/Poratake-$VERSION-win-x64.exe" \
             "$ASSET_DIR/Poratake-$VERSION-win-arm64.exe" \
             "$ASSET_DIR/latest.yml"
+          node scripts/write-updater-yml.mjs \
+            "$VERSION" \
+            "$ASSET_DIR/latest-linux.yml" \
+            "$ASSET_DIR/Poratake-$VERSION-linux-x64.tar.gz" \
+            "$ASSET_DIR/Poratake-$VERSION-linux-arm64.tar.gz"
 
       - name: Validate collected release assets
         env:
@@ -448,7 +506,7 @@ jobs:
             echo "Published successfully but could not delete staging tag $DRAFT_TAG"
 
   cleanup-failed-release:
-    needs: [prepare, build-macos, build-windows, publish]
+    needs: [prepare, build-macos, build-windows, build-linux-gpui, publish]
     if: ${{ always() && (needs.publish.result == 'failure' || needs.publish.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -1,5 +1,5 @@
 use crate::protocol::{Request, params};
-use poratake_daemon_common::contract::ScreenRecorderStartRequest;
+use poratake_daemon_common::contract::{RECORDING_TARGET_CLOSED, ScreenRecorderStartRequest};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -255,7 +255,7 @@ impl RecorderError {
 
     pub fn target_closed(message: impl Into<String>) -> Self {
         Self {
-            code: "TARGET_CLOSED",
+            code: RECORDING_TARGET_CLOSED,
             message: message.into(),
         }
     }

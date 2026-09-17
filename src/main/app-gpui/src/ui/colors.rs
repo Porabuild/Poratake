@@ -54,6 +54,24 @@ impl Tool {
         }
     }
 
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "select" => Some(Self::Select),
+            "pen" => Some(Self::Pen),
+            "highlight" => Some(Self::Highlight),
+            "rectangle" => Some(Self::Rectangle),
+            "circle" => Some(Self::Circle),
+            "line" => Some(Self::Line),
+            "arrow" => Some(Self::Arrow),
+            "text" => Some(Self::Text),
+            "number" => Some(Self::Number),
+            "redact" => Some(Self::Redact),
+            "crop" => Some(Self::Crop),
+            "wallpaper" => Some(Self::Wallpaper),
+            _ => None,
+        }
+    }
+
     pub fn icon(self) -> &'static str {
         match self {
             Self::Select => "mouse-pointer-2",

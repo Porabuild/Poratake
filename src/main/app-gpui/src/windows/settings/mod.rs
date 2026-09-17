@@ -86,7 +86,7 @@ impl SettingsWindow {
             cloud_test: CloudTest::Idle,
             cloud_test_error: None,
             devices: None,
-            update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::Status::Idle)),
+            update: crate::state::update_cell(cx),
             extras_open: std::collections::HashSet::new(),
             focus_handle: cx.focus_handle(),
             #[cfg(windows)]
@@ -136,10 +136,15 @@ impl SettingsWindow {
             self.config.appearance.theme.clone(),
         );
         let before_editor_shortcuts = self.config.shortcuts.editor.clone();
+        let before_preview_corner = self.config.preview.corner.clone();
         apply(&mut self.config);
         let snapshot = self.config.clone();
         self.store.update(move |config| *config = snapshot);
         crate::intents::refresh_shell(cx);
+
+        if before_preview_corner != self.config.preview.corner {
+            crate::windows::capture_preview::CapturePreviewWindow::reposition(cx);
+        }
 
         // The editor keymap is installed once; a rebound tool key has to
         // replace it or the old key would keep working.
@@ -242,18 +247,24 @@ impl SettingsWindow {
     pub fn update_status(&self) -> crate::update::Status {
         self.update
             .lock()
-            .map(|status| status.clone())
+            .map(|cell| cell.status())
             .unwrap_or_default()
     }
 
     /// `handleCheckForUpdates`. The request happens off the UI thread; the
     /// result is published into the shared cell and the window redrawn.
     pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
-        if let Ok(mut status) = self.update.lock() {
-            if *status == crate::update::Status::Checking {
+        if let Ok(mut cell) = self.update.lock() {
+            if matches!(
+                cell.status(),
+                crate::update::Status::Checking
+                    | crate::update::Status::Downloading { .. }
+                    | crate::update::Status::Ready { .. }
+                    | crate::update::Status::Unsupported
+            ) {
                 return;
             }
-            *status = crate::update::Status::Checking;
+            cell.publish(crate::update::Status::Checking);
         }
         cx.notify();
 
@@ -263,10 +274,14 @@ impl SettingsWindow {
                 .background_executor()
                 .spawn(async move { crate::update::check(crate::product::VERSION) })
                 .await;
-            if let Ok(mut status) = shared.lock() {
-                *status = result;
+            if let Ok(mut cell) = shared.lock() {
+                cell.publish(result);
             }
-            let _ = entity.update(cx, |_, cx| cx.notify());
+            let _ = entity.update(cx, |_, cx| {
+                crate::update::sync_tray_status(cx);
+                crate::update::start_download(cx);
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -807,7 +822,30 @@ fn sidebar(
                             .full_width()
                             .recipe("search")
                             .is_bare(true),
-                    ),
+                    )
+                    .when(searching, |el| {
+                        el.child(
+                            div()
+                                .id("settings-search-clear")
+                                .flex()
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .size(px(20.0))
+                                .rounded(px(4.0))
+                                .text_color(theme.muted_foreground)
+                                .hover(|style| style.text_color(theme.foreground))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.search.update(cx, |field, cx| {
+                                        field.set_value("");
+                                        cx.notify();
+                                    });
+                                    cx.notify();
+                                }))
+                                .child(icon_element("x", px(14.0))),
+                        )
+                    }),
             )
         })
         .child(nav)
@@ -1361,52 +1399,10 @@ mod extras_tests {
 }
 
 impl SettingsWindow {
-    /// `handleDownloadUpdate`: fetch the verified installer, reporting progress.
+    /// `handleDownloadUpdate`: the About button's fallback if auto-download
+    /// has not already moved the cell off `Available`.
     pub fn download_update(&mut self, cx: &mut Context<Self>) {
-        let crate::update::Status::Available {
-            version,
-            artifact,
-            sha512,
-        } = self.update_status()
-        else {
-            return;
-        };
-
-        if let Ok(mut status) = self.update.lock() {
-            *status = crate::update::Status::Downloading {
-                version: version.clone(),
-                progress: 0.0,
-            };
-        }
-        cx.notify();
-
-        let shared = self.update.clone();
-        let progress_cell = self.update.clone();
-        cx.spawn(async move |entity, cx| {
-            let version_for_progress = version.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    crate::update::download(&artifact, &sha512, move |fraction| {
-                        if let Ok(mut status) = progress_cell.lock() {
-                            *status = crate::update::Status::Downloading {
-                                version: version_for_progress.clone(),
-                                progress: fraction,
-                            };
-                        }
-                    })
-                })
-                .await;
-
-            if let Ok(mut status) = shared.lock() {
-                *status = match result {
-                    Ok(installer) => crate::update::Status::Ready { version, installer },
-                    Err(message) => crate::update::Status::Error { message },
-                };
-            }
-            let _ = entity.update(cx, |_, cx| cx.notify());
-        })
-        .detach();
+        crate::update::start_download(cx);
     }
 
     /// `quitAndInstall`: hand over to the installer, then leave -- NSIS cannot
@@ -1418,8 +1414,8 @@ impl SettingsWindow {
         match crate::update::launch_installer(&installer) {
             Ok(()) => cx.quit(),
             Err(message) => {
-                if let Ok(mut status) = self.update.lock() {
-                    *status = crate::update::Status::Error { message };
+                if let Ok(mut cell) = self.update.lock() {
+                    cell.publish(crate::update::Status::Error { message });
                 }
                 cx.notify();
             }

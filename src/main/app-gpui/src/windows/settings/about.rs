@@ -89,8 +89,8 @@ fn brand_logo(theme: &ThemeVars) -> AnyElement {
 
 /// `renderUpdateSection` in `about-tab.tsx`: a status line with its icon, a
 /// `Check` button for the resting states, and a card naming the new version when
-/// there is one. The reference's `Install Update` button has no counterpart --
-/// see `crate::update` for why -- so an available update offers its release page.
+/// there is one. Download starts on `Available` the same way Electron calls
+/// `downloadUpdate()`; the button remains for the brief window before that.
 fn update_section(
     theme: &ThemeVars,
     status: crate::update::Status,
@@ -117,6 +117,7 @@ fn update_section(
                             .text_color(match status {
                                 Status::UpToDate => crate::ui::colors::green_500(1.0),
                                 Status::Error { .. } => crate::ui::colors::red_500(1.0),
+                                Status::Unsupported => theme.muted_foreground,
                                 _ => theme.foreground,
                             })
                             .child(icon_element(status.icon(), px(16.0)))
@@ -174,30 +175,31 @@ fn update_section(
     // `{(status === 'available' || status === 'ready') && latestVersion && …}`.
     if let Some(version) = status.version() {
         if !matches!(status, Status::Downloading { .. }) {
-            section = section.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    // `rounded-lg border bg-green-500/5 p-3`.
-                    .rounded(px(crate::ui::chrome::RADIUS_LG))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(crate::ui::colors::green_500(0.05))
-                    .p(px(12.0))
-                    .child(
-                        div()
-                            .text_size(px(chrome::TEXT_SM))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(format!("Version {version} is available")),
-                    ),
-            );
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                // `rounded-lg border bg-green-500/5 p-3`.
+                .rounded(px(crate::ui::chrome::RADIUS_LG))
+                .border_1()
+                .border_color(theme.border)
+                .bg(crate::ui::colors::green_500(0.05))
+                .p(px(12.0))
+                .child(
+                    div()
+                        .text_size(px(chrome::TEXT_SM))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child(format!("Version {version} is available")),
+                );
+            if let Some(notes) = status.notes() {
+                card = card.child(release_notes(notes, theme));
+            }
+            section = section.child(card);
         }
     }
 
-    // `Download update` is this shell's name for the step Electron takes when
-    // `autoDownload` is off; the reference's own `Install Update` follows once
-    // the artifact is verified.
+    // Electron downloads from the `update-available` handler; this button is
+    // the same action if that start has not run yet.
     if matches!(status, Status::Available { .. }) {
         section = section.child(
             rows::icon_text_button(
@@ -248,6 +250,42 @@ fn update_section(
 
 fn separator(_theme: &ThemeVars) -> AnyElement {
     herogpui::Separator::new().my(px(12.0)).into_any_element()
+}
+
+/// `{updateState.releaseNotes && …}`: the "What's New" heading with the notes
+/// as plain text, capped at `max-h-32` with a scroll. GPUI has no pre-wrap, so
+/// each line is its own element and blank lines keep their height with a nbsp.
+fn release_notes(notes: &str, theme: &ThemeVars) -> AnyElement {
+    let mut body = div().flex().flex_col();
+    for line in notes.lines() {
+        body = body.child(if line.is_empty() {
+            "\u{00a0}".to_string()
+        } else {
+            line.to_string()
+        });
+    }
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .mt(px(8.0))
+        .child(
+            div()
+                .text_size(px(chrome::TEXT_XS))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme.foreground)
+                .child("What's New:"),
+        )
+        .child(
+            div()
+                .id("about-release-notes")
+                .max_h(px(128.0))
+                .overflow_y_scroll()
+                .text_size(px(chrome::TEXT_XS))
+                .text_color(theme.muted_foreground)
+                .child(body),
+        )
+        .into_any_element()
 }
 
 pub fn render(
