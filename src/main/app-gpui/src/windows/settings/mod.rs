@@ -86,7 +86,7 @@ impl SettingsWindow {
             cloud_test: CloudTest::Idle,
             cloud_test_error: None,
             devices: None,
-            update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::Status::Idle)),
+            update: crate::state::update_cell(cx),
             extras_open: std::collections::HashSet::new(),
             focus_handle: cx.focus_handle(),
             #[cfg(windows)]
@@ -247,18 +247,18 @@ impl SettingsWindow {
     pub fn update_status(&self) -> crate::update::Status {
         self.update
             .lock()
-            .map(|status| status.clone())
+            .map(|cell| cell.status())
             .unwrap_or_default()
     }
 
     /// `handleCheckForUpdates`. The request happens off the UI thread; the
     /// result is published into the shared cell and the window redrawn.
     pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
-        if let Ok(mut status) = self.update.lock() {
-            if *status == crate::update::Status::Checking {
+        if let Ok(mut cell) = self.update.lock() {
+            if cell.status() == crate::update::Status::Checking {
                 return;
             }
-            *status = crate::update::Status::Checking;
+            cell.publish(crate::update::Status::Checking);
         }
         cx.notify();
 
@@ -268,10 +268,13 @@ impl SettingsWindow {
                 .background_executor()
                 .spawn(async move { crate::update::check(crate::product::VERSION) })
                 .await;
-            if let Ok(mut status) = shared.lock() {
-                *status = result;
+            if let Ok(mut cell) = shared.lock() {
+                cell.publish(result);
             }
-            let _ = entity.update(cx, |_, cx| cx.notify());
+            let _ = entity.update(cx, |_, cx| {
+                crate::update::sync_tray_status(cx);
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -1372,44 +1375,85 @@ impl SettingsWindow {
             version,
             artifact,
             sha512,
+            notes,
         } = self.update_status()
         else {
             return;
         };
 
-        if let Ok(mut status) = self.update.lock() {
-            *status = crate::update::Status::Downloading {
+        if let Ok(mut cell) = self.update.lock() {
+            cell.publish(crate::update::Status::Downloading {
                 version: version.clone(),
                 progress: 0.0,
-            };
+                notes: notes.clone(),
+            });
         }
         cx.notify();
+        self.poll_download_progress(cx);
 
         let shared = self.update.clone();
         let progress_cell = self.update.clone();
         cx.spawn(async move |entity, cx| {
             let version_for_progress = version.clone();
+            let notes_for_progress = notes.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     crate::update::download(&artifact, &sha512, move |fraction| {
-                        if let Ok(mut status) = progress_cell.lock() {
-                            *status = crate::update::Status::Downloading {
+                        if let Ok(mut cell) = progress_cell.lock() {
+                            cell.publish(crate::update::Status::Downloading {
                                 version: version_for_progress.clone(),
                                 progress: fraction,
-                            };
+                                notes: notes_for_progress.clone(),
+                            });
                         }
                     })
                 })
                 .await;
 
-            if let Ok(mut status) = shared.lock() {
-                *status = match result {
-                    Ok(installer) => crate::update::Status::Ready { version, installer },
+            if let Ok(mut cell) = shared.lock() {
+                cell.publish(match result {
+                    Ok(installer) => crate::update::Status::Ready {
+                        version,
+                        installer,
+                        notes,
+                    },
                     Err(message) => crate::update::Status::Error { message },
-                };
+                });
             }
-            let _ = entity.update(cx, |_, cx| cx.notify());
+            let _ = entity.update(cx, |_, cx| {
+                crate::update::sync_tray_status(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The `update:download-progress` broadcast: while a download runs, the
+    /// progress bar and the tray row repaint at 10Hz from the shared cell.
+    /// Electron streams every tick over IPC; polling the cell is this shell's
+    /// equivalent, and it stops itself when the download leaves `downloading`.
+    fn poll_download_progress(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |entity, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(100))
+                .await;
+            let downloading = entity
+                .update(cx, |this, cx| {
+                    let downloading = matches!(
+                        this.update_status(),
+                        crate::update::Status::Downloading { .. }
+                    );
+                    if downloading {
+                        crate::update::sync_tray_status(cx);
+                        cx.notify();
+                    }
+                    downloading
+                })
+                .unwrap_or(false);
+            if !downloading {
+                break;
+            }
         })
         .detach();
     }
@@ -1423,8 +1467,8 @@ impl SettingsWindow {
         match crate::update::launch_installer(&installer) {
             Ok(()) => cx.quit(),
             Err(message) => {
-                if let Ok(mut status) = self.update.lock() {
-                    *status = crate::update::Status::Error { message };
+                if let Ok(mut cell) = self.update.lock() {
+                    cell.publish(crate::update::Status::Error { message });
                 }
                 cx.notify();
             }

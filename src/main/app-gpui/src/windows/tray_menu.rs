@@ -236,7 +236,7 @@ impl TrayMenuWindow {
         cx: &mut App,
     ) -> Option<WindowHandle<Self>> {
         let config = crate::state::state(cx).config.get();
-        let state = TrayMenuState::from_config(&config);
+        let state = TrayMenuState::from_config(&config, &crate::update::current_status(cx));
         let entries = crate::system::tray::entries(&state, tray_rect);
         let geometry = menu_geometry(tray_rect, &entries, cx);
         let max_height = geometry.bounds.size.height;
@@ -308,7 +308,7 @@ impl TrayMenuWindow {
     #[cfg(windows)]
     fn show(&mut self, tray_rect: Option<TrayRect>, window: &mut Window, cx: &mut Context<Self>) {
         let config = crate::state::state(cx).config.get();
-        let state = TrayMenuState::from_config(&config);
+        let state = TrayMenuState::from_config(&config, &crate::update::current_status(cx));
         let entries = crate::system::tray::entries(&state, tray_rect);
         let geometry = menu_geometry(tray_rect, &entries, cx);
         let max_height = geometry.bounds.size.height;

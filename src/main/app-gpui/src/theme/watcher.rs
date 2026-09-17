@@ -1,19 +1,21 @@
-//! Follows the Windows OS light/dark switch while the app runs.
+//! Follows the OS light/dark switch while the app runs.
 //!
 //! Electron subscribes to `nativeTheme.on('updated', ...)` and both shells
 //! offer the same `system` appearance mode, so this shell has to live-follow
-//! too. The OS theme is the `AppsUseLightTheme` DWORD under
+//! too. On Windows the OS theme is the `AppsUseLightTheme` DWORD under
 //! `HKCU\...\Themes\Personalize` (read by `presets::system_theme_mode`); a
 //! background thread blocks on `RegNotifyChangeKeyValue` for that key and
-//! reports the re-read mode over a channel. The mode only reaches the windows
-//! when the user actually follows the system and the value changed — the key
-//! also fires for accent-colour and wallpaper writes, which must not repaint
-//! anything.
+//! reports the re-read mode over a channel. On macOS AppKit offers no
+//! registry-style wait, so the thread re-reads `AppleInterfaceStyle` from
+//! `NSUserDefaults` every two seconds and reports only changes. The mode only
+//! reaches the windows when the user actually follows the system and the value
+//! changed — the Windows key also fires for accent-colour and wallpaper
+//! writes, which must not repaint anything.
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::thread;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use smol::channel::Receiver;
 
 use crate::theme::presets::ThemeMode;
@@ -61,6 +63,31 @@ pub fn spawn() -> Receiver<ThemeMode> {
     thread::Builder::new()
         .name("theme-watcher".into())
         .spawn(move || watch(tx))
+        .ok();
+    rx
+}
+
+/// The macOS half of `spawn`: `NSUserDefaults` reads are in-process, so a
+/// two-second poll is cheaper than the `defaults` subprocess the probe used to
+/// be, and only actual flips wake the main thread.
+#[cfg(target_os = "macos")]
+pub fn spawn() -> Receiver<ThemeMode> {
+    let (tx, rx) = smol::channel::unbounded();
+    thread::Builder::new()
+        .name("theme-watcher".into())
+        .spawn(move || {
+            let mut last = crate::theme::presets::system_theme_mode();
+            loop {
+                thread::sleep(std::time::Duration::from_secs(2));
+                let current = crate::theme::presets::system_theme_mode();
+                if current != last {
+                    last = current;
+                    if tx.send_blocking(current).is_err() {
+                        return;
+                    }
+                }
+            }
+        })
         .ok();
     rx
 }

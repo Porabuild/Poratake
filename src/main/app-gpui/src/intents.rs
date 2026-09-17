@@ -124,7 +124,11 @@ pub fn refresh_shell(cx: &mut App) {
     let config = crate::state::state(cx).config.get();
     let bridge = crate::state::native(cx);
     bridge.send(crate::system::native::NativeCommand::RebuildMenu(
-        crate::system::tray::TrayMenuState::from_config(&config).into(),
+        crate::system::tray::TrayMenuState::from_config(
+            &config,
+            &crate::update::current_status(cx),
+        )
+        .into(),
     ));
     bridge.send(crate::system::native::NativeCommand::SetHotkeys(
         crate::system::hotkeys::bindings(&config),
@@ -209,7 +213,7 @@ fn hide_tray_icon(cx: &mut App) {
         "Hide Tray Icon"
     };
     let detail = if cfg!(target_os = "macos") {
-        "The app will continue running in the background. To restore the menu bar icon, launch the app again."
+        "The app will continue running in the background. To restore the menu bar icon, launch the app again (double-click Poratake in Applications)."
     } else {
         "The app will continue running in the background. To restore the tray icon, launch Poratake again from the Start menu."
     };

@@ -507,6 +507,9 @@ the working tree but uncommitted — verify, don't rebuild.
   (`intents.rs:134-166`, no `select_category` on the existing window).
 - Fix: forward the requested category to the live window.
 - Accept: tray "Update Ready" with Settings on General switches to About.
+- Status: done (was already implemented; verified). `open_settings` forwards
+  `select_category` to the live window before activating, and the tray update
+  rows dispatch `Intent::OpenAbout` → `open_settings(Category::About)`.
 
 ### 42. Preview corner/dismiss changes don't reposition live previews
 
@@ -514,6 +517,11 @@ the working tree but uncommitted — verify, don't rebuild.
   has no equivalent (no `reposition` under `app-gpui/`).
 - Fix: notify the preview stack on settings change; reposition without restart.
 - Accept: changing preview corner moves existing thumbnails immediately.
+- Status: done (was already implemented; verified).
+  `CapturePreviewWindow::reposition` moves the live stack (in place on
+  Windows, rebuilt elsewhere) and settings calls it on corner change.
+  Electron fires on any preview update but its handler only moves windows, so
+  the corner-only trigger is behaviorally equivalent.
 
 ### 43. About omits release notes on update-available
 
@@ -521,6 +529,13 @@ the working tree but uncommitted — verify, don't rebuild.
   (`settings/about.rs:174-196`).
 - Fix: fetch + render scrollable "What's New" from the release.
 - Accept: update-available shows release notes in About.
+- Status: done. `check` keeps the release `body` as `notes` on `Available`
+  (carried through `Downloading` to `Ready`), converted by a `releaseNotesToText`
+  port (block-tag breaks, tag stripping with Electron's prefix-match quirks,
+  entity decoding, blank-line squash — covered by
+  `release_notes_become_plain_text_like_the_reference`). About renders the
+  "What's New:" heading with the notes capped at `max-h-32` scrollable; each
+  line is its own element since GPUI has no pre-wrap.
 
 ### 44. No `unsupported` update state on Linux
 
@@ -529,6 +544,10 @@ the working tree but uncommitted — verify, don't rebuild.
   (`settings/about.rs:94-247`, `update.rs:19-40`).
 - Fix: show "Automatic updates are not available on this platform" on Linux.
 - Accept: Linux About never runs a broken check flow.
+- Status: done. `Status::Unsupported` with Electron's text, `alert-circle` in
+  muted (matching `getStatusIcon`), no Check button; `check` returns it without
+  touching the network on Linux and fresh windows start there via
+  `Status::initial`. The reference-string test covers the new text.
 
 ### 45. No automatic update check (startup + interval)
 
@@ -536,6 +555,17 @@ the working tree but uncommitted — verify, don't rebuild.
 225-227`); GPUI checks only on user click (`settings/mod.rs:251-271`).
 - Fix: schedule startup + periodic checks; reflect status in tray without About open.
 - Accept: launch triggers a check; tray shows update state unprompted.
+- Status: done. The status is a global `UpdateCell` (Electron's module-level
+  `updateState`); `spawn_auto_check` runs one check 3s after launch then every
+  30min, skipping downloading/ready (plus in-flight checks, so a manual click
+  and the timer never fetch twice). Results repaint an open About and rebuild
+  the tray only when the row changes, mirroring `setStatus`: available/ready
+  transitions, download 10% buckets (first 10% keeps the available row),
+  errors never touch the tray. A 10Hz tick while downloading repaints About's
+  progress bar (previously frozen between start and finish) and feeds the tray
+  buckets. `TrayMenuState::from_config` takes the live status so settings
+  changes no longer wipe the update row. This also builds the progress feed
+  item 70 assumed missing — see item 70.
 
 ### 46. macOS tray misses "Hide Menu Bar Icon"
 
@@ -544,6 +574,10 @@ the working tree but uncommitted — verify, don't rebuild.
   supports the macOS title).
 - Fix: expose the entry + confirmation on macOS.
 - Accept: macOS tray menu hides the menu-bar icon like Electron.
+- Status: done. The `cfg!(windows)` gate is gone; the label is "Hide Menu Bar
+  Icon" off Windows (Electron's `isWindows` split), the macOS confirmation
+  detail matches Electron's copy including the Applications parenthetical, and
+  `hide_icon_entry_uses_the_platform_label` pins the entry per platform.
 
 ### 47. Pin window not draggable by the image
 
@@ -551,6 +585,8 @@ the working tree but uncommitted — verify, don't rebuild.
   sets no drag area.
 - Fix: mark the client area draggable (`WindowControlArea::Drag` / `drag_area`).
 - Accept: pinned window drags by grabbing the image.
+- Status: done (was already implemented; verified). The image sits inside a
+  `drag_area` (`WindowControlArea::Drag`) overlay.
 
 ### 48. Closing a pin doesn't restore the editor
 
@@ -558,6 +594,9 @@ the working tree but uncommitted — verify, don't rebuild.
   the pin only (`editor/window.rs:1605-1609`), no close handler in `pin.rs`.
 - Fix: on pin close, reopen the editor with the same state when pinned from editor.
 - Accept: pin-from-editor → close pin → editor returns.
+- Status: done (was already implemented; verified). The editor pins through
+  `open_for_editor` with the file path and pin close reopens it via
+  `open_editor_for`.
 
 ### 49. Pin window oversized on Retina
 
@@ -565,6 +604,9 @@ the working tree but uncommitted — verify, don't rebuild.
   (`pin.rs:21-40`).
 - Fix: size from logical (scale-divided) dimensions.
 - Accept: pin size on Retina matches Electron.
+- Status: done (was already implemented; verified). Decoded pixels are divided
+  by the display scale factor like Electron's `pngSize / scaleFactor`, and
+  `pin_window_size` floors like `Math.floor`.
 
 ### 50. macOS system appearance not followed live
 
@@ -572,6 +614,12 @@ the working tree but uncommitted — verify, don't rebuild.
   on Windows (`theme/watcher.rs:58-109`, `main.rs:130-138` `cfg(windows)`).
 - Fix: macOS appearance watcher repainting on OS light/dark toggle when mode is `system`.
 - Accept: OS toggle repaints GPUI without restart.
+- Status: done. `watcher::spawn` has a macOS half: a thread re-reading
+  `AppleInterfaceStyle` from `NSUserDefaults` every 2s (in-process — the probe
+  itself moved off the `defaults` subprocess onto objc2) and reporting flips
+  over the same channel/main-thread `apply_system_mode` path as Windows. The
+  probe is validated against the `defaults` CLI by
+  `the_macos_probe_matches_the_defaults_key`.
 
 ## P2 — design / motion / polish deltas (decide per surface, don't just build)
 
@@ -624,7 +672,11 @@ GPUI manual (`settings/about.rs:201-216`, `settings/mod.rs:1365-1409`). Decide
 manual vs auto; tray progress wiring (`menu.rs:133-142` state exists, no
 progress feed) follows the decision. 71. **Tray menu icons** — Electron bundled PNG/template images
 (`menu/index.ts:104-185`); GPUI stroked Lucide (`system/tray/menu.rs:288-290`). 72. **Tray icon tint on theme change** — Electron rebuilds (`menu/index.ts:496-502`);
-no GPUI equivalent. Pairs with item 50. 73. **History Clear All confirms** — Electron immediate
+no GPUI equivalent. Pairs with item 50. → Done (was already implemented;
+verified with item 50): `tray_icon(dark_mode)` re-tints the monochrome pixels
+(test-covered), every `RebuildMenu` re-sets the icon, and theme changes
+(settings + watcher) call `refresh_shell`. Menu-item icons are GPUI-rendered
+Lucide strokes, so they follow the theme by construction. 73. **History Clear All confirms** — Electron immediate
 (`history-window.tsx:150-164`); GPUI `rfd::MessageDialog`
 (`history/mod.rs:326-337`). Match Electron (no modal) or keep the guard deliberately. 74. **Pin cascade offset** — Electron 30px (`pin.ts:62-64,71-72`); GPUI count always 0
 (`pin.rs:41`). 75. **Pin minimum size 100x100** — Electron (`pin.ts:69-70`); absent in GPUI. 76. **Onboarding dots static** — Electron `transition-colors`

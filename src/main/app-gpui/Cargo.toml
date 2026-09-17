@@ -75,6 +75,7 @@ objc2-foundation = { version = "0.3.2", features = [
   "NSBundle",
   "NSError",
   "NSString",
+  "NSUserDefaults",
 ] }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = [
   "UNNotificationContent",

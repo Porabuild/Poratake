@@ -18,6 +18,20 @@ pub struct AppState {
 
 impl gpui::Global for AppState {}
 
+/// The shared updater cell — Electron's module-level `updateState`. About
+/// renders it, the tray maps it, and the auto-check publishes into it.
+pub struct UpdateState(pub crate::update::Shared);
+
+impl Default for UpdateState {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            crate::update::UpdateCell::default(),
+        )))
+    }
+}
+
+impl gpui::Global for UpdateState {}
+
 struct NativeShell(Arc<NativeBridge>);
 
 impl gpui::Global for NativeShell {}
@@ -44,6 +58,7 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));
     cx.set_global(AppState { service });
+    cx.set_global(UpdateState::default());
     config
 }
 
@@ -64,6 +79,7 @@ pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));
     cx.set_global(AppState { service });
+    cx.set_global(UpdateState::default());
 }
 
 pub fn set_native(cx: &mut gpui::App, bridge: NativeBridge) {
@@ -85,6 +101,9 @@ pub fn state(cx: &gpui::App) -> CaptureService {
     cx.global::<AppState>().service.clone()
 }
 
+pub fn update_cell(cx: &gpui::App) -> crate::update::Shared {
+    cx.global::<UpdateState>().0.clone()
+}
 pub fn try_state(cx: &gpui::App) -> Option<CaptureService> {
     cx.try_global::<AppState>()
         .map(|state| state.service.clone())

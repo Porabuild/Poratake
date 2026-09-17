@@ -14,6 +14,22 @@ pub enum UpdateStatus {
     Ready(String),
 }
 
+impl UpdateStatus {
+    /// Maps the shared updater state onto the tray's row — Electron's menu
+    /// shows the same three rows (`ready`, `downloading` with its percent,
+    /// `available`) and nothing for every other state.
+    pub fn from_status(status: &crate::update::Status) -> Self {
+        match status {
+            crate::update::Status::Available { version, .. } => Self::Available(version.clone()),
+            crate::update::Status::Downloading { progress, .. } => {
+                Self::Downloading((progress * 100.0).round().clamp(0.0, 100.0) as u8)
+            }
+            crate::update::Status::Ready { version, .. } => Self::Ready(version.clone()),
+            _ => Self::Idle,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TrayMenuState {
     pub shortcuts: ShortcutsConfig,
@@ -24,12 +40,15 @@ pub struct TrayMenuState {
 }
 
 impl TrayMenuState {
-    pub fn from_config(config: &crate::config::schema::SettingsConfig) -> Self {
+    pub fn from_config(
+        config: &crate::config::schema::SettingsConfig,
+        update: &crate::update::Status,
+    ) -> Self {
         let appearance_mode = crate::theme::presets::ThemeMode::parse(&config.appearance.mode);
         Self {
             shortcuts: config.shortcuts.clone(),
             desktop_icons_hidden: crate::capture::desktop_icons::are_hidden(),
-            update: UpdateStatus::Idle,
+            update: UpdateStatus::from_status(update),
             is_recording: crate::video::recorder::is_recording(),
             dark_mode: matches!(
                 crate::theme::presets::resolve_theme_mode(appearance_mode),
@@ -260,9 +279,15 @@ fn specs(state: &TrayMenuState) -> Vec<Spec> {
     specs.push(Spec::Separator);
 
     specs.push(item(Intent::OpenSettings, "Settings...", "settings"));
-    if cfg!(windows) {
-        specs.push(item(Intent::HideTrayIcon, "Hide Tray Icon", "eye-off"));
-    }
+    specs.push(item(
+        Intent::HideTrayIcon,
+        if cfg!(windows) {
+            "Hide Tray Icon"
+        } else {
+            "Hide Menu Bar Icon"
+        },
+        "eye-off",
+    ));
     specs.push(item(Intent::OpenIssues, "Poratake Issues", "aperture"));
     specs.push(item(Intent::Quit, "Quit", "power"));
 
@@ -361,6 +386,47 @@ mod tests {
                 labels(&built)
             );
         }
+    }
+
+    #[test]
+    fn tray_rows_map_from_the_updater_status() {
+        use crate::update::Status;
+        assert_eq!(UpdateStatus::from_status(&Status::Idle), UpdateStatus::Idle);
+        assert_eq!(
+            UpdateStatus::from_status(&Status::UpToDate),
+            UpdateStatus::Idle
+        );
+        assert_eq!(
+            UpdateStatus::from_status(&Status::Unsupported),
+            UpdateStatus::Idle
+        );
+        assert_eq!(
+            UpdateStatus::from_status(&Status::Downloading {
+                version: "1.0".into(),
+                progress: 0.156,
+                notes: None,
+            }),
+            UpdateStatus::Downloading(16)
+        );
+        assert_eq!(
+            UpdateStatus::from_status(&Status::Downloading {
+                version: "1.0".into(),
+                progress: 2.0,
+                notes: None,
+            }),
+            UpdateStatus::Downloading(100)
+        );
+    }
+
+    #[test]
+    fn hide_icon_entry_uses_the_platform_label() {
+        let built = labels(&specs(&state()));
+        let expected = if cfg!(windows) {
+            "Hide Tray Icon"
+        } else {
+            "Hide Menu Bar Icon"
+        };
+        assert!(built.contains(&expected.to_string()));
     }
 
     #[test]

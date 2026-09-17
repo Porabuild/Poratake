@@ -14,6 +14,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::system::tray::UpdateStatus;
+
 /// The states `about-tab.tsx` renders.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub enum Status {
@@ -25,21 +27,36 @@ pub enum Status {
         version: String,
         artifact: Artifact,
         sha512: String,
+        notes: Option<String>,
     },
     Downloading {
         version: String,
         progress: f32,
+        notes: Option<String>,
     },
     Ready {
         version: String,
         installer: std::path::PathBuf,
+        notes: Option<String>,
     },
     Error {
         message: String,
     },
+    /// `status: 'unsupported'` — Linux, where there is no installer to fetch.
+    Unsupported,
 }
 
 impl Status {
+    /// The status a fresh window starts from: Electron sets `unsupported` at
+    /// init on platforms without an updater, and stays `idle` elsewhere.
+    pub fn initial() -> Self {
+        if cfg!(target_os = "linux") {
+            Self::Unsupported
+        } else {
+            Self::Idle
+        }
+    }
+
     /// `getStatusText` in `about-tab.tsx`.
     pub fn text(&self) -> &'static str {
         match self {
@@ -49,6 +66,7 @@ impl Status {
             Self::Ready { .. } => "Update ready to install",
             Self::Error { .. } => "Update check failed",
             Self::UpToDate => "You are up to date",
+            Self::Unsupported => "Automatic updates are not available on this platform",
             Self::Idle => "Check for updates",
         }
     }
@@ -59,7 +77,7 @@ impl Status {
         match self {
             Self::Available { .. } => "download",
             Self::UpToDate | Self::Ready { .. } => "check-circle",
-            Self::Error { .. } => "alert-circle",
+            Self::Error { .. } | Self::Unsupported => "alert-circle",
             Self::Idle | Self::Checking | Self::Downloading { .. } => "refresh-cw",
         }
     }
@@ -83,10 +101,182 @@ impl Status {
             _ => None,
         }
     }
+
+    /// The "What's New" text Electron renders for `available` and `ready`.
+    pub fn notes(&self) -> Option<&str> {
+        match self {
+            Self::Available { notes, .. } | Self::Ready { notes, .. } => notes.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// Shared so the check can run off the UI thread and publish its result.
-pub type Shared = Arc<Mutex<Status>>;
+pub type Shared = Arc<Mutex<UpdateCell>>;
+
+/// The shared updater cell: the latest status plus the tray row it was last
+/// published as, so the menu rebuilds only when the row actually changes.
+#[derive(Clone, Debug)]
+pub struct UpdateCell {
+    status: Status,
+    published: UpdateStatus,
+}
+
+impl Default for UpdateCell {
+    fn default() -> Self {
+        Self {
+            status: Status::initial(),
+            published: UpdateStatus::Idle,
+        }
+    }
+}
+
+impl UpdateCell {
+    pub fn status(&self) -> Status {
+        self.status.clone()
+    }
+
+    pub fn publish(&mut self, status: Status) {
+        self.status = status;
+    }
+
+    /// The tray row for the current status when it differs from the last
+    /// published one, marking it published. Mirrors Electron's rebuild rule:
+    /// available/ready transitions rebuild, download progress rebuilds on 10%
+    /// bucket crossings (the first 10% still shows the available row), and an
+    /// error never touches the tray — the stale row keeps the update
+    /// discoverable and opens About, which shows the failure.
+    pub fn take_tray_refresh(&mut self) -> Option<UpdateStatus> {
+        if matches!(self.status, Status::Error { .. }) {
+            return None;
+        }
+        let mapped = UpdateStatus::from_status(&self.status);
+        let same = match (&self.published, &mapped) {
+            (UpdateStatus::Downloading(previous), UpdateStatus::Downloading(next)) => {
+                previous / 10 == next / 10
+            }
+            (UpdateStatus::Available(_), UpdateStatus::Downloading(percent)) => *percent < 10,
+            (previous, next) => previous == next,
+        };
+        if same {
+            return None;
+        }
+        self.published = mapped.clone();
+        Some(mapped)
+    }
+}
+
+/// The interval skips while a download is running or an installer is ready —
+/// `startPeriodicUpdateChecks` — plus while a check is already in flight, so a
+/// manual click and the timer never fetch the feed twice.
+pub fn should_auto_check(status: &Status) -> bool {
+    !matches!(
+        status,
+        Status::Downloading { .. } | Status::Ready { .. } | Status::Checking
+    )
+}
+
+/// The status main-thread callers render or map — `initial` without a cell,
+/// which only happens in headless tests that never installed one.
+pub fn current_status(cx: &gpui::App) -> Status {
+    cx.try_global::<crate::state::UpdateState>()
+        .and_then(|state| state.0.lock().ok())
+        .map(|cell| cell.status())
+        .unwrap_or_else(Status::initial)
+}
+
+/// Rebuilds the tray menu when the update row changed — the `rebuildTrayMenu`
+/// half of Electron's `setStatus`. Silent without a cell or bridge (headless
+/// tests).
+pub fn sync_tray_status(cx: &mut gpui::App) {
+    let status = {
+        let Some(state) = cx.try_global::<crate::state::UpdateState>() else {
+            return;
+        };
+        let Ok(mut cell) = state.0.lock() else {
+            return;
+        };
+        if cell.take_tray_refresh().is_none() {
+            return;
+        }
+        cell.status()
+    };
+    let (Some(service), Some(bridge)) = (crate::state::try_state(cx), crate::state::try_native(cx))
+    else {
+        return;
+    };
+    let config = service.config.get();
+    bridge.send(crate::system::native::NativeCommand::RebuildMenu(
+        crate::system::tray::TrayMenuState::from_config(&config, &status).into(),
+    ));
+}
+
+const INITIAL_CHECK_DELAY_SECS: u64 = 3;
+const CHECK_INTERVAL_SECS: u64 = 30 * 60;
+
+/// `init()` in `main/update/index.ts`: one check shortly after launch, then
+/// every 30 minutes. Results publish into the shared cell; the tray follows
+/// through `sync_tray_status` and an open About page is repainted.
+pub fn spawn_auto_check(cx: &mut gpui::App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_secs(INITIAL_CHECK_DELAY_SECS))
+            .await;
+        auto_check_once(cx).await;
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(CHECK_INTERVAL_SECS))
+                .await;
+            auto_check_once(cx).await;
+        }
+    })
+    .detach();
+}
+
+async fn auto_check_once(cx: &mut gpui::AsyncApp) {
+    let should: bool = cx.update(|cx| {
+        let Some(state) = cx.try_global::<crate::state::UpdateState>() else {
+            return false;
+        };
+        let Ok(mut cell) = state.0.lock() else {
+            return false;
+        };
+        if !should_auto_check(&cell.status()) {
+            return false;
+        }
+        cell.publish(Status::Checking);
+        true
+    });
+    if !should {
+        return;
+    }
+    let result = cx
+        .background_executor()
+        .spawn(async move { check(crate::product::VERSION) })
+        .await;
+    cx.update(|cx| {
+        if let Some(state) = cx.try_global::<crate::state::UpdateState>() {
+            if let Ok(mut cell) = state.0.lock() {
+                cell.publish(result);
+            }
+        }
+        sync_tray_status(cx);
+        notify_about_status_changed(cx);
+    });
+}
+
+/// The `update:status-changed` broadcast for the one window that renders the
+/// status: repaint About when it is open.
+fn notify_about_status_changed(cx: &mut gpui::App) {
+    use crate::windows::registry::{self, WindowKind};
+    use crate::windows::settings::SettingsWindow;
+
+    if let Some(handle) = registry::handle(WindowKind::Settings, cx) {
+        if let Some(settings) = handle.downcast::<SettingsWindow>() {
+            let _ = settings.update(cx, |_, _, cx| cx.notify());
+        }
+    }
+}
 
 const OWNER: &str = "Porabuild";
 const REPOSITORY: &str = "Poratake";
@@ -122,7 +312,12 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 /// Runs the check synchronously. Callers put it on a background thread.
+/// Linux has no installer to fetch, so it reports `unsupported` without
+/// touching the network — the `!isSupportedPlatform` guard in `checkForUpdate`.
 pub fn check(current: &str) -> Status {
+    if cfg!(target_os = "linux") {
+        return Status::Unsupported;
+    }
     let response = ureq::get(&latest_release_url())
         .header("User-Agent", "Poratake")
         .header("Accept", "application/vnd.github+json")
@@ -193,9 +388,206 @@ pub fn check(current: &str) -> Status {
         version: latest.to_string(),
         artifact,
         sha512,
+        notes: parsed
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .map(release_notes_text)
+            .filter(|notes| !notes.is_empty()),
     }
 }
 
+/// `releaseNotesToText` in `main/update/release-notes.ts`: the GitHub release
+/// body is markdown with embedded HTML, and the About card shows it as plain
+/// text. Block tags become line breaks, everything else is stripped, entities
+/// are decoded, and runs of blank lines collapse to one.
+pub fn release_notes_text(notes: &str) -> String {
+    let decoded = decode_entities(&strip_html(notes));
+    let collapsed: Vec<String> = decoded
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    squash_blank_lines(&collapsed.join("\n")).trim().to_string()
+}
+
+fn starts_with_name(inner: &str, name: &str) -> bool {
+    inner
+        .get(..name.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
+}
+
+/// The tag-stripping half: `<br>` becomes a break, `<li>` a bullet, block
+/// closers a break, `script`/`style` blocks vanish with their content, and any
+/// other `<...>` span is removed. Electron's patterns are prefix matches
+/// (`<br[^>]*>` also eats `<breakfast>`), so this is too.
+fn strip_html(notes: &str) -> String {
+    const BLOCKS: [&str; 15] = [
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "p",
+        "div",
+        "ul",
+        "ol",
+        "li",
+        "blockquote",
+        "pre",
+        "table",
+        "tr",
+    ];
+    let mut out = String::with_capacity(notes.len());
+    let mut rest = notes;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let tag = &rest[open..];
+        let Some(close) = tag.find('>') else {
+            out.push_str(tag);
+            rest = "";
+            break;
+        };
+        let inner = &tag[1..close];
+        rest = &tag[close + 1..];
+        let (closing, after_slash) = match inner.strip_prefix('/') {
+            Some(after) => (true, after),
+            None => (false, inner),
+        };
+        if closing {
+            if BLOCKS
+                .iter()
+                .any(|block| starts_with_name(after_slash, block))
+            {
+                out.push('\n');
+            }
+            continue;
+        }
+        if after_slash.is_empty() || !after_slash.as_bytes()[0].is_ascii_alphanumeric() {
+            continue;
+        }
+        if starts_with_name(after_slash, "script") || starts_with_name(after_slash, "style") {
+            let opener = if starts_with_name(after_slash, "script") {
+                "script"
+            } else {
+                "style"
+            };
+            if let Some(end) = find_closing_tag(rest, opener) {
+                rest = end;
+            }
+            continue;
+        }
+        if starts_with_name(after_slash, "br") {
+            out.push('\n');
+        } else if starts_with_name(after_slash, "li") {
+            out.push_str("\n- ");
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Finds `</name ...>` for a `script`/`style` opener, case-insensitively, and
+/// returns what follows it. `None` leaves the content in place — without its
+/// closer the opener is just another stripped tag.
+fn find_closing_tag<'a>(rest: &'a str, name: &str) -> Option<&'a str> {
+    let mut search = rest;
+    loop {
+        let open = search.find("</")?;
+        let mut tail = &search[open + "</".len()..];
+        tail = tail.trim_start();
+        if starts_with_name(tail, name) {
+            let close = tail.find('>')?;
+            return Some(&tail[close + 1..]);
+        }
+        search = &search[open + "</".len()..];
+    }
+}
+
+const NAMED_ENTITIES: [(&str, char); 10] = [
+    ("amp", '&'),
+    ("lt", '<'),
+    ("gt", '>'),
+    ("quot", '"'),
+    ("apos", '\''),
+    ("nbsp", ' '),
+    ("mdash", '\u{2014}'),
+    ("ndash", '\u{2013}'),
+    ("hellip", '\u{2026}'),
+    ("copy", '\u{00a9}'),
+];
+
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        let Some(semi) = tail.find(';') else {
+            out.push_str(tail);
+            rest = "";
+            break;
+        };
+        match decode_entity_body(&tail[1..semi]) {
+            Some(decoded) => {
+                out.push(decoded);
+                rest = &tail[semi + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn decode_entity_body(body: &str) -> Option<char> {
+    if let Some(hex) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X")) {
+        if hex.is_empty() || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        return code_point_to_char(u32::from_str_radix(hex, 16).ok()?);
+    }
+    if let Some(dec) = body.strip_prefix('#') {
+        if dec.is_empty() || !dec.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return code_point_to_char(dec.parse::<u32>().ok()?);
+    }
+    if body.is_empty() || !body.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+        return None;
+    }
+    NAMED_ENTITIES
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(body))
+        .map(|(_, decoded)| *decoded)
+}
+
+fn code_point_to_char(code: u32) -> Option<char> {
+    if code == 0 {
+        return None;
+    }
+    char::from_u32(code)
+}
+
+/// `/\n{3,}/g` becomes a single blank line.
+fn squash_blank_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut newlines = 0;
+    for ch in text.chars() {
+        if ch == '\n' {
+            newlines += 1;
+            if newlines <= 2 {
+                out.push(ch);
+            }
+        } else {
+            newlines = 0;
+            out.push(ch);
+        }
+    }
+    out
+}
 /// The `latest.yml` beside the installer. Without it there is nothing to verify
 /// against, and an unverified installer is not something to run.
 pub fn find_manifest(assets: &serde_json::Value) -> Option<String> {
@@ -270,18 +662,22 @@ mod tests {
                     size: 1,
                 },
                 sha512: "AAA".into(),
+                notes: None,
             },
             Status::Downloading {
                 version: "1.0.0".into(),
                 progress: 0.5,
+                notes: None,
             },
             Status::Ready {
                 version: "1.0.0".into(),
                 installer: std::path::PathBuf::from("installer.exe"),
+                notes: None,
             },
             Status::Error {
                 message: "boom".into(),
             },
+            Status::Unsupported,
         ] {
             assert!(
                 about.contains(status.text()),
@@ -297,6 +693,7 @@ mod tests {
         }
         .shows_check_button());
         assert!(!Status::Checking.shows_check_button());
+        assert!(!Status::Unsupported.shows_check_button());
         assert!(
             !Status::Available {
                 version: "1.0.0".into(),
@@ -306,6 +703,7 @@ mod tests {
                     size: 1,
                 },
                 sha512: "AAA".into(),
+                notes: None,
             }
             .shows_check_button(),
             "the reference hides Check while an update is pending"
@@ -325,6 +723,118 @@ mod tests {
             std::fs::read_to_string(root.join("src/types/product.ts")).expect("read product.ts");
         assert!(product.contains(&format!("UPDATE_OWNER = '{OWNER}'")));
         assert!(product.contains(&format!("UPDATE_REPOSITORY = '{REPOSITORY}'")));
+    }
+
+    #[test]
+    fn release_notes_become_plain_text_like_the_reference() {
+        assert_eq!(release_notes_text("a<br>b<BR/>c<br >d"), "a\nb\nc\nd");
+        assert_eq!(
+            release_notes_text("<ul><li>one</li><li>two</li></ul>"),
+            "- one\n\n- two"
+        );
+        assert_eq!(
+            release_notes_text("<h2>Title</h2><p>Body</p>"),
+            "Title\nBody"
+        );
+        assert_eq!(
+            release_notes_text("keep<script>var x = '</p>';</script>more"),
+            "keepmore"
+        );
+        assert_eq!(
+            release_notes_text("<style type=\"text/css\">.a{}</style>ok"),
+            "ok"
+        );
+        assert_eq!(release_notes_text("a<script>oops"), "aoops");
+        assert_eq!(release_notes_text("a</ p>b"), "ab");
+        assert_eq!(
+            release_notes_text("a &amp; b &LT;tag&gt; &#65;&#x42; &nbsp;x"),
+            "a & b <tag> AB x"
+        );
+        assert_eq!(
+            release_notes_text("&bogus; &amp &#0; &#xD800; &#x110000;"),
+            "&bogus; &amp &#0; &#xD800; &#x110000;"
+        );
+        assert_eq!(release_notes_text("<a href=\"x>y\">t</a>"), "y\">t");
+        assert_eq!(release_notes_text("a<brr>b"), "a\nb");
+        assert_eq!(release_notes_text("a\n\n\n\nb"), "a\n\nb");
+        assert_eq!(release_notes_text("5 < 10"), "5 < 10");
+        assert_eq!(release_notes_text("5 < 10 > 3"), "5 3");
+    }
+
+    #[test]
+    fn the_tray_rebuilds_on_the_electron_rule() {
+        let available = |version: &str| Status::Available {
+            version: version.into(),
+            artifact: Artifact {
+                name: "a".into(),
+                url: "u".into(),
+                size: 0,
+            },
+            sha512: "s".into(),
+            notes: None,
+        };
+        let downloading = |progress: f32| Status::Downloading {
+            version: "1.0".into(),
+            progress,
+            notes: None,
+        };
+
+        let mut cell = UpdateCell::default();
+        assert_eq!(cell.take_tray_refresh(), None);
+        cell.publish(available("1.0"));
+        assert_eq!(
+            cell.take_tray_refresh(),
+            Some(UpdateStatus::Available("1.0".into()))
+        );
+        assert_eq!(cell.take_tray_refresh(), None);
+        cell.publish(downloading(0.05));
+        assert_eq!(cell.take_tray_refresh(), None);
+        cell.publish(downloading(0.12));
+        assert_eq!(
+            cell.take_tray_refresh(),
+            Some(UpdateStatus::Downloading(12))
+        );
+        cell.publish(downloading(0.19));
+        assert_eq!(cell.take_tray_refresh(), None);
+        cell.publish(downloading(0.21));
+        assert_eq!(
+            cell.take_tray_refresh(),
+            Some(UpdateStatus::Downloading(21))
+        );
+        cell.publish(Status::Ready {
+            version: "1.0".into(),
+            installer: std::path::PathBuf::from("installer.exe"),
+            notes: None,
+        });
+        assert!(matches!(
+            cell.take_tray_refresh(),
+            Some(UpdateStatus::Ready(_))
+        ));
+        cell.publish(Status::Error {
+            message: "boom".into(),
+        });
+        assert_eq!(cell.take_tray_refresh(), None);
+    }
+
+    #[test]
+    fn the_interval_skips_busy_and_ready_states() {
+        assert!(should_auto_check(&Status::Idle));
+        assert!(should_auto_check(&Status::UpToDate));
+        assert!(should_auto_check(&Status::Unsupported));
+        assert!(should_auto_check(&Status::Error {
+            message: "boom".into()
+        }));
+        assert!(!should_auto_check(&Status::Checking));
+        assert!(!should_auto_check(&Status::Downloading {
+            version: "1.0".into(),
+            progress: 0.5,
+            notes: None,
+        }));
+        assert!(!should_auto_check(&Status::Ready {
+            version: "1.0".into(),
+            installer: std::path::PathBuf::from("installer.exe"),
+            notes: None,
+        }));
     }
 }
 
