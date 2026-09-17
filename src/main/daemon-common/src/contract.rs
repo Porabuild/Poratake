@@ -1,6 +1,8 @@
 include!("generated_methods.rs");
 
 pub const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+pub const RECORDING_TARGET_CLOSED: &str = "TARGET_CLOSED";
+pub const SCREEN_RECORDER_ERROR_EVENT: &str = "screen-recorder:error";
 pub const SCROLL_CAPTURE_CANCELLED_EVENT: &str = "scroll-capture:cancelled";
 pub const SCROLL_CAPTURE_DONE_EVENT: &str = "scroll-capture:done";
 pub const SCROLL_CAPTURE_FRAME_EVENT: &str = "scroll-capture:frame-captured";

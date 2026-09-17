@@ -111,6 +111,10 @@ pub struct VideoEditorWindow {
     /// permille and cancellation is a flag the render loop checks per frame.
     export_progress_permille: Arc<AtomicU32>,
     export_cancelled: Arc<AtomicBool>,
+    /// When the running export started, and the smoothed ETA the progress
+    /// footer shows — port of `useExportProgress`.
+    export_started_at: Option<std::time::Instant>,
+    export_remaining: Option<f64>,
     clip_drag: Option<ClipDrag>,
     /// The transcript's segment count, refreshed whenever it is written.
     subtitle_count: usize,
@@ -246,6 +250,8 @@ impl VideoEditorWindow {
             playback_generation: 0,
             export_progress_permille: Arc::new(AtomicU32::new(0)),
             export_cancelled: Arc::new(AtomicBool::new(false)),
+            export_started_at: None,
+            export_remaining: None,
             clip_drag: None,
             gesture_snapshot: None,
             subtitle_count: 0,
@@ -317,6 +323,8 @@ impl VideoEditorWindow {
         self.export_progress = 0.0;
         self.export_progress_permille = Arc::new(AtomicU32::new(0));
         self.export_cancelled = Arc::new(AtomicBool::new(false));
+        self.export_started_at = Some(std::time::Instant::now());
+        self.export_remaining = None;
         cx.notify();
 
         let progress = self.export_progress_permille.clone();
@@ -356,6 +364,8 @@ impl VideoEditorWindow {
             let _ = entity.update(cx, |this, cx| {
                 this.is_exporting = false;
                 this.export_progress = 0.0;
+                this.export_started_at = None;
+                this.export_remaining = None;
                 if this.upload_to_cloud {
                     if let Some(path) = output {
                         this.upload_export(path, cx);
@@ -405,6 +415,7 @@ impl VideoEditorWindow {
                     return false;
                 }
                 this.export_progress = progress.load(Ordering::Relaxed) as f32 / 1000.0;
+                this.update_export_eta();
                 cx.notify();
                 true
             });
@@ -413,6 +424,36 @@ impl VideoEditorWindow {
             }
         })
         .detach();
+    }
+
+    /// Port of the ETA half of `useExportProgress`: below 5% the estimate
+    /// is withheld, above it the raw projection is smoothed at 0.1.
+    fn update_export_eta(&mut self) {
+        let Some(started) = self.export_started_at else {
+            self.export_remaining = None;
+            return;
+        };
+        if self.export_progress <= 0.05 {
+            self.export_remaining = None;
+            return;
+        }
+        let elapsed = started.elapsed().as_secs_f64();
+        let raw = (elapsed / f64::from(self.export_progress) - elapsed).max(0.0);
+        self.export_remaining = Some(match self.export_remaining {
+            Some(previous) => previous + 0.1 * (raw - previous),
+            None => raw,
+        });
+    }
+
+    pub fn export_elapsed_secs(&self) -> u64 {
+        self.export_started_at
+            .map(|started| started.elapsed().as_secs())
+            .unwrap_or(0)
+    }
+
+    pub fn export_remaining_secs(&self) -> Option<u64> {
+        self.export_remaining
+            .map(|remaining| remaining.round() as u64)
     }
 
     /// Opens the recording and its sidecars off the UI thread, then composes
@@ -1816,6 +1857,8 @@ impl VideoEditorWindow {
         self.export_cancelled.store(true, Ordering::Relaxed);
         self.is_exporting = false;
         self.export_progress = 0.0;
+        self.export_started_at = None;
+        self.export_remaining = None;
         cx.notify();
     }
 

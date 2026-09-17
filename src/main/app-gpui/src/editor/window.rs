@@ -37,6 +37,13 @@ struct PersistedEditorState {
     layers: Vec<crate::editor::layers::ImageLayer>,
 }
 
+struct PreCropState {
+    base_image: Arc<image::DynamicImage>,
+    width: f32,
+    height: f32,
+    annotations: Vec<Annotation>,
+}
+
 pub struct EditorWindow {
     pub image: Option<Arc<gpui::RenderImage>>,
     pub base_image: Option<Arc<image::DynamicImage>>,
@@ -65,12 +72,16 @@ pub struct EditorWindow {
     pub drag_start: Option<Point>,
     pending_pointer_update: Option<Point>,
     pending_stroke_points: Vec<Point>,
+    pending_stroke_shift: bool,
     pointer_update_scheduled: bool,
     pub menu: MenuHandle,
     /// The inline field shown while a text annotation is being typed.
     text_editor: Option<(String, gpui::Entity<InputState>)>,
     /// The pending crop rectangle in image coordinates.
     crop: Option<(f64, f64, f64, f64)>,
+    /// Pre-crop pixels, dimensions and annotations — port of Electron's
+    /// `lastCropStateRef`, so undo after crop restores the image too.
+    pre_crop: Option<PreCropState>,
     /// The zoom control's measured rect, so its `backdrop-blur-md` can sample
     /// the capture underneath it. Measured rather than computed because the
     /// bar's width follows its label.
@@ -186,10 +197,12 @@ impl EditorWindow {
             drag_start: None,
             pending_pointer_update: None,
             pending_stroke_points: Vec::new(),
+            pending_stroke_shift: false,
             pointer_update_scheduled: false,
             menu: MenuHandle::new(),
             text_editor: None,
             crop: None,
+            pre_crop: None,
             zoom_bar_bounds: Rc::new(RefCell::new(None)),
             fit_for: None,
             zoom_backdrop: None,
@@ -574,14 +587,15 @@ impl EditorWindow {
         let Some(id) = self.selected_annotation.take() else {
             return;
         };
-        let annotations: Vec<Annotation> = self
+        let mut annotations: Vec<Annotation> = self
             .history
             .current()
             .iter()
             .filter(|annotation| annotation.id() != id)
             .cloned()
             .collect();
-        self.history.push(annotations);
+        self.renumber_annotations(&mut annotations);
+        self.push_annotations(annotations);
         self.refresh_redact_patches();
         self.sync_snapshot();
         cx.notify();
@@ -640,7 +654,7 @@ impl EditorWindow {
             last_id = Some(id);
             annotations.push(copy);
         }
-        self.history.push(annotations);
+        self.push_annotations(annotations);
         self.selected_annotation = last_id;
         self.refresh_redact_patches();
         self.sync_snapshot();
@@ -691,7 +705,7 @@ impl EditorWindow {
                 };
                 let mut annotations = self.history.current().to_vec();
                 annotations.push(annotation);
-                self.history.push(annotations);
+                self.push_annotations(annotations);
             }
             Tool::Text => {
                 self.drag_start = None;
@@ -721,6 +735,7 @@ impl EditorWindow {
             }
             Tool::Rectangle | Tool::Circle => {
                 self.drag_start = Some(point);
+                let fill = (self.shape_fill_mode == "filled").then(|| color.clone());
                 self.draft = Some(build_shape(
                     tool,
                     self.annotation_id(),
@@ -728,10 +743,12 @@ impl EditorWindow {
                     point,
                     &color,
                     stroke_width,
+                    fill,
                 ));
             }
             Tool::Line | Tool::Arrow => {
                 self.drag_start = Some(point);
+                let arrow_style = (tool == Tool::Arrow).then(|| self.arrow_style.clone());
                 self.draft = Some(build_segment(
                     tool,
                     self.annotation_id(),
@@ -739,6 +756,7 @@ impl EditorWindow {
                     point,
                     &color,
                     stroke_width,
+                    arrow_style,
                 ));
             }
             Tool::Select => {
@@ -763,6 +781,8 @@ impl EditorWindow {
         let tool = self.tool;
         let color = self.color_hex.clone();
         let stroke_width = self.stroke_width;
+        let shape_fill = (self.shape_fill_mode == "filled").then(|| color.clone());
+        let arrow_style = self.arrow_style.clone();
         if tool == Tool::Crop {
             if let Some((x, y, width, height)) = &mut self.crop {
                 let clamped_x = point.x.clamp(0.0, self.image_width) as f64;
@@ -804,6 +824,7 @@ impl EditorWindow {
                     point,
                     &color,
                     stroke_width,
+                    shape_fill.clone(),
                 );
             }
             (Some(draft @ Annotation::Line { .. }), Tool::Line)
@@ -815,6 +836,7 @@ impl EditorWindow {
                     point,
                     &color,
                     stroke_width,
+                    (tool == Tool::Arrow).then(|| arrow_style.clone()),
                 );
             }
             _ => {}
@@ -825,6 +847,7 @@ impl EditorWindow {
     fn queue_pointer_update(
         &mut self,
         point: Point,
+        shift: bool,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
@@ -833,6 +856,7 @@ impl EditorWindow {
             Some(Annotation::Pen { .. } | Annotation::Highlight { .. })
         ) {
             self.pending_stroke_points.push(point);
+            self.pending_stroke_shift = shift;
         } else {
             self.pending_pointer_update = Some(point);
         }
@@ -867,13 +891,21 @@ impl EditorWindow {
             return;
         }
         let points = std::mem::take(&mut self.pending_stroke_points);
+        let shift = std::mem::replace(&mut self.pending_stroke_shift, false);
         let Some(draft @ (Annotation::Pen { .. } | Annotation::Highlight { .. })) = &mut self.draft
         else {
             return;
         };
         let mut changed = false;
-        for point in points {
-            changed |= draft.push_point(point);
+        if shift {
+            if let Some(last) = points.last() {
+                draft.constrain_to_axis(*last);
+                changed = true;
+            }
+        } else {
+            for point in points {
+                changed |= draft.push_point(point);
+            }
         }
         if changed {
             self.sync_snapshot();
@@ -897,6 +929,13 @@ impl EditorWindow {
             return;
         }
 
+        let pre_crop = self.base_image.clone().map(|base_image| PreCropState {
+            base_image,
+            width: self.image_width,
+            height: self.image_height,
+            annotations: self.history.current().to_vec(),
+        });
+
         if let Some(base) = &self.base_image {
             let cropped = image::imageops::crop_imm(
                 base.as_ref(),
@@ -909,14 +948,9 @@ impl EditorWindow {
             self.image_width = cropped.width() as f32;
             self.image_height = cropped.height() as f32;
 
-            let mut bgra = cropped.clone();
-            for pixel in bgra.as_chunks_mut::<4>().0 {
-                pixel.swap(0, 2);
-            }
-            self.image = Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-                image::Frame::new(bgra)
-            ])));
-            self.base_image = Some(Arc::new(image::DynamicImage::ImageRgba8(cropped)));
+            let base = image::DynamicImage::ImageRgba8(cropped);
+            self.image = Some(render_image_from_base(&base));
+            self.base_image = Some(Arc::new(base));
             self.inset_color = None;
         }
 
@@ -929,6 +963,7 @@ impl EditorWindow {
             max_x >= 0.0 && max_y >= 0.0 && min_x <= crop_width && min_y <= crop_height
         });
         self.history.push(annotations);
+        self.pre_crop = pre_crop;
 
         self.refresh_redact_patches();
         self.sync_snapshot();
@@ -984,7 +1019,7 @@ impl EditorWindow {
             if !text.trim().is_empty() {
                 let mut annotations = self.history.current().to_vec();
                 annotations.push(draft);
-                self.history.push(annotations);
+                self.push_annotations(annotations);
             }
         }
         self.sync_snapshot();
@@ -1090,7 +1125,7 @@ impl EditorWindow {
             if has_extent {
                 let mut annotations = self.history.current().to_vec();
                 annotations.push(draft);
-                self.history.push(annotations);
+                self.push_annotations(annotations);
                 self.refresh_redact_patches();
             }
         }
@@ -1140,6 +1175,7 @@ fn build_shape(
     end: Point,
     color: &str,
     stroke_width: f64,
+    fill: Option<String>,
 ) -> Annotation {
     let stroke = color.to_string();
 
@@ -1152,7 +1188,7 @@ fn build_shape(
             radius,
             stroke,
             stroke_width,
-            fill: None,
+            fill,
         };
     }
     Annotation::Rectangle {
@@ -1163,7 +1199,7 @@ fn build_shape(
         height: (end.y - start.y) as f64,
         stroke,
         stroke_width,
-        fill: None,
+        fill,
     }
 }
 
@@ -1174,6 +1210,7 @@ fn build_segment(
     end: Point,
     color: &str,
     stroke_width: f64,
+    arrow_style: Option<String>,
 ) -> Annotation {
     let stroke = color.to_string();
     let points = [start.x as f64, start.y as f64, end.x as f64, end.y as f64];
@@ -1183,7 +1220,7 @@ fn build_segment(
             points,
             stroke,
             stroke_width,
-            arrow_style: None,
+            arrow_style,
             bend_offset: None,
         }
     } else {
@@ -1350,6 +1387,11 @@ impl Render for EditorWindow {
         )
         .on_action(cx.listener(|this, _: &actions::Undo, _, _cx| this.undo()))
         .on_action(cx.listener(|this, _: &actions::Redo, _, _cx| this.redo()))
+        .on_action(
+            cx.listener(|this, _: &actions::SaveScreenshot, window, cx| {
+                this.save_as(window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::PrintScreenshot, _, cx| {
             this.print(cx);
         }))
@@ -1368,9 +1410,13 @@ impl Render for EditorWindow {
         .on_action(cx.listener(|this, _: &actions::CancelCrop, _, cx| {
             if this.crop.is_some() {
                 this.cancel_crop(cx);
-            } else {
+            } else if this.text_editor.is_some() || this.draft.is_some() {
                 this.text_editor = None;
                 this.draft = None;
+                this.sync_snapshot();
+                cx.notify();
+            } else {
+                this.selected_annotation = None;
                 this.sync_snapshot();
                 cx.notify();
             }
@@ -1510,7 +1556,12 @@ impl Render for EditorWindow {
                                             let bounds = *editor.bounds.borrow();
                                             let point =
                                                 to_canvas_point(position, bounds, editor.zoom);
-                                            editor.queue_pointer_update(point, window, cx);
+                                            editor.queue_pointer_update(
+                                                point,
+                                                event.modifiers.shift,
+                                                window,
+                                                cx,
+                                            );
                                         }
                                     })
                                     .ok();
@@ -1593,9 +1644,12 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
                 return;
             };
             if action == EditorAction::Pin {
-                let png = entity.read(cx).export_png().ok();
+                let editor = entity.read(cx);
+                let png = editor.export_png().ok();
+                let file_path = editor.file_path.clone();
                 if let Some(bytes) = png {
-                    crate::windows::pin::PinWindow::open(cx, bytes);
+                    crate::windows::pin::PinWindow::open_for_editor(cx, bytes, file_path);
+                    window.remove_window();
                 }
                 return;
             }
@@ -1731,9 +1785,15 @@ impl EditorWindow {
             EditorOption::ArrowStyle(value) => self.arrow_style = value.to_string(),
             EditorOption::HighlightOpacity(value) => self.highlight_opacity = value,
             EditorOption::HighlightColor(value) => self.highlight_color = value.to_string(),
-            EditorOption::NumberStyle(value) => self.number_style = value.to_string(),
+            EditorOption::NumberStyle(value) => {
+                self.number_style = value.to_string();
+                self.renumber_current_without_history();
+            }
             EditorOption::NumberSize(value) => self.number_size = value.to_string(),
-            EditorOption::NumberStartValue(value) => self.number_start_value = value,
+            EditorOption::NumberStartValue(value) => {
+                self.number_start_value = value;
+                self.renumber_current_without_history();
+            }
             EditorOption::TextBackground(value) => self.text_background = value,
             EditorOption::TextFontSize(value) => self.text_font_size = value,
             EditorOption::TextFontFamily(value) => self.text_font_family = value.to_string(),
@@ -1964,6 +2024,17 @@ impl EditorWindow {
     }
 
     fn undo(&mut self) {
+        if let Some(pre) = self.pre_crop.take() {
+            self.image_width = pre.width;
+            self.image_height = pre.height;
+            self.image = Some(render_image_from_base(&pre.base_image));
+            self.base_image = Some(pre.base_image);
+            self.inset_color = None;
+            self.history.push(pre.annotations);
+            self.refresh_redact_patches();
+            self.sync_snapshot();
+            return;
+        }
         self.history.undo();
         self.refresh_redact_patches();
         self.sync_snapshot();
@@ -1973,6 +2044,44 @@ impl EditorWindow {
         self.history.redo();
         self.refresh_redact_patches();
         self.sync_snapshot();
+    }
+
+    /// Port of `renumberAnnotations`: number badges count up from the start
+    /// value in list order.
+    fn renumber_annotations(&self, annotations: &mut [Annotation]) {
+        let mut value = self.number_start_value;
+        for annotation in annotations.iter_mut() {
+            if let Annotation::Number {
+                value: badge,
+                display_value,
+                ..
+            } = annotation
+            {
+                *badge = value;
+                *display_value =
+                    crate::editor::options::number_display_value(value, &self.number_style);
+                value += 1.0;
+            }
+        }
+    }
+
+    /// Port of the auto-renumber effect: style/start changes resequence
+    /// badges in place, without pushing an undo step.
+    fn renumber_current_without_history(&mut self) {
+        let mut annotations = self.history.current().to_vec();
+        let before = annotations.clone();
+        self.renumber_annotations(&mut annotations);
+        if annotations != before {
+            self.history.replace_current(annotations);
+            self.refresh_redact_patches();
+        }
+    }
+
+    /// Pushes an annotation revision from an add/delete path, dropping the
+    /// pre-crop state the way Electron clears `lastCropStateRef` there.
+    fn push_annotations(&mut self, annotations: Vec<Annotation>) {
+        self.pre_crop = None;
+        self.history.push(annotations);
     }
 }
 fn load_image(
@@ -1988,17 +2097,20 @@ fn load_image(
     let (width, height) = (decoded.width() as f32, decoded.height() as f32);
 
     let base = image::DynamicImage::ImageRgba8(decoded.to_rgba8());
+    let render_image = render_image_from_base(&base);
 
+    Ok((Some(render_image), Some(base), width, height))
+}
+
+fn render_image_from_base(base: &image::DynamicImage) -> Arc<gpui::RenderImage> {
     // GPUI composites in BGRA; swap channels once at decode time.
-    let mut buffer = decoded.to_rgba8();
+    let mut buffer = base.to_rgba8();
     for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-
-    let frame = image::Frame::new(buffer);
-    let render_image = gpui::RenderImage::new(smallvec::smallvec![frame]);
-
-    Ok((Some(Arc::new(render_image)), Some(base), width, height))
+    Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+        image::Frame::new(buffer)
+    ]))
 }
 
 impl EditorWindow {
@@ -2256,5 +2368,72 @@ impl EditorWindow {
                 Err(error) => eprintln!("[editor] save failed: {error}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn point(x: f32, y: f32) -> Point {
+        Point { x, y }
+    }
+
+    #[test]
+    fn shape_builders_keep_the_selected_fill() {
+        let filled = Some("#ff0000".to_string());
+        let rectangle = build_shape(
+            Tool::Rectangle,
+            "rect".into(),
+            point(0.0, 0.0),
+            point(10.0, 20.0),
+            "#ff0000",
+            4.0,
+            filled.clone(),
+        );
+        assert!(matches!(rectangle, Annotation::Rectangle { fill, .. } if fill == filled));
+        let circle = build_shape(
+            Tool::Circle,
+            "circle".into(),
+            point(0.0, 0.0),
+            point(10.0, 0.0),
+            "#ff0000",
+            4.0,
+            filled.clone(),
+        );
+        assert!(matches!(circle, Annotation::Circle { fill, .. } if fill == filled));
+    }
+
+    #[test]
+    fn shape_builders_stay_unfilled_in_outline_mode() {
+        let rectangle = build_shape(
+            Tool::Rectangle,
+            "rect".into(),
+            point(0.0, 0.0),
+            point(10.0, 20.0),
+            "#ff0000",
+            4.0,
+            None,
+        );
+        assert!(matches!(
+            rectangle,
+            Annotation::Rectangle { fill: None, .. }
+        ));
+    }
+
+    #[test]
+    fn segment_builder_keeps_the_selected_arrow_style() {
+        let arrow = build_segment(
+            Tool::Arrow,
+            "arrow".into(),
+            point(0.0, 0.0),
+            point(10.0, 10.0),
+            "#00ff00",
+            4.0,
+            Some("double-curved".to_string()),
+        );
+        assert!(
+            matches!(arrow, Annotation::Arrow { arrow_style, bend_offset: None, .. } if arrow_style.as_deref() == Some("double-curved"))
+        );
     }
 }

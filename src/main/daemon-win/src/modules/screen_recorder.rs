@@ -6,8 +6,8 @@ use crate::protocol::{
 };
 use crate::router::{Module, Reply, method_not_found};
 use poratake_daemon_common::contract::{
-    SCREEN_RECORDER_MODULE, ScreenRecorderMethod, ScreenRecorderMicrophoneRequest,
-    ScreenRecorderToggleRequest,
+    SCREEN_RECORDER_ERROR_EVENT, SCREEN_RECORDER_MODULE, ScreenRecorderMethod,
+    ScreenRecorderMicrophoneRequest, ScreenRecorderToggleRequest,
 };
 use serde_json::json;
 use std::sync::mpsc::Receiver;
@@ -52,7 +52,7 @@ impl ScreenRecorderModule {
                 );
                 if let Some(error) = session.failure.recv() {
                     send_event(
-                        "screen-recorder:error",
+                        SCREEN_RECORDER_ERROR_EVENT,
                         Some(json!({
                             "code": error.code,
                             "message": error.message,

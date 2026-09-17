@@ -150,6 +150,57 @@ impl CapturePreviewWindow {
         let Some(preview) = preview else {
             return;
         };
+        Self::open_stack_window(cx, vec![preview]);
+    }
+
+    /// Port of the `capture-preview:reposition` IPC: moves the live stack to
+    /// the newly configured corner. Windows moves the window in place; other
+    /// platforms rebuild it, the way the recording bar reopens when its
+    /// anchor moves, because GPUI cannot move a live window there.
+    pub fn reposition(cx: &mut App) {
+        let Some(stack) = *STACK.lock() else {
+            return;
+        };
+        let Some(handle) = stack.downcast::<CapturePreviewWindow>() else {
+            *STACK.lock() = None;
+            return;
+        };
+        #[cfg(windows)]
+        {
+            let moved = handle
+                .update(cx, |view, window, cx| {
+                    configure_stack_window(window, cx, view.active_preview_count());
+                    cx.notify();
+                })
+                .is_ok();
+            if !moved {
+                *STACK.lock() = None;
+            }
+            return;
+        }
+        #[cfg(not(windows))]
+        {
+            let previews =
+                handle.update(cx, |view, _window, _cx| std::mem::take(&mut view.previews));
+            let Ok(previews) = previews else {
+                *STACK.lock() = None;
+                return;
+            };
+            *STACK.lock() = None;
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+            if !previews.is_empty() {
+                Self::open_stack_window(cx, previews);
+            }
+        }
+    }
+
+    fn open_stack_window(cx: &mut App, previews: Vec<CapturePreview>) {
+        let timers: Vec<(u64, Arc<AtomicU64>)> = previews
+            .iter()
+            .map(|preview| (preview.id, preview.dismiss_token.clone()))
+            .collect();
+        #[cfg(windows)]
+        let count = previews.len();
         let (bounds, display_id) = preview_stack_placement(cx);
         let window_bounds = display_id
             .and_then(|id| cx.find_display(id))
@@ -185,13 +236,13 @@ impl CapturePreviewWindow {
                     }
                 }
                 let view = cx.new(|_| Self {
-                    previews: vec![preview],
+                    previews,
                     layout_generation: 0,
                 });
                 #[cfg(windows)]
                 if !cfg!(test) {
                     window.on_next_frame(move |window, _cx| {
-                        reveal_preview_when_ready(window, bounds, 1, bottom_aligned);
+                        reveal_preview_when_ready(window, bounds, count, bottom_aligned);
                     });
                 }
                 view
@@ -200,7 +251,9 @@ impl CapturePreviewWindow {
         if let Ok(handle) = opened {
             let handle: AnyWindowHandle = handle.into();
             *STACK.lock() = Some(handle);
-            schedule_auto_dismiss(handle, id, cx, dismiss_token);
+            for (id, dismiss_token) in timers {
+                schedule_auto_dismiss(handle, id, cx, dismiss_token);
+            }
         }
     }
 }

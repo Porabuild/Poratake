@@ -4,6 +4,7 @@
 //! pre-recording and recording modes.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -11,6 +12,7 @@ use gpui::{
     Render, SharedString, Styled, Subscription, WeakEntity, Window,
 };
 use herogpui::gpui;
+use poratake_daemon_common::contract::{RECORDING_TARGET_CLOSED, SCREEN_RECORDER_ERROR_EVENT};
 
 use crate::capture::overlay::ScreenRect;
 use crate::theme::vars::active_theme;
@@ -86,6 +88,7 @@ pub struct RecordingControl {
     countdown_active: bool,
     countdown_remaining: Option<u32>,
     focus_handle: FocusHandle,
+    recorder_error_subscription: Option<crate::daemon::EventSubscription>,
 }
 
 impl RecordingControl {
@@ -165,6 +168,7 @@ impl RecordingControl {
                         countdown_active: false,
                         countdown_remaining: None,
                         focus_handle: cx.focus_handle(),
+                        recorder_error_subscription: None,
                     });
                     view.update(cx, |this, cx| {
                         this.bounds_subscription =
@@ -350,7 +354,7 @@ impl RecordingControl {
             camera_device_id: recording.camera.selected_device_id.clone(),
             ios_device_id: self.selected_ios_id.clone(),
             ios_device_name: self.selected_ios_name.clone(),
-            keyboard_enabled: false,
+            keyboard_enabled: true,
             frame_rate: recording.frame_rate,
             output_path: project.clone(),
         };
@@ -386,6 +390,7 @@ impl RecordingControl {
             crate::windows::toast::Toast::show(cx, "Recording failed", error.to_string());
             return;
         }
+        self.watch_recorder_errors(window, cx);
         set_pre_recording_escape(false, cx);
         #[cfg(not(target_os = "macos"))]
         let _ = crate::capture::overlay::begin_recording_handoff(self.rect, cx);
@@ -892,6 +897,14 @@ impl RecordingControl {
                 });
             }
             crate::system::devices::DeviceKind::Camera => {
+                if self.mode == Mode::Recording {
+                    // The camera device is locked to the one the recording
+                    // started with, so a mid-recording pick only re-enables
+                    // it instead of switching devices.
+                    self.set_camera(true, cx);
+                    cx.notify();
+                    return;
+                }
                 let previous = self.selected_camera_id.clone();
                 self.selected_camera_id = id.clone();
                 if !self.set_camera(true, cx) {
@@ -942,7 +955,72 @@ impl RecordingControl {
             .saturating_sub(self.paused_total + current_pause)
     }
 
+    /// Port of the `screen-recorder:error` listener in `recorder.ts`: a closed
+    /// target ends the take normally, any other daemon failure tears it down.
+    fn watch_recorder_errors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let service = crate::state::state(cx);
+        let (error_tx, error_rx) = smol::channel::bounded::<(String, String)>(1);
+        self.recorder_error_subscription =
+            Some(service.daemon.subscribe(Arc::new(move |event, data| {
+                if event != SCREEN_RECORDER_ERROR_EVENT {
+                    return;
+                }
+                let code = data
+                    .get("code")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let message = data
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Recording failed")
+                    .to_string();
+                let _ = error_tx.try_send((code, message));
+            })));
+
+        let handle = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            let Ok((code, message)) = error_rx.recv().await else {
+                return;
+            };
+            cx.update(|cx| {
+                let Some(handle) = handle.downcast::<Self>() else {
+                    return;
+                };
+                let _ = handle.update(cx, |this, window, cx| {
+                    if code == RECORDING_TARGET_CLOSED {
+                        this.finish(false, window, cx);
+                    } else {
+                        this.fail_recording(message, window, cx);
+                    }
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// Port of `handleTerminalRecordingFailure`: the daemon already errored
+    /// out, so the partial project is deleted, the UI torn down and the
+    /// failure surfaced, with no stop call issued.
+    fn fail_recording(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.recorder_error_subscription = None;
+        recorder::force_idle();
+        if let Some(project) = self.project.take() {
+            let _ = std::fs::remove_dir_all(&project);
+        }
+        self.started_at = None;
+        self.paused_at = None;
+        self.paused_total = Duration::ZERO;
+
+        window.remove_window();
+        registry::close(RegistryKind::RecordingControl, cx);
+        crate::capture::overlay::end_recording_handoff(cx);
+        crate::intents::refresh_shell(cx);
+        crate::windows::toast::Toast::show(cx, "Recording failed", message);
+    }
+
     fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.recorder_error_subscription = None;
         let duration = self.recording_duration().as_secs_f64();
         let service = crate::state::state(cx);
         let stopped = recorder::stop(&service.daemon);
@@ -1580,6 +1658,7 @@ mod tests {
                 countdown_active: false,
                 countdown_remaining: None,
                 focus_handle: cx.focus_handle(),
+                recorder_error_subscription: None,
             })
         });
         let weak = control.downgrade();
@@ -1715,6 +1794,7 @@ mod tests {
                 countdown_active: false,
                 countdown_remaining: None,
                 focus_handle: cx.focus_handle(),
+                recorder_error_subscription: None,
             };
             control.bounds_subscription = Some(cx.observe_window_bounds(
                 window,

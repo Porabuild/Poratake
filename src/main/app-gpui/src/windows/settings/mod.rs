@@ -136,10 +136,15 @@ impl SettingsWindow {
             self.config.appearance.theme.clone(),
         );
         let before_editor_shortcuts = self.config.shortcuts.editor.clone();
+        let before_preview_corner = self.config.preview.corner.clone();
         apply(&mut self.config);
         let snapshot = self.config.clone();
         self.store.update(move |config| *config = snapshot);
         crate::intents::refresh_shell(cx);
+
+        if before_preview_corner != self.config.preview.corner {
+            crate::windows::capture_preview::CapturePreviewWindow::reposition(cx);
+        }
 
         // The editor keymap is installed once; a rebound tool key has to
         // replace it or the old key would keep working.

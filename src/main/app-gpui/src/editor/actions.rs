@@ -77,13 +77,14 @@ pub fn tool_bindings(shortcuts: &EditorShortcuts) -> Vec<KeyBinding> {
 
 fn command_bindings() -> Vec<KeyBinding> {
     let editor = Some("Editor");
-    vec![
+    let mut bindings = vec![
         KeyBinding::new("ctrl-z", Undo, editor),
         KeyBinding::new("ctrl-shift-z", Redo, editor),
         KeyBinding::new("ctrl-c", CopyAnnotation, editor),
         KeyBinding::new("ctrl-x", CutAnnotation, editor),
         KeyBinding::new("ctrl-v", PasteAnnotation, editor),
         KeyBinding::new("delete", DeleteAnnotation, editor),
+        KeyBinding::new("backspace", DeleteAnnotation, editor),
         KeyBinding::new("ctrl-s", SaveScreenshot, editor),
         KeyBinding::new("ctrl-equal", ZoomIn, editor),
         KeyBinding::new("ctrl-minus", ZoomOut, editor),
@@ -92,7 +93,25 @@ fn command_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-backspace", DeleteScreenshot, editor),
         KeyBinding::new("enter", ApplyCrop, editor),
         KeyBinding::new("escape", CancelCrop, editor),
-    ]
+    ];
+    // The renderer answers both Cmd and Control (`e.metaKey || e.ctrlKey`) while
+    // GPUI leaves `ctrl` on Control everywhere, so macOS gets the Cmd twins.
+    if cfg!(target_os = "macos") {
+        bindings.extend([
+            KeyBinding::new("cmd-z", Undo, editor),
+            KeyBinding::new("cmd-shift-z", Redo, editor),
+            KeyBinding::new("cmd-c", CopyAnnotation, editor),
+            KeyBinding::new("cmd-x", CutAnnotation, editor),
+            KeyBinding::new("cmd-v", PasteAnnotation, editor),
+            KeyBinding::new("cmd-s", SaveScreenshot, editor),
+            KeyBinding::new("cmd-equal", ZoomIn, editor),
+            KeyBinding::new("cmd-minus", ZoomOut, editor),
+            KeyBinding::new("cmd-0", ZoomReset, editor),
+            KeyBinding::new("cmd-p", PrintScreenshot, editor),
+            KeyBinding::new("cmd-backspace", DeleteScreenshot, editor),
+        ]);
+    }
+    bindings
 }
 
 /// Installs the editor keymap. Called at startup and again whenever the tool
@@ -125,6 +144,11 @@ mod tests {
 
     #[test]
     fn the_command_bindings_are_fixed() {
-        assert_eq!(command_bindings().len(), 14);
+        let expected = if cfg!(target_os = "macos") {
+            15 + 11
+        } else {
+            15
+        };
+        assert_eq!(command_bindings().len(), expected);
     }
 }

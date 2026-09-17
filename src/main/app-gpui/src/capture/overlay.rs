@@ -1689,6 +1689,10 @@ impl Render for AreaOverlay {
         let root = root
             .cursor(self.cursor)
             .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+                if this.picking_color {
+                    this.stop_color_picker(cx);
+                    return;
+                }
                 if this.intent == crate::capture::intent::CaptureIntent::Recording {
                     crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
                 }
@@ -2839,7 +2843,7 @@ mod tests {
     }
 
     #[herogpui::test]
-    fn color_picker_is_exclusive_and_escape_closes_the_overlay(cx: &mut TestAppContext) {
+    fn color_picker_is_exclusive_and_escape_leaves_the_overlay_open(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
             Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
@@ -2894,6 +2898,12 @@ mod tests {
                 overlay.start_color_picker(window, cx);
             })
             .expect("select another mode");
+        cx.simulate_keystrokes(first.into(), "escape");
+        cx.run_until_parked();
+
+        assert!(first
+            .update(cx, |overlay, _window, _cx| !overlay.picking_color)
+            .expect("overlay stays open after leaving pick mode"));
         cx.simulate_keystrokes(first.into(), "escape");
         cx.run_until_parked();
 

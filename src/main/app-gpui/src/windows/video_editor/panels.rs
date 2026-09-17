@@ -2177,6 +2177,11 @@ fn first_frame_panel(
     kit::panel(children)
 }
 
+/// Port of `formatExportTime`: `m:ss`.
+fn format_export_time(seconds: u64) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
 fn export_panel(
     view: &VideoEditorWindow,
     state: &VideoEditorState,
@@ -2373,6 +2378,26 @@ fn export_panel(
                     herogpui::ProgressBar::new("video-export-panel-progress")
                         .value(export_progress * 100.0)
                         .sx(|el| el.h(px(6.0))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(kit::hint(
+                            format!("{} elapsed", format_export_time(view.export_elapsed_secs())),
+                            theme,
+                        ))
+                        .child(kit::hint(
+                            match view.export_remaining_secs() {
+                                Some(remaining) => {
+                                    format!("{} remaining", format_export_time(remaining))
+                                }
+                                None => "Calculating...".to_string(),
+                            },
+                            theme,
+                        )),
                 )
                 .into_any_element(),
         );

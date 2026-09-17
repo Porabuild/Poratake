@@ -358,6 +358,34 @@ impl Annotation {
         points.push(f64::from(point.y));
         true
     }
+
+    /// Port of the Shift branch in `useDrawingTools.updateAnnotation`:
+    /// rebuilds a freehand stroke as an axis-locked line from its first
+    /// point to the constrained cursor.
+    pub fn constrain_to_axis(&mut self, point: Point) {
+        let (Self::Pen { points, .. } | Self::Highlight { points, .. }) = self else {
+            return;
+        };
+        if points.len() < 2 {
+            return;
+        }
+        let (start_x, start_y) = (points[0], points[1]);
+        let (mut end_x, mut end_y) = (f64::from(point.x), f64::from(point.y));
+        if (end_x - start_x).abs() > (end_y - start_y).abs() {
+            end_y = start_y;
+        } else {
+            end_x = start_x;
+        }
+        let distance = ((end_x - start_x).powi(2) + (end_y - start_y).powi(2)).sqrt();
+        let segments = (distance / 5.0).floor().max(2.0) as usize;
+        let mut constrained = vec![start_x, start_y];
+        for index in 1..=segments {
+            let t = index as f64 / segments as f64;
+            constrained.push(start_x + (end_x - start_x) * t);
+            constrained.push(start_y + (end_y - start_y) * t);
+        }
+        *points = constrained;
+    }
 }
 
 /// Undo/redo history over the annotation list — port of `useHistory`.

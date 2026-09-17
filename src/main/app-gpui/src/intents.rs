@@ -132,6 +132,11 @@ pub fn refresh_shell(cx: &mut App) {
 }
 
 pub fn open_settings(category: Category, cx: &mut App) {
+    if let Some(handle) = registry::handle(WindowKind::Settings, cx) {
+        if let Some(settings) = handle.downcast::<SettingsWindow>() {
+            let _ = settings.update(cx, |view, _, cx| view.select_category(category, cx));
+        }
+    }
     registry::open_or_activate(WindowKind::Settings, cx, |cx| {
         let store = crate::state::state(cx).config;
         #[cfg(windows)]

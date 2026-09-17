@@ -210,6 +210,13 @@ pub fn stop(daemon: &DaemonHandle) -> bool {
     }
 }
 
+/// Forces idle after a terminal daemon failure, mirroring Electron's
+/// `handleTerminalRecordingError` state reset. The daemon already errored
+/// out, so no stop call is issued.
+pub fn force_idle() {
+    store_state(RecorderState::Idle);
+}
+
 pub fn set_microphone(
     daemon: &DaemonHandle,
     enabled: bool,
