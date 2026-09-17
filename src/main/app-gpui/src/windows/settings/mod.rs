@@ -260,6 +260,7 @@ impl SettingsWindow {
                 crate::update::Status::Checking
                     | crate::update::Status::Downloading { .. }
                     | crate::update::Status::Ready { .. }
+                    | crate::update::Status::Unsupported
             ) {
                 return;
             }

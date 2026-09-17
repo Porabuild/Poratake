@@ -163,11 +163,12 @@ impl UpdateCell {
 
 /// The interval skips while a download is running or an installer is ready —
 /// `startPeriodicUpdateChecks` — plus while a check is already in flight, so a
-/// manual click and the timer never fetch the feed twice.
+/// manual click and the timer never fetch the feed twice. Linux stays
+/// `unsupported` and never hits the feed.
 pub fn should_auto_check(status: &Status) -> bool {
     !matches!(
         status,
-        Status::Downloading { .. } | Status::Ready { .. } | Status::Checking
+        Status::Downloading { .. } | Status::Ready { .. } | Status::Checking | Status::Unsupported
     )
 }
 
@@ -459,9 +460,12 @@ pub fn check(current: &str) -> Status {
             message: format!("release {latest} has no installer for this platform"),
         };
     };
-    let Some(manifest_url) = find_manifest(&assets) else {
+    let Some(manifest_url) = find_manifest(&assets, manifest_name()) else {
         return Status::Error {
-            message: format!("release {latest} publishes no latest.yml to verify against"),
+            message: format!(
+                "release {latest} publishes no {} to verify against",
+                manifest_name()
+            ),
         };
     };
     let sha512 = match fetch_text(&manifest_url) {
@@ -469,7 +473,7 @@ pub fn check(current: &str) -> Status {
             Some(digest) => digest,
             None => {
                 return Status::Error {
-                    message: format!("latest.yml has no checksum for {}", artifact.name),
+                    message: format!("{} has no checksum for {}", manifest_name(), artifact.name),
                 }
             }
         },
@@ -680,11 +684,21 @@ fn squash_blank_lines(text: &str) -> String {
     }
     out
 }
-/// The `latest.yml` beside the installer. Without it there is nothing to verify
-/// against, and an unverified installer is not something to run.
-pub fn find_manifest(assets: &serde_json::Value) -> Option<String> {
+
+/// The `latest.yml` / `latest-mac.yml` beside the installer. Without it there
+/// is nothing to verify against, and an unverified installer is not something
+/// to run.
+pub fn manifest_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "latest-mac.yml"
+    } else {
+        "latest.yml"
+    }
+}
+
+pub fn find_manifest(assets: &serde_json::Value, name: &str) -> Option<String> {
     assets.as_array()?.iter().find_map(|asset| {
-        (asset.get("name")?.as_str()? == "latest.yml")
+        (asset.get("name")?.as_str()? == name)
             .then(|| {
                 asset
                     .get("browser_download_url")?
@@ -912,7 +926,7 @@ mod tests {
     fn the_interval_skips_busy_and_ready_states() {
         assert!(should_auto_check(&Status::Idle));
         assert!(should_auto_check(&Status::UpToDate));
-        assert!(should_auto_check(&Status::Unsupported));
+        assert!(!should_auto_check(&Status::Unsupported));
         assert!(should_auto_check(&Status::Error {
             message: "boom".into()
         }));
@@ -965,13 +979,20 @@ pub struct Artifact {
     pub size: u64,
 }
 
-/// `artifactName: "${productName}-${version}-win-${arch}.${ext}"` with
-/// `target: nsis`, so the installer is the `.exe` for the running architecture.
+/// The installer electron-builder publishes for this OS:
+/// Windows NSIS `*-win-${arch}.exe`, macOS `*-universal-mac.zip` (the zip
+/// `electron-updater` applies; the dmg sits beside it in the same feed).
 pub fn installer_suffix() -> &'static str {
-    if cfg!(target_arch = "aarch64") {
-        "-win-arm64.exe"
+    if cfg!(target_os = "macos") {
+        "-universal-mac.zip"
+    } else if cfg!(target_os = "windows") {
+        if cfg!(target_arch = "aarch64") {
+            "-win-arm64.exe"
+        } else {
+            "-win-x64.exe"
+        }
     } else {
-        "-win-x64.exe"
+        ""
     }
 }
 
@@ -1134,12 +1155,24 @@ fn installer_path(name: &str) -> Result<std::path::PathBuf, String> {
 }
 
 /// `quitAndInstall`: hand over to the installer and leave. The caller quits
-/// afterwards, because NSIS cannot replace a running binary.
+/// afterwards, because NSIS cannot replace a running binary. On macOS `open`
+/// reveals the verified zip (electron-updater would apply it in place).
 pub fn launch_installer(path: &std::path::Path) -> Result<(), String> {
-    std::process::Command::new(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::process::Command::new(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1173,9 +1206,38 @@ mod artifact_tests {
 
     #[test]
     fn the_suffix_follows_the_build_configuration() {
-        // `artifactName` in electron-builder.json5 ends `-win-${arch}.${ext}`.
-        assert!(installer_suffix().starts_with("-win-"));
-        assert!(installer_suffix().ends_with(".exe"));
+        #[cfg(target_os = "windows")]
+        {
+            assert!(installer_suffix().starts_with("-win-"));
+            assert!(installer_suffix().ends_with(".exe"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(installer_suffix(), "-universal-mac.zip");
+            assert_eq!(manifest_name(), "latest-mac.yml");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(installer_suffix(), "");
+        }
+    }
+
+    #[test]
+    fn the_manifest_is_the_electron_updater_feed_for_this_os() {
+        let assets = json!([
+            { "name": "latest.yml", "browser_download_url": "https://x/win", "size": 1 },
+            { "name": "latest-mac.yml", "browser_download_url": "https://x/mac", "size": 2 },
+            { "name": "Poratake-0.9.6-universal-mac.zip", "browser_download_url": "https://x/zip", "size": 3 },
+        ]);
+        assert_eq!(
+            find_manifest(&assets, "latest-mac.yml").as_deref(),
+            Some("https://x/mac")
+        );
+        assert_eq!(
+            find_manifest(&assets, "latest.yml").as_deref(),
+            Some("https://x/win")
+        );
+        assert!(find_installer(&assets, "-universal-mac.zip").is_some());
     }
 
     #[test]

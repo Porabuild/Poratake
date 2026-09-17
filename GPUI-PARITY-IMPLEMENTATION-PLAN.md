@@ -12,22 +12,12 @@ pipeline, window/display picking, all-in-one modes, capture sound, and the
 What follows are the verified deltas, ordered by priority. Every item has
 file:line evidence and an acceptance check. Severity: P0 = data loss / dead
 input / broken take; P1 = missing feature or wrong behavior; P2 = design /
-motion / polish delta. Items marked [fixed in tree] are already implemented in
-the working tree but uncommitted — verify, don't rebuild.
+motion / polish delta. Items 1–84 are closed (done, decided, or accepted).
 
-## Already fixed in working tree (verify, don't rebuild)
-
-- **Arrow style on create** [fixed in tree] — `editor/window.rs:737-745,816-825`
-  passes `self.arrow_style` into `build_segment`; `:1193-1197` stores it. Remainder:
-  bend-handle editing is still missing (item 12) and style doesn't apply to the
-  current selection (item 16).
-- **Shape fill on create** [fixed in tree] — `editor/window.rs:724,770,813` derives
-  fill from `shape_fill_mode`; `build_shape` writes it at `:1161-1175`. Remainder:
-  fill toggle doesn't update selected shapes (item 17).
-- **macOS Cmd bindings** [fixed in tree, partial] — `editor/actions.rs:96-112` adds
-  Cmd twins for undo/redo/copy/cut/paste/save/zoom/print/delete-file on macOS.
-  Remainders: Cmd+S has no handler (item 1); Backspace/Escape/Cmd+A selection keys
-  missing (item 24).
+Working tree leftovers from the first audit (Cmd+S, crop undo, TARGET_CLOSED,
+arrow style, fill, Cmd bindings) were implemented in checkpoints 1–2. Mac
+auto-download looks up `-universal-mac.zip` and `latest-mac.yml`; Linux never
+hits the feed.
 
 ## P0 — correctness bugs (fix first, in order)
 
@@ -39,6 +29,7 @@ the working tree but uncommitted — verify, don't rebuild.
   `screenshot-window.tsx:1139-1141`.
 - Fix: route `SaveScreenshot` to the same `save_as` path as the toolbar button.
 - Accept: Cmd+S (mac) / Ctrl+S (win) saves identically to the Save button.
+- Status: done. `SaveScreenshot` routes to the same `save_as` path as the toolbar.
 
 ### 2. Undo after crop restores annotations but not the image
 
@@ -49,6 +40,7 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: snapshot `base_image` (+ dimensions) alongside the annotation revision, or
   keep a pre-crop image on the undo stack.
 - Accept: undo after crop restores pixels and annotations together; redo re-applies.
+- Status: done. Crop snapshots `base_image` (+ dimensions) on the undo stack.
 
 ### 3. Closing the recorded window loses the take
 
@@ -60,6 +52,7 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: subscribe to the daemon error event, map `TARGET_CLOSED` to a normal stop,
   finalize the partial take, open editor/history.
 - Accept: closing a recorded window mid-take yields a playable file, no error toast.
+- Status: done. Daemon `RECORDING_TARGET_CLOSED` maps to a normal stop.
 
 ### 4. Async recorder failures leave GPUI stuck
 
@@ -71,6 +64,8 @@ the working tree but uncommitted — verify, don't rebuild.
   codes mirroring `handleTerminalRecordingFailure`.
 - Accept: injected mid-take recorder failure tears down UI and surfaces an error
   instead of hanging on a live timer.
+- Status: done. The same daemon-error subscription handles non-`TARGET_CLOSED`
+  codes as a terminal failure.
 
 ## P1 — capture flows
 
@@ -196,6 +191,7 @@ the working tree but uncommitted — verify, don't rebuild.
   `capture/color_picker.rs:65-116` 15x15 grid) — only the Escape semantics differ.
 - Fix: branch `Cancel` on pick state: exit pick mode first, dismiss on second press.
 - Accept: Escape during color pick returns to the toolbar; overlay stays open.
+- Status: done. `Cancel` exits pick mode first; a second Escape dismisses.
 
 ### 13. Windows OCR skips the ffmpeg preprocess
 
@@ -240,6 +236,7 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: handle hit-testing + drag-resize per annotation kind, reusing `bounds()`;
   one undo step per resize; text keeps font size.
 - Accept: rect/circle/line/arrow/text/redact drag-resize with pushed undo steps.
+- Status: done. Per-kind handles hit-test and resize with one undo step.
 
 ### 16. Tool options don't update selected annotations
 
@@ -249,6 +246,7 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: when a selection exists, apply option changes to it (and push undo).
 - Accept: changing color/stroke/arrow style/etc. with a selection updates those
   annotations, not just the next draw.
+- Status: done. `apply_option_to_selection` updates the selection and pushes undo.
 
 ### 17. Fill mode doesn't update selected shapes
 
@@ -256,6 +254,7 @@ the working tree but uncommitted — verify, don't rebuild.
   `shape_fill_mode` only (`editor/window.rs:1752`).
 - Fix: apply the toggle to selected rects/circles (same path as item 16).
 - Accept: outline/filled toggle re-renders selected shapes immediately.
+- Status: done (same path as item 16).
 
 ### 18. Highlight color doesn't update selected highlights
 
@@ -263,6 +262,7 @@ the working tree but uncommitted — verify, don't rebuild.
   the default only (`editor/window.rs:1743`).
 - Fix: same as item 16 for highlight fill.
 - Accept: picking a highlight color updates selected highlights.
+- Status: done (same path as item 16).
 
 ### 19. No multi-select or marquee
 
@@ -272,6 +272,7 @@ the working tree but uncommitted — verify, don't rebuild.
   (`editor/window.rs:98`).
 - Fix: selection set + Shift-click toggle + drag-empty marquee; move applies to all.
 - Accept: Shift-click toggles; marquee selects intersecting annotations.
+- Status: done. Selection set + Shift-toggle + empty-drag marquee.
 
 ### 20. Clipboard is single-annotation only
 
@@ -279,6 +280,7 @@ the working tree but uncommitted — verify, don't rebuild.
   GPUI copies one id and selects the last paste (`editor/window.rs:592-648`).
 - Fix: copy/cut/paste the whole selection with the same offset behavior.
 - Accept: multi-select copy/paste round-trips with all pasted ids selected.
+- Status: done. Clipboard copies/cuts/pastes the whole selection.
 
 ### 21. Arrow bend offset not editable
 
@@ -288,6 +290,7 @@ the working tree but uncommitted — verify, don't rebuild.
   GPUI hardcodes `bend_offset: None` (`editor/window.rs:1197`).
 - Fix: start/end/bend handles on selected arrows; drag updates `bendOffset`.
 - Accept: bent arrows render, export, and round-trip through save/reload.
+- Status: done. Start/end/bend handles update `bendOffset`.
 
 ### 22. No double-click text re-edit
 
@@ -296,6 +299,7 @@ the working tree but uncommitted — verify, don't rebuild.
   new-placement only (`editor/window.rs:696-699`).
 - Fix: double-click opens the inline editor with existing content.
 - Accept: double-clicked text edits in place; Enter commits, Escape cancels.
+- Status: done. Double-click opens the inline editor with existing content.
 
 ### 23. No text rotation
 
@@ -304,6 +308,7 @@ the working tree but uncommitted — verify, don't rebuild.
   (`editor/window.rs:972`); the field exists (`annotations.rs:102`) with no UI.
 - Fix: rotate handle on text selection; export matches preview.
 - Accept: rotated text renders and exports at the chosen angle.
+- Status: done. Rotate handle on text; preview-equals-export holds.
 
 ### 24. Missing selection keyboard shortcuts
 
@@ -313,6 +318,7 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: add Backspace-for-annotation, Escape-clear-selection, Select-all bindings
   (with Cmd twins on macOS).
 - Accept: Backspace/Escape/Cmd+A behave like Electron.
+- Status: done. Backspace deletes, Escape deselects, Cmd/Ctrl+A selects all.
 
 ### 25. Crop rect not movable/resizable after drag
 
@@ -321,6 +327,7 @@ the working tree but uncommitted — verify, don't rebuild.
   overlay is visual (`editor/canvas.rs:794-854`).
 - Fix: drag-to-move + corner handles on the pending crop rect before Enter.
 - Accept: crop box moves/resizes post-draw; Enter applies, Escape cancels.
+- Status: done. Pending crop has move + corner handles.
 
 ### 26. Number badges not renumbered on delete
 
@@ -329,6 +336,7 @@ the working tree but uncommitted — verify, don't rebuild.
   (`editor/window.rs:573-587`).
 - Fix: resequence remaining numbers per style/start value on delete.
 - Accept: deleting badge 2 of 1-2-3 leaves 1-2.
+- Status: done. `renumber_annotations` resequences on delete and style/start.
 
 ### 27. No Shift-constrain on pen/highlight
 
@@ -336,6 +344,7 @@ the working tree but uncommitted — verify, don't rebuild.
   GPUI `extend_stroke` appends with no modifier check (`editor/window.rs:784-785`).
 - Fix: Shift+drag constrains pen/highlight to horizontal/vertical.
 - Accept: Shift strokes are axis-aligned.
+- Status: done. Shift+drag constrains pen/highlight to an axis.
 
 ### 28. Capture-and-attach is a file picker, not live capture
 
@@ -344,6 +353,7 @@ the working tree but uncommitted — verify, don't rebuild.
   picker (`editor/window.rs:516,507-510`).
 - Fix: hold-Cmd edge picker capturing a live screenshot onto the edge.
 - Accept: hold-Cmd shows edges; click attaches a live capture.
+- Status: done. `attach_layer` hides the editor and runs a live area capture.
 
 ### 29. No drag-drop image layers
 
@@ -351,6 +361,7 @@ the working tree but uncommitted — verify, don't rebuild.
   (`screenshot-window.tsx:880-912`). Nothing under `app-gpui/` accepts drops.
 - Fix: accept image file drops onto the editor, attach to the configured edge.
 - Accept: dragging an image onto the editor attaches a layer.
+- Status: done. `on_drop` of image files attaches to the hovered edge.
 
 ### 30. No custom gradient background authoring
 
@@ -359,6 +370,7 @@ the working tree but uncommitted — verify, don't rebuild.
   images (`:1800-1821`) but cannot author gradients in-editor.
 - Fix: gradient editor in the wallpaper sheet (stops, angle, save as custom).
 - Accept: user creates/edits/saves a gradient custom without leaving the editor.
+- Status: done. Wallpaper sheet authors gradient stops, angle, and custom save.
 
 ### 31. Editor preferences not persisted
 
@@ -367,6 +379,7 @@ the working tree but uncommitted — verify, don't rebuild.
   `EditorPreferences` (`config/schema.rs:18-49`) is unused at open.
 - Fix: load on open, debounced save on change, same keys as Electron.
 - Accept: tool/color/stroke/styles survive close/reopen.
+- Status: done. Preferences load on open and save on change.
 
 ## P1 — recording
 
@@ -380,6 +393,7 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: when the session started with a camera, disable other cameras in the menu
   and only allow re-enable of the locked device.
 - Accept: mid-recording camera menu shows the locked device only.
+- Status: done. Camera is locked to the device the session started with.
 
 ### 33. No live camera preview bubble
 
@@ -388,6 +402,7 @@ the working tree but uncommitted — verify, don't rebuild.
   flow never calls `camera_preview()` (`windows/recording_control.rs`).
 - Fix: show/hide/reposition the daemon camera bubble with camera state.
 - Accept: enabling camera before/during recording shows the positioned bubble.
+- Status: done. Daemon camera bubble show/hide/reposition follows camera state.
 
 ### 34. Keyboard capture hardcoded off
 
@@ -396,6 +411,7 @@ the working tree but uncommitted — verify, don't rebuild.
   (`windows/recording_control.rs:353`, forwarded by `video/recorder.rs:165`).
 - Fix: wire the setting through `RecordingConfig` to the daemon.
 - Accept: recording produces `keyboard.json` shown in the video editor.
+- Status: done. `keyboard_enabled: true` is passed through to the daemon.
 
 ## P1 — video editor
 
@@ -722,7 +738,9 @@ the working tree but uncommitted — verify, don't rebuild.
 
 - Status: done. `Available` starts `start_download` (Electron's
   `downloadUpdate()` from `update-available`). Tray progress still rebuilds on
-  10% buckets.
+  10% buckets. macOS fetches `-universal-mac.zip` + `latest-mac.yml` and `open`s
+  the verified zip; Windows keeps `*-win-${arch}.exe` + `latest.yml`; Linux stays
+  `unsupported` and never hits the feed.
 
 ### 71. Tray menu icons
 
@@ -798,7 +816,8 @@ Platform limits (accepted, no action unless revisited):
   of `blur(18px) saturate(125%)`). GPUI has no live backdrop-filter.
 - **Geist fonts** — Electron `base.css:4-16,115-123`; GPUI uses system/HeroGPUI fonts.
 - **Updater auto-downloads** a verified installer and installs from Ready
-  (`start_download` / `quitAndInstall`). Linux stays `unsupported`.
+  (`start_download` / `quitAndInstall`). macOS uses the electron-updater zip
+  (`-universal-mac.zip` + `latest-mac.yml`); Linux stays `unsupported`.
 - **Wayland multi-display capture blocked** (`capture/mod.rs:411-421`) — documented
   limitation, not Electron drift.
 - **Linux session matrix** (X11/Wayland/headless gating) is GPUI-only by design.
@@ -809,16 +828,15 @@ Non-gaps found during comparison (do not file):
 - Aspect-ratio presets are unwired in BOTH shells (Electron `session.ts:877-888` has
   no non-test callers; GPUI `overlay.rs:1306-1310` hardcodes `None` with
   `selection.rs` geometry ready). Wire once, on both, when the product wants it.
-- Crop-undo and TARGET_CLOSED are real gaps (items 2-3), but the "HiDPI export
-  geometry" and "wallpaper preset degradation" claims from the early agent pass did
-  not reproduce: export uses natural resolution on both (`useCanvasExport.ts` vs
-  `export.rs:27-38`, DPR is preview-only in `canvas-renderer.tsx:314`), and
-  wallpaper presets/padding/frames/aspect/balance all port (`wallpaper_sheet.rs`
-  vs `wallpaper/index.tsx`).
+- Crop-undo and TARGET_CLOSED were real gaps at audit time (items 2–3); both are
+  done. The "HiDPI export geometry" and "wallpaper preset degradation" claims from
+  the early agent pass did not reproduce: export uses natural resolution on both
+  (`useCanvasExport.ts` vs `export.rs:27-38`, DPR is preview-only in
+  `canvas-renderer.tsx:314`), and wallpaper presets/padding/frames/aspect/balance
+  all port (`wallpaper_sheet.rs` vs `wallpaper/index.tsx`).
 - Frame-step in GPUI uses the source frame rate (`mod.rs:2535-2537`) vs Electron's
   fixed 1/30 (`use-editor-shortcuts.ts:33`) — GPUI is more accurate; keep.
-- `video/transcription.rs:1-5` "Media Foundation" doc comment is stale wording; the
-  code is portable pure Rust. Fix the comment when nearby code is touched.
+- `video/transcription.rs` audio conversion is portable Rust, not Media Foundation.
 
 ## Suggested order
 

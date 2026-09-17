@@ -2269,9 +2269,10 @@ mod tests {
             display.contains("theme.primary,"),
             "display menu hover is primary"
         );
-        for id in ["preview-show-in-folder"] {
-            assert!(control_call(id).contains("theme.primary,"), "{id}");
-        }
+        assert!(
+            control_call("preview-show-in-folder").contains("theme.primary,"),
+            "preview-show-in-folder"
+        );
 
         let pill = include_str!("../ui/preview.rs")
             .split_once("pub fn pill")
