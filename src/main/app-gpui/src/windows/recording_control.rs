@@ -1203,6 +1203,11 @@ impl RecordingControl {
         );
 
         if show_preview {
+            let project = project.clone();
+            cx.defer(move |cx| {
+                crate::windows::capture_preview::CapturePreviewWindow::open_video(cx, project);
+            });
+        } else {
             let path = project.to_string_lossy().to_string();
             cx.defer(move |cx| {
                 crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
@@ -1389,7 +1394,7 @@ fn bar_bounds(
     }
 }
 
-fn display_for_rect(
+pub(crate) fn display_for_rect(
     cx: &mut App,
     rect: ScreenRect,
 ) -> Option<std::rc::Rc<dyn gpui::PlatformDisplay>> {

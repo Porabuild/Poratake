@@ -84,6 +84,15 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: wrap every capture entry (area/window/screen/OCR/QR/scroll/timer) with
   hide → capture → restore, behind the existing setting + accessibility gate.
 - Accept: with the setting on, icons hide during each flow and restore after.
+- Status: done, with two corrections from the reference. Window screenshots
+  never hide in Electron (`captureWindowToFile` is unwrapped in
+  `screenshot.ts:140-160`), and screen screenshots hide only around the
+  pixels, not during the display pick — GPUI matches both. Area selection
+  hides at entry (except Recording), the screen picker and all-in-one hide at
+  confirm, restores funnel through finalize/error/cancel/countdown/scroll-end
+  exits, and every overlay entry clears an abandoned hide first
+  (`capture/desktop_icons.rs`, `capture/mod.rs`, `capture/overlay.rs`,
+  `capture/coordinator.rs`).
 
 ### 6. macOS scroll capture has no preview / control UI
 
@@ -96,6 +105,17 @@ the working tree but uncommitted — verify, don't rebuild.
   hint) + Done/Cancel/auto-scroll control.
 - Accept: macOS scroll session shows live stitch progress and finishes/cancels
   without hotkeys.
+- Status: done — new macOS-only `windows/scroll_capture.rs` owns the session
+  UI: a 240px preview panel fed by the daemon's `scroll-capture:frame` base64
+  stitch (bottom-anchored cover crop, status line with frame count and
+  estimated height, "Move cursor here to continue" hint while the cursor is
+  outside) plus a 168x52 control bar with Start/Stop auto-scroll, Done (Enter)
+  and Cancel (Esc). The coordinator subscribes to the macOS-only frame /
+  auto-scroll / cursor progress events, the control bar toggles through the
+  new `startAutoScroll` / `stopAutoScroll` client methods, and Enter/Escape
+  are armed as temporary global shortcuts for the session, mirroring the
+  Electron control window. Both popups are nonactivating so scrolling the
+  target app never loses focus.
 
 ### 7. macOS scroll capture forces native daemon UI
 
@@ -105,6 +125,14 @@ the working tree but uncommitted — verify, don't rebuild.
   Electron-equivalent UI.
 - Fix: pass `nativeControls: false` on macOS once item 6 lands (keep `true` on Windows).
 - Accept: macOS scroll uses the GPUI preview/control UI, not shortcut-only native UI.
+- Status: done — the coordinator passes `nativeControls: false` on macOS with
+  a new `boundaryOnly` start flag (documented in `daemon-contract.json`,
+  ignored by the Rust/Linux daemons and never sent by Electron). Swift splits
+  `showCaptureUI` so `boundaryOnly` draws just the click-through area frame —
+  GPUI windows cannot be click-through, which is what the frame needs — and
+  recolors it orange/blue as the cursor leaves/re-enters during auto-scroll,
+  matching the Electron overlay frame. Windows and Linux keep
+  `nativeControls: true` and the daemon-owned panel.
 
 ### 8. Scroll area selection must always be live
 
@@ -113,6 +141,9 @@ the working tree but uncommitted — verify, don't rebuild.
   (`capture/mod.rs:306-307` via `with_frozen_screen`).
 - Fix: force the live overlay path for scroll regardless of the freeze setting.
 - Accept: scroll selection always runs over live pixels.
+- Status: done — `CaptureIntent::allows_freeze` returns false for scroll and
+  `with_frozen_screen` takes a force-live flag
+  (`capture/intent.rs`, `capture/mod.rs`).
 
 ### 9. Record Screen is primary-display-only
 
@@ -120,6 +151,11 @@ the working tree but uncommitted — verify, don't rebuild.
   GPUI hardcodes the primary display (`capture/mod.rs:431-451`).
 - Fix: route Record Screen through the overlay display-pick flow like Electron.
 - Accept: Record Screen on multi-display lets the user pick the display.
+- Status: done — `start_screen_recording` opens the screen picker with the
+  Recording intent on multi-display setups (live, like `recordScreen`
+  `freeze: false`); click opens the pre-recording bar and conceals the pickers,
+  Escape cancels. Single display keeps the direct path (`capture/mod.rs`,
+  `capture/overlay.rs`).
 
 ### 10. Full-screen screenshot uses a different picker UX
 
@@ -128,6 +164,16 @@ the working tree but uncommitted — verify, don't rebuild.
   (`capture/mod.rs:649-682`). Product decision, but behavior must be equivalent.
 - Fix: decide native vs overlay, then match the chosen UX on both shells.
 - Accept: multi-display screenshot pick behaves equivalently on both shells.
+- Status: decided — keep the GPUI overlay picker. Verified equivalent to the
+  native UI (`DisplaySelectorModule.swift`: dim + hover un-dim, click selects,
+  Escape cancels with no fallback): the native UI shows no visible display
+  numbers either (numbers exist only in the response payload), and GPUI's
+  click-to-pick makes them redundant. The picker honors the freeze setting so
+  the click captures the exact pixels shown; forcing it live would desync the
+  `confirm_screen` reservation. No display-id routing gap either: macOS passes
+  the CG display id through and the daemons resolve area/rect captures to the
+  containing monitor (`screen_capture.rs` `monitor_contains`,
+  `ScreenCaptureRecorder.swift` display filter).
 
 ### 11. Timer capture may re-freeze the final shot
 
@@ -137,6 +183,8 @@ the working tree but uncommitted — verify, don't rebuild.
   freeze if the setting is on (`coordinator.rs:45-47,289-290`).
 - Fix: capture the post-countdown shot from live pixels, not a fresh freeze.
 - Accept: countdown runs over the live desktop and the final shot is live.
+- Status: done — the post-countdown capture calls `capture_area_reserved` with
+  no reservation (`capture/coordinator.rs`).
 
 ### 12. Escape during color pick kills the whole overlay
 
@@ -155,6 +203,11 @@ the working tree but uncommitted — verify, don't rebuild.
   `preprocessImageForOcr`); GPUI `capture/analysis.rs` has no equivalent.
 - Fix: port the preprocess step to the Windows OCR path.
 - Accept: Windows OCR accuracy on low-contrast captures matches Electron.
+- Status: done — `recognize_text` preprocesses on non-mac via the `image`
+  crate (upscale the longer side to 1300px Lanczos, grayscale, unsharp),
+  mirroring the FFmpeg filter chain without bundling FFmpeg; any failure
+  falls back to the raw capture and the processed file is deleted after
+  (`capture/analysis.rs`).
 
 ### 14. No video/recording capture preview
 
@@ -165,6 +218,15 @@ the working tree but uncommitted — verify, don't rebuild.
 - Fix: open the preview flow on recording finish when `recording.showPreview` is on,
   with play/export actions.
 - Accept: finished recording shows a video preview before/alongside the editor.
+- Status: done — `CapturePreviewWindow::open_video` stacks a video preview
+  with 8fps autoplay, Edit/double-click into the video editor, Delete
+  recording, Show in Folder, and Copy running the standard export with a
+  Cancel pill; recording finish shows the preview when `showPreview` is on
+  and opens the editor directly when it is off, mirroring the screenshot
+  flow. One deviation: Electron copies the exported file to the clipboard,
+  which GPUI's clipboard cannot hold, so the export is revealed in the
+  folder with a toast instead (`windows/capture_preview.rs`,
+  `windows/recording_control.rs`).
 
 ## P1 — screenshot editor
 

@@ -48,6 +48,12 @@ impl CaptureIntent {
     pub fn saves_to_library(self) -> bool {
         matches!(self, Self::Screenshot | Self::Timer | Self::ScrollCapture)
     }
+
+    /// Scroll selection always runs over live pixels (`scroll-capture/index.ts`
+    /// passes `freeze: false`); every other flow honors the freeze setting.
+    pub fn allows_freeze(self) -> bool {
+        !matches!(self, Self::ScrollCapture)
+    }
 }
 
 #[cfg(test)]
@@ -61,6 +67,14 @@ mod tests {
         assert!(CaptureIntent::ScrollCapture.saves_to_library());
         assert!(!CaptureIntent::Ocr.saves_to_library());
         assert!(!CaptureIntent::QrCode.saves_to_library());
+    }
+
+    #[test]
+    fn scroll_selection_always_runs_over_live_pixels() {
+        assert!(!CaptureIntent::ScrollCapture.allows_freeze());
+        assert!(CaptureIntent::Screenshot.allows_freeze());
+        assert!(CaptureIntent::Recording.allows_freeze());
+        assert!(CaptureIntent::EditorAttach.allows_freeze());
     }
 
     #[test]

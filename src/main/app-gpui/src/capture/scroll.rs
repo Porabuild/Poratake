@@ -11,6 +11,19 @@ use crate::daemon::DaemonHandle;
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Debug)]
+pub enum ScrollSessionSignal {
+    Finish,
+    Cancel,
+    Frame {
+        frame_count: usize,
+        estimated_height: i64,
+        preview: Option<String>,
+    },
+    AutoScrolling(bool),
+    CursorOutside(bool),
+}
+
 pub fn is_active() -> bool {
     ACTIVE.load(Ordering::SeqCst)
 }

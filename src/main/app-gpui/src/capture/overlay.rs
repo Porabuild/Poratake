@@ -1024,6 +1024,7 @@ impl AreaOverlay {
         service: CaptureService,
         display_id: DisplayId,
         display_bounds: Bounds<Pixels>,
+        intent: crate::capture::intent::CaptureIntent,
         launch: OverlayLaunch,
         cx: &mut App,
     ) -> Option<gpui::WindowHandle<AreaOverlay>> {
@@ -1032,14 +1033,8 @@ impl AreaOverlay {
             display_bounds,
             launch,
             |scale, focus_handle| {
-                AreaOverlay::with_focus(
-                    display_bounds,
-                    scale,
-                    service,
-                    crate::capture::intent::CaptureIntent::Screenshot,
-                    focus_handle,
-                )
-                .with_screen_picker()
+                AreaOverlay::with_focus(display_bounds, scale, service, intent, focus_handle)
+                    .with_screen_picker()
             },
             |_, _| {},
             true,
@@ -1375,6 +1370,13 @@ impl AreaOverlay {
             return;
         }
 
+        if self.all_in_one.is_some() {
+            crate::capture::desktop_icons::hide_for_capture(
+                &self.service.daemon,
+                &self.service.config,
+            );
+        }
+
         let coordinator = crate::state::coordinator(cx);
         let display_origin = (
             (f32::from(self.display_bounds.left()) * coordinate_scale).round() as i32,
@@ -1644,6 +1646,30 @@ fn sync_window_recording_handoff(cx: &mut Context<AreaOverlay>) {
     });
 }
 
+fn conceal_screen_recording_pick(window: &mut Window, cx: &mut Context<AreaOverlay>) {
+    conceal_recording_selector(window);
+    let handles = session(cx).handles.clone();
+    App::defer(cx, move |cx| {
+        for tracked in handles {
+            let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
+                continue;
+            };
+            let _ = handle.update(cx, |overlay, window, cx| {
+                if overlay.intent != crate::capture::intent::CaptureIntent::Recording
+                    || !overlay.screen_picker
+                {
+                    return;
+                }
+                overlay.screen_picker = false;
+                overlay.interaction = None;
+                overlay.pointer = None;
+                conceal_recording_selector(window);
+                cx.notify();
+            });
+        }
+    });
+}
+
 fn conceal_recording_selector(window: &mut Window) {
     #[cfg(windows)]
     park_overlay(window);
@@ -1693,6 +1719,9 @@ impl Render for AreaOverlay {
                     this.stop_color_picker(cx);
                     return;
                 }
+                crate::capture::desktop_icons::restore_after_capture(
+                    &crate::state::state(cx).daemon,
+                );
                 if this.intent == crate::capture::intent::CaptureIntent::Recording {
                     crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
                 }
@@ -1950,14 +1979,18 @@ impl AreaOverlay {
         let rect = capture.rect;
         let intent = self.intent;
         if retains_overlay_after_selection(intent) {
-            self.rect = Some(selection::Rect {
-                x: 0.0,
-                y: 0.0,
-                width: self.viewport().width,
-                height: self.viewport().height,
-            });
-            self.all_in_one = None;
-            sync_recording_handoff(cx);
+            if self.screen_picker {
+                conceal_screen_recording_pick(window, cx);
+            } else {
+                self.rect = Some(selection::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: self.viewport().width,
+                    height: self.viewport().height,
+                });
+                self.all_in_one = None;
+                sync_recording_handoff(cx);
+            }
             begin_recording(
                 cx,
                 crate::video::recorder::RecordingTarget::Screen,
@@ -1968,6 +2001,12 @@ impl AreaOverlay {
             );
             cx.notify();
             return;
+        }
+        if self.screen_picker || self.all_in_one.is_some() {
+            crate::capture::desktop_icons::hide_for_capture(
+                &self.service.daemon,
+                &self.service.config,
+            );
         }
         let coordinator = crate::state::coordinator(cx);
         let reservation = self
@@ -2191,6 +2230,43 @@ mod tests {
                 .update(cx, |overlay, _, _| overlay.display_id)
                 .expect("read display id"),
             Some(u64::from(display_id) as u32)
+        );
+    }
+
+    #[herogpui::test]
+    fn screen_picker_keeps_the_recording_intent(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (display_id, display_bounds) = cx.read(|cx| {
+            let display = cx.primary_display().expect("primary display");
+            (display.id(), display.bounds())
+        });
+        let opened = cx.update(|cx| {
+            super::AreaOverlay::open_screen_picker(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Recording,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: false,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open picker")
+        });
+
+        assert_eq!(
+            opened
+                .update(cx, |overlay, _, _| (
+                    overlay.intent,
+                    overlay.is_picking_screen()
+                ))
+                .expect("read intent"),
+            (crate::capture::intent::CaptureIntent::Recording, true)
         );
     }
 

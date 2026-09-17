@@ -5,6 +5,8 @@ pub mod onboarding;
 pub mod pin;
 pub mod recording_control;
 pub mod registry;
+#[cfg(target_os = "macos")]
+pub mod scroll_capture;
 pub mod settings;
 mod smoke;
 pub mod toast;

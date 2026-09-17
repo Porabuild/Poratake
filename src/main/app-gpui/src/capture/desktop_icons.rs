@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use parking_lot::Mutex;
 
+use crate::config::store::ConfigStore;
 use crate::daemon::DaemonHandle;
 use crate::system::capabilities::{is_supported, Feature};
 
@@ -30,6 +31,34 @@ fn with_state<R>(apply: impl FnOnce(&mut State) -> R) -> R {
 
 pub fn supported() -> bool {
     is_supported(Feature::DesktopIcons)
+}
+
+/// `shouldHideDesktopIconsForCapture` (`desktop-icons/preference.ts`): the
+/// setting plus the capability gate, with the macOS accessibility check that
+/// flips the setting off when trust is missing.
+pub fn should_hide_for_capture(config: &ConfigStore) -> bool {
+    if !config.get().screenshot.hide_desktop_icons || !supported() {
+        return false;
+    }
+    if !crate::system::permissions::accessibility_granted() {
+        config.update(|settings| settings.screenshot.hide_desktop_icons = false);
+        return false;
+    }
+    true
+}
+
+/// Hides the icons for one capture flow. Every entry that hides must reach a
+/// `restore_after_capture` on each of its exits.
+pub fn hide_for_capture(daemon: &DaemonHandle, config: &ConfigStore) {
+    if should_hide_for_capture(config) {
+        hide(daemon, HideSource::Capture);
+    }
+}
+
+/// Every capture exit funnels through here. A no-op when the flow never hid,
+/// so recording and window screenshots share the same exits safely.
+pub fn restore_after_capture(daemon: &DaemonHandle) {
+    show(daemon, HideSource::Capture);
 }
 
 pub fn are_hidden() -> bool {
@@ -123,5 +152,20 @@ mod tests {
 
         state.reasons.remove(&HideSource::Capture);
         assert!(state.reasons.is_empty());
+    }
+
+    #[test]
+    fn the_capture_gate_needs_the_setting_and_trust() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = ConfigStore::load_at(dir.path().join("config.json")).expect("load config");
+        config.update(|settings| settings.screenshot.hide_desktop_icons = false);
+        assert!(!should_hide_for_capture(&config));
+
+        config.update(|settings| settings.screenshot.hide_desktop_icons = true);
+        let trusted = crate::system::permissions::accessibility_granted();
+        assert_eq!(should_hide_for_capture(&config), supported() && trusted);
+        if !trusted {
+            assert!(!config.get().screenshot.hide_desktop_icons);
+        }
     }
 }

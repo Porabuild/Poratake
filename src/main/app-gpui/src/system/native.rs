@@ -49,6 +49,8 @@ pub enum NativeEvent {
         tray_rect: Option<TrayRect>,
     },
     CancelPreRecording,
+    FinishScrollCapture,
+    CancelScrollCapture,
 }
 
 pub enum NativeCommand {
@@ -56,6 +58,7 @@ pub enum NativeCommand {
     SetTrayVisible(bool),
     SetHotkeys(Vec<(Intent, String)>),
     SetPreRecordingEscape(bool),
+    SetScrollCaptureShortcuts(bool),
 }
 
 pub struct NativeBridge {
@@ -163,6 +166,12 @@ impl Shell {
         if self.hotkeys.is_pre_recording_escape(id) {
             return Some(NativeEvent::CancelPreRecording);
         }
+        if self.hotkeys.is_scroll_capture_done(id) {
+            return Some(NativeEvent::FinishScrollCapture);
+        }
+        if self.hotkeys.is_scroll_capture_cancel(id) {
+            return Some(NativeEvent::CancelScrollCapture);
+        }
         self.hotkeys
             .intent_for(id)
             .map(|intent| NativeEvent::Intent {
@@ -189,6 +198,9 @@ impl Shell {
             NativeCommand::SetHotkeys(bindings) => self.hotkeys.apply(&bindings),
             NativeCommand::SetPreRecordingEscape(enabled) => {
                 self.hotkeys.set_pre_recording_escape(enabled)
+            }
+            NativeCommand::SetScrollCaptureShortcuts(enabled) => {
+                self.hotkeys.set_scroll_capture_shortcuts(enabled)
             }
         }
     }

@@ -31,6 +31,22 @@ static STACK: Mutex<Option<AnyWindowHandle>> = Mutex::new(None);
 static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(1);
 const UPLOAD_DONE_DISPLAY_MS: u64 = 800;
 const PREVIEW_MOVE_MS: u64 = 120;
+/// Video previews autoplay the recording muted and looped, like the Electron
+/// `<video>` tag. 8fps keeps the thumbnail alive without decoding full rate.
+const VIDEO_PLAYBACK_TICK: Duration = Duration::from_millis(125);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewKind {
+    Screenshot,
+    Video,
+}
+
+struct VideoPlayback {
+    decoder: Arc<crate::video::decoder::VideoDecoder>,
+    duration: f64,
+    started: Instant,
+    in_flight: bool,
+}
 
 #[derive(Clone, Copy)]
 struct LayoutAnimation {
@@ -55,8 +71,11 @@ enum DismissBehavior {
 
 struct CapturePreview {
     id: u64,
+    kind: PreviewKind,
     path: PathBuf,
     image: Option<Arc<gpui::RenderImage>>,
+    video: Option<VideoPlayback>,
+    export_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Electron's scrim is `backdrop-blur-md` over the thumbnail; gpui cannot
     /// blur a region, so the blur is baked once here instead of per frame.
     blurred: Option<Arc<gpui::RenderImage>>,
@@ -92,21 +111,65 @@ impl CapturePreviewWindow {
     pub fn open(cx: &mut App, path: PathBuf) {
         let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
-        let mut preview = Some(CapturePreview {
+        Self::push_preview(
+            cx,
             id,
-            image: load_thumbnail(&path),
-            blurred: load_blurred_thumbnail(&path),
-            path,
-            hover_progress: 0.0,
-            last_frame: None,
-            hovered: false,
-            busy: false,
-            dismiss_token: dismiss_token.clone(),
-            entered_at: Instant::now(),
-            layout_y: None,
-            layout_animation: None,
-            dismiss_animation: None,
-        });
+            dismiss_token.clone(),
+            CapturePreview {
+                id,
+                kind: PreviewKind::Screenshot,
+                image: load_thumbnail(&path),
+                blurred: load_blurred_thumbnail(&path),
+                path,
+                video: None,
+                export_cancel: None,
+                hover_progress: 0.0,
+                last_frame: None,
+                hovered: false,
+                busy: false,
+                dismiss_token,
+                entered_at: Instant::now(),
+                layout_y: None,
+                layout_animation: None,
+                dismiss_animation: None,
+            },
+        );
+    }
+
+    /// Recording counterpart of `open`: the stack shows the project's video
+    /// with play/export actions (`recording-actions.ts` shows a `'video'`
+    /// preview when `recording.showPreview` is on).
+    pub fn open_video(cx: &mut App, project: PathBuf) {
+        let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
+        let dismiss_token = Arc::new(AtomicU64::new(0));
+        Self::push_preview(
+            cx,
+            id,
+            dismiss_token.clone(),
+            CapturePreview {
+                id,
+                kind: PreviewKind::Video,
+                image: None,
+                blurred: None,
+                path: project,
+                video: None,
+                export_cancel: None,
+                hover_progress: 0.0,
+                last_frame: None,
+                hovered: false,
+                busy: false,
+                dismiss_token,
+                entered_at: Instant::now(),
+                layout_y: None,
+                layout_animation: None,
+                dismiss_animation: None,
+            },
+        );
+        pump_video_preview(cx, id);
+    }
+
+    fn push_preview(cx: &mut App, id: u64, dismiss_token: Arc<AtomicU64>, preview: CapturePreview) {
+        let mut preview = Some(preview);
 
         let existing = *STACK.lock();
         if let Some(handle) = existing {
@@ -189,7 +252,21 @@ impl CapturePreviewWindow {
             *STACK.lock() = None;
             let _ = handle.update(cx, |_, window, _| window.remove_window());
             if !previews.is_empty() {
+                let mut previews = previews;
+                for preview in previews.iter_mut() {
+                    if preview.kind == PreviewKind::Video {
+                        preview.video = None;
+                    }
+                }
+                let ids: Vec<u64> = previews
+                    .iter()
+                    .filter(|preview| preview.kind == PreviewKind::Video)
+                    .map(|preview| preview.id)
+                    .collect();
                 Self::open_stack_window(cx, previews);
+                for id in ids {
+                    pump_video_preview(cx, id);
+                }
             }
         }
     }
@@ -393,6 +470,252 @@ fn dismiss_state(
         return DismissVerdict::Blocked;
     }
     DismissVerdict::Ready
+}
+
+/// Starts the autoplay loop for a video preview: the decoder opens on a
+/// background thread, then a tick decodes the looped playhead time into the
+/// thumbnail until the preview is removed.
+fn pump_video_preview(cx: &mut App, id: u64) {
+    let Some(stack) = *STACK.lock() else {
+        return;
+    };
+    let Some(handle) = stack.downcast::<CapturePreviewWindow>() else {
+        return;
+    };
+    let started = handle
+        .update(cx, |view, _, cx| {
+            let preview = view.previews.iter().find(|preview| preview.id == id)?;
+            if preview.kind != PreviewKind::Video || preview.video.is_some() {
+                return None;
+            }
+            let video_path = crate::video::project::recording_video_path(&preview.path);
+            cx.spawn(async move |entity, cx| {
+                let decoder = cx
+                    .background_executor()
+                    .spawn(async move { crate::video::decoder::VideoDecoder::open(&video_path) })
+                    .await;
+                let Some(decoder) = decoder else {
+                    return;
+                };
+                let duration = decoder.info().duration;
+                let decoder = Arc::new(decoder);
+                let attached = cx.update(|cx| {
+                    entity
+                        .update(cx, |view, cx| {
+                            let preview =
+                                view.previews.iter_mut().find(|preview| preview.id == id)?;
+                            preview.video = Some(VideoPlayback {
+                                decoder: decoder.clone(),
+                                duration,
+                                started: Instant::now(),
+                                in_flight: false,
+                            });
+                            cx.notify();
+                            Some(())
+                        })
+                        .ok()
+                        .flatten()
+                });
+                if attached.is_none() {
+                    return;
+                };
+                loop {
+                    cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
+                    let job = cx.update(|cx| {
+                        entity
+                            .update(cx, |view, _| {
+                                let preview =
+                                    view.previews.iter_mut().find(|preview| preview.id == id)?;
+                                let playback = preview.video.as_mut()?;
+                                if playback.in_flight {
+                                    return None;
+                                }
+                                playback.in_flight = true;
+                                let time = looped_playhead(
+                                    playback.started.elapsed().as_secs_f64(),
+                                    playback.duration,
+                                );
+                                Some((playback.decoder.clone(), time))
+                            })
+                            .ok()
+                            .flatten()
+                    });
+                    let Some((decoder, time)) = job else {
+                        let alive = entity
+                            .update(cx, |view, _| {
+                                view.previews.iter().any(|preview| preview.id == id)
+                            })
+                            .unwrap_or(false);
+                        if !alive {
+                            return;
+                        }
+                        continue;
+                    };
+                    let frame = cx
+                        .background_executor()
+                        .spawn({
+                            let decoder = decoder.clone();
+                            async move {
+                                decoder
+                                    .frame_at(time)
+                                    .and_then(|frame| video_thumbnail(&frame))
+                            }
+                        })
+                        .await;
+                    cx.update(|cx| {
+                        let _ = entity.update(cx, |view, cx| {
+                            let Some(preview) =
+                                view.previews.iter_mut().find(|preview| preview.id == id)
+                            else {
+                                return;
+                            };
+                            if let Some(playback) = preview.video.as_mut() {
+                                playback.in_flight = false;
+                            }
+                            if let Some(image) = frame {
+                                preview.image = Some(image);
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+            })
+            .detach();
+            Some(())
+        })
+        .ok()
+        .flatten();
+    let _ = started;
+}
+
+fn looped_playhead(elapsed: f64, duration: f64) -> f64 {
+    if duration.is_finite() && duration > 0.0 {
+        elapsed % duration
+    } else {
+        0.0
+    }
+}
+
+/// A decoded BGRA frame as a cover-fit thumbnail, following `load_thumbnail`.
+fn video_thumbnail(frame: &crate::video::decoder::DecodedFrame) -> Option<Arc<gpui::RenderImage>> {
+    if frame.width == 0 || frame.height == 0 {
+        return None;
+    }
+    let mut rgba = frame.bgra.to_vec();
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    let decoded = image::RgbaImage::from_raw(frame.width, frame.height, rgba)?;
+    let mut buffer = image::DynamicImage::ImageRgba8(decoded)
+        .resize_to_fill(
+            PREVIEW_WIDTH as u32,
+            PREVIEW_HEIGHT as u32,
+            image::imageops::FilterType::Triangle,
+        )
+        .to_rgba8();
+    for pixel in buffer.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    let frame = image::Frame::new(buffer);
+    Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame])))
+}
+
+/// The preview Copy button on a video: runs the standard export with the
+/// project's saved state and reveals the result. Electron copies the exported
+/// file to the clipboard, which GPUI's clipboard cannot hold, so the file is
+/// revealed in the folder instead.
+fn start_video_export(
+    id: u64,
+    project: PathBuf,
+    entity: gpui::WeakEntity<CapturePreviewWindow>,
+    cx: &mut App,
+) {
+    let prepared = STACK
+        .lock()
+        .and_then(|stack| stack.downcast::<CapturePreviewWindow>())
+        .and_then(|handle| {
+            handle
+                .update(cx, |view, _, cx| {
+                    let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
+                    if preview.busy {
+                        return None;
+                    }
+                    preview.busy = true;
+                    preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+                    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    preview.export_cancel = Some(cancel.clone());
+                    cx.notify();
+                    Some((cancel, preview.dismiss_token.clone()))
+                })
+                .ok()
+                .flatten()
+        });
+    let Some((cancel, dismiss_token)) = prepared else {
+        return;
+    };
+    cx.spawn(async move |cx| {
+        let output = cx
+            .background_executor()
+            .spawn({
+                let project = project.clone();
+                async move {
+                    let state = crate::windows::video_editor::model::load_state(&project);
+                    let output = crate::video::export::default_output_path(&project, &state);
+                    let result = crate::video::export::run(
+                        crate::video::export::Request {
+                            project,
+                            output,
+                            state,
+                        },
+                        &mut |_| {},
+                        &|| !cancel.load(Ordering::Relaxed),
+                    );
+                    (result, cancel.load(Ordering::Relaxed))
+                }
+            })
+            .await;
+        let handle = *STACK.lock();
+        cx.update(|cx| {
+            let _ = entity.update(cx, |view, cx| {
+                if let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id) {
+                    preview.busy = false;
+                    preview.export_cancel = None;
+                }
+                cx.notify();
+            });
+            let (result, cancelled) = output;
+            match result {
+                Ok(path) if !cancelled => {
+                    crate::windows::toast::Toast::show(cx, "Export ready", path.to_string_lossy());
+                    crate::system::desktop::reveal_in_file_manager(&path);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    if !cancelled {
+                        crate::windows::toast::Toast::show(cx, "Export failed", error);
+                    }
+                }
+            }
+            if let Some(handle) = handle {
+                schedule_auto_dismiss(handle, id, cx, dismiss_token);
+            }
+        });
+    })
+    .detach();
+}
+
+fn cancel_video_export(id: u64, cx: &mut App) {
+    if let Some(stack) = *STACK.lock() {
+        let _ = stack.downcast::<CapturePreviewWindow>().map(|handle| {
+            handle.update(cx, |view, _, _| {
+                if let Some(preview) = view.previews.iter().find(|preview| preview.id == id) {
+                    if let Some(cancel) = preview.export_cancel.as_ref() {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+            })
+        });
+    }
 }
 
 fn selected_display(cx: &mut App) -> Option<(Bounds<gpui::Pixels>, gpui::DisplayId)> {
@@ -764,6 +1087,10 @@ fn delete_capture(path: &Path) {
     crate::history_store::delete_path(path, crate::history_store::HistoryItemType::Screenshot);
 }
 
+fn delete_recording(project: &Path) {
+    crate::history_store::delete_path(project, crate::history_store::HistoryItemType::Video);
+}
+
 fn begin_remove_preview(
     view: &mut CapturePreviewWindow,
     id: u64,
@@ -940,6 +1267,8 @@ impl CapturePreviewWindow {
         let preview_entity = cx.entity().downgrade();
         let preview = &mut self.previews[index];
         let id = preview.id;
+        let is_video = preview.kind == PreviewKind::Video;
+        let polish = if is_video { None } else { polish };
         let path = preview.path.clone();
         let dismiss_token = preview.dismiss_token.clone();
         let busy = preview.busy;
@@ -996,7 +1325,11 @@ impl CapturePreviewWindow {
                             cx,
                         )
                     });
-                    crate::open_editor_for(cx, &path);
+                    if is_video {
+                        crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
+                    } else {
+                        crate::open_editor_for(cx, &path);
+                    }
                 }
             });
 
@@ -1031,7 +1364,10 @@ impl CapturePreviewWindow {
                 .justify_center()
                 .bg(theme.muted_background)
                 .text_color(theme.muted_foreground)
-                .child(icon_element("image", px(48.0)))
+                .child(icon_element(
+                    if is_video { "film" } else { "image" },
+                    px(48.0),
+                ))
                 .into_any_element(),
         });
 
@@ -1083,14 +1419,22 @@ impl CapturePreviewWindow {
                             ("preview-delete", id),
                             "trash-2",
                             false,
-                            "Delete screenshot",
+                            if is_video {
+                                "Delete recording"
+                            } else {
+                                "Delete screenshot"
+                            },
                             theme,
                             theme.destructive,
                             {
                                 let path = path.clone();
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
-                                    delete_capture(&path);
+                                    if is_video {
+                                        delete_recording(&path);
+                                    } else {
+                                        delete_capture(&path);
+                                    }
                                     let _ = preview_entity.update(cx, |view, cx| {
                                         begin_remove_preview(
                                             view,
@@ -1117,6 +1461,33 @@ impl CapturePreviewWindow {
                         // also what Electron renders with no starred preset.
                         .flex_col()
                         .gap(px(4.0))
+                        .when(is_video && !busy, |el| {
+                            el.child(preview::pill(
+                                ("preview-copy-video", id),
+                                "Copy",
+                                "Copy",
+                                theme,
+                                {
+                                    let path = path.clone();
+                                    let preview_entity = preview_entity.clone();
+                                    move |_window, cx| {
+                                        start_video_export(id, path.clone(), preview_entity.clone(), cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                        })
+                        .when(is_video && busy, |el| {
+                            el.child(preview::pill(
+                                ("preview-exporting", id),
+                                "Exporting...",
+                                "Exporting...",
+                                theme,
+                                |_, cx| {
+                                    cx.stop_propagation();
+                                },
+                            ))
+                        })
                         .when_some(polish, |el, preset| {
                             let tooltip = format!("Copy with \"{}\"", preset.name);
                             el.child(preview::pill(
@@ -1143,43 +1514,65 @@ impl CapturePreviewWindow {
                                 },
                             ))
                         })
-                        .child(preview::pill(
-                            ("preview-edit", id),
-                            "Edit",
-                            "Edit",
-                            theme,
-                            {
-                                let path = path.clone();
-                                let preview_entity = preview_entity.clone();
-                                move |window, cx| {
-                                    let path = path.to_string_lossy().into_owned();
-                                    let _ = preview_entity.update(cx, |view, cx| {
-                                        begin_remove_preview(
-                                            view,
-                                            id,
-                                            DismissBehavior::PreserveControls,
-                                            window,
-                                            cx,
-                                        )
-                                    });
-                                    crate::open_editor_for(cx, &path);
-                                }
-                            },
-                        )),
+                        .when(!(is_video && busy), |el| {
+                            el.child(preview::pill(
+                                ("preview-edit", id),
+                                "Edit",
+                                "Edit",
+                                theme,
+                                {
+                                    let path = path.clone();
+                                    let preview_entity = preview_entity.clone();
+                                    move |window, cx| {
+                                        let path = path.to_string_lossy().into_owned();
+                                        let _ = preview_entity.update(cx, |view, cx| {
+                                            begin_remove_preview(
+                                                view,
+                                                id,
+                                                DismissBehavior::PreserveControls,
+                                                window,
+                                                cx,
+                                            )
+                                        });
+                                        if is_video {
+                                            crate::windows::video_editor::VideoEditorWindow::open(
+                                                cx,
+                                                Some(path),
+                                            );
+                                        } else {
+                                            crate::open_editor_for(cx, &path);
+                                        }
+                                    }
+                                },
+                            ))
+                        })
+                        .when(is_video && busy, |el| {
+                            el.child(preview::pill(
+                                ("preview-cancel-export", id),
+                                "Cancel",
+                                "Cancel",
+                                theme,
+                                move |_, cx| {
+                                    cancel_video_export(id, cx);
+                                    cx.stop_propagation();
+                                },
+                            ))
+                        }),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .opacity(progress)
-                        .bottom(px(PREVIEW_CONTROL_INSET))
-                        .left(px(PREVIEW_CONTROL_INSET))
-                        .child(preview::circle(
-                            ("preview-copy", id),
-                            "copy",
-                            false,
-                            "Copy",
-                            theme,
-                            theme.primary,
+                .when(!is_video, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .opacity(progress)
+                            .bottom(px(PREVIEW_CONTROL_INSET))
+                            .left(px(PREVIEW_CONTROL_INSET))
+                            .child(preview::circle(
+                                ("preview-copy", id),
+                                "copy",
+                                false,
+                                "Copy",
+                                theme,
+                                theme.primary,
                             {
                                 let path = path.clone();
                                 let preview_entity = preview_entity.clone();
@@ -1199,20 +1592,46 @@ impl CapturePreviewWindow {
                                 }
                             },
                         )),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .opacity(progress)
-                        .bottom(px(PREVIEW_CONTROL_INSET))
-                        .right(px(PREVIEW_CONTROL_INSET))
-                        .child(preview::circle(
-                            ("preview-upload", id),
-                            "cloud-upload",
-                            busy,
-                            "Upload to Cloud",
-                            theme,
-                            theme.primary,
+                    )
+                })
+                .when(is_video, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .opacity(progress)
+                            .bottom(px(PREVIEW_CONTROL_INSET))
+                            .left(px(PREVIEW_CONTROL_INSET))
+                            .child(preview::circle(
+                                ("preview-show-in-folder", id),
+                                "folder-open",
+                                false,
+                                "Show in Folder",
+                                theme,
+                                theme.primary,
+                                {
+                                    let path = path.clone();
+                                    move |_, cx| {
+                                        crate::system::desktop::reveal_in_file_manager(&path);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            )),
+                    )
+                })
+                .when(!is_video, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .opacity(progress)
+                            .bottom(px(PREVIEW_CONTROL_INSET))
+                            .right(px(PREVIEW_CONTROL_INSET))
+                            .child(preview::circle(
+                                ("preview-upload", id),
+                                "cloud-upload",
+                                busy,
+                                "Upload to Cloud",
+                                theme,
+                                theme.primary,
                             {
                                 let path = path.clone();
                                 let preview_entity = preview_entity.clone();
@@ -1313,7 +1732,8 @@ impl CapturePreviewWindow {
                                 }
                             },
                         )),
-                );
+                    )
+                });
 
             if has_multiple_displays {
                 root = root.child(
@@ -1414,6 +1834,14 @@ impl Render for CapturePreviewWindow {
 mod tests {
     use super::*;
 
+    static STACK_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_stack_for_test() -> std::sync::MutexGuard<'static, ()> {
+        let guard = STACK_TEST_GUARD.lock().expect("stack test guard");
+        *STACK.lock() = None;
+        guard
+    }
+
     #[test]
     fn stack_height_preserves_card_size_and_shadow_gutters() {
         assert_eq!(
@@ -1472,13 +1900,71 @@ mod tests {
     }
 
     #[test]
+    fn the_video_playhead_loops_over_the_duration() {
+        assert_eq!(super::looped_playhead(1.0, 10.0), 1.0);
+        assert_eq!(super::looped_playhead(12.5, 10.0), 2.5);
+        assert_eq!(super::looped_playhead(5.0, 0.0), 0.0);
+        assert_eq!(super::looped_playhead(5.0, f64::NAN), 0.0);
+    }
+
+    #[test]
+    fn a_decoded_frame_cover_fits_the_thumbnail() {
+        let frame = crate::video::decoder::DecodedFrame {
+            width: 4,
+            height: 2,
+            bgra: vec![10u8; 4 * 4 * 2].into(),
+        };
+        assert!(super::video_thumbnail(&frame).is_some());
+        let empty = crate::video::decoder::DecodedFrame {
+            width: 0,
+            height: 0,
+            bgra: Vec::new().into(),
+        };
+        assert!(super::video_thumbnail(&empty).is_none());
+    }
+
+    #[herogpui::test]
+    fn open_video_stacks_a_recording_preview(cx: &mut gpui::TestAppContext) {
+        use crate::config::store::ConfigStore;
+
+        let _stack_guard = lock_stack_for_test();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let project = dir.path().join("Take 1.poratake");
+        std::fs::create_dir(&project).expect("project dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone()));
+        cx.run_until_parked();
+
+        let kinds = super::STACK
+            .lock()
+            .and_then(|stack| stack.downcast::<CapturePreviewWindow>())
+            .and_then(|handle| {
+                handle
+                    .update(cx, |view, _, _| {
+                        view.previews
+                            .iter()
+                            .map(|preview| (preview.kind, preview.path.clone()))
+                            .collect::<Vec<_>>()
+                    })
+                    .ok()
+            })
+            .expect("stack window");
+        assert_eq!(kinds, vec![(super::PreviewKind::Video, project)]);
+    }
+
+    #[test]
     fn interactive_dismissal_preserves_controls_after_window_hover_ends() {
         let now = Instant::now();
         let mut preview = CapturePreview {
             id: 1,
+            kind: super::PreviewKind::Screenshot,
             path: PathBuf::new(),
             image: None,
             blurred: None,
+            video: None,
+            export_cancel: None,
             hover_progress: 0.75,
             last_frame: Some(now),
             hovered: true,
@@ -1528,6 +2014,7 @@ mod tests {
     fn the_preview_closes_itself_when_the_dismiss_timer_elapses(cx: &mut gpui::TestAppContext) {
         use crate::config::store::ConfigStore;
 
+        let _stack_guard = lock_stack_for_test();
         let dir = tempfile::tempdir().expect("temp dir");
         let store = std::sync::Arc::new(
             ConfigStore::load_at(dir.path().join("config.json")).expect("load config"),

@@ -92,6 +92,7 @@ class ScrollCaptureModule: NSObject, Module {
             maxHeight = max
         }
         let nativeControls = params?["nativeControls"]?.bool() ?? false
+        let boundaryOnly = params?["boundaryOnly"]?.bool() ?? false
 
         let mainScreenHeight = primaryScreenHeight()
         let cocoaY = cocoaYFromTopLeft(
@@ -119,6 +120,10 @@ class ScrollCaptureModule: NSObject, Module {
                     message: "Failed to register scroll capture shortcuts"
                 )
                 return
+            }
+            if !nativeControls && boundaryOnly {
+                self.hideCaptureUI()
+                self.showBoundaryFrame()
             }
             self.respond(id: requestId, result: ["started": true])
             self.emit(event: "started", data: [
@@ -320,6 +325,10 @@ class ScrollCaptureModule: NSObject, Module {
         guard isInside != !isCursorOutside else { return }
 
         isCursorOutside = !isInside
+        let frameColor = isCursorOutside
+            ? NSColor(red: 249 / 255, green: 115 / 255, blue: 22 / 255, alpha: 1)
+            : NSColor(red: 59 / 255, green: 130 / 255, blue: 246 / 255, alpha: 1)
+        boundaryWindows.forEach { $0.backgroundColor = frameColor }
         emit(event: "cursor", data: ["outside": isCursorOutside])
     }
 
@@ -664,6 +673,50 @@ class ScrollCaptureModule: NSObject, Module {
         hideCaptureUI()
         guard registerCaptureHotKeys() else { return false }
 
+        showBoundaryFrame()
+
+        let panelSize = NSSize(width: 280, height: 52)
+        let screen = targetScreen ?? NSScreen.main ?? NSScreen.screens.first
+        let screenFrame = screen?.frame ?? .zero
+        let below = captureArea.minY - 12 - panelSize.height
+        let panelY = below >= screenFrame.minY ? below : captureArea.maxY + 12
+        let panelRect = NSRect(
+            x: captureArea.midX - panelSize.width / 2,
+            y: panelY,
+            width: panelSize.width,
+            height: panelSize.height
+        )
+        let panel = NSPanel(
+            contentRect: panelRect,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .screenSaver
+        panel.isOpaque = false
+        panel.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96)
+        panel.hasShadow = true
+        panel.sharingType = .none
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.becomesKeyOnlyIfNeeded = true
+
+        let auto = controlButton(title: "Auto", action: #selector(toggleAutoScrollFromUI(_:)))
+        let done = controlButton(title: "Done", action: #selector(doneFromUI(_:)))
+        let cancel = controlButton(title: "Cancel", action: #selector(cancelFromUI(_:)))
+        let stack = NSStackView(views: [auto, done, cancel])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.distribution = .fillEqually
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        panel.contentView = stack
+        panel.orderFrontRegardless()
+        controlPanel = panel
+        autoButton = auto
+        return true
+    }
+
+    private func showBoundaryFrame() {
         let thickness: CGFloat = 2
         let edgeRects = [
             NSRect(
@@ -708,50 +761,9 @@ class ScrollCaptureModule: NSObject, Module {
             window.orderFrontRegardless()
             return window
         }
-
-        let panelSize = NSSize(width: 280, height: 52)
-        let screen = targetScreen ?? NSScreen.main ?? NSScreen.screens.first
-        let screenFrame = screen?.frame ?? .zero
-        let below = captureArea.minY - 12 - panelSize.height
-        let panelY = below >= screenFrame.minY ? below : captureArea.maxY + 12
-        let panelRect = NSRect(
-            x: captureArea.midX - panelSize.width / 2,
-            y: panelY,
-            width: panelSize.width,
-            height: panelSize.height
-        )
-        let panel = NSPanel(
-            contentRect: panelRect,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.level = .screenSaver
-        panel.isOpaque = false
-        panel.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96)
-        panel.hasShadow = true
-        panel.sharingType = .none
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.becomesKeyOnlyIfNeeded = true
-
-        let auto = controlButton(title: "Auto", action: #selector(toggleAutoScrollFromUI(_:)))
-        let done = controlButton(title: "Done", action: #selector(doneFromUI(_:)))
-        let cancel = controlButton(title: "Cancel", action: #selector(cancelFromUI(_:)))
-        let stack = NSStackView(views: [auto, done, cancel])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.distribution = .fillEqually
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        panel.contentView = stack
-        panel.orderFrontRegardless()
-        controlPanel = panel
-        autoButton = auto
-        return true
     }
 
-    private func controlButton(title: String, action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
+    private func controlButton(title: String, action: Selector) -> NSButton {        let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .rounded
         button.setButtonType(.momentaryPushIn)
         return button

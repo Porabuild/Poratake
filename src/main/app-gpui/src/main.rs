@@ -45,6 +45,16 @@ fn dispatch_native_event(event: NativeEvent, cx: &mut App) {
         NativeEvent::CancelPreRecording => {
             windows::recording_control::RecordingControl::cancel_pre_recording(cx);
         }
+        #[cfg(target_os = "macos")]
+        NativeEvent::FinishScrollCapture => {
+            windows::scroll_capture::ScrollCaptureSession::finish_requested(cx);
+        }
+        #[cfg(target_os = "macos")]
+        NativeEvent::CancelScrollCapture => {
+            windows::scroll_capture::ScrollCaptureSession::cancel_requested(cx);
+        }
+        #[cfg(not(target_os = "macos"))]
+        NativeEvent::FinishScrollCapture | NativeEvent::CancelScrollCapture => {}
     }
 }
 

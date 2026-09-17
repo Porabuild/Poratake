@@ -5,8 +5,9 @@
 use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
 use poratake_daemon_common::contract::{
-    ScrollCaptureStartRequest, ScrollSpeed, SCROLL_CAPTURE_CANCELLED_EVENT,
-    SCROLL_CAPTURE_DONE_EVENT, SYSTEM_EXIT_EVENT,
+    ScrollCaptureStartRequest, ScrollSpeed, SCROLL_CAPTURE_AUTO_SCROLL_EVENT,
+    SCROLL_CAPTURE_CANCELLED_EVENT, SCROLL_CAPTURE_CURSOR_EVENT, SCROLL_CAPTURE_DONE_EVENT,
+    SCROLL_CAPTURE_FRAME_PREVIEW_EVENT, SYSTEM_EXIT_EVENT,
 };
 
 use crate::capture::intent::CaptureIntent;
@@ -97,7 +98,9 @@ impl Coordinator {
 /// honour the clipboard settings, then open the preview or the editor.
 async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui::AsyncApp) {
     let (history_enabled, max_items, play_sound, screenshot) = cx.update(|cx| {
-        let config = cx.global::<crate::state::AppState>().service.config.get();
+        let service = &cx.global::<crate::state::AppState>().service;
+        crate::capture::desktop_icons::restore_after_capture(&service.daemon);
+        let config = service.config.get();
         (
             config.history.enabled,
             config.history.max_items as usize,
@@ -156,7 +159,12 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
 
 fn show_capture_error(cx: &mut gpui::AsyncApp, title: &'static str, body: &str) {
     let body = body.to_string();
-    cx.update(|cx| crate::windows::toast::Toast::show(cx, title, body));
+    cx.update(|cx| {
+        crate::capture::desktop_icons::restore_after_capture(
+            &cx.global::<crate::state::AppState>().service.daemon,
+        );
+        crate::windows::toast::Toast::show(cx, title, body)
+    });
 }
 
 fn restore_editor_window(window: AnyWindowHandle, cx: &mut gpui::App) {
@@ -190,6 +198,7 @@ impl Coordinator {
         let Some(pending) = self.pending_attach.take() else {
             return;
         };
+        crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
         restore_editor_window(pending.window, cx);
     }
 
@@ -200,6 +209,7 @@ impl Coordinator {
         cx: &mut Context<Self>,
     ) {
         let Some(pending) = self.pending_attach.take() else {
+            crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
             return;
         };
         let service = self.service.clone();
@@ -218,6 +228,9 @@ impl Coordinator {
                 Ok(path) => path,
                 Err(error) => {
                     cx.update(|cx| {
+                        crate::capture::desktop_icons::restore_after_capture(
+                            &cx.global::<crate::state::AppState>().service.daemon,
+                        );
                         restore_editor_window(pending.window, cx);
                         crate::windows::toast::Toast::show(cx, "Capture Failed", error.to_string());
                     });
@@ -238,6 +251,9 @@ impl Coordinator {
             });
             let Some((bytes, (width, height))) = attached.await else {
                 cx.update(|cx| {
+                    crate::capture::desktop_icons::restore_after_capture(
+                        &cx.global::<crate::state::AppState>().service.daemon,
+                    );
                     restore_editor_window(pending.window, cx);
                     crate::windows::toast::Toast::show(
                         cx,
@@ -253,6 +269,9 @@ impl Coordinator {
                 base64::engine::general_purpose::STANDARD.encode(bytes)
             );
             cx.update(|cx| {
+                crate::capture::desktop_icons::restore_after_capture(
+                    &cx.global::<crate::state::AppState>().service.daemon,
+                );
                 restore_editor_window(pending.window, cx);
                 let _ = pending.editor.update(cx, |editor, cx| {
                     editor.push_image_layer(image_url, width, height, pending.edge, cx);
@@ -280,18 +299,24 @@ impl Coordinator {
         .detach();
     }
 
-    /// Starts a daemon scroll-capture session over the selection. The daemon
-    /// owns the on-screen control panel and reports when it is done.
+    /// Starts a daemon scroll-capture session over the selection. On macOS the
+    /// daemon draws only the click-through area frame while the GPUI preview
+    /// panel and control bar report progress; elsewhere the daemon owns the
+    /// whole control panel and the app only finalizes the stitched image.
     fn run_scroll_capture(&mut self, capture: DisplayCapture, cx: &mut Context<Self>) {
         let service = self.service.clone();
         let config = service.config.get().scroll_capture;
+        #[cfg(target_os = "macos")]
+        let area = capture.rect;
         let request = ScrollCaptureStartRequest {
             capture,
             auto_scroll_speed: ScrollSpeed::parse(&config.auto_scroll_speed),
             max_height: config.max_height.round().clamp(1.0, i32::MAX as f64) as i32,
-            native_controls: Some(true),
+            native_controls: Some(!cfg!(target_os = "macos")),
+            boundary_only: cfg!(target_os = "macos").then_some(true),
         };
         if !crate::capture::scroll::start(&service.daemon, &request) {
+            crate::capture::desktop_icons::restore_after_capture(&service.daemon);
             crate::windows::toast::Toast::show(
                 cx,
                 "Scroll Capture Failed",
@@ -300,53 +325,108 @@ impl Coordinator {
             return;
         }
 
-        let (tx, rx) = smol::channel::bounded::<bool>(1);
+        let (tx, rx) = smol::channel::bounded::<crate::capture::scroll::ScrollSessionSignal>(16);
         let daemon = service.daemon.clone();
-        let subscription =
-            daemon.subscribe(std::sync::Arc::new(
-                move |event: &str, _payload| match event {
-                    SCROLL_CAPTURE_DONE_EVENT => {
-                        let _ = tx.try_send(true);
-                    }
-                    SCROLL_CAPTURE_CANCELLED_EVENT => {
-                        let _ = tx.try_send(false);
-                    }
-                    SYSTEM_EXIT_EVENT => {
-                        let _ = tx.try_send(false);
-                    }
-                    _ => {}
-                },
-            ));
+        let event_tx = tx.clone();
+        let subscription = daemon.subscribe(std::sync::Arc::new(move |event: &str, payload| {
+            use crate::capture::scroll::ScrollSessionSignal as Signal;
+            let signal = match event {
+                SCROLL_CAPTURE_DONE_EVENT => Some(Signal::Finish),
+                SCROLL_CAPTURE_CANCELLED_EVENT | SYSTEM_EXIT_EVENT => Some(Signal::Cancel),
+                SCROLL_CAPTURE_FRAME_PREVIEW_EVENT => Some(Signal::Frame {
+                    frame_count: payload
+                        .get("frameCount")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0) as usize,
+                    estimated_height: payload
+                        .get("estimatedHeight")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0),
+                    preview: payload
+                        .get("preview")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                }),
+                SCROLL_CAPTURE_AUTO_SCROLL_EVENT => Some(Signal::AutoScrolling(
+                    payload
+                        .get("scrolling")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                )),
+                SCROLL_CAPTURE_CURSOR_EVENT => Some(Signal::CursorOutside(
+                    payload
+                        .get("outside")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                )),
+                _ => None,
+            };
+            if let Some(signal) = signal {
+                let _ = event_tx.try_send(signal);
+            }
+        }));
+
+        #[cfg(target_os = "macos")]
+        let ui = crate::windows::scroll_capture::ScrollCaptureSession::open(
+            cx,
+            service.daemon.clone(),
+            area,
+            tx.clone(),
+        );
 
         let output = service.generate_screenshot_path();
         cx.spawn(async move |_entity, cx| {
-            let finished = rx.recv().await.unwrap_or(false);
-            drop(subscription);
-            if !finished {
-                crate::capture::scroll::cancel(&service.daemon);
-                return;
-            }
-            let daemon = service.daemon.clone();
-            let stitched = cx
-                .background_executor()
-                .spawn(async move { crate::capture::scroll::finish(&daemon, &output) })
-                .await;
-            match stitched {
-                Some(path) => finalize_capture(path, true, cx).await,
-                None => show_capture_error(
-                    cx,
-                    "Scroll Capture Failed",
-                    "The scroll capture produced no image",
-                ),
+            use crate::capture::scroll::ScrollSessionSignal as Signal;
+            loop {
+                match rx.recv().await.unwrap_or(Signal::Cancel) {
+                    Signal::Finish => {
+                        drop(subscription);
+                        #[cfg(target_os = "macos")]
+                        cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+                        let daemon = service.daemon.clone();
+                        let stitched = cx
+                            .background_executor()
+                            .spawn(async move { crate::capture::scroll::finish(&daemon, &output) })
+                            .await;
+                        match stitched {
+                            Some(path) => finalize_capture(path, true, cx).await,
+                            None => show_capture_error(
+                                cx,
+                                "Scroll Capture Failed",
+                                "The scroll capture produced no image",
+                            ),
+                        }
+                        return;
+                    }
+                    Signal::Cancel => {
+                        drop(subscription);
+                        crate::capture::scroll::cancel(&service.daemon);
+                        crate::capture::desktop_icons::restore_after_capture(&service.daemon);
+                        #[cfg(target_os = "macos")]
+                        cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+                        return;
+                    }
+                    #[cfg(target_os = "macos")]
+                    progress => {
+                        let ui = ui.clone();
+                        cx.update(|cx| {
+                            crate::windows::scroll_capture::apply_progress(&ui, progress, cx);
+                        });
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    _ => {}
+                }
             }
         })
         .detach();
     }
 
-    /// Shows the daemon countdown above the selection, then captures it as a
-    /// normal screenshot when the countdown finishes.
+    /// Shows the daemon countdown above the selection, then captures it from
+    /// live pixels when the countdown finishes (`timer-capture.ts` captures
+    /// uncached: the freeze was released before the countdown started).
     fn run_countdown(&mut self, capture: DisplayCapture, cx: &mut Context<Self>) {
         let Some(session) = crate::capture::timer::begin() else {
+            crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
             return;
         };
         let daemon = self.service.daemon.clone();
@@ -374,6 +454,7 @@ impl Coordinator {
         ) {
             drop(subscription);
             drop(session);
+            crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
             crate::windows::toast::Toast::show(
                 cx,
                 "Timer Capture Failed",
@@ -399,10 +480,15 @@ impl Coordinator {
                 .spawn(async move { crate::capture::timer::hide(&daemon) })
                 .detach();
             if !completed {
+                cx.update(|cx| {
+                    crate::capture::desktop_icons::restore_after_capture(
+                        &cx.global::<crate::state::AppState>().service.daemon,
+                    );
+                });
                 return;
             }
             let _ = entity.update(cx, |coordinator, cx| {
-                coordinator.capture_area_for(capture, CaptureIntent::Screenshot, cx);
+                coordinator.capture_area_reserved(capture, CaptureIntent::Screenshot, None, cx);
             });
         })
         .detach();
@@ -444,6 +530,7 @@ impl Coordinator {
             let Some(daemon) = daemon else {
                 return;
             };
+            crate::capture::desktop_icons::restore_after_capture(&daemon);
 
             let analysis = cx.background_executor().spawn({
                 let captured = captured.clone();

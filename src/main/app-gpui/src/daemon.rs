@@ -790,6 +790,28 @@ impl ScrollCaptureClient<'_> {
             )
             .map(|_| ())
     }
+
+    pub fn start_auto_scroll(&self) -> Result<()> {
+        self.daemon.ensure_running()?;
+        self.daemon
+            .call(
+                SCROLL_CAPTURE_MODULE,
+                ScrollCaptureMethod::StartAutoScroll.id(),
+                None,
+            )
+            .map(|_| ())
+    }
+
+    pub fn stop_auto_scroll(&self) -> Result<()> {
+        self.daemon.ensure_running()?;
+        self.daemon
+            .call(
+                SCROLL_CAPTURE_MODULE,
+                ScrollCaptureMethod::StopAutoScroll.id(),
+                None,
+            )
+            .map(|_| ())
+    }
 }
 
 impl RecordingControlClient<'_> {
