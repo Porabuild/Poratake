@@ -2,9 +2,6 @@ const MONOCHROME_TOLERANCE: u8 = 24;
 
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../../../../../public/tray-icon.png");
 
-/// Electron's second-tray recording glyph (`menu/recording/iconTemplate@2x`),
-/// which this shell swaps onto the main icon while recording instead of
-/// spawning a second tray entry.
 #[cfg(not(windows))]
 const RECORDING_ICON_BYTES: &[u8] =
     include_bytes!("../../../../../../src/main/menu/recording/iconTemplate@2x.png");
@@ -22,14 +19,6 @@ fn adapt_monochrome_pixels(image: &mut image::RgbaImage, dark_mode: bool) {
     }
 }
 
-/// The asset stays at its native 32x32 resolution so the shell can pick a
-/// sharp size for scaled taskbars instead of stretching a 16px bitmap.
-///
-/// While recording, the icon swaps to the recording glyph — Electron's
-/// `recording-tray` spawns a second tray entry for this, but this shell's
-/// bridge hosts one icon, so the main one carries the signal. On Windows the
-/// normal icon stays, matching Electron, which also reuses `tray-icon.png`
-/// there and distinguishes the recording tray by tooltip and click behavior.
 pub fn tray_icon(dark_mode: bool, recording: bool) -> Option<tray_icon::Icon> {
     #[cfg(windows)]
     let _ = recording;
@@ -45,8 +34,6 @@ pub fn tray_icon(dark_mode: bool, recording: bool) -> Option<tray_icon::Icon> {
     tray_icon::Icon::from_rgba(rgba.into_raw(), width, height).ok()
 }
 
-/// The recording glyph is a template asset (black shape, system-tinted), so
-/// it needs no theme adaptation.
 #[cfg(not(windows))]
 fn recording_icon() -> Option<tray_icon::Icon> {
     let decoded =

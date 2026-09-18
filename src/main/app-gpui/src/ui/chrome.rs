@@ -79,7 +79,6 @@ pub const SHORTCUT_MIN_WIDTH: f32 = 144.0;
 pub const SHORTCUT_MIN_WIDTH_SINGLE: f32 = 64.0;
 
 pub const FIELD_PAD_X: f32 = 12.0;
-pub const FIELD_TEXT: f32 = 14.0;
 
 #[allow(dead_code)]
 pub const DIALOG_FADE_MS: u64 = 200;
@@ -222,6 +221,9 @@ pub const HISTORY_EMPTY_FILTER_ICON: f32 = 32.0;
 pub const RECORDING_PRE_WIDTH: f32 = 236.0;
 pub const RECORDING_WIDTH: f32 = 400.0;
 pub const RECORDING_TARGET_LABEL_WIDTH: f32 = 140.0;
+pub const RECORDING_TARGET_CHIP_MAX_W: f32 = 128.0;
+pub const RECORDING_WINDOW_GUTTER: f32 = 16.0;
+pub const RECORDING_DEVICE_MENU_WIDTH: f32 = 300.0;
 pub const RECORDING_WINDOW_HEIGHT: f32 = 52.0;
 pub const RECORDING_BAR_PAD_TOP: f32 = 4.0;
 
@@ -252,11 +254,15 @@ pub const ONBOARDING_DOT: f32 = 8.0;
 pub const OVERLAY_DIM: f32 = 0.5;
 pub const OVERLAY_PROMPT_TOP: f32 = 32.0;
 pub const OVERLAY_PROMPT_TOP_MAC: f32 = 48.0;
-pub const OVERLAY_PROMPT_TOOLBAR_GAP: f32 = 40.0;
+pub const OVERLAY_PROMPT_TOOLBAR_TOP: f32 = 96.0;
+pub const OVERLAY_PROMPT_TOOLBAR_TOP_MAC: f32 = 112.0;
 
 pub fn overlay_prompt_top(toolbar: bool) -> f32 {
     if toolbar {
-        return overlay_toolbar_top() + overlay_bar_height() + OVERLAY_PROMPT_TOOLBAR_GAP;
+        if is_macos() {
+            return OVERLAY_PROMPT_TOOLBAR_TOP_MAC;
+        }
+        return OVERLAY_PROMPT_TOOLBAR_TOP;
     }
     if is_macos() {
         return OVERLAY_PROMPT_TOP_MAC;
@@ -298,6 +304,10 @@ pub fn recording_control_width(recording: bool, has_target_name: bool) -> f32 {
     } else {
         base
     }
+}
+
+pub fn recording_window_width(bar_width: f32) -> f32 {
+    bar_width.max(RECORDING_DEVICE_MENU_WIDTH) + RECORDING_WINDOW_GUTTER * 2.0
 }
 
 pub fn recording_bar_origin(
@@ -588,10 +598,21 @@ mod tests {
         } else {
             assert_eq!(overlay_toolbar_top(), OVERLAY_TOOLBAR_TOP);
         }
-        assert_eq!(
-            overlay_prompt_top(true),
-            overlay_toolbar_top() + overlay_bar_height() + OVERLAY_PROMPT_TOOLBAR_GAP
-        );
+        assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP, 96.0);
+        assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP_MAC, 112.0);
+        if is_macos() {
+            assert_eq!(overlay_prompt_top(true), 112.0);
+            assert_eq!(overlay_prompt_top(false), 48.0);
+        } else {
+            assert_eq!(overlay_prompt_top(true), 96.0);
+            assert_eq!(overlay_prompt_top(false), 32.0);
+        }
+        assert_eq!(RECORDING_TARGET_CHIP_MAX_W, 128.0);
+        assert_eq!(RECORDING_WINDOW_GUTTER, 16.0);
+        assert_eq!(RECORDING_DEVICE_MENU_WIDTH, 300.0);
+        assert_eq!(recording_window_width(236.0), 332.0);
+        assert_eq!(recording_window_width(400.0), 432.0);
+        assert_eq!(recording_window_width(540.0), 572.0);
         let handles = overlay_handle_rects(200.0, 100.0);
         assert_eq!(handles.len(), 12);
         assert_eq!(handles[0], (0.0, 0.0, 20.0, 4.0));
@@ -705,7 +726,6 @@ mod tests {
         assert_eq!(BUTTON_RADIUS, RADIUS_3XL);
         assert_eq!(Size::Sm.icon_control_size(), px(OVERLAY_BUTTON_SIZE));
         assert_eq!(FIELD_PAD_X, 12.0);
-        assert_eq!(FIELD_TEXT, 14.0);
     }
 
     #[test]

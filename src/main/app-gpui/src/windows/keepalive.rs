@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, size, App, Bounds, Context, Render, Window};
+use gpui::{prelude::*, px, size, App, Bounds, Context, Render, Window};
 use herogpui::gpui;
 
 /// Poratake is a tray-first app with no main window, but the Windows backend
@@ -51,6 +51,6 @@ impl KeepAlive {
 
 impl Render for KeepAlive {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        crate::ui::font::root()
     }
 }

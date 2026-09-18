@@ -147,11 +147,12 @@ impl SettingsWindow {
                 let set = *set;
                 let value = get(self.config());
                 let recording = self.is_recording_shortcut(item.id);
-                crate::ui::shortcut_input::render(
+                crate::ui::shortcut_input::render_sized(
                     item.id,
                     &value,
                     *single_key,
                     recording,
+                    compact,
                     cx,
                     move |this, next, cx| {
                         this.mutate(cx, move |config| set(config, &next));
@@ -346,20 +347,28 @@ impl SettingsWindow {
         use crate::system::devices::DeviceKind;
 
         let lists = self.device_lists(cx);
-        let (devices, selected) = match kind {
+        let (devices, selected, selected_name, default_id) = match kind {
             DeviceKind::Microphone => (
                 lists.microphones.clone(),
                 self.config().recording.selected_mic_id.clone(),
+                self.config().recording.selected_mic_name.clone(),
+                lists.default_microphone_id.clone(),
             ),
             DeviceKind::Camera => (
                 lists.cameras.clone(),
                 self.config().recording.camera.selected_device_id.clone(),
+                self.config().recording.camera.selected_device_name.clone(),
+                lists.default_camera_id.clone(),
             ),
         };
 
+        let placeholder =
+            crate::system::devices::system_default_label(&devices, default_id.as_deref());
         let items = rows::picker_items(crate::system::devices::options_with_selection(
             &devices,
             selected.as_deref(),
+            selected_name.as_deref(),
+            default_id.as_deref(),
         ));
         let labels: std::collections::HashMap<String, String> = devices
             .iter()
@@ -372,7 +381,12 @@ impl SettingsWindow {
             .variant(FieldVariant::Secondary)
             .value(value.clone())
             .full_width(true)
-            .placeholder("System Default")
+            .placeholder(placeholder)
+            .on_open_change(cx.listener(|this, open: &bool, _window, cx| {
+                if *open {
+                    this.refresh_device_lists(cx);
+                }
+            }))
             .on_selection_change(cx.listener(
                 move |this, value: &Option<SharedString>, _window, cx| {
                     let id = value
@@ -516,6 +530,18 @@ impl SettingsWindow {
         // rather than on the page. Clicking the icon reveals this shell's
         // clickable chips, so the default view is Electron's.
         let tokens_open = self.extras_open.contains(NAMING_TOKENS_KEY);
+        let code_background = theme.muted_background;
+        let muted = theme.muted_foreground;
+        let token_rows: Vec<(SharedString, SharedString)> =
+            crate::editor::filename::available_tokens(chrono::Local::now())
+                .into_iter()
+                .map(|token| {
+                    (
+                        SharedString::from(token.token),
+                        SharedString::from(format!("{} ({})", token.description, token.example)),
+                    )
+                })
+                .collect();
         let mut block = div()
             .flex()
             .flex_col()
@@ -527,17 +553,22 @@ impl SettingsWindow {
                     .items_center()
                     .gap(px(8.0))
                     .child(rows::label("Naming Pattern", theme))
-                    .child(toolbar::tooltip_button(
-                        icon_button::compact_sm_muted("naming-pattern-help", "help-circle"),
-                        "Available tokens",
-                        cx,
-                        |this, _window, cx| {
-                            if !this.extras_open.remove(NAMING_TOKENS_KEY) {
-                                this.extras_open.insert(NAMING_TOKENS_KEY);
-                            }
-                            cx.notify();
-                        },
-                    )),
+                    .child(
+                        herogpui::components::Tooltip::new("Available tokens")
+                            .placement(herogpui::components::TooltipPlacement::Right)
+                            .body(move |_window, _cx| {
+                                naming_token_table(&token_rows, code_background, muted)
+                            })
+                            .child(
+                                icon_button::compact_sm_muted("naming-pattern-help", "help-circle")
+                                    .on_press(cx.listener(|this, _event, _window, cx| {
+                                        if !this.extras_open.remove(NAMING_TOKENS_KEY) {
+                                            this.extras_open.insert(NAMING_TOKENS_KEY);
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
             )
             .child(
                 div()
@@ -650,6 +681,10 @@ fn label_weight(item: &Item) -> gpui::FontWeight {
     }
 }
 
+const ROW_MIN_HEIGHT: f32 = 40.0;
+const ROW_LABEL_LINE: f32 = 20.0;
+const ROW_DESCRIPTION_LINE: f32 = 16.0;
+
 fn labelled(item: &Item, theme: &ThemeVars, control: AnyElement, compact: bool) -> AnyElement {
     div()
         .flex()
@@ -657,17 +692,25 @@ fn labelled(item: &Item, theme: &ThemeVars, control: AnyElement, compact: bool) 
         .items_center()
         .justify_between()
         .gap(px(16.0))
-        .when(compact, |el| el.min_h(px(40.0)).py(px(4.0)))
+        .min_h(px(ROW_MIN_HEIGHT))
+        .when(compact, |el| el.py(px(4.0)))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
                 .flex_1()
                 .min_w_0()
-                .child(rows::label_weighted(item.label, label_weight(item), theme))
+                .child(
+                    div()
+                        .line_height(px(ROW_LABEL_LINE))
+                        .child(rows::label_weighted(item.label, label_weight(item), theme)),
+                )
                 .when(!compact, |el| {
-                    el.child(rows::description(item.description, theme))
+                    el.child(
+                        div()
+                            .line_height(px(ROW_DESCRIPTION_LINE))
+                            .child(rows::description(item.description, theme)),
+                    )
                 }),
         )
         .child(control)
@@ -700,7 +743,7 @@ fn device_test_button(
         .variant(Variant::Secondary)
         .size(Size::Sm)
         .label(label)
-        .sx(|el| el.min_w(px(DEVICE_TEST_BUTTON_WIDTH)))
+        .min_width(px(DEVICE_TEST_BUTTON_WIDTH))
         .on_press(cx.listener(move |this, _event, _window, cx| on_press(this, cx)))
 }
 
@@ -754,6 +797,47 @@ fn level_meter(level: f32, active: bool, theme: &ThemeVars) -> gpui::Div {
         );
     }
     meter
+}
+
+fn naming_token_table(
+    rows: &[(SharedString, SharedString)],
+    code_background: gpui::Hsla,
+    muted: gpui::Hsla,
+) -> AnyElement {
+    let mut table = div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .text_size(px(chrome::TEXT_XS));
+    for (token, description) in rows {
+        table = table.child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_between()
+                .gap(px(16.0))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .rounded(px(4.0))
+                        .bg(code_background)
+                        .px(px(4.0))
+                        .child(token.clone()),
+                )
+                .child(div().text_color(muted).child(description.clone())),
+        );
+    }
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .mb(px(8.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child("Available tokens:"),
+        )
+        .child(table)
+        .into_any_element()
 }
 
 #[cfg(test)]

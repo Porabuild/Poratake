@@ -6,7 +6,6 @@
 use std::path::Path;
 
 use crate::video::encoder::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
-use crate::windows::video_editor::model::Segment;
 
 /// Interleaved stereo 16-bit samples at [`AUDIO_SAMPLE_RATE`].
 pub type Pcm = Vec<i16>;
@@ -34,38 +33,6 @@ fn frames(samples: &[i16]) -> usize {
 
 fn frames_for(seconds: f64) -> usize {
     (seconds.max(0.0) * AUDIO_SAMPLE_RATE as f64).round() as usize
-}
-
-/// Slices `samples` to the timeline the editor's segments describe, applying
-/// each segment's speed. Gaps outside the source are silence, so a trim past
-/// the end of a track does not shorten the mix.
-pub fn apply_segments(samples: &[i16], segments: &[Segment]) -> Pcm {
-    if segments.is_empty() {
-        return samples.to_vec();
-    }
-    let mut output: Pcm = Vec::new();
-    for segment in segments {
-        let start = frames_for(segment.original_start);
-        let end = frames_for(segment.original_end).max(start);
-        let available = frames(samples);
-
-        let mut slice: Pcm = Vec::with_capacity((end - start) * FRAME_SIZE);
-        for frame in start..end {
-            if frame < available {
-                let offset = frame * FRAME_SIZE;
-                slice.extend_from_slice(&samples[offset..offset + FRAME_SIZE]);
-            } else {
-                slice.extend(std::iter::repeat_n(0i16, FRAME_SIZE));
-            }
-        }
-
-        let speed = segment.speed.unwrap_or(1.0);
-        if (speed - 1.0).abs() > f64::EPSILON {
-            slice = time_stretch(&slice, speed);
-        }
-        output.extend_from_slice(&slice);
-    }
-    output
 }
 
 /// Sums tracks, scaling each by its volume and clipping at the 16-bit range.
@@ -97,28 +64,46 @@ pub fn to_bytes(samples: &[i16]) -> Vec<u8> {
     bytes
 }
 
-/// Places a music track on the timeline: the trimmed slice of the source is
-/// speed-adjusted and laid down at the track's start, with silence around it.
-pub fn place_music_track(
-    samples: &[i16],
-    track: &crate::windows::video_editor::model::MusicTrack,
-) -> Pcm {
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Placement {
+    pub start_time: f64,
+    pub end_time: f64,
+    pub original_duration: f64,
+    pub trim_start: f64,
+    pub trim_end: f64,
+    pub speed: f64,
+}
+
+impl Placement {
+    pub fn of(track: &crate::windows::video_editor::model::MusicTrack) -> Self {
+        Self {
+            start_time: track.start_time,
+            end_time: track.end_time,
+            original_duration: track.original_duration,
+            trim_start: track.trim_start,
+            trim_end: track.trim_end,
+            speed: track.speed,
+        }
+    }
+}
+
+pub fn place(samples: &[i16], placement: &Placement) -> Pcm {
     let available = frames(samples);
-    let start = frames_for(track.trim_start).min(available);
-    let end = frames_for(track.original_duration.max(0.0) - track.trim_end).clamp(start, available);
+    let start = frames_for(placement.trim_start).min(available);
+    let end = frames_for(placement.original_duration.max(0.0) - placement.trim_end)
+        .clamp(start, available);
 
     let mut slice: Pcm = samples[start * FRAME_SIZE..end * FRAME_SIZE].to_vec();
-    if (track.speed - 1.0).abs() > f64::EPSILON {
-        slice = time_stretch(&slice, track.speed);
+    if (placement.speed - 1.0).abs() > f64::EPSILON {
+        slice = time_stretch(&slice, placement.speed);
     }
 
-    let offset = frames_for(track.start_time);
+    let offset = frames_for(placement.start_time);
     let mut placed: Pcm = vec![0; offset * FRAME_SIZE];
     placed.extend_from_slice(&slice);
 
-    // The track's own end wins over the source length, so a shortened clip
     // does not bleed past where the timeline places it.
-    let limit = frames_for(track.end_time) * FRAME_SIZE;
+    let limit = frames_for(placement.end_time) * FRAME_SIZE;
     if limit > 0 && placed.len() > limit {
         placed.truncate(limit);
     }
@@ -389,17 +374,6 @@ mod tests {
             .collect()
     }
 
-    fn segment(start: f64, end: f64, speed: Option<f64>) -> Segment {
-        Segment {
-            id: format!("{start}-{end}"),
-            original_start: start,
-            original_end: end,
-            trim_min_start: start,
-            trim_max_end: end,
-            speed,
-        }
-    }
-
     #[test]
     fn mixing_sums_and_clips() {
         let loud = Track {
@@ -432,33 +406,6 @@ mod tests {
         let mixed = mix(&[track], 3);
         assert_eq!(mixed.len(), 6);
         assert_eq!(&mixed[2..], &[0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn segments_trim_the_source() {
-        let samples = tone(AUDIO_SAMPLE_RATE as usize, 8000);
-        let trimmed = apply_segments(&samples, &[segment(0.25, 0.75, None)]);
-        assert_eq!(frames(&trimmed), AUDIO_SAMPLE_RATE as usize / 2);
-    }
-
-    #[test]
-    fn a_trim_past_the_end_pads_with_silence() {
-        let samples = tone(100, 8000);
-        let trimmed = apply_segments(&samples, &[segment(0.0, 0.01, None)]);
-        assert_eq!(frames(&trimmed), 480);
-        assert_eq!(trimmed[trimmed.len() - 1], 0);
-    }
-
-    #[test]
-    fn speeding_a_segment_up_shortens_it() {
-        let samples = tone(AUDIO_SAMPLE_RATE as usize, 8000);
-        let doubled = apply_segments(&samples, &[segment(0.0, 1.0, Some(2.0))]);
-        let expected = AUDIO_SAMPLE_RATE as usize / 2;
-        assert!(
-            (frames(&doubled) as i64 - expected as i64).abs() < 64,
-            "{}",
-            frames(&doubled)
-        );
     }
 
     #[test]
@@ -495,7 +442,7 @@ mod tests {
             trim_end: 0.25,
             ..MusicTrack::default()
         };
-        let placed = place_music_track(&samples, &track);
+        let placed = place(&samples, &Placement::of(&track));
         assert_eq!(frames(&placed), frames_for(1.5));
         // Everything before the start is silence.
         assert!(placed[..frames_for(1.0) * FRAME_SIZE]
@@ -508,6 +455,9 @@ mod tests {
 
     #[test]
     fn a_missing_file_decodes_to_nothing() {
-        assert!(decode(&std::env::temp_dir().join("poratake-missing.m4a")).is_none());
+        assert!(decode(&crate::util::test_paths::unique_temp(
+            "poratake-missing.m4a"
+        ))
+        .is_none());
     }
 }

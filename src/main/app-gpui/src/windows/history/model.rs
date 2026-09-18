@@ -209,6 +209,18 @@ mod tests {
     }
 
     #[test]
+    fn the_tab_strip_matches_the_renderer_filter_options() {
+        assert_eq!(
+            HistoryFilter::ALL.map(|option| (option.as_str(), option.label(), option.icon())),
+            [
+                ("all", "All", None),
+                ("screenshot", "Screenshots", Some("camera")),
+                ("video", "Videos", Some("video")),
+            ]
+        );
+    }
+
+    #[test]
     fn filters_and_reverses_like_the_renderer() {
         let items = vec![
             item("a", HistoryItemType::Screenshot),

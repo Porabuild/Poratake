@@ -123,13 +123,27 @@ pub fn resize_handle(
         .flex()
         .justify_center()
         .cursor_ew_resize()
-        .child(div().my_auto().h_full().w(px(1.0)).bg(if resizing {
-            theme.accent
+        .bg(if resizing {
+            theme.accent.opacity(0.4)
         } else if hovered {
-            theme.accent.opacity(0.65)
+            theme.accent.opacity(0.2)
         } else {
-            theme.border
-        }))
+            gpui::transparent_black()
+        })
+        .child(
+            div()
+                .my_auto()
+                .h(px(32.0))
+                .w(px(2.0))
+                .rounded_full()
+                .bg(if resizing {
+                    theme.accent
+                } else if hovered {
+                    theme.muted_foreground.opacity(0.5)
+                } else {
+                    theme.muted_foreground.opacity(0.3)
+                }),
+        )
         .on_hover(move |over: &bool, _window, cx| {
             crate::ui::primitives::track_hover(&hover, *over, cx);
         })
@@ -181,7 +195,7 @@ pub fn tab_rail(
                     .is_icon_only(true)
                     .child(icon_element(tab.icon(), px(16.0)))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
-                        this.select_tab(tab, cx);
+                        this.activate_tab(tab, cx);
                     })),
             ),
         );

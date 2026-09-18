@@ -831,7 +831,7 @@ mod tests {
 
     #[test]
     fn importing_an_empty_transcript_is_refused() {
-        let source = std::env::temp_dir().join("poratake-empty.srt");
+        let source = crate::util::test_paths::unique_temp("poratake-empty.srt");
         std::fs::write(&source, "").expect("write");
         let error = import_from(&std::env::temp_dir(), &source).unwrap_err();
         assert!(error.contains("no subtitle segments"), "{error}");

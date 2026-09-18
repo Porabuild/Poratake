@@ -14,13 +14,13 @@ use crate::ui::menu::{MenuBuilder, MenuHandle, MenuItem, MenuPlacement};
 use crate::ui::toolbar;
 
 const TARGET_MENU_ID: &str = "all-in-one-target";
+const TARGET_MENU_MIN_WIDTH: f32 = 160.0;
 const TARGET_ICON_GAP: f32 = 4.0;
 const TARGET_ICON_GROUP_WIDTH: f32 =
     chrome::TOOL_BUTTON_ICON + TARGET_ICON_GAP + chrome::OVERLAY_TARGET_CHEVRON;
 
 pub fn render(
     choices: Choices,
-    picking_color: bool,
     menu: &MenuHandle,
     theme: &ThemeVars,
     window: &mut Window,
@@ -30,19 +30,18 @@ pub fn render(
     let ocr_enabled = is_supported(Feature::Ocr);
     let color_picker_enabled = is_supported(Feature::ColorPicker);
 
-    let mut modes = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-        .bg(theme.muted_foreground.opacity(0.10));
+    let mut tabs = Vec::new();
+    let mut active_tab = None;
     for mode in [Mode::Screenshot, Mode::Record] {
         if mode == Mode::Record && !recording_enabled {
             continue;
         }
-        let active = mode_selected(choices, picking_color, mode);
+        let active = choices.mode == mode;
+        if active {
+            active_tab = Some(tabs.len());
+        }
         let id = SharedString::from(format!("all-in-one-mode-{}", mode.id()));
-        modes = modes.child(
+        tabs.push(
             toolbar::mode_tab(id, mode.icon(), active, theme, window, cx).on_click(cx.listener(
                 move |this, _event, window, cx| {
                     this.close_all_in_one_menu(window);
@@ -51,6 +50,7 @@ pub fn render(
             )),
         );
     }
+    let modes = toolbar::mode_tab_group("all-in-one-mode", active_tab, tabs, theme, window, cx);
 
     let mut bar = div()
         .absolute()
@@ -62,7 +62,7 @@ pub fn render(
         .child(
             toolbar::surface(theme)
                 .child(modes)
-                .when(!mode_selected(choices, picking_color, Mode::Ocr), |el| {
+                .when(choices.mode != Mode::Ocr, |el| {
                     el.child(target_menu(choices, menu, theme, window, cx))
                 })
                 .child(toolbar::hairline(theme))
@@ -71,7 +71,7 @@ pub fn render(
                         "all-in-one-ocr",
                         "scan-text",
                         "Capture text",
-                        mode_selected(choices, picking_color, Mode::Ocr),
+                        choices.mode == Mode::Ocr,
                         theme,
                         |this, window, cx| {
                             this.close_all_in_one_menu(window);
@@ -85,7 +85,7 @@ pub fn render(
                         "all-in-one-pick-color",
                         "pipette",
                         "Pick color",
-                        picking_color,
+                        false,
                         theme,
                         |this, window, cx| {
                             this.start_color_picker(window, cx);
@@ -129,8 +129,8 @@ fn toolbar_button(
     )
 }
 
-fn mode_selected(choices: Choices, picking_color: bool, mode: Mode) -> bool {
-    !picking_color && choices.mode == mode
+fn target_menu_placement() -> MenuPlacement {
+    MenuPlacement::below(TARGET_MENU_ID).min_width(px(TARGET_MENU_MIN_WIDTH))
 }
 
 fn target_menu(
@@ -215,22 +215,12 @@ fn target_menu(
         )
         .child(menu.render_dropdown(TARGET_MENU_ID))
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            handle.toggle(
-                MenuPlacement::below(TARGET_MENU_ID),
-                entries.clone(),
-                window,
-                cx,
-            );
+            handle.toggle(target_menu_placement(), entries.clone(), window, cx);
             cx.stop_propagation();
         })
         .on_key_down(move |event, window, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                key_handle.toggle(
-                    MenuPlacement::below(TARGET_MENU_ID),
-                    key_entries.clone(),
-                    window,
-                    cx,
-                );
+                key_handle.toggle(target_menu_placement(), key_entries.clone(), window, cx);
                 cx.stop_propagation();
             }
         })
@@ -250,12 +240,5 @@ mod tests {
                 - TARGET_ICON_GROUP_WIDTH,
             4.0
         );
-    }
-
-    #[test]
-    fn color_picker_replaces_the_selected_mode() {
-        let choices = Choices::default();
-        assert!(mode_selected(choices, false, Mode::Screenshot));
-        assert!(!mode_selected(choices, true, Mode::Screenshot));
     }
 }

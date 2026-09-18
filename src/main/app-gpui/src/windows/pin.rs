@@ -97,7 +97,7 @@ impl PinWindow {
 
 impl Render for PinWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        crate::ui::font::root()
             .id("pin-root")
             .size_full()
             .relative()

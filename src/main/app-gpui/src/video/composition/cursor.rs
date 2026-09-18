@@ -369,23 +369,45 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
     }
 
     // The blur is a stack of decreasingly opaque copies along the travel
-    // vector, matching the renderer's offscreen accumulation.
-    canvas.save();
-    canvas.set_global_alpha(opacity as f32);
+    let pad = (size * click_scale).ceil();
+    let buffer_width = (size * click_scale + dx.abs()).ceil() + pad;
+    let buffer_height = (size * click_scale + dy.abs()).ceil() + pad;
+    let device_scale = canvas.device_scale() as f64;
+    let Some(mut buffer) = Canvas::new(
+        (buffer_width * device_scale).ceil().max(1.0) as u32,
+        (buffer_height * device_scale).ceil().max(1.0) as u32,
+    ) else {
+        draw_sprite(canvas, &sprite, x, y, size, click_scale, hotspot, opacity);
+        return;
+    };
+    buffer.scale(device_scale as f32, device_scale as f32);
+
+    let local_x = buffer_width / 2.0;
+    let local_y = buffer_height / 2.0;
     let center = (MOTION_BLUR_SAMPLES - 1) as f64 / 2.0;
     for index in 0..MOTION_BLUR_SAMPLES {
         let t = (index as f64 - center) / center;
         draw_sprite(
-            canvas,
+            &mut buffer,
             &sprite,
-            x + (dx * t) / 2.0,
-            y + (dy * t) / 2.0,
+            local_x + (dx * t) / 2.0,
+            local_y + (dy * t) / 2.0,
             size,
             click_scale,
             hotspot,
             1.0 / (index + 1) as f64,
         );
     }
+
+    canvas.save();
+    canvas.set_global_alpha(opacity as f32);
+    canvas.draw_pixmap(
+        buffer.pixmap().as_ref(),
+        (x - local_x) as f32,
+        (y - local_y) as f32,
+        buffer_width as f32,
+        buffer_height as f32,
+    );
     canvas.restore();
 }
 

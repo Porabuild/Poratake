@@ -176,13 +176,18 @@ pub fn open_settings(category: Category, cx: &mut App) {
                 px(crate::ui::chrome::SETTINGS_WINDOW_HEIGHT),
             )),
         );
-        options.window_background = WindowBackgroundAppearance::Blurred;
-        cx.open_window(options, |window, cx| {
+        let translucent = !crate::system::reduced_transparency::enabled();
+        options.window_background = crate::system::reduced_transparency::window_background(
+            WindowBackgroundAppearance::Blurred,
+        );
+        cx.open_window(options, move |window, cx| {
             #[cfg(not(windows))]
-            let _ = window;
+            let _ = (window, translucent);
             #[cfg(windows)]
-            if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                crate::system::window_composition::configure_acrylic_surface(hwnd, dark);
+            if translucent {
+                if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                    crate::system::window_composition::configure_acrylic_surface(hwnd, dark);
+                }
             }
             cx.new(|cx| SettingsWindow::new(store, category, cx))
         })

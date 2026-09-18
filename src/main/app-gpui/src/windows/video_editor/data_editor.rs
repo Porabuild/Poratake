@@ -43,6 +43,36 @@ impl DataKind {
         }
     }
 
+    pub fn placeholder(self) -> &'static str {
+        match self {
+            Self::Cursor => "Enter cursor data JSON...",
+            Self::Subtitle => "Enter subtitle data JSON...",
+        }
+    }
+
+    pub fn field_documentation(self) -> &'static str {
+        match self {
+            Self::Cursor => concat!(
+                "recordingArea: Video dimensions in pixels\n",
+                "events: Array of cursor events with:\n",
+                "  timestamp: Time in seconds\n",
+                "  x, y: Position (0-1, normalized)\n",
+                "  type: move, down, up, or scroll\n",
+                "  button: left, right, middle (optional)\n",
+                "  cursor: arrow, pointingHand, iBeam, etc. (optional)\n",
+                "meta: Recording metadata",
+            ),
+            Self::Subtitle => concat!(
+                "segments: Array of subtitle segments with:\n",
+                "  start: Start time in seconds\n",
+                "  end: End time in seconds\n",
+                "  text: Subtitle text content\n",
+                "  words: Word-level timing (optional)\n",
+                "meta: Metadata including language and model",
+            ),
+        }
+    }
+
     pub fn path(self, project_or_video: &std::path::Path) -> PathBuf {
         match self {
             Self::Cursor => project::cursor_path(project_or_video),
@@ -70,15 +100,9 @@ impl DataKind {
             .unwrap_or_default(),
             Self::Subtitle => serde_json::to_string_pretty(&serde_json::json!({
                 "segments": [
-                    {
-                        "start": 0.0,
-                        "end": 2.0,
-                        "text": "Hello there",
-                        "words": [
-                            { "text": "Hello", "start": 0.0, "end": 1.0 },
-                            { "text": "there", "start": 1.0, "end": 2.0 }
-                        ]
-                    }
+                    { "start": 0.0, "end": 2.5, "text": "Hello, welcome to this video." },
+                    { "start": 2.5, "end": 5.0, "text": "Today we will learn about subtitles." },
+                    { "start": 5.0, "end": 8.0, "text": "Each segment has a start and end time." }
                 ],
                 "meta": {
                     "generatedAt": "2024-01-01T00:00:00.000Z",
@@ -107,7 +131,7 @@ impl DataKind {
             .unwrap_or_default(),
             Self::Subtitle => serde_json::to_string_pretty(&serde_json::json!({
                 "segments": [
-                    { "start": 0.0, "end": duration.min(2.0), "text": "" }
+                    { "start": 0.0, "end": duration.min(3.0), "text": "Your subtitle text here" }
                 ],
                 "meta": {
                     "generatedAt": chrono::Utc::now().to_rfc3339(),
@@ -150,6 +174,7 @@ pub struct DataEditor {
     pub kind: DataKind,
     pub field: Entity<InputState>,
     pub error: Option<SharedString>,
+    pub saving: bool,
 }
 
 impl DataEditor {
@@ -168,6 +193,7 @@ impl DataEditor {
             kind,
             field,
             error: None,
+            saving: false,
         }
     }
 }
@@ -180,21 +206,31 @@ pub fn render(
 ) -> AnyElement {
     let kind = editor.kind;
     let error = editor.error.clone();
+    let saving = editor.saving;
 
     div()
+        .id("data-editor-backdrop")
         .absolute()
         .inset_0()
         .flex()
         .items_center()
         .justify_center()
         .bg(crate::ui::colors::black(0.5))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this, _event, _window, cx| this.close_data_editor(cx)),
+        )
         .child(
             div()
+                .id("data-editor-card")
                 .flex()
                 .flex_col()
                 .gap(px(12.0))
-                .w(px(640.0))
-                .max_h(px(620.0))
+                .w(px(672.0))
+                .max_h(gpui::relative(0.9))
+                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation();
+                })
                 .rounded(px(10.0))
                 .border_1()
                 .border_color(theme.border)
@@ -226,7 +262,22 @@ pub fn render(
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .child(div().text_size(px(12.0)).child(kind.label()))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(div().text_size(px(12.0)).child(kind.label()))
+                                .child(
+                                    herogpui::components::Tooltip::new(kind.field_documentation())
+                                        .child(
+                                            div()
+                                                .text_color(theme.muted_foreground)
+                                                .child(icon_element("help-circle", px(14.0))),
+                                        ),
+                                ),
+                        )
                         .child(
                             div()
                                 .flex()
@@ -253,10 +304,12 @@ pub fn render(
                         ),
                 )
                 .child(
-                    TextArea::new(editor.field.clone())
-                        .rows(16)
-                        .placeholder("Enter data as JSON\u{2026}")
-                        .font_family(crate::ui::colors::MONO_FONT),
+                    div().flex_1().min_h_0().child(
+                        TextArea::new(editor.field.clone())
+                            .rows(16)
+                            .placeholder(kind.placeholder())
+                            .font_family(crate::ui::colors::MONO_FONT),
+                    ),
                 )
                 .when_some(error, |el, error| {
                     el.child(
@@ -282,7 +335,7 @@ pub fn render(
                         .gap(px(8.0))
                         .child(
                             Button::new("data-editor-cancel")
-                                .variant(Variant::Secondary)
+                                .variant(Variant::Tertiary)
                                 .size(Size::Sm)
                                 .label("Cancel")
                                 .on_press(cx.listener(|this, _event, _window, cx| {
@@ -293,7 +346,8 @@ pub fn render(
                             Button::new("data-editor-save")
                                 .variant(Variant::Primary)
                                 .size(Size::Sm)
-                                .label("Save")
+                                .label(if saving { "Saving..." } else { "Save" })
+                                .is_disabled(saving)
                                 .on_press(cx.listener(|this, _event, _window, cx| {
                                     this.save_data_editor(cx)
                                 })),

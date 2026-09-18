@@ -3,12 +3,15 @@ use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
-use crate::ui::icon::icon_element;
 use crate::ui::icon_button;
 use crate::ui::toolbar;
 use crate::windows::history::model::{HistoryFilter, HistoryLayout, HistorySortOrder};
 use crate::windows::history::HistoryWindow;
 use herogpui::components::Variant;
+
+const TAB_HEIGHT: f32 = 20.0;
+const TAB_PAD_X: f32 = 6.0;
+const HEADER_ACTION_PAD_X: f32 = 8.0;
 
 pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow>) -> AnyElement {
     let mut actions = div()
@@ -29,6 +32,7 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
             .variant(Variant::Ghost)
             .recipe("compact")
             .recipe("muted")
+            .padding_x(px(HEADER_ACTION_PAD_X))
             .on_press(cx.listener(|this, _event, _window, cx| this.clear_all(cx))),
         );
     }
@@ -63,11 +67,13 @@ pub fn toolbar(
     filter: HistoryFilter,
     order: HistorySortOrder,
     layout: HistoryLayout,
+    theme: &ThemeVars,
     cx: &mut Context<HistoryWindow>,
 ) -> AnyElement {
     let mut filters = div().flex().items_center().gap(px(2.0));
 
     for option in HistoryFilter::ALL {
+        let foreground = theme.foreground;
         let mut button = icon_button::chip(
             ElementId::Name(SharedString::from(format!(
                 "history-filter-{}",
@@ -76,11 +82,23 @@ pub fn toolbar(
             filter == option,
         )
         .label(option.label())
+        .height(px(TAB_HEIGHT))
+        .padding_x(px(TAB_PAD_X))
+        .sx(move |el| el.text_color(foreground))
         .on_press(cx.listener(move |this, _event, _window, cx| {
             this.set_filter(option, cx);
         }));
         if let Some(icon) = option.icon() {
-            button = button.child(icon_element(icon, px(chrome::HISTORY_CHIP_ICON)));
+            let label = SharedString::from(option.label());
+            button = button.content(move |_| {
+                crate::ui::primitives::icon_label(
+                    icon,
+                    label.clone(),
+                    px(chrome::HISTORY_CHIP_ICON),
+                    px(chrome::HISTORY_CHIP_ICON_GAP),
+                    false,
+                )
+            });
         }
         filters = filters.child(button);
     }

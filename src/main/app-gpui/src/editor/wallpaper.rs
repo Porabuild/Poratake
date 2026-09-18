@@ -177,53 +177,6 @@ pub const GRADIENT_PRESETS: [(&str, [&str; 2], f64); 8] = [
     ("dusk", ["#6366f1", "#0f172a"], 135.0),
 ];
 
-pub const SVG_PRESETS: [(&str, &str, [&str; 2], f64); 14] = [
-    (
-        "crimson-wave",
-        "Crimson Wave",
-        ["#7f1d1d", "#fca5a5"],
-        135.0,
-    ),
-    ("forest-glow", "Forest Glow", ["#4ade80", "#052e16"], 225.0),
-    ("violet-dune", "Violet Dune", ["#1e1b4b", "#f472b6"], 135.0),
-    ("ocean-depth", "Ocean Depth", ["#0c4a6e", "#0ea5e9"], 180.0),
-    ("rose-garden", "Rose Garden", ["#fdf2f8", "#831843"], 180.0),
-    ("amber-ridge", "Amber Ridge", ["#0f172a", "#fde68a"], 45.0),
-    ("mint-frost", "Mint Frost", ["#f0fdfa", "#0f766e"], 135.0),
-    (
-        "electric-kite",
-        "Electric Kite",
-        ["#0f172a", "#22d3ee"],
-        135.0,
-    ),
-    (
-        "slate-minimal",
-        "Slate Minimal",
-        ["#f8fafc", "#1e293b"],
-        135.0,
-    ),
-    (
-        "nebula-threads",
-        "Nebula Threads",
-        ["#1d4ed8", "#020617"],
-        225.0,
-    ),
-    ("golden-hour", "Golden Hour", ["#1c1917", "#fef3c7"], 0.0),
-    (
-        "lavender-mist",
-        "Lavender Mist",
-        ["#f5f3ff", "#4c1d95"],
-        225.0,
-    ),
-    ("terra-mosaic", "Terra Mosaic", ["#fef3c7", "#1f2937"], 90.0),
-    (
-        "arctic-aurora",
-        "Arctic Aurora",
-        ["#0f172a", "#0c4a6e"],
-        180.0,
-    ),
-];
-
 pub const FRAME_THEMES: [(&str, &str, &str, &str, &str, &str); 4] = [
     (
         "macos-light",
@@ -271,14 +224,11 @@ pub fn preset(id: &str) -> Option<GradientOption> {
     {
         return Some(gradient);
     }
-    SVG_PRESETS
-        .iter()
-        .find(|(preset_id, _, _, _)| *preset_id == id)
-        .map(|(preset_id, _, colors, angle)| GradientOption {
-            id: (*preset_id).to_string(),
-            colors: colors.iter().map(|color| (*color).to_string()).collect(),
-            angle: *angle,
-        })
+    crate::editor::wallpaper_svg::is_preset(id).then(|| GradientOption {
+        id: id.to_string(),
+        colors: Vec::new(),
+        angle: 0.0,
+    })
 }
 
 pub fn apply_preset(
@@ -304,6 +254,20 @@ pub fn apply_preset(
         .as_ref()
         .map(|frame| frame.style.clone())
         .unwrap_or_else(|| "none".to_string());
+}
+
+pub fn preset_save_name(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+pub fn preset_summary(settings: &WallpaperSettings) -> String {
+    format!(
+        "Padding: {}, Corners: {}, Shadow: {}",
+        settings.padding.round() as i64,
+        settings.corners.round() as i64,
+        settings.shadow.round() as i64
+    )
 }
 
 pub fn to_schema_preset(
@@ -382,6 +346,28 @@ pub fn layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preset_name_is_trimmed_and_an_empty_one_is_rejected() {
+        assert_eq!(preset_save_name("  Dark  ").as_deref(), Some("Dark"));
+        assert_eq!(preset_save_name("Dark").as_deref(), Some("Dark"));
+        assert_eq!(preset_save_name(""), None);
+        assert_eq!(preset_save_name("   "), None);
+    }
+
+    #[test]
+    fn the_save_panel_summarizes_the_current_settings() {
+        let settings = WallpaperSettings {
+            padding: 50.4,
+            corners: 12.0,
+            shadow: 0.0,
+            ..WallpaperSettings::default()
+        };
+        assert_eq!(
+            preset_summary(&settings),
+            "Padding: 50, Corners: 12, Shadow: 0"
+        );
+    }
 
     #[test]
     fn padding_opens_up_when_a_gradient_is_picked() {
@@ -478,7 +464,7 @@ mod tests {
         assert_eq!(NOISE_MAX, 100.0);
         assert_eq!(ASPECT_RATIOS.len(), 10);
         assert_eq!(WINDOW_FRAMES.len(), 5);
-        assert_eq!(SVG_PRESETS.len(), 14);
+        assert_eq!(crate::editor::wallpaper_svg::PRESETS.len(), 14);
     }
 
     #[test]

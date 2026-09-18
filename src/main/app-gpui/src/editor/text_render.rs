@@ -1,55 +1,131 @@
-//! Text rasterization for export. The preview is drawn by GPUI with the
-//! platform UI font; the export loads the same family from the OS so a saved
-//! image matches what the editor showed. Nothing is bundled, so there is no
-//! extra font to license or ship.
-
 use std::sync::OnceLock;
 
 use fontdue::{Font, FontSettings};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Weight {
+    Regular,
+    Bold,
+}
+
 /// Mirrors `FONT_FAMILIES` in `renderer/components/editor/text/text-utils.ts`
 /// plus the `system-ui` default the renderer falls back to.
-const CANDIDATES: &[(&str, &[&str])] = &[
+const CANDIDATES: &[(&str, Weight, &[(&str, u32)])] = &[
     (
         "sans",
+        Weight::Regular,
         &[
-            r"C:\Windows\Fonts\segoeui.ttf",
-            r"C:\Windows\Fonts\arial.ttf",
-            "/System/Library/Fonts/SFNS.ttf",
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            (r"C:\Windows\Fonts\segoeui.ttf", 0),
+            (r"C:\Windows\Fonts\arial.ttf", 0),
+            ("/System/Library/Fonts/SFNS.ttf", 0),
+            ("/System/Library/Fonts/Supplemental/Arial.ttf", 0),
+            ("/System/Library/Fonts/Helvetica.ttc", 0),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+        ],
+    ),
+    (
+        "sans",
+        Weight::Bold,
+        &[
+            (r"C:\Windows\Fonts\segoeuib.ttf", 0),
+            (r"C:\Windows\Fonts\arialbd.ttf", 0),
+            ("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 0),
+            ("/System/Library/Fonts/Helvetica.ttc", 1),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
         ],
     ),
     (
         "serif",
+        Weight::Regular,
         &[
-            r"C:\Windows\Fonts\georgia.ttf",
-            r"C:\Windows\Fonts\times.ttf",
-            "/System/Library/Fonts/Supplemental/Georgia.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+            (r"C:\Windows\Fonts\georgia.ttf", 0),
+            (r"C:\Windows\Fonts\times.ttf", 0),
+            ("/System/Library/Fonts/Supplemental/Georgia.ttf", 0),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", 0),
+        ],
+    ),
+    (
+        "serif",
+        Weight::Bold,
+        &[
+            (r"C:\Windows\Fonts\georgiab.ttf", 0),
+            (r"C:\Windows\Fonts\timesbd.ttf", 0),
+            ("/System/Library/Fonts/Supplemental/Georgia Bold.ttf", 0),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", 0),
         ],
     ),
     (
         "mono",
+        Weight::Regular,
         &[
-            r"C:\Windows\Fonts\consola.ttf",
-            r"C:\Windows\Fonts\cour.ttf",
-            "/System/Library/Fonts/Menlo.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            (r"C:\Windows\Fonts\consola.ttf", 0),
+            (r"C:\Windows\Fonts\cour.ttf", 0),
+            ("/System/Library/Fonts/Menlo.ttc", 0),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 0),
+        ],
+    ),
+    (
+        "mono",
+        Weight::Bold,
+        &[
+            (r"C:\Windows\Fonts\consolab.ttf", 0),
+            (r"C:\Windows\Fonts\courbd.ttf", 0),
+            ("/System/Library/Fonts/Menlo.ttc", 1),
+            (
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+                0,
+            ),
         ],
     ),
     (
         "comic",
+        Weight::Regular,
         &[
-            r"C:\Windows\Fonts\comic.ttf",
-            "/System/Library/Fonts/Supplemental/Comic Sans MS.ttf",
+            (r"C:\Windows\Fonts\comic.ttf", 0),
+            ("/System/Library/Fonts/Supplemental/Comic Sans MS.ttf", 0),
+        ],
+    ),
+    (
+        "comic",
+        Weight::Bold,
+        &[
+            (r"C:\Windows\Fonts\comicbd.ttf", 0),
+            (
+                "/System/Library/Fonts/Supplemental/Comic Sans MS Bold.ttf",
+                0,
+            ),
         ],
     ),
 ];
 
+pub const SANS_UI_FAMILY: &str = if cfg!(target_os = "windows") {
+    "Segoe UI"
+} else if cfg!(target_os = "macos") {
+    ".AppleSystemUIFont"
+} else {
+    "DejaVu Sans"
+};
+
+pub const MONO_UI_FAMILY: &str = if cfg!(target_os = "windows") {
+    "Consolas"
+} else if cfg!(target_os = "macos") {
+    "Menlo"
+} else {
+    "DejaVu Sans Mono"
+};
+
+pub fn ui_family(family: &str) -> &'static str {
+    match family {
+        "serif" => "Georgia",
+        "mono" => MONO_UI_FAMILY,
+        "comic" => "Comic Sans MS",
+        _ => SANS_UI_FAMILY,
+    }
+}
+
 struct Loaded {
     family: &'static str,
+    weight: Weight,
     font: Font,
 }
 
@@ -58,29 +134,49 @@ fn fonts() -> &'static Vec<Loaded> {
     FONTS.get_or_init(|| {
         CANDIDATES
             .iter()
-            .filter_map(|(family, paths)| {
-                paths.iter().find_map(|path| {
+            .filter_map(|(family, weight, paths)| {
+                paths.iter().find_map(|(path, index)| {
                     let bytes = std::fs::read(path).ok()?;
-                    let font = Font::from_bytes(bytes, FontSettings::default()).ok()?;
+                    let settings = FontSettings {
+                        collection_index: *index,
+                        ..FontSettings::default()
+                    };
+                    let font = Font::from_bytes(bytes, settings).ok()?;
                     // SFNS.ttf parses but carries CFF2 outlines fontdue cannot
                     // rasterize, yielding empty bitmaps; probe before accepting.
                     let (_, bitmap) = font.rasterize('A', 32.0);
                     if !bitmap.iter().any(|coverage| *coverage > 0) {
                         return None;
                     }
-                    Some(Loaded { family, font })
+                    Some(Loaded {
+                        family,
+                        weight: *weight,
+                        font,
+                    })
                 })
             })
             .collect()
     })
 }
 
-fn font_for(family: &str) -> Option<&'static Font> {
-    let loaded = fonts();
-    loaded
+#[cfg(test)]
+fn has_face(family: &str, weight: Weight) -> bool {
+    fonts()
         .iter()
-        .find(|entry| entry.family == family)
-        .or_else(|| loaded.iter().find(|entry| entry.family == "sans"))
+        .any(|entry| entry.family == family && entry.weight == weight)
+}
+
+fn font_for(family: &str, weight: Weight) -> Option<&'static Font> {
+    let loaded = fonts();
+    let face = |family: &str, weight: Weight| {
+        loaded
+            .iter()
+            .find(|entry| entry.family == family && entry.weight == weight)
+    };
+    face(family, weight)
+        .or_else(|| face(family, Weight::Regular))
+        .or_else(|| face("sans", weight))
+        .or_else(|| face("sans", Weight::Regular))
         .or_else(|| loaded.first())
         .map(|entry| &entry.font)
 }
@@ -98,8 +194,8 @@ impl Metrics {
     }
 }
 
-pub fn measure(text: &str, family: &str, size: f32) -> Option<Metrics> {
-    let font = font_for(family)?;
+pub fn measure(text: &str, family: &str, size: f32, weight: Weight) -> Option<Metrics> {
+    let font = font_for(family, weight)?;
     let line = font.horizontal_line_metrics(size)?;
     let width = text
         .chars()
@@ -117,12 +213,13 @@ pub fn measure(text: &str, family: &str, size: f32) -> Option<Metrics> {
 pub fn rasterize(
     text: &str,
     family: &str,
+    weight: Weight,
     size: f32,
     origin_x: f32,
     baseline_y: f32,
     mut plot: impl FnMut(i64, i64, f32),
 ) -> bool {
-    let Some(font) = font_for(family) else {
+    let Some(font) = font_for(family, weight) else {
         return false;
     };
     let mut pen_x = origin_x;
@@ -158,12 +255,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_live_field_resolves_the_same_families_the_rasterizer_knows() {
+        assert_eq!(ui_family("serif"), "Georgia");
+        assert_eq!(ui_family("mono"), MONO_UI_FAMILY);
+        assert_eq!(ui_family("comic"), "Comic Sans MS");
+        assert_eq!(ui_family("sans"), SANS_UI_FAMILY);
+        assert_eq!(ui_family("nope"), SANS_UI_FAMILY);
+        for family in ["serif", "mono", "comic"] {
+            assert!(CANDIDATES.iter().any(|(name, _, _)| *name == family));
+        }
+    }
+
+    #[test]
     fn falls_back_to_the_sans_family_for_unknown_names() {
         if !is_available() {
             return;
         }
-        assert!(font_for("nope").is_some());
-        assert!(font_for("sans").is_some());
+        assert!(font_for("nope", Weight::Regular).is_some());
+        assert!(font_for("sans", Weight::Regular).is_some());
+        assert!(font_for("nope", Weight::Bold).is_some());
     }
 
     #[test]
@@ -171,8 +281,8 @@ mod tests {
         if !is_available() {
             return;
         }
-        let short = measure("i", "sans", 20.0).expect("short");
-        let long = measure("iiiiii", "sans", 20.0).expect("long");
+        let short = measure("i", "sans", 20.0, Weight::Regular).expect("short");
+        let long = measure("iiiiii", "sans", 20.0, Weight::Regular).expect("long");
         assert!(long.width > short.width);
         assert!(short.height() > 0.0);
     }
@@ -183,12 +293,40 @@ mod tests {
             return;
         }
         let mut covered = 0usize;
-        let drawn = rasterize("A", "sans", 32.0, 0.0, 32.0, |_, _, coverage| {
-            if coverage > 0.5 {
-                covered += 1;
-            }
-        });
+        let drawn = rasterize(
+            "A",
+            "sans",
+            Weight::Regular,
+            32.0,
+            0.0,
+            32.0,
+            |_, _, coverage| {
+                if coverage > 0.5 {
+                    covered += 1;
+                }
+            },
+        );
         assert!(drawn);
         assert!(covered > 0);
+    }
+
+    #[test]
+    fn the_bold_face_covers_more_than_the_regular_one() {
+        if !is_available() {
+            return;
+        }
+        let count = |weight| {
+            let mut covered = 0usize;
+            rasterize("8", "sans", weight, 48.0, 0.0, 48.0, |_, _, coverage| {
+                if coverage > 0.5 {
+                    covered += 1;
+                }
+            });
+            covered
+        };
+        if !has_face("sans", Weight::Bold) {
+            return;
+        }
+        assert!(count(Weight::Bold) > count(Weight::Regular));
     }
 }

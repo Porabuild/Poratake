@@ -102,6 +102,126 @@ pub fn selected_surfaces(
     (None, crate::ui::colors::white(0.15))
 }
 
+pub const FILLED_GLYPH_SIZE: f32 = 14.0;
+
+pub fn filled_glyph(color: gpui::Hsla, round: bool) -> AnyElement {
+    let glyph = div().size(px(FILLED_GLYPH_SIZE)).bg(color);
+    if round {
+        return glyph.rounded_full().into_any_element();
+    }
+    glyph.rounded(px(chrome::RADIUS_SM)).into_any_element()
+}
+
+pub fn filled_play(color: gpui::Hsla) -> AnyElement {
+    gpui::canvas(
+        |_, _, _| {},
+        move |bounds: gpui::Bounds<gpui::Pixels>, _: (), window: &mut Window, _cx: &mut App| {
+            let at = |x: f32, y: f32| {
+                gpui::point(
+                    bounds.origin.x + px(x * FILLED_GLYPH_SIZE),
+                    bounds.origin.y + px(y * FILLED_GLYPH_SIZE),
+                )
+            };
+            let mut builder = gpui::PathBuilder::fill();
+            builder.move_to(at(0.25, 0.125));
+            builder.line_to(at(0.8333, 0.5));
+            builder.line_to(at(0.25, 0.875));
+            builder.close();
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, color);
+            }
+        },
+    )
+    .w(px(FILLED_GLYPH_SIZE))
+    .h(px(FILLED_GLYPH_SIZE))
+    .into_any_element()
+}
+
+#[derive(Default)]
+struct TabSlots {
+    from: usize,
+    to: usize,
+    started: bool,
+}
+
+impl TabSlots {
+    fn advance(&mut self, active: usize) -> (usize, usize) {
+        if !self.started {
+            self.started = true;
+            self.from = active;
+            self.to = active;
+        } else if self.to != active {
+            self.from = self.to;
+            self.to = active;
+        }
+        (self.from, self.to)
+    }
+}
+
+fn tab_slot_left(slot: usize) -> f32 {
+    slot as f32 * chrome::OVERLAY_BUTTON_SIZE
+}
+
+pub fn mode_tab_group(
+    key: &'static str,
+    active: Option<usize>,
+    tabs: Vec<Stateful<Div>>,
+    theme: &ThemeVars,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let indicator = tab_indicator(key, active, theme, window, cx);
+    div()
+        .relative()
+        .flex()
+        .flex_row()
+        .items_center()
+        .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
+        .bg(theme.muted_foreground.opacity(0.10))
+        .children(indicator)
+        .children(tabs)
+}
+
+fn tab_indicator(
+    key: &'static str,
+    active: Option<usize>,
+    theme: &ThemeVars,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    use gpui::AnimationExt;
+
+    let slots = window.use_keyed_state(
+        ElementId::Name(format!("{key}-indicator").into()),
+        cx,
+        |_, _| TabSlots::default(),
+    );
+    let active = active?;
+    let (from, to) = slots.update(cx, |slots, _| slots.advance(active));
+    let pill = div()
+        .absolute()
+        .top_0()
+        .size(px(chrome::OVERLAY_BUTTON_SIZE))
+        .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
+        .bg(theme.muted_foreground.opacity(0.25));
+    if from == to {
+        return Some(pill.left(px(tab_slot_left(to))).into_any_element());
+    }
+    let start = tab_slot_left(from);
+    let distance = tab_slot_left(to) - start;
+    Some(
+        pill.with_animation(
+            ElementId::Name(format!("{key}-indicator-{from}-{to}").into()),
+            gpui::Animation::new(std::time::Duration::from_millis(
+                crate::ui::primitives::OVERLAY_ENTER_MS,
+            ))
+            .with_easing(crate::ui::primitives::ease_out()),
+            move |pill, delta| pill.left(px(start + distance * delta)),
+        )
+        .into_any_element(),
+    )
+}
+
 pub fn mode_tab(
     id: SharedString,
     icon: &'static str,
@@ -113,10 +233,10 @@ pub fn mode_tab(
     let key = id.to_string();
     let focus = crate::ui::primitives::control_focus(&key, false, window, cx);
     let (hover, hovered) = crate::ui::primitives::hover_flag(&key, window, cx);
-    let text = if hovered {
-        theme.muted_foreground
-    } else if active {
+    let text = if active {
         theme.foreground
+    } else if hovered {
+        theme.muted_foreground
     } else {
         theme.muted_foreground.opacity(0.6)
     };
@@ -129,7 +249,6 @@ pub fn mode_tab(
         .flex()
         .items_center()
         .justify_center()
-        .when(active, |el| el.bg(theme.muted_foreground.opacity(0.25)))
         .text_color(text)
         .on_hover({
             let hover = hover.clone();
@@ -143,6 +262,17 @@ pub fn mode_tab(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_indicator_slides_from_the_previous_slot() {
+        let mut slots = TabSlots::default();
+        assert_eq!(slots.advance(1), (1, 1));
+        assert_eq!(slots.advance(0), (1, 0));
+        assert_eq!(slots.advance(0), (1, 0));
+        assert_eq!(slots.advance(1), (0, 1));
+        assert_eq!(tab_slot_left(0), 0.0);
+        assert_eq!(tab_slot_left(1), chrome::OVERLAY_BUTTON_SIZE);
+    }
 
     #[test]
     fn selected_toolbar_buttons_use_the_active_hover_surface() {

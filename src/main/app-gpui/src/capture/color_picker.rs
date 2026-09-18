@@ -28,6 +28,8 @@ fn pixel_color(pixel: image::Rgba<u8>) -> gpui::Hsla {
     .to_hsla()
 }
 
+pub const HINT: &str = "Click to copy \u{b7} Esc to cancel";
+
 pub fn render(
     frame: &image::RgbaImage,
     pointer: Point<Pixels>,
@@ -38,8 +40,14 @@ pub fn render(
     const HALF: i32 = GRID / 2;
     const CELL: f32 = 7.0;
     const SIZE: f32 = GRID as f32 * CELL;
-    const CARD_WIDTH: f32 = 128.0;
-    const CARD_HEIGHT: f32 = SIZE + 32.0;
+    const PADDING: f32 = 6.0;
+    const SWATCH_ROW: f32 = 14.0;
+    const SWATCH_GAP: f32 = 6.0;
+    const HINT_SIZE: f32 = 12.0;
+    const HINT_ROW: f32 = 16.0;
+    const HINT_GAP: f32 = 4.0;
+    const CARD_WIDTH: f32 = 196.0;
+    const CARD_HEIGHT: f32 = PADDING * 2.0 + SIZE + SWATCH_GAP + SWATCH_ROW + HINT_GAP + HINT_ROW;
     const OFFSET: f32 = 20.0;
 
     let logical = selection::Size {
@@ -111,19 +119,19 @@ pub fn render(
         .border_2()
         .border_color(theme.muted_foreground.opacity(0.35))
         .bg(theme.muted_background.opacity(0.95))
-        .p(px(6.0))
+        .p(px(PADDING))
         .shadow_2xl()
         .child(div().flex().justify_center().child(loupe))
         .child(
             div()
-                .mt(px(6.0))
+                .mt(px(SWATCH_GAP))
                 .flex()
                 .items_center()
                 .gap(px(6.0))
                 .px(px(2.0))
                 .child(
                     div()
-                        .size(px(14.0))
+                        .size(px(SWATCH_ROW))
                         .rounded_full()
                         .border_1()
                         .border_color(theme.border.opacity(0.6))
@@ -138,12 +146,35 @@ pub fn render(
                         .child(hex),
                 ),
         )
+        .child(
+            div()
+                .mt(px(HINT_GAP))
+                .h(px(HINT_ROW))
+                .px(px(2.0))
+                .text_size(px(HINT_SIZE))
+                .text_color(theme.muted_foreground)
+                .child(HINT),
+        )
         .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hint_is_the_line_the_reference_shows() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .to_path_buf();
+        let reference = std::fs::read_to_string(
+            root.join("src/renderer/components/area-overlay/color-picker.tsx"),
+        )
+        .expect("reference color picker");
+        assert!(reference.contains(HINT));
+    }
 
     #[test]
     fn frame_point_scales_and_clamps_logical_coordinates() {

@@ -1,11 +1,14 @@
 use gpui::{
-    div, prelude::*, px, AnyElement, Context, MouseDownEvent, MouseMoveEvent, ScrollHandle, Styled,
+    div, prelude::*, px, AnyElement, Context, MouseDownEvent, MouseMoveEvent, ScrollHandle,
+    ScrollWheelEvent, Styled,
 };
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
 use crate::util::format::format_time;
-use crate::windows::video_editor::timeline::{time_at_position, RULER_HEIGHT, TRACK_GUTTER_WIDTH};
+use crate::windows::video_editor::timeline::{
+    time_at_position, RULER_HEIGHT, TRACK_GUTTER_WIDTH, TRACK_HEIGHT,
+};
 use crate::windows::video_editor::VideoEditorWindow;
 
 const TARGET_PIXELS_BETWEEN_MARKS: f32 = 60.0;
@@ -29,12 +32,13 @@ pub fn marks(total_duration: f64, pixels_per_second: f32) -> Vec<f64> {
 }
 
 pub fn render(
-    total_duration: f64,
+    display_duration: f64,
     pixels_per_second: f32,
     scroll: &ScrollHandle,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
+    let total_duration = display_duration;
     let total_width = (total_duration as f32 * pixels_per_second).max(0.0);
     let mut lane = div().relative().h_full().w(px(total_width)).flex_shrink_0();
 
@@ -85,6 +89,24 @@ pub fn render(
                 .flex_1()
                 .overflow_x_scroll()
                 .cursor_pointer()
+                .on_scroll_wheel(cx.listener({
+                    let scroll = scroll.clone();
+                    move |this, event: &ScrollWheelEvent, _window, cx| {
+                        let delta = event.delta.pixel_delta(px(TRACK_HEIGHT));
+                        if event.modifiers.platform || event.modifiers.control {
+                            let pointer =
+                                f32::from(event.position.x - scroll.bounds().left()).max(0.0);
+                            this.zoom_timeline_at(f32::from(delta.y), pointer, cx);
+                            return;
+                        }
+                        let amount = if f32::from(delta.x) == 0.0 {
+                            f32::from(delta.y)
+                        } else {
+                            f32::from(delta.x)
+                        };
+                        this.scroll_timeline_by(amount, total_width, cx);
+                    }
+                }))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener({

@@ -6,8 +6,8 @@ use gpui::AnyWindowHandle;
 #[cfg(windows)]
 use gpui::Global;
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Render,
-    Subscription, WeakEntity, Window, WindowHandle,
+    prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Render, Subscription,
+    WeakEntity, Window, WindowHandle,
 };
 use herogpui::gpui;
 
@@ -205,6 +205,11 @@ impl TrayMenuWindow {
             return;
         }
 
+        if crate::video::recorder::is_recording() {
+            crate::intents::dispatch(crate::system::tray::Intent::StopRecording, tray_rect, cx);
+            return;
+        }
+
         #[cfg(windows)]
         {
             if let Some(handle) = tray_menu_cache(cx).handle {
@@ -391,7 +396,7 @@ fn build_menu(
 
 impl Render for TrayMenuWindow {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let surface = div().size_full().child(self.menu.clone());
+        let surface = crate::ui::font::root().size_full().child(self.menu.clone());
 
         #[cfg(windows)]
         return surface.into_any_element();

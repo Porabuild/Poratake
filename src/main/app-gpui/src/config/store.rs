@@ -246,7 +246,7 @@ mod dir_tests {
     fn the_environment_override_takes_precedence_when_it_is_not_empty() {
         // Serialised by being the only test that touches this variable.
         let previous = std::env::var_os(super::CONFIG_DIR_ENV);
-        let scratch = std::env::temp_dir().join("poratake-parity-profile");
+        let scratch = crate::util::test_paths::unique_temp("poratake-parity-profile");
 
         unsafe { std::env::set_var(super::CONFIG_DIR_ENV, &scratch) };
         assert_eq!(super::config_dir(), scratch);

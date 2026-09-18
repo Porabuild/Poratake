@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use gpui::{App, SharedString, Window};
+use gpui::{App, CursorStyle, SharedString, Window};
 use herogpui::gpui;
 
 use crate::ui::colors::Tool;
@@ -94,6 +94,8 @@ pub enum EditorOption {
     WallpaperCustom(SharedString),
     WallpaperDeleteCustom(SharedString),
     WallpaperApplyPreset(SharedString),
+    WallpaperPresetDraftOpen,
+    WallpaperPresetDraftCancel,
     WallpaperSavePreset,
     WallpaperDeletePreset,
     WallpaperToggleDefaultPreset,
@@ -142,6 +144,21 @@ impl EditorHandlers {
     pub fn action(&self, value: EditorAction) -> impl Fn(&mut Window, &mut App) + 'static {
         let handler = self.on_action.clone();
         move |window, cx| handler(value, window, cx)
+    }
+}
+
+pub fn toggled_tool(current: Tool, requested: Tool) -> Tool {
+    match (current, requested) {
+        (Tool::Wallpaper, Tool::Wallpaper) => Tool::Select,
+        _ => requested,
+    }
+}
+
+pub fn tool_cursor(tool: Tool) -> CursorStyle {
+    match tool {
+        Tool::Select | Tool::Wallpaper => CursorStyle::Arrow,
+        Tool::Text => CursorStyle::IBeam,
+        _ => CursorStyle::Crosshair,
     }
 }
 
@@ -241,6 +258,35 @@ mod tests {
         assert_eq!(thickness_bar_height(1.0), 2.0);
         assert_eq!(thickness_bar_height(21.0), 10.0);
         assert_eq!(thickness_bar_height(7.5), 4.0);
+    }
+
+    #[test]
+    fn only_the_wallpaper_tool_toggles_itself_off() {
+        assert_eq!(toggled_tool(Tool::Wallpaper, Tool::Wallpaper), Tool::Select);
+        assert_eq!(toggled_tool(Tool::Select, Tool::Wallpaper), Tool::Wallpaper);
+        assert_eq!(toggled_tool(Tool::Pen, Tool::Pen), Tool::Pen);
+        assert_eq!(toggled_tool(Tool::Crop, Tool::Crop), Tool::Crop);
+        assert_eq!(toggled_tool(Tool::Wallpaper, Tool::Pen), Tool::Pen);
+    }
+
+    #[test]
+    fn every_tool_carries_the_cursor_the_renderer_sets() {
+        assert_eq!(tool_cursor(Tool::Select), CursorStyle::Arrow);
+        assert_eq!(tool_cursor(Tool::Wallpaper), CursorStyle::Arrow);
+        assert_eq!(tool_cursor(Tool::Text), CursorStyle::IBeam);
+        for tool in [
+            Tool::Pen,
+            Tool::Rectangle,
+            Tool::Circle,
+            Tool::Line,
+            Tool::Arrow,
+            Tool::Crop,
+            Tool::Number,
+            Tool::Redact,
+            Tool::Highlight,
+        ] {
+            assert_eq!(tool_cursor(tool), CursorStyle::Crosshair);
+        }
     }
 
     #[test]

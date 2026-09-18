@@ -87,7 +87,7 @@ The package manager-provided license files for these components ship under `lice
 
 ## Geist fonts
 
-Poratake bundles Geist Sans and Geist Mono from the [Geist font project](https://github.com/vercel/geist-font), copyright 2024 The Geist Project Authors and licensed under the SIL Open Font License 1.1. The full license text ships with the app at `licenses/Geist-OFL-1.1.txt`.
+Poratake bundles Geist Sans and Geist Mono from the [Geist font project](https://github.com/vercel/geist-font), copyright 2024 The Geist Project Authors and licensed under the SIL Open Font License 1.1. The full license text ships with the app at `licenses/Geist-OFL-1.1.txt`. The Electron renderer loads the upstream variable fonts as WOFF2 (`src/renderer/fonts/Geist-Variable.woff2`, `src/renderer/fonts/GeistMono-Variable.woff2`). The GPUI shell cannot read WOFF2, so it embeds static TrueType instances generated from those same variable fonts — Geist at weights 400, 500, 600 and 700 and Geist Mono at 400 and 500, under `src/main/app-gpui/fonts/` — which are Modified Versions under the same license. The Geist copyright notice specifies no Reserved Font Name, so the instances keep the original family names.
 
 ## FFmpeg
 

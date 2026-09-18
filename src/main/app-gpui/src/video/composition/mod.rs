@@ -188,6 +188,26 @@ impl Engine {
         Some(canvas.into_pixmap())
     }
 
+    pub fn render_frame_at(
+        &mut self,
+        timeline_time: f64,
+        frames: Frames<'_>,
+        width: u32,
+        height: u32,
+    ) -> Option<Pixmap> {
+        let (composition_width, composition_height) = self.dimensions();
+        if width == composition_width && height == composition_height {
+            return self.render_frame(timeline_time, frames);
+        }
+        let scale_x = width as f32 / composition_width as f32;
+        let scale_y = height as f32 / composition_height as f32;
+        let mut canvas = Canvas::new(width, height)?;
+        canvas.set_shadow_scale((scale_x + scale_y) / 2.0);
+        canvas.scale(scale_x, scale_y);
+        self.render_into(&mut canvas, timeline_time, frames);
+        Some(canvas.into_pixmap())
+    }
+
     /// Port of `renderFrame`.
     pub fn render_into(&mut self, canvas: &mut Canvas, timeline_time: f64, frames: Frames<'_>) {
         let first_frame_duration = self.first_frame_duration();
@@ -524,8 +544,7 @@ impl Engine {
             return;
         }
         let (width, height) = self.dimensions();
-        let ranges = (!self.config.state.camera_segments.is_empty())
-            .then_some(self.config.state.camera_segments.as_slice());
+        let ranges = Some(self.config.state.camera_segments.as_slice());
         camera::render(
             canvas,
             timeline_time,
@@ -754,6 +773,88 @@ mod tests {
             )
             .expect("frame");
         assert_eq!((composed.width(), composed.height()), (640, 360));
+    }
+
+    fn camera_engine(
+        camera_segments: Vec<crate::windows::video_editor::model::CameraSegment>,
+    ) -> Engine {
+        let mut config = Config::new(40.0, 40.0, state());
+        config.state.camera_style.visible = true;
+        config.state.camera_style.shadow = 0.0;
+        config.state.camera_segments = camera_segments;
+        Engine::new(config)
+    }
+
+    fn has_camera_pixels(engine: &mut Engine) -> bool {
+        let video = source(40, 40, Color::from_rgba8(0, 0, 0, 255));
+        let camera = source(40, 40, Color::from_rgba8(0, 255, 0, 255));
+        let composed = engine
+            .render_frame(
+                1.0,
+                Frames {
+                    video: Some(video.as_ref()),
+                    camera: Some(camera.as_ref()),
+                },
+            )
+            .expect("frame");
+        composed
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[1] > 128 && pixel[0] < 128)
+    }
+
+    fn camera_segment(start: f64, end: f64) -> crate::windows::video_editor::model::CameraSegment {
+        crate::windows::video_editor::model::CameraSegment {
+            id: format!("{start}-{end}"),
+            start_time: start,
+            end_time: end,
+        }
+    }
+
+    #[test]
+    fn deleting_every_camera_clip_hides_the_bubble() {
+        assert!(!has_camera_pixels(&mut camera_engine(Vec::new())));
+    }
+
+    #[test]
+    fn a_camera_clip_shows_the_bubble_only_inside_its_range() {
+        assert!(has_camera_pixels(&mut camera_engine(vec![camera_segment(
+            0.0, 2.0
+        )])));
+        assert!(!has_camera_pixels(&mut camera_engine(vec![
+            camera_segment(2.0, 4.0)
+        ])));
+        assert!(has_camera_pixels(&mut camera_engine(vec![
+            camera_segment(0.0, 0.5),
+            camera_segment(0.9, 4.0),
+        ])));
+    }
+
+    #[test]
+    fn composing_at_a_target_size_scales_both_ways() {
+        let mut engine = Engine::new(Config::new(1920.0, 1080.0, state()));
+        let video = source(1920, 1080, Color::from_rgba8(255, 0, 0, 255));
+        let frames = || Frames {
+            video: Some(video.as_ref()),
+            camera: None,
+        };
+
+        let down = engine
+            .render_frame_at(0.0, frames(), 1280, 720)
+            .expect("downscaled frame");
+        assert_eq!((down.width(), down.height()), (1280, 720));
+
+        let up = engine
+            .render_frame_at(0.0, frames(), 3840, 2160)
+            .expect("upscaled frame");
+        assert_eq!((up.width(), up.height()), (3840, 2160));
+
+        let same = engine
+            .render_frame_at(0.0, frames(), 1920, 1080)
+            .expect("unscaled frame");
+        assert_eq!((same.width(), same.height()), (1920, 1080));
     }
 
     #[test]

@@ -212,10 +212,36 @@ pub fn sync_tray_status(cx: &mut gpui::App) {
 const INITIAL_CHECK_DELAY_SECS: u64 = 3;
 const CHECK_INTERVAL_SECS: u64 = 30 * 60;
 
+pub fn path_is_packaged(exe: &std::path::Path) -> bool {
+    if exe
+        .components()
+        .any(|component| component.as_os_str() == "target")
+    {
+        return false;
+    }
+    if !cfg!(target_os = "macos") {
+        return true;
+    }
+    exe.ancestors()
+        .any(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))
+}
+
+pub fn dev_update_forced() -> bool {
+    std::env::var("PORATAKE_DEV_UPDATE_VERSION").is_ok_and(|value| !value.trim().is_empty())
+}
+
+pub fn auto_check_enabled(packaged: bool, dev_forced: bool) -> bool {
+    packaged || dev_forced
+}
+
 /// `init()` in `main/update/index.ts`: one check shortly after launch, then
 /// every 30 minutes. Results publish into the shared cell; the tray follows
 /// through `sync_tray_status` and an open About page is repainted.
 pub fn spawn_auto_check(cx: &mut gpui::App) {
+    let packaged = std::env::current_exe().is_ok_and(|exe| path_is_packaged(&exe));
+    if !auto_check_enabled(packaged, dev_update_forced()) {
+        return;
+    }
     cx.spawn(async move |cx| {
         cx.background_executor()
             .timer(std::time::Duration::from_secs(INITIAL_CHECK_DELAY_SECS))
@@ -941,6 +967,58 @@ mod tests {
             installer: std::path::PathBuf::from("installer.exe"),
             notes: None,
         }));
+    }
+
+    #[test]
+    fn an_unpacked_build_never_checks_on_its_own() {
+        assert!(!auto_check_enabled(false, false));
+        assert!(auto_check_enabled(false, true));
+        assert!(auto_check_enabled(true, false));
+    }
+
+    #[test]
+    fn a_cargo_build_directory_is_not_a_packaged_app() {
+        assert!(!path_is_packaged(std::path::Path::new(
+            "/work/poratake/src/main/target/debug/poratake-gpui"
+        )));
+        assert!(!path_is_packaged(std::path::Path::new(
+            "/work/poratake/src/main/target/release/poratake-gpui"
+        )));
+        #[cfg(target_os = "macos")]
+        {
+            assert!(path_is_packaged(std::path::Path::new(
+                "/Applications/Poratake.app/Contents/MacOS/Poratake"
+            )));
+            assert!(!path_is_packaged(std::path::Path::new(
+                "/opt/poratake/poratake-gpui"
+            )));
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert!(path_is_packaged(std::path::Path::new(
+            "C:/Program Files/Poratake/Poratake.exe"
+        )));
+    }
+
+    #[test]
+    fn the_resting_states_offer_the_check_button() {
+        assert_eq!(Status::default(), Status::Idle);
+        assert!(Status::Idle.shows_check_button());
+        assert!(Status::UpToDate.shows_check_button());
+        assert!(Status::Error {
+            message: "boom".into()
+        }
+        .shows_check_button());
+        assert!(!Status::Checking.shows_check_button());
+        assert!(!Status::Downloading {
+            version: "1.0".into(),
+            progress: 0.0,
+            notes: None,
+        }
+        .shows_check_button());
+        assert!(!Status::Idle.spins());
+        assert!(Status::Checking.spins());
+        assert_eq!(Status::Idle.text(), "Check for updates");
+        assert_eq!(Status::Idle.icon(), "refresh-cw");
     }
 
     #[test]

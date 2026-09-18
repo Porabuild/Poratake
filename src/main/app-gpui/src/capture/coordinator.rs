@@ -334,14 +334,6 @@ impl Coordinator {
                 SCROLL_CAPTURE_DONE_EVENT => Some(Signal::Finish),
                 SCROLL_CAPTURE_CANCELLED_EVENT | SYSTEM_EXIT_EVENT => Some(Signal::Cancel),
                 SCROLL_CAPTURE_FRAME_PREVIEW_EVENT => Some(Signal::Frame {
-                    frame_count: payload
-                        .get("frameCount")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0) as usize,
-                    estimated_height: payload
-                        .get("estimatedHeight")
-                        .and_then(serde_json::Value::as_i64)
-                        .unwrap_or(0),
                     preview: payload
                         .get("preview")
                         .and_then(serde_json::Value::as_str)
@@ -423,7 +415,6 @@ impl Coordinator {
 
     /// Shows the daemon countdown above the selection, then captures it from
     /// live pixels when the countdown finishes (`timer-capture.ts` captures
-    /// uncached: the freeze was released before the countdown started).
     fn run_countdown(&mut self, capture: DisplayCapture, cx: &mut Context<Self>) {
         let Some(session) = crate::capture::timer::begin() else {
             crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
@@ -479,6 +470,7 @@ impl Coordinator {
             cx.background_executor()
                 .spawn(async move { crate::capture::timer::hide(&daemon) })
                 .detach();
+            cx.update(crate::capture::overlay::close_all);
             if !completed {
                 cx.update(|cx| {
                     crate::capture::desktop_icons::restore_after_capture(
@@ -487,8 +479,17 @@ impl Coordinator {
                 });
                 return;
             }
-            let _ = entity.update(cx, |coordinator, cx| {
-                coordinator.capture_area_reserved(capture, CaptureIntent::Screenshot, None, cx);
+            cx.update(|cx| {
+                cx.defer(move |cx| {
+                    let _ = entity.update(cx, |coordinator, cx| {
+                        coordinator.capture_area_reserved(
+                            capture,
+                            CaptureIntent::Screenshot,
+                            None,
+                            cx,
+                        );
+                    });
+                });
             });
         })
         .detach();

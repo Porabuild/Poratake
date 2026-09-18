@@ -1,7 +1,14 @@
+use std::path::Path;
+
 use anyhow::{anyhow, Result};
 use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
 use herogpui::gpui;
 use image::{DynamicImage, RgbaImage};
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(windows)]
+mod windows;
 
 pub struct ClipboardService;
 
@@ -22,6 +29,18 @@ impl ClipboardService {
         DynamicImage::ImageRgba8(rgba).write_to(&mut png, image::ImageFormat::Png)?;
         Self::write_png(cx, png.into_inner());
         Ok(())
+    }
+
+    pub fn write_file(path: &Path) -> bool {
+        #[cfg(target_os = "macos")]
+        return macos::write_file(path);
+        #[cfg(windows)]
+        return windows::write_file(path);
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            let _ = path;
+            false
+        }
     }
 
     pub fn read_image(cx: &gpui::App) -> Option<Image> {

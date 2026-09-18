@@ -8,7 +8,10 @@ use crate::windows::video_editor::model::{
 
 pub const MIN_SPLIT_DURATION: f64 = 0.1;
 /// `MIN_DRAWING_SEGMENT_DURATION` in `types/drawing.ts`.
-pub const MIN_DRAWING_SEGMENT_DURATION: f64 = 0.1;
+pub const MIN_DRAWING_SEGMENT_DURATION: f64 = 0.3;
+pub const MIN_RESIZE_DURATION: f64 = 0.3;
+pub const DEFAULT_DRAWN_DURATION: f64 = 3.0;
+pub const DRAW_CLICK_THRESHOLD: f64 = 0.1;
 /// `minDuration` in `use-segment-operations.ts`.
 pub const MIN_VIDEO_TRIM_DURATION: f64 = 0.5;
 
@@ -223,7 +226,7 @@ pub fn resize_range<T: TimelineRange>(
     let Some(item) = items.iter_mut().find(|item| item.id() == id) else {
         return false;
     };
-    let minimum = T::minimum_duration();
+    let minimum = MIN_RESIZE_DURATION;
     let start = start.clamp(0.0, (total - minimum).max(0.0));
     let end = end.clamp(start + minimum, total.max(start + minimum));
     item.set_range(start, end);
@@ -263,6 +266,18 @@ pub fn trim_video(segments: &mut [Segment], id: &str, time: f64, start_edge: boo
             .max(segment.original_start + MIN_VIDEO_TRIM_DURATION);
     }
     true
+}
+
+pub fn drawn_range(start: f64, end: f64, total: f64) -> Option<(f64, f64)> {
+    if (end - start).abs() < DRAW_CLICK_THRESHOLD {
+        return Some((start, (start + DEFAULT_DRAWN_DURATION).min(total)));
+    }
+    let from = start.min(end);
+    let to = start.max(end);
+    if to - from < MIN_RESIZE_DURATION {
+        return None;
+    }
+    Some((from, to))
 }
 
 #[cfg(test)]
@@ -413,7 +428,51 @@ mod tests {
         let mut segments = vec![zoom("a", 0.0, 4.0)];
         assert!(resize_range(&mut segments, "a", 1.0, 1.0, 8.0));
         assert_eq!(segments[0].start_time, 1.0);
-        assert_eq!(segments[0].end_time, 1.0 + MIN_SPLIT_DURATION);
+        assert_eq!(segments[0].end_time, 1.0 + MIN_RESIZE_DURATION);
+    }
+
+    #[test]
+    fn every_range_track_resizes_down_to_the_renderer_minimum() {
+        assert_eq!(MIN_RESIZE_DURATION, 0.3);
+        let mut music = vec![MusicTrack {
+            id: "m".into(),
+            start_time: 0.0,
+            end_time: 4.0,
+            ..MusicTrack::default()
+        }];
+        assert!(resize_range(&mut music, "m", 2.0, 2.0, 8.0));
+        assert_eq!(music[0].end_time, 2.3);
+
+        let mut drawings = vec![DrawingSegment {
+            id: "d".into(),
+            start_time: 0.0,
+            end_time: 4.0,
+            ..DrawingSegment::default()
+        }];
+        assert!(resize_range(&mut drawings, "d", 1.0, 1.05, 8.0));
+        assert_eq!(drawings[0].end_time, 1.3);
+    }
+
+    #[test]
+    fn a_press_draws_the_default_clip_and_a_drag_draws_its_range() {
+        assert_eq!(drawn_range(1.0, 1.02, 10.0), Some((1.0, 4.0)));
+        assert_eq!(drawn_range(8.0, 8.0, 10.0), Some((8.0, 10.0)));
+        assert_eq!(drawn_range(1.0, 5.0, 10.0), Some((1.0, 5.0)));
+        assert_eq!(drawn_range(5.0, 1.0, 10.0), Some((1.0, 5.0)));
+        assert_eq!(drawn_range(1.0, 1.2, 10.0), None);
+    }
+
+    #[test]
+    fn a_drawing_splits_no_closer_than_the_renderer_minimum() {
+        assert_eq!(MIN_DRAWING_SEGMENT_DURATION, 0.3);
+        let mut drawings = vec![DrawingSegment {
+            id: "d".into(),
+            start_time: 0.0,
+            end_time: 4.0,
+            ..DrawingSegment::default()
+        }];
+        assert!(!split_ranges(&mut drawings, 0.2));
+        assert!(split_ranges(&mut drawings, 0.4));
     }
 
     #[test]

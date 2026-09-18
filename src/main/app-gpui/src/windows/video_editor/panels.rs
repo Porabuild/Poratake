@@ -1,11 +1,14 @@
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Styled};
 use herogpui::gpui;
 
+use crate::editor::annotations::Annotation;
+use crate::editor::options::EditorOption;
 use crate::theme::vars::ThemeVars;
 use crate::ui::icon_button;
 use crate::ui::menu::MenuHandle;
 use crate::ui::toolbar;
 use crate::windows::video_editor::data_editor;
+use crate::windows::video_editor::drawing_overlay;
 use crate::windows::video_editor::model::{FocusPoint, VideoEditorState};
 use crate::windows::video_editor::panel_kit as kit;
 use crate::windows::video_editor::sidebar::SidebarTab;
@@ -34,15 +37,15 @@ pub fn render(
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     match tab {
-        SidebarTab::Cursor => cursor_panel(state, has_cursor_data, menu, theme, cx),
+        SidebarTab::Cursor => cursor_panel(view, state, has_cursor_data, theme, cx),
         SidebarTab::Zoom => zoom_panel(view, state, has_cursor_data, theme, cx),
-        SidebarTab::Drawing => drawing_panel(view, state, menu, theme, cx),
-        SidebarTab::Camera => camera_panel(state, has_camera, theme, cx),
+        SidebarTab::Drawing => drawing_panel(view, state, menu, theme, window, cx),
+        SidebarTab::Camera => camera_panel(view, state, has_camera, theme, cx),
         SidebarTab::Audio => audio_panel(view, state, has_keyboard, menu, theme, cx),
         SidebarTab::Wallpaper => wallpaper_panel(view, state, theme, window, cx),
-        SidebarTab::Keyboard => keyboard_panel(state, has_keyboard, theme, cx),
+        SidebarTab::Keyboard => keyboard_panel(view, state, has_keyboard, theme, cx),
         SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, cx),
-        SidebarTab::FirstFrame => first_frame_panel(state, theme, cx),
+        SidebarTab::FirstFrame => first_frame_panel(view, state, theme, cx),
         SidebarTab::Export => {
             export_panel(view, state, is_exporting, export_progress, menu, theme, cx)
         }
@@ -50,14 +53,17 @@ pub fn render(
 }
 
 fn cursor_panel(
+    view: &VideoEditorWindow,
     state: &VideoEditorState,
     has_cursor_data: bool,
-    menu: &MenuHandle,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
+    let cursor_data_summary = view
+        .cursor_summary()
+        .unwrap_or_else(|| SharedString::from("Edit or replace cursor movement data"));
     if !has_cursor_data {
-        return kit::panel(vec![
+        return kit::panel(&view.panel_scroll, vec![
             kit::header(
                 "Cursor Data",
                 "No cursor data available for this video",
@@ -114,25 +120,48 @@ fn cursor_panel(
             "Cursor overlay is disabled. Enable it to show cursor in your video.",
             theme,
         ));
-        return kit::panel(children);
+        return kit::panel(&view.panel_scroll, children);
     }
 
     let has_custom = style.custom_cursor_image.is_some();
-    if has_custom {
+    if let Some(path) = style.custom_cursor_image.clone() {
         children.push(kit::field(
             "Custom Cursor",
-            kit::tertiary_button(
-                "cursor-remove-custom",
-                "Remove",
-                "x",
-                false,
-                theme,
-                cx,
-                |this, cx| this.clear_custom_cursor(cx),
-            ),
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .size(px(40.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .overflow_hidden()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.muted_background)
+                        .child(
+                            gpui::img(std::path::PathBuf::from(path))
+                                .size(px(40.0))
+                                .object_fit(gpui::ObjectFit::Contain),
+                        ),
+                )
+                .child(kit::tertiary_button(
+                    "cursor-remove-custom",
+                    "Remove",
+                    "x",
+                    false,
+                    theme,
+                    cx,
+                    |this, cx| this.clear_custom_cursor(cx),
+                ))
+                .into_any_element(),
             theme,
         ));
-        children.push(kit::hint("Using custom cursor image", theme));
     } else {
         children.push(kit::field(
             "Custom Cursor",
@@ -155,6 +184,7 @@ fn cursor_panel(
 
     children.push(kit::slider_row(
         "cursor-size",
+        None,
         "Size",
         style.size,
         styles::CURSOR_SIZE_MIN,
@@ -166,6 +196,7 @@ fn cursor_panel(
     ));
     children.push(kit::slider_row(
         "cursor-smoothing",
+        None,
         "Smoothing",
         style.smoothing,
         0.0,
@@ -183,15 +214,16 @@ fn cursor_panel(
     children.push(kit::switch_row(
         "cursor-motion-blur",
         "Motion Blur",
+        Some("Blur the cursor along its movement"),
         style.motion_blur,
         theme,
         cx,
         |this, value, cx| this.update_cursor(cx, move |style| style.motion_blur = value),
     ));
-    children.push(kit::hint("Blur the cursor along its movement", theme));
     if style.motion_blur {
         children.push(kit::slider_row(
             "cursor-blur-strength",
+            None,
             "Blur Strength",
             style.motion_blur_strength,
             0.0,
@@ -206,42 +238,50 @@ fn cursor_panel(
     }
 
     if !has_custom {
-        children.push(kit::select_row(
-            "cursor-color",
-            "Color",
-            &style.color,
-            &styles::CURSOR_COLORS,
-            menu,
-            theme,
-            cx,
-            |this, value, cx| this.update_cursor(cx, move |style| style.color = value.clone()),
-        ));
-        children.push(kit::select_row(
-            "cursor-border",
-            "Border",
-            &style.border_color,
-            &styles::CURSOR_BORDERS,
-            menu,
-            theme,
-            cx,
-            |this, value, cx| {
-                this.update_cursor(cx, move |style| style.border_color = value.clone())
-            },
-        ));
+        children.push(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(12.0))
+                .child(div().flex_1().min_w_0().child(kit::color_select_row(
+                    "cursor-color",
+                    "Color",
+                    &style.color,
+                    &styles::CURSOR_COLORS,
+                    theme,
+                    cx,
+                    |this, value, cx| {
+                        this.update_cursor(cx, move |style| style.color = value.clone())
+                    },
+                )))
+                .child(div().flex_1().min_w_0().child(kit::color_select_row(
+                    "cursor-border",
+                    "Border",
+                    &style.border_color,
+                    &styles::CURSOR_BORDERS,
+                    theme,
+                    cx,
+                    |this, value, cx| {
+                        this.update_cursor(cx, move |style| style.border_color = value.clone())
+                    },
+                )))
+                .into_any_element(),
+        );
     }
 
     children.push(kit::switch_row(
         "cursor-hide-on-idle",
         "Hide When Idle",
+        Some("Fade out cursor when not moving"),
         style.hide_on_idle,
         theme,
         cx,
         |this, value, cx| this.update_cursor(cx, move |style| style.hide_on_idle = value),
     ));
-    children.push(kit::hint("Fade out cursor when not moving", theme));
     if style.hide_on_idle {
         children.push(kit::slider_row(
             "cursor-idle-timeout",
+            None,
             "Timeout",
             style.hide_on_idle_timeout,
             0.5,
@@ -256,8 +296,8 @@ fn cursor_panel(
     }
 
     children.push(kit::separator(theme));
-    children.push(kit::label("Cursor Data", theme));
-    children.push(
+    children.push(kit::data_editor_section(
+        "Cursor Data",
         div()
             .flex()
             .flex_row()
@@ -281,12 +321,14 @@ fn cursor_panel(
                 |this, cx| this.import_cursor_data(cx),
             ))
             .into_any_element(),
-    );
+        Some(cursor_data_summary),
+        theme,
+    ));
     children.push(kit::reset_button("cursor-reset", theme, cx, |this, cx| {
         this.update_cursor(cx, |style| *style = CursorStyle::default());
     }));
 
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 fn format_card(title: &'static str, body: &'static str, theme: &ThemeVars) -> AnyElement {
@@ -358,8 +400,8 @@ fn zoom_panel(
 
     match selected {
         None => {
-            children.push(kit::note(
-                "Select a zoom segment on the timeline to edit its settings",
+            children.push(kit::empty_state(
+                &["Select a zoom segment on the timeline to edit its settings"],
                 theme,
             ));
         }
@@ -394,6 +436,7 @@ fn zoom_panel(
 
             children.push(kit::slider_row(
                 "zoom-level",
+                None,
                 "Zoom Level",
                 segment.zoom_level,
                 styles::ZOOM_LEVEL_MIN,
@@ -416,6 +459,7 @@ fn zoom_panel(
                 .unwrap_or(settings.transition_in_duration);
             children.push(kit::slider_row(
                 "zoom-speed",
+                None,
                 "Zoom Speed",
                 speed,
                 styles::ZOOM_SPEED_MIN,
@@ -434,6 +478,7 @@ fn zoom_panel(
 
             children.push(kit::slider_row(
                 "zoom-follow-smoothness",
+                None,
                 "Smooth Follow",
                 settings.follow_smoothness,
                 0.08,
@@ -449,6 +494,7 @@ fn zoom_panel(
             ));
             children.push(kit::slider_row(
                 "zoom-look-ahead",
+                None,
                 "Look Ahead",
                 settings.look_ahead,
                 0.0,
@@ -484,7 +530,7 @@ fn zoom_panel(
         }
     }
 
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 fn zoom_speed_label(value: f64) -> &'static str {
@@ -641,21 +687,19 @@ fn drawing_panel(
     state: &VideoEditorState,
     menu: &MenuHandle,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
-    let (tools, selected_id) = {
-        let editor = view;
-        (
-            editor.drawing_tools.clone(),
-            editor.selected_clip.clone().map(|id| id.to_string()),
-        )
-    };
+    let tools = view.drawing_tools.clone();
+    let selected_id = view.selected_clip.clone().map(|id| id.to_string());
     let selected = selected_id.as_deref().and_then(|id| {
         state
             .drawing_segments
             .iter()
             .find(|segment| segment.id == id)
     });
+    let annotation = selected.and_then(|segment| segment.annotations.first());
+    let style = drawing_overlay::displayed_style(annotation, &tools);
     let mut children = vec![
         kit::header(
             "Drawing",
@@ -668,33 +712,46 @@ fn drawing_panel(
         drawing_tool_grid(&tools.active_tool, theme, cx),
         kit::label("Style", theme),
     ];
-    children.extend(drawing_style_rows(&tools, menu, theme, cx));
+    children.extend(drawing_style_rows(&tools, &style, menu, theme, window, cx));
     children.push(kit::separator(theme));
-    match selected {
-        Some(_) => {
-            children.push(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(kit::label("Selected Drawing", theme))
-                    .child(
-                        icon_button::compact_sm("drawing-delete", "trash-2")
-                            .recipe("danger-text")
-                            .on_press(cx.listener(|this, _event, _window, cx| {
-                                this.delete_selected_drawing(cx)
-                            })),
-                    )
-                    .into_any_element(),
-            );
-        }
-        None => children.push(kit::note(
+    let Some(annotation) = annotation else {
+        children.push(kit::note(
             "Select a drawing segment on the timeline to edit it.",
             theme,
-        )),
+        ));
+        return kit::panel(&view.panel_scroll, children);
+    };
+    children.push(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(kit::label("Selected Drawing", theme))
+            .child(
+                icon_button::compact_sm("drawing-delete", "trash-2")
+                    .recipe("danger-text")
+                    .on_press(
+                        cx.listener(|this, _event, _window, cx| this.delete_selected_drawing(cx)),
+                    ),
+            )
+            .into_any_element(),
+    );
+    if matches!(annotation, Annotation::Text { .. }) {
+        let owner = cx.entity().downgrade();
+        children.push(
+            herogpui::components::TextArea::new(view.drawing_text_field.clone())
+                .rows(3)
+                .on_change(move |value, _window, app| {
+                    let value = value.to_string();
+                    let _ = owner.update(app, |this, cx| {
+                        this.set_selected_annotation_text(value, cx);
+                    });
+                })
+                .into_any_element(),
+        );
     }
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 fn drawing_tool_grid(
@@ -702,124 +759,177 @@ fn drawing_tool_grid(
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
-    let buttons: Vec<AnyElement> = crate::ui::colors::VIDEO_DRAWING_TOOLS
-        .iter()
-        .map(|tool| {
-            let selected = tool.id() == active;
-            let id = tool.id();
-            Button::new(SharedString::from(format!("drawing-tool-{id}")))
-                .child(crate::ui::icon::icon_element(tool.icon(), px(16.0)))
-                .variant(if selected {
-                    Variant::Tertiary
-                } else {
-                    Variant::Ghost
-                })
-                .size(Size::Sm)
-                .is_icon_only(true)
-                .on_press(cx.listener(move |this, _event, _window, cx| {
-                    this.update_drawing_tools(cx, |tools| tools.active_tool = id.to_string());
+    let _ = theme;
+    let rows: Vec<AnyElement> = crate::ui::colors::VIDEO_DRAWING_TOOLS
+        .chunks(5)
+        .map(|chunk| {
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(crate::ui::chrome::DRAWING_TOOL_GRID_GAP))
+                .children(chunk.iter().map(|tool| {
+                    let selected = tool.id() == active;
+                    let id = tool.id();
+                    div().flex_1().min_w_0().child(
+                        herogpui::components::Tooltip::new(tool.label()).child(
+                            Button::new(SharedString::from(format!("drawing-tool-{id}")))
+                                .child(crate::ui::icon::icon_element(tool.icon(), px(16.0)))
+                                .variant(if selected {
+                                    Variant::Tertiary
+                                } else {
+                                    Variant::Ghost
+                                })
+                                .size(Size::Sm)
+                                .is_icon_only(true)
+                                .full_width(true)
+                                .on_press(cx.listener(move |this, _event, _window, cx| {
+                                    this.update_drawing_tools(cx, |tools| {
+                                        tools.active_tool = id.to_string()
+                                    });
+                                })),
+                        ),
+                    )
                 }))
                 .into_any_element()
         })
         .collect();
-    let _ = theme;
     div()
         .flex()
-        .flex_row()
-        .flex_wrap()
+        .flex_col()
         .gap(px(crate::ui::chrome::DRAWING_TOOL_GRID_GAP))
-        .children(buttons)
+        .children(rows)
+        .into_any_element()
+}
+
+const DRAWING_COLOR_PICKER_ID: &str = "video-drawing-color-picker";
+
+fn drawing_color_trigger(
+    color: SharedString,
+    opacity: f32,
+    is_highlight: bool,
+    menu: &MenuHandle,
+    window: &mut gpui::Window,
+    cx: &mut Context<VideoEditorWindow>,
+) -> AnyElement {
+    let open = menu.is_open_for(DRAWING_COLOR_PICKER_ID);
+    let handle = menu.clone();
+    let palette: Vec<SharedString> = crate::ui::colors::palette_for_tool(if is_highlight {
+        crate::ui::colors::Tool::Highlight
+    } else {
+        crate::ui::colors::Tool::Pen
+    })
+    .iter()
+    .map(|value| SharedString::from(*value))
+    .collect();
+    let owner = cx.entity().downgrade();
+    let current = color.clone();
+    crate::ui::color_picker::trigger(DRAWING_COLOR_PICKER_ID, &color, opacity, open, window, cx)
+        .child(menu.render_dropdown(DRAWING_COLOR_PICKER_ID))
+        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+            let palette = palette.clone();
+            let current = current.clone();
+            let owner = owner.clone();
+            handle.toggle_with(
+                crate::ui::menu::MenuPlacement::below(DRAWING_COLOR_PICKER_ID),
+                move |dismiss, cx| {
+                    let handler: crate::ui::color_picker::ColorHandler = std::rc::Rc::new(
+                        move |value: SharedString,
+                              _window: &mut gpui::Window,
+                              cx: &mut gpui::App| {
+                            let _ = owner.update(cx, |this, cx| {
+                                let value = value.to_string();
+                                this.update_drawing_tools(cx, |tools| match is_highlight {
+                                    true => tools.highlight_color = value.clone(),
+                                    false => tools.selected_color = value.clone(),
+                                });
+                                this.update_selected_annotation(
+                                    match is_highlight {
+                                        true => EditorOption::HighlightColor(value.into()),
+                                        false => EditorOption::Color(value.into()),
+                                    },
+                                    cx,
+                                );
+                            });
+                        },
+                    );
+                    let view = cx.new(|cx| {
+                        crate::ui::color_picker::ColorPickerPopover::new(
+                            &current, palette, handler, dismiss, cx,
+                        )
+                    });
+                    let focus = view.read(cx).focus_handle();
+                    (view.into(), Some(focus))
+                },
+                window,
+                cx,
+            );
+            cx.stop_propagation();
+        })
         .into_any_element()
 }
 
 fn drawing_style_rows(
     tools: &styles::DrawingToolSettings,
+    style: &drawing_overlay::DisplayedStyle,
     menu: &MenuHandle,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> Vec<AnyElement> {
     use crate::editor::options::{
         ARROW_STYLES, FONT_FAMILIES, FONT_SIZES, HIGHLIGHT_OPACITIES, NUMBER_SIZES,
         NUMBER_START_VALUES, NUMBER_STYLES, REDACT_INTENSITIES, REDACT_STYLES, SHAPE_FILL_MODES,
     };
-    let tool = tools.active_tool.as_str();
+    let tool = style.config_type.as_str();
+    let is_highlight = tool == "highlight";
     let mut rows = Vec::new();
-    let color = if tool == "highlight" {
-        tools.highlight_color.as_str()
-    } else {
-        tools.selected_color.as_str()
-    };
-    rows.push(kit::select_row(
-        "drawing-color",
-        if tool == "highlight" {
-            "Highlight"
-        } else {
-            "Color"
-        },
-        color,
-        if tool == "highlight" {
-            &[
-                ("#FFFF00", "Yellow"),
-                ("#00FF00", "Green"),
-                ("#FF69B4", "Pink"),
-                ("#00BFFF", "Blue"),
-                ("#FFA500", "Orange"),
-            ]
-        } else {
-            &[
-                ("#FF3B30", "Red"),
-                ("#f97316", "Orange"),
-                ("#f59e0b", "Amber"),
-                ("#22c55e", "Green"),
-                ("#3b82f6", "Blue"),
-                ("#8b5cf6", "Violet"),
-                ("#000000", "Black"),
-                ("#ffffff", "White"),
-            ]
-        },
-        menu,
+    rows.push(kit::setting_row(
+        if is_highlight { "Highlight" } else { "Color" },
+        drawing_color_trigger(
+            SharedString::from(style.color.clone()),
+            if is_highlight {
+                style.highlight_opacity as f32
+            } else {
+                1.0
+            },
+            is_highlight,
+            menu,
+            window,
+            cx,
+        ),
         theme,
-        cx,
-        move |this, value, cx| {
-            this.update_drawing_tools(cx, |tools| {
-                if tools.active_tool == "highlight" {
-                    tools.highlight_color = value.clone();
-                } else {
-                    tools.selected_color = value.clone();
-                }
-            });
-        },
     ));
     if matches!(tool, "pen" | "rectangle" | "circle" | "line" | "arrow") {
-        rows.push(kit::slider_row(
+        rows.push(kit::slider_setting_row(
             "drawing-thickness",
             "Thickness",
-            tools.stroke_width,
+            style.stroke_width,
             crate::ui::chrome::DRAWING_STROKE_MIN,
             crate::ui::chrome::DRAWING_STROKE_MAX,
-            format!("{}", tools.stroke_width.round() as i32),
+            format!("{}", style.stroke_width.round() as i32),
             theme,
             cx,
             |this, value, cx| {
-                this.update_drawing_tools(cx, |tools| tools.stroke_width = value.round())
+                this.update_drawing_tools(cx, |tools| tools.stroke_width = value.round());
+                this.update_selected_annotation(EditorOption::StrokeWidth(value.round()), cx);
             },
         ));
     }
     if tool == "arrow" {
-        rows.push(kit::select_row(
+        rows.push(kit::select_setting_row(
             "drawing-arrow",
             "Arrow",
-            &tools.arrow_style,
+            &style.arrow_style,
             &ARROW_STYLES,
-            menu,
             theme,
             cx,
             |this, value, cx| {
-                this.update_drawing_tools(cx, |tools| tools.arrow_style = value.clone())
+                this.update_drawing_tools(cx, |tools| tools.arrow_style = value.clone());
+                this.update_selected_annotation(EditorOption::ArrowStyle(value.into()), cx);
             },
         ));
     }
-    if tool == "highlight" {
+    if is_highlight {
         let opacity_options: [(&str, &str); 5] = [
             ("0.2", "20%"),
             ("0.3", "30%"),
@@ -827,62 +937,63 @@ fn drawing_style_rows(
             ("0.5", "50%"),
             ("0.6", "60%"),
         ];
-        let current = format!("{}", tools.highlight_opacity);
         let current = HIGHLIGHT_OPACITIES
             .iter()
-            .find(|value| (**value - tools.highlight_opacity).abs() < 0.01)
+            .find(|value| (**value - style.highlight_opacity).abs() < 0.01)
             .map(|value| format!("{value}"))
-            .unwrap_or(current);
-        rows.push(kit::select_row(
+            .unwrap_or_else(|| format!("{}", style.highlight_opacity));
+        rows.push(kit::select_setting_row(
             "drawing-highlight-opacity",
             "Opacity",
             &current,
             &opacity_options,
-            menu,
             theme,
             cx,
             |this, value, cx| {
-                if let Ok(parsed) = value.parse::<f64>() {
-                    this.update_drawing_tools(cx, |tools| tools.highlight_opacity = parsed);
-                }
+                let Ok(parsed) = value.parse::<f64>() else {
+                    return;
+                };
+                this.update_drawing_tools(cx, |tools| tools.highlight_opacity = parsed);
+                this.update_selected_annotation(EditorOption::HighlightOpacity(parsed), cx);
             },
         ));
     }
     if matches!(tool, "rectangle" | "circle") {
-        rows.push(kit::tab_row(
+        rows.push(kit::tabs_setting_row(
             "drawing-fill",
             "Fill",
-            &tools.shape_fill_mode,
+            &style.shape_fill_mode,
             &SHAPE_FILL_MODES,
             theme,
             cx,
             |this, value, cx| {
-                this.update_drawing_tools(cx, |tools| tools.shape_fill_mode = value.clone())
+                this.update_drawing_tools(cx, |tools| tools.shape_fill_mode = value.clone());
+                this.update_selected_annotation(EditorOption::ShapeFillMode(value.into()), cx);
             },
         ));
     }
     if tool == "number" {
-        rows.push(kit::select_row(
+        rows.push(kit::select_setting_row(
             "drawing-number-style",
             "Number",
             &tools.number_style,
             &NUMBER_STYLES,
-            menu,
             theme,
             cx,
             |this, value, cx| {
                 this.update_drawing_tools(cx, |tools| tools.number_style = value.clone())
             },
         ));
-        rows.push(kit::tab_row(
+        rows.push(kit::tabs_setting_row(
             "drawing-number-size",
             "Size",
-            &tools.number_size,
+            &style.number_size,
             &NUMBER_SIZES,
             theme,
             cx,
             |this, value, cx| {
-                this.update_drawing_tools(cx, |tools| tools.number_size = value.clone())
+                this.update_drawing_tools(cx, |tools| tools.number_size = value.clone());
+                this.update_selected_annotation(EditorOption::NumberSize(value.into()), cx);
             },
         ));
         let start = format!("{}", tools.number_start_value as i32);
@@ -905,12 +1016,11 @@ fn drawing_style_rows(
                 (label, label)
             })
             .collect();
-        rows.push(kit::select_row(
+        rows.push(kit::select_setting_row(
             "drawing-number-start",
             "Start",
             &start,
             &starts,
-            menu,
             theme,
             cx,
             |this, value, cx| {
@@ -921,7 +1031,7 @@ fn drawing_style_rows(
         ));
     }
     if tool == "text" {
-        let size = format!("{}", tools.text_font_size as i32);
+        let size = format!("{}", style.text_font_size as i32);
         let sizes: Vec<(&'static str, &'static str)> = FONT_SIZES
             .iter()
             .map(|value| {
@@ -943,66 +1053,72 @@ fn drawing_style_rows(
                 (label, label)
             })
             .collect();
-        rows.push(kit::select_row(
+        rows.push(kit::select_setting_row(
             "drawing-text-size",
             "Text",
             &size,
             &sizes,
-            menu,
             theme,
             cx,
             |this, value, cx| {
-                if let Ok(parsed) = value.parse::<f64>() {
-                    this.update_drawing_tools(cx, |tools| tools.text_font_size = parsed);
-                }
+                let Ok(parsed) = value.parse::<f64>() else {
+                    return;
+                };
+                this.update_drawing_tools(cx, |tools| tools.text_font_size = parsed);
+                this.update_selected_annotation(EditorOption::TextFontSize(parsed), cx);
             },
         ));
-        rows.push(kit::select_row(
+        rows.push(kit::select_setting_row(
             "drawing-text-font",
             "Font",
             &tools.text_font_family,
             &FONT_FAMILIES,
-            menu,
             theme,
             cx,
             |this, value, cx| {
-                this.update_drawing_tools(cx, |tools| tools.text_font_family = value.clone())
+                this.update_drawing_tools(cx, |tools| tools.text_font_family = value.clone());
+                this.update_selected_annotation(EditorOption::TextFontFamily(value.into()), cx);
             },
         ));
         rows.push(kit::switch_row(
             "drawing-text-background",
             "Background",
-            tools.text_background,
+            None,
+            style.text_background,
             theme,
             cx,
-            |this, value, cx| this.update_drawing_tools(cx, |tools| tools.text_background = value),
+            |this, value, cx| {
+                this.update_drawing_tools(cx, |tools| tools.text_background = value);
+                this.update_selected_annotation(EditorOption::TextBackground(value), cx);
+            },
         ));
     }
     if tool == "redact" {
         let redact: [(&str, &str); 3] = REDACT_STYLES.map(|(value, label, _)| (value, label));
-        rows.push(kit::select_row(
+        rows.push(kit::select_setting_row(
             "drawing-redact-style",
             "Redact",
-            &tools.redact_style,
+            &style.redact_style,
             &redact,
-            menu,
             theme,
             cx,
             |this, value, cx| {
-                this.update_drawing_tools(cx, |tools| tools.redact_style = value.clone())
+                this.update_drawing_tools(cx, |tools| tools.redact_style = value.clone());
+                this.update_selected_annotation(EditorOption::RedactStyle(value.into()), cx);
             },
         ));
-        rows.push(kit::slider_row(
+        rows.push(kit::slider_setting_row(
             "drawing-redact-intensity",
             "Intensity",
-            tools.redact_intensity,
+            style.redact_intensity,
             *REDACT_INTENSITIES.first().unwrap_or(&1.0),
             *REDACT_INTENSITIES.last().unwrap_or(&10.0),
-            format!("{}", tools.redact_intensity.round() as i32),
+            format!("{}", style.redact_intensity.round() as i32),
             theme,
             cx,
             |this, value, cx| {
-                this.update_drawing_tools(cx, |tools| tools.redact_intensity = value.round())
+                this.update_drawing_tools(cx, |tools| tools.redact_intensity = value.round());
+                this.update_selected_annotation(EditorOption::RedactIntensity(value.round()), cx);
             },
         ));
     }
@@ -1010,6 +1126,7 @@ fn drawing_style_rows(
 }
 
 fn camera_panel(
+    view: &VideoEditorWindow,
     state: &VideoEditorState,
     has_camera: bool,
     theme: &ThemeVars,
@@ -1017,7 +1134,10 @@ fn camera_panel(
 ) -> AnyElement {
     if !has_camera {
         return kit::empty_state(
-            "No camera recording available for this video.\nEnable camera during recording to use camera overlay.",
+            &[
+                "No camera recording available for this video.",
+                "Enable camera during recording to use camera overlay.",
+            ],
             theme,
         );
     }
@@ -1035,6 +1155,7 @@ fn camera_panel(
         kit::switch_row(
             "camera-visible",
             "Show Camera",
+            None,
             style.visible,
             theme,
             cx,
@@ -1043,13 +1164,14 @@ fn camera_panel(
     ];
 
     if !style.visible {
-        return kit::panel(children);
+        return kit::panel(&view.panel_scroll, children);
     }
 
     children.extend([
         kit::switch_row(
             "camera-mirrored",
             "Mirror",
+            None,
             style.mirrored,
             theme,
             cx,
@@ -1080,6 +1202,7 @@ fn camera_panel(
         ),
         kit::slider_row(
             "camera-padding",
+            None,
             "Edge Padding",
             style.padding,
             0.0,
@@ -1091,6 +1214,7 @@ fn camera_panel(
         ),
         kit::slider_row(
             "camera-corners",
+            None,
             "Radius",
             style.border_radius,
             0.0,
@@ -1104,6 +1228,7 @@ fn camera_panel(
         ),
         kit::slider_row(
             "camera-shadow",
+            None,
             "Shadow",
             style.shadow,
             0.0,
@@ -1118,7 +1243,7 @@ fn camera_panel(
         }),
     ]);
 
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 fn camera_position_grid(
@@ -1133,8 +1258,9 @@ fn camera_position_grid(
             .enumerate()
             .map(|(col_index, position)| {
                 let selected = *position == value;
+                let label = position.replace('-', " ");
                 let position = (*position).to_string();
-                div()
+                let cell = div()
                     .id(SharedString::from(format!(
                         "camera-pos-{row_index}-{col_index}"
                     )))
@@ -1146,13 +1272,17 @@ fn camera_position_grid(
                     } else {
                         theme.default
                     })
+                    .when(!selected, |el| el.hover(|s| s.bg(theme.default_hover)))
                     .cursor_pointer()
                     .on_mouse_down(gpui::MouseButton::Left, {
                         cx.listener(move |this, _event, _window, cx| {
                             let value = position.clone();
                             this.update_camera(cx, move |style| style.position = value);
                         })
-                    })
+                    });
+                div()
+                    .flex_1()
+                    .child(herogpui::components::Tooltip::new(label).child(cell))
                     .into_any_element()
             })
             .collect();
@@ -1219,20 +1349,44 @@ fn audio_panel(
         children.push(kit::hint("No audio tracks.", theme));
     }
     for track in groups {
-        children.push(music_row(track, menu, theme, cx));
+        children.push(music_row(track, theme, cx));
     }
 
     if has_keyboard {
-        children.push(kit::switch_row(
-            "audio-keyboard-enabled",
-            "Keyboard Sound",
-            style.keyboard_sound_enabled,
-            theme,
-            cx,
-            |this, value, cx| {
-                this.update_audio(cx, move |style| style.keyboard_sound_enabled = value)
-            },
-        ));
+        children.push(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(theme.muted_foreground)
+                                .child(crate::ui::icon::icon_element("keyboard", px(16.0))),
+                        )
+                        .child(kit::label("Keyboard Sound", theme)),
+                )
+                .child(
+                    crate::ui::rows::switch(
+                        "audio-keyboard-enabled",
+                        style.keyboard_sound_enabled,
+                        cx,
+                        |this, value, cx| {
+                            this.update_audio(cx, move |style| style.keyboard_sound_enabled = value)
+                        },
+                    )
+                    .size(Size::Sm),
+                )
+                .into_any_element(),
+        );
         if style.keyboard_sound_enabled {
             let demo = view.is_keyboard_demo_playing();
             children.push(
@@ -1241,8 +1395,9 @@ fn audio_panel(
                     .flex_row()
                     .items_center()
                     .gap(px(8.0))
-                    .child(kit::select_row(
+                    .child(div().flex_1().min_w_0().child(kit::select_row(
                         "audio-keyboard-type",
+                        None,
                         "Keyboard sound",
                         &style.keyboard_sound_type,
                         &styles::KEYBOARD_SOUND_TYPES,
@@ -1254,7 +1409,7 @@ fn audio_panel(
                                 style.keyboard_sound_type = value.clone()
                             })
                         },
-                    ))
+                    )))
                     .child(toolbar::tooltip_button(
                         icon_button::compact_sm(
                             "audio-keyboard-demo",
@@ -1273,9 +1428,10 @@ fn audio_panel(
                     ))
                     .into_any_element(),
             );
-            children.push(kit::slider_row(
+            children.push(kit::slider_inline_row(
                 "audio-keyboard-volume",
-                "Volume",
+                None,
+                None,
                 style.keyboard_sound_volume,
                 0.0,
                 1.0,
@@ -1289,7 +1445,7 @@ fn audio_panel(
         }
     }
 
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 fn music_groups(
@@ -1316,7 +1472,6 @@ fn music_groups(
 /// button, mirroring the rows in `audio-settings-panel.tsx`.
 fn music_row(
     track: &crate::windows::video_editor::model::MusicTrack,
-    menu: &MenuHandle,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
@@ -1346,7 +1501,15 @@ fn music_row(
                         .items_center()
                         .gap(px(8.0))
                         .min_w_0()
-                        .child(crate::ui::icon::icon_element("music", px(16.0)))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(theme.muted_foreground)
+                                .child(crate::ui::icon::icon_element(
+                                    music_source_icon(&track.source),
+                                    px(16.0),
+                                )),
+                        )
                         .child(
                             div()
                                 .flex_1()
@@ -1397,9 +1560,10 @@ fn music_row(
     if track.enabled {
         let speed_value = format_music_speed(speed);
         body = body
-            .child(kit::slider_row(
+            .child(kit::slider_inline_row(
                 "music-volume",
-                "Volume",
+                Some(id.as_ref()),
+                Some("Volume"),
                 volume,
                 0.0,
                 1.0,
@@ -1411,12 +1575,12 @@ fn music_row(
                     move |this, value, cx| this.set_music_volume(id.clone(), value, cx)
                 },
             ))
-            .child(kit::select_row(
+            .child(kit::select_inline_row(
                 "music-speed",
+                Some(id.as_ref()),
                 "Speed",
                 &speed_value,
                 &styles::MUSIC_SPEEDS,
-                menu,
                 theme,
                 cx,
                 {
@@ -1431,6 +1595,14 @@ fn music_row(
     }
 
     body.into_any_element()
+}
+
+fn music_source_icon(source: &str) -> &'static str {
+    match source {
+        "mic" => "mic",
+        "music" => "music",
+        _ => "volume-2",
+    }
 }
 
 fn format_music_speed(speed: f64) -> String {
@@ -1467,6 +1639,7 @@ fn wallpaper_panel(
         children.push(kit::switch_row(
             "wallpaper-device-frame",
             "Device Frame",
+            None,
             wallpaper.device_frame,
             theme,
             cx,
@@ -1513,6 +1686,7 @@ fn wallpaper_panel(
         children.push(kit::separator(theme));
         children.push(kit::slider_row(
             "wallpaper-padding",
+            None,
             "Padding",
             wallpaper.padding,
             0.0,
@@ -1527,6 +1701,7 @@ fn wallpaper_panel(
         if !wallpaper.device_frame {
             children.push(kit::slider_row(
                 "wallpaper-corners",
+                None,
                 "Corners",
                 wallpaper.corners,
                 0.0,
@@ -1541,6 +1716,7 @@ fn wallpaper_panel(
         }
         children.push(kit::slider_row(
             "wallpaper-shadow",
+            None,
             "Shadow",
             wallpaper.shadow,
             0.0,
@@ -1554,7 +1730,7 @@ fn wallpaper_panel(
         ));
     }
 
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 fn video_backgrounds(
@@ -1564,7 +1740,6 @@ fn video_backgrounds(
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     use crate::config::schema::CustomBackgroundData;
-    use crate::editor::wallpaper;
     use crate::editor::wallpaper_sheet::{gradient_tile, icon_tile, image_tile};
     use crate::ui::chrome;
 
@@ -1654,39 +1829,33 @@ fn video_backgrounds(
         });
     }
 
-    for (index, (id, name, colors, angle)) in wallpaper::SVG_PRESETS.iter().enumerate() {
+    for (index, (id, name, _)) in crate::editor::wallpaper_svg::PRESETS.iter().enumerate() {
         let selected = wallpaper.enabled && current_gradient_id.as_deref() == Some(*id);
         let entity = entity.clone();
         let preset_id = (*id).to_string();
-        let preset_colors: Vec<String> = colors.iter().map(|color| (*color).to_string()).collect();
-        let preset_angle = *angle;
-        tiles.push(gradient_tile(
-            gpui::ElementId::Integer(2000 + index as u64),
-            name,
-            colors,
-            *angle,
-            tile,
-            selected,
-            theme,
-            move |_, cx| {
-                if let Some(entity) = entity.upgrade() {
-                    entity.update(cx, |this, cx| {
-                        this.update_wallpaper(cx, |wallpaper| {
-                            wallpaper.enabled = true;
-                            wallpaper.gradient = Some(serde_json::json!({
-                                "id": preset_id,
-                                "colors": preset_colors,
-                                "angle": preset_angle,
-                            }));
-                            wallpaper.background_image = None;
-                            if wallpaper.padding == 0.0 {
-                                wallpaper.padding = 50.0;
-                            }
-                        });
+        let element_id = gpui::ElementId::Integer(2000 + index as u64);
+        let select = move |_: &mut gpui::Window, cx: &mut gpui::App| {
+            if let Some(entity) = entity.upgrade() {
+                entity.update(cx, |this, cx| {
+                    this.update_wallpaper(cx, |wallpaper| {
+                        wallpaper.enabled = true;
+                        wallpaper.gradient = Some(serde_json::json!({
+                            "id": preset_id,
+                            "colors": Vec::<String>::new(),
+                            "angle": 0.0,
+                        }));
+                        wallpaper.background_image = None;
+                        if wallpaper.padding == 0.0 {
+                            wallpaper.padding = 50.0;
+                        }
                     });
-                }
-            },
-        ));
+                });
+            }
+        };
+        tiles.push(match crate::editor::wallpaper_svg::render_image(id, tile) {
+            Some(image) => image_tile(element_id, image, tile, selected, theme, select),
+            None => icon_tile(element_id, name, "image", tile, selected, theme, select),
+        });
     }
 
     for (index, background) in customs.iter().enumerate() {
@@ -1806,13 +1975,14 @@ fn video_backgrounds(
 }
 
 fn keyboard_panel(
+    view: &VideoEditorWindow,
     state: &VideoEditorState,
     has_keyboard: bool,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     if !has_keyboard {
-        return kit::empty_state("No keyboard data available for this video.", theme);
+        return kit::empty_state(&["No keyboard data available for this video."], theme);
     }
 
     let style = state.keyboard_style.clone();
@@ -1828,6 +1998,7 @@ fn keyboard_panel(
         kit::switch_row(
             "keyboard-visible",
             "Show Keys",
+            None,
             style.visible,
             theme,
             cx,
@@ -1857,7 +2028,7 @@ fn keyboard_panel(
         ));
     }
 
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 fn subtitle_panel(
@@ -1922,19 +2093,27 @@ fn subtitle_panel(
                 "Add context like speaker names, technical terms, or topics",
                 theme,
             ));
-            children.push(kit::tertiary_button(
-                "subtitle-generate",
-                view.transcription_label(),
-                "subtitles",
-                is_transcribing,
-                theme,
-                cx,
-                |this, cx| this.generate_subtitles(cx),
-            ));
+            children.push(match is_transcribing {
+                true => kit::tertiary_spinner_button(
+                    "subtitle-generate",
+                    view.transcription_label(),
+                    cx,
+                    |this, cx| this.generate_subtitles(cx),
+                ),
+                false => kit::tertiary_button(
+                    "subtitle-generate",
+                    view.transcription_label(),
+                    "subtitles",
+                    false,
+                    theme,
+                    cx,
+                    |this, cx| this.generate_subtitles(cx),
+                ),
+            });
             if let Some(error) = view.transcription_error() {
                 children.push(kit::error(error.to_string(), theme));
             }
-            children.push(kit::separator(theme));
+            children.push(kit::labelled_separator("or", theme));
         }
         children.push(kit::note(
             if has_mic {
@@ -1967,7 +2146,7 @@ fn subtitle_panel(
             "Subtitle data is a JSON file containing segments with start/end times (in seconds) and text content. You can also import standard SRT files.",
             theme,
         ));
-        return kit::panel(children);
+        return kit::panel(&view.panel_scroll, children);
     }
 
     let style = state.subtitle_style.clone();
@@ -1985,7 +2164,7 @@ fn subtitle_panel(
             "Subtitles are disabled. Enable them to show subtitles in your video.",
             theme,
         ));
-        return kit::panel(children);
+        return kit::panel(&view.panel_scroll, children);
     }
 
     children.extend([
@@ -2022,9 +2201,8 @@ fn subtitle_panel(
         ),
     ]);
     children.push(kit::separator(theme));
-    children.push(kit::label("Subtitle Data", theme));
-    children.push(kit::hint(format!("{count} segments"), theme));
-    children.push(
+    children.push(kit::data_editor_section(
+        "Subtitle Data",
         div()
             .flex()
             .flex_row()
@@ -2048,40 +2226,42 @@ fn subtitle_panel(
                 |this, cx| this.import_subtitles(cx),
             ))
             .into_any_element(),
-    );
+        Some(
+            view.subtitle_summary()
+                .unwrap_or_else(|| SharedString::from(format!("{count} segments"))),
+        ),
+        theme,
+    ));
     if has_mic {
         children.push(
             div()
                 .flex()
                 .flex_row()
                 .gap(px(8.0))
-                .child(kit::tertiary_button(
+                .child(kit::tertiary_text_button(
                     "subtitle-regenerate",
                     "Regenerate",
-                    "subtitles",
                     is_transcribing,
-                    theme,
+                    false,
                     cx,
                     |this, cx| this.generate_subtitles(cx),
                 ))
-                .child(kit::tertiary_button(
+                .child(kit::tertiary_text_button(
                     "subtitle-delete",
                     "Delete",
-                    "trash-2",
                     is_transcribing,
-                    theme,
+                    true,
                     cx,
                     |this, cx| this.delete_subtitles(cx),
                 ))
                 .into_any_element(),
         );
     } else {
-        children.push(kit::tertiary_button(
+        children.push(kit::tertiary_text_button(
             "subtitle-delete",
             "Delete Subtitles",
-            "trash-2",
             false,
-            theme,
+            true,
             cx,
             |this, cx| this.delete_subtitles(cx),
         ));
@@ -2095,7 +2275,7 @@ fn subtitle_panel(
         },
     ));
 
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 /// `WHISPER_MODELS` in `types/subtitle.ts`.
@@ -2110,6 +2290,7 @@ const WHISPER_MODEL_META: [(&str, &str, &str, &str); 3] = [
 ];
 
 fn first_frame_panel(
+    view: &VideoEditorWindow,
     state: &VideoEditorState,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
@@ -2140,6 +2321,7 @@ fn first_frame_panel(
             children.push(
                 div()
                     .w_full()
+                    .aspect_ratio(16.0 / 9.0)
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(theme.border)
@@ -2147,7 +2329,7 @@ fn first_frame_panel(
                     .child(
                         gpui::img(std::path::PathBuf::from(path))
                             .w_full()
-                            .h(px(144.0))
+                            .h_full()
                             .object_fit(gpui::ObjectFit::Cover),
                     )
                     .into_any_element(),
@@ -2189,11 +2371,11 @@ fn first_frame_panel(
         }
     }
 
-    kit::panel(children)
+    kit::panel(&view.panel_scroll, children)
 }
 
 /// Port of `formatExportTime`: `m:ss`.
-fn format_export_time(seconds: u64) -> String {
+pub(crate) fn format_export_time(seconds: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
@@ -2242,6 +2424,7 @@ fn export_panel(
         ),
         kit::select_row(
             "export-format",
+            None,
             "Format",
             &settings.format,
             &styles::EXPORT_FORMATS,
@@ -2254,6 +2437,7 @@ fn export_panel(
         ),
         kit::select_row(
             "export-resolution",
+            None,
             "Resolution",
             &settings.resolution,
             &resolutions,
@@ -2266,6 +2450,7 @@ fn export_panel(
         ),
         kit::select_row(
             "export-quality",
+            None,
             "Compression",
             &settings.quality_preset,
             &styles::EXPORT_QUALITY_PRESETS,
@@ -2278,6 +2463,7 @@ fn export_panel(
         ),
         kit::select_row(
             "export-frame-rate",
+            None,
             "Frame Rate",
             &settings.frame_rate,
             &frame_rates,
@@ -2302,6 +2488,7 @@ fn export_panel(
     let mut footer = vec![kit::switch_row(
         "export-open-in-finder",
         "Reveal in Finder after export",
+        None,
         settings.open_in_finder,
         theme,
         cx,
@@ -2310,6 +2497,7 @@ fn export_panel(
     footer.push(kit::switch_row(
         "export-upload-cloud",
         "Upload to cloud after export",
+        None,
         cloud_configured && upload_to_cloud,
         theme,
         cx,
@@ -2325,15 +2513,15 @@ fn export_panel(
         crate::cloud::UploadState::Uploading => {
             footer.push(kit::hint("Uploading to cloud...", theme));
             footer.push(
-                crate::ui::primitives::indeterminate_progress("export-cloud-progress", theme)
+                herogpui::ProgressBar::new("export-cloud-progress")
+                    .is_indeterminate(true)
                     .into_any_element(),
             );
-            footer.push(kit::tertiary_button(
+            footer.push(kit::tertiary_text_button(
                 "export-cloud-cancel",
                 "Cancel",
-                "x",
                 false,
-                theme,
+                false,
                 cx,
                 |this, cx| this.cancel_cloud_upload(cx),
             ));
@@ -2343,31 +2531,69 @@ fn export_panel(
         }
         crate::cloud::UploadState::Success => {
             if let Some(url) = uploaded_url {
-                footer.push(kit::hint("Uploaded to cloud", theme));
-                footer.push(kit::hint(url, theme));
+                let copied = view.url_recently_copied();
                 footer.push(
                     div()
                         .flex()
-                        .flex_row()
+                        .flex_col()
                         .gap(px(8.0))
-                        .child(kit::tertiary_button(
-                            "export-cloud-copy",
-                            "Copy",
-                            "copy",
-                            false,
-                            theme,
-                            cx,
-                            |this, cx| this.copy_uploaded_url(cx),
-                        ))
-                        .child(kit::tertiary_button(
-                            "export-cloud-open",
-                            "Open",
-                            "external-link",
-                            false,
-                            theme,
-                            cx,
-                            |this, cx| this.open_uploaded_url(cx),
-                        ))
+                        .rounded(px(crate::ui::chrome::RADIUS_MD))
+                        .bg(theme.muted_background.opacity(0.5))
+                        .p(px(12.0))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_color(theme.primary)
+                                        .child(crate::ui::icon::icon_element("check", px(14.0))),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(crate::ui::chrome::TEXT_XS))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .child("Uploaded to cloud"),
+                                ),
+                        )
+                        .child(
+                            herogpui::components::Tooltip::new(url.clone()).child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(crate::ui::chrome::TEXT_XS))
+                                    .text_color(theme.muted_foreground)
+                                    .child(SharedString::from(url)),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap(px(8.0))
+                                .child(div().flex_1().min_w_0().child(kit::tertiary_button(
+                                    "export-cloud-copy",
+                                    if copied { "Copied" } else { "Copy" },
+                                    if copied { "check" } else { "copy" },
+                                    false,
+                                    theme,
+                                    cx,
+                                    |this, cx| this.copy_uploaded_url(cx),
+                                )))
+                                .child(div().flex_1().min_w_0().child(kit::tertiary_button(
+                                    "export-cloud-open",
+                                    "Open",
+                                    "external-link",
+                                    false,
+                                    theme,
+                                    cx,
+                                    |this, cx| this.open_uploaded_url(cx),
+                                ))),
+                        )
                         .into_any_element(),
                 );
             }
@@ -2387,16 +2613,15 @@ fn export_panel(
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .child(kit::hint("Exporting...", theme))
-                        .child(kit::hint(
+                        .child(kit::progress_label("Exporting...", theme))
+                        .child(kit::hint_inline(
                             format!("{}%", (export_progress * 100.0).round() as i32),
                             theme,
                         )),
                 )
                 .child(
                     herogpui::ProgressBar::new("video-export-panel-progress")
-                        .value(export_progress * 100.0)
-                        .sx(|el| el.h(px(6.0))),
+                        .value(export_progress * 100.0),
                 )
                 .child(
                     div()
@@ -2404,11 +2629,11 @@ fn export_panel(
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .child(kit::hint(
+                        .child(kit::hint_inline(
                             format!("{} elapsed", format_export_time(view.export_elapsed_secs())),
                             theme,
                         ))
-                        .child(kit::hint(
+                        .child(kit::hint_inline(
                             match view.export_remaining_secs() {
                                 Some(remaining) => {
                                     format!("{} remaining", format_export_time(remaining))
@@ -2430,15 +2655,17 @@ fn export_panel(
             |this, cx| this.cancel_export(cx),
         ));
     } else {
-        footer.push(kit::tertiary_button(
+        footer.push(kit::tertiary_text_button(
             "export-start",
             if is_gif { "Export GIF" } else { "Export Video" },
-            "download",
             false,
-            theme,
+            false,
             cx,
             |this, cx| this.start_export(cx),
         ));
+    }
+    if let Some(error) = view.export_error() {
+        footer.push(kit::error(error, theme));
     }
 
     div()
@@ -2448,15 +2675,27 @@ fn export_panel(
         .size_full()
         .child(
             div()
-                .id("video-export-settings")
+                .relative()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .gap(px(crate::ui::chrome::VIDEO_PANEL_GAP))
-                .overflow_y_scroll()
-                .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
-                .children(settings_children),
+                .child(
+                    div()
+                        .id("video-export-settings")
+                        .track_scroll(&view.export_scroll)
+                        .flex()
+                        .flex_col()
+                        .size_full()
+                        .gap(px(crate::ui::chrome::VIDEO_PANEL_GAP))
+                        .overflow_y_scroll()
+                        .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
+                        .children(settings_children),
+                )
+                .child(crate::windows::scrollbars::app_vertical(
+                    "video-export-settings-scrollbar",
+                    &view.export_scroll,
+                )),
         )
         .child(
             div()

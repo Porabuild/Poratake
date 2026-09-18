@@ -13,6 +13,7 @@ use crate::video::sidecars::{KeyboardData, KeyboardKeyEvent};
 use crate::windows::video_editor::styles::KeyboardStyle;
 
 const FONT_FAMILY: &str = "sans";
+const FONT_WEIGHT: text::Weight = text::Weight::Bold;
 const GAP: f64 = 8.0;
 const MAX_VISIBLE_KEYS: usize = 3;
 
@@ -166,7 +167,8 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
     let widths: Vec<f64> = keys
         .iter()
         .map(|key| {
-            text::measure(&key.display_text, FONT_FAMILY, size as f32).width as f64
+            text::measure_weighted(&key.display_text, FONT_FAMILY, size as f32, FONT_WEIGHT).width
+                as f64
                 + PADDING_HORIZONTAL * 2.0
         })
         .collect();
@@ -206,10 +208,11 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
         ) {
             canvas.fill_path(&path, Color::from_rgba8(0, 0, 0, 255), FillRule::Winding);
         }
-        text::fill_text(
+        text::fill_text_weighted(
             canvas,
             &key.display_text,
             FONT_FAMILY,
+            FONT_WEIGHT,
             size as f32,
             center_x as f32,
             text_y as f32,

@@ -48,6 +48,18 @@ pub fn map_timeline_to_video_time(timeline_time: f64, segments: &[VideoSegment])
     None
 }
 
+pub fn map_video_to_timeline(video_time: f64, segments: &[Segment]) -> f64 {
+    let mut accumulated = 0.0;
+    for segment in segments {
+        let speed = segment.speed.unwrap_or(1.0).max(0.01);
+        if video_time >= segment.original_start && video_time <= segment.original_end {
+            return accumulated + (video_time - segment.original_start) / speed;
+        }
+        accumulated += (segment.original_end - segment.original_start) / speed;
+    }
+    accumulated
+}
+
 /// The total timeline duration of `segments`, falling back to the source
 /// duration when the project has not been split yet.
 pub fn total_duration(segments: &[Segment], fallback: f64) -> f64 {

@@ -156,11 +156,8 @@ fn overlay_action(
                 .variant(Variant::Ghost)
                 .is_icon_only(true)
                 .radius(radius)
-                .sx(move |el| {
-                    el.bg(resting)
-                        .h(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-                        .text_color(foreground)
-                })
+                .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
+                .sx(move |el| el.bg(resting).text_color(foreground))
                 .hover_bg(surface_hover)
                 .child(icon_element(icon, px(chrome::HISTORY_ITEM_ACTION_ICON)))
                 .on_press(cx.listener(move |this, _event, window, cx| {
@@ -429,7 +426,8 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                         px(chrome::HISTORY_ITEM_ACTION_ICON),
                     ))
                     .recipe("muted")
-                    .sx(|el| el.h(px(chrome::HISTORY_ITEM_ACTION_SIZE)).w(px(28.0)).p_0())
+                    .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
+                    .width(px(28.0))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
                         this.reveal_index(index, cx);
                     })),
@@ -442,10 +440,8 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                     .variant(Variant::Ghost)
                     .is_icon_only(true)
                     .radius(px(chrome::RADIUS_3XL))
-                    .sx(move |el| {
-                        el.h(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-                            .text_color(foreground)
-                    })
+                    .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
+                    .sx(move |el| el.text_color(foreground))
                     .hover_bg(surface_hover)
                     .child(icon_element(
                         "trash-2",

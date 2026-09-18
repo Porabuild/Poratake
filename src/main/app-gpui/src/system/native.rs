@@ -214,7 +214,7 @@ impl Shell {
                     }
                 }
                 let tooltip = if state.is_recording {
-                    "Recording — open the menu to stop"
+                    "Click to stop recording"
                 } else {
                     "Poratake"
                 };
@@ -278,7 +278,7 @@ fn create_tray(dark_mode: bool, recording: bool) -> Option<tray_icon::TrayIcon> 
 fn create_tray_builder(dark_mode: bool, recording: bool) -> tray_icon::TrayIconBuilder {
     let mut builder = tray_icon::TrayIconBuilder::new()
         .with_tooltip(if recording {
-            "Recording — open the menu to stop"
+            "Click to stop recording"
         } else {
             "Poratake"
         })

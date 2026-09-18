@@ -18,46 +18,6 @@ pub fn draw_all(canvas: &mut Canvas, annotations: &[Annotation]) {
     }
 }
 
-pub struct RotatedTextPatch {
-    pub pixmap: Pixmap,
-    pub x: f64,
-    pub y: f64,
-}
-
-pub fn rotated_text_patch(annotation: &Annotation) -> Option<RotatedTextPatch> {
-    let Annotation::Text { text, rotation, .. } = annotation else {
-        return None;
-    };
-    let angle = rotation.unwrap_or(0.0);
-    if angle == 0.0 || text.is_empty() {
-        return None;
-    }
-    let text_box = annotation.text_box()?;
-    let radians = angle.to_radians();
-    let (sin, cos) = (radians.sin().abs(), radians.cos().abs());
-    const PAD: f64 = 2.0;
-    let width = (text_box.width * cos + text_box.height * sin + PAD * 2.0)
-        .ceil()
-        .max(1.0) as u32;
-    let height = (text_box.width * sin + text_box.height * cos + PAD * 2.0)
-        .ceil()
-        .max(1.0) as u32;
-    let origin_x = text_box.center_x - width as f64 / 2.0;
-    let origin_y = text_box.center_y - height as f64 / 2.0;
-    let mut shifted = (*annotation).clone();
-    if let Annotation::Text { x, y, .. } = &mut shifted {
-        *x -= origin_x;
-        *y -= origin_y;
-    }
-    let mut canvas = Canvas::new(width, height)?;
-    draw(&mut canvas, &shifted);
-    Some(RotatedTextPatch {
-        pixmap: canvas.into_pixmap(),
-        x: origin_x,
-        y: origin_y,
-    })
-}
-
 pub fn draw(canvas: &mut Canvas, annotation: &Annotation) {
     match annotation {
         Annotation::Pen {
@@ -151,6 +111,24 @@ pub fn draw(canvas: &mut Canvas, annotation: &Annotation) {
     }
 }
 
+pub fn pen_outline(points: &[f64], stroke_width: f64) -> Vec<Vec2> {
+    let coordinates = points_to_coordinates(points);
+    if coordinates.is_empty() {
+        return Vec::new();
+    }
+    freehand::stroke(&coordinates, &freehand::Options::for_pen(stroke_width))
+}
+
+pub fn freehand_segments(points: &[Vec2]) -> Vec<(Vec2, Vec2)> {
+    (0..points.len())
+        .map(|index| {
+            let (x0, y0) = points[index];
+            let (x1, y1) = points[(index + 1) % points.len()];
+            ((x0, y0), ((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+        })
+        .collect()
+}
+
 /// `drawFreehandPath` — the outline is closed with quadratic segments through
 /// each pair's midpoint, exactly as `getSvgPathFromStroke` builds it.
 fn freehand_path(points: &[Vec2]) -> Option<tiny_skia::Path> {
@@ -159,14 +137,12 @@ fn freehand_path(points: &[Vec2]) -> Option<tiny_skia::Path> {
     }
     let mut builder = PathBuilder::new();
     builder.move_to(points[0].0 as f32, points[0].1 as f32);
-    for index in 0..points.len() {
-        let (x0, y0) = points[index];
-        let (x1, y1) = points[(index + 1) % points.len()];
+    for (control, end) in freehand_segments(points) {
         builder.quad_to(
-            x0 as f32,
-            y0 as f32,
-            ((x0 + x1) / 2.0) as f32,
-            ((y0 + y1) / 2.0) as f32,
+            control.0 as f32,
+            control.1 as f32,
+            end.0 as f32,
+            end.1 as f32,
         );
     }
     builder.close();
@@ -174,11 +150,7 @@ fn freehand_path(points: &[Vec2]) -> Option<tiny_skia::Path> {
 }
 
 fn draw_pen(canvas: &mut Canvas, points: &[f64], stroke: &str, stroke_width: f64) {
-    let coordinates = points_to_coordinates(points);
-    if coordinates.is_empty() {
-        return;
-    }
-    let outline = freehand::stroke(&coordinates, &freehand::Options::for_pen(stroke_width));
+    let outline = pen_outline(points, stroke_width);
     let Some(path) = freehand_path(&outline) else {
         return;
     };
@@ -191,16 +163,10 @@ fn draw_pen(canvas: &mut Canvas, points: &[f64], stroke: &str, stroke_width: f64
     canvas.restore();
 }
 
-fn draw_highlight(
-    canvas: &mut Canvas,
-    points: &[f64],
-    fill: &str,
-    opacity: f64,
-    stroke_width: f64,
-) {
+pub fn highlighter_outline(points: &[f64], stroke_width: f64) -> Vec<Vec2> {
     let coordinates = points_to_coordinates(points);
     if coordinates.len() < 2 {
-        return;
+        return Vec::new();
     }
     let half_width = stroke_width / 2.0;
     let mut upper: Vec<Vec2> = Vec::with_capacity(coordinates.len());
@@ -228,12 +194,25 @@ fn draw_highlight(
         lower.push((x - dx * half_width, y - dy * half_width));
     }
 
+    upper.extend(lower.iter().rev());
+    upper
+}
+
+fn draw_highlight(
+    canvas: &mut Canvas,
+    points: &[f64],
+    fill: &str,
+    opacity: f64,
+    stroke_width: f64,
+) {
+    let outline = highlighter_outline(points, stroke_width);
+    let Some((first, rest)) = outline.split_first() else {
+        return;
+    };
+
     let mut builder = PathBuilder::new();
-    builder.move_to(upper[0].0 as f32, upper[0].1 as f32);
-    for point in upper.iter().skip(1) {
-        builder.line_to(point.0 as f32, point.1 as f32);
-    }
-    for point in lower.iter().rev() {
+    builder.move_to(first.0 as f32, first.1 as f32);
+    for point in rest {
         builder.line_to(point.0 as f32, point.1 as f32);
     }
     builder.close();
@@ -510,10 +489,11 @@ fn draw_number(canvas: &mut Canvas, x: f64, y: f64, display_value: &str, fill: &
             FillRule::Winding,
         );
     }
-    text::fill_text(
+    text::fill_text_weighted(
         canvas,
         display_value,
         DEFAULT_TEXT_FONT,
+        text::Weight::Bold,
         font_size as f32,
         x as f32,
         y as f32,
@@ -904,40 +884,6 @@ pub fn scale_to_composition(annotation: &Annotation, scale_x: f64, scale_y: f64)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_rotated_text_gets_a_raster_patch() {
-        let plain = Annotation::Text {
-            id: "text-1".into(),
-            x: 10.0,
-            y: 10.0,
-            text: "hi".into(),
-            font_size: 16.0,
-            fill: "#000000".into(),
-            font_family: None,
-            background_color: None,
-            background_opacity: None,
-            background_padding: None,
-            background_radius: None,
-            rotation: None,
-        };
-        assert!(rotated_text_patch(&plain).is_none());
-        let mut rotated = plain.clone();
-        if let Annotation::Text { rotation, .. } = &mut rotated {
-            *rotation = Some(45.0);
-        }
-        let patch = rotated_text_patch(&rotated).expect("rotated patch");
-        assert!(patch.pixmap.width() > 0);
-        assert!(patch.pixmap.height() > 0);
-        assert!(patch.pixmap.data().iter().any(|byte| *byte > 0));
-        let line = Annotation::Line {
-            id: "line-1".into(),
-            points: [0.0, 0.0, 10.0, 10.0],
-            stroke: "#000000".into(),
-            stroke_width: 2.0,
-        };
-        assert!(rotated_text_patch(&line).is_none());
-    }
 
     fn covered(canvas: &Canvas) -> usize {
         canvas

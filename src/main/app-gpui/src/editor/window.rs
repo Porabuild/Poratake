@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, px, App, Context, DragMoveEvent, ExternalPaths, FileDropEvent, Focusable,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollWheelEvent, Styled,
-    Subscription, Window,
+    ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
+    ScrollWheelEvent, Styled, Subscription, Window,
 };
 use herogpui::gpui;
 
@@ -92,16 +92,6 @@ pub const BACKGROUND_PALETTE: [&str; 16] = [
 
 pub const BACKGROUND_MAX_COLORS: usize = 5;
 pub const BACKGROUND_MIN_COLORS: usize = 2;
-
-#[derive(Clone)]
-struct RotatedTextEntry {
-    key: String,
-    image: Arc<gpui::RenderImage>,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
 
 struct ResizeState {
     handle: ResizeHandle,
@@ -403,15 +393,19 @@ pub struct EditorWindow {
     pub wallpaper: crate::editor::wallpaper::WallpaperSettings,
     wallpaper_preset_id: String,
     background_editor: Option<BackgroundDraft>,
+    background_previews: crate::editor::background::BackgroundPreviews,
+    preset_draft: Option<PresetDraft>,
+    sheet_closing: bool,
+    sheet_close_task: Option<gpui::Task<()>>,
     pub cloud_upload: crate::cloud::UploadState,
     redact_patches: std::collections::HashMap<String, Arc<gpui::RenderImage>>,
-    rotated_text: std::collections::HashMap<String, RotatedTextEntry>,
     pub snapshot: SnapshotCell,
     pub bounds: Rc<RefCell<Option<gpui::Bounds<Pixels>>>>,
     /// Images attached to the capture's edges.
     layers: Vec<crate::editor::layers::ImageLayer>,
     /// Whether the edge overlay for attaching a capture is showing.
     capture_mode: bool,
+    meta_held: bool,
     /// The edge a dragged image would attach to, while an OS drag hovers the
     /// stage — the `useImageDrop` state.
     drop_edge: Option<crate::editor::layers::Edge>,
@@ -446,6 +440,12 @@ pub struct EditorWindow {
     last_editor_state_write: Cell<std::time::Instant>,
     pub focus_handle: gpui::FocusHandle,
     bounds_sub: Option<Subscription>,
+    activation_sub: Option<Subscription>,
+}
+
+struct PresetDraft {
+    field: gpui::Entity<InputState>,
+    _subscription: Subscription,
 }
 
 pub type SnapshotCell = Rc<RefCell<CanvasSnapshot>>;
@@ -479,6 +479,7 @@ impl EditorWindow {
             base_image: base.map(Arc::new),
             layers: persisted.layers,
             capture_mode: false,
+            meta_held: false,
             drop_edge: None,
             balance_crop: None,
             selected_annotations: Vec::new(),
@@ -533,13 +534,15 @@ impl EditorWindow {
             wallpaper: persisted.wallpaper,
             wallpaper_preset_id: String::new(),
             background_editor: None,
+            background_previews: crate::editor::background::BackgroundPreviews::default(),
+            preset_draft: None,
+            sheet_closing: false,
+            sheet_close_task: None,
             cloud_upload: crate::cloud::UploadState::Idle,
             redact_patches: std::collections::HashMap::new(),
-            rotated_text: std::collections::HashMap::new(),
             snapshot: Rc::new(RefCell::new(CanvasSnapshot {
                 image: None,
                 redact_patches: std::collections::HashMap::new(),
-                rotated_text: std::collections::HashMap::new(),
                 image_width: width,
                 image_height: height,
                 zoom: 1.0,
@@ -566,7 +569,15 @@ impl EditorWindow {
             last_editor_state_write: Cell::new(std::time::Instant::now()),
             focus_handle: cx.focus_handle(),
             bounds_sub: None,
+            activation_sub: None,
         };
+        editor.activation_sub = Some(cx.observe_window_activation(window, |editor, window, cx| {
+            if window.is_window_active() || !editor.meta_held {
+                return;
+            }
+            editor.meta_held = false;
+            cx.notify();
+        }));
         editor.bounds_sub = Some(cx.observe_window_bounds(window, |_, window, _cx| {
             if window.is_maximized() {
                 return;
@@ -615,27 +626,6 @@ impl EditorWindow {
             }
             self.redact_patches = live;
         }
-        self.refresh_rotated_text();
-    }
-
-    fn refresh_rotated_text(&mut self) {
-        let mut live = std::collections::HashMap::new();
-        for annotation in self.history.current() {
-            let Annotation::Text { id, .. } = annotation else {
-                continue;
-            };
-            let key = format!("{annotation:?}");
-            if let Some(existing) = self.rotated_text.get(id) {
-                if existing.key == key {
-                    live.insert(id.clone(), existing.clone());
-                    continue;
-                }
-            }
-            if let Some(patch) = render_rotated_text_patch(annotation) {
-                live.insert(id.clone(), patch);
-            }
-        }
-        self.rotated_text = live;
     }
 
     fn redact_patches_by_id(&self) -> std::collections::HashMap<String, Arc<gpui::RenderImage>> {
@@ -775,22 +765,6 @@ impl EditorWindow {
         {
             let mut snap = self.snapshot.borrow_mut();
             snap.redact_patches = self.redact_patches_by_id();
-            snap.rotated_text = self
-                .rotated_text
-                .iter()
-                .map(|(id, entry)| {
-                    (
-                        id.clone(),
-                        (
-                            entry.image.clone(),
-                            entry.x,
-                            entry.y,
-                            entry.width,
-                            entry.height,
-                        ),
-                    )
-                })
-                .collect();
             snap.crop = self.crop;
             snap.wallpaper = self.wallpaper.clone();
             snap.backdrop = self.backdrop.clone();
@@ -1833,12 +1807,7 @@ impl EditorWindow {
                 .child(
                     TextField::new(field.clone())
                         .placeholder("Type\u{2026}")
-                        .font_family(match family {
-                            "serif" => "Georgia",
-                            "mono" => "Consolas",
-                            "comic" => "Comic Sans MS",
-                            _ => ".SystemUIFont",
-                        })
+                        .font_family(crate::editor::text_render::ui_family(family))
                         .on_change({
                             let owner = owner.clone();
                             move |value, _window, app| {
@@ -1972,25 +1941,6 @@ fn render_redact_patch(
     Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
         image::Frame::new(patch)
     ])))
-}
-
-fn render_rotated_text_patch(annotation: &Annotation) -> Option<RotatedTextEntry> {
-    let patch = crate::render::annotations::rotated_text_patch(annotation)?;
-    let key = format!("{annotation:?}");
-    let mut buffer = crate::editor::export::to_rgba(&patch.pixmap);
-    for pixel in buffer.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
-    }
-    Some(RotatedTextEntry {
-        key,
-        image: Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-            image::Frame::new(buffer)
-        ])),
-        x: patch.x,
-        y: patch.y,
-        width: patch.pixmap.width() as f64,
-        height: patch.pixmap.height() as f64,
-    })
 }
 
 /// Port of the rectangle and circle branches of `useDrawingTools`: a
@@ -2263,6 +2213,72 @@ impl EditorWindow {
     }
 }
 
+impl EditorWindow {
+    fn open_preset_draft(&mut self, cx: &mut Context<Self>) {
+        let field = cx.new(|cx| InputState::new(cx));
+        let subscription = cx.observe(&field, |_, _, cx| cx.notify());
+        self.preset_draft = Some(PresetDraft {
+            field,
+            _subscription: subscription,
+        });
+    }
+
+    fn ensure_background_previews(&mut self, cx: &mut Context<Self>) {
+        let size =
+            chrome::wallpaper_tile_size(chrome::WALLPAPER_SHEET_WIDTH, chrome::WALLPAPER_SHEET_PAD);
+        if crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::DesktopWallpaper,
+        ) && !self.background_previews.desktop_requested()
+        {
+            self.background_previews.request_desktop();
+            let daemon = crate::state::state(cx).daemon;
+            cx.spawn(async move |entity, cx| {
+                let image = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let source = crate::editor::background::desktop_wallpaper(&daemon)?;
+                        crate::editor::background::preview_image(&source, size)
+                    })
+                    .await;
+                let _ = entity.update(cx, |editor, cx| {
+                    editor.background_previews.set_desktop(image);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+
+        let customs = crate::state::state(cx)
+            .config
+            .get()
+            .wallpaper
+            .custom_backgrounds;
+        for background in customs {
+            let crate::config::schema::CustomBackgroundData::Image { data } = &background.data
+            else {
+                continue;
+            };
+            if self.background_previews.custom_requested(&background.id) {
+                continue;
+            }
+            self.background_previews.request_custom(&background.id);
+            let id = background.id.clone();
+            let source = data.image_url.clone();
+            cx.spawn(async move |entity, cx| {
+                let image = cx
+                    .background_executor()
+                    .spawn(async move { crate::editor::background::preview_image(&source, size) })
+                    .await;
+                let _ = entity.update(cx, |editor, cx| {
+                    editor.background_previews.set_custom(&id, image);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+}
+
 impl Render for EditorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
@@ -2276,6 +2292,20 @@ impl Render for EditorWindow {
         let shortcuts = crate::state::state(cx)
             .config
             .read(|config| config.shortcuts.clone());
+
+        let sheet_open = self.tool == Tool::Wallpaper;
+        if sheet_open {
+            self.ensure_background_previews(cx);
+        }
+        if self.sheet_closing {
+            self.schedule_sheet_unmount(cx);
+        }
+        let sheet_mounted = sheet_open || self.sheet_closing;
+        let preset_draft = self.preset_draft.as_ref().map(|draft| {
+            let name = draft.field.read(cx).value().to_string();
+            (draft.field.clone(), name)
+        });
+        let capture_overlay = actions::capture_overlay_visible(self.capture_mode, self.meta_held);
 
         let snapshot_cell = self.snapshot.clone();
         let bounds_cell = self.bounds.clone();
@@ -2291,8 +2321,19 @@ impl Render for EditorWindow {
             .flex_col()
             .size_full()
             .bg(theme.background)
+            .font_family(crate::ui::font::UI_FONT)
             .text_color(theme.foreground)
-            .track_focus(&self.focus_handle);
+            .track_focus(&self.focus_handle)
+            .on_modifiers_changed(cx.listener(
+                |this, event: &ModifiersChangedEvent, _window, cx| {
+                    let held = actions::is_meta_held(&event.modifiers);
+                    if this.meta_held == held {
+                        return;
+                    }
+                    this.meta_held = held;
+                    cx.notify();
+                },
+            ));
         let root = if self.text_editor.is_none() {
             root.key_context("Editor")
         } else {
@@ -2360,6 +2401,9 @@ impl Render for EditorWindow {
         .on_action(cx.listener(|this, _: &actions::ToggleCaptureMode, _, cx| {
             this.toggle_capture_mode(cx);
         }))
+        .on_action(cx.listener(|this, _: &actions::CloudUpload, _, cx| {
+            this.upload_to_cloud(cx);
+        }))
         .on_action(
             cx.listener(|this, _: &actions::CopyAnnotation, window, cx| {
                 // A selected annotation is copied; otherwise the whole image
@@ -2417,13 +2461,22 @@ impl Render for EditorWindow {
                 .flex_row()
                 .flex_1()
                 .min_h_0()
-                .when(self.tool == Tool::Wallpaper, |el| {
+                .when(sheet_mounted, |el| {
                     el.child(crate::editor::wallpaper_sheet::render(
-                        &self.wallpaper,
-                        !self.layers.is_empty(),
-                        &self.wallpaper_preset_id,
-                        self.background_editor.as_ref(),
-                        &self.menu,
+                        &crate::editor::wallpaper_sheet::SheetState {
+                            wallpaper: &self.wallpaper,
+                            has_layers: !self.layers.is_empty(),
+                            preset_id: &self.wallpaper_preset_id,
+                            draft: self.background_editor.as_ref(),
+                            previews: &self.background_previews,
+                            preset_draft: preset_draft.as_ref().map(|(field, name)| {
+                                crate::editor::wallpaper_sheet::PresetDraftView {
+                                    field,
+                                    name: name.as_str(),
+                                }
+                            }),
+                            closing: self.sheet_closing,
+                        },
                         &handlers,
                         window,
                         cx,
@@ -2437,13 +2490,13 @@ impl Render for EditorWindow {
                         .min_h_0()
                         .min_w_0()
                         .overflow_hidden()
-                        .cursor_default()
+                        .cursor(crate::editor::options::tool_cursor(self.tool))
                         .child(EditorCanvas::new(
                             snapshot_cell,
                             bounds_cell,
                             self.stage_scroll.clone(),
                         ))
-                        .when(self.capture_mode, |el| {
+                        .when(capture_overlay, |el| {
                             let entity = cx.entity().downgrade();
                             el.child(crate::editor::canvas::capture_edge_overlay(
                                 &theme,
@@ -2660,6 +2713,8 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
     }
 }
 
+const ZOOM_BUTTON_SIZE: f32 = 28.0;
+
 fn zoom_control(
     zoom: f32,
     backdrop: Option<std::sync::Arc<gpui::RenderImage>>,
@@ -2725,16 +2780,20 @@ fn zoom_control(
         .child(icon_button::with_tooltip(
             "Zoom Out",
             icon_button::compact_sm("zoom-out", "minus")
+                .width(px(ZOOM_BUTTON_SIZE))
+                .height(px(ZOOM_BUTTON_SIZE))
                 .is_disabled(zoom <= MIN_ZOOM)
                 .on_press(move |_event, window, cx| zoom_out(window, cx)),
         ))
         .child(
-            div().min_w(px(chrome::ZOOM_RESET_MIN)).child(
+            div().w(px(chrome::ZOOM_RESET_MIN)).flex_shrink_0().child(
                 herogpui::components::Tooltip::new("Reset Zoom").child(
                     Button::new("zoom-reset")
                         .variant(Variant::Ghost)
                         .recipe("compact")
                         .recipe("muted")
+                        .full_width(true)
+                        .height(px(ZOOM_BUTTON_SIZE))
                         .label(format!("{}%", (zoom * 100.0).round() as i32))
                         .on_press(move |_event, window, cx| zoom_reset(window, cx)),
                 ),
@@ -2743,6 +2802,8 @@ fn zoom_control(
         .child(icon_button::with_tooltip(
             "Zoom In",
             icon_button::compact_sm("zoom-in", "plus")
+                .width(px(ZOOM_BUTTON_SIZE))
+                .height(px(ZOOM_BUTTON_SIZE))
                 .is_disabled(zoom >= MAX_ZOOM)
                 .on_press(move |_event, window, cx| zoom_in(window, cx)),
         ))
@@ -2940,8 +3001,17 @@ impl EditorWindow {
                     self.wallpaper_preset_id = preset.id;
                 }
             }
+            EditorOption::WallpaperPresetDraftOpen => self.open_preset_draft(cx),
+            EditorOption::WallpaperPresetDraftCancel => self.preset_draft = None,
             EditorOption::WallpaperSavePreset => {
-                let count = crate::state::state(cx).config.get().wallpaper.presets.len();
+                let Some(name) = self
+                    .preset_draft
+                    .as_ref()
+                    .map(|draft| draft.field.read(cx).value().to_string())
+                    .and_then(|value| crate::editor::wallpaper::preset_save_name(&value))
+                else {
+                    return;
+                };
                 let id = format!(
                     "preset-{}",
                     std::time::SystemTime::now()
@@ -2949,13 +3019,13 @@ impl EditorWindow {
                         .map(|duration| duration.as_millis())
                         .unwrap_or(0)
                 );
-                let name = format!("Preset {}", count + 1);
                 let preset =
                     crate::editor::wallpaper::to_schema_preset(&self.wallpaper, id.clone(), name);
                 crate::state::state(cx).config.update(|settings| {
                     settings.wallpaper.presets.push(preset);
                 });
                 self.wallpaper_preset_id = id;
+                self.preset_draft = None;
             }
             EditorOption::WallpaperDeletePreset => {
                 let selected = self.wallpaper_preset_id.clone();
@@ -3249,7 +3319,7 @@ impl EditorWindow {
             editor.redact_style = redact_style;
             editor.redact_intensity = redact_intensity;
             editor.shape_fill_mode = shape_fill_mode;
-            if !matches!(tool, Tool::Crop | Tool::Wallpaper) {
+            if tool != Tool::Wallpaper {
                 editor.last_tool = tool.id().to_string();
             }
         });
@@ -3291,8 +3361,38 @@ impl EditorWindow {
     }
 
     fn set_tool(&mut self, tool: Tool) {
+        let tool = crate::editor::options::toggled_tool(self.tool, tool);
+        if self.tool == tool {
+            return;
+        }
+        if self.tool == Tool::Wallpaper {
+            self.begin_sheet_close();
+        }
         self.tool = tool;
         self.sync_snapshot();
+    }
+
+    fn begin_sheet_close(&mut self) {
+        self.preset_draft = None;
+        self.sheet_closing = true;
+    }
+
+    fn schedule_sheet_unmount(&mut self, cx: &mut Context<Self>) {
+        if self.sheet_close_task.is_some() {
+            return;
+        }
+        self.sheet_close_task = Some(cx.spawn(async move |entity, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(
+                    crate::editor::wallpaper_sheet::SHEET_ANIMATION_MS,
+                ))
+                .await;
+            let _ = entity.update(cx, |editor, cx| {
+                editor.sheet_closing = false;
+                editor.sheet_close_task = None;
+                cx.notify();
+            });
+        }));
     }
 
     fn focus_text_editor(&self, window: &mut Window, cx: &mut Context<Self>) {

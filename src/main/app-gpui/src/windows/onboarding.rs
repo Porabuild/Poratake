@@ -771,7 +771,7 @@ impl Render for OnboardingWindow {
                     4.0,
                 )
                 .variant(Variant::Ghost)
-                .sx(|el| el.flex_1().w_0())
+                .grow(true)
                 .on_press(cx.listener(|this, _event, _window, cx| this.back(cx))),
             );
         }
@@ -780,7 +780,7 @@ impl Render for OnboardingWindow {
                 .variant(Variant::Primary)
                 .label("Get Started")
                 .is_disabled(step == Step::Permissions && !all_permissions_granted)
-                .sx(|el| el.flex_1().w_0())
+                .grow(true)
                 .on_press(cx.listener(|this, _event, window, cx| this.finish(window, cx)))
         } else {
             Button::new("onboarding-next")
@@ -795,11 +795,11 @@ impl Render for OnboardingWindow {
                         true,
                     )
                 })
-                .sx(|el| el.flex_1().w_0())
+                .grow(true)
                 .on_press(cx.listener(|this, _event, window, cx| this.next(window, cx)))
         });
 
-        div()
+        crate::ui::font::root()
             .id("onboarding-window")
             .key_context("Onboarding")
             .track_focus(&self.focus_handle)
@@ -817,34 +817,45 @@ impl Render for OnboardingWindow {
             ))
             .child(
                 div()
-                    .id("onboarding-body")
-                    .track_scroll(&self.scroll)
+                    .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .p(px(24.0))
-                    .child(div().flex_1().child(content))
                     .child(
                         div()
-                            .mt(px(24.0))
+                            .id("onboarding-body")
+                            .track_scroll(&self.scroll)
                             .flex()
                             .flex_col()
-                            .gap(px(16.0))
-                            .child(step_indicator(self.step, &theme))
-                            .child(actions)
+                            .size_full()
+                            .overflow_y_scroll()
+                            .p(px(24.0))
+                            .child(div().flex_1().child(content))
                             .child(
-                                Button::new("onboarding-skip")
-                                    .variant(Variant::Ghost)
-                                    .label("Skip for now")
-                                    .full_width(true)
-                                    .recipe("muted")
-                                    .on_press(cx.listener(|this, _event, window, cx| {
-                                        this.skip(window, cx)
-                                    })),
+                                div()
+                                    .mt(px(24.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.0))
+                                    .child(step_indicator(self.step, &theme))
+                                    .child(actions)
+                                    .child(
+                                        Button::new("onboarding-skip")
+                                            .variant(Variant::Ghost)
+                                            .label("Skip for now")
+                                            .full_width(true)
+                                            .recipe("muted")
+                                            .on_press(cx.listener(|this, _event, window, cx| {
+                                                this.skip(window, cx)
+                                            })),
+                                    ),
                             ),
-                    ),
+                    )
+                    .child(crate::windows::scrollbars::app_vertical(
+                        "onboarding-body-scrollbar",
+                        &self.scroll,
+                    )),
             )
     }
 }
@@ -895,7 +906,7 @@ mod tests {
 
     #[test]
     fn onboarding_is_hidden_once_it_is_completed_or_skipped() {
-        let path = std::env::temp_dir().join("poratake-onboarding-test.json");
+        let path = crate::util::test_paths::unique_temp("poratake-onboarding-test.json");
         let _ = std::fs::remove_file(&path);
         let store = ConfigStore::load_at(path.clone()).expect("store");
         assert!(OnboardingWindow::should_show(&store));

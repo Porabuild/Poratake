@@ -16,6 +16,24 @@ use herogpui::theme::{
 };
 use herogpui::{Color, FieldVariant, Variant};
 
+fn app_shadow(alpha: f32) -> gpui::BoxShadow {
+    gpui::BoxShadow {
+        color: gpui::hsla(0.0, 0.0, 0.0, alpha),
+        offset: gpui::point(gpui::px(0.0), gpui::px(20.0)),
+        blur_radius: gpui::px(60.0),
+        spread_radius: gpui::px(0.0),
+        inset: false,
+    }
+}
+
+const SURFACE_SHADOW_ALPHA: f32 = 0.08;
+const OVERLAY_SHADOW_ALPHA: f32 = 0.2;
+const TRAY_MENU_ROW_HEIGHT: f32 = 24.0;
+const TRAY_MENU_ROW_PADDING_Y: f32 = 2.0;
+const TRAY_MENU_SEPARATOR_INSET: f32 = 15.0;
+const SELECT_TRIGGER_PADDING_Y: f32 = 8.0;
+const COMPACT_SELECT_PADDING_Y: f32 = 4.0;
+
 fn component_themes(vars: &ThemeVars) -> ComponentThemes {
     ComponentThemes::default()
         .slider(ComponentTheme::new(
@@ -25,11 +43,17 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
             SwitchStyle::default().radius(gpui::px(9999.0)),
         ))
         .select(
-            ComponentTheme::new(SelectStyle::default().variant(FieldVariant::Secondary)).recipe(
+            ComponentTheme::new(
+                SelectStyle::default()
+                    .variant(FieldVariant::Secondary)
+                    .padding_y(gpui::px(SELECT_TRIGGER_PADDING_Y)),
+            )
+            .recipe(
                 "compact",
                 SelectStyle::default()
                     .height(gpui::px(28.0))
                     .padding_x(gpui::px(8.0))
+                    .padding_y(gpui::px(COMPACT_SELECT_PADDING_Y))
                     .trigger_text_size(gpui::px(12.0))
                     .row_height(gpui::px(28.0))
                     .row_padding_x(gpui::px(8.0))
@@ -53,11 +77,12 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                 "compact",
                 MenuStyle::default()
                     .panel_padding(gpui::px(4.0))
-                    .row_height(gpui::px(28.0))
+                    .row_height(gpui::px(TRAY_MENU_ROW_HEIGHT))
                     .row_padding_x(gpui::px(8.0))
-                    .row_padding_y(gpui::px(2.0))
+                    .row_padding_y(gpui::px(TRAY_MENU_ROW_PADDING_Y))
                     .row_text_size(gpui::px(12.0))
-                    .row_gap(gpui::px(8.0)),
+                    .row_gap(gpui::px(8.0))
+                    .separator_inset(gpui::px(TRAY_MENU_SEPARATOR_INSET)),
             )
             .recipe(
                 "accent",
@@ -191,6 +216,7 @@ pub fn to_herogpui(vars: &ThemeVars, dark: bool) -> herogpui::theme::Theme {
         // explicit `field` tokens below win.
         .role("default", vars.default, vars.default_foreground)
         .role("accent", vars.accent, vars.accent_foreground)
+        .accent_hover(vars.accent_hover)
         .role("danger", vars.danger, vars.danger_foreground)
         .field(vars.field_background, vars.field_foreground)
         .field_placeholder(vars.field_placeholder)
@@ -199,10 +225,10 @@ pub fn to_herogpui(vars: &ThemeVars, dark: bool) -> herogpui::theme::Theme {
         .build();
 
     // Tokens with no builder method: `foreground` derives scrollbar at 15%
-    // alpha, but the app resolves it directly, and the app's ring (accent at
-    // 52%) is what its own focus-ring helper paints.
     theme.colors.scrollbar = vars.scrollbar;
-    theme.colors.focus = vars.ring;
+    theme.layout.surface_shadow = vec![app_shadow(SURFACE_SHADOW_ALPHA)];
+    theme.layout.overlay_shadow = vec![app_shadow(OVERLAY_SHADOW_ALPHA)];
+    theme.layout.overlay_hairline = None;
     theme.appearance = if dark {
         herogpui::theme::Appearance::Dark
     } else {
@@ -309,10 +335,161 @@ mod tests {
                 );
                 assert_eq!(colors.field.border, vars.field_border, "{id} field-border");
                 assert_eq!(colors.scrollbar, vars.scrollbar, "{id} scrollbar");
-                assert_eq!(colors.focus, vars.ring, "{id} focus ring");
+                assert_eq!(colors.focus, vars.accent, "{id} focus ring");
                 assert_eq!(theme.is_dark(), dark, "{id} appearance");
             }
         }
+    }
+
+    #[test]
+    fn the_app_layout_shadows_reach_herogpui() {
+        for dark in [true, false] {
+            let vars = ThemeVars::for_preset(
+                get_theme_preset(DEFAULT_THEME_ID),
+                if dark {
+                    crate::theme::presets::ThemeMode::Dark
+                } else {
+                    crate::theme::presets::ThemeMode::Light
+                },
+            );
+            let theme = to_herogpui(&vars, dark);
+            let surface = &theme.layout.surface_shadow;
+            let overlay = &theme.layout.overlay_shadow;
+
+            assert_eq!(surface.len(), 1, "one drop, not HeroUI's stack");
+            assert_eq!(surface[0].offset.y, px(20.0));
+            assert_eq!(surface[0].blur_radius, px(60.0));
+            assert_eq!(surface[0].color.a, 0.08);
+            assert_eq!(overlay.len(), 1);
+            assert_eq!(overlay[0].color.a, 0.2);
+            assert_eq!(theme.layout.overlay_hairline, None);
+        }
+        assert!(
+            herogpui::theme::LayoutTheme::dark()
+                .overlay_hairline
+                .is_some(),
+            "stock dark still draws the hairline; the app is the one dropping it"
+        );
+    }
+
+    #[test]
+    fn field_rings_use_the_full_opacity_accent() {
+        let vars = ThemeVars::for_preset(
+            get_theme_preset(DEFAULT_THEME_ID),
+            crate::theme::presets::ThemeMode::Dark,
+        );
+        let theme = to_herogpui(&vars, true);
+
+        assert_eq!(theme.colors.focus, vars.accent);
+        assert_ne!(theme.colors.focus, vars.ring);
+    }
+
+    #[test]
+    fn the_apps_accent_hover_reaches_herogpui() {
+        for preset in APP_THEME_PRESETS {
+            for (variant, dark) in [(&preset.dark, true), (&preset.light, false)] {
+                let vars = ThemeVars::resolve(
+                    variant,
+                    if dark {
+                        crate::theme::presets::ThemeMode::Dark
+                    } else {
+                        crate::theme::presets::ThemeMode::Light
+                    },
+                );
+                let theme = to_herogpui(&vars, dark);
+
+                assert_eq!(
+                    theme.colors.accent.hover(),
+                    vars.accent_hover,
+                    "{} accent hover",
+                    preset.id
+                );
+                assert_ne!(
+                    vars.accent_hover,
+                    herogpui::theme::RoleColor::new(vars.accent, vars.accent_foreground).hover(),
+                    "{} the derived mix is the divergence the role hover fixes",
+                    preset.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_primary_variant_hovers_on_the_apps_accent_without_a_recipe() {
+        let vars = ThemeVars::for_preset(
+            get_theme_preset(DEFAULT_THEME_ID),
+            crate::theme::presets::ThemeMode::Dark,
+        );
+        let theme = to_herogpui(&vars, true);
+
+        assert_eq!(theme.colors.accent.hover(), vars.accent_hover);
+        assert!(
+            theme
+                .components
+                .button
+                .resolve(&["primary".into()])
+                .variant
+                .is_none(),
+            "the primary recipe is gone; Variant::Primary carries the accent hover"
+        );
+    }
+
+    #[test]
+    fn the_tray_separator_runs_on_the_appkit_inset() {
+        let vars = ThemeVars::for_preset(
+            get_theme_preset(DEFAULT_THEME_ID),
+            crate::theme::presets::ThemeMode::Dark,
+        );
+        let theme = to_herogpui(&vars, true);
+        let compact = theme.components.menu.resolve(&["compact".into()]);
+
+        assert_eq!(compact.separator_inset, Some(px(TRAY_MENU_SEPARATOR_INSET)));
+        assert_eq!(
+            compact.separator_thickness, None,
+            "the stock hairline is already AppKit's 1pt, so the theme leaves it"
+        );
+        const APPKIT_SEPARATOR_THICKNESS: f32 = 1.0;
+        assert_eq!(
+            theme.layout.border_width,
+            px(APPKIT_SEPARATOR_THICKNESS),
+            "the unset thickness falls back to the layout hairline, already 1pt"
+        );
+        assert_eq!(
+            theme.components.menu.resolve(&[]).separator_inset,
+            None,
+            "only the tray opts out of HeroUI's proportional rule"
+        );
+    }
+
+    #[test]
+    fn the_select_trigger_carries_the_references_vertical_padding() {
+        let vars = ThemeVars::for_preset(
+            get_theme_preset(DEFAULT_THEME_ID),
+            crate::theme::presets::ThemeMode::Dark,
+        );
+        let theme = to_herogpui(&vars, true);
+        let select = theme.components.select.resolve(&[]);
+
+        assert_eq!(select.padding_y, Some(px(SELECT_TRIGGER_PADDING_Y)));
+
+        const TRIGGER_LINE_HEIGHT: f32 = 20.0;
+        const TRIGGER_MIN_HEIGHT: f32 = 36.0;
+        let single = (TRIGGER_LINE_HEIGHT + 2.0 * SELECT_TRIGGER_PADDING_Y).max(TRIGGER_MIN_HEIGHT);
+        let double =
+            (2.0 * TRIGGER_LINE_HEIGHT + 2.0 * SELECT_TRIGGER_PADDING_Y).max(TRIGGER_MIN_HEIGHT);
+        assert_eq!(single, 36.0, "a single-line value keeps the field height");
+        assert_eq!(double, 56.0, "a two-line value grows the way `py-2` does");
+
+        let compact = theme.components.select.resolve(&["compact".into()]);
+        assert_eq!(
+            compact.padding_y,
+            Some(px(COMPACT_SELECT_PADDING_Y)),
+            "the compact trigger is a fixed 28pt, so it takes the padding that fits it"
+        );
+        assert_eq!(
+            compact.height.map(f32::from),
+            Some(TRIGGER_LINE_HEIGHT + 2.0 * COMPACT_SELECT_PADDING_Y)
+        );
     }
 
     /// A theme published by the bridge must be buildable without a `TestApp` —
@@ -370,6 +547,30 @@ mod tests {
     }
 
     #[test]
+    fn the_tray_menu_rows_run_on_the_appkit_pitch() {
+        let vars = ThemeVars::for_preset(
+            get_theme_preset(DEFAULT_THEME_ID),
+            crate::theme::presets::ThemeMode::Dark,
+        );
+        let theme = to_herogpui(&vars, true);
+        let compact = theme.components.menu.resolve(&["compact".into()]);
+
+        assert_eq!(compact.row_height, Some(px(TRAY_MENU_ROW_HEIGHT)));
+        assert_eq!(compact.row_padding_y, Some(px(TRAY_MENU_ROW_PADDING_Y)));
+        assert_eq!(compact.panel_gap, Some(px(0.0)));
+
+        const MENU_ROW_LINE_HEIGHT: f32 = 20.0;
+        let drawn = TRAY_MENU_ROW_HEIGHT.max(MENU_ROW_LINE_HEIGHT + 2.0 * TRAY_MENU_ROW_PADDING_Y);
+        assert_eq!(drawn, 24.0, "AppKit runs tray items on a 24pt pitch");
+
+        assert_eq!(
+            theme.components.menu.resolve(&[]).row_height,
+            Some(px(36.0)),
+            "only the tray opts into the compact pitch"
+        );
+    }
+
+    #[test]
     fn component_defaults_live_on_the_theme() {
         let vars = ThemeVars::for_preset(
             get_theme_preset(DEFAULT_THEME_ID),
@@ -387,7 +588,10 @@ mod tests {
         assert_eq!(menu.panel_gap, Some(gpui::px(0.0)));
         assert_eq!(menu.row_height, Some(gpui::px(36.0)));
         let compact_menu = theme.components.menu.resolve(&["compact".into()]);
-        assert_eq!(compact_menu.row_height, Some(gpui::px(28.0)));
+        assert_eq!(
+            compact_menu.row_height,
+            Some(gpui::px(TRAY_MENU_ROW_HEIGHT))
+        );
         assert_eq!(compact_menu.panel_gap, Some(gpui::px(0.0)));
         let accent = theme.components.menu.resolve(&["accent".into()]);
         assert_eq!(

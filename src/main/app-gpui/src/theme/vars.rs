@@ -38,19 +38,16 @@ pub struct ThemeVars {
     pub row_active: Hsla,
     pub hairline: Hsla,
     pub card: Hsla,
-    pub card_foreground: Hsla,
     pub popover: Hsla,
     pub popover_foreground: Hsla,
     pub primary: Hsla,
     pub primary_foreground: Hsla,
     pub secondary: Hsla,
-    pub secondary_foreground: Hsla,
     pub muted_background: Hsla,
     pub muted_foreground: Hsla,
     pub input: Hsla,
     pub ring: Hsla,
     pub destructive: Hsla,
-    pub destructive_foreground: Hsla,
     pub default_hover: Hsla,
     pub default_foreground: Hsla,
     pub danger: Hsla,
@@ -168,19 +165,16 @@ impl ThemeVars {
             row_active: m(variant.fg, 11.0, "transparent"),
             hairline: m(variant.fg, 9.0, "transparent"),
             card: Srgba::parse(variant.surface).to_hsla(),
-            card_foreground: Srgba::parse(variant.fg).to_hsla(),
             popover: Srgba::parse(variant.surface).to_hsla(),
             popover_foreground: Srgba::parse(variant.fg).to_hsla(),
             primary: Srgba::parse(variant.accent).to_hsla(),
             primary_foreground: Srgba::parse(variant.accent_fg).to_hsla(),
             secondary: default_surface,
-            secondary_foreground: Srgba::parse(variant.fg).to_hsla(),
             muted_background: m(variant.surface, 88.0, variant.bg),
             muted_foreground: m(variant.fg, 76.0, variant.bg),
             input: field_border,
             ring: m(variant.accent, 52.0, "transparent"),
             destructive: Srgba::parse(DESTRUCTIVE).to_hsla(),
-            destructive_foreground: Srgba::WHITE.to_hsla(),
             default_hover,
             default_foreground: default_foreground_srgb.to_hsla(),
             danger: danger_srgb.to_hsla(),
@@ -411,11 +405,6 @@ mod tests {
             "{preset_id} card"
         );
         assert_eq!(
-            vars.card_foreground,
-            Srgba::parse(variant.fg).to_hsla(),
-            "{preset_id} card-foreground"
-        );
-        assert_eq!(
             vars.popover,
             Srgba::parse(variant.surface).to_hsla(),
             "{preset_id} popover"
@@ -436,11 +425,6 @@ mod tests {
             "{preset_id} primary-foreground"
         );
         assert_eq!(vars.secondary, default_surface, "{preset_id} secondary");
-        assert_eq!(
-            vars.secondary_foreground,
-            Srgba::parse(variant.fg).to_hsla(),
-            "{preset_id} secondary-foreground"
-        );
         assert_eq!(
             vars.muted_background,
             expected_mix(variant.surface, 88.0, variant.bg),

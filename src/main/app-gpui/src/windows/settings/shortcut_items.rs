@@ -115,16 +115,6 @@ fn specs() -> Vec<Spec> {
             set: |config, value| config.shortcuts.scan_qrcode = value.to_string(),
         },
         Spec {
-            id: "shortcuts.scrollCapture",
-            section: OTHER,
-            label: "Scroll Capture",
-            description: "Keyboard shortcut for scroll capture",
-            keywords: "shortcut hotkey scroll capture long page",
-            feature: Some(Feature::ScrollCapture),
-            get: |config| config.shortcuts.scroll_capture.clone(),
-            set: |config, value| config.shortcuts.scroll_capture = value.to_string(),
-        },
-        Spec {
             id: "shortcuts.history",
             section: OTHER,
             label: "Open History",
@@ -446,6 +436,32 @@ mod tests {
         assert!(single.contains(&"shortcuts.videoEditorSidebar.export"));
         assert!(!single.contains(&"shortcuts.screenshot.area"));
         assert!(!single.contains(&"shortcuts.editorActions.uploadToCloud"));
+    }
+
+    fn renderer_registry_ids() -> Vec<String> {
+        let registry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .join("src/renderer/components/settings/registry/shortcuts.ts");
+        let source = std::fs::read_to_string(registry).expect("read shortcuts.ts");
+        source
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("id: '"))
+            .filter_map(|rest| rest.split('\'').next())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_shortcut_ids_match_the_renderer_registry_exactly() {
+        let mut theirs = renderer_registry_ids();
+        let mut ours: Vec<String> = items().iter().map(|item| item.id.to_string()).collect();
+        assert_eq!(theirs.len(), 36, "renderer registry id count");
+        assert_eq!(ours.len(), theirs.len(), "shortcut id count");
+        theirs.sort();
+        ours.sort();
+        assert_eq!(ours, theirs);
     }
 
     #[test]

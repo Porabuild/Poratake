@@ -6,12 +6,11 @@ use std::path::{Path, PathBuf};
 
 use tiny_skia::Pixmap;
 
-use crate::render::canvas::Canvas;
 use crate::video::composition::segments::{self, VideoSegment};
 use crate::video::composition::{Config, Engine, Frames};
 use crate::video::decoder::VideoDecoder;
 use crate::video::encoder::{Encoder, Settings, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
-use crate::video::{audio, project, sidecars};
+use crate::video::{audio, audio_tracks, keyboard_audio, project, sidecars};
 use crate::windows::video_editor::model::VideoEditorState;
 
 /// `MAX_H264_DIMENSION` / `MAX_H264_PIXELS` in `export/export-types.ts`.
@@ -135,7 +134,10 @@ pub fn default_output_path(project_or_video: &Path, state: &VideoEditorState) ->
     } else {
         "mp4"
     };
-    let name = crate::windows::video_editor::model::project_display_name(project_or_video);
+    let name = format!(
+        "{}-exported",
+        crate::windows::video_editor::model::project_display_name(project_or_video)
+    );
     let folder = project::project_folder(project_or_video)
         .and_then(|folder| folder.parent().map(Path::to_path_buf))
         .or_else(|| project_or_video.parent().map(Path::to_path_buf))
@@ -192,86 +194,40 @@ pub fn run(
     let mut engine = Engine::new(config);
 
     let (composition_width, composition_height) = engine.dimensions();
-    let dimensions = if is_gif {
-        gif_dimensions(
-            composition_width,
-            composition_height,
-            &request.state.export_settings.resolution,
-        )
-    } else {
-        export_dimensions(
-            composition_width,
-            composition_height,
-            &request.state.export_settings.resolution,
-        )
-    };
+    let dimensions = export_dimensions(
+        composition_width,
+        composition_height,
+        &request.state.export_settings.resolution,
+    );
 
     let total_duration = engine.total_duration();
     if total_duration <= 0.0 {
         return Err("the timeline is empty".to_string());
     }
-    let total_frames = ((total_duration * fps as f64).ceil() as u64).max(1);
+
+    let mut session = Session {
+        engine: &mut engine,
+        decoder: &decoder,
+        camera: camera.as_ref(),
+        video_segments: &video_segments,
+        dimensions,
+        fps,
+        total_frames: ((total_duration * fps as f64).ceil() as u64).max(1),
+        total_duration,
+        source_duration: request.state.source_duration.unwrap_or(info.duration),
+    };
 
     if is_gif {
-        return run_gif(
-            &request,
-            &mut engine,
-            &decoder,
-            camera.as_ref(),
-            &video_segments,
-            dimensions,
-            fps,
-            total_frames,
-            progress,
-            should_cancel,
-        );
+        return run_gif(&request, &mut session, progress, should_cancel);
     }
 
-    let result = (|| -> Result<(), String> {
-        let audio_track = build_audio(&request.project, &request.state, total_duration);
-        let mut encoder = Encoder::create(
-            &request.output,
-            Settings {
-                width: dimensions.width,
-                height: dimensions.height,
-                frame_rate: fps,
-                bitrate: bitrate(
-                    dimensions.width,
-                    dimensions.height,
-                    fps,
-                    &request.state.export_settings.quality_preset,
-                    camera.is_some(),
-                ),
-                has_audio: audio_track.is_some(),
-            },
-        )?;
-
-        if let Some(samples) = audio_track {
-            encoder.write_audio(audio::to_bytes(&samples), 0)?;
-        }
-
-        let first_frame_duration = engine.first_frame_duration();
-        for index in 0..total_frames {
-            if should_cancel() {
-                return Err("the export was cancelled".to_string());
-            }
-
-            let timeline_time = index as f64 / fps as f64;
-            let frame = compose_pixmap(
-                &mut engine,
-                &decoder,
-                camera.as_ref(),
-                &video_segments,
-                first_frame_duration,
-                timeline_time,
-                dimensions,
-            )?;
-            encoder.write_frame(to_bgra(&frame))?;
-            progress((index + 1) as f32 / total_frames as f32);
-        }
-
-        encoder.finish()
-    })();
+    let result = encode(
+        &request,
+        &request.output,
+        &mut session,
+        progress,
+        should_cancel,
+    );
     if let Err(error) = result {
         let _ = std::fs::remove_file(&request.output);
         return Err(error);
@@ -279,58 +235,280 @@ pub fn run(
     Ok(request.output)
 }
 
-/// Writes an animated GIF straight from the composed frames. The Electron
-/// shell renders an MP4 and converts it with FFmpeg; going direct keeps the
-/// frames the preview showed and needs no external binary.
-#[allow(clippy::too_many_arguments)]
-fn run_gif(
-    request: &Request,
-    engine: &mut Engine,
-    decoder: &VideoDecoder,
-    camera: Option<&VideoDecoder>,
-    video_segments: &[VideoSegment],
+struct Session<'a> {
+    engine: &'a mut Engine,
+    decoder: &'a VideoDecoder,
+    camera: Option<&'a VideoDecoder>,
+    video_segments: &'a [VideoSegment],
     dimensions: Dimensions,
     fps: u32,
     total_frames: u64,
+    total_duration: f64,
+    source_duration: f64,
+}
+
+fn encode(
+    request: &Request,
+    output: &Path,
+    session: &mut Session<'_>,
+    progress: &mut dyn FnMut(f32),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let first_frame_duration = session.engine.first_frame_duration();
+    let audio_track = build_audio(
+        &request.project,
+        &request.state,
+        session.source_duration,
+        (session.total_duration - first_frame_duration).max(0.0),
+    );
+    let mut encoder = Encoder::create(
+        output,
+        Settings {
+            width: session.dimensions.width,
+            height: session.dimensions.height,
+            frame_rate: session.fps,
+            bitrate: bitrate(
+                session.dimensions.width,
+                session.dimensions.height,
+                session.fps,
+                &request.state.export_settings.quality_preset,
+                session.camera.is_some(),
+            ),
+            has_audio: audio_track.is_some(),
+        },
+    )?;
+
+    if let Some(samples) = audio_track {
+        encoder.write_audio(
+            audio::to_bytes(&samples),
+            audio_offset(first_frame_duration),
+        )?;
+    }
+
+    for index in 0..session.total_frames {
+        if should_cancel() {
+            return Err("the export was cancelled".to_string());
+        }
+
+        let timeline_time = index as f64 / session.fps as f64;
+        let frame = compose_pixmap(session, first_frame_duration, timeline_time)?;
+        encoder.write_frame(to_bgra(&frame))?;
+        progress((index + 1) as f32 / session.total_frames as f32);
+    }
+
+    encoder.finish()
+}
+
+fn audio_offset(seconds: f64) -> i64 {
+    (seconds.max(0.0) * 10_000_000.0).round() as i64
+}
+
+const GIF_FRAME_PASS_SHARE: f32 = 0.7;
+const GIF_DIRECT_ENCODE_SHARE: f32 = 0.95;
+
+fn phase_fraction(start: f32, end: f32, completed: f32) -> f32 {
+    start + (end - start) * completed.clamp(0.0, 1.0)
+}
+
+fn run_gif(
+    request: &Request,
+    session: &mut Session<'_>,
+    progress: &mut dyn FnMut(f32),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<PathBuf, String> {
+    if let Some(result) = run_gif_with_ffmpeg(request, session, progress, should_cancel) {
+        return result;
+    }
+    run_gif_direct(request, session, progress, should_cancel)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn run_gif_with_ffmpeg(
+    request: &Request,
+    session: &mut Session<'_>,
+    progress: &mut dyn FnMut(f32),
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<Result<PathBuf, String>> {
+    let ffmpeg = crate::video::ffmpeg_path();
+    if !ffmpeg.is_file() {
+        return None;
+    }
+    let intermediate = request.output.with_extension("gif-temp.mp4");
+    let duration = session.total_duration;
+    let width = gif_width(&request.state.export_settings.resolution);
+    let fps = session.fps;
+    let result = (|| -> Result<(), String> {
+        encode(
+            request,
+            &intermediate,
+            session,
+            &mut |fraction| progress(phase_fraction(0.0, GIF_FRAME_PASS_SHARE, fraction)),
+            should_cancel,
+        )?;
+        if should_cancel() {
+            return Err("the export was cancelled".to_string());
+        }
+        convert_to_gif(
+            &ffmpeg,
+            &intermediate,
+            &request.output,
+            width,
+            fps,
+            duration,
+            progress,
+        )
+    })();
+    let _ = std::fs::remove_file(&intermediate);
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&request.output);
+        return Some(Err(error));
+    }
+    progress(1.0);
+    Some(Ok(request.output.clone()))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn run_gif_with_ffmpeg(
+    _request: &Request,
+    _session: &mut Session<'_>,
+    _progress: &mut dyn FnMut(f32),
+    _should_cancel: &dyn Fn() -> bool,
+) -> Option<Result<PathBuf, String>> {
+    None
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn ffmpeg_progress_seconds(line: &str) -> Option<f64> {
+    let line = line.trim();
+    let value = line
+        .strip_prefix("out_time_us=")
+        .or_else(|| line.strip_prefix("out_time_ms="))?;
+    value.parse::<f64>().ok().map(|micros| micros / 1_000_000.0)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn convert_to_gif(
+    ffmpeg: &Path,
+    input: &Path,
+    output: &Path,
+    width: u32,
+    fps: u32,
+    duration: f64,
+    progress: &mut dyn FnMut(f32),
+) -> Result<(), String> {
+    let filter = format!(
+        "[0:v]fps={fps},scale={width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle[out]"
+    );
+    let mut command = std::process::Command::new(ffmpeg);
+    command
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostats",
+            "-progress",
+            "pipe:1",
+            "-y",
+            "-i",
+        ])
+        .arg(input)
+        .args(["-filter_complex", &filter, "-map", "[out]", "-loop", "0"])
+        .arg(output)
+        .stdin(std::process::Stdio::null());
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::Builder::new()
+        .name("gif-conversion".into())
+        .spawn(move || {
+            let mut command = command;
+            crate::video::command_stdout(
+                &mut command,
+                std::time::Duration::from_secs(1800),
+                move |stdout| {
+                    use std::io::BufRead as _;
+
+                    for line in std::io::BufReader::new(stdout).lines() {
+                        let Some(seconds) = ffmpeg_progress_seconds(&line?) else {
+                            continue;
+                        };
+                        if sender.send(seconds).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .map_err(|error| format!("could not run FFmpeg: {error}"))?;
+
+    while let Ok(seconds) = receiver.recv() {
+        let completed = match duration > 0.0 {
+            true => (seconds / duration) as f32,
+            false => 0.0,
+        };
+        progress(phase_fraction(GIF_FRAME_PASS_SHARE, 1.0, completed));
+    }
+
+    let result = worker
+        .join()
+        .map_err(|_| "the GIF conversion failed".to_string())?
+        .map_err(|error| format!("could not run FFmpeg: {error}"))?;
+    if result.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&result.stderr).trim().to_string();
+    Err(match detail.is_empty() {
+        true => "the GIF could not be written".to_string(),
+        false => detail,
+    })
+}
+
+fn run_gif_direct(
+    request: &Request,
+    session: &mut Session<'_>,
     progress: &mut dyn FnMut(f32),
     should_cancel: &dyn Fn() -> bool,
 ) -> Result<PathBuf, String> {
     use image::codecs::gif::{GifEncoder, Repeat};
 
+    let (composition_width, composition_height) = session.engine.dimensions();
+    session.dimensions = gif_dimensions(
+        composition_width,
+        composition_height,
+        &request.state.export_settings.resolution,
+    );
+
     let file = std::fs::File::create(&request.output)
         .map_err(|error| format!("could not create the file: {error}"))?;
-    let mut encoder = GifEncoder::new_with_speed(std::io::BufWriter::new(file), 10);
+    let mut encoder = GifEncoder::new_with_speed(std::io::BufWriter::new(file), 1);
     encoder
         .set_repeat(Repeat::Infinite)
         .map_err(|error| format!("could not start the GIF: {error}"))?;
 
-    let delay = image::Delay::from_numer_denom_ms(1000, fps.max(1));
-    let first_frame_duration = engine.first_frame_duration();
+    let delay = image::Delay::from_numer_denom_ms(1000, session.fps.max(1));
+    let first_frame_duration = session.engine.first_frame_duration();
 
-    for index in 0..total_frames {
+    for index in 0..session.total_frames {
         if should_cancel() {
             let _ = std::fs::remove_file(&request.output);
             return Err("the export was cancelled".to_string());
         }
 
-        let timeline_time = index as f64 / fps as f64;
-        let composed = compose_pixmap(
-            engine,
-            decoder,
-            camera,
-            video_segments,
-            first_frame_duration,
-            timeline_time,
-            dimensions,
-        )?;
+        let timeline_time = index as f64 / session.fps as f64;
+        let composed = compose_pixmap(session, first_frame_duration, timeline_time)?;
         let frame = image::Frame::from_parts(to_rgba_buffer(&composed), 0, 0, delay);
         encoder
             .encode_frame(frame)
             .map_err(|error| format!("could not write a frame: {error}"))?;
-        progress((index + 1) as f32 / total_frames as f32);
+        progress(phase_fraction(
+            0.0,
+            GIF_DIRECT_ENCODE_SHARE,
+            (index + 1) as f32 / session.total_frames as f32,
+        ));
     }
 
     drop(encoder);
+    progress(1.0);
     Ok(request.output.clone())
 }
 
@@ -362,41 +540,42 @@ fn to_rgba_buffer(pixmap: &Pixmap) -> image::RgbaImage {
     buffer
 }
 
-/// Composes one frame at export size.
-#[allow(clippy::too_many_arguments)]
 fn compose_pixmap(
-    engine: &mut Engine,
-    decoder: &VideoDecoder,
-    camera: Option<&VideoDecoder>,
-    video_segments: &[VideoSegment],
+    session: &mut Session<'_>,
     first_frame_duration: f64,
     timeline_time: f64,
-    dimensions: Dimensions,
 ) -> Result<Pixmap, String> {
     let adjusted = (timeline_time - first_frame_duration).max(0.0);
-    let video_time = segments::map_timeline_to_video_time(adjusted, video_segments)
-        .or_else(|| video_segments.last().map(|segment| segment.end_time))
+    let video_time = segments::map_timeline_to_video_time(adjusted, session.video_segments)
+        .or_else(|| {
+            session
+                .video_segments
+                .last()
+                .map(|segment| segment.end_time)
+        })
         .unwrap_or(adjusted);
 
-    let video = decoder
+    let video = session
+        .decoder
         .frame_at(video_time)
         .and_then(|frame| to_pixmap(&frame));
-    let camera_frame = camera
+    let camera_frame = session
+        .camera
         .and_then(|decoder| decoder.frame_at(video_time))
         .and_then(|frame| to_pixmap(&frame));
 
-    let composed = engine
-        .render_frame(
+    session
+        .engine
+        .render_frame_at(
             timeline_time,
             Frames {
                 video: video.as_ref().map(Pixmap::as_ref),
                 camera: camera_frame.as_ref().map(Pixmap::as_ref),
             },
+            session.dimensions.width,
+            session.dimensions.height,
         )
-        .ok_or_else(|| "the frame could not be composed".to_string())?;
-
-    scale_to(&composed, dimensions.width, dimensions.height)
-        .ok_or_else(|| "the frame could not be scaled".to_string())
+        .ok_or_else(|| "the frame could not be composed".to_string())
 }
 
 fn to_pixmap(frame: &crate::video::decoder::DecodedFrame) -> Option<Pixmap> {
@@ -419,18 +598,6 @@ fn to_pixmap(frame: &crate::video::decoder::DecodedFrame) -> Option<Pixmap> {
     Some(pixmap)
 }
 
-/// Resamples a composed frame to the export size, on an opaque backdrop so a
-/// transparent wallpaper does not encode as black fringing.
-fn scale_to(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
-    if source.width() == width && source.height() == height {
-        return Some(source.clone());
-    }
-    let mut canvas = Canvas::new(width, height)?;
-    canvas.fill_all(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
-    canvas.draw_pixmap(source.as_ref(), 0.0, 0.0, width as f32, height as f32);
-    Some(canvas.into_pixmap())
-}
-
 /// Unpremultiplies into the BGRA layout Media Foundation's RGB32 input expects.
 fn to_bgra(pixmap: &Pixmap) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(pixmap.data().len());
@@ -451,57 +618,50 @@ fn to_bgra(pixmap: &Pixmap) -> Vec<u8> {
     bytes
 }
 
-/// Decodes, trims and mixes every enabled audio track, or `None` when the
-/// project has no audible source.
 fn build_audio(
     project_path: &Path,
     state: &VideoEditorState,
-    total_duration: f64,
+    source_duration: f64,
+    audio_duration: f64,
 ) -> Option<audio::Pcm> {
+    let sources = audio_tracks::Sources::resolve(project_path);
     let mut tracks: Vec<audio::Track> = Vec::new();
 
-    let mut add = |path: PathBuf, volume: f64, enabled: bool| {
-        if !enabled || volume <= 0.0 {
-            return;
+    for stem in audio_tracks::stems(&sources, state, source_duration) {
+        let volume = stem.volume.resolve(state);
+        if volume <= 0.0 {
+            continue;
         }
-        if let Some(samples) = audio::decode(&path) {
-            tracks.push(audio::Track {
-                samples: audio::apply_segments(&samples, &state.segments),
-                volume,
-            });
-        }
-    };
+        let Some(samples) = audio::decode(&stem.path) else {
+            continue;
+        };
+        tracks.push(audio::Track {
+            samples: audio::place(&samples, &stem.placement),
+            volume,
+        });
+    }
 
-    add(
-        project::system_audio_path(project_path),
-        state.audio_style.system_audio_volume,
-        state.audio_style.system_audio_enabled,
-    );
-    add(
-        project::mic_audio_path(project_path),
-        state.audio_style.mic_audio_volume,
-        state.audio_style.mic_audio_enabled,
-    );
-
-    if let Some(folder) = project::music_folder(project_path) {
-        for track in &state.music_tracks {
-            if !track.enabled || track.file_name.is_empty() {
-                continue;
+    let keyboard_volume = audio_tracks::VolumeSource::Keyboard.resolve(state);
+    if keyboard_volume > 0.0 {
+        if let Some(data) = sidecars::load_keyboard(project_path) {
+            if let Some(samples) = keyboard_audio::render(
+                &data,
+                &state.segments,
+                &state.audio_style.keyboard_sound_type,
+                audio_duration,
+            ) {
+                tracks.push(audio::Track {
+                    samples,
+                    volume: keyboard_volume,
+                });
             }
-            let Some(samples) = audio::decode(&folder.join(&track.file_name)) else {
-                continue;
-            };
-            tracks.push(audio::Track {
-                samples: audio::place_music_track(&samples, track),
-                volume: track.volume,
-            });
         }
     }
 
     if tracks.is_empty() {
         return None;
     }
-    let frames = (total_duration * AUDIO_SAMPLE_RATE as f64).round() as usize;
+    let frames = (audio_duration * AUDIO_SAMPLE_RATE as f64).round() as usize;
     let mixed = audio::mix(&tracks, frames);
     (mixed.len() >= AUDIO_CHANNELS as usize).then_some(mixed)
 }
@@ -560,7 +720,7 @@ mod tests {
     #[test]
     fn the_frame_rate_comes_from_the_export_settings() {
         let mut state = VideoEditorState::default();
-        assert_eq!(frame_rate(&state), 60);
+        assert_eq!(frame_rate(&state), 30);
         state.export_settings.frame_rate = "24".into();
         assert_eq!(frame_rate(&state), 24);
         state.export_settings.frame_rate = "nonsense".into();
@@ -568,10 +728,89 @@ mod tests {
     }
 
     #[test]
-    fn the_default_output_sits_beside_the_project() {
-        let state = VideoEditorState::default();
+    fn the_default_output_sits_beside_the_project_with_an_exported_stem() {
+        let mut state = VideoEditorState::default();
         let path = default_output_path(Path::new("/tmp/Take 1.poratake"), &state);
-        assert_eq!(path, PathBuf::from("/tmp/Take 1.mp4"));
+        assert_eq!(path, PathBuf::from("/tmp/Take 1-exported.mp4"));
+
+        state.export_settings.format = "gif".into();
+        assert_eq!(
+            default_output_path(Path::new("/tmp/Take 1.poratake"), &state),
+            PathBuf::from("/tmp/Take 1-exported.gif")
+        );
+    }
+
+    fn gif_progress_sequence(frames: u64, conversion_samples: u64) -> Vec<f32> {
+        let mut values = Vec::new();
+        for index in 0..frames {
+            values.push(phase_fraction(
+                0.0,
+                GIF_FRAME_PASS_SHARE,
+                (index + 1) as f32 / frames as f32,
+            ));
+        }
+        for sample in 0..conversion_samples {
+            values.push(phase_fraction(
+                GIF_FRAME_PASS_SHARE,
+                1.0,
+                (sample + 1) as f32 / conversion_samples as f32,
+            ));
+        }
+        values
+    }
+
+    #[test]
+    fn the_gif_progress_never_goes_backwards_and_reaches_the_end_only_at_the_end() {
+        let values = gif_progress_sequence(60, 20);
+
+        assert!(
+            values.windows(2).all(|pair| pair[1] >= pair[0]),
+            "{values:?}"
+        );
+        assert!(values[0] < 0.05, "{}", values[0]);
+        assert_eq!(values.last().copied(), Some(1.0));
+        assert!(values[..values.len() - 1].iter().all(|value| *value < 1.0));
+    }
+
+    #[test]
+    fn the_gif_progress_advances_in_small_steps_through_the_conversion() {
+        let values = gif_progress_sequence(60, 20);
+        let biggest_step = values
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .fold(0.0_f32, f32::max);
+        assert!(biggest_step < 0.05, "{biggest_step}");
+
+        let during_conversion = values
+            .iter()
+            .filter(|value| **value > GIF_FRAME_PASS_SHARE && **value < 1.0)
+            .count();
+        assert!(during_conversion >= 10, "{during_conversion}");
+    }
+
+    #[test]
+    fn a_phase_fraction_stays_inside_its_own_band() {
+        assert_eq!(phase_fraction(0.0, GIF_FRAME_PASS_SHARE, -1.0), 0.0);
+        assert_eq!(phase_fraction(0.0, GIF_FRAME_PASS_SHARE, 2.0), 0.7);
+        assert_eq!(phase_fraction(GIF_FRAME_PASS_SHARE, 1.0, 0.0), 0.7);
+        assert_eq!(phase_fraction(GIF_FRAME_PASS_SHARE, 1.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn the_in_process_gif_encoder_leaves_room_for_the_flush() {
+        let last_frame = phase_fraction(0.0, GIF_DIRECT_ENCODE_SHARE, 1.0);
+        assert!(last_frame < 1.0, "{last_frame}");
+        assert!(last_frame > GIF_FRAME_PASS_SHARE, "{last_frame}");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn ffmpeg_progress_lines_are_read_as_seconds() {
+        assert_eq!(ffmpeg_progress_seconds("out_time_us=1500000"), Some(1.5));
+        assert_eq!(ffmpeg_progress_seconds("out_time_ms=2000000"), Some(2.0));
+        assert_eq!(ffmpeg_progress_seconds("out_time_us=N/A"), None);
+        assert_eq!(ffmpeg_progress_seconds("frame=12"), None);
+        assert_eq!(ffmpeg_progress_seconds("progress=end"), None);
     }
 
     #[test]
@@ -582,11 +821,9 @@ mod tests {
     }
 
     #[test]
-    fn scaling_returns_the_requested_size() {
-        let mut source = Pixmap::new(4, 4).expect("pixmap");
-        source.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 255));
-        let scaled = scale_to(&source, 8, 8).expect("scaled");
-        assert_eq!((scaled.width(), scaled.height()), (8, 8));
+    fn the_audio_offset_is_the_first_frame_in_media_units() {
+        assert_eq!(audio_offset(0.0), 0);
+        assert_eq!(audio_offset(1.0 / 60.0), 166_667);
     }
 
     #[test]
@@ -604,13 +841,13 @@ mod tests {
 
     #[test]
     fn an_export_with_no_recording_fails_before_writing_anything() {
-        let output = std::env::temp_dir().join("poratake-export-test.gif");
+        let output = crate::util::test_paths::unique_temp("poratake-export-test.gif");
         let _ = std::fs::remove_file(&output);
         let mut state = VideoEditorState::default();
         state.export_settings.format = "gif".into();
         let error = run(
             Request {
-                project: std::env::temp_dir().join("poratake-missing.poratake"),
+                project: crate::util::test_paths::unique_temp("poratake-missing.poratake"),
                 output: output.clone(),
                 state,
             },

@@ -7,6 +7,7 @@ use gpui::{
 use herogpui::gpui;
 
 use crate::config::schema::{CustomBackground, CustomBackgroundData};
+use crate::editor::background::{BackgroundPreviews, PreviewState};
 use crate::editor::options::{EditorHandlers, EditorOption};
 use crate::editor::wallpaper::{self, WallpaperSettings};
 use crate::editor::window::{
@@ -18,17 +19,29 @@ use crate::theme::vars::{active_theme, ThemeVars};
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, ICON_MD};
 use crate::ui::icon_button;
-use crate::ui::menu::MenuHandle;
 use herogpui::components::{Button, Select, Size, Switch, TextField, Variant};
 use herogpui::components::{Slider, SliderSize};
 use herogpui::Separator;
 
+pub const SHEET_ANIMATION_MS: u64 = 300;
+
+pub struct SheetState<'a> {
+    pub wallpaper: &'a WallpaperSettings,
+    pub has_layers: bool,
+    pub preset_id: &'a str,
+    pub draft: Option<&'a BackgroundDraft>,
+    pub previews: &'a BackgroundPreviews,
+    pub preset_draft: Option<PresetDraftView<'a>>,
+    pub closing: bool,
+}
+
+pub struct PresetDraftView<'a> {
+    pub field: &'a gpui::Entity<herogpui::components::InputState>,
+    pub name: &'a str,
+}
+
 pub fn render(
-    wallpaper: &WallpaperSettings,
-    has_layers: bool,
-    preset_id: &str,
-    draft: Option<&BackgroundDraft>,
-    _menu: &MenuHandle,
+    state: &SheetState<'_>,
     handlers: &EditorHandlers,
     window: &mut Window,
     cx: &mut App,
@@ -36,9 +49,14 @@ pub fn render(
     let theme = active_theme(cx);
     let config = crate::state::state(cx).config.get();
     let wallpaper_config = config.wallpaper;
+    let wallpaper = state.wallpaper;
 
-    if let Some(draft) = draft {
-        return sheet_shell(background_editor_panel(draft, handlers, &theme), &theme);
+    if let Some(draft) = state.draft {
+        return sheet_shell(
+            background_editor_panel(draft, handlers, &theme, window, cx),
+            state.closing,
+            &theme,
+        );
     }
 
     let content = div()
@@ -53,7 +71,7 @@ pub fn render(
                 .flex_col()
                 .gap(px(chrome::WALLPAPER_SHEET_INNER_GAP))
                 .child(preset_manager(
-                    preset_id,
+                    state,
                     &wallpaper_config.presets,
                     wallpaper_config.default_preset_id.as_deref(),
                     handlers,
@@ -63,6 +81,7 @@ pub fn render(
                 .child(backgrounds_section(
                     wallpaper,
                     &wallpaper_config.custom_backgrounds,
+                    state.previews,
                     handlers,
                     &theme,
                     window,
@@ -116,14 +135,19 @@ pub fn render(
                     EditorOption::WallpaperShadow,
                     &theme,
                 ))
-                .child(spacing_control(wallpaper, has_layers, handlers, &theme))
+                .child(spacing_control(
+                    wallpaper,
+                    state.has_layers,
+                    handlers,
+                    &theme,
+                ))
                 .child(Separator::new())
                 .child(window_frames(wallpaper, handlers, &theme)),
         );
-    sheet_shell(content.into_any_element(), &theme)
+    sheet_shell(content.into_any_element(), state.closing, &theme)
 }
 
-fn sheet_shell(content: AnyElement, theme: &ThemeVars) -> AnyElement {
+fn sheet_shell(content: AnyElement, closing: bool, theme: &ThemeVars) -> AnyElement {
     let sheet = div()
         .id("wallpaper-sheet")
         .flex()
@@ -140,13 +164,16 @@ fn sheet_shell(content: AnyElement, theme: &ThemeVars) -> AnyElement {
         .shadow_lg()
         .child(content)
         .with_animation(
-            ElementId::Name("wallpaper-sheet-enter".into()),
-            Animation::new(std::time::Duration::from_millis(300))
+            ElementId::Name(if closing {
+                "wallpaper-sheet-exit".into()
+            } else {
+                "wallpaper-sheet-enter".into()
+            }),
+            Animation::new(std::time::Duration::from_millis(SHEET_ANIMATION_MS))
                 .with_easing(crate::ui::primitives::cubic_bezier(0.42, 0.0, 0.58, 1.0)),
-            |sheet, delta| {
-                sheet
-                    .opacity(delta)
-                    .left(px(-chrome::WALLPAPER_SHEET_WIDTH * (1.0 - delta)))
+            move |sheet, delta| {
+                let travel = if closing { delta } else { 1.0 - delta };
+                sheet.left(px(-chrome::WALLPAPER_SHEET_WIDTH * travel))
             },
         );
 
@@ -167,6 +194,8 @@ fn background_editor_panel(
     draft: &BackgroundDraft,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     let close = handlers.option(EditorOption::WallpaperEditorClose);
     let save = handlers.option(EditorOption::WallpaperEditorSave);
@@ -199,7 +228,7 @@ fn background_editor_panel(
                 ),
         )
         .child(editor_preview(draft, theme))
-        .child(editor_type_toggle(draft, handlers, theme));
+        .child(editor_type_toggle(draft, handlers, theme, window, cx));
     panel = if is_gradient {
         panel
             .child(editor_colors(draft, handlers, theme))
@@ -282,10 +311,25 @@ fn editor_preview(draft: &BackgroundDraft, theme: &ThemeVars) -> AnyElement {
     }
 }
 
+const EDITOR_TYPE_SEGMENTS: [(BackgroundDraftType, &str, &str); 2] = [
+    (BackgroundDraftType::Gradient, "Gradient", "gradient"),
+    (BackgroundDraftType::Image, "Image", "image"),
+];
+
+fn editor_type_segment_id(text: &str) -> String {
+    format!("wallpaper-editor-tab-{text}")
+}
+
+fn activates_editor_type_segment(key: &str) -> bool {
+    matches!(key, "enter" | "space")
+}
+
 fn editor_type_toggle(
     draft: &BackgroundDraft,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     let row = div()
         .flex()
@@ -293,23 +337,18 @@ fn editor_type_toggle(
         .gap(px(6.0))
         .child(label("Type", theme, false));
     let mut buttons = div().flex().flex_row().gap(px(8.0));
-    for (value, text) in [
-        (BackgroundDraftType::Gradient, "Gradient"),
-        (BackgroundDraftType::Image, "Image"),
-    ] {
+    for (value, text, option) in EDITOR_TYPE_SEGMENTS {
         let selected = draft.draft_type == value;
-        let apply = handlers.option(EditorOption::WallpaperEditorTab(SharedString::from(
-            if value == BackgroundDraftType::Image {
-                "image"
-            } else {
-                "gradient"
-            },
-        )));
+        let tab = EditorOption::WallpaperEditorTab(SharedString::from(option));
+        let press = handlers.option(tab.clone());
+        let activate = handlers.option(tab);
+        let key = editor_type_segment_id(text);
+        let focus = crate::ui::primitives::control_focus(&key, false, window, cx);
         buttons = buttons.child(
             div()
-                .id(ElementId::Name(SharedString::from(format!(
-                    "wallpaper-editor-tab-{text}"
-                ))))
+                .id(ElementId::Name(SharedString::from(key)))
+                .track_focus(&focus)
+                .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
                 .flex_1()
                 .flex()
                 .items_center()
@@ -322,6 +361,9 @@ fn editor_type_toggle(
                 } else {
                     theme.popover
                 })
+                .when(!selected, |el| {
+                    el.hover(|style| style.bg(theme.muted_background))
+                })
                 .text_size(px(chrome::TEXT_SM))
                 .text_color(if selected {
                     theme.primary
@@ -332,7 +374,14 @@ fn editor_type_toggle(
                 .py(px(6.0))
                 .cursor_pointer()
                 .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-                    apply(window, cx);
+                    press(window, cx);
+                })
+                .on_key_down(move |event, window, cx| {
+                    if !activates_editor_type_segment(event.keystroke.key.as_str()) {
+                        return;
+                    }
+                    activate(window, cx);
+                    cx.stop_propagation();
                 })
                 .child(text),
         );
@@ -609,14 +658,100 @@ fn header(handlers: &EditorHandlers, theme: &ThemeVars) -> AnyElement {
         .into_any_element()
 }
 
+fn preset_save_panel(
+    wallpaper: &WallpaperSettings,
+    draft: &PresetDraftView<'_>,
+    handlers: &EditorHandlers,
+    theme: &ThemeVars,
+) -> AnyElement {
+    let cancel = handlers.option(EditorOption::WallpaperPresetDraftCancel);
+    let commit = handlers.option(EditorOption::WallpaperSavePreset);
+    let submit = handlers.option(EditorOption::WallpaperSavePreset);
+    let can_save = wallpaper::preset_save_name(draft.name).is_some();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(label("Save Preset", theme, false))
+                .child(
+                    icon_button::compact_sm_muted("wallpaper-preset-cancel", "x")
+                        .on_press(move |_event, window, cx| cancel(window, cx)),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .rounded(px(chrome::RADIUS_MD))
+                .bg(theme.muted_background.opacity(0.5))
+                .p(px(8.0))
+                .text_size(px(chrome::TEXT_XS))
+                .child(div().text_color(theme.muted_foreground).child("Preview:"))
+                .child(
+                    div()
+                        .text_color(theme.foreground)
+                        .child(wallpaper::preset_summary(wallpaper)),
+                ),
+        )
+        .child(
+            TextField::new(draft.field)
+                .auto_focus(true)
+                .full_width()
+                .text_size(px(chrome::TEXT_XS))
+                .placeholder("Preset name")
+                .on_submit(move |value, window, cx| {
+                    if wallpaper::preset_save_name(value).is_some() {
+                        submit(window, cx);
+                    }
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(8.0))
+                .child(
+                    Button::new("wallpaper-preset-cancel-button")
+                        .variant(Variant::Ghost)
+                        .recipe("compact")
+                        .label("Cancel")
+                        .grow(true)
+                        .on_press({
+                            let cancel = handlers.option(EditorOption::WallpaperPresetDraftCancel);
+                            move |_event, window, cx| cancel(window, cx)
+                        }),
+                )
+                .child(
+                    Button::new("wallpaper-preset-save-button")
+                        .recipe("compact")
+                        .label("Save")
+                        .is_disabled(!can_save)
+                        .grow(true)
+                        .on_press(move |_event, window, cx| commit(window, cx)),
+                ),
+        )
+        .into_any_element()
+}
+
 fn preset_manager(
-    selected_id: &str,
+    state: &SheetState<'_>,
     presets: &[crate::config::schema::WallpaperPreset],
     default_id: Option<&str>,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
 ) -> AnyElement {
-    let save = handlers.option(EditorOption::WallpaperSavePreset);
+    if let Some(draft) = &state.preset_draft {
+        return preset_save_panel(state.wallpaper, draft, handlers, theme);
+    }
+    let selected_id = state.preset_id;
+    let save = handlers.option(EditorOption::WallpaperPresetDraftOpen);
     let block = div().flex().flex_col().gap(px(8.0)).child(
         div()
             .flex()
@@ -719,6 +854,7 @@ fn preset_manager(
 fn backgrounds_section(
     wallpaper: &WallpaperSettings,
     customs: &[CustomBackground],
+    previews: &BackgroundPreviews,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
     window: &mut Window,
@@ -758,28 +894,25 @@ fn backgrounds_section(
     if crate::system::capabilities::is_supported(
         crate::system::capabilities::Feature::DesktopWallpaper,
     ) {
-        tiles.push(desktop_tile(wallpaper, customs, tile, handlers, theme));
+        tiles.push(desktop_tile(
+            wallpaper, customs, previews, tile, handlers, theme,
+        ));
     }
-    for (index, (id, name, colors, angle)) in wallpaper::SVG_PRESETS.iter().enumerate() {
+    for (index, (id, name, _)) in crate::editor::wallpaper_svg::PRESETS.iter().enumerate() {
         let selected = wallpaper
             .gradient
             .as_ref()
             .is_some_and(|gradient| gradient.id == *id);
         let select = handlers.option(EditorOption::WallpaperGradient(SharedString::from(*id)));
-        tiles.push(gradient_tile(
-            ElementId::Integer(index as u64),
-            name,
-            colors,
-            *angle,
-            tile,
-            selected,
-            theme,
-            select,
-        ));
+        let element_id = ElementId::Integer(index as u64);
+        tiles.push(match crate::editor::wallpaper_svg::render_image(id, tile) {
+            Some(image) => image_tile_named(element_id, name, image, tile, selected, theme, select),
+            None => icon_tile(element_id, name, "image", tile, selected, theme, select),
+        });
     }
     for (index, background) in customs.iter().enumerate() {
         tiles.push(custom_tile(
-            wallpaper, background, index, tile, handlers, theme,
+            wallpaper, background, previews, index, tile, handlers, theme,
         ));
     }
 
@@ -877,6 +1010,7 @@ fn selected_custom<'a>(
 fn desktop_tile(
     wallpaper: &WallpaperSettings,
     customs: &[CustomBackground],
+    previews: &BackgroundPreviews,
     size: f32,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
@@ -890,20 +1024,35 @@ fn desktop_tile(
     let is_desktop =
         wallpaper.background_image.is_some() && wallpaper.gradient.is_none() && !is_custom_image;
     let use_desktop = handlers.option(EditorOption::WallpaperUseDesktop);
-    icon_tile(
-        "wallpaper-desktop",
-        "Use Desktop Wallpaper",
-        "monitor",
-        size,
-        is_desktop,
-        theme,
-        use_desktop,
-    )
+    match previews.desktop() {
+        PreviewState::Ready(image) => image_tile_named(
+            "wallpaper-desktop",
+            if is_desktop {
+                "Desktop Wallpaper (active)"
+            } else {
+                "Use Desktop Wallpaper"
+            },
+            image,
+            size,
+            is_desktop,
+            theme,
+            use_desktop,
+        ),
+        PreviewState::Loading => loading_tile("wallpaper-desktop", size, theme),
+        PreviewState::Failed => disabled_tile(
+            "wallpaper-desktop",
+            "Unable to access desktop wallpaper",
+            "monitor",
+            size,
+            theme,
+        ),
+    }
 }
 
 fn custom_tile(
     wallpaper: &WallpaperSettings,
     background: &CustomBackground,
+    previews: &BackgroundPreviews,
     index: usize,
     size: f32,
     handlers: &EditorHandlers,
@@ -924,7 +1073,7 @@ fn custom_tile(
             ];
             gradient_tile(
                 ElementId::Name(SharedString::from(format!("custom-{}", index))),
-                background.id.as_str(),
+                "",
                 &pair,
                 data.gradient.angle,
                 size,
@@ -935,48 +1084,154 @@ fn custom_tile(
         }
         CustomBackgroundData::Image { data } => {
             let selected = wallpaper.background_image.as_deref() == Some(data.image_url.as_str());
-            icon_tile(
-                ElementId::Name(SharedString::from(format!("custom-image-{}", index))),
-                "Custom image",
-                "image",
-                size,
-                selected,
-                theme,
-                select,
-            )
+            let id = ElementId::Name(SharedString::from(format!("custom-image-{}", index)));
+            match previews.custom(&background.id) {
+                PreviewState::Ready(image) => {
+                    image_tile_named(id, "", image, size, selected, theme, select)
+                }
+                PreviewState::Loading => loading_tile(id, size, theme),
+                PreviewState::Failed => {
+                    disabled_tile(id, "This image could not be read", "image", size, theme)
+                }
+            }
         }
     }
 }
 
+const TILE_RING_GAP: f32 = 2.0;
+
+enum TileInteraction {
+    Click(Rc<dyn Fn(&mut Window, &mut App)>),
+    Inert,
+    Blocked,
+}
+
+fn tile_shell(
+    id: impl Into<ElementId>,
+    tooltip: &str,
+    size: f32,
+    selected: bool,
+    theme: &ThemeVars,
+    interaction: TileInteraction,
+    content: AnyElement,
+) -> AnyElement {
+    let ring = theme.ring;
+    let border = theme.border;
+    let mut tile = div()
+        .id(id)
+        .w(px(size))
+        .h(px(size))
+        .flex()
+        .rounded(px(chrome::WALLPAPER_TILE_RADIUS + TILE_RING_GAP * 2.0))
+        .border_2()
+        .border_color(if selected {
+            ring
+        } else {
+            gpui::hsla(0.0, 0.0, 0.0, 0.0)
+        })
+        .p(px(TILE_RING_GAP))
+        .when(!selected, |el| {
+            el.hover(move |style| style.border_color(border))
+        })
+        .child(
+            div()
+                .size_full()
+                .overflow_hidden()
+                .rounded(px(chrome::WALLPAPER_TILE_RADIUS))
+                .child(content),
+        );
+    match interaction {
+        TileInteraction::Click(handler) => {
+            tile = tile.cursor_pointer().on_mouse_down(
+                gpui::MouseButton::Left,
+                move |_event, window, cx| {
+                    handler(window, cx);
+                },
+            );
+        }
+        TileInteraction::Inert => tile = tile.cursor_default(),
+        TileInteraction::Blocked => {
+            tile = tile.cursor(gpui::CursorStyle::OperationNotAllowed);
+        }
+    }
+    if tooltip.is_empty() {
+        return tile.into_any_element();
+    }
+    herogpui::components::Tooltip::new(SharedString::from(tooltip.to_string()))
+        .child(tile)
+        .into_any_element()
+}
+
 pub fn icon_tile(
     id: impl Into<ElementId>,
-    _tooltip: &str,
+    tooltip: &str,
     icon: &'static str,
     size: f32,
     selected: bool,
     theme: &ThemeVars,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let handler = Rc::new(on_click);
+    tile_shell(
+        id,
+        tooltip,
+        size,
+        selected,
+        theme,
+        TileInteraction::Click(Rc::new(on_click)),
+        icon_face(theme)
+            .child(icon_element(icon, px(ICON_MD)))
+            .into_any_element(),
+    )
+}
+
+fn icon_face(theme: &ThemeVars) -> gpui::Div {
     div()
-        .id(id)
-        .w(px(size))
-        .h(px(size))
+        .size_full()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(chrome::WALLPAPER_TILE_RADIUS))
         .bg(theme.muted_background)
-        .when(selected, |el| el.border_2().border_color(theme.ring))
-        .when(!selected, |el| {
-            el.border_2().border_color(theme.muted_background)
-        })
-        .cursor_pointer()
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            handler(window, cx);
-        })
-        .child(icon_element(icon, px(ICON_MD)))
-        .into_any_element()
+}
+
+fn loading_tile(id: impl Into<ElementId>, size: f32, theme: &ThemeVars) -> AnyElement {
+    let id = id.into();
+    let spinner = crate::ui::icon::spinner_element(
+        ElementId::Name(SharedString::from(format!("{id:?}-spinner"))),
+        px(ICON_MD),
+    );
+    tile_shell(
+        id,
+        "",
+        size,
+        false,
+        theme,
+        TileInteraction::Inert,
+        icon_face(theme)
+            .text_color(theme.muted_foreground)
+            .child(spinner)
+            .into_any_element(),
+    )
+}
+
+fn disabled_tile(
+    id: impl Into<ElementId>,
+    tooltip: &str,
+    icon: &'static str,
+    size: f32,
+    theme: &ThemeVars,
+) -> AnyElement {
+    tile_shell(
+        id,
+        tooltip,
+        size,
+        false,
+        theme,
+        TileInteraction::Blocked,
+        icon_face(theme)
+            .opacity(0.5)
+            .child(icon_element(icon, px(ICON_MD)))
+            .into_any_element(),
+    )
 }
 
 pub fn image_tile(
@@ -987,32 +1242,35 @@ pub fn image_tile(
     theme: &ThemeVars,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let handler = Rc::new(on_click);
-    div()
-        .id(id)
-        .w(px(size))
-        .h(px(size))
-        .overflow_hidden()
-        .rounded(px(chrome::WALLPAPER_TILE_RADIUS))
-        .when(selected, |el| el.border_2().border_color(theme.ring))
-        .when(!selected, |el| {
-            el.border_2().border_color(theme.muted_background)
-        })
-        .cursor_pointer()
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            handler(window, cx);
-        })
-        .child(
-            gpui::img(image)
-                .size_full()
-                .object_fit(gpui::ObjectFit::Cover),
-        )
-        .into_any_element()
+    image_tile_named(id, "", image, size, selected, theme, on_click)
+}
+
+pub fn image_tile_named(
+    id: impl Into<ElementId>,
+    tooltip: &str,
+    image: std::sync::Arc<gpui::RenderImage>,
+    size: f32,
+    selected: bool,
+    theme: &ThemeVars,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    tile_shell(
+        id,
+        tooltip,
+        size,
+        selected,
+        theme,
+        TileInteraction::Click(Rc::new(on_click)),
+        gpui::img(image)
+            .size_full()
+            .object_fit(gpui::ObjectFit::Cover)
+            .into_any_element(),
+    )
 }
 
 pub fn gradient_tile(
     id: impl Into<ElementId>,
-    _name: &str,
+    name: &str,
     colors: &[&str],
     angle: f64,
     size: f32,
@@ -1022,26 +1280,22 @@ pub fn gradient_tile(
 ) -> AnyElement {
     let from = Srgba::parse(colors.first().copied().unwrap_or("#000000")).to_hsla();
     let to = Srgba::parse(colors.last().copied().unwrap_or("#ffffff")).to_hsla();
-    let handler = Rc::new(on_click);
-    div()
-        .id(id)
-        .w(px(size))
-        .h(px(size))
-        .rounded(px(chrome::WALLPAPER_TILE_RADIUS))
-        .bg(linear_gradient(
-            angle as f32,
-            linear_color_stop(from, 0.0),
-            linear_color_stop(to, 1.0),
-        ))
-        .when(selected, |el| el.border_2().border_color(theme.ring))
-        .when(!selected, |el| {
-            el.border_2().border_color(gpui::hsla(0.0, 0.0, 0.0, 0.0))
-        })
-        .cursor_pointer()
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            handler(window, cx);
-        })
-        .into_any_element()
+    tile_shell(
+        id,
+        name,
+        size,
+        selected,
+        theme,
+        TileInteraction::Click(Rc::new(on_click)),
+        div()
+            .size_full()
+            .bg(linear_gradient(
+                angle as f32,
+                linear_color_stop(from, 0.0),
+                linear_color_stop(to, 1.0),
+            ))
+            .into_any_element(),
+    )
 }
 
 fn aspect_row(
@@ -1229,7 +1483,7 @@ fn frame_preview(
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .rounded(px(6.0))
+                .rounded(px(chrome::RADIUS_MD))
                 .border_1()
                 .border_color(Srgba::parse(frame_border).to_hsla())
                 .child(
@@ -1251,15 +1505,15 @@ fn frame_preview(
                 .child(div().flex_1().bg(Srgba::parse(content).to_hsla()))
         }
         None => div()
+            .relative()
             .h(px(chrome::WALLPAPER_FRAME_PREVIEW_H))
             .w_full()
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(theme.border)
+            .rounded(px(chrome::RADIUS_MD))
             .bg(theme.muted_background.opacity(0.5))
+            .child(dashed_border(theme.border))
             .child(
                 div()
                     .text_size(px(chrome::TEXT_XS))
@@ -1285,6 +1539,10 @@ fn frame_preview(
             gpui::hsla(0.0, 0.0, 0.0, 0.0)
         })
         .when(selected, |el| el.bg(theme.muted_background))
+        .when(!selected, |el| {
+            let border = theme.border;
+            el.hover(move |style| style.border_color(border))
+        })
         .p(px(chrome::WALLPAPER_FRAME_PAD))
         .cursor_pointer()
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
@@ -1302,6 +1560,52 @@ fn frame_preview(
                 .child(name),
         )
         .into_any_element()
+}
+
+const DASH_LENGTH: f32 = 4.0;
+const DASH_GAP: f32 = 3.0;
+const DASH_WIDTH: f32 = 1.0;
+
+fn dashed_border(color: gpui::Hsla) -> AnyElement {
+    gpui::canvas(
+        |_, _, _| {},
+        move |bounds, _: (), window, _cx| {
+            let mut builder = gpui::PathBuilder::stroke(px(DASH_WIDTH));
+            let inset = DASH_WIDTH / 2.0;
+            let left = f32::from(bounds.origin.x) + inset;
+            let top = f32::from(bounds.origin.y) + inset;
+            let right = left + f32::from(bounds.size.width) - DASH_WIDTH;
+            let bottom = top + f32::from(bounds.size.height) - DASH_WIDTH;
+            let step = DASH_LENGTH + DASH_GAP;
+            let mut dash = |from: (f32, f32), to: (f32, f32)| {
+                let span = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
+                if span <= 0.0 {
+                    return;
+                }
+                let (dx, dy) = ((to.0 - from.0) / span, (to.1 - from.1) / span);
+                let mut offset = 0.0;
+                while offset < span {
+                    let end = (offset + DASH_LENGTH).min(span);
+                    builder.move_to(gpui::point(
+                        px(from.0 + dx * offset),
+                        px(from.1 + dy * offset),
+                    ));
+                    builder.line_to(gpui::point(px(from.0 + dx * end), px(from.1 + dy * end)));
+                    offset += step;
+                }
+            };
+            dash((left, top), (right, top));
+            dash((right, top), (right, bottom));
+            dash((right, bottom), (left, bottom));
+            dash((left, bottom), (left, top));
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, color);
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
 }
 
 fn traffic_lights() -> AnyElement {
@@ -1340,6 +1644,20 @@ fn windows_controls(color: gpui::Hsla) -> AnyElement {
                 .items_center()
                 .justify_center()
                 .child(div().size(px(6.0)).border_1().border_color(color)),
+        )
+        .child(
+            div()
+                .w(px(12.0))
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(color)
+                .child(
+                    crate::ui::icon::icon("M8 8L16 16M16 8L8 16")
+                        .size(px(12.0))
+                        .stroke_width(2.0),
+                ),
         )
         .into_any_element()
 }
@@ -1446,4 +1764,47 @@ pub fn video_aspect_grid(
                 .children(buttons),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_editor_type_segment_is_its_own_focus_stop() {
+        let ids: Vec<String> = EDITOR_TYPE_SEGMENTS
+            .iter()
+            .map(|(_, text, _)| editor_type_segment_id(text))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "wallpaper-editor-tab-Gradient".to_string(),
+                "wallpaper-editor-tab-Image".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn editor_type_segments_carry_the_option_value_of_their_draft_type() {
+        assert_eq!(
+            EDITOR_TYPE_SEGMENTS
+                .iter()
+                .map(|(value, _, option)| (*value, *option))
+                .collect::<Vec<_>>(),
+            vec![
+                (BackgroundDraftType::Gradient, "gradient"),
+                (BackgroundDraftType::Image, "image"),
+            ]
+        );
+    }
+
+    #[test]
+    fn editor_type_segments_activate_on_enter_and_space_only() {
+        assert!(activates_editor_type_segment("enter"));
+        assert!(activates_editor_type_segment("space"));
+        assert!(!activates_editor_type_segment("tab"));
+        assert!(!activates_editor_type_segment("escape"));
+        assert!(!activates_editor_type_segment("a"));
+    }
 }

@@ -24,13 +24,6 @@ impl Srgba {
         a: 0.0,
     };
 
-    pub const WHITE: Self = Self {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a: 1.0,
-    };
-
     pub fn from_hex(hex: &str) -> Self {
         let hex = hex.trim();
         let hex = hex.strip_prefix('#').unwrap_or(hex);
@@ -80,23 +73,11 @@ impl Srgba {
     }
 
     fn from_oklab(oklab: Oklab) -> Self {
-        let l_ = oklab.lightness + 0.396_337_78 * oklab.a + 0.215_803_76 * oklab.b;
-        let m_ = oklab.lightness - 0.105_561_346 * oklab.a - 0.063_854_17 * oklab.b;
-        let s_ = oklab.lightness - 0.089_484_18 * oklab.a - 1.291_485_5 * oklab.b;
-
-        let l = l_ * l_ * l_;
-        let m = m_ * m_ * m_;
-        let s = s_ * s_ * s_;
-
-        let lr = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
-        let lg = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
-        let lb = -0.0041960863 * l - 0.703_418_6 * m + 1.707_614_7 * s;
-
-        let clamp01 = |v: f32| v.clamp(0.0, 1.0);
+        let (r, g, b) = gamut_map_oklab(oklab);
         Self {
-            r: clamp01(linear_to_srgb(lr)),
-            g: clamp01(linear_to_srgb(lg)),
-            b: clamp01(linear_to_srgb(lb)),
+            r,
+            g,
+            b,
             a: oklab.alpha.clamp(0.0, 1.0),
         }
     }
@@ -154,18 +135,22 @@ impl Srgba {
 
     fn from_oklch_str(body: &str) -> Self {
         let body = body.split('/').map(str::trim).collect::<Vec<_>>();
-        let nums: Vec<f32> = body[0]
-            .split_whitespace()
-            .filter_map(|token| token.trim_end_matches('%').parse::<f32>().ok())
-            .collect();
-        if nums.len() < 3 {
+        let tokens: Vec<&str> = body[0].split_whitespace().collect();
+        if tokens.len() < 3 {
             return Self::from_hex("#000000");
         }
+        let (Some(lightness), Some(chroma), Some(hue)) = (
+            oklch_component(tokens[0], 1.0),
+            oklch_component(tokens[1], OKLCH_CHROMA_REFERENCE),
+            oklch_component(tokens[2], 1.0),
+        ) else {
+            return Self::from_hex("#000000");
+        };
         let alpha = body
             .get(1)
-            .and_then(|a| a.parse::<f32>().ok())
+            .and_then(|token| oklch_component(token, 1.0))
             .unwrap_or(1.0);
-        Self::from_oklch(nums[0], nums[1], nums[2], alpha)
+        Self::from_oklch(lightness, chroma, hue, alpha)
     }
 
     pub fn from_oklch(lightness: f32, chroma: f32, hue_degrees: f32, alpha: f32) -> Self {
@@ -209,6 +194,106 @@ struct Oklab {
     a: f32,
     b: f32,
     alpha: f32,
+}
+
+fn oklch_component(token: &str, percentage_reference: f32) -> Option<f32> {
+    if token.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    match token.strip_suffix('%') {
+        Some(value) => value
+            .parse::<f32>()
+            .ok()
+            .map(|value| value / 100.0 * percentage_reference),
+        None => token.parse::<f32>().ok(),
+    }
+}
+
+const OKLCH_CHROMA_REFERENCE: f32 = 0.4;
+const GAMUT_JND: f32 = 0.02;
+const GAMUT_EPSILON: f32 = 0.0001;
+const GAMUT_SLACK: f32 = 1e-5;
+
+fn oklab_to_srgb(oklab: Oklab) -> (f32, f32, f32) {
+    let l_ = oklab.lightness + 0.396_337_78 * oklab.a + 0.215_803_76 * oklab.b;
+    let m_ = oklab.lightness - 0.105_561_346 * oklab.a - 0.063_854_17 * oklab.b;
+    let s_ = oklab.lightness - 0.089_484_18 * oklab.a - 1.291_485_5 * oklab.b;
+
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+
+    (
+        linear_to_srgb(4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s),
+        linear_to_srgb(-1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s),
+        linear_to_srgb(-0.0041960863 * l - 0.703_418_6 * m + 1.707_614_7 * s),
+    )
+}
+
+fn in_srgb_gamut(channels: (f32, f32, f32)) -> bool {
+    let inside = |value: f32| (-GAMUT_SLACK..=1.0 + GAMUT_SLACK).contains(&value);
+    inside(channels.0) && inside(channels.1) && inside(channels.2)
+}
+
+fn clip_srgb(channels: (f32, f32, f32)) -> (f32, f32, f32) {
+    (
+        channels.0.clamp(0.0, 1.0),
+        channels.1.clamp(0.0, 1.0),
+        channels.2.clamp(0.0, 1.0),
+    )
+}
+
+fn delta_eok(first: Oklab, second: Oklab) -> f32 {
+    let lightness = first.lightness - second.lightness;
+    let a = first.a - second.a;
+    let b = first.b - second.b;
+    (lightness * lightness + a * a + b * b).sqrt()
+}
+
+fn gamut_map_oklab(oklab: Oklab) -> (f32, f32, f32) {
+    let channels = oklab_to_srgb(oklab);
+    if in_srgb_gamut(channels) {
+        return clip_srgb(channels);
+    }
+    if oklab.lightness >= 1.0 {
+        return (1.0, 1.0, 1.0);
+    }
+    if oklab.lightness <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let chroma = oklab.a.hypot(oklab.b);
+    let hue = oklab.b.atan2(oklab.a);
+    let at_chroma = |chroma: f32| Oklab {
+        lightness: oklab.lightness,
+        a: chroma * hue.cos(),
+        b: chroma * hue.sin(),
+        alpha: oklab.alpha,
+    };
+    let mut low = 0.0;
+    let mut high = chroma;
+    while high - low > GAMUT_EPSILON {
+        let mid = (low + high) / 2.0;
+        let candidate = at_chroma(mid);
+        let channels = oklab_to_srgb(candidate);
+        if in_srgb_gamut(channels) {
+            low = mid;
+            continue;
+        }
+        let clipped = clip_srgb(channels);
+        let clipped_oklab = Srgba {
+            r: clipped.0,
+            g: clipped.1,
+            b: clipped.2,
+            a: 1.0,
+        }
+        .to_oklab();
+        if delta_eok(clipped_oklab, candidate) < GAMUT_JND {
+            return clipped;
+        }
+        high = mid;
+    }
+    clip_srgb(oklab_to_srgb(at_chroma(low)))
 }
 
 fn cbrt(v: f32) -> f32 {
@@ -301,4 +386,82 @@ pub fn mix_hsla(color_a: gpui::Hsla, percentage: f32, color_b: gpui::Hsla) -> gp
         Srgba::from_hsla(color_b),
     )
     .to_hsla()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(first: f32, second: f32, tolerance: f32) -> bool {
+        (first - second).abs() <= tolerance
+    }
+
+    #[test]
+    fn oklch_accepts_percentages_for_lightness_chroma_and_alpha() {
+        let fraction = Srgba::parse("oklch(0.7 0.1 200)");
+        let percentage = Srgba::parse("oklch(70% 0.1 200)");
+        assert!(close(fraction.r, percentage.r, 1.0 / 255.0));
+        assert!(close(fraction.g, percentage.g, 1.0 / 255.0));
+        assert!(close(fraction.b, percentage.b, 1.0 / 255.0));
+
+        let chroma_percentage = Srgba::parse("oklch(0.7 25% 200)");
+        assert!(close(fraction.r, chroma_percentage.r, 1.0 / 255.0));
+        assert!(close(fraction.b, chroma_percentage.b, 1.0 / 255.0));
+
+        assert!(close(
+            Srgba::parse("oklch(0.7 0.1 200 / 50%)").a,
+            0.5,
+            1.0 / 255.0
+        ));
+        assert!(close(
+            Srgba::parse("oklch(0.7 0.1 200 / 0.5)").a,
+            0.5,
+            1.0 / 255.0
+        ));
+        assert_eq!(Srgba::parse("oklch(0.7 none 200)").a, 1.0);
+    }
+
+    #[test]
+    fn an_in_gamut_colour_round_trips_untouched() {
+        let original = Srgba::from_hex("#4477cc");
+        let round_trip = Srgba::from_oklab(original.to_oklab());
+        assert!(close(original.r, round_trip.r, 1.0 / 255.0));
+        assert!(close(original.g, round_trip.g, 1.0 / 255.0));
+        assert!(close(original.b, round_trip.b, 1.0 / 255.0));
+    }
+
+    #[test]
+    fn an_out_of_gamut_colour_gives_up_chroma_rather_than_hue() {
+        let requested = Oklab {
+            lightness: 0.7,
+            a: 0.4 * 30.0_f32.to_radians().cos(),
+            b: 0.4 * 30.0_f32.to_radians().sin(),
+            alpha: 1.0,
+        };
+        assert!(!in_srgb_gamut(oklab_to_srgb(requested)));
+
+        let mapped = Srgba::from_oklab(requested).to_oklab();
+        let clipped = {
+            let channels = clip_srgb(oklab_to_srgb(requested));
+            Srgba {
+                r: channels.0,
+                g: channels.1,
+                b: channels.2,
+                a: 1.0,
+            }
+            .to_oklab()
+        };
+        let hue_error = |result: Oklab| {
+            let requested_hue = requested.b.atan2(requested.a);
+            let result_hue = result.b.atan2(result.a);
+            (requested_hue - result_hue).abs()
+        };
+
+        assert!(close(mapped.lightness, requested.lightness, 0.02));
+        assert!(mapped.a.hypot(mapped.b) < requested.a.hypot(requested.b));
+        assert!(
+            hue_error(mapped) < hue_error(clipped),
+            "chroma reduction holds the hue that per-channel clipping shifts"
+        );
+    }
 }

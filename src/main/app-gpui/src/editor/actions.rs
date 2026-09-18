@@ -1,11 +1,11 @@
 //! Editor actions and key bindings — port of `useEditorToolShortcuts` and the
 //! editor command shortcuts in `screenshot-window.tsx`.
 
-use gpui::{App, KeyBinding};
+use gpui::{App, KeyBinding, Modifiers};
 use herogpui::actions;
 use herogpui::gpui;
 
-use crate::config::shortcuts::EditorShortcuts;
+use crate::config::shortcuts::{EditorActionShortcuts, EditorShortcuts};
 
 actions!(
     editor,
@@ -40,8 +40,23 @@ actions!(
         TogglePalette,
         ApplyCrop,
         CancelCrop,
+        CloudUpload,
     ]
 );
+
+pub fn is_meta_held(modifiers: &Modifiers) -> bool {
+    modifiers.secondary()
+}
+
+pub fn capture_overlay_visible(capture_mode: bool, meta_held: bool) -> bool {
+    capture_mode || meta_held
+}
+
+pub fn action_bindings(shortcuts: &EditorActionShortcuts) -> Vec<KeyBinding> {
+    crate::system::accelerator::keystroke(&shortcuts.upload_to_cloud)
+        .map(|keystroke| vec![KeyBinding::new(&keystroke, CloudUpload, Some("Editor"))])
+        .unwrap_or_default()
+}
 
 /// The tool bindings, taken from the user's settings so a rebound tool key
 /// works here exactly as it does in the Electron editor. The command bindings
@@ -120,8 +135,9 @@ fn command_bindings() -> Vec<KeyBinding> {
 /// Installs the editor keymap. Called at startup and again whenever the tool
 /// shortcuts change, so a rebound key takes effect without a restart.
 pub fn init_bindings(cx: &mut App) {
-    let shortcuts = crate::state::state(cx).config.get().shortcuts.editor;
-    let mut bindings = tool_bindings(&shortcuts);
+    let shortcuts = crate::state::state(cx).config.get().shortcuts;
+    let mut bindings = tool_bindings(&shortcuts.editor);
+    bindings.extend(action_bindings(&shortcuts.editor_actions));
     bindings.extend(command_bindings());
     cx.bind_keys(bindings);
 }
@@ -143,6 +159,33 @@ mod tests {
             ..EditorShortcuts::default()
         };
         assert_eq!(tool_bindings(&shortcuts).len(), 10);
+    }
+
+    #[test]
+    fn the_modifier_reveals_the_capture_picker_until_it_is_released() {
+        let mut meta_held = false;
+        assert!(!capture_overlay_visible(false, meta_held));
+
+        meta_held = is_meta_held(&Modifiers::secondary_key());
+        assert!(meta_held);
+        assert!(capture_overlay_visible(false, meta_held));
+
+        meta_held = is_meta_held(&Modifiers::none());
+        assert!(!meta_held);
+        assert!(!capture_overlay_visible(false, meta_held));
+
+        assert!(capture_overlay_visible(true, false));
+        assert!(is_meta_held(&Modifiers::secondary_key()));
+        assert!(!is_meta_held(&Modifiers::shift()));
+    }
+
+    #[test]
+    fn the_cloud_upload_shortcut_is_bound_from_config() {
+        assert_eq!(action_bindings(&EditorActionShortcuts::default()).len(), 1);
+        let cleared = EditorActionShortcuts {
+            upload_to_cloud: String::new(),
+        };
+        assert!(action_bindings(&cleared).is_empty());
     }
 
     #[test]

@@ -1,10 +1,4 @@
 //! macOS scroll-capture session UI — port of `scroll-capture-window.ts`
-//! and the scroll overlay/control renderer windows. GPUI windows cannot be
-//! click-through, so the daemon keeps drawing the area frame itself (the
-//! `boundaryOnly` start flag, recolored orange while the cursor is outside);
-//! this module owns the live stitch preview panel and the
-//! auto-scroll/Done/Cancel control bar as two small nonactivating popups that
-//! never steal focus from the app being scrolled.
 
 use std::sync::Arc;
 
@@ -18,6 +12,7 @@ use crate::capture::overlay::ScreenRect;
 use crate::capture::scroll::ScrollSessionSignal;
 use crate::daemon::DaemonHandle;
 use crate::theme::vars::active_theme;
+use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::toolbar;
 
@@ -27,14 +22,12 @@ pub const PREVIEW_GAP: f32 = 16.0;
 pub const CONTROL_WIDTH: f32 = 168.0;
 pub const CONTROL_HEIGHT: f32 = 52.0;
 pub const CONTROL_GAP: f32 = 16.0;
-const STATUS_HEIGHT: f32 = 28.0;
 const PREVIEW_SCALE: u32 = 2;
+const PROMPT_TEXT: &str = "Move cursor here to continue";
 
 pub struct ScrollCaptureUi {
     daemon: DaemonHandle,
     signal: smol::channel::Sender<ScrollSessionSignal>,
-    frame_count: usize,
-    estimated_height: i64,
     preview: Option<PreviewImage>,
     cursor_outside: bool,
     auto_scrolling: bool,
@@ -66,34 +59,10 @@ impl ScrollCaptureUi {
         let _ = self.signal.try_send(ScrollSessionSignal::Cancel);
     }
 
-    fn apply_frame(
-        &mut self,
-        frame_count: usize,
-        estimated_height: i64,
-        image: Option<PreviewImage>,
-    ) {
-        self.frame_count = frame_count;
-        self.estimated_height = estimated_height;
+    fn apply_frame(&mut self, image: Option<PreviewImage>) {
         if image.is_some() {
             self.preview = image;
         }
-    }
-
-    fn status_text(&self) -> SharedString {
-        if self.cursor_outside {
-            return "Move cursor here to continue".into();
-        }
-        if self.frame_count == 0 {
-            return "Capturing…".into();
-        }
-        if self.estimated_height > 0 {
-            return format!(
-                "{} frames · ~{} px",
-                self.frame_count, self.estimated_height
-            )
-            .into();
-        }
-        format!("{} frames", self.frame_count).into()
     }
 }
 
@@ -109,8 +78,6 @@ impl ScrollCaptureSession {
         let ui = cx.new(|_| ScrollCaptureUi {
             daemon,
             signal,
-            frame_count: 0,
-            estimated_height: 0,
             preview: None,
             cursor_outside: false,
             auto_scrolling: false,
@@ -145,7 +112,11 @@ impl ScrollCaptureSession {
         let preview_left = preview_left(logical, bounds_width);
         let preview_bounds = Bounds {
             origin: gpui::point(px(origin_x + preview_left), px(origin_y + logical.1)),
-            size: size(px(PREVIEW_WIDTH), px(STATUS_HEIGHT)),
+            size: size(px(PREVIEW_WIDTH), px(1.0)),
+        };
+        let prompt_bounds = Bounds {
+            origin: gpui::point(px(origin_x + logical.0), px(origin_y + logical.1)),
+            size: size(px(logical.2), px(logical.3)),
         };
         let to_local = |bounds: Bounds<gpui::Pixels>| {
             display
@@ -171,6 +142,28 @@ impl ScrollCaptureSession {
                 cx.new(|cx| {
                     let _subscription = observe_ui(cx, &view_entity);
                     ScrollPreviewPanel {
+                        ui: view_entity,
+                        _subscription,
+                    }
+                })
+            },
+        );
+        let prompt_entity = ui.clone();
+        let _ = cx.open_window(
+            super::popup_window_options(
+                to_local(prompt_bounds),
+                super::PopupWindowConfig {
+                    focus: false,
+                    display_id: platform_display_id,
+                    ..Default::default()
+                },
+            ),
+            |window, cx| {
+                crate::system::click_through::enable(window);
+                let view_entity = prompt_entity.clone();
+                cx.new(|cx| {
+                    let _subscription = observe_ui(cx, &view_entity);
+                    ScrollAreaPrompt {
                         ui: view_entity,
                         _subscription,
                     }
@@ -206,6 +199,8 @@ impl ScrollCaptureSession {
         set_session_shortcuts(false, cx);
         for window_handle in cx.windows() {
             if let Some(handle) = window_handle.downcast::<ScrollPreviewPanel>() {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            } else if let Some(handle) = window_handle.downcast::<ScrollAreaPrompt>() {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             } else if let Some(handle) = window_handle.downcast::<ScrollControlBar>() {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -247,14 +242,10 @@ fn set_session_shortcuts(enabled: bool, cx: &App) {
 
 pub fn apply_progress(ui: &Entity<ScrollCaptureUi>, signal: ScrollSessionSignal, cx: &mut App) {
     match signal {
-        ScrollSessionSignal::Frame {
-            frame_count,
-            estimated_height,
-            preview,
-        } => {
+        ScrollSessionSignal::Frame { preview } => {
             let image = preview.as_deref().and_then(decode_preview);
             ui.update(cx, |ui, cx| {
-                ui.apply_frame(frame_count, estimated_height, image);
+                ui.apply_frame(image);
                 cx.notify();
             });
         }
@@ -281,27 +272,24 @@ struct ScrollPreviewPanel {
 
 impl Render for ScrollPreviewPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = active_theme(cx);
         let state = self.ui.read(cx);
         let image_height = state
             .preview
             .as_ref()
             .map(|image| image.height)
             .unwrap_or(0.0);
-        let height = STATUS_HEIGHT + image_height;
+        let height = image_height.max(1.0);
         if window.bounds().size.height != px(height) {
             window.resize(size(px(PREVIEW_WIDTH), px(height)));
         }
-        let mut panel = div()
+        let mut panel = crate::ui::font::root()
             .w(px(PREVIEW_WIDTH))
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(px(8.0))
-            .bg(theme.popover)
-            .border_1()
-            .border_color(theme.border)
-            .shadow_lg();
+            .rounded(px(chrome::RADIUS_LG))
+            .bg(crate::ui::colors::black(0.4))
+            .shadow_2xl();
         if let Some(image) = &state.preview {
             panel = panel.child(
                 div()
@@ -315,25 +303,39 @@ impl Render for ScrollPreviewPanel {
                     ),
             );
         }
-        let status = state.status_text();
-        let cursor_outside = state.cursor_outside;
-        let mut row = div()
-            .h(px(STATUS_HEIGHT))
+        panel.into_any_element()
+    }
+}
+
+struct ScrollAreaPrompt {
+    ui: Entity<ScrollCaptureUi>,
+    _subscription: Subscription,
+}
+
+impl Render for ScrollAreaPrompt {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let outside = self.ui.read(cx).cursor_outside;
+        crate::ui::font::root()
+            .size_full()
             .flex()
-            .flex_row()
             .items_center()
-            .gap(px(6.0))
-            .px(px(8.0))
-            .text_sm();
-        if cursor_outside {
-            row = row
-                .text_color(gpui::rgb(0xf97316))
-                .child(icon_element("mouse-pointer-2", px(14.0)))
-                .child(status);
-        } else {
-            row = row.text_color(theme.muted_foreground).child(status);
-        }
-        panel.child(row).into_any_element()
+            .justify_center()
+            .children(outside.then(|| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .rounded(px(chrome::RADIUS_LG))
+                    .bg(crate::ui::colors::black(0.75))
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .text_size(px(14.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(crate::ui::colors::white(1.0))
+                    .child(icon_element("mouse-pointer-click", px(16.0)))
+                    .child(PROMPT_TEXT)
+            }))
     }
 }
 
@@ -352,6 +354,21 @@ impl ScrollControlBar {
     ) -> AnyElement {
         toolbar::tooltip_button(toolbar::icon(id, icon), tooltip, cx, on_click)
     }
+
+    fn filled_button(
+        id: &'static str,
+        glyph: AnyElement,
+        tooltip: impl Into<SharedString>,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        toolbar::tooltip_button(
+            toolbar::desktop(toolbar::button(id).child(glyph)),
+            tooltip,
+            cx,
+            on_click,
+        )
+    }
 }
 
 impl Render for ScrollControlBar {
@@ -366,17 +383,22 @@ impl Render for ScrollControlBar {
         } else {
             "Start auto-scroll".into()
         };
-        let toggle_icon = if auto_scrolling { "square" } else { "play" };
-        div()
+        let glyph_color = crate::ui::colors::white(0.85);
+        let toggle_glyph = if auto_scrolling {
+            toolbar::filled_glyph(glyph_color, false)
+        } else {
+            toolbar::filled_play(glyph_color)
+        };
+        crate::ui::font::root()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
             .child(
                 toolbar::surface(&theme)
-                    .child(Self::button(
+                    .child(Self::filled_button(
                         "scroll-toggle-auto-scroll",
-                        toggle_icon,
+                        toggle_glyph,
                         toggle_tooltip,
                         |this, _, cx| {
                             this.ui.update(cx, |ui, cx| ui.toggle_auto_scroll(cx));
@@ -492,6 +514,20 @@ fn decode_preview(encoded: &str) -> Option<PreviewImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_prompt_is_the_line_the_reference_shows() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .to_path_buf();
+        let reference = std::fs::read_to_string(
+            root.join("src/renderer/windows/scroll-capture-overlay-window.tsx"),
+        )
+        .expect("reference scroll overlay");
+        assert!(reference.contains(PROMPT_TEXT));
+    }
 
     #[test]
     fn control_bar_goes_below_the_area_when_it_fits() {

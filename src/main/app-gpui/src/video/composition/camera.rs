@@ -451,7 +451,6 @@ pub fn render(
     canvas.restore();
 }
 
-/// `renderShadow` — the bubble's own drop shadow, drawn behind it.
 fn render_shadow(canvas: &mut Canvas, left: f64, top: f64, layout: Layout, shadow: f64) {
     let Some(shadow) = shadow_config(shadow) else {
         return;
@@ -465,10 +464,33 @@ fn render_shadow(canvas: &mut Canvas, left: f64, top: f64, layout: Layout, shado
     ) else {
         return;
     };
+    let Some(clip) = knockout_path(left, top, layout, shadow.blur as f64) else {
+        return;
+    };
     canvas.save();
+    canvas.clip_path(&clip, FillRule::EvenOdd);
     canvas.set_shadow(Some(shadow));
     canvas.fill_path(&path, Color::from_rgba8(0, 0, 0, 255), FillRule::Winding);
     canvas.restore();
+}
+
+fn knockout_path(left: f64, top: f64, layout: Layout, spread: f64) -> Option<tiny_skia::Path> {
+    let mut builder = tiny_skia::PathBuilder::new();
+    builder.push_rect(Rect::from_xywh(
+        (left - spread) as f32,
+        (top - spread) as f32,
+        (layout.width + spread * 2.0) as f32,
+        (layout.height + spread * 2.0) as f32,
+    )?);
+    let bubble = rounded_rect_path(
+        left as f32,
+        top as f32,
+        layout.width as f32,
+        layout.height as f32,
+        layout.border_radius as f32,
+    )?;
+    builder.push_path(&bubble);
+    builder.finish()
 }
 
 #[cfg(test)]

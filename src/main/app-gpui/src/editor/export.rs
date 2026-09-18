@@ -570,7 +570,7 @@ mod tests {
     fn an_attached_layer_widens_the_composition() {
         use crate::editor::layers::{Edge, ImageLayer};
 
-        let attached = std::env::temp_dir().join("poratake-layer-test.png");
+        let attached = crate::util::test_paths::unique_temp("poratake-layer-test.png");
         let side = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
             50,
             50,

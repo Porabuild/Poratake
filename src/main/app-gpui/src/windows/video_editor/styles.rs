@@ -286,28 +286,35 @@ impl Default for FirstFrameSettings {
 pub struct ExportSettings {
     #[serde(default = "mp4")]
     pub format: String,
-    #[serde(default = "original")]
+    #[serde(default = "default_export_resolution")]
     pub resolution: String,
     #[serde(default = "studio")]
     pub quality_preset: String,
-    #[serde(default = "sixty")]
+    #[serde(default = "default_export_frame_rate")]
     pub frame_rate: String,
     #[serde(default = "t")]
     pub open_in_finder: bool,
 }
 
 default_value!(mp4, String, "mp4".into());
-default_value!(original, String, "original".into());
 default_value!(studio, String, "studio".into());
-default_value!(sixty, String, "60".into());
+
+fn default_export_resolution() -> String {
+    MP4_DEFAULTS.resolution.to_string()
+}
+
+fn default_export_frame_rate() -> String {
+    MP4_DEFAULTS.frame_rate.to_string()
+}
 
 impl Default for ExportSettings {
     fn default() -> Self {
+        let defaults = MP4_DEFAULTS;
         Self {
             format: mp4(),
-            resolution: original(),
-            quality_preset: studio(),
-            frame_rate: sixty(),
+            resolution: defaults.resolution.to_string(),
+            quality_preset: defaults.quality_preset.to_string(),
+            frame_rate: defaults.frame_rate.to_string(),
             open_in_finder: true,
         }
     }
@@ -382,10 +389,9 @@ pub const EXPORT_QUALITY_PRESETS: [(&str, &str); 4] = [
     ("web-low", "Web (Low)"),
 ];
 
-pub const EXPORT_FRAME_RATES: [(&str, &str); 8] = [
+pub const EXPORT_FRAME_RATES: [(&str, &str); 7] = [
     ("60", "60 FPS"),
     ("50", "50 FPS"),
-    ("40", "40 FPS"),
     ("30", "30 FPS"),
     ("25", "25 FPS"),
     ("24", "24 FPS"),
@@ -393,9 +399,105 @@ pub const EXPORT_FRAME_RATES: [(&str, &str); 8] = [
     ("10", "10 FPS"),
 ];
 
+pub struct FormatDefaults {
+    pub resolution: &'static str,
+    pub quality_preset: &'static str,
+    pub frame_rate: &'static str,
+}
+
+pub const MP4_DEFAULTS: FormatDefaults = FormatDefaults {
+    resolution: "4k",
+    quality_preset: "studio",
+    frame_rate: "30",
+};
+
+pub const GIF_DEFAULTS: FormatDefaults = FormatDefaults {
+    resolution: "720p",
+    quality_preset: "web",
+    frame_rate: "20",
+};
+
+pub fn format_defaults(format: &str) -> &'static FormatDefaults {
+    match format {
+        "gif" => &GIF_DEFAULTS,
+        _ => &MP4_DEFAULTS,
+    }
+}
+
+pub fn format_resolutions(format: &str) -> &'static [&'static str] {
+    match format {
+        "gif" => GIF_RESOLUTIONS,
+        _ => MP4_RESOLUTIONS,
+    }
+}
+
+pub fn format_frame_rates(format: &str) -> &'static [&'static str] {
+    match format {
+        "gif" => GIF_FRAME_RATES,
+        _ => MP4_FRAME_RATES,
+    }
+}
+
+pub fn apply_format_defaults(settings: &mut ExportSettings) {
+    let defaults = format_defaults(&settings.format);
+    settings.resolution = defaults.resolution.to_string();
+    settings.quality_preset = defaults.quality_preset.to_string();
+    settings.frame_rate = defaults.frame_rate.to_string();
+}
+
+pub fn normalize_export_settings(settings: &mut ExportSettings) {
+    if !EXPORT_FORMATS
+        .iter()
+        .any(|(value, _)| *value == settings.format)
+    {
+        settings.format = mp4();
+    }
+    let defaults = format_defaults(&settings.format);
+    if !format_resolutions(&settings.format).contains(&settings.resolution.as_str()) {
+        settings.resolution = defaults.resolution.to_string();
+    }
+    if !EXPORT_QUALITY_PRESETS
+        .iter()
+        .any(|(value, _)| *value == settings.quality_preset)
+    {
+        settings.quality_preset = defaults.quality_preset.to_string();
+    }
+    if !format_frame_rates(&settings.format).contains(&settings.frame_rate.as_str()) {
+        settings.frame_rate = defaults.frame_rate.to_string();
+    }
+}
+
+pub const VIDEO_SLIDER_STEPS: [(&str, f64); 18] = [
+    ("cursor-size", 5.0),
+    ("cursor-smoothing", 0.1),
+    ("cursor-blur-strength", 0.05),
+    ("cursor-idle-timeout", 0.5),
+    ("zoom-level", 0.25),
+    ("zoom-speed", 0.1),
+    ("zoom-follow-smoothness", 0.02),
+    ("zoom-look-ahead", 0.02),
+    ("music-volume", 0.01),
+    ("audio-keyboard-volume", 0.01),
+    ("drawing-thickness", 1.0),
+    ("drawing-redact-intensity", 1.0),
+    ("camera-padding", 1.0),
+    ("camera-corners", 1.0),
+    ("camera-shadow", 1.0),
+    ("wallpaper-padding", 1.0),
+    ("wallpaper-corners", 1.0),
+    ("wallpaper-shadow", 1.0),
+];
+
+pub fn slider_step(key: &str) -> Option<f64> {
+    VIDEO_SLIDER_STEPS
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, step)| *step)
+}
+
 pub const MP4_RESOLUTIONS: &[&str] = &["original", "4k", "1080p", "720p", "480p"];
 pub const GIF_RESOLUTIONS: &[&str] = &["1080p", "720p", "480p"];
-pub const MP4_FRAME_RATES: &[&str] = &["60", "50", "40", "30", "25", "24", "20", "10"];
+pub const MP4_FRAME_RATES: &[&str] = &["60", "50", "30", "25", "24", "20", "10"];
 pub const GIF_FRAME_RATES: &[&str] = &["50", "30", "25", "24", "20", "10"];
 
 pub const CURSOR_SIZE_MIN: f64 = 50.0;
@@ -501,7 +603,7 @@ mod tests {
 
         let json = serde_json::to_value(ExportSettings::default()).expect("export settings");
         assert_eq!(json["qualityPreset"], "studio");
-        assert_eq!(json["frameRate"], "60");
+        assert_eq!(json["frameRate"], "30");
         assert_eq!(json["openInFinder"], true);
     }
 
@@ -537,6 +639,11 @@ mod tests {
         assert_eq!(EXPORT_QUALITY_PRESETS[1], ("social", "Social Media"));
         assert_eq!(EXPORT_RESOLUTIONS[1], ("4k", "4K (3840x2160)"));
         assert_eq!(EXPORT_FRAME_RATES[0], ("60", "60 FPS"));
+        assert!(
+            !EXPORT_FRAME_RATES.iter().any(|(value, _)| *value == "40"),
+            "ALL_FRAMERATE_OPTIONS has no 40 FPS row"
+        );
+        assert!(!MP4_FRAME_RATES.contains(&"40"));
         assert_eq!(GIF_RESOLUTIONS, &["1080p", "720p", "480p"]);
         assert_eq!(SIZE_OPTIONS.len(), 3);
         assert_eq!(SUBTITLE_BACKGROUNDS.len(), 3);
@@ -549,5 +656,100 @@ mod tests {
         assert_eq!(drawing.highlight_opacity, 0.4);
         assert_eq!(drawing.text_font_size, 24.0);
         assert_eq!(crate::ui::colors::VIDEO_DRAWING_TOOLS.len(), 10);
+    }
+
+    #[test]
+    fn export_defaults_match_the_electron_format_config() {
+        assert_eq!(MP4_DEFAULTS.resolution, "4k");
+        assert_eq!(MP4_DEFAULTS.quality_preset, "studio");
+        assert_eq!(MP4_DEFAULTS.frame_rate, "30");
+        assert_eq!(GIF_DEFAULTS.resolution, "720p");
+        assert_eq!(GIF_DEFAULTS.quality_preset, "web");
+        assert_eq!(GIF_DEFAULTS.frame_rate, "20");
+        let defaults = ExportSettings::default();
+        assert_eq!(defaults.resolution, "4k");
+        assert_eq!(defaults.quality_preset, "studio");
+        assert_eq!(defaults.frame_rate, "30");
+    }
+
+    #[test]
+    fn switching_to_gif_renormalizes_every_dependent_field() {
+        let mut settings = ExportSettings {
+            format: "gif".to_string(),
+            ..ExportSettings::default()
+        };
+        apply_format_defaults(&mut settings);
+        assert_eq!(settings.resolution, "720p");
+        assert_eq!(settings.quality_preset, "web");
+        assert_eq!(settings.frame_rate, "20");
+        normalize_export_settings(&mut settings);
+        assert_eq!(settings.frame_rate, "20");
+    }
+
+    #[test]
+    fn a_gif_never_keeps_an_mp4_only_value() {
+        let mut settings = ExportSettings {
+            format: "gif".to_string(),
+            resolution: "original".to_string(),
+            quality_preset: "studio".to_string(),
+            frame_rate: "60".to_string(),
+            open_in_finder: true,
+        };
+        normalize_export_settings(&mut settings);
+        assert_eq!(settings.resolution, "720p");
+        assert_eq!(settings.frame_rate, "20");
+        assert_eq!(settings.quality_preset, "studio");
+        assert!(GIF_FRAME_RATES.contains(&settings.frame_rate.as_str()));
+    }
+
+    #[test]
+    fn an_unknown_format_falls_back_to_mp4() {
+        let mut settings = ExportSettings {
+            format: "webm".to_string(),
+            resolution: "nope".to_string(),
+            quality_preset: "nope".to_string(),
+            frame_rate: "999".to_string(),
+            open_in_finder: false,
+        };
+        normalize_export_settings(&mut settings);
+        assert_eq!(settings.format, "mp4");
+        assert_eq!(settings.resolution, "4k");
+        assert_eq!(settings.quality_preset, "studio");
+        assert_eq!(settings.frame_rate, "30");
+    }
+
+    #[test]
+    fn every_slider_step_matches_its_electron_counterpart() {
+        for (key, expected) in [
+            ("cursor-size", 5.0),
+            ("cursor-smoothing", 0.1),
+            ("cursor-blur-strength", 0.05),
+            ("cursor-idle-timeout", 0.5),
+            ("zoom-level", 0.25),
+            ("zoom-speed", 0.1),
+            ("zoom-follow-smoothness", 0.02),
+            ("zoom-look-ahead", 0.02),
+            ("music-volume", 0.01),
+            ("audio-keyboard-volume", 0.01),
+            ("drawing-thickness", 1.0),
+            ("camera-padding", 1.0),
+            ("wallpaper-padding", 1.0),
+        ] {
+            assert_eq!(slider_step(key), Some(expected), "{key}");
+        }
+    }
+
+    #[test]
+    fn slider_steps_are_unique_and_positive() {
+        for (index, (key, step)) in VIDEO_SLIDER_STEPS.iter().enumerate() {
+            assert!(*step > 0.0, "{key} has no step");
+            assert!(
+                !VIDEO_SLIDER_STEPS[..index]
+                    .iter()
+                    .any(|(other, _)| other == key),
+                "{key} is listed twice"
+            );
+        }
+        assert_eq!(slider_step("not-a-slider"), None);
     }
 }

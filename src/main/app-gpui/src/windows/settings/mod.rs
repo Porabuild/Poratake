@@ -3,6 +3,7 @@
 //! pages, and the About page that carries the AGPL notices.
 
 pub mod about;
+pub mod device_cache;
 pub mod item_row;
 pub mod registry;
 pub mod shortcut_items;
@@ -27,6 +28,10 @@ use herogpui::components::{InputState, InputType, TextField};
 
 const SIDEBAR_WIDTH: f32 = chrome::SETTINGS_SIDEBAR_WIDTH;
 const CONTENT_MAX_WIDTH: f32 = chrome::SETTINGS_CONTENT_MAX;
+const SIDEBAR_ROW_HEIGHT: f32 = 32.0;
+const SIDEBAR_ROW_TEXT_LINE: f32 = 20.0;
+const SIDEBAR_SEARCH_HEIGHT: f32 = 32.0;
+const CONTENT_PAD_RIGHT: f32 = chrome::SETTINGS_CONTENT_PAD_X * 2.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CloudTest {
@@ -53,9 +58,10 @@ pub struct SettingsWindow {
     shortcut_search: Entity<InputState>,
     fields: HashMap<String, Entity<InputState>>,
     recording_shortcut: Option<&'static str>,
+    pending_shortcut: Option<String>,
     cloud_test: CloudTest,
     cloud_test_error: Option<String>,
-    devices: Option<crate::system::devices::MediaDeviceLists>,
+    devices: device_cache::DeviceCache,
     focus_handle: FocusHandle,
     #[cfg(windows)]
     acrylic_dark: Option<bool>,
@@ -65,6 +71,9 @@ pub struct SettingsWindow {
     /// Collapsed by default so each page reads exactly like its Electron
     /// counterpart until the extras are asked for.
     extras_open: std::collections::HashSet<&'static str>,
+    content_scroll: gpui::ScrollHandle,
+    nav_scroll: gpui::ScrollHandle,
+    release_notes_scroll: gpui::ScrollHandle,
 }
 
 impl SettingsWindow {
@@ -83,11 +92,15 @@ impl SettingsWindow {
             shortcut_search,
             fields: HashMap::new(),
             recording_shortcut: None,
+            pending_shortcut: None,
             cloud_test: CloudTest::Idle,
             cloud_test_error: None,
-            devices: None,
+            devices: device_cache::DeviceCache::default(),
             update: crate::state::update_cell(cx),
             extras_open: std::collections::HashSet::new(),
+            content_scroll: gpui::ScrollHandle::new(),
+            nav_scroll: gpui::ScrollHandle::new(),
+            release_notes_scroll: gpui::ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             #[cfg(windows)]
             acrylic_dark: None,
@@ -135,7 +148,7 @@ impl SettingsWindow {
             self.config.appearance.mode.clone(),
             self.config.appearance.theme.clone(),
         );
-        let before_editor_shortcuts = self.config.shortcuts.editor.clone();
+        let before_shortcuts = self.config.shortcuts.clone();
         let before_preview_corner = self.config.preview.corner.clone();
         apply(&mut self.config);
         let snapshot = self.config.clone();
@@ -146,9 +159,7 @@ impl SettingsWindow {
             crate::windows::capture_preview::CapturePreviewWindow::reposition(cx);
         }
 
-        // The editor keymap is installed once; a rebound tool key has to
-        // replace it or the old key would keep working.
-        if before_editor_shortcuts != self.config.shortcuts.editor {
+        if editor_keymap_changed(&before_shortcuts, &self.config.shortcuts) {
             cx.clear_key_bindings();
             crate::editor::actions::init_bindings(cx);
             crate::capture::overlay::init_bindings(cx);
@@ -346,6 +357,7 @@ impl SettingsWindow {
 
     pub fn stop_recording_shortcut(&mut self, cx: &mut Context<Self>) {
         self.recording_shortcut = None;
+        self.pending_shortcut = None;
         cx.notify();
     }
 
@@ -362,6 +374,22 @@ impl SettingsWindow {
         };
         self.mutate(cx, move |config| set(config, &value));
         self.stop_recording_shortcut(cx);
+    }
+
+    fn on_key_up(
+        &mut self,
+        _event: &gpui::KeyUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.recording_shortcut.is_none() {
+            return;
+        }
+        let Some(pending) = self.pending_shortcut.take() else {
+            return;
+        };
+        self.write_recorded_shortcut(pending, cx);
+        cx.stop_propagation();
     }
 
     fn on_key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -385,10 +413,16 @@ impl SettingsWindow {
                 "escape" => self.stop_recording_shortcut(cx),
                 "backspace" => self.write_recorded_shortcut(String::new(), cx),
                 _ => {
-                    if let Some(combination) =
+                    let Some(combination) =
                         crate::ui::shortcut_input::combination_from(event, single_key)
-                    {
+                    else {
+                        cx.stop_propagation();
+                        return;
+                    };
+                    if single_key {
                         self.write_recorded_shortcut(combination, cx);
+                    } else {
+                        self.pending_shortcut = Some(combination);
                     }
                 }
             }
@@ -410,10 +444,16 @@ impl SettingsWindow {
         &mut self,
         cx: &mut Context<Self>,
     ) -> crate::system::devices::MediaDeviceLists {
-        if let Some(devices) = &self.devices {
-            return devices.clone();
+        if !self.devices.is_loaded() {
+            self.refresh_device_lists(cx);
         }
-        self.devices = Some(crate::system::devices::MediaDeviceLists::default());
+        self.devices.lists()
+    }
+
+    pub(crate) fn refresh_device_lists(&mut self, cx: &mut Context<Self>) {
+        if !self.devices.begin_refresh() {
+            return;
+        }
 
         let daemon = crate::state::state(cx).daemon;
         cx.spawn(async move |entity, cx| {
@@ -430,13 +470,11 @@ impl SettingsWindow {
                 })
                 .await;
             let _ = entity.update(cx, |this, cx| {
-                this.devices = Some(listed);
+                this.devices.publish(listed);
                 cx.notify();
             });
         })
         .detach();
-
-        crate::system::devices::MediaDeviceLists::default()
     }
 
     pub fn select_category(&mut self, category: Category, cx: &mut Context<Self>) {
@@ -593,7 +631,7 @@ impl Render for SettingsWindow {
         #[cfg(windows)]
         {
             let dark = active_mode(cx) == ThemeMode::Dark;
-            if self.acrylic_dark != Some(dark) {
+            if self.acrylic_dark != Some(dark) && !crate::system::reduced_transparency::enabled() {
                 if let Some(hwnd) = crate::windows::window_hwnd(window) {
                     crate::system::window_composition::configure_acrylic_surface(hwnd, dark);
                     self.acrylic_dark = Some(dark);
@@ -613,16 +651,23 @@ impl Render for SettingsWindow {
         let content: AnyElement = if searching {
             search_results(&query, self, &theme, cx)
         } else if self.active == Category::About {
-            about::render(&theme, self.update_status(), window, cx)
+            about::render(
+                &theme,
+                self.update_status(),
+                &self.release_notes_scroll,
+                window,
+                cx,
+            )
         } else {
-            category_page(self.active, self, &theme, window, cx)
+            category_page(self.active, self, &theme, cx)
         };
 
-        div()
+        crate::ui::font::root()
             .id("settings-window")
             .key_context("Settings")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key))
+            .on_key_up(cx.listener(Self::on_key_up))
             .flex()
             .flex_row()
             .size_full()
@@ -645,34 +690,41 @@ impl Render for SettingsWindow {
                     ))
                     .child(
                         div()
-                            .id("settings-content-body")
+                            .relative()
+                            .flex()
+                            .flex_col()
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
-                            .px(px(chrome::SETTINGS_CONTENT_PAD_X))
-                            .pt(px(chrome::SETTINGS_CONTENT_PAD_TOP))
-                            .pb(px(chrome::SETTINGS_CONTENT_PAD_BOTTOM))
-                            // `mx-auto max-w-[720px]` centres the column.
                             .child(
-                                // `min_w_0` lets the column shrink to the slot.
-                                // Without it a child that measures wider than
-                                // the content area is centred *over* the
-                                // sidebar and clipped on the left, which is what
-                                // the About page did.
                                 div()
-                                    .flex()
-                                    .flex_row()
-                                    .justify_center()
-                                    .w_full()
-                                    .min_w_0()
+                                    .id("settings-content-body")
+                                    .track_scroll(&self.content_scroll)
+                                    .size_full()
+                                    .overflow_y_scroll()
+                                    .px(px(chrome::SETTINGS_CONTENT_PAD_X))
+                                    .pr(px(CONTENT_PAD_RIGHT))
+                                    .pt(px(chrome::SETTINGS_CONTENT_PAD_TOP))
+                                    .pb(px(chrome::SETTINGS_CONTENT_PAD_BOTTOM))
                                     .child(
                                         div()
+                                            .flex()
+                                            .flex_row()
+                                            .justify_center()
                                             .w_full()
                                             .min_w_0()
-                                            .max_w(px(CONTENT_MAX_WIDTH))
-                                            .child(content),
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .max_w(px(CONTENT_MAX_WIDTH))
+                                                    .child(content),
+                                            ),
                                     ),
-                            ),
+                            )
+                            .child(crate::windows::scrollbars::app_vertical(
+                                "settings-content-scrollbar",
+                                &self.content_scroll,
+                            )),
                     ),
             )
     }
@@ -685,6 +737,11 @@ fn sidebar(
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
     let searching = !window.search_query(cx).is_empty();
+    let search_focused = window
+        .search
+        .read(cx)
+        .focus_handle(cx)
+        .is_focused(ui_window);
     let active = window.active;
     let categories = Category::supported();
     let sidebar_percentage = if active_mode(cx) == ThemeMode::Dark {
@@ -714,9 +771,11 @@ fn sidebar(
             .gap(px(chrome::SETTINGS_NAV_GAP))
             .w_full()
             .rounded(px(chrome::SETTINGS_NAV_RADIUS))
+            .h(px(SIDEBAR_ROW_HEIGHT))
             .px(px(chrome::SETTINGS_NAV_PX))
             .py(px(chrome::SETTINGS_NAV_PY))
             .text_size(px(14.0))
+            .line_height(px(SIDEBAR_ROW_TEXT_LINE))
             .text_color(if selected {
                 theme.foreground
             } else {
@@ -739,11 +798,11 @@ fn sidebar(
 
     let mut nav = div()
         .id("settings-nav")
+        .track_scroll(&window.nav_scroll)
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .flex_1()
-        .min_h_0()
+        .size_full()
         .overflow_y_scroll()
         .px(px(8.0));
     for category in categories
@@ -804,11 +863,13 @@ fn sidebar(
                     .flex_row()
                     .items_center()
                     .rounded(px(chrome::RADIUS_3XL))
+                    .h(px(SIDEBAR_SEARCH_HEIGHT))
                     .px(px(8.0))
-                    .py(px(6.0))
                     .text_color(theme.muted_foreground)
                     .when(search_hovered, |el| el.bg(theme.row_hover))
-                    .when(!search_hovered && searching, |el| el.bg(theme.row_active))
+                    .when(!search_hovered && search_focused, |el| {
+                        el.bg(theme.row_active)
+                    })
                     .on_hover({
                         let search_hover = search_hover.clone();
                         move |over: &bool, _window, cx| {
@@ -848,14 +909,30 @@ fn sidebar(
                     }),
             )
         })
-        .child(nav)
+        .child(
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(nav)
+                .child(crate::windows::scrollbars::app_vertical(
+                    "settings-nav-scrollbar",
+                    &window.nav_scroll,
+                )),
+        )
         .child(
             div()
                 .pt(px(8.0))
                 .pb(px(8.0))
                 // The `<Separator className="mb-2" />` spans the full sidebar
                 // width; only the button groups are inset.
-                .child(div().w_full().mb(px(8.0)).h(px(1.0)).bg(theme.separator))
+                .child(
+                    herogpui::Separator::new()
+                        .sx(|el| el.mb(px(8.0)))
+                        .into_any_element(),
+                )
                 .child(footer),
         )
         .into_any_element()
@@ -908,7 +985,6 @@ fn category_page(
     category: Category,
     window: &mut SettingsWindow,
     theme: &ThemeVars,
-    ui_window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
     let is_shortcuts = category == Category::Shortcuts;
@@ -953,9 +1029,6 @@ fn category_page(
         .filter(|(_, item)| item.category == category)
         .filter(|(_, item)| item.is_visible(window.config()))
         .filter(|(_, item)| filter.is_empty() || item.matches(&filter))
-        // Rows this shell adds are held back for the disclosure below, so the
-        // page above it is exactly the set Electron renders.
-        .filter(|(_, item)| !EXTRA_ITEM_IDS.contains(&item.id))
         .map(|(index, _)| index)
         .collect();
 
@@ -983,7 +1056,6 @@ fn category_page(
         stack = stack.child(block);
     }
     page = page.child(stack);
-    page = extras(page, window, category, &filter, theme, ui_window, cx);
 
     if rendered == 0 && is_shortcuts && !filter.is_empty() {
         page = page.child(
@@ -1100,107 +1172,6 @@ fn search_results(
         .into_any_element()
 }
 
-/// Registry rows this shell adds that Electron has no equivalent for. They are
-/// rendered under a collapsed disclosure rather than inline, so a page matches
-/// Electron until the extras are expanded.
-pub(crate) const EXTRA_ITEM_IDS: &[&str] = &["shortcuts.scrollCapture"];
-
-/// Everything this shell offers beyond Electron on a given page, behind one
-/// collapsed disclosure per page.
-fn extras(
-    page: gpui::Div,
-    window: &mut SettingsWindow,
-    category: Category,
-    filter: &str,
-    theme: &ThemeVars,
-    ui_window: &mut Window,
-    cx: &mut Context<SettingsWindow>,
-) -> gpui::Div {
-    let items = registry::items();
-    let extra: Vec<usize> = items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| item.category == category)
-        .filter(|(_, item)| EXTRA_ITEM_IDS.contains(&item.id))
-        .filter(|(_, item)| item.is_visible(window.config()))
-        .filter(|(_, item)| filter.is_empty() || item.matches(filter))
-        .map(|(index, _)| index)
-        .collect();
-    if extra.is_empty() {
-        return page;
-    }
-
-    let key = category.id();
-    let open = window.extras_open.contains(key);
-    let mut block = div()
-        .flex()
-        .flex_col()
-        .gap(px(ITEM_GAP))
-        .pt(px(SECTION_GAP))
-        .child(disclosure_header(key, open, theme, ui_window, cx));
-    if open {
-        for index in extra {
-            let item = &items[index];
-            block = block.child(window.render_setting(
-                item,
-                theme,
-                category == Category::Shortcuts,
-                cx,
-            ));
-        }
-    }
-    page.child(block)
-}
-
-/// The disclosure's own row: a rotating chevron and a muted label, matching the
-/// section headings on the shortcuts page rather than inventing a new style.
-fn disclosure_header(
-    key: &'static str,
-    open: bool,
-    theme: &ThemeVars,
-    ui_window: &mut Window,
-    cx: &mut Context<SettingsWindow>,
-) -> AnyElement {
-    let hover_key = format!("settings-extras-{key}");
-    let focus = crate::ui::primitives::control_focus(&hover_key, false, ui_window, cx);
-    let (hover, hovered) = crate::ui::primitives::hover_flag(&hover_key, ui_window, cx);
-    div()
-        .id(SharedString::from(hover_key))
-        .track_focus(&focus)
-        .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(6.0))
-        .py(px(4.0))
-        .text_size(px(chrome::TEXT_XS))
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(if hovered {
-            theme.foreground
-        } else {
-            theme.muted_foreground
-        })
-        .on_hover({
-            let hover = hover.clone();
-            move |over: &bool, _window, cx| {
-                crate::ui::primitives::track_hover(&hover, *over, cx);
-            }
-        })
-        .on_click(cx.listener(move |this, _event, _window, cx| {
-            if !this.extras_open.remove(key) {
-                this.extras_open.insert(key);
-            }
-            cx.notify();
-        }))
-        // Closed points right, open points down -- the usual disclosure.
-        .children(
-            crate::ui::icon::Icon::with_size("chevron-down", px(chrome::TEXT_XS))
-                .map(|icon| icon.rotate_turns(if open { 0.0 } else { -0.25 })),
-        )
-        .child("More options")
-        .into_any_element()
-}
-
 impl crate::ui::shortcut_input::ShortcutRecorder for SettingsWindow {
     fn start_recording_shortcut(
         &mut self,
@@ -1214,6 +1185,13 @@ impl crate::ui::shortcut_input::ShortcutRecorder for SettingsWindow {
     }
 }
 
+fn editor_keymap_changed(
+    before: &crate::config::shortcuts::ShortcutsConfig,
+    after: &crate::config::shortcuts::ShortcutsConfig,
+) -> bool {
+    before.editor != after.editor || before.editor_actions != after.editor_actions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,6 +1200,23 @@ mod tests {
     /// already appeared joins that earlier group rather than starting a new one.
     /// The General page depends on it: `Remember All-in-One choices` is declared
     /// between two `Preview` rows and has to render after all of them.
+    #[test]
+    fn rebinding_an_editor_action_reinstalls_the_keymap() {
+        let before = crate::config::shortcuts::ShortcutsConfig::default();
+
+        let mut tool = before.clone();
+        tool.editor.pen = "q".into();
+        assert!(editor_keymap_changed(&before, &tool));
+
+        let mut action = before.clone();
+        action.editor_actions.upload_to_cloud = "CommandOrControl+Shift+K".into();
+        assert!(editor_keymap_changed(&before, &action));
+
+        let mut unrelated = before.clone();
+        unrelated.history = "CommandOrControl+Shift+J".into();
+        assert!(!editor_keymap_changed(&before, &unrelated));
+    }
+
     #[test]
     fn a_section_is_one_group_no_matter_where_its_rows_are_declared() {
         let items = registry::items();
@@ -1269,84 +1264,25 @@ mod tests {
 }
 
 #[cfg(test)]
-mod extras_tests {
+mod render_tests {
     use super::*;
 
-    /// `EXTRA_ITEM_IDS` is only correct while those rows really are absent from
-    /// Electron. If one is ever added there it has to come back inline, so this
-    /// reads Electron's registry rather than trusting the list.
-    #[test]
-    fn every_extra_row_exists_here_and_nowhere_in_electron() {
-        let items = registry::items();
-        let renderer = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .join("src/renderer/components/settings/registry");
-
-        let mut electron = String::new();
-        for entry in std::fs::read_dir(&renderer).expect("read the registry directory") {
-            let path = entry.expect("directory entry").path();
-            if path.extension().is_some_and(|ext| ext == "ts") {
-                electron.push_str(&std::fs::read_to_string(&path).expect("read a registry file"));
-            }
-        }
-        assert!(
-            electron.contains("shortcuts."),
-            "the Electron registry was not read"
-        );
-
-        assert!(!EXTRA_ITEM_IDS.is_empty());
-        if !crate::system::capabilities::is_supported(
-            crate::system::capabilities::Feature::ScrollCapture,
-        ) {
-            assert!(EXTRA_ITEM_IDS
-                .iter()
-                .all(|id| !items.iter().any(|item| item.id == *id)));
-            return;
-        }
-        for id in EXTRA_ITEM_IDS {
-            assert!(
-                items.iter().any(|item| item.id == *id),
-                "`{id}` is listed as an extra but is not in the registry"
-            );
-            assert!(
-                !electron.contains(&format!("id: '{id}'")),
-                "`{id}` now exists in Electron too, so it should render inline"
-            );
-        }
-    }
-
-    /// The expanded body is a separate render path -- it is not built at all
-    /// while the disclosure is closed -- so it needs its own draw.
     #[herogpui::test]
-    fn the_expanded_disclosure_renders(cx: &mut gpui::TestAppContext) {
+    fn every_category_page_draws(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = std::sync::Arc::new(
             ConfigStore::load_at(dir.path().join("config.json")).expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
 
-        // Appearance holds the theme grid, Shortcuts holds the extra rows.
-        for category in [Category::Appearance, Category::Shortcuts] {
-            let window =
+        for category in Category::supported() {
+            let _window =
                 cx.add_window(|_window, cx| SettingsWindow::new(store.clone(), category, cx));
-            cx.refresh().expect("schedule a redraw");
-            cx.run_until_parked();
-            window
-                .update(cx, |view, _window, cx| {
-                    view.extras_open.insert(category.id());
-                    cx.notify();
-                })
-                .expect("expand the disclosure");
             cx.refresh().expect("schedule a redraw");
             cx.run_until_parked();
         }
     }
 
-    /// The disclosure starts closed, which is what makes the page above it match
-    /// Electron on first open -- and the row is still registered, so nothing was
-    /// removed to get there.
     #[herogpui::test]
     fn settings_heading_reserves_native_window_controls(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -1367,34 +1303,6 @@ mod extras_tests {
         let content_drag = cx.debug_bounds("content-title-drag-strip").unwrap();
         assert_eq!(content_drag.left(), px(SIDEBAR_WIDTH));
         assert_eq!(content_drag.top(), px(0.0));
-    }
-
-    #[herogpui::test]
-    fn the_disclosure_starts_closed(cx: &mut gpui::TestAppContext) {
-        let items = registry::items();
-        if crate::system::capabilities::is_supported(
-            crate::system::capabilities::Feature::ScrollCapture,
-        ) {
-            assert!(items
-                .iter()
-                .any(|item| item.id == "shortcuts.scrollCapture"
-                    && item.category == Category::Shortcuts));
-        }
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let store = std::sync::Arc::new(
-            ConfigStore::load_at(dir.path().join("config.json")).expect("load config"),
-        );
-        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
-        let window =
-            cx.add_window(|_window, cx| SettingsWindow::new(store, Category::Shortcuts, cx));
-        cx.refresh().expect("schedule a redraw");
-        cx.run_until_parked();
-
-        let open = window
-            .update(cx, |view, _window, _cx| view.extras_open.len())
-            .expect("read the disclosure state");
-        assert_eq!(open, 0, "no disclosure is expanded on a fresh window");
     }
 }
 

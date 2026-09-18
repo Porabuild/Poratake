@@ -1,5 +1,6 @@
 pub mod accelerator;
 pub mod capabilities;
+pub mod click_through;
 pub mod clipboard;
 pub mod desktop;
 pub mod device_test;
@@ -10,6 +11,7 @@ pub mod linux_session;
 pub mod native;
 pub mod notification;
 pub mod permissions;
+pub mod reduced_transparency;
 pub mod single_instance;
 pub mod startup;
 pub mod tray;

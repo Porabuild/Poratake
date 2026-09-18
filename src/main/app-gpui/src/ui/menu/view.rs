@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{div, prelude::*, px, App, Context, FocusHandle, Pixels, Render, Window};
@@ -26,6 +27,7 @@ pub struct MenuView {
     compact: bool,
     neutral_highlight: bool,
     entrance: MenuEntrance,
+    exiting: Rc<Cell<bool>>,
     focus_handle: FocusHandle,
 }
 
@@ -44,6 +46,7 @@ impl MenuView {
             compact: false,
             neutral_highlight: false,
             entrance: MenuEntrance::default(),
+            exiting: Rc::new(Cell::new(false)),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -73,6 +76,11 @@ impl MenuView {
         self
     }
 
+    pub fn exit_flag(mut self, exiting: Rc<Cell<bool>>) -> Self {
+        self.exiting = exiting;
+        self
+    }
+
     pub fn max_height(mut self, height: Pixels) -> Self {
         self.max_height = height;
         self
@@ -96,6 +104,7 @@ impl Render for MenuView {
             .panel_min_width(self.min_width)
             .panel_max_height(self.max_height)
             .animate_entry(self.entrance == MenuEntrance::Overlay)
+            .exiting(self.exiting.get())
             .disabled_keys(converted.disabled)
             .selected_keys(converted.selected)
             .on_dismiss(move |_, window, cx| dismiss(window, cx))

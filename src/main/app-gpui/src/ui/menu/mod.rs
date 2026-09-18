@@ -2,7 +2,7 @@ mod library;
 mod model;
 mod view;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
@@ -22,6 +22,7 @@ struct MenuPopup {
     offset: Point<Pixels>,
     animation_id: u64,
     closing_at: Option<std::time::Instant>,
+    exiting: Option<Rc<Cell<bool>>>,
 }
 
 /// A shared, cheaply cloned slot for the one menu a surface can have open at a
@@ -162,6 +163,7 @@ impl MenuHandle {
                 return;
             }
             popup.closing_at = Some(std::time::Instant::now());
+            start_exit(popup);
             state.suppressed = None;
             drop(state);
             window.refresh();
@@ -233,13 +235,16 @@ impl MenuHandle {
         let max_height = placement.max_height;
         let compact = placement.compact;
         let neutral_highlight = placement.neutral_highlight;
-        self.open_with(
+        let exiting = Rc::new(Cell::new(false));
+        let flag = exiting.clone();
+        self.open_layer(
             placement,
             move |dismiss, cx| {
                 let view = cx.new(|cx| {
                     let menu = MenuView::new(entries, dismiss, cx)
                         .compact(compact)
-                        .neutral_highlight(neutral_highlight);
+                        .neutral_highlight(neutral_highlight)
+                        .exit_flag(flag);
                     let menu = match min_width {
                         Some(width) => menu.min_width(width),
                         None => menu,
@@ -256,6 +261,7 @@ impl MenuHandle {
                 let focus = view.read(cx).focus_handle();
                 (view.into(), Some(focus))
             },
+            Some(exiting),
             window,
             cx,
         );
@@ -271,12 +277,24 @@ impl MenuHandle {
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.open_layer(placement, build, None, window, cx);
+    }
+
+    fn open_layer(
+        &self,
+        placement: MenuPlacement,
+        build: impl FnOnce(DismissHandler, &mut App) -> (AnyView, Option<gpui::FocusHandle>),
+        exiting: Option<Rc<Cell<bool>>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let shared = self.0.clone();
         let dismiss: DismissHandler = Rc::new(move |window: &mut Window, _cx: &mut App| {
             let mut state = shared.borrow_mut();
             let owner = state.popup.as_ref().and_then(|popup| popup.owner.clone());
             if let Some(popup) = state.popup.as_mut() {
                 popup.closing_at = Some(std::time::Instant::now());
+                start_exit(popup);
             }
             state.suppressed = owner;
             drop(state);
@@ -297,6 +315,7 @@ impl MenuHandle {
             offset: placement.offset,
             animation_id: state.next_animation_id,
             closing_at: None,
+            exiting,
         });
         drop(state);
         window.refresh();
@@ -385,20 +404,32 @@ impl MenuHandle {
     }
 }
 
+fn start_exit(popup: &MenuPopup) {
+    if let Some(exiting) = popup.exiting.as_ref() {
+        exiting.set(true);
+    }
+}
+
 fn layer(popup: &MenuPopup) -> AnyElement {
     let closing = popup.closing_at.is_some_and(|closing_at| {
         closing_at.elapsed()
             < std::time::Duration::from_millis(crate::ui::primitives::OVERLAY_EXIT_MS)
-    });
-    let view = if closing {
-        crate::ui::primitives::overlay_exit(
-            ("menu-exit", popup.animation_id),
-            crate::ui::primitives::EnterFrom::Top,
-            div().child(popup.view.clone()),
-        )
-        .into_any_element()
-    } else {
-        div().child(popup.view.clone()).into_any_element()
+    }) && popup.exiting.is_none();
+    let from = match popup.anchor {
+        Anchor::TopLeft | Anchor::TopRight => crate::ui::primitives::EnterFrom::Top,
+        _ => crate::ui::primitives::EnterFrom::Bottom,
+    };
+    let surface = crate::ui::font::root().child(popup.view.clone());
+    let view = match (closing, popup.exiting.is_none()) {
+        (true, _) => {
+            crate::ui::primitives::overlay_exit(("menu-exit", popup.animation_id), from, surface)
+                .into_any_element()
+        }
+        (false, true) => {
+            crate::ui::primitives::overlay_enter(("menu-enter", popup.animation_id), from, surface)
+                .into_any_element()
+        }
+        (false, false) => surface.into_any_element(),
     };
     let mut anchor = anchored()
         .anchor(popup.anchor)
@@ -424,6 +455,18 @@ mod tests {
         let above = MenuPlacement::above("above");
         assert_eq!(f32::from(above.offset.y), -8.0);
         assert!(above.neutral_highlight);
+    }
+
+    #[test]
+    fn menus_exit_on_herogpuis_own_zoom_out() {
+        let exit = herogpui::components::anim::Motion::LIST_OUT;
+        assert_eq!(exit.ms, crate::ui::primitives::OVERLAY_EXIT_MS);
+        assert_eq!(exit.scale, 0.95);
+        assert_eq!(
+            herogpui::components::EXITING_MS,
+            crate::ui::primitives::OVERLAY_EXIT_MS,
+            "every overlay exit in the shell runs on HeroUI v3's 100ms"
+        );
     }
 
     #[test]

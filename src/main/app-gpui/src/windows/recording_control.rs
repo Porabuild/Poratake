@@ -26,11 +26,9 @@ use crate::ui::toolbar;
 use crate::video::recorder::{self, RecordingConfig, RecordingTarget};
 use crate::windows::registry::{self, WindowKind as RegistryKind};
 
-const TARGET_LABEL_WIDTH: f32 = chrome::RECORDING_TARGET_LABEL_WIDTH;
-const DEVICE_MENU_WINDOW_WIDTH: f32 = 300.0;
 const DEVICE_MENU_WINDOW_HEIGHT: f32 = 300.0;
-const CONTROL_WINDOW_HORIZONTAL_GUTTER: f32 = 16.0;
 const DEVICE_DROPDOWN_WIDTH: f32 = 256.0;
+const DEVICE_DROPDOWN_MIN_WIDTH: f32 = 224.0;
 const DEVICE_DROPDOWN_HEIGHT: f32 = 224.0;
 const COUNTDOWN_WINDOW_HEIGHT: f32 = 148.0;
 
@@ -91,6 +89,7 @@ pub struct RecordingControl {
     countdown_generation: u64,
     countdown_active: bool,
     countdown_remaining: Option<u32>,
+    measured_width: Option<f32>,
     focus_handle: FocusHandle,
     recorder_error_subscription: Option<crate::daemon::EventSubscription>,
 }
@@ -169,6 +168,7 @@ impl RecordingControl {
                         paused_at: None,
                         paused_total: Duration::ZERO,
                         elapsed: 0,
+                        measured_width: None,
                         countdown_generation: 0,
                         countdown_active: false,
                         countdown_remaining: None,
@@ -376,7 +376,7 @@ impl RecordingControl {
             output_path: project.clone(),
         };
 
-        if !crate::capture::overlay::release_frozen_for_recording(cx) {
+        if !crate::capture::overlay::release_frozen_screen_in_place(cx) {
             let _ = std::fs::remove_dir_all(&project);
             crate::windows::toast::Toast::show(
                 cx,
@@ -601,6 +601,7 @@ impl RecordingControl {
                 if self.camera { "video" } else { "video-off" },
                 "Select camera",
                 DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
+                false,
                 window,
                 cx,
             ));
@@ -611,6 +612,7 @@ impl RecordingControl {
                 if self.microphone { "mic" } else { "mic-off" },
                 "Select microphone",
                 DeviceMenuKind::Media(crate::system::devices::DeviceKind::Microphone),
+                false,
                 window,
                 cx,
             ),
@@ -626,6 +628,7 @@ impl RecordingControl {
                 } else {
                     "Turn system sounds on"
                 },
+                self.countdown_active,
                 |this, _window, cx| {
                     if this.countdown_active {
                         return;
@@ -643,6 +646,7 @@ impl RecordingControl {
                 "smartphone",
                 "Select iPhone or iPad",
                 DeviceMenuKind::Ios,
+                self.selected_ios_id.is_some(),
                 window,
                 cx,
             ));
@@ -656,6 +660,7 @@ impl RecordingControl {
         icon: &'static str,
         tooltip: &'static str,
         kind: DeviceMenuKind,
+        tinted: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -668,6 +673,7 @@ impl RecordingControl {
         let focus = crate::ui::primitives::control_focus(&owner, false, window, cx);
         let (trigger_hover, trigger_hovered) =
             crate::ui::primitives::hover_flag(&owner, window, cx);
+        let text = device_trigger_color(&theme, tinted, trigger_hovered);
         herogpui::components::Tooltip::new(tooltip)
             .id(SharedString::from(format!("{owner}-tip")))
             .child(
@@ -687,6 +693,7 @@ impl RecordingControl {
                     .w(px(48.0))
                     .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
                     .opacity(if self.countdown_active { 0.35 } else { 1.0 })
+                    .text_color(text)
                     .when(trigger_hovered, |el| el.bg(crate::ui::colors::white(0.15)))
                     .on_hover({
                         let trigger_hover = trigger_hover.clone();
@@ -1242,11 +1249,14 @@ impl RecordingControl {
         cx: &mut Context<Self>,
         device_menu_open: bool,
     ) {
-        let mut width =
-            recording_control_width(self.mode == Mode::Recording, self.target_name.is_some());
-        if self.mode == Mode::Recording && !self.camera_locked {
-            width -= 48.0;
-        }
+        let width = self.measured_width.unwrap_or_else(|| {
+            let mut estimate =
+                recording_control_width(self.mode == Mode::Recording, self.target_name.is_some());
+            if self.mode == Mode::Recording && !self.camera_locked {
+                estimate -= 48.0;
+            }
+            estimate
+        });
         let bounds = bar_bounds(
             cx,
             self.rect,
@@ -1277,9 +1287,23 @@ impl RecordingControl {
     }
 }
 
+fn device_trigger_color(
+    theme: &crate::theme::vars::ThemeVars,
+    tinted: bool,
+    hovered: bool,
+) -> gpui::Hsla {
+    if tinted {
+        return theme.accent;
+    }
+    if hovered {
+        return crate::ui::colors::white(1.0);
+    }
+    crate::ui::colors::white(0.85)
+}
+
 fn device_menu_placement(owner: impl Into<SharedString>) -> MenuPlacement {
     MenuPlacement::below(owner)
-        .min_width(px(DEVICE_DROPDOWN_WIDTH))
+        .min_width(px(DEVICE_DROPDOWN_MIN_WIDTH))
         .max_width(px(DEVICE_DROPDOWN_WIDTH))
         .max_height(px(DEVICE_DROPDOWN_HEIGHT))
         .offset(point(
@@ -1440,11 +1464,7 @@ fn control_window_metrics(
     device_menu_open: bool,
     countdown_active: bool,
 ) -> (f32, f32, f32) {
-    let window_width = if device_menu_open {
-        width.max(DEVICE_MENU_WINDOW_WIDTH) + CONTROL_WINDOW_HORIZONTAL_GUTTER * 2.0
-    } else {
-        width
-    };
+    let window_width = chrome::recording_window_width(width);
     let bar_offset = ((window_width - width) / 2.0).round();
     let height = if device_menu_open {
         DEVICE_MENU_WINDOW_HEIGHT
@@ -1460,18 +1480,44 @@ fn overlay_icon(
     id: &'static str,
     icon: &'static str,
     tooltip: &'static str,
+    disabled: bool,
     on_click: impl Fn(&mut RecordingControl, &mut Window, &mut Context<RecordingControl>) + 'static,
     cx: &mut Context<RecordingControl>,
 ) -> AnyElement {
-    toolbar::tooltip_button(toolbar::icon(id, icon), tooltip, cx, on_click)
+    toolbar::tooltip_button(
+        toolbar::icon(id, icon).is_disabled(disabled),
+        tooltip,
+        cx,
+        on_click,
+    )
+}
+
+fn width_probe(cx: &mut Context<RecordingControl>) -> AnyElement {
+    let owner = cx.entity().downgrade();
+    gpui::canvas(
+        move |bounds: Bounds<Pixels>, _window: &mut Window, app: &mut App| {
+            let width = f32::from(bounds.size.width);
+            if width <= 0.0 {
+                return;
+            }
+            let _ = owner.update(app, |this, cx| {
+                if this.measured_width == Some(width) {
+                    return;
+                }
+                this.measured_width = Some(width);
+                cx.notify();
+            });
+        },
+        |_bounds, _state: (), _window, _app| {},
+    )
+    .absolute()
+    .size_full()
+    .into_any_element()
 }
 
 impl Render for RecordingControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.pending_device_menu.is_none()
-            && !self.menu.is_present()
-            && window.bounds().size.height > px(chrome::RECORDING_WINDOW_HEIGHT)
-        {
+        if self.pending_device_menu.is_none() && !self.menu.is_present() {
             self.sync_window_bounds(window, cx, false);
         }
         let theme = active_theme(cx);
@@ -1486,12 +1532,16 @@ impl Render for RecordingControl {
         if let Some(name) = &self.target_name {
             bar = bar
                 .child(
-                    div()
-                        .max_w(px(TARGET_LABEL_WIDTH))
-                        .truncate()
-                        .px(px(4.0))
-                        .text_size(px(12.0))
-                        .child(name.clone()),
+                    herogpui::components::Tooltip::new(name.clone())
+                        .id("recording-target-tip")
+                        .child(
+                            div()
+                                .max_w(px(chrome::RECORDING_TARGET_CHIP_MAX_W))
+                                .truncate()
+                                .px(px(4.0))
+                                .text_size(px(12.0))
+                                .child(name.clone()),
+                        ),
                 )
                 .child(toolbar::hairline(&theme));
         }
@@ -1503,7 +1553,7 @@ impl Render for RecordingControl {
                     toolbar::button("recording-start")
                         .is_disabled(self.countdown_active)
                         .hover_bg(crate::ui::colors::white(0.15))
-                        .child(filled_glyph(theme.accent, true)),
+                        .child(toolbar::filled_glyph(theme.accent, true)),
                     "Start recording",
                     cx,
                     |this, window, cx| this.start(window, cx),
@@ -1515,6 +1565,7 @@ impl Render for RecordingControl {
                     "recording-cancel",
                     "x",
                     "Close",
+                    self.countdown_active,
                     |this, window, cx| this.cancel(window, cx),
                     cx,
                 )),
@@ -1534,13 +1585,14 @@ impl Render for RecordingControl {
                 } else {
                     "Pause recording"
                 },
+                false,
                 |this, _window, cx| this.toggle_pause(cx),
                 cx,
             ))
             .child(toolbar::tooltip_button(
                 toolbar::button("recording-stop")
                     .hover_bg(crate::ui::colors::white(0.15))
-                    .child(filled_glyph(theme.destructive, false)),
+                    .child(toolbar::filled_glyph(theme.destructive, false)),
                 "Stop recording",
                 cx,
                 |this, window, cx| this.finish(false, window, cx),
@@ -1549,8 +1601,8 @@ impl Render for RecordingControl {
                 div()
                     .min_w(px(64.0))
                     .px(px(4.0))
+                    .font_family(crate::ui::colors::MONO_FONT)
                     .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_center()
                     .child(crate::util::format::format_elapsed(self.elapsed)),
             )
@@ -1561,6 +1613,7 @@ impl Render for RecordingControl {
                 "recording-discard",
                 "trash-2",
                 "Discard recording",
+                false,
                 |this, window, cx| this.finish(true, window, cx),
                 cx,
             )),
@@ -1578,7 +1631,7 @@ fn recording_shell(
     countdown: Option<u32>,
     cx: &mut Context<RecordingControl>,
 ) -> impl IntoElement {
-    div()
+    crate::ui::font::root()
         .id("recording-control")
         .track_focus(focus)
         .size_full()
@@ -1599,7 +1652,7 @@ fn recording_shell(
             }),
         )
         .pt(px(chrome::RECORDING_BAR_PAD_TOP))
-        .child(bar)
+        .child(div().relative().child(bar).child(width_probe(cx)))
         .when_some(countdown, |el, seconds| {
             el.child(
                 toolbar::surface(&active_theme(cx))
@@ -1610,6 +1663,7 @@ fn recording_shell(
                     .child(
                         div()
                             .text_size(px(30.0))
+                            .line_height(px(30.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(seconds.to_string()),
                     )
@@ -1617,6 +1671,7 @@ fn recording_shell(
                         div()
                             .flex()
                             .flex_col()
+                            .gap(px(2.0))
                             .child(
                                 div()
                                     .text_size(px(12.0))
@@ -1634,6 +1689,7 @@ fn recording_shell(
                         "recording-countdown-cancel",
                         "x",
                         "Cancel countdown",
+                        false,
                         |this, window, cx| this.cancel(window, cx),
                         cx,
                     )),
@@ -1674,7 +1730,7 @@ mod tests {
         assert_eq!(chrome::recording_control_width(true, false), 400.0);
         assert_eq!(chrome::recording_control_width(false, true), 376.0);
         assert_eq!(chrome::recording_control_width(true, true), 540.0);
-        assert_eq!(TARGET_LABEL_WIDTH, 140.0);
+        assert_eq!(chrome::RECORDING_TARGET_LABEL_WIDTH, 140.0);
         assert_eq!(chrome::RECORDING_WINDOW_HEIGHT, 52.0);
         assert_eq!(chrome::RECORDING_BAR_PAD_TOP, 4.0);
         assert_eq!(
@@ -1736,11 +1792,15 @@ mod tests {
     fn device_menu_window_matches_electron_bounds() {
         assert_eq!(
             control_window_metrics(236.0, false, false),
-            (236.0, 0.0, 52.0)
+            (332.0, 48.0, 52.0)
         );
         assert_eq!(
             control_window_metrics(236.0, false, true),
-            (236.0, 0.0, 148.0)
+            (332.0, 48.0, 148.0)
+        );
+        assert_eq!(
+            control_window_metrics(540.0, false, false),
+            (572.0, 16.0, 52.0)
         );
         assert_eq!(
             control_window_metrics(236.0, true, false),
@@ -1802,6 +1862,7 @@ mod tests {
                 countdown_generation: 0,
                 countdown_active: false,
                 countdown_remaining: None,
+                measured_width: None,
                 focus_handle: cx.focus_handle(),
                 recorder_error_subscription: None,
             })
@@ -1939,6 +2000,7 @@ mod tests {
                 countdown_generation: 0,
                 countdown_active: false,
                 countdown_remaining: None,
+                measured_width: None,
                 focus_handle: cx.focus_handle(),
                 recorder_error_subscription: None,
             };
@@ -2000,22 +2062,6 @@ mod tests {
         assert!(!activates_device_menu("escape"));
     }
 }
-
-/// `size-3.5 fill-current`: a solid 14px disc for the record button, a solid
-/// 14px square for stop. Rounding is the only difference between them.
-fn filled_glyph(color: gpui::Hsla, round: bool) -> gpui::AnyElement {
-    let glyph = gpui::div().size(px(RECORD_GLYPH_SIZE)).bg(color);
-    if round {
-        glyph.rounded_full().into_any_element()
-    } else {
-        // `<Square>` has lucide's own 2px corner, which at this scale reads as
-        // square; `rounded-sm` is the nearest token.
-        glyph.rounded(px(chrome::RADIUS_SM)).into_any_element()
-    }
-}
-
-/// `size-3.5`.
-const RECORD_GLYPH_SIZE: f32 = 14.0;
 
 #[cfg(test)]
 mod toolbar_tests {

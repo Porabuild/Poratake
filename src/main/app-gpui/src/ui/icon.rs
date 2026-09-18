@@ -22,6 +22,7 @@ pub const ICON_LG: f32 = 20.0;
 
 const VIEWBOX: f32 = 24.0;
 const STROKE_WIDTH: f32 = 2.0;
+const SPIN_MS: u64 = 1000;
 
 fn icon_data(name: &str) -> Option<&'static str> {
     if let Some((_, path)) = data::ICONS.iter().find(|(id, _)| *id == name) {
@@ -209,22 +210,32 @@ pub fn icon_element(name: &str, size: Pixels) -> gpui::AnyElement {
 /// A `loader-2` glyph spinning once per second, matching Tailwind's
 /// `animate-spin` (`1s linear infinite`) on the renderer's spinners.
 pub fn spinner_element(id: impl Into<gpui::ElementId>, size: Pixels) -> gpui::AnyElement {
-    use gpui::AnimationExt;
-    use herogpui::gpui;
+    Loader {
+        id: id.into(),
+        size,
+    }
+    .into_any_element()
+}
 
-    let Some(glyph) = Icon::new("loader-2") else {
-        return div().into_any_element();
-    };
-    div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(glyph.size(size).with_animation(
-            id.into(),
-            gpui::Animation::new(std::time::Duration::from_secs(1)).repeat(),
-            |icon, delta| icon.rotate_turns(delta),
-        ))
-        .into_any_element()
+#[derive(IntoElement)]
+struct Loader {
+    id: gpui::ElementId,
+    size: Pixels,
+}
+
+impl RenderOnce for Loader {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        herogpui::components::Spinner::new(self.id)
+            .size_px(self.size)
+            .duration_ms(SPIN_MS)
+            .current_color(window.text_style().color)
+            .glyph(
+                gpui::svg()
+                    .size(self.size)
+                    .flex_shrink_0()
+                    .path(herogpui::components::icons::LOADER_2),
+            )
+    }
 }
 
 /// The select / popover indicator: `chevron-down`, carrying the renderer's

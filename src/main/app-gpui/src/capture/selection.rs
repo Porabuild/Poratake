@@ -256,7 +256,6 @@ pub fn hit_test_handle(rect: Rect, point: Point) -> Option<Handle> {
 }
 
 /// `cursorFor`: crosshair with no selection, a resize cursor over a handle,
-/// `move` inside the box, crosshair outside it.
 pub fn cursor_for(rect: Option<Rect>, point: Point) -> CursorStyle {
     let Some(rect) = rect else {
         return CursorStyle::Crosshair;
@@ -265,7 +264,7 @@ pub fn cursor_for(rect: Option<Rect>, point: Point) -> CursorStyle {
         return handle.cursor();
     }
     if contains_point(rect, point) {
-        CursorStyle::ClosedHand
+        CursorStyle::OpenHand
     } else {
         CursorStyle::Crosshair
     }
@@ -492,7 +491,7 @@ mod tests {
         );
         assert_eq!(
             cursor_for(Some(BOX), point(BOX.x + 60.0, BOX.y + 50.0)),
-            CursorStyle::ClosedHand
+            CursorStyle::OpenHand
         );
         assert_eq!(
             cursor_for(Some(BOX), point(BOX.x - 100.0, BOX.y)),

@@ -3,7 +3,7 @@
 //! the configured corner, stacks up to four deep, and reveals hover chrome.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -115,6 +115,8 @@ struct CapturePreview {
     last_frame: Option<std::time::Instant>,
     hovered: bool,
     busy: bool,
+    completed: Option<Instant>,
+    export_progress: Option<Arc<AtomicU32>>,
     dismiss_token: Arc<AtomicU64>,
     entered_at: Instant,
     layout_y: Option<f32>,
@@ -155,6 +157,8 @@ impl CapturePreviewWindow {
                 last_frame: None,
                 hovered: false,
                 busy: false,
+                completed: None,
+                export_progress: None,
                 dismiss_token,
                 entered_at: Instant::now(),
                 layout_y: None,
@@ -186,6 +190,8 @@ impl CapturePreviewWindow {
                 last_frame: None,
                 hovered: false,
                 busy: false,
+                completed: None,
+                export_progress: None,
                 dismiss_token,
                 entered_at: Instant::now(),
                 layout_y: None,
@@ -479,7 +485,7 @@ fn dismiss_verdict(
                 generation,
                 preview.hovered,
                 window.is_window_hovered(),
-                preview.busy,
+                preview.busy || preview.completed.is_some(),
             )
         })
         .unwrap_or(DismissVerdict::Gone)
@@ -490,12 +496,12 @@ fn dismiss_state(
     generation: u64,
     hovered: bool,
     window_hovered: bool,
-    busy: bool,
+    blocked: bool,
 ) -> DismissVerdict {
     if current_generation != generation {
         return DismissVerdict::Gone;
     }
-    if hovered && window_hovered || busy {
+    if hovered && window_hovered || blocked {
         return DismissVerdict::Blocked;
     }
     DismissVerdict::Ready
@@ -649,10 +655,6 @@ fn video_thumbnail(frame: &crate::video::decoder::DecodedFrame) -> Option<Arc<gp
     Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame])))
 }
 
-/// The preview Copy button on a video: runs the standard export with the
-/// project's saved state and reveals the result. Electron copies the exported
-/// file to the clipboard, which GPUI's clipboard cannot hold, so the file is
-/// revealed in the folder instead.
 fn start_video_export(
     id: u64,
     project: PathBuf,
@@ -666,20 +668,22 @@ fn start_video_export(
             handle
                 .update(cx, |view, _, cx| {
                     let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
-                    if preview.busy {
+                    if preview.busy || preview.completed.is_some() {
                         return None;
                     }
                     preview.busy = true;
                     preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
                     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                     preview.export_cancel = Some(cancel.clone());
+                    let progress = Arc::new(AtomicU32::new(0));
+                    preview.export_progress = Some(progress.clone());
                     cx.notify();
-                    Some((cancel, preview.dismiss_token.clone()))
+                    Some((cancel, progress, preview.dismiss_token.clone()))
                 })
                 .ok()
                 .flatten()
         });
-    let Some((cancel, dismiss_token)) = prepared else {
+    let Some((cancel, progress, dismiss_token)) = prepared else {
         return;
     };
     cx.spawn(async move |cx| {
@@ -696,7 +700,10 @@ fn start_video_export(
                             output,
                             state,
                         },
-                        &mut |_| {},
+                        &mut |value| {
+                            progress
+                                .store((value.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+                        },
                         &|| !cancel.load(Ordering::Relaxed),
                     );
                     (result, cancel.load(Ordering::Relaxed))
@@ -709,25 +716,36 @@ fn start_video_export(
                 if let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id) {
                     preview.busy = false;
                     preview.export_cancel = None;
+                    preview.export_progress = None;
                 }
                 cx.notify();
             });
             let (result, cancelled) = output;
-            match result {
+            let copied = match result {
                 Ok(path) if !cancelled => {
-                    crate::windows::toast::Toast::show(cx, "Export ready", path.to_string_lossy());
-                    crate::system::desktop::reveal_in_file_manager(&path);
+                    let copied = crate::system::clipboard::ClipboardService::write_file(&path);
+                    if !copied {
+                        report_copy_failure(cx, "could not put the recording on the clipboard");
+                    }
+                    copied
                 }
-                Ok(_) => {}
+                Ok(_) => false,
                 Err(error) => {
                     if !cancelled {
                         crate::windows::toast::Toast::show(cx, "Export failed", error);
                     }
+                    false
                 }
-            }
-            if let Some(handle) = handle {
+            };
+            let Some(handle) = handle else {
+                return;
+            };
+            if !copied {
                 schedule_auto_dismiss(handle, id, cx, dismiss_token);
+                return;
             }
+            mark_completed(handle, id, cx);
+            hold_then_dismiss(handle, id, cx);
         });
     })
     .detach();
@@ -1229,13 +1247,54 @@ fn remove_preview_now(
     cx.notify();
 }
 
+fn finished_progress(started: Instant, now: Instant) -> f32 {
+    let elapsed = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
+    (elapsed / crate::ui::preview::FINISHED_ENTER_MS as f32).clamp(0.0, 1.0)
+}
+
+fn export_fraction(progress: &Arc<AtomicU32>) -> f32 {
+    (progress.load(Ordering::Relaxed) as f32 / 1000.0).clamp(0.0, 1.0)
+}
+
+fn mark_completed(handle: AnyWindowHandle, id: u64, cx: &mut App) {
+    let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
+        return;
+    };
+    let _ = handle.update(cx, |view, _window, cx| {
+        let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id) else {
+            return;
+        };
+        preview.busy = false;
+        preview.export_progress = None;
+        preview.completed = Some(Instant::now());
+        cx.notify();
+    });
+}
+
+fn hold_then_dismiss(handle: AnyWindowHandle, id: u64, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(UPLOAD_DONE_DISPLAY_MS))
+            .await;
+        cx.update(|cx| {
+            let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
+                return;
+            };
+            let _ = handle.update(cx, |view, window, cx| {
+                begin_remove_preview(view, id, DismissBehavior::Automatic, window, cx)
+            });
+        });
+    })
+    .detach();
+}
+
 impl CapturePreviewWindow {
-    fn show_controls(hovered: bool, busy: bool) -> bool {
-        hovered || busy
+    fn show_controls(hovered: bool, busy: bool, completed: bool) -> bool {
+        !completed && (hovered || busy)
     }
 
     fn advance_hover(preview: &mut CapturePreview, hovered: bool, now: Instant) -> (f32, bool) {
-        let target = if Self::show_controls(hovered, preview.busy) {
+        let target = if Self::show_controls(hovered, preview.busy, preview.completed.is_some()) {
             1.0
         } else {
             0.0
@@ -1274,7 +1333,7 @@ impl CapturePreviewWindow {
         let hovered = preview.hovered && window_hovered;
         let (progress, animating) = Self::advance_hover(preview, hovered, now);
         (
-            Self::show_controls(hovered, preview.busy),
+            Self::show_controls(hovered, preview.busy, preview.completed.is_some()),
             progress,
             animating,
         )
@@ -1301,11 +1360,15 @@ impl CapturePreviewWindow {
         let path = preview.path.clone();
         let dismiss_token = preview.dismiss_token.clone();
         let busy = preview.busy;
+        let finished = preview.completed.map(|at| finished_progress(at, now));
+        let export_progress = preview.export_progress.clone();
+        let gated = busy || finished.is_some();
         let (show_controls, progress, animating) =
             Self::control_frame(preview, window_hovered, now);
         let (layout_y, layout_animating) = advance_layout(preview, target_y, enter_offset, now);
         let (opacity, opacity_animating) = preview_opacity(preview, now);
         *needs_frame |= animating || layout_animating || opacity_animating;
+        *needs_frame |= finished.is_some_and(|value| value < 1.0) || export_progress.is_some();
         // `scale-105` over `duration-200` rather than an instant jump.
         let scale = 1.0 + (PREVIEW_HOVER_SCALE - 1.0) * progress;
         let image_w = PREVIEW_WIDTH * scale;
@@ -1341,7 +1404,7 @@ impl CapturePreviewWindow {
                 let preview_entity = preview_entity.clone();
                 let path = path.clone();
                 move |event: &gpui::MouseDownEvent, window, cx| {
-                    if event.click_count < 2 {
+                    if event.click_count < 2 || gated {
                         return;
                     }
                     let path = path.to_string_lossy().into_owned();
@@ -1442,6 +1505,9 @@ impl CapturePreviewWindow {
                             {
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
+                                    if gated {
+                                        return;
+                                    }
                                     let _ = preview_entity.update(cx, |view, cx| {
                                         begin_remove_preview(
                                             view,
@@ -1476,6 +1542,9 @@ impl CapturePreviewWindow {
                                 let path = path.clone();
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
+                                    if gated {
+                                        return;
+                                    }
                                     if is_video {
                                         delete_recording(&path);
                                     } else {
@@ -1545,6 +1614,9 @@ impl CapturePreviewWindow {
                                     let path = path.clone();
                                     let preview_entity = preview_entity.clone();
                                     move |window, cx| {
+                                        if gated {
+                                            return;
+                                        }
                                         if polish_and_copy(&path, cx) {
                                             let _ = preview_entity.update(cx, |view, cx| {
                                                 begin_remove_preview(
@@ -1560,7 +1632,7 @@ impl CapturePreviewWindow {
                                 },
                             ))
                         })
-                        .when(!(is_video && busy), |el| {
+                        .when(!gated, |el| {
                             el.child(preview::pill(
                                 ("preview-edit", id),
                                 "Edit",
@@ -1623,6 +1695,10 @@ impl CapturePreviewWindow {
                                 let path = path.clone();
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
+                                    if gated {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if copy_image(&path, cx) {
                                         let _ = preview_entity.update(cx, |view, cx| {
                                             begin_remove_preview(
@@ -1682,6 +1758,10 @@ impl CapturePreviewWindow {
                                 let path = path.clone();
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
+                                    if gated {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     let config = crate::state::state(cx).config.get().cloud;
                                     let path = path.clone();
                                     let handle = window.window_handle();
@@ -1691,7 +1771,7 @@ impl CapturePreviewWindow {
                                                 .previews
                                                 .iter_mut()
                                                 .find(|preview| preview.id == id)?;
-                                            if preview.busy {
+                                            if preview.busy || preview.completed.is_some() {
                                                 return None;
                                             }
                                             preview.busy = true;
@@ -1715,13 +1795,14 @@ impl CapturePreviewWindow {
                                         let succeeded = result.is_ok();
                                         cx.update(|cx| {
                                             let _ = task_entity.update(cx, |view, cx| {
-                                                if !succeeded {
-                                                    if let Some(preview) = view
-                                                        .previews
-                                                        .iter_mut()
-                                                        .find(|preview| preview.id == id)
-                                                    {
-                                                        preview.busy = false;
+                                                if let Some(preview) = view
+                                                    .previews
+                                                    .iter_mut()
+                                                    .find(|preview| preview.id == id)
+                                                {
+                                                    preview.busy = false;
+                                                    if succeeded {
+                                                        preview.completed = Some(Instant::now());
                                                     }
                                                 }
                                                 cx.notify();
@@ -1843,6 +1924,13 @@ impl CapturePreviewWindow {
             }
         }
 
+        if let Some(fraction) = export_progress.as_ref().map(export_fraction) {
+            root = root.child(preview::progress_bar(fraction, theme));
+        }
+        if let Some(value) = finished {
+            root = root.child(preview::finished_badge(value, theme));
+        }
+
         div()
             .absolute()
             .top(px(layout_y))
@@ -1875,7 +1963,7 @@ impl Render for CapturePreviewWindow {
         };
         let now = Instant::now();
         let mut needs_frame = false;
-        let mut root = div().relative().size_full();
+        let mut root = crate::ui::font::root().relative().size_full();
         let mut active_index = 0;
         for index in 0..self.previews.len() {
             let target_y = if self.previews[index].dismiss_animation.is_some() {
@@ -1978,6 +2066,50 @@ mod tests {
     }
 
     #[test]
+    fn controls_hide_once_an_operation_finishes() {
+        assert!(CapturePreviewWindow::show_controls(true, false, false));
+        assert!(CapturePreviewWindow::show_controls(false, true, false));
+        assert!(!CapturePreviewWindow::show_controls(false, false, false));
+        assert!(!CapturePreviewWindow::show_controls(true, true, true));
+    }
+
+    #[test]
+    fn a_finished_preview_blocks_the_auto_dismiss_timer() {
+        assert_eq!(
+            dismiss_state(4, 4, false, false, true),
+            DismissVerdict::Blocked
+        );
+        assert_eq!(
+            dismiss_state(4, 4, false, false, false),
+            DismissVerdict::Ready
+        );
+    }
+
+    #[test]
+    fn the_finished_badge_zooms_in_from_half_size_over_its_enter_duration() {
+        let started = Instant::now();
+        assert_eq!(
+            crate::ui::preview::finished_zoom(finished_progress(started, started)),
+            crate::ui::preview::FINISHED_ZOOM_FROM
+        );
+        let half = started + Duration::from_millis(crate::ui::preview::FINISHED_ENTER_MS / 2);
+        assert!((finished_progress(started, half) - 0.5).abs() < 0.01);
+        let done = started + Duration::from_millis(crate::ui::preview::FINISHED_ENTER_MS * 2);
+        assert_eq!(finished_progress(started, done), 1.0);
+        assert_eq!(crate::ui::preview::finished_zoom(1.0), 1.0);
+    }
+
+    #[test]
+    fn export_progress_reads_back_as_a_clamped_fraction() {
+        let progress = Arc::new(AtomicU32::new(0));
+        assert_eq!(export_fraction(&progress), 0.0);
+        progress.store(250, Ordering::Relaxed);
+        assert_eq!(export_fraction(&progress), 0.25);
+        progress.store(4000, Ordering::Relaxed);
+        assert_eq!(export_fraction(&progress), 1.0);
+    }
+
+    #[test]
     fn the_video_playhead_loops_over_the_duration() {
         assert_eq!(super::looped_playhead(1.0, 10.0), 1.0);
         assert_eq!(super::looped_playhead(12.5, 10.0), 2.5);
@@ -2047,6 +2179,8 @@ mod tests {
             last_frame: Some(now),
             hovered: true,
             busy: false,
+            completed: None,
+            export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
             entered_at: now,
             layout_y: None,
@@ -2215,7 +2349,7 @@ mod tests {
     fn window_exit_and_reentry_gate_the_stored_hover() {
         let stored_hover = true;
         let visible = [false, true].map(|window_hovered| {
-            CapturePreviewWindow::show_controls(stored_hover && window_hovered, false)
+            CapturePreviewWindow::show_controls(stored_hover && window_hovered, false, false)
         });
         assert_eq!(visible, [false, true]);
     }

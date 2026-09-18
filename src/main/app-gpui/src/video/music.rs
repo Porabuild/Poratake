@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn an_existing_name_gains_a_counter() {
-        let folder = std::env::temp_dir().join("poratake-music-test");
+        let folder = crate::util::test_paths::unique_temp("poratake-music-test");
         std::fs::create_dir_all(&folder).expect("folder");
         std::fs::write(folder.join("song.mp3"), b"a").expect("write");
         assert_eq!(unique_file_name(&folder, "song.mp3"), "song (1).mp3");
@@ -170,12 +170,12 @@ mod tests {
 
     #[test]
     fn a_referenced_file_is_kept() {
-        let folder = std::env::temp_dir().join("poratake-music-keep.poratake/music");
+        let project = crate::util::test_paths::unique_temp("poratake-music-keep.poratake");
+        let folder = project.join("music");
         std::fs::create_dir_all(&folder).expect("folder");
         let file = folder.join("song.mp3");
         std::fs::write(&file, b"a").expect("write");
 
-        let project = std::env::temp_dir().join("poratake-music-keep.poratake");
         remove(&project, "song.mp3", true);
         assert!(file.exists());
 

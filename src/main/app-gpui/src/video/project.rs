@@ -82,6 +82,14 @@ pub fn mic_audio_path(path: &Path) -> PathBuf {
     sidecar(path, MIC_AUDIO, "mic.m4a")
 }
 
+pub fn embedded_audio_path(path: &Path) -> Option<PathBuf> {
+    if system_audio_path(path).is_file() {
+        return None;
+    }
+    let recording = recording_video_path(path);
+    recording.is_file().then_some(recording)
+}
+
 pub fn cursor_path(path: &Path) -> PathBuf {
     sidecar(path, CURSOR, "cursor.json")
 }
@@ -155,6 +163,20 @@ mod tests {
         );
         assert_eq!(recording_video_path(&loose), loose);
         assert_eq!(recording_features(&loose), RecordingFeatures::default());
+    }
+
+    #[test]
+    fn the_recording_is_the_audio_source_when_there_is_no_system_stem() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let project = directory.path().join("Take 1.poratake");
+        std::fs::create_dir(&project).expect("project folder");
+        assert_eq!(embedded_audio_path(&project), None);
+
+        std::fs::write(project.join(RECORDING), []).expect("recording");
+        assert_eq!(embedded_audio_path(&project), Some(project.join(RECORDING)));
+
+        std::fs::write(project.join(SYSTEM_AUDIO), []).expect("system audio");
+        assert_eq!(embedded_audio_path(&project), None);
     }
 
     #[test]

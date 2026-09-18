@@ -109,14 +109,10 @@ mod tests {
         source.len()
     }
 
-    /// Every `.method(..)` in a `Button::new(..)` builder chain, as one string.
-    ///
-    /// Chain order carries no meaning — `Button` is a builder — so the guard
-    /// has to read the whole chain rather than a line or two around a match.
-    fn button_chains(source: &str) -> Vec<(usize, String)> {
+    fn builder_chains(source: &str, constructor: &str) -> Vec<(usize, String)> {
         let mut out = Vec::new();
         let mut from = 0usize;
-        while let Some(found) = source[from..].find("Button::new") {
+        while let Some(found) = source[from..].find(constructor) {
             let start = from + found;
             let Some(paren) = source[start..].find('(') else {
                 break;
@@ -145,7 +141,6 @@ mod tests {
     }
 
     /// A button showing an icon *and* text must still carry an accessible name.
-    ///
     /// `Button::label` is the name, and it paints before every child — so an
     /// icon written first still lands after the text, and moving the text into
     /// a child to fix the order silently drops the name. `content` is the only
@@ -156,7 +151,7 @@ mod tests {
         let mut offenders = Vec::new();
         for path in rust_sources() {
             let source = std::fs::read_to_string(&path).expect("read source");
-            for (line, chain) in button_chains(&source) {
+            for (line, chain) in builder_chains(&source, "Button::new") {
                 if !chain.contains("icon_element(") || chain.contains("label(") {
                     continue;
                 }
@@ -179,6 +174,30 @@ mod tests {
             "these buttons show an icon and text but have no accessible name; \
              add `.label(text)` for the name and `.content(|_| \
              primitives::icon_label(..))` for the painted row. Found at:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn select_trigger_padding_comes_from_the_theme() {
+        let mut offenders = Vec::new();
+        for path in rust_sources() {
+            let source = std::fs::read_to_string(&path).expect("read source");
+            for (line, chain) in builder_chains(&source, "Select::new") {
+                let Some(at) = chain.find(".sx(") else {
+                    continue;
+                };
+                let start = at + ".sx(".len() - 1;
+                let arg = &chain[start..call_end(&chain, start)];
+                if arg.contains(".py(") || arg.contains(".pt(") || arg.contains(".pb(") {
+                    offenders.push(format!("{}:{}", path.display(), line));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "`Select::sx` pads the component root, not the trigger; set \
+             `SelectStyle::padding_y` in `theme/bridge.rs` instead. Found at:\n  {}",
             offenders.join("\n  ")
         );
     }

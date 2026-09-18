@@ -169,6 +169,66 @@ fn function_code(index: u8) -> Option<Code> {
     }
 }
 
+pub fn keystroke(accelerator: &str) -> Option<String> {
+    let trimmed = accelerator.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut tokens = trimmed
+        .split('+')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let key = keystroke_key(tokens.pop()?)?;
+    let mut parts = Vec::new();
+    for token in tokens {
+        parts.push(keystroke_modifier(token)?);
+    }
+    parts.push(key);
+    Some(parts.join("-"))
+}
+
+fn keystroke_modifier(token: &str) -> Option<String> {
+    match token.to_ascii_lowercase().as_str() {
+        "alt" | "option" => Some("alt".into()),
+        "ctrl" | "control" => Some("ctrl".into()),
+        "shift" => Some("shift".into()),
+        "cmd" | "command" | "super" | "meta" => Some("cmd".into()),
+        "commandorcontrol" | "cmdorctrl" | "commandorctrl" | "cmdorcontrol" => {
+            Some("secondary".into())
+        }
+        _ => None,
+    }
+}
+
+fn keystroke_key(token: &str) -> Option<String> {
+    let lower = token.to_ascii_lowercase();
+    if lower.len() == 1 && lower.chars().all(|value| value.is_ascii_alphanumeric()) {
+        return Some(lower);
+    }
+    if let Some(number) = lower.strip_prefix('f') {
+        if !number.is_empty() && number.chars().all(|value| value.is_ascii_digit()) {
+            return Some(lower);
+        }
+    }
+    match lower.as_str() {
+        "return" | "enter" => Some("enter".into()),
+        "esc" | "escape" => Some("escape".into()),
+        "space" => Some("space".into()),
+        "tab" => Some("tab".into()),
+        "backspace" => Some("backspace".into()),
+        "delete" => Some("delete".into()),
+        "insert" => Some("insert".into()),
+        "home" => Some("home".into()),
+        "end" => Some("end".into()),
+        "pageup" => Some("pageup".into()),
+        "pagedown" => Some("pagedown".into()),
+        "up" | "down" | "left" | "right" => Some(lower),
+        "plus" => Some("+".into()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +251,19 @@ mod tests {
         assert_eq!(parse("p").expect("p").code, Code::KeyP);
         assert_eq!(parse("F5").expect("f5").code, Code::F5);
         assert_eq!(parse("Alt+Left").expect("alt left").code, Code::ArrowLeft);
+    }
+
+    #[test]
+    fn accelerators_become_gpui_keystrokes() {
+        assert_eq!(
+            keystroke("CommandOrControl+Shift+U").as_deref(),
+            Some("secondary-shift-u")
+        );
+        assert_eq!(keystroke("Alt+F5").as_deref(), Some("alt-f5"));
+        assert_eq!(keystroke("Cmd+Return").as_deref(), Some("cmd-enter"));
+        assert_eq!(keystroke("  "), None);
+        assert_eq!(keystroke("Ctrl+Nope"), None);
+        assert_eq!(keystroke("Hyper+U"), None);
     }
 }
 

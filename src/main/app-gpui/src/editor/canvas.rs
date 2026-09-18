@@ -12,9 +12,10 @@ use gpui::{
 use herogpui::gpui;
 
 use crate::editor::annotations::{
-    arrow_curve_control, arrow_head_size, normalize_rect, points_to_coordinates, Annotation, Point,
-    ResizeHandle, DEFAULT_TEXT_FONT,
+    arrow_curve_control, arrow_head_size, normalize_rect, number_size_config, Annotation, Offset,
+    Point, ResizeHandle, TextBox,
 };
+use crate::editor::preview_raster;
 use crate::theme::color::Srgba;
 use crate::theme::vars::active_theme;
 use crate::ui::colors::Tool;
@@ -28,11 +29,6 @@ pub struct CanvasSnapshot {
     /// Redacted pixels for committed redactions, rendered from the same code
     /// the export uses so the preview shows exactly what is written out.
     pub redact_patches: std::collections::HashMap<String, std::sync::Arc<gpui::RenderImage>>,
-    /// Rotated text, rasterized by the export renderer with its image-space
-    /// origin and size. GPUI cannot rotate elements, so these annotations
-    /// paint as images instead of text overlays.
-    pub rotated_text:
-        std::collections::HashMap<String, (std::sync::Arc<gpui::RenderImage>, f64, f64, f64, f64)>,
     pub image_width: f32,
     pub image_height: f32,
     pub zoom: f32,
@@ -118,74 +114,6 @@ impl RenderOnce for EditorCanvas {
 
         drop(snap);
 
-        let text_overlays: Vec<(
-            String,
-            f64,
-            f64,
-            String,
-            String,
-            f64,
-            Option<String>,
-            Option<String>,
-        )> = {
-            let snapshot = self.snapshot.borrow();
-            let committed = snapshot
-                .annotations
-                .iter()
-                .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()));
-            committed
-                .chain(snapshot.draft.iter())
-                .filter(|annotation| {
-                    !snapshot.rotated_text.contains_key(annotation.id())
-                        || snapshot
-                            .draft
-                            .as_ref()
-                            .is_some_and(|draft| draft.id() == annotation.id())
-                })
-                .filter_map(|annotation| {
-                    if let Annotation::Text {
-                        id,
-                        x,
-                        y,
-                        text,
-                        fill,
-                        font_size,
-                        font_family,
-                        background_color,
-                        ..
-                    } = annotation
-                    {
-                        Some((
-                            id.clone(),
-                            *x,
-                            *y,
-                            text.clone(),
-                            fill.clone(),
-                            *font_size,
-                            font_family.clone(),
-                            background_color.clone(),
-                        ))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-        let zoom = self.snapshot.borrow().zoom;
-        for (id, x, y, text, fill, font_size, font_family, background_color) in text_overlays {
-            frame = frame.child(text_overlay(
-                &id,
-                x,
-                y,
-                &text,
-                &fill,
-                font_size,
-                font_family.as_deref().unwrap_or(DEFAULT_TEXT_FONT),
-                background_color.as_deref(),
-                zoom,
-            ));
-        }
-
         for outline in selection_outlines(&self.snapshot.borrow(), &theme) {
             frame = frame.child(outline);
         }
@@ -222,70 +150,12 @@ impl RenderOnce for EditorCanvas {
                 move |bounds, (), window, _cx| {
                     set_paint_origin(bounds.origin);
                     let snapshot = overlay_snapshot.borrow();
-                    for annotation in snapshot.annotations.iter().chain(snapshot.draft.iter()) {
-                        if let Annotation::Redact {
-                            id,
-                            x,
-                            y,
-                            width,
-                            height,
-                            ..
-                        } = annotation
-                        {
-                            if let Some(patch) = snapshot.redact_patches.get(id) {
-                                let scale = snapshot.zoom;
-                                let region = gpui::Bounds {
-                                    origin: gpui::point(
-                                        bounds.origin.x + px(*x as f32 * scale),
-                                        bounds.origin.y + px(*y as f32 * scale),
-                                    ),
-                                    size: gpui::size(
-                                        px(*width as f32 * scale),
-                                        px(*height as f32 * scale),
-                                    ),
-                                };
-                                let _ = window.paint_image(
-                                    region,
-                                    region,
-                                    gpui::Corners::default(),
-                                    patch.clone(),
-                                    0,
-                                    false,
-                                );
-                                continue;
-                            }
-                        }
-                        if let Annotation::Text { id, .. } = annotation {
-                            if snapshot.editing_text.as_deref() == Some(id.as_str()) {
-                                continue;
-                            }
-                            if let Some((patch, x, y, width, height)) =
-                                snapshot.rotated_text.get(id)
-                            {
-                                let scale = snapshot.zoom;
-                                let region = gpui::Bounds {
-                                    origin: gpui::point(
-                                        bounds.origin.x + px(*x as f32 * scale),
-                                        bounds.origin.y + px(*y as f32 * scale),
-                                    ),
-                                    size: gpui::size(
-                                        px(*width as f32 * scale),
-                                        px(*height as f32 * scale),
-                                    ),
-                                };
-                                let _ = window.paint_image(
-                                    region,
-                                    region,
-                                    gpui::Corners::default(),
-                                    patch.clone(),
-                                    0,
-                                    false,
-                                );
-                                continue;
-                            }
-                        }
-                        draw_annotation(window, annotation, snapshot.zoom);
-                    }
+                    paint_annotations(
+                        window,
+                        bounds.origin,
+                        &snapshot,
+                        primary.opacity(HALO_OPACITY),
+                    );
                     if let [selected] = snapshot.selected.as_slice() {
                         if let Some(annotation) = snapshot
                             .annotations
@@ -406,82 +276,97 @@ impl RenderOnce for EditorCanvas {
     }
 }
 
-pub fn draw_annotation(window: &mut gpui::Window, annotation: &Annotation, scale: f32) {
-    match annotation {
-        Annotation::Highlight {
-            points,
-            fill,
-            opacity,
-            stroke_width,
-            ..
-        } => {
-            let coordinates = points_to_coordinates(points);
-            if coordinates.len() < 2 {
-                return;
-            }
-            let mut builder = stroked(*stroke_width as f32 * scale);
-            for (index, (x, y)) in coordinates.iter().enumerate() {
-                let at = at_point(
-                    &Point {
-                        x: *x as f32,
-                        y: *y as f32,
-                    },
-                    scale,
-                );
-                if index == 0 {
-                    builder.move_to(at);
-                } else {
-                    builder.line_to(at);
-                }
-            }
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, Srgba::parse(fill).to_hsla().opacity(*opacity as f32));
-            }
+fn paint_annotations(
+    window: &mut gpui::Window,
+    origin: gpui::Point<Pixels>,
+    snapshot: &CanvasSnapshot,
+    halo: Hsla,
+) {
+    let zoom = snapshot.zoom;
+    let haloed = match snapshot.selected.as_slice() {
+        [single] => Some(single.as_str()),
+        _ => None,
+    };
+    let visible: Vec<&Annotation> = snapshot
+        .annotations
+        .iter()
+        .chain(snapshot.draft.iter())
+        .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()))
+        .collect();
+    let surface = preview_raster::Surface {
+        width: snapshot.image_width.max(0.0) as u32,
+        height: snapshot.image_height.max(0.0) as u32,
+        pixels: snapshot.image.as_ref().and_then(|image| image.as_bytes(0)),
+    };
+    let scale = f64::from(zoom) * f64::from(window.scale_factor());
+
+    let keys = preview_raster::begin_frame(&visible);
+    for (index, annotation) in visible.iter().enumerate() {
+        if haloed == Some(annotation.id()) {
+            draw_selection_halo(window, annotation, zoom, halo);
         }
-        Annotation::Number {
+        if let Annotation::Redact {
+            id,
             x,
             y,
-            display_value,
-            fill,
-            size,
+            width,
+            height,
             ..
-        } => {
-            let (radius, _) = crate::editor::annotations::number_size_config(size);
-            let center = Point {
-                x: *x as f32,
-                y: *y as f32,
-            };
-            if let Some(path) =
-                ellipse_path(center.x, center.y, radius as f32, radius as f32, scale)
-            {
-                window.paint_path(path, Srgba::parse(fill).to_hsla());
-            }
-            let (_, font_size) = crate::editor::annotations::number_size_config(size);
-            let cell = font_size as f32 / crate::editor::glyphs::GLYPH_ROWS as f32;
-            let text_color = contrast_color(fill);
-            for (column, row) in crate::editor::glyphs::cells(display_value) {
-                let a = Point {
-                    x: center.x + column * cell,
-                    y: center.y + row * cell,
-                };
-                let b = Point {
-                    x: a.x + cell,
-                    y: a.y + cell,
-                };
-                let mut builder = PathBuilder::fill();
-                for (index, point) in rect_points(a, b).iter().enumerate() {
-                    if index == 0 {
-                        builder.move_to(at_point(point, scale));
-                    } else {
-                        builder.line_to(at_point(point, scale));
-                    }
-                }
-                builder.close();
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, text_color);
-                }
+        } = annotation
+        {
+            if let Some(patch) = snapshot.redact_patches.get(id) {
+                paint_patch(window, origin, zoom, patch.clone(), *x, *y, *width, *height);
+                continue;
             }
         }
+        if preview_raster::is_rasterized(annotation) {
+            if let Some(patch) =
+                preview_raster::image(&keys, index, annotation, &visible[..index], &surface, scale)
+            {
+                paint_patch(
+                    window,
+                    origin,
+                    zoom,
+                    patch.image,
+                    patch.x,
+                    patch.y,
+                    patch.width,
+                    patch.height,
+                );
+            }
+            continue;
+        }
+        draw_annotation(window, annotation, zoom);
+    }
+    preview_raster::end_frame(window);
+}
+
+fn paint_patch(
+    window: &mut gpui::Window,
+    origin: gpui::Point<Pixels>,
+    zoom: f32,
+    image: std::sync::Arc<gpui::RenderImage>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) {
+    let region = gpui::Bounds {
+        origin: gpui::point(
+            origin.x + px(x as f32 * zoom),
+            origin.y + px(y as f32 * zoom),
+        ),
+        size: gpui::size(px(width as f32 * zoom), px(height as f32 * zoom)),
+    };
+    let _ = window.paint_image(region, region, gpui::Corners::default(), image, 0, false);
+}
+
+pub fn draw_annotation(window: &mut gpui::Window, annotation: &Annotation, scale: f32) {
+    match annotation {
+        Annotation::Pen { .. }
+        | Annotation::Highlight { .. }
+        | Annotation::Number { .. }
+        | Annotation::Text { .. } => {}
         Annotation::Redact {
             x,
             y,
@@ -515,39 +400,6 @@ pub fn draw_annotation(window: &mut gpui::Window, annotation: &Annotation, scale
                 window.paint_path(path, Srgba::parse("#000000").to_hsla().opacity(preview));
             }
         }
-        Annotation::Text { .. } => {
-            // Text is drawn by GPUI's text system as a positioned overlay so
-            // it uses the same platform font the export rasterizes with.
-        }
-        Annotation::Pen {
-            points,
-            stroke,
-            stroke_width,
-            ..
-        } => {
-            let coordinates = points_to_coordinates(points);
-            if coordinates.len() < 2 {
-                return;
-            }
-            let mut builder = stroked(*stroke_width as f32 * scale);
-            let mut first = true;
-            for (x, y) in coordinates {
-                let at = at_point(
-                    &Point {
-                        x: x as f32,
-                        y: y as f32,
-                    },
-                    scale,
-                );
-                if first {
-                    builder.move_to(at);
-                    first = false;
-                } else {
-                    builder.line_to(at);
-                }
-            }
-            finish(builder, window, stroke);
-        }
         Annotation::Line {
             points,
             stroke,
@@ -577,44 +429,11 @@ pub fn draw_annotation(window: &mut gpui::Window, annotation: &Annotation, scale
             bend_offset,
             ..
         } => {
-            let start = Point {
-                x: points[0] as f32,
-                y: points[1] as f32,
-            };
-            let end = Point {
-                x: points[2] as f32,
-                y: points[3] as f32,
-            };
-            let control =
-                arrow_curve_control(points, arrow_style.as_deref(), *bend_offset).map(|(x, y)| {
-                    Point {
-                        x: x as f32,
-                        y: y as f32,
-                    }
-                });
-
-            let mut builder = stroked(*stroke_width as f32 * scale);
-            builder.move_to(at_point(&start, scale));
-            match &control {
-                Some(control) => builder.curve_to(at_point(&end, scale), at_point(control, scale)),
-                None => builder.line_to(at_point(&end, scale)),
-            }
-
-            let head_length = arrow_head_size(*stroke_width) as f32;
-            let end_angle = match &control {
-                Some(control) => (end.y - control.y).atan2(end.x - control.x),
-                None => (end.y - start.y).atan2(end.x - start.x),
-            };
-            push_arrow_head(&mut builder, &end, end_angle, head_length, scale);
-            if matches!(arrow_style.as_deref(), Some("double" | "double-curved")) {
-                let start_angle = match &control {
-                    Some(control) => (start.y - control.y).atan2(start.x - control.x),
-                    None => (start.y - end.y).atan2(start.x - end.x),
-                };
-                push_arrow_head(&mut builder, &start, start_angle, head_length, scale);
-            }
-
-            finish(builder, window, stroke);
+            let geometry =
+                arrow_geometry(points, arrow_style.as_deref(), *bend_offset, *stroke_width);
+            let width = *stroke_width as f32;
+            let color = Srgba::parse(stroke).to_hsla();
+            paint_arrow(window, &geometry, width, width, scale, color);
         }
         Annotation::Rectangle {
             x,
@@ -673,6 +492,342 @@ pub fn draw_annotation(window: &mut gpui::Window, annotation: &Annotation, scale
             }
         }
     }
+}
+
+struct ArrowGeometry {
+    start: Point,
+    end: Point,
+    control: Option<Point>,
+    head_length: f32,
+    double: bool,
+}
+
+fn arrow_geometry(
+    points: &[f64; 4],
+    arrow_style: Option<&str>,
+    bend_offset: Option<Offset>,
+    stroke_width: f64,
+) -> ArrowGeometry {
+    ArrowGeometry {
+        start: Point {
+            x: points[0] as f32,
+            y: points[1] as f32,
+        },
+        end: Point {
+            x: points[2] as f32,
+            y: points[3] as f32,
+        },
+        control: arrow_curve_control(points, arrow_style, bend_offset).map(|(x, y)| Point {
+            x: x as f32,
+            y: y as f32,
+        }),
+        head_length: arrow_head_size(stroke_width) as f32,
+        double: matches!(arrow_style, Some("double" | "double-curved")),
+    }
+}
+
+fn paint_arrow(
+    window: &mut gpui::Window,
+    geometry: &ArrowGeometry,
+    line_width: f32,
+    head_width: f32,
+    scale: f32,
+    color: Hsla,
+) {
+    let ArrowGeometry {
+        start,
+        end,
+        control,
+        head_length,
+        double,
+    } = geometry;
+
+    let mut line = stroked(line_width * scale);
+    line.move_to(at_point(start, scale));
+    match control {
+        Some(control) => line.curve_to(at_point(end, scale), at_point(control, scale)),
+        None => line.line_to(at_point(end, scale)),
+    }
+    if let Ok(path) = line.build() {
+        window.paint_path(path, color);
+    }
+
+    let mut head = stroked(head_width * scale);
+    let end_angle = match control {
+        Some(control) => (end.y - control.y).atan2(end.x - control.x),
+        None => (end.y - start.y).atan2(end.x - start.x),
+    };
+    push_arrow_head(&mut head, end, end_angle, *head_length, scale);
+    if *double {
+        let start_angle = match control {
+            Some(control) => (start.y - control.y).atan2(start.x - control.x),
+            None => (start.y - end.y).atan2(start.x - end.x),
+        };
+        push_arrow_head(&mut head, start, start_angle, *head_length, scale);
+    }
+    if let Ok(path) = head.build() {
+        window.paint_path(path, color);
+    }
+}
+
+const HALO_STROKE: f32 = 6.0;
+const HALO_OPACITY: f32 = 0.8;
+const HALO_ARROW_HEAD_STROKE: f32 = 4.0;
+const HALO_NUMBER_OFFSET: f32 = 3.0;
+const HALO_PEN_STROKE: f32 = 2.0;
+const HALO_HIGHLIGHT_STROKE: f32 = 3.0;
+const HALO_TEXT_STROKE: f32 = 4.0;
+
+fn halo_stroke(stroke_width: f64) -> f32 {
+    stroke_width as f32 + HALO_STROKE
+}
+
+fn number_halo_radius(size: &str) -> f32 {
+    number_size_config(size).0 as f32 + HALO_NUMBER_OFFSET
+}
+
+fn text_halo_rect(text_box: &TextBox) -> (f64, f64, f64, f64) {
+    let inset = f64::from(HALO_TEXT_STROKE) / 2.0;
+    (
+        text_box.x - inset,
+        text_box.y - inset,
+        text_box.width + inset * 2.0,
+        text_box.height + inset * 2.0,
+    )
+}
+
+fn draw_selection_halo(
+    window: &mut gpui::Window,
+    annotation: &Annotation,
+    scale: f32,
+    color: Hsla,
+) {
+    match annotation {
+        Annotation::Rectangle {
+            x,
+            y,
+            width,
+            height,
+            stroke_width,
+            ..
+        } => halo_rect(
+            window,
+            *x,
+            *y,
+            *width,
+            *height,
+            halo_stroke(*stroke_width),
+            scale,
+            color,
+        ),
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } => halo_rect(window, *x, *y, *width, *height, HALO_STROKE, scale, color),
+        Annotation::Circle {
+            x,
+            y,
+            radius,
+            stroke_width,
+            ..
+        } => halo_ellipse(
+            window,
+            *x as f32,
+            *y as f32,
+            *radius as f32,
+            halo_stroke(*stroke_width),
+            scale,
+            color,
+        ),
+        Annotation::Number { x, y, size, .. } => halo_ellipse(
+            window,
+            *x as f32,
+            *y as f32,
+            number_halo_radius(size),
+            HALO_STROKE,
+            scale,
+            color,
+        ),
+        Annotation::Line {
+            points,
+            stroke_width,
+            ..
+        } => {
+            let mut builder = stroked(halo_stroke(*stroke_width) * scale);
+            builder.move_to(at_point(
+                &Point {
+                    x: points[0] as f32,
+                    y: points[1] as f32,
+                },
+                scale,
+            ));
+            builder.line_to(at_point(
+                &Point {
+                    x: points[2] as f32,
+                    y: points[3] as f32,
+                },
+                scale,
+            ));
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, color);
+            }
+        }
+        Annotation::Arrow {
+            points,
+            stroke_width,
+            arrow_style,
+            bend_offset,
+            ..
+        } => {
+            let geometry =
+                arrow_geometry(points, arrow_style.as_deref(), *bend_offset, *stroke_width);
+            paint_arrow(
+                window,
+                &geometry,
+                halo_stroke(*stroke_width),
+                *stroke_width as f32 + HALO_ARROW_HEAD_STROKE,
+                scale,
+                color,
+            );
+        }
+        Annotation::Text { .. } => {
+            let Some(text_box) = annotation.text_box() else {
+                return;
+            };
+            let (left, top, width, height) = text_halo_rect(&text_box);
+            let radians = text_box.rotation.to_radians() as f32;
+            let (sin, cos) = radians.sin_cos();
+            let (center_x, center_y) = ((left + width / 2.0) as f32, (top + height / 2.0) as f32);
+            let (half_w, half_h) = ((width / 2.0) as f32, (height / 2.0) as f32);
+            let corners = [
+                (-half_w, -half_h),
+                (half_w, -half_h),
+                (half_w, half_h),
+                (-half_w, half_h),
+            ]
+            .map(|(dx, dy)| Point {
+                x: center_x + dx * cos - dy * sin,
+                y: center_y + dx * sin + dy * cos,
+            });
+            halo_polygon(window, &corners, HALO_TEXT_STROKE, scale, color);
+        }
+        Annotation::Pen {
+            points,
+            stroke_width,
+            ..
+        } => {
+            let outline = crate::render::annotations::pen_outline(points, *stroke_width);
+            let Some(first) = outline.first() else {
+                return;
+            };
+            let mut builder = stroked(HALO_PEN_STROKE * scale);
+            builder.move_to(at_outline_point(*first, scale));
+            for (control, end) in crate::render::annotations::freehand_segments(&outline) {
+                builder.curve_to(
+                    at_outline_point(end, scale),
+                    at_outline_point(control, scale),
+                );
+            }
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, color);
+            }
+        }
+        Annotation::Highlight {
+            points,
+            stroke_width,
+            ..
+        } => {
+            let outline = crate::render::annotations::highlighter_outline(points, *stroke_width);
+            let corners: Vec<Point> = outline
+                .iter()
+                .map(|(x, y)| Point {
+                    x: *x as f32,
+                    y: *y as f32,
+                })
+                .collect();
+            halo_polygon(window, &corners, HALO_HIGHLIGHT_STROKE, scale, color);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn halo_rect(
+    window: &mut gpui::Window,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    stroke_width: f32,
+    scale: f32,
+    color: Hsla,
+) {
+    let (left, top, width, height) = normalize_rect(x, y, width, height);
+    let corners = [
+        Point {
+            x: left as f32,
+            y: top as f32,
+        },
+        Point {
+            x: (left + width) as f32,
+            y: top as f32,
+        },
+        Point {
+            x: (left + width) as f32,
+            y: (top + height) as f32,
+        },
+        Point {
+            x: left as f32,
+            y: (top + height) as f32,
+        },
+    ];
+    halo_polygon(window, &corners, stroke_width, scale, color);
+}
+
+fn halo_ellipse(
+    window: &mut gpui::Window,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    stroke_width: f32,
+    scale: f32,
+    color: Hsla,
+) {
+    if let Some(path) = ellipse_stroke_path(cx, cy, radius, radius, scale, stroke_width) {
+        window.paint_path(path, color);
+    }
+}
+
+fn halo_polygon(
+    window: &mut gpui::Window,
+    corners: &[Point],
+    stroke_width: f32,
+    scale: f32,
+    color: Hsla,
+) {
+    let Some(first) = corners.first() else {
+        return;
+    };
+    let mut builder = stroked(stroke_width * scale);
+    builder.move_to(at_point(first, scale));
+    for corner in corners.iter().skip(1).chain(std::iter::once(first)) {
+        builder.line_to(at_point(corner, scale));
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
+fn at_outline_point(point: (f64, f64), scale: f32) -> gpui::Point<Pixels> {
+    at_point(
+        &Point {
+            x: point.0 as f32,
+            y: point.1 as f32,
+        },
+        scale,
+    )
 }
 
 fn draw_selection_handles(
@@ -1098,13 +1253,14 @@ pub fn drop_zone_overlay(
     overlay.child(zone).child(indicator).into_any_element()
 }
 
-/// A dashed box around the selected annotation, matching `SELECTION_STROKE`
-/// in the renderer's annotation layer.
 fn selection_outlines(
     snapshot: &CanvasSnapshot,
     theme: &crate::theme::vars::ThemeVars,
 ) -> Vec<gpui::AnyElement> {
     const PADDING: f32 = 4.0;
+    if snapshot.selected.len() < 2 {
+        return Vec::new();
+    }
     let zoom = snapshot.zoom;
     snapshot
         .selected
@@ -1189,8 +1345,9 @@ fn crop_overlay(
                 .top(top)
                 .w(w)
                 .h(h)
-                .border_1()
-                .border_color(theme.accent),
+                .rounded(px(1.0))
+                .border_2()
+                .border_color(theme.primary),
         )
         .children(corners.into_iter().map(|(hx, hy)| {
             div()
@@ -1204,72 +1361,120 @@ fn crop_overlay(
                 .border_2()
                 .border_color(theme.primary)
         }))
-        .child(
-            div()
-                .absolute()
-                .left(left)
-                .top(top + h + px(6.0))
-                .rounded(px(4.0))
-                .bg(theme.popover)
-                .border_1()
-                .border_color(theme.border)
-                .px(px(8.0))
-                .py(px(3.0))
-                .text_size(px(11.0))
-                .text_color(theme.popover_foreground)
-                .child("Enter to crop \u{00b7} Esc to cancel"),
-        )
+        .child(crop_hint(left, top, w, h, theme))
         .into_any_element()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn text_overlay(
-    id: &str,
-    x: f64,
-    y: f64,
-    text: &str,
-    fill: &str,
-    font_size: f64,
-    font_family: &str,
-    background_color: Option<&str>,
-    zoom: f32,
-) -> gpui::AnyElement {
-    use crate::editor::annotations::{TEXT_BG_PADDING_X, TEXT_BG_PADDING_Y, TEXT_BG_RADIUS};
+const CROP_HINT_GAP: f32 = 24.0;
+const CROP_HINT_FONT_SIZE: f32 = 14.0;
 
-    let mut element = div()
-        .absolute()
-        .left(px(x as f32 * zoom))
-        .top(px(y as f32 * zoom))
-        .text_size(px(font_size as f32 * zoom))
-        .text_color(Srgba::parse(fill).to_hsla())
-        .child(gpui::SharedString::from(text.to_string()))
-        .id(gpui::SharedString::from(format!("text-annotation-{id}")));
-
-    element = match font_family {
-        "serif" => element.font_family("Georgia"),
-        "mono" => element.font_family("Consolas"),
-        "comic" => element.font_family("Comic Sans MS"),
-        _ => element,
-    };
-
-    if let Some(background) = background_color {
-        element = element
-            .px(px(TEXT_BG_PADDING_X as f32 * zoom))
-            .py(px(TEXT_BG_PADDING_Y as f32 * zoom))
-            .rounded(px(TEXT_BG_RADIUS as f32 * zoom))
-            .bg(Srgba::parse(background).to_hsla());
-    }
-
-    element.into_any_element()
+fn crop_hint_layout(left: f32, top: f32, width: f32, height: f32) -> (f32, f32, f32) {
+    (left, top + height + CROP_HINT_GAP, width)
 }
 
-/// Port of `getContrastColor` in `renderer/utils/color.ts`.
-fn contrast_color(hex: &str) -> gpui::Hsla {
-    let parsed = Srgba::parse(hex);
-    let luminance = 0.299 * parsed.r + 0.587 * parsed.g + 0.114 * parsed.b;
-    if luminance > 0.5 {
-        gpui::hsla(0.0, 0.0, 0.0, 1.0)
-    } else {
-        gpui::hsla(0.0, 0.0, 1.0, 1.0)
+fn crop_hint(
+    left: Pixels,
+    top: Pixels,
+    width: Pixels,
+    height: Pixels,
+    theme: &crate::theme::vars::ThemeVars,
+) -> gpui::Div {
+    let (hint_left, hint_top, hint_width) = crop_hint_layout(
+        f32::from(left),
+        f32::from(top),
+        f32::from(width),
+        f32::from(height),
+    );
+    div()
+        .absolute()
+        .left(px(hint_left))
+        .top(px(hint_top))
+        .w(px(hint_width))
+        .flex()
+        .justify_center()
+        .text_size(px(CROP_HINT_FONT_SIZE))
+        .text_color(theme.primary)
+        .child(div().whitespace_nowrap().child("Press Enter to crop"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shape_halo_restrokes_six_pixels_wider() {
+        assert_eq!(halo_stroke(2.0), 8.0);
+        assert_eq!(halo_stroke(12.5), 18.5);
+    }
+
+    #[test]
+    fn number_halo_is_three_pixels_outside_the_badge() {
+        assert_eq!(number_halo_radius("small"), 17.0);
+        assert_eq!(number_halo_radius("medium"), 21.0);
+        assert_eq!(number_halo_radius("large"), 27.0);
+    }
+
+    #[test]
+    fn text_halo_grows_by_half_its_stroke_on_every_side() {
+        let text_box = TextBox {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 40.0,
+            center_x: 60.0,
+            center_y: 40.0,
+            rotation: 0.0,
+        };
+        assert_eq!(text_halo_rect(&text_box), (8.0, 18.0, 104.0, 44.0));
+    }
+
+    #[test]
+    fn circle_halo_follows_the_circle() {
+        let circle = Annotation::Circle {
+            id: "c".into(),
+            x: 50.0,
+            y: 60.0,
+            radius: 30.0,
+            stroke: "#ff0000".into(),
+            stroke_width: 4.0,
+            fill: None,
+        };
+        let Annotation::Circle {
+            radius,
+            stroke_width,
+            ..
+        } = &circle
+        else {
+            unreachable!();
+        };
+        assert!(ellipse_stroke_path(
+            50.0,
+            60.0,
+            *radius as f32,
+            *radius as f32,
+            1.0,
+            halo_stroke(*stroke_width),
+        )
+        .is_some());
+        assert_eq!(halo_stroke(*stroke_width), 10.0);
+    }
+
+    #[test]
+    fn arrow_halo_reuses_the_arrow_path() {
+        let points = [0.0, 0.0, 100.0, 0.0];
+        let geometry = arrow_geometry(&points, Some("double"), None, 4.0);
+        assert!(geometry.double);
+        assert!(geometry.control.is_none());
+        assert_eq!(geometry.head_length, 20.0);
+        assert_eq!(geometry.start.x, 0.0);
+        assert_eq!(geometry.end.x, 100.0);
+    }
+
+    #[test]
+    fn crop_hint_sits_centred_below_the_box() {
+        let (left, top, width) = crop_hint_layout(40.0, 60.0, 200.0, 120.0);
+        assert_eq!(left, 40.0);
+        assert_eq!(top, 204.0);
+        assert_eq!(width, 200.0);
     }
 }

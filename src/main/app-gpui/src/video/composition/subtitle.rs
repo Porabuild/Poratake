@@ -27,6 +27,7 @@ pub fn font_size(size: &str) -> f64 {
 /// The renderer asks for the platform UI font; the export resolves the same
 /// family through `render::text`.
 const FONT_FAMILY: &str = "sans";
+const FONT_WEIGHT: text::Weight = text::Weight::Bold;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bounds {
@@ -130,7 +131,8 @@ pub fn wrap_words(words: &[String], size: f64, max_width: f64) -> Vec<WrappedLin
         } else {
             format!("{current_text} {word}")
         };
-        let width = text::measure(&candidate, FONT_FAMILY, size as f32).width as f64;
+        let width =
+            text::measure_weighted(&candidate, FONT_FAMILY, size as f32, FONT_WEIGHT).width as f64;
         if width > max_width && !current_text.is_empty() {
             lines.push(WrappedLine {
                 text: std::mem::take(&mut current_text),
@@ -181,7 +183,9 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
     let box_height = lines.len() as f64 * line_height + PADDING_VERTICAL * 2.0;
     let widest = lines
         .iter()
-        .map(|line| text::measure(&line.text, FONT_FAMILY, size as f32).width as f64)
+        .map(|line| {
+            text::measure_weighted(&line.text, FONT_FAMILY, size as f32, FONT_WEIGHT).width as f64
+        })
         .fold(0.0_f64, f64::max);
     let box_width = (widest + PADDING_HORIZONTAL * 2.0).min(config.video_width - MARGIN_EDGE * 2.0);
     let box_x = (config.video_width - box_width) / 2.0;
@@ -225,13 +229,15 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
 
     for (index, line) in lines.iter().enumerate() {
         let line_y = text_start_y + index as f64 * line_height;
-        let line_width = text::measure(&line.text, FONT_FAMILY, size as f32).width as f64;
+        let line_width =
+            text::measure_weighted(&line.text, FONT_FAMILY, size as f32, FONT_WEIGHT).width as f64;
         let line_x = (config.video_width - line_width) / 2.0;
 
-        text::fill_text(
+        text::fill_text_weighted(
             canvas,
             &line.text,
             FONT_FAMILY,
+            FONT_WEIGHT,
             size as f32,
             line_x as f32,
             line_y as f32,
@@ -246,10 +252,11 @@ pub fn render(canvas: &mut Canvas, timeline_time: f64, config: &RenderConfig<'_>
             .min(line.words.len());
         if in_line > 0 {
             let spoken = line.words[..in_line].join(" ");
-            text::fill_text(
+            text::fill_text_weighted(
                 canvas,
                 &spoken,
                 FONT_FAMILY,
+                FONT_WEIGHT,
                 size as f32,
                 line_x as f32,
                 line_y as f32,

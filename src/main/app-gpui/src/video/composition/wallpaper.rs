@@ -80,7 +80,7 @@ pub fn shadow_config(shadow: f64) -> Option<Shadow> {
             .unwrap_or(Color::TRANSPARENT),
         blur: blur as f32,
         offset_x: 0.0,
-        offset_y: (blur * 0.3).round() as f32,
+        offset_y: (shadow * 0.25 * 0.3).round() as f32,
     })
 }
 
@@ -227,6 +227,8 @@ mod tests {
         let softer = shadow_config(60.0).expect("shadow");
         assert_eq!(softer.blur, 15.0);
         assert!((softer.color.alpha() - 0.2).abs() < 0.001);
+
+        assert_eq!(shadow_config(6.0).expect("shadow").offset_y, 0.0);
     }
 
     #[test]

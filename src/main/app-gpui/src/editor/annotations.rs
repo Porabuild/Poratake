@@ -326,9 +326,14 @@ impl Annotation {
                 ..
             } => {
                 let family = font_family.as_deref().unwrap_or(DEFAULT_TEXT_FONT);
-                let width = crate::editor::text_render::measure(text, family, *font_size as f32)
-                    .map(|metrics| metrics.width as f64)
-                    .unwrap_or(text.chars().count() as f64 * font_size * 0.55);
+                let width = crate::editor::text_render::measure(
+                    text,
+                    family,
+                    *font_size as f32,
+                    crate::editor::text_render::Weight::Regular,
+                )
+                .map(|metrics| metrics.width as f64)
+                .unwrap_or(text.chars().count() as f64 * font_size * 0.55);
                 (*x, *y, x + width, y + font_size)
             }
             Self::Line { points, .. } | Self::Arrow { points, .. } => (
@@ -564,10 +569,14 @@ impl Annotation {
             return None;
         };
         let family = font_family.as_deref().unwrap_or(DEFAULT_TEXT_FONT);
-        let (measured_width, measured_height) =
-            crate::editor::text_render::measure(text, family, *font_size as f32)
-                .map(|metrics| (f64::from(metrics.width), f64::from(metrics.height())))
-                .unwrap_or((text.chars().count() as f64 * font_size * 0.6, *font_size));
+        let (measured_width, measured_height) = crate::editor::text_render::measure(
+            text,
+            family,
+            *font_size as f32,
+            crate::editor::text_render::Weight::Regular,
+        )
+        .map(|metrics| (f64::from(metrics.width), f64::from(metrics.height())))
+        .unwrap_or((text.chars().count() as f64 * font_size * 0.6, *font_size));
         let (pad_x, pad_y) = if background_color.is_some() {
             background_padding
                 .map(|padding| (padding.x, padding.y))

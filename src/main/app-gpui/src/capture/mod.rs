@@ -362,15 +362,19 @@ fn with_frozen_screen(
 }
 
 /// A new overlay abandons whatever flow was open, so a capture hide it left
-/// behind is released before this flow hides for itself. Recording and window
-/// flows never hide, matching Electron (`recording-actions.ts` and the
-/// unwrapped `captureWindowToFile` in `screenshot.ts`).
 fn restart_capture_hide(intent: Option<intent::CaptureIntent>, cx: &mut gpui::App) {
     let service = crate::state::state(cx);
     desktop_icons::restore_after_capture(&service.daemon);
-    if intent.is_some_and(|intent| intent != intent::CaptureIntent::Recording) {
+    if intent.is_some_and(hides_icons_before_selection) {
         desktop_icons::hide_for_capture(&service.daemon, &service.config);
     }
+}
+
+fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
+    matches!(
+        intent,
+        intent::CaptureIntent::Timer | intent::CaptureIntent::ScrollCapture
+    )
 }
 
 /// Opens the shared area overlay for one of the selection-driven flows.
@@ -791,6 +795,22 @@ mod tests {
     use super::CaptureService;
     use crate::config::store::ConfigStore;
     use crate::daemon::DaemonHandle;
+
+    #[test]
+    fn only_the_timer_and_scroll_flows_hide_icons_before_the_selection() {
+        use crate::capture::intent::CaptureIntent;
+
+        assert!(super::hides_icons_before_selection(CaptureIntent::Timer));
+        assert!(super::hides_icons_before_selection(
+            CaptureIntent::ScrollCapture
+        ));
+        assert!(!super::hides_icons_before_selection(
+            CaptureIntent::Screenshot
+        ));
+        assert!(!super::hides_icons_before_selection(
+            CaptureIntent::Recording
+        ));
+    }
 
     #[test]
     fn x11_screen_target_keeps_the_randr_monitor_geometry() {

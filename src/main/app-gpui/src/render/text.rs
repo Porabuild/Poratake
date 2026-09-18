@@ -7,6 +7,8 @@ use tiny_skia::{Color, Pixmap, Transform};
 use crate::editor::text_render;
 use crate::render::canvas::Canvas;
 
+pub use crate::editor::text_render::Weight;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Align {
     Left,
@@ -33,7 +35,11 @@ impl Metrics {
 
 /// `ctx.measureText` for the family the renderer would have resolved.
 pub fn measure(text: &str, family: &str, size: f32) -> Metrics {
-    match text_render::measure(text, family, size) {
+    measure_weighted(text, family, size, Weight::Regular)
+}
+
+pub fn measure_weighted(text: &str, family: &str, size: f32, weight: Weight) -> Metrics {
+    match text_render::measure(text, family, size, weight) {
         Some(metrics) => Metrics {
             width: metrics.width,
             ascent: metrics.ascent,
@@ -62,10 +68,36 @@ pub fn fill_text(
     align: Align,
     baseline: Baseline,
 ) {
+    fill_text_weighted(
+        canvas,
+        text,
+        family,
+        Weight::Regular,
+        size,
+        x,
+        y,
+        color,
+        align,
+        baseline,
+    )
+}
+
+pub fn fill_text_weighted(
+    canvas: &mut Canvas,
+    text: &str,
+    family: &str,
+    weight: Weight,
+    size: f32,
+    x: f32,
+    y: f32,
+    color: Color,
+    align: Align,
+    baseline: Baseline,
+) {
     if text.is_empty() || size <= 0.0 {
         return;
     }
-    let metrics = measure(text, family, size);
+    let metrics = measure_weighted(text, family, size, weight);
     let origin_x = match align {
         Align::Left => x,
         Align::Center => x - metrics.width / 2.0,
@@ -98,6 +130,7 @@ pub fn fill_text(
     let drawn = text_render::rasterize(
         text,
         family,
+        weight,
         raster_size,
         pad,
         pad + metrics.ascent * effective_scale,

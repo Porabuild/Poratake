@@ -58,32 +58,30 @@ fn link_row(
         .into_any_element()
 }
 
+const WORDMARK: &str = "Pora.take";
+const WORDMARK_DOT: std::ops::Range<usize> = 4..5;
+const WORDMARK_TAIL: std::ops::Range<usize> = 5..9;
+
 fn brand_logo(theme: &ThemeVars) -> AnyElement {
     div()
-        .flex()
-        .flex_row()
-        .items_end()
-        .h(px(29.0))
         .text_size(px(24.0))
-        .child(div().font_weight(gpui::FontWeight::BOLD).child("Pora"))
-        .child(
-            div()
-                .relative()
-                .h(px(24.0))
-                .w(px(5.76))
-                .ml(px(2.4))
-                .mr(px(0.72))
-                .child(
-                    div()
-                        .absolute()
-                        .bottom(px(1.0))
-                        .left(px(0.72))
-                        .size(px(4.32))
-                        .rounded_full()
-                        .bg(theme.accent),
-                ),
-        )
-        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("take"))
+        .font_weight(gpui::FontWeight::BOLD)
+        .child(gpui::StyledText::new(WORDMARK).with_highlights([
+            (
+                WORDMARK_DOT,
+                gpui::HighlightStyle {
+                    color: Some(theme.accent),
+                    ..gpui::HighlightStyle::default()
+                },
+            ),
+            (
+                WORDMARK_TAIL,
+                gpui::HighlightStyle {
+                    font_weight: Some(gpui::FontWeight::SEMIBOLD),
+                    ..gpui::HighlightStyle::default()
+                },
+            ),
+        ]))
         .into_any_element()
 }
 
@@ -94,6 +92,7 @@ fn brand_logo(theme: &ThemeVars) -> AnyElement {
 fn update_section(
     theme: &ThemeVars,
     status: crate::update::Status,
+    notes_scroll: &gpui::ScrollHandle,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
     use crate::update::Status;
@@ -192,7 +191,7 @@ fn update_section(
                         .child(format!("Version {version} is available")),
                 );
             if let Some(notes) = status.notes() {
-                card = card.child(release_notes(notes, theme));
+                card = card.child(release_notes(notes, notes_scroll, theme));
             }
             section = section.child(card);
         }
@@ -255,7 +254,7 @@ fn separator(_theme: &ThemeVars) -> AnyElement {
 /// `{updateState.releaseNotes && …}`: the "What's New" heading with the notes
 /// as plain text, capped at `max-h-32` with a scroll. GPUI has no pre-wrap, so
 /// each line is its own element and blank lines keep their height with a nbsp.
-fn release_notes(notes: &str, theme: &ThemeVars) -> AnyElement {
+fn release_notes(notes: &str, scroll: &gpui::ScrollHandle, theme: &ThemeVars) -> AnyElement {
     let mut body = div().flex().flex_col();
     for line in notes.lines() {
         body = body.child(if line.is_empty() {
@@ -278,12 +277,24 @@ fn release_notes(notes: &str, theme: &ThemeVars) -> AnyElement {
         )
         .child(
             div()
-                .id("about-release-notes")
+                .relative()
+                .flex()
+                .flex_col()
                 .max_h(px(128.0))
-                .overflow_y_scroll()
-                .text_size(px(chrome::TEXT_XS))
-                .text_color(theme.muted_foreground)
-                .child(body),
+                .child(
+                    div()
+                        .id("about-release-notes")
+                        .track_scroll(scroll)
+                        .max_h(px(128.0))
+                        .overflow_y_scroll()
+                        .text_size(px(chrome::TEXT_XS))
+                        .text_color(theme.muted_foreground)
+                        .child(body),
+                )
+                .child(crate::windows::scrollbars::app_vertical(
+                    "about-release-notes-scrollbar",
+                    scroll,
+                )),
         )
         .into_any_element()
 }
@@ -293,6 +304,7 @@ pub fn render(
     // Passed in rather than read back out of the context: `Entity::read` panics
     // while the entity is mid-render.
     update: crate::update::Status,
+    notes_scroll: &gpui::ScrollHandle,
     window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
@@ -377,7 +389,7 @@ pub fn render(
                 ),
         )
         .child(separator(theme))
-        .child(update_section(theme, update, cx))
+        .child(update_section(theme, update, notes_scroll, cx))
         .child(separator(theme))
         .child(
             div()
@@ -480,4 +492,17 @@ pub fn render(
                 ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wordmark_is_one_run_with_an_accent_dot() {
+        assert_eq!(&WORDMARK[..WORDMARK_DOT.start], "Pora");
+        assert_eq!(&WORDMARK[WORDMARK_DOT], ".");
+        assert_eq!(&WORDMARK[WORDMARK_TAIL], "take");
+        assert_eq!(WORDMARK_TAIL.end, WORDMARK.len());
+    }
 }

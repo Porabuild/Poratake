@@ -403,7 +403,7 @@ fn color_trigger(
                     );
                     let view = cx.new(|cx| {
                         color_picker::ColorPickerPopover::new(
-                            &current, palette, opacity, handler, dismiss, cx,
+                            &current, palette, handler, dismiss, cx,
                         )
                     });
                     let focus = view.read(cx).focus_handle();

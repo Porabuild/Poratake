@@ -186,6 +186,8 @@ pub struct EditorUiState {
     pub sidebar_tab: String,
     #[serde(default)]
     pub scrub_audio_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_height: Option<f64>,
 }
 
 fn default_true() -> bool {
@@ -202,6 +204,7 @@ impl Default for EditorUiState {
             sidebar_open: true,
             sidebar_tab: default_sidebar_tab(),
             scrub_audio_enabled: false,
+            timeline_height: None,
         }
     }
 }
@@ -348,6 +351,36 @@ pub fn poster_frame(project_or_video: &Path) -> Option<PathBuf> {
     crate::thumbnails::cached(project_or_video)
 }
 
+pub fn music_display_end(tracks: &[MusicTrack]) -> f64 {
+    tracks
+        .iter()
+        .filter(|track| track.enabled)
+        .map(|track| track.end_time)
+        .fold(0.0, f64::max)
+}
+
+pub fn music_groups(tracks: &[MusicTrack]) -> Vec<Vec<&MusicTrack>> {
+    let mut groups: Vec<Vec<&MusicTrack>> = Vec::new();
+    for track in tracks.iter().filter(|track| track.enabled) {
+        let key = group_key(track);
+        match groups
+            .iter_mut()
+            .find(|group| group.first().is_some_and(|first| group_key(first) == key))
+        {
+            Some(group) => group.push(track),
+            None => groups.push(vec![track]),
+        }
+    }
+    groups
+}
+
+pub fn group_key(track: &MusicTrack) -> &str {
+    if track.group_id.is_empty() {
+        return track.id.as_str();
+    }
+    track.group_id.as_str()
+}
+
 pub fn total_duration(segments: &[Segment], fallback: f64) -> f64 {
     if segments.is_empty() {
         return fallback.max(0.0);
@@ -385,6 +418,50 @@ mod tests {
         // contract: `getFileNameFromPath` strips whatever follows the last dot,
         // so a recording's extension never reaches the title bar.
         assert_eq!(project_display_name(Path::new("/tmp/clip.mp4")), "clip");
+    }
+}
+
+#[cfg(test)]
+mod music_tests {
+    use super::*;
+
+    fn track(id: &str, group: &str, enabled: bool, end: f64) -> MusicTrack {
+        MusicTrack {
+            id: id.into(),
+            group_id: group.into(),
+            enabled,
+            end_time: end,
+            ..MusicTrack::default()
+        }
+    }
+
+    #[test]
+    fn a_disabled_group_has_no_lane_and_no_reach() {
+        let tracks = vec![
+            track("a", "g1", true, 4.0),
+            track("b", "g1", true, 8.0),
+            track("c", "g2", false, 30.0),
+        ];
+        let groups = music_groups(&tracks);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
+        assert_eq!(music_display_end(&tracks), 8.0);
+    }
+
+    #[test]
+    fn a_track_without_a_group_is_its_own_lane() {
+        let tracks = vec![track("a", "", true, 1.0), track("b", "", true, 2.0)];
+        assert_eq!(music_groups(&tracks).len(), 2);
+    }
+
+    #[test]
+    fn the_timeline_height_survives_a_round_trip() {
+        let mut state = VideoEditorState::default();
+        assert_eq!(state.ui.timeline_height, None);
+        state.ui.timeline_height = Some(180.0);
+        let json = serde_json::to_string(&state).expect("serialize");
+        let parsed: VideoEditorState = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed.ui.timeline_height, Some(180.0));
     }
 }
 

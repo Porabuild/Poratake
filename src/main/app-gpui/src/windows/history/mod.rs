@@ -100,7 +100,13 @@ impl HistoryWindow {
                     super::PopupWindowConfig {
                         show: !cfg!(windows),
                         display_id,
-                        background: gpui::WindowBackgroundAppearance::Opaque,
+                        background: if cfg!(target_os = "macos") {
+                            crate::system::reduced_transparency::window_background(
+                                gpui::WindowBackgroundAppearance::Blurred,
+                            )
+                        } else {
+                            gpui::WindowBackgroundAppearance::Opaque
+                        },
                         ..Default::default()
                     },
                 ),
@@ -483,8 +489,7 @@ impl Render for HistoryWindow {
         let mut scroller = div()
             .id("history-scroll")
             .track_scroll(&self.scroll)
-            .flex_1()
-            .min_h_0()
+            .size_full()
             .overflow_y_scroll()
             .p(px(crate::ui::chrome::HISTORY_CONTENT_PAD))
             .flex()
@@ -532,7 +537,7 @@ impl Render for HistoryWindow {
             }
         }
 
-        div()
+        crate::ui::font::root()
             .id("history-window")
             .key_context("HistoryWindow")
             .track_focus(&self.focus_handle)
@@ -543,7 +548,7 @@ impl Render for HistoryWindow {
             .flex_col()
             .overflow_hidden()
             .rounded(px(crate::ui::chrome::HISTORY_RADIUS))
-            .bg(theme.background)
+            .when(!cfg!(target_os = "macos"), |el| el.bg(theme.background))
             .text_color(theme.foreground)
             .child(toolbar::header(has_items, &theme, cx))
             .when(has_items, |el| {
@@ -551,10 +556,23 @@ impl Render for HistoryWindow {
                     self.filter,
                     self.sort_order,
                     self.layout,
+                    &theme,
                     cx,
                 ))
             })
-            .child(scroller)
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .child(scroller)
+                    .child(crate::windows::scrollbars::app_vertical(
+                        "history-scrollbar",
+                        &self.scroll,
+                    )),
+            )
             .children(self.menu.render())
     }
 }

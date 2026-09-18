@@ -299,6 +299,38 @@ fn specs(state: &TrayMenuState) -> Vec<Spec> {
     prune(specs)
 }
 
+fn modifier_rank(token: &str) -> Option<u8> {
+    match token.trim().to_ascii_uppercase().as_str() {
+        "CONTROL" | "CTRL" => Some(0),
+        "ALT" | "OPTION" => Some(1),
+        "SHIFT" => Some(2),
+        "COMMAND" | "CMD" | "META" | "SUPER" | "COMMANDORCONTROL" | "CMDORCTRL"
+        | "COMMANDORCTRL" | "CMDORCONTROL" => Some(3),
+        _ => None,
+    }
+}
+
+fn appkit_order(value: &str) -> String {
+    if !cfg!(target_os = "macos") {
+        return value.to_string();
+    }
+    let mut modifiers: Vec<(u8, &str)> = Vec::new();
+    let mut rest: Vec<&str> = Vec::new();
+    for token in value.split('+') {
+        match modifier_rank(token) {
+            Some(rank) => modifiers.push((rank, token)),
+            None => rest.push(token),
+        }
+    }
+    modifiers.sort_by_key(|(rank, _)| *rank);
+    modifiers
+        .into_iter()
+        .map(|(_, token)| token)
+        .chain(rest)
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
 pub fn entries(
     state: &TrayMenuState,
     tray_rect: Option<crate::system::native::TrayRect>,
@@ -319,7 +351,7 @@ pub fn entries(
                     item = item.icon(icon);
                 }
                 if let Some(accelerator) = accelerator {
-                    item = item.shortcut(accelerator::display(&accelerator));
+                    item = item.shortcut(accelerator::display(&appkit_order(&accelerator)));
                 }
                 item = item.on_select(move |_window, cx| {
                     crate::intents::dispatch(intent, tray_rect, cx);
@@ -469,6 +501,29 @@ mod tests {
             Some(Spec::Item { enabled, .. }) => assert!(!enabled),
             _ => panic!("record screen item missing"),
         }
+    }
+
+    #[test]
+    fn menu_accelerators_follow_the_appkit_modifier_order() {
+        if !cfg!(target_os = "macos") {
+            assert_eq!(
+                appkit_order("CommandOrControl+Shift+S"),
+                "CommandOrControl+Shift+S"
+            );
+            return;
+        }
+        assert_eq!(
+            appkit_order("CommandOrControl+Shift+S"),
+            "Shift+CommandOrControl+S"
+        );
+        assert_eq!(
+            appkit_order("Command+Alt+Control+Shift+4"),
+            "Control+Alt+Shift+Command+4"
+        );
+        assert_eq!(
+            accelerator::display(&appkit_order("CommandOrControl+Shift+3")),
+            "\u{21e7}\u{2318}3"
+        );
     }
 
     #[test]

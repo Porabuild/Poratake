@@ -43,20 +43,37 @@ pub fn options(devices: &[MediaDevice]) -> Vec<(String, String)> {
         .collect()
 }
 
+pub fn system_default_label(devices: &[MediaDevice], default_id: Option<&str>) -> String {
+    let resolved = default_id
+        .filter(|id| !id.is_empty())
+        .and_then(|id| devices.iter().find(|device| device.id == id));
+    match resolved {
+        Some(device) if !device.label.trim().is_empty() => {
+            format!("System Default ({})", device.label)
+        }
+        _ => "System Default".to_string(),
+    }
+}
+
 pub fn options_with_selection(
     devices: &[MediaDevice],
     selected: Option<&str>,
+    selected_name: Option<&str>,
+    default_id: Option<&str>,
 ) -> Vec<(String, String)> {
-    let mut result = vec![(String::new(), "System Default".to_string())];
+    let mut result = vec![(String::new(), system_default_label(devices, default_id))];
     result.extend(options(devices));
-    if let Some(selected_id) = selected {
-        if !selected_id.is_empty() && !devices.iter().any(|device| device.id == selected_id) {
-            result.push((
-                selected_id.to_string(),
-                format!("Unavailable ({selected_id})"),
-            ));
-        }
+    let Some(selected_id) = selected.filter(|id| !id.is_empty()) else {
+        return result;
+    };
+    if devices.iter().any(|device| device.id == selected_id) {
+        return result;
     }
+    let name = selected_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Unknown device");
+    result.push((selected_id.to_string(), format!("{name} (unavailable)")));
     result
 }
 
@@ -98,11 +115,34 @@ mod tests {
 
     #[test]
     fn device_options_keep_default_and_disconnected_selection() {
-        let options = options_with_selection(&[], Some("missing"));
+        let options = options_with_selection(&[], Some("missing"), Some("Studio Mic"), None);
         assert_eq!(options[0], (String::new(), "System Default".into()));
         assert_eq!(
             options[1],
-            ("missing".into(), "Unavailable (missing)".into())
+            ("missing".into(), "Studio Mic (unavailable)".into())
         );
+    }
+
+    #[test]
+    fn a_disconnected_selection_without_a_name_reads_as_unknown() {
+        let options = options_with_selection(&[], Some("missing"), None, None);
+        assert_eq!(
+            options[1],
+            ("missing".into(), "Unknown device (unavailable)".into())
+        );
+    }
+
+    #[test]
+    fn the_first_option_names_the_resolved_system_default() {
+        let devices = vec![MediaDevice {
+            id: "mic-1".into(),
+            label: "MacBook Pro Microphone".into(),
+        }];
+        let options = options_with_selection(&devices, None, None, Some("mic-1"));
+        assert_eq!(options[0].1, "System Default (MacBook Pro Microphone)");
+        assert_eq!(options.len(), 2);
+
+        let unresolved = options_with_selection(&devices, None, None, Some("mic-9"));
+        assert_eq!(unresolved[0].1, "System Default");
     }
 }

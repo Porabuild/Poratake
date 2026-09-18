@@ -99,10 +99,6 @@ pub fn request_immediate_animation_frame(window: &gpui::Window) {
 pub enum EnterFrom {
     /// `data-placement="bottom"` → `slide-in-from-top-1`.
     Top,
-    /// `data-placement="top"` → `slide-in-from-bottom-1`. The app's menus only
-    /// ever anchor below their trigger, so nothing constructs this today; it
-    /// stays so a top-anchored panel slides the right way when one appears.
-    #[allow(dead_code)]
     Bottom,
 }
 
@@ -122,6 +118,13 @@ where
     )
 }
 
+fn overlay_travel(from: EnterFrom) -> f32 {
+    match from {
+        EnterFrom::Top => -OVERLAY_ENTER_SLIDE,
+        EnterFrom::Bottom => OVERLAY_ENTER_SLIDE,
+    }
+}
+
 pub fn overlay_exit<E>(
     id: impl Into<gpui::ElementId>,
     from: EnterFrom,
@@ -133,15 +136,32 @@ where
     use gpui::AnimationExt;
     use herogpui::gpui;
 
-    let travel = match from {
-        EnterFrom::Top => -OVERLAY_ENTER_SLIDE,
-        EnterFrom::Bottom => OVERLAY_ENTER_SLIDE,
-    };
+    let travel = overlay_travel(from);
     element.with_animation(
         id.into(),
         gpui::Animation::new(std::time::Duration::from_millis(OVERLAY_EXIT_MS))
             .with_easing(ease_out()),
         move |element, delta| element.opacity(1.0 - delta).mt(px(travel * delta)),
+    )
+}
+
+pub fn overlay_enter<E>(
+    id: impl Into<gpui::ElementId>,
+    from: EnterFrom,
+    element: E,
+) -> gpui::AnimationElement<E>
+where
+    E: gpui::IntoElement + Styled + 'static,
+{
+    use gpui::AnimationExt;
+    use herogpui::gpui;
+
+    let travel = overlay_travel(from);
+    element.with_animation(
+        id.into(),
+        gpui::Animation::new(std::time::Duration::from_millis(OVERLAY_ENTER_MS))
+            .with_easing(ease_out()),
+        move |element, delta| element.opacity(delta).mt(px(travel * (1.0 - delta))),
     )
 }
 
@@ -243,42 +263,6 @@ pub fn ease_out() -> impl Fn(f32) -> f32 {
     cubic_bezier(0.0, 0.0, 0.2, 1.0)
 }
 
-/// CSS `ease-in-out`: `cubic-bezier(0.42, 0, 0.58, 1)`.
-pub fn ease_in_out() -> impl Fn(f32) -> f32 {
-    cubic_bezier(0.42, 0.0, 0.58, 1.0)
-}
-
-/// `progress-indeterminate` in `base.css`: a 33% fill that travels from
-/// `translateX(-100%)` to `translateX(400%)` over 1.2s.
-pub const INDETERMINATE_MS: u64 = 1200;
-
-pub fn indeterminate_progress(id: impl Into<gpui::ElementId>, theme: &ThemeVars) -> gpui::Div {
-    use gpui::AnimationExt;
-    use herogpui::gpui;
-
-    let fill = theme.primary;
-    div()
-        .h(px(6.0))
-        .w_full()
-        .overflow_hidden()
-        .rounded_full()
-        .bg(theme.muted_background)
-        .child(
-            div()
-                .h_full()
-                .w(gpui::relative(0.33))
-                .rounded_full()
-                .bg(fill)
-                .with_animation(
-                    id.into(),
-                    gpui::Animation::new(std::time::Duration::from_millis(INDETERMINATE_MS))
-                        .repeat()
-                        .with_easing(ease_in_out()),
-                    |bar, delta| bar.ml(gpui::relative(delta * 1.65 - 0.33)),
-                ),
-        )
-}
-
 /// `focus-ring` is `ring-2`.
 pub const FOCUS_RING_WIDTH: f32 = 2.0;
 /// `--ring-offset-width: 2px`, used by `focus-ring` but not by
@@ -313,21 +297,24 @@ mod tests {
     }
 
     #[test]
-    fn the_indeterminate_travel_matches_css() {
-        assert_eq!(INDETERMINATE_MS, 1200);
-        let curve = ease_in_out();
-        assert!(curve(0.0).abs() < 1e-3);
-        assert!((curve(1.0) - 1.0).abs() < 1e-3);
-        assert!((0.33_f32 * 4.0 - 0.33 - 0.99).abs() < 1e-3);
-    }
-
-    #[test]
     fn the_entrance_slide_travels_one_spacing_step_toward_its_placement() {
         assert_eq!(OVERLAY_ENTER_SLIDE, 4.0);
         assert_eq!(OVERLAY_ENTER_MS, 150);
-        // A menu hangs below its trigger, so it enters from above.
-        assert_eq!(EnterFrom::Top, EnterFrom::Top);
-        assert_ne!(EnterFrom::Top, EnterFrom::Bottom);
+        assert_eq!(overlay_travel(EnterFrom::Top), -OVERLAY_ENTER_SLIDE);
+        assert_eq!(overlay_travel(EnterFrom::Bottom), OVERLAY_ENTER_SLIDE);
+    }
+
+    #[test]
+    fn an_overlay_enters_and_exits_along_the_same_axis() {
+        for from in [EnterFrom::Top, EnterFrom::Bottom] {
+            let travel = overlay_travel(from);
+            let enter_start = travel * (1.0 - 0.0);
+            let enter_end = travel * (1.0 - 1.0);
+            let exit_start = travel * 0.0;
+            let exit_end = travel * 1.0;
+            assert_eq!(enter_start, exit_end);
+            assert_eq!(enter_end, exit_start);
+        }
     }
 
     #[test]

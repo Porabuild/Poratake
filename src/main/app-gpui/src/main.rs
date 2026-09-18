@@ -130,6 +130,7 @@ fn main() {
             let config = state::init(cx);
             let settings = config.get();
             let mode = resolve_theme_mode(ThemeMode::parse(&settings.appearance.mode));
+            ui::font::register(cx);
             // `ThemeProvider` must exist before any HeroGPUI component renders;
             // the first `init_theme` below publishes the app's resolved tokens.
             herogpui::init(cx);

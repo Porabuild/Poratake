@@ -24,7 +24,7 @@ pub struct GradientOption {
 
 impl GradientOption {
     pub fn is_renderable(&self) -> bool {
-        self.colors.len() >= 2
+        self.colors.len() >= 2 || crate::editor::wallpaper_svg::is_preset(&self.id)
     }
 }
 
@@ -44,7 +44,14 @@ pub fn endpoints(angle: f64, width: f32, height: f32) -> ((f32, f32), (f32, f32)
 }
 
 pub fn fill(canvas: &mut Canvas, gradient: &GradientOption, width: f32, height: f32) {
-    if !gradient.is_renderable() || width <= 0.0 || height <= 0.0 {
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    if let Some(artwork) = crate::editor::wallpaper_svg::cover_pixmap(&gradient.id, width, height) {
+        fill_image(canvas, artwork.as_ref().as_ref(), width, height);
+        return;
+    }
+    if !gradient.is_renderable() {
         return;
     }
     let (start, end) = endpoints(gradient.angle, width, height);

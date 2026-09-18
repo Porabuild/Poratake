@@ -10,8 +10,8 @@ use crate::ui::toolbar;
 use crate::util::format::format_time;
 use crate::windows::video_editor::timeline::{MAX_PIXELS_PER_SECOND, MIN_PIXELS_PER_SECOND};
 use crate::windows::video_editor::VideoEditorWindow;
+use herogpui::components::SliderSize;
 use herogpui::components::{Button, Size, Tooltip, Variant};
-use herogpui::components::{Slider, SliderSize};
 
 const CUT_TOOL_HINT: &str =
     "Click a track to cut all tracks at that position | Shift+Click to cut a single track";
@@ -26,7 +26,6 @@ pub struct ControlsState {
     pub total_duration: f64,
     pub segment_count: usize,
     pub selected_segment_speed: f64,
-    pub speed_selector_open: bool,
     pub pixels_per_second: f32,
     pub scrub_audio_enabled: bool,
     pub is_scrub_audio_available: bool,
@@ -131,7 +130,6 @@ pub fn render(
     if state.has_selected_segment {
         bar = bar.child(separator(theme)).child(speed_selector(
             state.selected_segment_speed,
-            state.speed_selector_open,
             theme,
             cx,
         ));
@@ -159,7 +157,7 @@ pub fn render(
                             state.pixels_per_second as f64,
                             MIN_PIXELS_PER_SECOND as f64,
                             MAX_PIXELS_PER_SECOND as f64,
-                            0.0,
+                            1.0,
                             cx,
                             |this, next, cx| this.set_timeline_zoom(next as f32, cx),
                         )
@@ -222,134 +220,54 @@ pub fn render(
         .into_any_element()
 }
 
-const MIN_SPEED: f64 = 0.25;
-const NORMAL_SPEED: f64 = 1.0;
-const MAX_SPEED: f64 = 4.0;
-const SPEED_PRESETS: [f64; 9] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
-
-fn speed_position(speed: f64) -> f32 {
-    let speed = speed.clamp(MIN_SPEED, MAX_SPEED);
-    if speed <= NORMAL_SPEED {
-        (((speed - MIN_SPEED) / (NORMAL_SPEED - MIN_SPEED)) * 0.5) as f32
-    } else {
-        (0.5 + ((speed - NORMAL_SPEED) / (MAX_SPEED - NORMAL_SPEED)) * 0.5) as f32
-    }
-}
-
-fn speed_at_position(position: f32) -> f64 {
-    let position = f64::from(position.clamp(0.0, 1.0));
-    let speed = if position <= 0.5 {
-        MIN_SPEED + (position / 0.5) * (NORMAL_SPEED - MIN_SPEED)
-    } else {
-        NORMAL_SPEED + ((position - 0.5) / 0.5) * (MAX_SPEED - NORMAL_SPEED)
-    };
-    (speed * 20.0).round() / 20.0
-}
-
 fn speed_selector(
     speed: f64,
-    open: bool,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
-    let drag_view = cx.entity().downgrade();
-    let drop_view = drag_view.clone();
-    let radius = px(6.0);
-    let speed_label: SharedString = format!("{}x", (speed * 20.0).round() / 20.0).into();
-    let content_label = speed_label.clone();
-    let mut selector = div().id("timeline-speed-selector").relative().child(
-        herogpui::components::Tooltip::new("Playback Speed").child(
-            Button::new("timeline-speed")
-                .variant(if open {
-                    Variant::Secondary
-                } else {
-                    Variant::Ghost
-                })
-                .label(speed_label)
-                .content(move |_| {
-                    crate::ui::primitives::icon_label(
-                        "chevron-down",
-                        content_label.clone(),
-                        px(chrome::BUTTON_XS_ICON),
-                        px(8.0),
-                        true,
-                    )
-                })
-                .recipe("compact")
-                .recipe("muted")
-                .sx(move |el| el.rounded(radius))
-                .on_press(cx.listener(|this, _event, _window, cx| this.press_speed_selector(cx))),
-        ),
-    );
-    if open {
-        selector = selector.child(
+    let presets = crate::windows::video_editor::timeline::SPEED_PRESETS;
+    let at_min = speed <= presets[0];
+    let at_max = speed >= presets[presets.len() - 1];
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(2.0))
+        .child(toolbar::tooltip_button(
+            icon_button::compact_sm("timeline-speed-down", "minus").is_disabled(at_min),
+            "Decrease speed",
+            cx,
+            |this, _window, cx| this.step_selected_segment_speed(-1, cx),
+        ))
+        .child(
             div()
-                .absolute()
-                .bottom(px(34.0))
-                .left(px(-72.0))
-                .w(px(208.0))
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.card)
-                .shadow_lg()
-                .p(px(12.0))
-                .occlude()
-                .on_mouse_down_out(
-                    cx.listener(|this, _event, _window, cx| this.dismiss_speed_selector(cx)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .text_size(px(11.0))
-                        .text_color(theme.muted_foreground)
-                        .child("0.25x")
-                        .child("1x")
-                        .child("4x"),
-                )
-                .child(
-                    Slider::new("timeline-speed-slider", speed_position(speed))
-                        .min_value(0.0)
-                        .max_value(1.0)
-                        .size(SliderSize::Sm)
-                        .steps(SPEED_PRESETS.map(speed_position))
-                        .on_drag_start(move |_window, cx| {
-                            let _ = drag_view.update(cx, |this, _cx| this.begin_slider_gesture());
-                        })
-                        .on_drag_end(move |_window, cx| {
-                            let _ = drop_view.update(cx, |this, cx| this.end_slider_gesture(cx));
-                        })
-                        .on_change(cx.listener(|this, value: &f32, _window, cx| {
-                            this.set_selected_segment_speed(speed_at_position(*value), cx)
-                        })),
-                ),
-        );
-    }
-    selector.into_any_element()
+                .w(px(40.0))
+                .text_center()
+                .text_size(px(chrome::TEXT_XS))
+                .text_color(theme.foreground)
+                .child(SharedString::from(
+                    crate::windows::video_editor::timeline::format_speed(speed),
+                )),
+        )
+        .child(toolbar::tooltip_button(
+            icon_button::compact_sm("timeline-speed-up", "plus").is_disabled(at_max),
+            "Increase speed",
+            cx,
+            |this, _window, cx| this.step_selected_segment_speed(1, cx),
+        ))
+        .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::windows::video_editor::timeline::SPEED_PRESETS;
 
     #[test]
-    fn normal_speed_is_the_slider_midpoint() {
-        assert_eq!(speed_position(1.0), 0.5);
-        assert_eq!(speed_at_position(0.5), 1.0);
-        assert_eq!(speed_at_position(0.0), 0.25);
-        assert_eq!(speed_at_position(1.0), 4.0);
-    }
-
-    #[test]
-    fn speed_presets_keep_normal_speed_in_the_middle() {
-        let positions = SPEED_PRESETS.map(speed_position);
-        assert_eq!(positions[3], 0.5);
-        assert!(positions.windows(2).all(|steps| steps[0] < steps[1]));
+    fn the_stepper_offers_the_renderer_presets_and_nothing_below_them() {
+        assert_eq!(
+            SPEED_PRESETS,
+            [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0],
+            "0.25x is a gpui-only speed the renderer never offered"
+        );
     }
 }

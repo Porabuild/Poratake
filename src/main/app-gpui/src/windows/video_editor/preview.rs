@@ -72,6 +72,11 @@ impl Source {
         })
     }
 
+    pub fn composition_size(&self) -> (f64, f64) {
+        let (width, height) = self.engine.dimensions();
+        (width as f64, height as f64)
+    }
+
     pub fn info(&self) -> VideoInfo {
         self.video
             .as_ref()
@@ -254,7 +259,7 @@ mod tests {
 
     #[test]
     fn opening_a_missing_project_yields_no_source() {
-        let missing = std::env::temp_dir().join("poratake-missing.poratake");
+        let missing = crate::util::test_paths::unique_temp("poratake-missing.poratake");
         assert!(Source::open(&missing, VideoEditorState::default()).is_none());
     }
 

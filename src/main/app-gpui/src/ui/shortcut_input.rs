@@ -25,19 +25,67 @@ pub trait ShortcutRecorder: Render + Sized {
     );
 }
 
-/// `shortcut-input.tsx`: an `outline` button (`primary` while recording) that
-/// reads the current binding, preceded by a ghost clear button. The compact
-/// variant used by the shortcuts category is `size="sm"` at `min-w-36`.
+pub const SHORTCUT_MIN_WIDTH_DEFAULT: f32 = 180.0;
+pub const SHORTCUT_MIN_WIDTH_SINGLE_DEFAULT: f32 = 80.0;
+pub const SHORTCUT_GAP_DEFAULT: f32 = 8.0;
+const TEXT_BASE: f32 = 16.0;
+
+#[derive(Clone, Copy)]
+struct Metrics {
+    size: Size,
+    gap: f32,
+    min_width: f32,
+    text_size: f32,
+}
+
+fn metrics(compact: bool, single_key: bool) -> Metrics {
+    if compact {
+        return Metrics {
+            size: Size::Sm,
+            gap: chrome::SHORTCUT_GAP,
+            min_width: if single_key {
+                chrome::SHORTCUT_MIN_WIDTH_SINGLE
+            } else {
+                chrome::SHORTCUT_MIN_WIDTH
+            },
+            text_size: chrome::TEXT_SM,
+        };
+    }
+    Metrics {
+        size: Size::Md,
+        gap: SHORTCUT_GAP_DEFAULT,
+        min_width: if single_key {
+            SHORTCUT_MIN_WIDTH_SINGLE_DEFAULT
+        } else {
+            SHORTCUT_MIN_WIDTH_DEFAULT
+        },
+        text_size: TEXT_BASE,
+    }
+}
+
 pub fn render<V: ShortcutRecorder>(
+    id: &'static str,
+    value: &str,
+    single_key: bool,
+    recording: bool,
+    cx: &mut Context<V>,
+    apply: impl Fn(&mut V, String, &mut Context<V>) + 'static,
+) -> AnyElement {
+    render_sized(id, value, single_key, recording, false, cx, apply)
+}
+
+pub fn render_sized<V: ShortcutRecorder>(
     id: &'static str,
     value: &str,
     single_key: bool,
     // The owner is mid-render, so it cannot be read back out of the context:
     // `Entity::read` panics while an entity is being updated.
     recording: bool,
+    compact: bool,
     cx: &mut Context<V>,
     apply: impl Fn(&mut V, String, &mut Context<V>) + 'static,
 ) -> AnyElement {
+    let metrics = metrics(compact, single_key);
     let display = if recording {
         if single_key {
             "Press key...".to_string()
@@ -57,18 +105,14 @@ pub fn render<V: ShortcutRecorder>(
     };
 
     let apply = std::rc::Rc::new(apply);
-    let mut row = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(chrome::SHORTCUT_GAP));
+    let mut row = div().flex().flex_row().items_center().gap(px(metrics.gap));
 
     if !value.is_empty() && !recording {
         row = row.child(
             herogpui::components::Tooltip::new("Clear shortcut").child(
                 Button::new(SharedString::from(format!("{id}-clear")))
                     .variant(Variant::Ghost)
-                    .size(Size::Sm)
+                    .size(metrics.size)
                     .is_icon_only(true)
                     .child(icon_element("x", px(chrome::TOOL_BUTTON_ICON)))
                     .recipe("muted")
@@ -81,20 +125,14 @@ pub fn render<V: ShortcutRecorder>(
 
     row.child(
         Button::new(SharedString::from(format!("{id}-shortcut")))
-            .variant(if recording {
-                Variant::Primary
-            } else {
-                Variant::Outline
-            })
-            .size(Size::Sm)
+            .when(recording, |el| el.variant(Variant::Primary))
+            .when(!recording, |el| el.variant(Variant::Outline))
+            .size(metrics.size)
             .label(display)
-            .sx(|el| {
-                el.min_w(px(if single_key {
-                    chrome::SHORTCUT_MIN_WIDTH_SINGLE
-                } else {
-                    chrome::SHORTCUT_MIN_WIDTH
-                }))
-                .font_weight(gpui::FontWeight::NORMAL)
+            .sx(move |el| {
+                el.min_w(px(metrics.min_width))
+                    .text_size(px(metrics.text_size))
+                    .font_weight(gpui::FontWeight::NORMAL)
             })
             .on_press(cx.listener(move |this, _event, window, cx| {
                 this.start_recording_shortcut(id, window, cx);
@@ -216,6 +254,29 @@ mod tests {
         ))
         .expect("combination");
         assert_eq!(combination, "Control+Alt+Shift+CommandOrControl+4");
+    }
+
+    #[test]
+    fn the_compact_variant_is_the_only_small_one() {
+        let compact = metrics(true, false);
+        assert_eq!(compact.size, Size::Sm);
+        assert_eq!(compact.min_width, chrome::SHORTCUT_MIN_WIDTH);
+        assert_eq!(compact.gap, chrome::SHORTCUT_GAP);
+        assert_eq!(compact.text_size, chrome::TEXT_SM);
+        assert_eq!(
+            metrics(true, true).min_width,
+            chrome::SHORTCUT_MIN_WIDTH_SINGLE
+        );
+
+        let default = metrics(false, false);
+        assert_eq!(default.size, Size::Md);
+        assert_eq!(default.min_width, SHORTCUT_MIN_WIDTH_DEFAULT);
+        assert_eq!(default.gap, SHORTCUT_GAP_DEFAULT);
+        assert_eq!(default.text_size, TEXT_BASE);
+        assert_eq!(
+            metrics(false, true).min_width,
+            SHORTCUT_MIN_WIDTH_SINGLE_DEFAULT
+        );
     }
 
     #[test]

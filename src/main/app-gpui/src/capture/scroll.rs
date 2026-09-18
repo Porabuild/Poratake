@@ -15,11 +15,7 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 pub enum ScrollSessionSignal {
     Finish,
     Cancel,
-    Frame {
-        frame_count: usize,
-        estimated_height: i64,
-        preview: Option<String>,
-    },
+    Frame { preview: Option<String> },
     AutoScrolling(bool),
     CursorOutside(bool),
 }

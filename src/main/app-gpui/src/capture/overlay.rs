@@ -77,7 +77,7 @@ pub fn close_all(cx: &mut App) {
     }
 }
 
-pub fn release_frozen_for_recording(cx: &mut App) -> bool {
+pub fn release_frozen_screen_in_place(cx: &mut App) -> bool {
     let generation = session(cx)
         .handles
         .iter()
@@ -929,7 +929,7 @@ impl AreaOverlay {
             };
             let label = picked.label();
             let window_id = picked.window_id;
-            if !release_frozen_for_recording(cx) {
+            if !release_frozen_screen_in_place(cx) {
                 crate::windows::toast::Toast::show(
                     cx,
                     "Recording failed",
@@ -1354,7 +1354,7 @@ impl AreaOverlay {
 
         let intent = self.intent;
         let scale = self.scale;
-        if retains_overlay_after_selection(intent) {
+        if intent == crate::capture::intent::CaptureIntent::Recording {
             self.all_in_one = None;
             sync_recording_handoff(cx);
             begin_recording(
@@ -1374,7 +1374,7 @@ impl AreaOverlay {
             return;
         }
 
-        if self.all_in_one.is_some() {
+        if hides_icons_at_confirm(intent) {
             crate::capture::desktop_icons::hide_for_capture(
                 &self.service.daemon,
                 &self.service.config,
@@ -1387,14 +1387,20 @@ impl AreaOverlay {
             (f32::from(self.display_bounds.top()) * coordinate_scale).round() as i32,
         );
         let display_id = self.display_id;
-        let reservation = self
-            .service
-            .config
-            .get()
-            .screenshot
-            .freeze_screen
+        let retained = retains_overlay_after_selection(intent);
+        let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
             .then(|| self.service.reserve_cached_capture());
-        dismiss(window, cx);
+        if !retained {
+            dismiss(window, cx);
+        } else if !hand_off_for_timer(cx) {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Timer Capture Failed",
+                "Could not release the frozen screen",
+            );
+            dismiss(window, cx);
+            return;
+        }
         cx.defer(move |cx| {
             coordinator.update(cx, |coordinator, cx| {
                 coordinator.capture_area_reserved(
@@ -1552,8 +1558,38 @@ fn capture_intent(mode: crate::capture::all_in_one::Mode) -> crate::capture::int
     }
 }
 
+fn hides_icons_at_confirm(intent: crate::capture::intent::CaptureIntent) -> bool {
+    !matches!(
+        intent,
+        crate::capture::intent::CaptureIntent::Recording
+            | crate::capture::intent::CaptureIntent::Timer
+            | crate::capture::intent::CaptureIntent::ScrollCapture
+    )
+}
+
+fn hand_off_for_timer(cx: &mut Context<AreaOverlay>) -> bool {
+    if !release_frozen_screen_in_place(cx) {
+        return false;
+    }
+    for_each_area_overlay(cx, |overlay, cx| {
+        if overlay.intent != crate::capture::intent::CaptureIntent::Timer {
+            return;
+        }
+        overlay.all_in_one = None;
+        overlay.interaction = None;
+        overlay.pointer = None;
+        overlay.handed_off = true;
+        cx.notify();
+    });
+    true
+}
+
 fn retains_overlay_after_selection(intent: crate::capture::intent::CaptureIntent) -> bool {
-    intent == crate::capture::intent::CaptureIntent::Recording
+    matches!(
+        intent,
+        crate::capture::intent::CaptureIntent::Recording
+            | crate::capture::intent::CaptureIntent::Timer
+    )
 }
 
 fn for_each_area_overlay(
@@ -1691,7 +1727,7 @@ impl Render for AreaOverlay {
         let selection = self.selection();
         let dim = crate::ui::colors::black(crate::ui::chrome::OVERLAY_DIM);
 
-        let root = div()
+        let root = crate::ui::font::root()
             .id("area-overlay")
             .size_full()
             .key_context("AreaOverlay")
@@ -1742,18 +1778,11 @@ impl Render for AreaOverlay {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up));
 
         let toolbar = self.all_in_one.map(|choices| {
-            crate::capture::all_in_one_toolbar::render(
-                choices,
-                self.picking_color,
-                &self.menu,
-                &theme,
-                window,
-                cx,
-            )
+            crate::capture::all_in_one_toolbar::render(choices, &self.menu, &theme, window, cx)
         });
 
         if self.picking_color {
-            let mut picking = root.children(self.pointer.and_then(|pointer| {
+            return root.children(self.pointer.and_then(|pointer| {
                 self.color_frame.as_ref().map(|frame| {
                     crate::capture::color_picker::render(
                         frame,
@@ -1763,10 +1792,6 @@ impl Render for AreaOverlay {
                     )
                 })
             }));
-            if let Some(toolbar) = toolbar {
-                picking = picking.child(toolbar);
-            }
-            return picking;
         }
 
         if self.is_picking_windows() {
@@ -1774,7 +1799,7 @@ impl Render for AreaOverlay {
             // picking, so the candidate window shows through undimmed. The DOM
             // overlay draws neither a frame nor a name label in this mode.
             let viewport = window.viewport_size();
-            let mut picking = root.cursor_pointer();
+            let mut picking = root;
             let hovered_frame = if window.is_window_hovered() {
                 self.hovered_frame()
             } else {
@@ -1819,7 +1844,11 @@ impl Render for AreaOverlay {
                     self.pointer
                         .map(|pointer| crosshair_guides(pointer, accent)),
                 )
-                .child(prompt(self.intent.prompt(), self.all_in_one.is_some())),
+                .children(
+                    self.intent
+                        .shows_prompt()
+                        .then(|| prompt(self.intent.prompt(), self.all_in_one.is_some())),
+                ),
             Some((origin, bounds_size)) => {
                 let left_w = origin.x;
                 let right_x = origin.x + bounds_size.width;
@@ -1949,6 +1978,7 @@ impl AreaOverlay {
             return;
         }
         if self.is_picking_windows() {
+            self.confirm_window(window, cx);
             return;
         }
         if self.is_picking_screen() {
@@ -1982,7 +2012,7 @@ impl AreaOverlay {
         let capture = display_capture(self.display_bounds, scale, self.display_id);
         let rect = capture.rect;
         let intent = self.intent;
-        if retains_overlay_after_selection(intent) {
+        if intent == crate::capture::intent::CaptureIntent::Recording {
             if self.screen_picker {
                 conceal_screen_recording_pick(window, cx);
             } else {
@@ -2006,21 +2036,27 @@ impl AreaOverlay {
             cx.notify();
             return;
         }
-        if self.screen_picker || self.all_in_one.is_some() {
+        if hides_icons_at_confirm(intent) {
             crate::capture::desktop_icons::hide_for_capture(
                 &self.service.daemon,
                 &self.service.config,
             );
         }
         let coordinator = crate::state::coordinator(cx);
-        let reservation = self
-            .service
-            .config
-            .get()
-            .screenshot
-            .freeze_screen
+        let retained = retains_overlay_after_selection(intent);
+        let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
             .then(|| self.service.reserve_cached_capture());
-        dismiss(window, cx);
+        if !retained {
+            dismiss(window, cx);
+        } else if !hand_off_for_timer(cx) {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Timer Capture Failed",
+                "Could not release the frozen screen",
+            );
+            dismiss(window, cx);
+            return;
+        }
         cx.defer(move |cx| {
             coordinator.update(cx, |coordinator, cx| {
                 coordinator.capture_area_reserved(capture, intent, reservation, cx);
@@ -2082,7 +2118,6 @@ impl AreaOverlay {
     /// small); an adjusted one stays put.
     fn on_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_picking_windows() {
-            self.confirm_window(window, cx);
             return;
         }
         let Some(interaction) = self.interaction.take() else {
@@ -2141,16 +2176,28 @@ mod tests {
     }
 
     #[test]
-    fn only_recording_keeps_the_selection_overlay() {
+    fn recording_and_the_timer_countdown_keep_the_selection_overlay() {
         use crate::capture::intent::CaptureIntent;
 
         assert!(super::retains_overlay_after_selection(
             CaptureIntent::Recording
         ));
+        assert!(super::retains_overlay_after_selection(CaptureIntent::Timer));
         assert!(!super::retains_overlay_after_selection(
             CaptureIntent::Screenshot
         ));
         assert!(!super::retains_overlay_after_selection(CaptureIntent::Ocr));
+    }
+
+    #[test]
+    fn only_the_pre_selection_flows_keep_their_icon_hide() {
+        use crate::capture::intent::CaptureIntent;
+
+        assert!(super::hides_icons_at_confirm(CaptureIntent::Screenshot));
+        assert!(super::hides_icons_at_confirm(CaptureIntent::Ocr));
+        assert!(!super::hides_icons_at_confirm(CaptureIntent::Timer));
+        assert!(!super::hides_icons_at_confirm(CaptureIntent::ScrollCapture));
+        assert!(!super::hides_icons_at_confirm(CaptureIntent::Recording));
     }
 
     #[test]

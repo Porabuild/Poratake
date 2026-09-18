@@ -19,8 +19,9 @@ use rodio::source::{SeekError, Source};
 use rodio::{ChannelCount, MixerDeviceSink, Player, Sample, SampleRate};
 
 use crate::video::audio;
+use crate::video::audio_tracks::{self, VolumeSource};
 use crate::video::encoder::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
-use crate::video::project;
+use crate::video::{keyboard_audio, sidecars};
 use crate::windows::video_editor::model::{MusicTrack, Segment, VideoEditorState};
 
 const RESYNC_THRESHOLD_SECONDS: f64 = 0.3;
@@ -98,14 +99,18 @@ impl Source for PcmSource {
     }
 }
 
-/// Everything a rebuild needs, cloned off the GPUI thread.
 pub struct RebuildInputs {
-    system_path: PathBuf,
-    mic_path: PathBuf,
-    music_folder: Option<PathBuf>,
-    segments: Vec<Segment>,
-    music_tracks: Vec<MusicTrack>,
+    project: PathBuf,
+    stems: Vec<audio_tracks::Stem>,
+    keyboard: Option<KeyboardRequest>,
     cache: HashMap<PathBuf, Arc<Vec<i16>>>,
+    signature: StemSignature,
+}
+
+struct KeyboardRequest {
+    segments: Vec<Segment>,
+    sound_type: String,
+    duration: f64,
 }
 
 impl RebuildInputs {
@@ -114,32 +119,52 @@ impl RebuildInputs {
         state: &VideoEditorState,
         cache: &HashMap<PathBuf, Arc<Vec<i16>>>,
     ) -> Self {
-        Self {
-            system_path: project::system_audio_path(project),
-            mic_path: project::mic_audio_path(project),
-            music_folder: project::music_folder(project),
+        let sources = audio_tracks::Sources::resolve(project);
+        let duration = timeline_duration(state);
+        let keyboard = (VolumeSource::Keyboard.resolve(state) > 0.0).then(|| KeyboardRequest {
             segments: state.segments.clone(),
-            music_tracks: state.music_tracks.clone(),
+            sound_type: state.audio_style.keyboard_sound_type.clone(),
+            duration,
+        });
+        Self {
+            project: project.to_path_buf(),
+            stems: audio_tracks::stems(&sources, state, state.source_duration.unwrap_or(0.0)),
+            keyboard,
             cache: cache.clone(),
+            signature: StemSignature::capture(state),
         }
     }
 }
 
+fn timeline_duration(state: &VideoEditorState) -> f64 {
+    crate::video::composition::segments::total_duration(
+        &state.segments,
+        state.source_duration.unwrap_or(0.0),
+    )
+}
+
+pub struct BuiltStem {
+    pub volume: VolumeSource,
+    pub program: bool,
+    pub samples: Arc<Vec<i16>>,
+}
+
 /// Decoded stems ready to install, plus the source cache the next rebuild reuses.
 pub struct BuiltStems {
-    pub system: Option<Arc<Vec<i16>>>,
-    pub mic: Option<Arc<Vec<i16>>>,
-    pub music: Vec<(String, Arc<Vec<i16>>)>,
+    pub stems: Vec<BuiltStem>,
     pub cache: HashMap<PathBuf, Arc<Vec<i16>>>,
     pub signature: StemSignature,
 }
 
-/// The structural inputs a stem set was rendered from. Volumes and mute flags
-/// are deliberately excluded — they apply live on the players.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StemSignature {
     segments: Vec<Segment>,
     music_tracks: Vec<MusicTrack>,
+    source_duration: Option<f64>,
+    system_audio_enabled: bool,
+    mic_audio_enabled: bool,
+    keyboard_sound_enabled: bool,
+    keyboard_sound_type: String,
 }
 
 impl StemSignature {
@@ -147,6 +172,11 @@ impl StemSignature {
         Self {
             segments: state.segments.clone(),
             music_tracks: state.music_tracks.clone(),
+            source_duration: state.source_duration,
+            system_audio_enabled: state.audio_style.system_audio_enabled,
+            mic_audio_enabled: state.audio_style.mic_audio_enabled,
+            keyboard_sound_enabled: state.audio_style.keyboard_sound_enabled,
+            keyboard_sound_type: state.audio_style.keyboard_sound_type.clone(),
         }
     }
 }
@@ -166,35 +196,42 @@ fn decode_cached(
 /// Renders every audible stem on a background thread. Mirrors
 /// `export::build_audio` stem for stem, minus the final mixdown.
 pub fn build_stems(inputs: RebuildInputs) -> BuiltStems {
+    let signature = inputs.signature;
     let mut cache = inputs.cache;
-    let system = decode_cached(&inputs.system_path, &mut cache)
-        .map(|samples| Arc::new(audio::apply_segments(&samples, &inputs.segments)));
-    let mic = decode_cached(&inputs.mic_path, &mut cache)
-        .map(|samples| Arc::new(audio::apply_segments(&samples, &inputs.segments)));
-    let mut music = Vec::new();
-    if let Some(folder) = inputs.music_folder {
-        for track in &inputs.music_tracks {
-            if track.file_name.is_empty() {
-                continue;
-            }
-            let path = folder.join(&track.file_name);
-            if let Some(samples) = decode_cached(&path, &mut cache) {
-                music.push((
-                    track.id.clone(),
-                    Arc::new(audio::place_music_track(&samples, track)),
-                ));
-            }
+    let mut stems = Vec::new();
+    for stem in inputs.stems {
+        let Some(samples) = decode_cached(&stem.path, &mut cache) else {
+            continue;
+        };
+        stems.push(BuiltStem {
+            volume: stem.volume,
+            program: stem.program,
+            samples: Arc::new(audio::place(&samples, &stem.placement)),
+        });
+    }
+
+    if let Some(keyboard) = inputs.keyboard {
+        let clicks = sidecars::load_keyboard(&inputs.project).and_then(|data| {
+            keyboard_audio::render(
+                &data,
+                &keyboard.segments,
+                &keyboard.sound_type,
+                keyboard.duration,
+            )
+        });
+        if let Some(samples) = clicks {
+            stems.push(BuiltStem {
+                volume: VolumeSource::Keyboard,
+                program: false,
+                samples: Arc::new(samples),
+            });
         }
     }
+
     BuiltStems {
-        system,
-        mic,
-        music,
+        stems,
         cache,
-        signature: StemSignature {
-            segments: inputs.segments,
-            music_tracks: inputs.music_tracks,
-        },
+        signature,
     }
 }
 
@@ -211,18 +248,23 @@ impl Stem {
     }
 }
 
-struct MusicStem {
-    id: String,
+struct Playing {
+    volume: VolumeSource,
+    program: bool,
     stem: Stem,
 }
 
 struct Output {
-    system: Option<Stem>,
-    mic: Option<Stem>,
-    music: Vec<MusicStem>,
+    stems: Vec<Playing>,
     anchor: Option<(Instant, f64)>,
     playing: bool,
     device: MixerDeviceSink,
+}
+
+impl Output {
+    fn program(&self) -> impl Iterator<Item = &Playing> {
+        self.stems.iter().filter(|stem| stem.program)
+    }
 }
 
 #[derive(Default)]
@@ -247,30 +289,15 @@ impl PreviewAudio {
         !self.built_once || self.signature != StemSignature::capture(state)
     }
 
-    /// Applies volumes and mute flags to the live players. Electron sets
     /// `element.volume = enabled ? volume : 0` on the same state changes.
     pub fn apply_volumes(&self, state: &VideoEditorState) {
         let Some(output) = &self.output else {
             return;
         };
-        if let Some(stem) = &output.system {
-            stem.player.set_volume(program_volume(
-                state.audio_style.system_audio_enabled,
-                state.audio_style.system_audio_volume,
-            ));
-        }
-        if let Some(stem) = &output.mic {
-            stem.player.set_volume(program_volume(
-                state.audio_style.mic_audio_enabled,
-                state.audio_style.mic_audio_volume,
-            ));
-        }
-        for stem in &output.music {
-            let track = state.music_tracks.iter().find(|track| track.id == stem.id);
-            let volume = track
-                .map(|track| program_volume(track.enabled, track.volume))
-                .unwrap_or(0.0);
-            stem.stem.player.set_volume(volume);
+        for stem in &output.stems {
+            stem.stem
+                .player
+                .set_volume(stem.volume.resolve(state).clamp(0.0, 4.0) as f32);
         }
     }
 
@@ -279,7 +306,7 @@ impl PreviewAudio {
     /// A stem-less project records the build and stays silent without holding
     /// an audio device.
     pub fn install(&mut self, built: BuiltStems, state: &VideoEditorState, offset: f64) {
-        if built.system.is_none() && built.mic.is_none() && built.music.is_empty() {
+        if built.stems.is_empty() {
             self.cache = built.cache;
             self.signature = built.signature;
             self.built_once = true;
@@ -298,23 +325,17 @@ impl PreviewAudio {
         self.built_once = true;
         let playing = self.output.as_ref().is_some_and(|output| output.playing);
         let mut output = Output {
-            system: None,
-            mic: None,
-            music: Vec::new(),
+            stems: Vec::new(),
             anchor: None,
             playing,
             device,
         };
-        if let Some(samples) = built.system {
-            output.system = Some(connect(&output.device, samples));
-        }
-        if let Some(samples) = built.mic {
-            output.mic = Some(connect(&output.device, samples));
-        }
-        for (id, samples) in built.music {
-            output.music.push(MusicStem {
-                id,
-                stem: connect(&output.device, samples),
+        for stem in built.stems {
+            let player = connect(&output.device, stem.samples);
+            output.stems.push(Playing {
+                volume: stem.volume,
+                program: stem.program,
+                stem: player,
             });
         }
         self.output = Some(output);
@@ -364,8 +385,8 @@ impl PreviewAudio {
         };
         output.anchor = None;
         output.playing = false;
-        for stem in [&output.system, &output.mic].into_iter().flatten() {
-            stem.play_from(offset);
+        for stem in output.stems.iter().filter(|stem| stem.program) {
+            stem.stem.play_from(offset);
         }
     }
 
@@ -376,11 +397,8 @@ impl PreviewAudio {
         if output.playing {
             return;
         }
-        if let Some(stem) = &output.system {
-            stem.player.pause();
-        }
-        if let Some(stem) = &output.mic {
-            stem.player.pause();
+        for stem in output.stems.iter().filter(|stem| stem.program) {
+            stem.stem.player.pause();
         }
     }
 
@@ -397,10 +415,7 @@ impl PreviewAudio {
         let Some(output) = &self.output else {
             return;
         };
-        for stem in [&output.system, &output.mic].into_iter().flatten() {
-            stem.player.pause();
-        }
-        for stem in &output.music {
+        for stem in &output.stems {
             stem.stem.player.pause();
         }
     }
@@ -410,12 +425,7 @@ impl PreviewAudio {
             return;
         };
         output.anchor = Some((Instant::now(), offset.max(0.0)));
-        for stem in [&output.system, &output.mic].into_iter().flatten() {
-            let _ = stem
-                .player
-                .try_seek(Duration::from_secs_f64(offset.max(0.0)));
-        }
-        for stem in &output.music {
+        for stem in &output.stems {
             let _ = stem
                 .stem
                 .player
@@ -432,28 +442,21 @@ impl PreviewAudio {
             self.pause_players();
             return;
         }
-        for stem in [&output.system, &output.mic].into_iter().flatten() {
-            stem.player.play();
-        }
-        for stem in &output.music {
+        for stem in &output.stems {
             stem.stem.player.play();
         }
     }
 
     fn has_samples(&self) -> bool {
-        self.has_program() || self.has_music()
+        self.output
+            .as_ref()
+            .is_some_and(|output| !output.stems.is_empty())
     }
 
     fn has_program(&self) -> bool {
         self.output
             .as_ref()
-            .is_some_and(|output| output.system.is_some() || output.mic.is_some())
-    }
-
-    fn has_music(&self) -> bool {
-        self.output
-            .as_ref()
-            .is_some_and(|output| !output.music.is_empty())
+            .is_some_and(|output| output.program().next().is_some())
     }
 
     fn take_or_open_device(&mut self) -> Option<MixerDeviceSink> {
@@ -480,23 +483,17 @@ fn connect(device: &MixerDeviceSink, samples: Arc<Vec<i16>>) -> Stem {
     Stem { player }
 }
 
-fn program_volume(enabled: bool, volume: f64) -> f32 {
-    if !enabled {
-        return 0.0;
-    }
-    volume.clamp(0.0, 4.0) as f32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn program_volume_mutes_when_disabled() {
-        assert_eq!(program_volume(false, 1.0), 0.0);
-        assert_eq!(program_volume(true, 0.75), 0.75);
-        assert_eq!(program_volume(true, 9.0), 4.0);
-        assert_eq!(program_volume(true, -1.0), 0.0);
+    fn a_stem_volume_follows_the_model_it_came_from() {
+        let mut state = VideoEditorState::default();
+        state.audio_style.system_audio_volume = 0.75;
+        assert_eq!(VolumeSource::SystemAudio.resolve(&state), 0.75);
+        state.audio_style.system_audio_enabled = false;
+        assert_eq!(VolumeSource::SystemAudio.resolve(&state), 0.0);
     }
 
     #[test]
@@ -515,6 +512,96 @@ mod tests {
         assert_eq!(source.next(), None);
     }
 
+    fn project_with_every_source() -> (tempfile::TempDir, PathBuf, VideoEditorState) {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let project = directory.path().join("Take 1.poratake");
+        std::fs::create_dir(&project).expect("project folder");
+        std::fs::create_dir(project.join("music")).expect("music folder");
+        for file in ["system.m4a", "mic.m4a", "recording.mov", "keys.json"] {
+            std::fs::write(project.join(file), []).expect("source file");
+        }
+        std::fs::write(project.join("music/song.mp3"), []).expect("music file");
+
+        let state = VideoEditorState {
+            segments: vec![Segment::spanning(4.0)],
+            source_duration: Some(4.0),
+            music_tracks: vec![MusicTrack {
+                id: "music-song".into(),
+                file_name: "song.mp3".into(),
+                end_time: 4.0,
+                original_duration: 4.0,
+                ..MusicTrack::default()
+            }],
+            ..VideoEditorState::default()
+        };
+        (directory, project, state)
+    }
+
+    #[test]
+    fn the_preview_renders_the_same_stem_set_the_export_mixes() {
+        let (_directory, project, mut state) = project_with_every_source();
+        state.audio_style.keyboard_sound_enabled = true;
+
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        let sources = audio_tracks::Sources::resolve(&project);
+        let expected = audio_tracks::stems(&sources, &state, 4.0);
+
+        assert_eq!(inputs.stems, expected);
+        assert_eq!(inputs.stems.len(), 3);
+        assert!(inputs
+            .stems
+            .iter()
+            .any(|stem| stem.volume == VolumeSource::SystemAudio));
+        assert!(inputs
+            .stems
+            .iter()
+            .any(|stem| stem.volume == VolumeSource::MicAudio));
+        assert!(inputs
+            .stems
+            .iter()
+            .any(|stem| stem.volume == VolumeSource::Track("music-song".into())));
+        assert!(inputs.keyboard.is_some());
+    }
+
+    #[test]
+    fn a_muted_music_track_leaves_the_preview_as_it_leaves_the_export() {
+        let (_directory, project, mut state) = project_with_every_source();
+        state.music_tracks[0].enabled = false;
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        assert!(inputs
+            .stems
+            .iter()
+            .all(|stem| stem.volume != VolumeSource::Track("music-song".into())));
+    }
+
+    #[test]
+    fn a_recording_without_a_system_stem_still_has_program_audio() {
+        let (_directory, project, state) = project_with_every_source();
+        std::fs::remove_file(project.join("system.m4a")).expect("remove system stem");
+        std::fs::remove_file(project.join("mic.m4a")).expect("remove mic stem");
+
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        let program: Vec<_> = inputs.stems.iter().filter(|stem| stem.program).collect();
+        assert_eq!(program.len(), 1);
+        assert!(program[0].path.ends_with("recording.mov"));
+    }
+
+    #[test]
+    fn the_keyboard_click_track_follows_its_setting() {
+        let (_directory, project, mut state) = project_with_every_source();
+        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
+            .keyboard
+            .is_none());
+        state.audio_style.keyboard_sound_enabled = true;
+        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
+            .keyboard
+            .is_some());
+        state.audio_style.keyboard_sound_volume = 0.0;
+        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
+            .keyboard
+            .is_none());
+    }
+
     #[test]
     fn stem_signature_ignores_volumes() {
         let first = VideoEditorState {
@@ -523,7 +610,6 @@ mod tests {
         };
         let mut second = first.clone();
         second.audio_style.system_audio_volume = 0.25;
-        second.audio_style.mic_audio_enabled = false;
         assert_eq!(
             StemSignature::capture(&first),
             StemSignature::capture(&second)

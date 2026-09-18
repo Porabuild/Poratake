@@ -2,6 +2,7 @@ pub mod app_icon;
 pub mod chrome;
 pub mod color_picker;
 pub mod colors;
+pub mod font;
 pub mod icon;
 pub mod icon_button;
 mod lints;

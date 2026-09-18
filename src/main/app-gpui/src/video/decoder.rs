@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_file_yields_no_decoder() {
-        let missing = std::env::temp_dir().join("poratake-missing-video.mov");
+        let missing = crate::util::test_paths::unique_temp("poratake-missing-video.mov");
         assert!(VideoDecoder::open(&missing).is_none());
     }
 

@@ -1,9 +1,11 @@
 pub mod audio;
+pub mod audio_tracks;
 pub mod auto_zoom;
 pub mod composition;
 pub mod decoder;
 pub mod encoder;
 pub mod export;
+pub mod keyboard_audio;
 pub mod music;
 pub mod preview_audio;
 pub mod project;

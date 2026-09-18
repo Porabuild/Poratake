@@ -31,6 +31,10 @@ impl CaptureIntent {
         DRAG_PROMPT
     }
 
+    pub fn shows_prompt(self) -> bool {
+        !matches!(self, Self::Timer)
+    }
+
     pub fn temp_prefix(self) -> &'static str {
         match self {
             Self::Screenshot => "poratake-capture",
@@ -67,6 +71,14 @@ mod tests {
         assert!(CaptureIntent::ScrollCapture.saves_to_library());
         assert!(!CaptureIntent::Ocr.saves_to_library());
         assert!(!CaptureIntent::QrCode.saves_to_library());
+    }
+
+    #[test]
+    fn only_the_timer_flow_suppresses_the_prompt() {
+        assert!(!CaptureIntent::Timer.shows_prompt());
+        assert!(CaptureIntent::Screenshot.shows_prompt());
+        assert!(CaptureIntent::ScrollCapture.shows_prompt());
+        assert!(CaptureIntent::Recording.shows_prompt());
     }
 
     #[test]
@@ -138,6 +150,9 @@ mod prompt_tests {
             super::CaptureIntent::Recording,
             super::CaptureIntent::EditorAttach,
         ] {
+            if !intent.shows_prompt() {
+                continue;
+            }
             assert!(
                 reference.contains(intent.prompt()),
                 "the prompt for {intent:?} is not a string the reference uses"

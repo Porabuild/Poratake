@@ -120,9 +120,7 @@ pub const VIDEO_DRAWING_TOOLS: [Tool; 10] = [
     Tool::Redact,
 ];
 
-/// Tailwind's `font-mono` stack resolves to Consolas on Windows; the renderer
-/// uses it for the selection readout and the JSON editors.
-pub const MONO_FONT: &str = "Consolas";
+pub const MONO_FONT: &str = crate::ui::font::MONO_FONT;
 
 /// Tailwind `red-500` / `red-400`. The history item actions use these fixed
 /// palette colours rather than the theme's `--danger`.

@@ -1,12 +1,13 @@
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, App, Context, FocusHandle, Hsla, Render, SharedString, Styled, Window,
+    div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, Render, SharedString, Window,
 };
+use herogpui::components::{Button, InputState, Size, Variant};
 use herogpui::gpui;
 use herogpui::{
-    ColorArea, ColorChannel, ColorSlider, ColorSpace, ColorSwatchPicker, PickerColor, SizeXl,
-    SwatchShape,
+    ColorArea, ColorChannel, ColorField, ColorSlider, ColorSpace, ColorSwatchPicker, FieldVariant,
+    PickerColor, SizeXl, SwatchShape,
 };
 
 use crate::theme::color::Srgba;
@@ -14,12 +15,15 @@ use crate::theme::vars::active_theme;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::DismissHandler;
-use herogpui::components::{Button, Size, Variant};
 
 const POPOVER_WIDTH: f32 = 256.0;
 const POPOVER_PAD: f32 = 12.0;
 const AREA_HEIGHT: f32 = (POPOVER_WIDTH - POPOVER_PAD * 2.0) * 3.0 / 4.0;
 const SHUFFLE_SIZE: f32 = 32.0;
+const TRIGGER_WIDTH: f32 = chrome::TOOL_OPTION_PAD_X * 2.0
+    + chrome::COLOR_SWATCH_XS
+    + chrome::TOOL_OPTION_GAP
+    + chrome::TOOL_OPTION_CHEVRON;
 const HEX_ROW_HEIGHT: f32 = 36.0;
 
 pub type ColorHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
@@ -84,11 +88,6 @@ impl Hsv {
         )
     }
 
-    pub fn to_hsla(self, alpha: f32) -> Hsla {
-        let (r, g, b) = self.to_rgb();
-        Srgba { r, g, b, a: alpha }.to_hsla()
-    }
-
     fn to_picker(self) -> PickerColor {
         PickerColor::hsb(self.hue, self.saturation, self.value)
     }
@@ -102,6 +101,19 @@ impl Hsv {
     }
 }
 
+pub fn random_hex(seed: u64) -> String {
+    let mut state = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    state = (state ^ (state >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    state = (state ^ (state >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    state ^= state >> 31;
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (state >> 40) as u8,
+        (state >> 24) as u8,
+        (state >> 8) as u8
+    )
+}
+
 pub fn hsv_from_hex(hex: &str) -> Hsv {
     let parsed = Srgba::parse(hex);
     Hsv::from_rgb(parsed.r, parsed.g, parsed.b)
@@ -110,28 +122,29 @@ pub fn hsv_from_hex(hex: &str) -> Hsv {
 pub struct ColorPickerPopover {
     hsv: Hsv,
     palette: Vec<SharedString>,
-    swatch_opacity: f32,
     on_change: ColorHandler,
     on_dismiss: DismissHandler,
     focus_handle: FocusHandle,
+    hex_field: Entity<InputState>,
 }
 
 impl ColorPickerPopover {
     pub fn new(
         color: &str,
         palette: Vec<SharedString>,
-        swatch_opacity: f32,
         on_change: ColorHandler,
         on_dismiss: DismissHandler,
         cx: &mut Context<Self>,
     ) -> Self {
+        let hsv = hsv_from_hex(color);
+        let hex = hsv.to_hex().to_ascii_uppercase();
         Self {
-            hsv: hsv_from_hex(color),
+            hsv,
             palette,
-            swatch_opacity,
             on_change,
             on_dismiss,
             focus_handle: cx.focus_handle(),
+            hex_field: cx.new(|cx| InputState::with_value(cx, hex)),
         }
     }
 
@@ -139,11 +152,28 @@ impl ColorPickerPopover {
         self.focus_handle.clone()
     }
 
-    fn emit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let hex = SharedString::from(self.hsv.to_hex());
+    fn sync_hex_field(&self, cx: &mut App) {
+        let hex = self.hsv.to_hex().to_ascii_uppercase();
+        self.hex_field.update(cx, |state, cx| {
+            if state.value() == hex {
+                return;
+            }
+            state.set_value(hex);
+            cx.notify();
+        });
+    }
+
+    fn notify_change(&mut self, hex: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let handler = self.on_change.clone();
         handler(hex, window, cx);
         cx.notify();
+    }
+
+    fn emit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.hex_field.read(cx).focus_handle(cx).is_focused(window) {
+            self.sync_hex_field(cx);
+        }
+        self.notify_change(SharedString::from(self.hsv.to_hex()), window, cx);
     }
 
     fn apply(&mut self, color: PickerColor, window: &mut Window, cx: &mut Context<Self>) {
@@ -154,13 +184,9 @@ impl ColorPickerPopover {
     fn randomize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|value| value.subsec_nanos())
+            .map(|value| value.as_nanos() as u64)
             .unwrap_or(0);
-        self.hsv = Hsv {
-            hue: (seed % 360) as f32,
-            saturation: 0.55 + ((seed / 360) % 45) as f32 / 100.0,
-            value: 0.6 + ((seed / 16_200) % 40) as f32 / 100.0,
-        };
+        self.hsv = hsv_from_hex(&random_hex(seed));
         self.emit(window, cx);
     }
 }
@@ -169,7 +195,6 @@ impl Render for ColorPickerPopover {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let current = self.hsv.to_picker();
-        let selected_hex = self.hsv.to_hex();
         let area_width = POPOVER_WIDTH - POPOVER_PAD * 2.0;
         let swatches = self
             .palette
@@ -179,7 +204,8 @@ impl Render for ColorPickerPopover {
         let entity = cx.entity().downgrade();
         let area_entity = entity.clone();
         let hue_entity = entity.clone();
-        let swatch_entity = entity;
+        let swatch_entity = entity.clone();
+        let hex_entity = entity;
 
         div()
             .id("color-picker-popover")
@@ -192,6 +218,7 @@ impl Render for ColorPickerPopover {
             .flex()
             .flex_col()
             .gap(px(12.0))
+            .font_family(crate::ui::font::UI_FONT)
             .w(px(POPOVER_WIDTH))
             .min_w(px(POPOVER_WIDTH))
             .flex_shrink_0()
@@ -254,28 +281,23 @@ impl Render for ColorPickerPopover {
                     ),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .h(px(HEX_ROW_HEIGHT))
-                    .rounded(px(chrome::RADIUS_XL))
-                    .bg(theme.default)
-                    .px(px(chrome::FIELD_PAD_X))
-                    .child(
-                        div()
-                            .size(px(chrome::COLOR_SWATCH_XS))
-                            .rounded(px(chrome::RADIUS_LG))
-                            .bg(self.hsv.to_hsla(self.swatch_opacity)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(chrome::FIELD_TEXT))
-                            .text_color(theme.field_foreground)
-                            .child(selected_hex.to_uppercase()),
-                    ),
+                ColorField::new("color-hex", current)
+                    .variant(FieldVariant::Secondary)
+                    .state(self.hex_field.clone())
+                    .full_width(true)
+                    .height(px(HEX_ROW_HEIGHT))
+                    .padding_x(px(chrome::FIELD_PAD_X))
+                    .radius(px(chrome::RADIUS_XL))
+                    .placeholder("#000000")
+                    .on_change(move |color, window, cx| {
+                        let Some(color) = *color else {
+                            return;
+                        };
+                        let Some(entity) = hex_entity.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| this.apply(color, window, cx));
+                    }),
             )
     }
 }
@@ -299,6 +321,7 @@ pub fn trigger(
         .items_center()
         .gap(px(chrome::TOOL_OPTION_GAP))
         .h(px(chrome::TOOL_OPTION_HEIGHT))
+        .w(px(TRIGGER_WIDTH))
         .rounded(px(chrome::TOOL_OPTION_RADIUS))
         .px(px(chrome::TOOL_OPTION_PAD_X))
         .flex_shrink_0()
@@ -355,6 +378,117 @@ mod tests {
 
         let grey = hsv_from_hex("#808080");
         assert!(grey.saturation < 0.01);
+    }
+
+    #[test]
+    fn the_hex_field_parses_what_electron_parses() {
+        assert_eq!(
+            PickerColor::from_hex("aabbcc").map(|color| color.to_hex()),
+            Some("#AABBCC".to_owned())
+        );
+        assert_eq!(
+            PickerColor::from_hex("  #aAbBcC  ").map(|color| color.to_hex()),
+            Some("#AABBCC".to_owned())
+        );
+        assert_eq!(
+            PickerColor::from_hex("#abc").map(|color| color.to_hex()),
+            Some("#AABBCC".to_owned())
+        );
+        assert!(PickerColor::from_hex("nothex").is_none());
+        assert!(PickerColor::from_hex("").is_none());
+    }
+
+    #[test]
+    fn a_typed_hex_reaches_the_annotation_unchanged() {
+        for hex in [
+            "#aabbcc", "#ff3b30", "#000000", "#ffffff", "#3b82f6", "#010203", "#7f8081", "#fe0154",
+        ] {
+            let color = PickerColor::from_hex(hex).expect("valid hex");
+            assert_eq!(Hsv::from_picker(color).to_hex(), hex, "typed {hex}");
+        }
+        for seed in 0..4096u64 {
+            let hex = random_hex(seed);
+            let color = PickerColor::from_hex(&hex).expect("valid hex");
+            assert_eq!(Hsv::from_picker(color).to_hex(), hex, "shuffled {hex}");
+        }
+    }
+
+    #[test]
+    fn the_shuffle_reaches_the_whole_rgb_range() {
+        let samples: Vec<String> = (0..4096u64).map(random_hex).collect();
+        assert!(samples
+            .iter()
+            .all(|hex| PickerColor::from_hex(hex).is_some()));
+        let unique: std::collections::HashSet<&String> = samples.iter().collect();
+        assert!(unique.len() > 4000, "{}", unique.len());
+
+        let parsed: Vec<Hsv> = samples.iter().map(|hex| hsv_from_hex(hex)).collect();
+        assert!(parsed.iter().any(|hsv| hsv.value < 0.25));
+        assert!(parsed.iter().any(|hsv| hsv.saturation < 0.2));
+        assert!(parsed.iter().any(|hsv| hsv.value > 0.9));
+        assert_eq!(random_hex(7), random_hex(7));
+        assert_ne!(random_hex(7), random_hex(8));
+    }
+
+    #[test]
+    fn the_trigger_is_the_width_the_renderer_lays_out() {
+        assert_eq!(TRIGGER_WIDTH, 54.0);
+    }
+
+    #[herogpui::test]
+    fn a_rejected_hex_reverts_to_the_committed_colour(cx: &mut gpui::TestAppContext) {
+        cx.update(herogpui::init);
+        let window = cx.add_window(|_window, cx| {
+            ColorPickerPopover::new(
+                "#ff0000",
+                Vec::new(),
+                Rc::new(|_, _, _| {}),
+                Rc::new(|_, _| {}),
+                cx,
+            )
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |this, window, cx| {
+                let field = this.hex_field.read(cx).focus_handle(cx);
+                window.focus(&field, cx);
+            })
+            .unwrap();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |this, window, cx| {
+                let committed = PickerColor::from_hex("#3b82f6").expect("valid hex");
+                this.apply(committed, window, cx);
+                this.hex_field.update(cx, |state, cx| {
+                    state.set_value("#ab");
+                    cx.notify();
+                });
+            })
+            .unwrap();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+
+        let elsewhere = window
+            .update(cx, |_, window, cx| {
+                let handle = cx.focus_handle().tab_stop(true);
+                window.focus(&handle, cx);
+                handle
+            })
+            .unwrap();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        drop(elsewhere);
+
+        let restored = window
+            .update(cx, |this, _, cx| {
+                this.hex_field.read(cx).value().to_string()
+            })
+            .unwrap();
+        assert_eq!(restored, "#3B82F6");
     }
 
     #[test]
