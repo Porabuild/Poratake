@@ -80,7 +80,7 @@ impl HistoryWindow {
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
             if this.revealing
                 || this.closing
-                || !should_close_on_blur(window.is_window_active(), this.menu.is_open())
+                || !should_close_on_blur(window.is_window_active(), this.menu.is_open(cx))
             {
                 return;
             }
@@ -427,7 +427,7 @@ impl HistoryWindow {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.is_open() {
+        if self.menu.is_open(cx) {
             return;
         }
         let columns = self.layout.columns() as isize;
@@ -573,7 +573,7 @@ impl Render for HistoryWindow {
                         &self.scroll,
                     )),
             )
-            .children(self.menu.render())
+            .children(self.menu.render(cx))
     }
 }
 

@@ -1067,8 +1067,8 @@ impl AreaOverlay {
         cx.notify();
     }
 
-    pub fn close_all_in_one_menu(&self, window: &mut Window) {
-        self.menu.close(window);
+    pub fn close_all_in_one_menu(&self, window: &mut Window, cx: &App) {
+        self.menu.close(window, cx);
     }
 
     pub fn set_all_in_one_target(
@@ -1141,7 +1141,7 @@ impl AreaOverlay {
     }
 
     pub fn start_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.menu.close(window);
+        self.menu.close(window, cx);
         window.focus(&self.focus_handle, cx);
         self.activate_color_picker(cx);
         sync_color_picker(true, cx);

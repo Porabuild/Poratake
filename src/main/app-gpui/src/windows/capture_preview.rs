@@ -12,7 +12,6 @@ use gpui::{
     Styled, Window,
 };
 use herogpui::gpui;
-use parking_lot::Mutex;
 
 use crate::theme::vars::active_theme;
 use crate::ui::chrome::{
@@ -26,8 +25,8 @@ use crate::ui::primitives::{
     OVERLAY_ENTER_MS as PREVIEW_ENTER_MS, OVERLAY_ENTER_SLIDE as PREVIEW_ENTER_OFFSET,
     OVERLAY_EXIT_MS as PREVIEW_EXIT_MS,
 };
+use crate::windows::registry::{self, WindowKind};
 
-static STACK: Mutex<Option<AnyWindowHandle>> = Mutex::new(None);
 static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(1);
 const UPLOAD_DONE_DISPLAY_MS: u64 = 800;
 const PREVIEW_MOVE_MS: u64 = 120;
@@ -141,6 +140,7 @@ impl CapturePreviewWindow {
     pub fn open(cx: &mut App, path: PathBuf) {
         let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
+        let entered_at = cx.background_executor().now();
         Self::push_preview(
             cx,
             id,
@@ -160,7 +160,7 @@ impl CapturePreviewWindow {
                 completed: None,
                 export_progress: None,
                 dismiss_token,
-                entered_at: Instant::now(),
+                entered_at,
                 layout_y: None,
                 layout_animation: None,
                 dismiss_animation: None,
@@ -174,6 +174,7 @@ impl CapturePreviewWindow {
     pub fn open_video(cx: &mut App, project: PathBuf) {
         let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
+        let entered_at = cx.background_executor().now();
         Self::push_preview(
             cx,
             id,
@@ -193,7 +194,7 @@ impl CapturePreviewWindow {
                 completed: None,
                 export_progress: None,
                 dismiss_token,
-                entered_at: Instant::now(),
+                entered_at,
                 layout_y: None,
                 layout_animation: None,
                 dismiss_animation: None,
@@ -205,7 +206,7 @@ impl CapturePreviewWindow {
     fn push_preview(cx: &mut App, id: u64, dismiss_token: Arc<AtomicU64>, preview: CapturePreview) {
         let mut preview = Some(preview);
 
-        let existing = *STACK.lock();
+        let existing = registry::handle(WindowKind::CapturePreview, cx);
         if let Some(handle) = existing {
             let updated = handle
                 .downcast::<CapturePreviewWindow>()
@@ -241,7 +242,7 @@ impl CapturePreviewWindow {
                 schedule_auto_dismiss(handle, id, cx, dismiss_token);
                 return;
             }
-            *STACK.lock() = None;
+            registry::forget(WindowKind::CapturePreview, cx);
         }
 
         let Some(preview) = preview else {
@@ -255,11 +256,11 @@ impl CapturePreviewWindow {
     /// platforms rebuild it, the way the recording bar reopens when its
     /// anchor moves, because GPUI cannot move a live window there.
     pub fn reposition(cx: &mut App) {
-        let Some(stack) = *STACK.lock() else {
+        let Some(stack) = registry::handle(WindowKind::CapturePreview, cx) else {
             return;
         };
         let Some(handle) = stack.downcast::<CapturePreviewWindow>() else {
-            *STACK.lock() = None;
+            registry::forget(WindowKind::CapturePreview, cx);
             return;
         };
         #[cfg(windows)]
@@ -271,7 +272,7 @@ impl CapturePreviewWindow {
                 })
                 .is_ok();
             if !moved {
-                *STACK.lock() = None;
+                registry::forget(WindowKind::CapturePreview, cx);
             }
             return;
         }
@@ -280,10 +281,10 @@ impl CapturePreviewWindow {
             let previews =
                 handle.update(cx, |view, _window, _cx| std::mem::take(&mut view.previews));
             let Ok(previews) = previews else {
-                *STACK.lock() = None;
+                registry::forget(WindowKind::CapturePreview, cx);
                 return;
             };
-            *STACK.lock() = None;
+            registry::forget(WindowKind::CapturePreview, cx);
             let _ = handle.update(cx, |_, window, _| window.remove_window());
             if !previews.is_empty() {
                 let mut previews = previews;
@@ -362,7 +363,7 @@ impl CapturePreviewWindow {
         );
         if let Ok(handle) = opened {
             let handle: AnyWindowHandle = handle.into();
-            *STACK.lock() = Some(handle);
+            registry::remember(WindowKind::CapturePreview, handle, cx);
             for (id, dismiss_token) in timers {
                 schedule_auto_dismiss(handle, id, cx, dismiss_token);
             }
@@ -511,7 +512,7 @@ fn dismiss_state(
 /// background thread, then a tick decodes the looped playhead time into the
 /// thumbnail until the preview is removed.
 fn pump_video_preview(cx: &mut App, id: u64) {
-    let Some(stack) = *STACK.lock() else {
+    let Some(stack) = registry::handle(WindowKind::CapturePreview, cx) else {
         return;
     };
     let Some(handle) = stack.downcast::<CapturePreviewWindow>() else {
@@ -542,7 +543,7 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                             preview.video = Some(VideoPlayback {
                                 decoder: decoder.clone(),
                                 duration,
-                                started: Instant::now(),
+                                started: cx.background_executor().now(),
                                 in_flight: false,
                             });
                             cx.notify();
@@ -558,7 +559,8 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                     cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
                     let job = cx.update(|cx| {
                         entity
-                            .update(cx, |view, _| {
+                            .update(cx, |view, cx| {
+                                let now = cx.background_executor().now();
                                 let preview =
                                     view.previews.iter_mut().find(|preview| preview.id == id)?;
                                 let playback = preview.video.as_mut()?;
@@ -567,7 +569,8 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 }
                                 playback.in_flight = true;
                                 let time = looped_playhead(
-                                    playback.started.elapsed().as_secs_f64(),
+                                    now.saturating_duration_since(playback.started)
+                                        .as_secs_f64(),
                                     playback.duration,
                                 );
                                 Some((playback.decoder.clone(), time))
@@ -661,8 +664,7 @@ fn start_video_export(
     entity: gpui::WeakEntity<CapturePreviewWindow>,
     cx: &mut App,
 ) {
-    let prepared = STACK
-        .lock()
+    let prepared = registry::handle(WindowKind::CapturePreview, cx)
         .and_then(|stack| stack.downcast::<CapturePreviewWindow>())
         .and_then(|handle| {
             handle
@@ -710,8 +712,8 @@ fn start_video_export(
                 }
             })
             .await;
-        let handle = *STACK.lock();
         cx.update(|cx| {
+            let handle = registry::handle(WindowKind::CapturePreview, cx);
             let _ = entity.update(cx, |view, cx| {
                 if let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id) {
                     preview.busy = false;
@@ -752,7 +754,7 @@ fn start_video_export(
 }
 
 fn cancel_video_export(id: u64, cx: &mut App) {
-    if let Some(stack) = *STACK.lock() {
+    if let Some(stack) = registry::handle(WindowKind::CapturePreview, cx) {
         let _ = stack.downcast::<CapturePreviewWindow>().map(|handle| {
             handle.update(cx, |view, _, _| {
                 if let Some(preview) = view.previews.iter().find(|preview| preview.id == id) {
@@ -1145,7 +1147,7 @@ fn begin_remove_preview(
     window: &mut Window,
     cx: &mut Context<CapturePreviewWindow>,
 ) {
-    let now = Instant::now();
+    let now = cx.background_executor().now();
     let Some(index) = view.previews.iter().position(|preview| preview.id == id) else {
         return;
     };
@@ -1240,7 +1242,7 @@ fn remove_preview_now(
 ) {
     view.previews.retain(|preview| preview.id != id);
     if view.previews.is_empty() {
-        *STACK.lock() = None;
+        registry::forget(WindowKind::CapturePreview, cx);
         window.remove_window();
         return;
     }
@@ -1266,7 +1268,7 @@ fn mark_completed(handle: AnyWindowHandle, id: u64, cx: &mut App) {
         };
         preview.busy = false;
         preview.export_progress = None;
-        preview.completed = Some(Instant::now());
+        preview.completed = Some(cx.background_executor().now());
         cx.notify();
     });
 }
@@ -1802,7 +1804,8 @@ impl CapturePreviewWindow {
                                                 {
                                                     preview.busy = false;
                                                     if succeeded {
-                                                        preview.completed = Some(Instant::now());
+                                                        preview.completed =
+                                                            Some(cx.background_executor().now());
                                                     }
                                                 }
                                                 cx.notify();
@@ -1919,7 +1922,7 @@ impl CapturePreviewWindow {
                                 cx.stop_propagation();
                             },
                         ))
-                        .child(self.display_menu.render_dropdown(&owner)),
+                        .child(self.display_menu.render_dropdown(&owner, cx)),
                 );
             }
         }
@@ -1961,7 +1964,7 @@ impl Render for CapturePreviewWindow {
         } else {
             PREVIEW_ENTER_OFFSET
         };
-        let now = Instant::now();
+        let now = cx.background_executor().now();
         let mut needs_frame = false;
         let mut root = crate::ui::font::root().relative().size_full();
         let mut active_index = 0;
@@ -1999,12 +2002,8 @@ impl Render for CapturePreviewWindow {
 mod tests {
     use super::*;
 
-    static STACK_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn lock_stack_for_test() -> std::sync::MutexGuard<'static, ()> {
-        let guard = STACK_TEST_GUARD.lock().expect("stack test guard");
-        *STACK.lock() = None;
-        guard
+    fn stack_handle(cx: &mut gpui::TestAppContext) -> Option<AnyWindowHandle> {
+        cx.update(|cx| registry::handle(WindowKind::CapturePreview, cx))
     }
 
     #[test]
@@ -2137,7 +2136,6 @@ mod tests {
     fn open_video_stacks_a_recording_preview(cx: &mut gpui::TestAppContext) {
         use crate::config::store::ConfigStore;
 
-        let _stack_guard = lock_stack_for_test();
         let dir = tempfile::tempdir().expect("temp dir");
         let project = dir.path().join("Take 1.poratake");
         std::fs::create_dir(&project).expect("project dir");
@@ -2147,8 +2145,7 @@ mod tests {
         cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone()));
         cx.run_until_parked();
 
-        let kinds = super::STACK
-            .lock()
+        let kinds = stack_handle(cx)
             .and_then(|stack| stack.downcast::<CapturePreviewWindow>())
             .and_then(|handle| {
                 handle
@@ -2226,7 +2223,6 @@ mod tests {
     fn the_preview_closes_itself_when_the_dismiss_timer_elapses(cx: &mut gpui::TestAppContext) {
         use crate::config::store::ConfigStore;
 
-        let _stack_guard = lock_stack_for_test();
         let dir = tempfile::tempdir().expect("temp dir");
         let store = std::sync::Arc::new(
             ConfigStore::load_at(dir.path().join("config.json")).expect("load config"),
@@ -2242,9 +2238,7 @@ mod tests {
             cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
             cx.run_until_parked();
         }
-        let handle = STACK
-            .lock()
-            .expect("the preview opened the shared stack window");
+        let handle = stack_handle(cx).expect("the preview opened the shared stack window");
         handle
             .downcast::<CapturePreviewWindow>()
             .expect("preview stack")

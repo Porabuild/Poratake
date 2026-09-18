@@ -136,8 +136,8 @@ impl MenuHandle {
         Self::default()
     }
 
-    pub fn is_open(&self) -> bool {
-        self.finish_closing();
+    pub fn is_open(&self, cx: &App) -> bool {
+        self.finish_closing(cx);
         self.0
             .borrow()
             .popup
@@ -145,8 +145,8 @@ impl MenuHandle {
             .is_some_and(|popup| popup.closing_at.is_none())
     }
 
-    pub fn is_open_for(&self, owner: &str) -> bool {
-        self.finish_closing();
+    pub fn is_open_for(&self, owner: &str, cx: &App) -> bool {
+        self.finish_closing(cx);
         self.0.borrow().popup.as_ref().is_some_and(|popup| {
             popup.closing_at.is_none()
                 && popup
@@ -156,13 +156,14 @@ impl MenuHandle {
         })
     }
 
-    pub fn close(&self, window: &mut Window) {
+    pub fn close(&self, window: &mut Window, cx: &App) {
+        let now = cx.background_executor().now();
         let mut state = self.0.borrow_mut();
         if let Some(popup) = state.popup.as_mut() {
             if popup.closing_at.is_some() {
                 return;
             }
-            popup.closing_at = Some(std::time::Instant::now());
+            popup.closing_at = Some(now);
             start_exit(popup);
             state.suppressed = None;
             drop(state);
@@ -192,27 +193,27 @@ impl MenuHandle {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if self.toggled_closed(&placement, window) {
+        if self.toggled_closed(&placement, window, cx) {
             return;
         }
         self.open(placement, entries, window, cx);
     }
 
-    fn toggled_closed(&self, placement: &MenuPlacement, window: &mut Window) -> bool {
+    fn toggled_closed(&self, placement: &MenuPlacement, window: &mut Window, cx: &App) -> bool {
         let suppressed = self.take_suppressed();
         match placement.owner.as_ref() {
             Some(owner) => {
                 if suppressed.as_ref() == Some(owner) {
                     return true;
                 }
-                if self.is_open_for(owner) {
-                    self.close(window);
+                if self.is_open_for(owner, cx) {
+                    self.close(window, cx);
                     return true;
                 }
             }
             None => {
-                if self.is_open() {
-                    self.close(window);
+                if self.is_open(cx) {
+                    self.close(window, cx);
                     return true;
                 }
             }
@@ -289,11 +290,12 @@ impl MenuHandle {
         cx: &mut App,
     ) {
         let shared = self.0.clone();
-        let dismiss: DismissHandler = Rc::new(move |window: &mut Window, _cx: &mut App| {
+        let dismiss: DismissHandler = Rc::new(move |window: &mut Window, cx: &mut App| {
+            let now = cx.background_executor().now();
             let mut state = shared.borrow_mut();
             let owner = state.popup.as_ref().and_then(|popup| popup.owner.clone());
             if let Some(popup) = state.popup.as_mut() {
-                popup.closing_at = Some(std::time::Instant::now());
+                popup.closing_at = Some(now);
                 start_exit(popup);
             }
             state.suppressed = owner;
@@ -328,15 +330,15 @@ impl MenuHandle {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if self.toggled_closed(&placement, window) {
+        if self.toggled_closed(&placement, window, cx) {
             return;
         }
         self.open_with(placement, build, window, cx);
     }
 
     /// Renders the layer for a window-anchored menu opened with `open_at`.
-    pub fn render(&self) -> Option<AnyElement> {
-        self.finish_closing();
+    pub fn render(&self, cx: &App) -> Option<AnyElement> {
+        self.finish_closing(cx);
         self.clear_stale_suppression();
         let borrowed = self.0.borrow();
         let popup = borrowed.popup.as_ref()?;
@@ -346,8 +348,8 @@ impl MenuHandle {
         Some(layer(popup))
     }
 
-    pub fn is_present(&self) -> bool {
-        self.finish_closing();
+    pub fn is_present(&self, cx: &App) -> bool {
+        self.finish_closing(cx);
         self.0.borrow().popup.is_some()
     }
 
@@ -362,8 +364,8 @@ impl MenuHandle {
 
     /// Renders the layer for the dropdown owned by `owner`, anchored to the
     /// trigger that calls it. The trigger must be `relative()`.
-    pub fn render_dropdown(&self, owner: &str) -> AnyElement {
-        self.finish_closing();
+    pub fn render_dropdown(&self, owner: &str, cx: &App) -> AnyElement {
+        self.finish_closing(cx);
         let borrowed = self.0.borrow();
         let Some(popup) = borrowed.popup.as_ref().filter(|popup| {
             popup
@@ -387,14 +389,15 @@ impl MenuHandle {
             .into_any_element()
     }
 
-    fn finish_closing(&self) {
+    fn finish_closing(&self, cx: &App) {
+        let now = cx.background_executor().now();
         let mut state = self.0.borrow_mut();
         let done = state
             .popup
             .as_ref()
             .and_then(|popup| popup.closing_at)
             .is_some_and(|started| {
-                started.elapsed()
+                now.saturating_duration_since(started)
                     >= std::time::Duration::from_millis(crate::ui::primitives::OVERLAY_EXIT_MS)
             });
         if done {

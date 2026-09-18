@@ -114,7 +114,7 @@ fn trigger(
     window: &mut gpui::Window,
     cx: &mut App,
 ) -> AnyElement {
-    let open = menu.is_open_for(id);
+    let open = menu.is_open_for(id, cx);
     trigger_base(id, menu, theme, entries, window, cx)
         .gap(px(chrome::TOOL_OPTION_GAP))
         .px(px(chrome::TOOL_OPTION_PAD_X))
@@ -124,7 +124,7 @@ fn trigger(
                 .text_color(theme.muted_foreground)
                 .child(chevron_element(px(chrome::TOOL_OPTION_CHEVRON), open)),
         )
-        .child(menu.render_dropdown(id))
+        .child(menu.render_dropdown(id, cx))
         .into_any_element()
 }
 
@@ -141,7 +141,7 @@ fn select_trigger(
     window: &mut gpui::Window,
     cx: &mut App,
 ) -> AnyElement {
-    let open = menu.is_open_for(id);
+    let open = menu.is_open_for(id, cx);
     trigger_base(id, menu, theme, entries, window, cx)
         .pl(px(chrome::TOOL_OPTION_PAD_X))
         .pr(px(chrome::SELECT_INDICATOR_PAD_END))
@@ -157,7 +157,7 @@ fn select_trigger(
                 .text_color(theme.field_placeholder)
                 .child(chevron_element(px(chrome::SELECT_INDICATOR_SIZE), open)),
         )
-        .child(menu.render_dropdown(id))
+        .child(menu.render_dropdown(id, cx))
         .into_any_element()
 }
 

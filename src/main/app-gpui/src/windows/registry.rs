@@ -10,6 +10,7 @@ pub enum WindowKind {
     VideoEditor,
     Onboarding,
     RecordingControl,
+    CapturePreview,
     #[cfg(not(windows))]
     TrayMenu,
 }
@@ -70,6 +71,10 @@ pub fn close(kind: WindowKind, cx: &mut App) {
         return;
     };
     let _ = handle.update(cx, |_, window, _| window.remove_window());
+}
+
+pub fn remember(kind: WindowKind, handle: AnyWindowHandle, cx: &mut App) {
+    registry(cx).handles.insert(kind, handle);
 }
 
 pub fn forget(kind: WindowKind, cx: &mut App) {

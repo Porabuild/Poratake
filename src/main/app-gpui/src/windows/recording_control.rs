@@ -241,10 +241,10 @@ impl RecordingControl {
             cx.notify();
             return true;
         }
-        if !self.menu.is_present() {
+        if !self.menu.is_present(cx) {
             return false;
         }
-        self.menu.close(window);
+        self.menu.close(window, cx);
         self.sync_window_bounds(window, cx, false);
         true
     }
@@ -427,14 +427,14 @@ impl RecordingControl {
         self.project = Some(project);
         self.mode = Mode::Recording;
         self.camera_locked = self.camera;
-        self.started_at = Some(Instant::now());
+        self.started_at = Some(cx.background_executor().now());
         self.paused_at = None;
         self.paused_total = Duration::ZERO;
         self.elapsed = 0;
         self.sync_window_bounds(
             window,
             cx,
-            self.pending_device_menu.is_some() || self.menu.is_present(),
+            self.pending_device_menu.is_some() || self.menu.is_present(cx),
         );
         crate::intents::refresh_shell(cx);
         self.tick(cx);
@@ -449,7 +449,7 @@ impl RecordingControl {
                     return false;
                 }
                 if recorder::state() == recorder::RecorderState::Recording {
-                    this.elapsed = this.recording_duration().as_secs();
+                    this.elapsed = this.recording_duration(cx).as_secs();
                     cx.notify();
                 }
                 true
@@ -703,7 +703,7 @@ impl RecordingControl {
                     })
                     .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
                     .child(icon_element("chevron-down", px(12.0)))
-                    .child(self.menu.render_dropdown(&menu_id))
+                    .child(self.menu.render_dropdown(&menu_id, cx))
                     .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
                         if let Some(entity) = entity.upgrade() {
                             entity.update(cx, |this, cx| {
@@ -745,10 +745,10 @@ impl RecordingControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let opening = !self.menu.is_open_for(owner.as_ref());
+        let opening = !self.menu.is_open_for(owner.as_ref(), cx);
         if !opening {
             self.pending_device_menu = None;
-            self.menu.close(window);
+            self.menu.close(window, cx);
             self.sync_window_bounds(window, cx, false);
             return;
         }
@@ -774,7 +774,7 @@ impl RecordingControl {
         };
         self.menu
             .toggle(device_menu_placement(owner.clone()), entries, window, cx);
-        if self.menu.is_open_for(owner.as_ref()) {
+        if self.menu.is_open_for(owner.as_ref(), cx) {
             match kind {
                 DeviceMenuKind::Media(kind) => self.refresh_devices(kind, owner, window, cx),
                 DeviceMenuKind::Ios => self.refresh_ios_devices(owner, window, cx),
@@ -930,7 +930,7 @@ impl RecordingControl {
                 ) {
                     return;
                 }
-                if this.menu.is_open_for(owner.as_ref()) {
+                if this.menu.is_open_for(owner.as_ref(), cx) {
                     let entries = this.device_menu_entries(kind, cx.entity().downgrade());
                     this.menu
                         .open(device_menu_placement(owner.clone()), entries, window, cx);
@@ -960,7 +960,7 @@ impl RecordingControl {
                     return;
                 }
                 this.ios_devices = listed;
-                if this.menu.is_open_for(owner.as_ref()) {
+                if this.menu.is_open_for(owner.as_ref(), cx) {
                     let entries = this.ios_menu_entries(cx.entity().downgrade());
                     this.menu
                         .open(device_menu_placement(owner.clone()), entries, window, cx);
@@ -1036,14 +1036,17 @@ impl RecordingControl {
             recorder::RecorderState::Recording => {
                 recorder::pause(&daemon);
                 if recorder::state() == recorder::RecorderState::Paused {
-                    self.paused_at = Some(Instant::now());
+                    self.paused_at = Some(cx.background_executor().now());
                 }
             }
             recorder::RecorderState::Paused => {
                 recorder::resume(&daemon);
                 if recorder::state() == recorder::RecorderState::Recording {
                     if let Some(paused_at) = self.paused_at.take() {
-                        self.paused_total += paused_at.elapsed();
+                        self.paused_total += cx
+                            .background_executor()
+                            .now()
+                            .saturating_duration_since(paused_at);
                     }
                 }
             }
@@ -1052,16 +1055,16 @@ impl RecordingControl {
         cx.notify();
     }
 
-    fn recording_duration(&self) -> Duration {
+    fn recording_duration(&self, cx: &App) -> Duration {
         let Some(started_at) = self.started_at else {
             return Duration::from_secs(self.elapsed);
         };
+        let now = cx.background_executor().now();
         let current_pause = self
             .paused_at
-            .map(|paused_at| paused_at.elapsed())
+            .map(|paused_at| now.saturating_duration_since(paused_at))
             .unwrap_or_default();
-        started_at
-            .elapsed()
+        now.saturating_duration_since(started_at)
             .saturating_sub(self.paused_total + current_pause)
     }
 
@@ -1133,7 +1136,7 @@ impl RecordingControl {
     pub(crate) fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.recorder_error_subscription = None;
         self.hide_camera_preview(cx);
-        let duration = self.recording_duration().as_secs_f64();
+        let duration = self.recording_duration(cx).as_secs_f64();
         let service = crate::state::state(cx);
         let stopped = recorder::stop(&service.daemon);
         if !stopped {
@@ -1517,7 +1520,7 @@ fn width_probe(cx: &mut Context<RecordingControl>) -> AnyElement {
 
 impl Render for RecordingControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.pending_device_menu.is_none() && !self.menu.is_present() {
+        if self.pending_device_menu.is_none() && !self.menu.is_present(cx) {
             self.sync_window_bounds(window, cx, false);
         }
         let theme = active_theme(cx);
@@ -1695,7 +1698,7 @@ fn recording_shell(
                     )),
             )
         })
-        .children(menu.render())
+        .children(menu.render(cx))
 }
 
 #[cfg(test)]
@@ -2024,8 +2027,8 @@ mod tests {
                 );
             });
         });
-        assert!(control.read_with(cx, |control, _| {
-            control.pending_device_menu.is_some() && !control.menu.is_open()
+        assert!(control.read_with(cx, |control, cx| {
+            control.pending_device_menu.is_some() && !control.menu.is_open(cx)
         }));
 
         cx.update(|window, cx| {
@@ -2034,8 +2037,8 @@ mod tests {
             });
         });
         cx.simulate_resize(size(px(332.0), px(300.0)));
-        assert!(control.read_with(cx, |control, _| {
-            control.pending_device_menu.is_none() && !control.menu.is_open()
+        assert!(control.read_with(cx, |control, cx| {
+            control.pending_device_menu.is_none() && !control.menu.is_open(cx)
         }));
 
         cx.simulate_resize(size(px(332.0), px(52.0)));
@@ -2050,8 +2053,9 @@ mod tests {
             });
         });
         cx.simulate_resize(size(px(332.0), px(300.0)));
-        assert!(control.read_with(cx, |control, _| {
-            control.pending_device_menu.is_none() && control.menu.is_open_for("recording-camera")
+        assert!(control.read_with(cx, |control, cx| {
+            control.pending_device_menu.is_none()
+                && control.menu.is_open_for("recording-camera", cx)
         }));
     }
 

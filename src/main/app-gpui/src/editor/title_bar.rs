@@ -367,7 +367,7 @@ fn color_trigger(
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) -> AnyElement {
-    let open = menu.is_open_for(COLOR_PICKER_ID);
+    let open = menu.is_open_for(COLOR_PICKER_ID, cx);
     let handle = menu.clone();
     let palette: Vec<SharedString> = crate::ui::colors::palette_for_tool(if is_highlight {
         Tool::Highlight
@@ -381,7 +381,7 @@ fn color_trigger(
     let current = color.clone();
 
     color_picker::trigger(COLOR_PICKER_ID, &color, opacity, open, window, cx)
-        .child(menu.render_dropdown(COLOR_PICKER_ID))
+        .child(menu.render_dropdown(COLOR_PICKER_ID, cx))
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
             let palette = palette.clone();
             let current = current.clone();

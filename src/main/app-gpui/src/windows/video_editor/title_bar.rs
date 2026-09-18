@@ -140,7 +140,7 @@ fn export_indicator(
                     this.toggle_export_popover(window, cx);
                 })),
         )
-        .child(state.menu.render_dropdown(EXPORT_POPOVER_ID))
+        .child(state.menu.render_dropdown(EXPORT_POPOVER_ID, cx))
         .into_any_element()
 }
 
@@ -358,7 +358,7 @@ pub fn render(
                             ),
                         ),
                 )
-                .child(state.menu.render_dropdown(PROJECT_POPOVER_ID)),
+                .child(state.menu.render_dropdown(PROJECT_POPOVER_ID, cx)),
         );
     }
 

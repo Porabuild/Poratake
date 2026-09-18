@@ -35,9 +35,11 @@ const TRAY_CLICK_AFTER_CLOSE_MS: u64 = 250;
 static CLOSED_ON_DEACTIVATION: parking_lot::Mutex<Option<std::time::Instant>> =
     parking_lot::Mutex::new(None);
 
-fn recently_closed_on_deactivation() -> bool {
+fn recently_closed_on_deactivation(cx: &App) -> bool {
+    let now = cx.background_executor().now();
     CLOSED_ON_DEACTIVATION.lock().is_some_and(|closed_at| {
-        closed_at.elapsed() < std::time::Duration::from_millis(TRAY_CLICK_AFTER_CLOSE_MS)
+        now.saturating_duration_since(closed_at)
+            < std::time::Duration::from_millis(TRAY_CLICK_AFTER_CLOSE_MS)
     })
 }
 
@@ -149,7 +151,7 @@ impl TrayMenuWindow {
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() && this.visibility == TrayMenuVisibility::Visible {
-                *CLOSED_ON_DEACTIVATION.lock() = Some(std::time::Instant::now());
+                *CLOSED_ON_DEACTIVATION.lock() = Some(cx.background_executor().now());
                 this.begin_close(window, cx);
             }
         }));
@@ -201,7 +203,7 @@ impl TrayMenuWindow {
     }
 
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
-        if recently_closed_on_deactivation() {
+        if recently_closed_on_deactivation(cx) {
             return;
         }
 

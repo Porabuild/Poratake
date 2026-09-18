@@ -44,7 +44,7 @@ pub fn render(
         tabs.push(
             toolbar::mode_tab(id, mode.icon(), active, theme, window, cx).on_click(cx.listener(
                 move |this, _event, window, cx| {
-                    this.close_all_in_one_menu(window);
+                    this.close_all_in_one_menu(window, cx);
                     this.set_all_in_one_mode(mode, cx);
                 },
             )),
@@ -74,7 +74,7 @@ pub fn render(
                         choices.mode == Mode::Ocr,
                         theme,
                         |this, window, cx| {
-                            this.close_all_in_one_menu(window);
+                            this.close_all_in_one_menu(window, cx);
                             this.set_all_in_one_mode(Mode::Ocr, cx);
                         },
                         cx,
@@ -213,7 +213,7 @@ fn target_menu(
                     px(chrome::OVERLAY_TARGET_CHEVRON),
                 )),
         )
-        .child(menu.render_dropdown(TARGET_MENU_ID))
+        .child(menu.render_dropdown(TARGET_MENU_ID, cx))
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
             handle.toggle(target_menu_placement(), entries.clone(), window, cx);
             cx.stop_propagation();

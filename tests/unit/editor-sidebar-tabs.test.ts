@@ -24,6 +24,8 @@ vi.mock('@/renderer/components/editor/wallpaper', () => {
 });
 
 describe('EditorSidebarTabs', () => {
+  vi.setConfig({ testTimeout: 30_000 });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });

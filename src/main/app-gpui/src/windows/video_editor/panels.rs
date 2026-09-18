@@ -811,7 +811,7 @@ fn drawing_color_trigger(
     window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
-    let open = menu.is_open_for(DRAWING_COLOR_PICKER_ID);
+    let open = menu.is_open_for(DRAWING_COLOR_PICKER_ID, cx);
     let handle = menu.clone();
     let palette: Vec<SharedString> = crate::ui::colors::palette_for_tool(if is_highlight {
         crate::ui::colors::Tool::Highlight
@@ -824,7 +824,7 @@ fn drawing_color_trigger(
     let owner = cx.entity().downgrade();
     let current = color.clone();
     crate::ui::color_picker::trigger(DRAWING_COLOR_PICKER_ID, &color, opacity, open, window, cx)
-        .child(menu.render_dropdown(DRAWING_COLOR_PICKER_ID))
+        .child(menu.render_dropdown(DRAWING_COLOR_PICKER_ID, cx))
         .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
             let palette = palette.clone();
             let current = current.clone();
@@ -2531,7 +2531,7 @@ fn export_panel(
         }
         crate::cloud::UploadState::Success => {
             if let Some(url) = uploaded_url {
-                let copied = view.url_recently_copied();
+                let copied = view.url_recently_copied(cx);
                 footer.push(
                     div()
                         .flex()
@@ -2630,7 +2630,10 @@ fn export_panel(
                         .items_center()
                         .justify_between()
                         .child(kit::hint_inline(
-                            format!("{} elapsed", format_export_time(view.export_elapsed_secs())),
+                            format!(
+                                "{} elapsed",
+                                format_export_time(view.export_elapsed_secs(cx))
+                            ),
                             theme,
                         ))
                         .child(kit::hint_inline(

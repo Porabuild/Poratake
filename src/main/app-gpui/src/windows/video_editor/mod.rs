@@ -456,7 +456,7 @@ impl VideoEditorWindow {
         self.displayed_progress = 0.0;
         self.export_progress_permille = Arc::new(AtomicU32::new(0));
         self.export_cancelled = Arc::new(AtomicBool::new(false));
-        self.export_started_at = Some(std::time::Instant::now());
+        self.export_started_at = Some(cx.background_executor().now());
         self.export_remaining = None;
         cx.notify();
 
@@ -464,7 +464,7 @@ impl VideoEditorWindow {
         let cancelled = self.export_cancelled.clone();
         let was_cancelled = self.export_cancelled.clone();
         let reveal = state.export_settings.open_in_finder;
-        let started = std::time::Instant::now();
+        let started = cx.background_executor().now();
 
         self.poll_export_progress(cx);
         cx.spawn(async move |entity, cx| {
@@ -495,7 +495,12 @@ impl VideoEditorWindow {
                     "Export Complete",
                     &format!(
                         "Video exported successfully in {}",
-                        format_export_duration(started.elapsed().as_secs_f64())
+                        format_export_duration(
+                            cx.background_executor()
+                                .now()
+                                .saturating_duration_since(started)
+                                .as_secs_f64()
+                        )
                     ),
                 );
                 if reveal {
@@ -511,7 +516,7 @@ impl VideoEditorWindow {
                 this.export_remaining = None;
                 this.export_error = failure.map(SharedString::from);
                 if output.is_some() {
-                    this.export_completed_at = Some(std::time::Instant::now());
+                    this.export_completed_at = Some(cx.background_executor().now());
                     this.schedule_export_completion_clear(cx);
                 }
                 if this.upload_to_cloud {
@@ -565,7 +570,7 @@ impl VideoEditorWindow {
                 this.export_progress = progress.load(Ordering::Relaxed) as f32 / 1000.0;
                 this.displayed_progress =
                     tween_progress(this.displayed_progress, this.export_progress, 100);
-                this.update_export_eta();
+                this.update_export_eta(cx);
                 cx.notify();
                 true
             });
@@ -578,7 +583,7 @@ impl VideoEditorWindow {
 
     /// Port of the ETA half of `useExportProgress`: below 5% the estimate
     /// is withheld, above it the raw projection is smoothed at 0.1.
-    fn update_export_eta(&mut self) {
+    fn update_export_eta(&mut self, cx: &App) {
         let Some(started) = self.export_started_at else {
             self.export_remaining = None;
             return;
@@ -587,7 +592,11 @@ impl VideoEditorWindow {
             self.export_remaining = None;
             return;
         }
-        let elapsed = started.elapsed().as_secs_f64();
+        let elapsed = cx
+            .background_executor()
+            .now()
+            .saturating_duration_since(started)
+            .as_secs_f64();
         let raw = (elapsed / f64::from(self.export_progress) - elapsed).max(0.0);
         self.export_remaining = Some(match self.export_remaining {
             Some(previous) => previous + 0.1 * (raw - previous),
@@ -595,9 +604,10 @@ impl VideoEditorWindow {
         });
     }
 
-    pub fn export_elapsed_secs(&self) -> u64 {
+    pub fn export_elapsed_secs(&self, cx: &App) -> u64 {
+        let now = cx.background_executor().now();
         self.export_started_at
-            .map(|started| started.elapsed().as_secs())
+            .map(|started| now.saturating_duration_since(started).as_secs())
             .unwrap_or(0)
     }
 
@@ -772,7 +782,7 @@ impl VideoEditorWindow {
         self.playback_generation += 1;
         let generation = self.playback_generation;
         let tick = playback_tick(self.source_frame_rate);
-        let started = std::time::Instant::now();
+        let started = cx.background_executor().now();
         let initial_playhead = self.playhead;
 
         cx.spawn(async move |entity, cx| loop {
@@ -782,7 +792,11 @@ impl VideoEditorWindow {
                     return false;
                 }
                 let total = this.total_duration();
-                let next = initial_playhead + started.elapsed().as_secs_f64();
+                let next = initial_playhead
+                    + cx.background_executor()
+                        .now()
+                        .saturating_duration_since(started)
+                        .as_secs_f64();
                 if next >= total {
                     this.playhead = total;
                     this.is_playing = false;
@@ -2402,13 +2416,15 @@ impl VideoEditorWindow {
             cx,
             path.to_string_lossy().to_string(),
         );
-        self.path_copied_at = Some(std::time::Instant::now());
+        self.path_copied_at = Some(cx.background_executor().now());
         cx.notify();
     }
 
-    pub fn path_recently_copied(&self) -> bool {
-        self.path_copied_at
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(COPY_FEEDBACK_MS))
+    pub fn path_recently_copied(&self, cx: &App) -> bool {
+        let now = cx.background_executor().now();
+        self.path_copied_at.is_some_and(|at| {
+            now.saturating_duration_since(at) < Duration::from_millis(COPY_FEEDBACK_MS)
+        })
     }
 
     pub fn rename_project(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2444,7 +2460,7 @@ impl VideoEditorWindow {
         crate::history_store::update_item_path(&old_path, &new_path);
         self.path = Some(new_path);
         self.rename_error = None;
-        self.menu.close(window);
+        self.menu.close(window, cx);
         self.persist(cx);
         self.load_preview(cx);
         window.focus(&self.focus_handle, cx);
@@ -2476,18 +2492,22 @@ impl VideoEditorWindow {
         .detach();
     }
 
-    pub fn is_export_complete(&self) -> bool {
-        self.export_completed_at
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(EXPORT_COMPLETION_MS))
+    pub fn is_export_complete(&self, cx: &App) -> bool {
+        let now = cx.background_executor().now();
+        self.export_completed_at.is_some_and(|at| {
+            now.saturating_duration_since(at) < Duration::from_millis(EXPORT_COMPLETION_MS)
+        })
     }
 
     pub fn export_error(&self) -> Option<SharedString> {
         self.export_error.clone()
     }
 
-    pub fn url_recently_copied(&self) -> bool {
-        self.url_copied_at
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(COPY_FEEDBACK_MS))
+    pub fn url_recently_copied(&self, cx: &App) -> bool {
+        let now = cx.background_executor().now();
+        self.url_copied_at.is_some_and(|at| {
+            now.saturating_duration_since(at) < Duration::from_millis(COPY_FEEDBACK_MS)
+        })
     }
 
     pub fn set_upload_to_cloud(&mut self, value: bool, cx: &mut Context<Self>) {
@@ -2508,7 +2528,7 @@ impl VideoEditorWindow {
             return;
         };
         crate::system::clipboard::ClipboardService::write_text(cx, url);
-        self.url_copied_at = Some(std::time::Instant::now());
+        self.url_copied_at = Some(cx.background_executor().now());
         cx.notify();
     }
 
@@ -2934,7 +2954,7 @@ impl VideoEditorWindow {
             return;
         }
         if event.keystroke.key.as_str() == "escape" {
-            if self.menu.is_present() {
+            if self.menu.is_present(cx) {
                 cx.stop_propagation();
                 return;
             }
@@ -3181,7 +3201,7 @@ impl Render for VideoEditorWindow {
                 is_sidebar_open: self.state.ui.sidebar_open,
                 is_exporting: self.is_exporting,
                 export_progress: self.displayed_progress,
-                export_completed: self.is_export_complete(),
+                export_completed: self.is_export_complete(cx),
                 menu: self.menu.clone(),
             },
             &theme,
@@ -3468,7 +3488,7 @@ impl Render for VideoEditorWindow {
             .child(release_handler)
             .child(title)
             .child(stage)
-            .children(self.menu.render())
+            .children(self.menu.render(cx))
             .children(
                 self.data_editor
                     .as_ref()
@@ -3493,11 +3513,11 @@ impl Render for TitlePopover {
         let view = editor.read(cx);
         let body = match owner {
             title_bar::EXPORT_POPOVER_ID => title_bar::export_popover(
-                view.is_export_complete(),
+                view.is_export_complete(cx),
                 view.displayed_progress,
                 SharedString::from(format!(
                     "{} elapsed",
-                    panels::format_export_time(view.export_elapsed_secs())
+                    panels::format_export_time(view.export_elapsed_secs(cx))
                 )),
                 SharedString::from(match view.export_remaining_secs() {
                     Some(remaining) => {
@@ -3522,7 +3542,7 @@ impl Render for TitlePopover {
                 ),
                 view.rename_field.clone(),
                 view.rename_error.clone(),
-                view.path_recently_copied(),
+                view.path_recently_copied(cx),
                 &theme,
                 {
                     let editor = editor.clone();
@@ -3983,7 +4003,7 @@ mod keyboard_demo_tests {
                 assert!(editor.export_cancelled.load(Ordering::Relaxed));
                 assert!(!editor.is_exporting);
                 assert_eq!(editor.export_error(), None, "a cancel is not a failure");
-                assert!(!editor.is_export_complete());
+                assert!(!editor.is_export_complete(cx));
                 assert_eq!(editor.displayed_progress, 0.0);
             })
             .expect("update editor");
@@ -4284,17 +4304,17 @@ mod keyboard_demo_tests {
         cx.update(|cx| crate::state::set_test_state(cx, config));
         let (editor, cx) = cx.add_window_view(|_, cx| VideoEditorWindow::new_for_test(None, cx));
         cx.update(|_window, cx| {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.export_started_at =
-                    Some(std::time::Instant::now() - Duration::from_secs(10));
+                    Some(cx.background_executor().now() - Duration::from_secs(10));
                 editor.export_progress = 0.01;
-                editor.update_export_eta();
+                editor.update_export_eta(cx);
                 assert_eq!(editor.export_remaining_secs(), None);
                 editor.export_progress = 0.5;
-                editor.update_export_eta();
+                editor.update_export_eta(cx);
                 assert_eq!(editor.export_remaining_secs(), Some(10));
                 editor.export_progress = 0.75;
-                editor.update_export_eta();
+                editor.update_export_eta(cx);
                 let smoothed = editor.export_remaining.expect("smoothed eta");
                 assert!((smoothed - 9.33).abs() < 0.5, "smoothed eta {smoothed}");
             });
