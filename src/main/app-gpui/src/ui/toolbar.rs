@@ -1,6 +1,5 @@
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Context, Div, ElementId, SharedString, Stateful, Styled,
-    Window,
+    div, prelude::*, px, AnyElement, App, Context, Div, ElementId, SharedString, Styled, Window,
 };
 use herogpui::components::{Button, Size, Variant};
 use herogpui::gpui;
@@ -137,142 +136,9 @@ pub fn filled_play(color: gpui::Hsla) -> AnyElement {
     .into_any_element()
 }
 
-#[derive(Default)]
-struct TabSlots {
-    from: usize,
-    to: usize,
-    started: bool,
-}
-
-impl TabSlots {
-    fn advance(&mut self, active: usize) -> (usize, usize) {
-        if !self.started {
-            self.started = true;
-            self.from = active;
-            self.to = active;
-        } else if self.to != active {
-            self.from = self.to;
-            self.to = active;
-        }
-        (self.from, self.to)
-    }
-}
-
-fn tab_slot_left(slot: usize) -> f32 {
-    slot as f32 * chrome::OVERLAY_BUTTON_SIZE
-}
-
-pub fn mode_tab_group(
-    key: &'static str,
-    active: Option<usize>,
-    tabs: Vec<Stateful<Div>>,
-    theme: &ThemeVars,
-    window: &mut Window,
-    cx: &mut App,
-) -> Div {
-    let indicator = tab_indicator(key, active, theme, window, cx);
-    div()
-        .relative()
-        .flex()
-        .flex_row()
-        .items_center()
-        .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-        .bg(theme.muted_foreground.opacity(0.10))
-        .children(indicator)
-        .children(tabs)
-}
-
-fn tab_indicator(
-    key: &'static str,
-    active: Option<usize>,
-    theme: &ThemeVars,
-    window: &mut Window,
-    cx: &mut App,
-) -> Option<AnyElement> {
-    use gpui::AnimationExt;
-
-    let slots = window.use_keyed_state(
-        ElementId::Name(format!("{key}-indicator").into()),
-        cx,
-        |_, _| TabSlots::default(),
-    );
-    let active = active?;
-    let (from, to) = slots.update(cx, |slots, _| slots.advance(active));
-    let pill = div()
-        .absolute()
-        .top_0()
-        .size(px(chrome::OVERLAY_BUTTON_SIZE))
-        .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-        .bg(theme.muted_foreground.opacity(0.25));
-    if from == to {
-        return Some(pill.left(px(tab_slot_left(to))).into_any_element());
-    }
-    let start = tab_slot_left(from);
-    let distance = tab_slot_left(to) - start;
-    Some(
-        pill.with_animation(
-            ElementId::Name(format!("{key}-indicator-{from}-{to}").into()),
-            gpui::Animation::new(std::time::Duration::from_millis(
-                crate::ui::primitives::OVERLAY_ENTER_MS,
-            ))
-            .with_easing(crate::ui::primitives::ease_out()),
-            move |pill, delta| pill.left(px(start + distance * delta)),
-        )
-        .into_any_element(),
-    )
-}
-
-pub fn mode_tab(
-    id: SharedString,
-    icon: &'static str,
-    active: bool,
-    theme: &ThemeVars,
-    window: &mut Window,
-    cx: &mut App,
-) -> Stateful<Div> {
-    let key = id.to_string();
-    let focus = crate::ui::primitives::control_focus(&key, false, window, cx);
-    let (hover, hovered) = crate::ui::primitives::hover_flag(&key, window, cx);
-    let text = if active {
-        theme.foreground
-    } else if hovered {
-        theme.muted_foreground
-    } else {
-        theme.muted_foreground.opacity(0.6)
-    };
-    div()
-        .id(id)
-        .track_focus(&focus)
-        .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
-        .size(px(chrome::OVERLAY_BUTTON_SIZE))
-        .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(text)
-        .on_hover({
-            let hover = hover.clone();
-            move |over: &bool, _window, cx| {
-                crate::ui::primitives::track_hover(&hover, *over, cx);
-            }
-        })
-        .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_indicator_slides_from_the_previous_slot() {
-        let mut slots = TabSlots::default();
-        assert_eq!(slots.advance(1), (1, 1));
-        assert_eq!(slots.advance(0), (1, 0));
-        assert_eq!(slots.advance(0), (1, 0));
-        assert_eq!(slots.advance(1), (0, 1));
-        assert_eq!(tab_slot_left(0), 0.0);
-        assert_eq!(tab_slot_left(1), chrome::OVERLAY_BUTTON_SIZE);
-    }
 
     #[test]
     fn selected_toolbar_buttons_use_the_active_hover_surface() {

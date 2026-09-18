@@ -31,6 +31,14 @@ impl Mode {
         }
     }
 
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Screenshot => "Screenshot",
+            Self::Record => "Record",
+            Self::Ocr => "Capture text",
+        }
+    }
+
     pub fn icon(self) -> &'static str {
         match self {
             Self::Screenshot => "camera",

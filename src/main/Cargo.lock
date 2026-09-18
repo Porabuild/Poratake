@@ -3263,9 +3263,9 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "herogpui"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6b29b4f580ce2a7d949364b3d47382b0e2a1372aab2472fbd7b323593363e6b"
+checksum = "4a303c1a8334bd9fa8d092530f1760a206a70466d4751f5d563e321118967004"
 dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
@@ -3276,9 +3276,9 @@ dependencies = [
 
 [[package]]
 name = "herogpui-components"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e6aa875d169fa083e5fbdc66881eadaa381e13f3db31a610a09db04f7debe58"
+checksum = "71d797743de94bd7ff60a28b484390b745c1725bd079ab3d8c0d1fa4a29c28f4"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
@@ -3293,18 +3293,18 @@ dependencies = [
 
 [[package]]
 name = "herogpui-core"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7b0ae32f601ec866e3a03b8bba34688f6e67858e4a184238f23af8471c9f208"
+checksum = "e39eadc1c9c563e537174d15b1a85fae4e135e17974a9cfbbc8f96723741d27d"
 dependencies = [
  "gpui-pre",
 ]
 
 [[package]]
 name = "herogpui-theme"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f5db14e4896936caeaf22db19c41695a5b0f2e790271b3ab61d771d2454ec92"
+checksum = "3ff1a1ac721ebbcc19465cfd04e0c544ec741abc307e53e95ee50852185dd40a"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
