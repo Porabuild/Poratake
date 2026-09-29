@@ -58,7 +58,8 @@ pub fn render(
         .indicator_shadow(false)
         .list_padding(px(0.0))
         .hover_fill(false)
-        .sx(move |el| el.w(group_width).flex_none())
+        .w(group_width)
+        .flex_none()
         .on_selection_change(cx.listener(move |this, key: &SharedString, window, cx| {
             this.close_all_in_one_menu(window, cx);
             this.set_all_in_one_mode(Mode::parse(key), cx);
@@ -210,7 +211,7 @@ fn target_menu(
     div()
         .id(TARGET_MENU_ID)
         .track_focus(&focus)
-        .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
+        .map(|el| crate::ui::primitives::keyboard_focus_ring(el, theme, cx))
         .relative()
         .flex()
         .flex_row()

@@ -139,12 +139,10 @@ fn chip(
         .is_icon_only(icon_only)
         .is_disabled(disabled)
         .recipe(recipe)
-        .sx(move |el| {
-            let el = el.bg(surface).text_color(foreground);
-            match disabled {
-                true => el.cursor(gpui::CursorStyle::OperationNotAllowed),
-                false => el,
-            }
+        .bg(surface)
+        .text_color(foreground)
+        .when(disabled, |el| {
+            el.cursor(gpui::CursorStyle::OperationNotAllowed)
         })
         .hover_bg(hover_bg)
         .on_press(move |_event, window, cx| {

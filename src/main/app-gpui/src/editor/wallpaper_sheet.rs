@@ -348,7 +348,7 @@ fn editor_type_toggle(
             div()
                 .id(ElementId::Name(SharedString::from(key)))
                 .track_focus(&focus)
-                .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
+                .map(|el| crate::ui::primitives::keyboard_focus_ring(el, theme, cx))
                 .flex_1()
                 .flex()
                 .items_center()
@@ -821,12 +821,10 @@ fn preset_manager(
                     "Use this preset for Polish"
                 },
                 icon_button::compact_sm("wallpaper-preset-star", "star")
-                    .sx(|el| {
-                        el.text_color(if is_default {
-                            theme.primary
-                        } else {
-                            theme.muted_foreground
-                        })
+                    .text_color(if is_default {
+                        theme.primary
+                    } else {
+                        theme.muted_foreground
                     })
                     .on_press(move |_event, window, cx| toggle(window, cx)),
             ))
@@ -1316,7 +1314,7 @@ fn aspect_row(
             Select::new("wallpaper-aspect", items)
                 .recipe("compact")
                 .value(value.clone())
-                .sx(|el| el.w(px(chrome::WALLPAPER_SELECT_WIDTH)))
+                .w(px(chrome::WALLPAPER_SELECT_WIDTH))
                 .on_selection_change(move |value, window, cx| {
                     let Some(value) = value else { return };
                     apply(

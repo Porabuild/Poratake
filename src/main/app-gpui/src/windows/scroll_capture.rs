@@ -389,7 +389,7 @@ impl Render for ScrollControlBar {
         } else {
             toolbar::filled_play(glyph_color)
         };
-        crate::ui::font::root()
+        let content = crate::ui::font::root()
             .size_full()
             .flex()
             .items_center()
@@ -423,7 +423,8 @@ impl Render for ScrollControlBar {
                         },
                         cx,
                     )),
-            )
+            );
+        crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 

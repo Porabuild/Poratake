@@ -35,7 +35,7 @@ fn separator(_theme: &ThemeVars) -> AnyElement {
     herogpui::Separator::new()
         .orientation(herogpui::Orientation::Vertical)
         .mx(px(4.0))
-        .sx(|el| el.h(px(20.0)))
+        .h(px(20.0))
         .into_any_element()
 }
 

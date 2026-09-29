@@ -680,9 +680,7 @@ impl RecordingControl {
                 div()
                     .id(SharedString::from(owner.clone()))
                     .track_focus(&focus)
-                    .focus(move |style| {
-                        style.shadow(crate::ui::primitives::focus_ring(&theme, 2.0))
-                    })
+                    .map(|el| crate::ui::primitives::keyboard_focus_ring(el, &theme, cx))
                     .relative()
                     .flex()
                     .flex_row()
@@ -1574,6 +1572,7 @@ impl Render for RecordingControl {
                 )),
                 &self.menu,
                 countdown,
+                window,
                 cx,
             );
         }
@@ -1622,6 +1621,7 @@ impl Render for RecordingControl {
             )),
             &self.menu,
             None,
+            window,
             cx,
         )
     }
@@ -1632,9 +1632,10 @@ fn recording_shell(
     bar: impl IntoElement,
     menu: &MenuHandle,
     countdown: Option<u32>,
+    window: &mut Window,
     cx: &mut Context<RecordingControl>,
 ) -> impl IntoElement {
-    crate::ui::font::root()
+    let content = crate::ui::font::root()
         .id("recording-control")
         .track_focus(focus)
         .size_full()
@@ -1698,7 +1699,8 @@ fn recording_shell(
                     )),
             )
         })
-        .children(menu.render(cx))
+        .children(menu.render(cx));
+    crate::ui::window_root::focus_root(content, window, cx)
 }
 
 #[cfg(test)]

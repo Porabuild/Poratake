@@ -154,7 +154,7 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `glib`                     |    0.18.5 | MIT                       |
 | `global-hotkey`            |     0.8.0 | Apache-2.0 OR MIT         |
 | `gpui-pre`                 |     0.3.5 | Apache-2.0                |
-| `herogpui`                 |     0.9.0 | Apache-2.0                |
+| `herogpui`                 |    0.14.0 | Apache-2.0                |
 | `gtk`                      |    0.18.2 | MIT                       |
 | `hmac`                     |    0.13.0 | MIT OR Apache-2.0         |
 | `image`                    |   0.25.10 | MIT OR Apache-2.0         |
@@ -183,11 +183,11 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `serde`                    |   1.0.229 | MIT OR Apache-2.0         |
 | `serde_json`               |   1.0.151 | MIT OR Apache-2.0         |
 
-[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are version 0.9.0, published on [crates.io](https://crates.io/crates/herogpui) and licensed Apache-2.0; their versions and checksums are pinned in `src/main/Cargo.lock`. The unmodified license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`.
+[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are version 0.14.0, published on [crates.io](https://crates.io/crates/herogpui) and licensed Apache-2.0; their versions and checksums are pinned in `src/main/Cargo.lock`. The unmodified license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`.
 
 The GPUI implementation is the Apache-2.0 `gpui-pre` 0.3.5 family, replacing `gpui` 0.2.2: `gpui-pre`, `gpui-pre-apple`, `gpui-pre-collections`, `gpui-pre-derive-refineable`, `gpui-pre-http-client`, `gpui-pre-linux`, `gpui-pre-macos`, `gpui-pre-macros`, `gpui-pre-media`, `gpui-pre-perf`, `gpui-pre-platform`, `gpui-pre-refineable`, `gpui-pre-scheduler`, `gpui-pre-shared-string`, `gpui-pre-sum-tree`, `gpui-pre-util`, `gpui-pre-util-macros`, `gpui-pre-web`, `gpui-pre-wgpu`, `gpui-pre-windows`, `gpui-pre-zlog`, `gpui-pre-ztracing`, and `gpui-pre-ztracing-macro`. Platform-specific crates are linked only for their respective targets. `gpui-pre-http-client` compresses through `async-compression` 0.4.43, which pulls in `bzip2` 0.6.1 and `libbz2-rs-sys` 0.2.5 (bzip2-1.0.6).
 
-HeroGPUI also introduces ICU4X calendar and date/time components and compiled locale data: `icu_calendar` 2.2.1, `icu_calendar_data`, `icu_datetime`, `icu_datetime_data`, `icu_decimal`, `icu_decimal_data`, `icu_locale`, `icu_locale_data`, `icu_plurals`, `icu_plurals_data`, `icu_time` 2.2.0, `icu_time_data` 2.2.1, and `icu_pattern` 0.4.2 (Unicode-3.0). Local time and locale detection use `jiff`/`jiff-static` 0.2.35, `jiff-core` 0.1.0, `jiff-tzdb` 0.1.8, `jiff-tzdb-platform` 0.1.3 (MIT OR Unlicense), and `locale_config` 0.3.0 (MIT).
+HeroGPUI also introduces ICU4X calendar and date/time components and compiled locale data: `icu_calendar` 2.2.1, `icu_calendar_data`, `icu_datetime`, `icu_datetime_data`, `icu_decimal`, `icu_decimal_data`, `icu_locale`, `icu_locale_data`, `icu_plurals`, `icu_plurals_data`, `icu_time` 2.2.0, `icu_time_data` 2.2.1, and `icu_pattern` 0.4.2 (Unicode-3.0). Local time and locale detection use `jiff`/`jiff-static` 0.2.35, `jiff-core` 0.1.0, `jiff-tzdb` 0.1.8, and `jiff-tzdb-platform` 0.1.3 (MIT OR Unlicense).
 
 `tray-icon` pulls in `dpi` 0.1.2 (Apache-2.0 AND MIT).
 

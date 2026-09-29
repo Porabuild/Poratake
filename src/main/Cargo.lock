@@ -3263,9 +3263,9 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "herogpui"
-version = "0.10.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a303c1a8334bd9fa8d092530f1760a206a70466d4751f5d563e321118967004"
+checksum = "625a1c0c1421d6a08c595abca191492c5eeb111f7e2382b3fc0df54a746f2466"
 dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
@@ -3276,9 +3276,9 @@ dependencies = [
 
 [[package]]
 name = "herogpui-components"
-version = "0.10.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71d797743de94bd7ff60a28b484390b745c1725bd079ab3d8c0d1fa4a29c28f4"
+checksum = "7cad1025e53afbad55221a6cf08206a70fe10cd695d15c82192f30bfdd427c1a"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
@@ -3287,24 +3287,27 @@ dependencies = [
  "icu_datetime",
  "icu_locale_core",
  "jiff",
- "locale_config",
+ "objc2-foundation 0.3.2",
+ "sys-locale",
+ "unicode-segmentation",
  "web-time",
+ "windows-registry",
 ]
 
 [[package]]
 name = "herogpui-core"
-version = "0.10.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e39eadc1c9c563e537174d15b1a85fae4e135e17974a9cfbbc8f96723741d27d"
+checksum = "1b45d8b8ff6ccb2f876bb416674b3d213074ef69357f0405205a992f7a80f02c"
 dependencies = [
  "gpui-pre",
 ]
 
 [[package]]
 name = "herogpui-theme"
-version = "0.10.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ff1a1ac721ebbcc19465cfd04e0c544ec741abc307e53e95ee50852185dd40a"
+checksum = "0afb6a13a9a2c746c2b870ab657c8c92d323ac0c71eeb96ba193ce3c33baaaf1"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
@@ -4178,19 +4181,6 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
-
-[[package]]
-name = "locale_config"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d2c35b16f4483f6c26f0e4e9550717a2f6575bcd6f12a53ff0c490a94a6934"
-dependencies = [
- "lazy_static",
- "objc",
- "objc-foundation",
- "regex",
- "winapi",
-]
 
 [[package]]
 name = "lock_api"

@@ -243,7 +243,6 @@ impl Render for ColorPickerPopover {
                 ColorArea::new("color-area", current)
                     .color_space(ColorSpace::Hsb)
                     .size(px(area_width), px(AREA_HEIGHT))
-                    .sx(|el| el.rounded(px(chrome::RADIUS_2XL)))
                     .on_change(move |color, window, cx| {
                         if let Some(entity) = area_entity.upgrade() {
                             entity.update(cx, |this, cx| this.apply(*color, window, cx));
@@ -272,7 +271,7 @@ impl Render for ColorPickerPopover {
                                 .variant(Variant::Tertiary)
                                 .size(Size::Sm)
                                 .is_icon_only(true)
-                                .sx(|el| el.rounded(px(9999.0)))
+                                .rounded(px(9999.0))
                                 .child(icon_element("shuffle", px(chrome::TOOL_OPTION_CHEVRON)))
                                 .on_press(cx.listener(|this, _event, window, cx| {
                                     this.randomize(window, cx)

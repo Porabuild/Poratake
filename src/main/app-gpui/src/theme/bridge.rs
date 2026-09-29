@@ -33,6 +33,8 @@ const TRAY_MENU_ROW_PADDING_Y: f32 = 2.0;
 const TRAY_MENU_SEPARATOR_INSET: f32 = 15.0;
 const SELECT_TRIGGER_PADDING_Y: f32 = 8.0;
 const COMPACT_SELECT_PADDING_Y: f32 = 4.0;
+const MENU_MIN_WIDTH: f32 = 128.0;
+const MENU_MAX_HEIGHT: f32 = 420.0;
 
 fn component_themes(vars: &ThemeVars) -> ComponentThemes {
     ComponentThemes::default()
@@ -65,6 +67,8 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
         .menu(
             ComponentTheme::new(
                 MenuStyle::default()
+                    .panel_min_width(gpui::px(MENU_MIN_WIDTH))
+                    .panel_max_height(gpui::px(MENU_MAX_HEIGHT))
                     .panel_gap(gpui::px(0.0))
                     .panel_padding(gpui::px(6.0))
                     .row_height(gpui::px(36.0))
@@ -214,10 +218,10 @@ pub fn to_herogpui(vars: &ThemeVars, dark: bool) -> herogpui::theme::Theme {
         .segment(vars.segment, vars.foreground)
         // `role` for "default" also points fields at the role colour, so the
         // explicit `field` tokens below win.
-        .role("default", vars.default, vars.default_foreground)
-        .role("accent", vars.accent, vars.accent_foreground)
+        .role(Color::Default, vars.default, vars.default_foreground)
+        .role(Color::Accent, vars.accent, vars.accent_foreground)
         .accent_hover(vars.accent_hover)
-        .role("danger", vars.danger, vars.danger_foreground)
+        .role(Color::Danger, vars.danger, vars.danger_foreground)
         .field(vars.field_background, vars.field_foreground)
         .field_placeholder(vars.field_placeholder)
         .field_border(vars.field_border)
@@ -598,6 +602,12 @@ mod tests {
             accent.row_hover_bg,
             Some(ComponentColor::Role(Color::Accent))
         );
+        assert_eq!(
+            accent.row_hover_foreground,
+            Some(ComponentColor::RoleForeground(Color::Accent))
+        );
+        assert_eq!(accent.panel_min_width, Some(gpui::px(MENU_MIN_WIDTH)));
+        assert_eq!(accent.panel_max_height, Some(gpui::px(MENU_MAX_HEIGHT)));
         let button = theme.components.button.resolve(&["compact".into()]);
         assert!(button.style.is_some());
         let missing = theme.components.button.resolve(&["does-not-exist".into()]);

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, img, prelude::*, px, AnyElement, Context, ElementId, ObjectFit, SharedString, Styled,
-    Window,
+    div, img, prelude::*, px, AnyElement, App, Context, ElementId, ObjectFit, SharedString, Styled,
+    WeakEntity, Window,
 };
 use herogpui::gpui;
 
@@ -11,6 +11,7 @@ use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::colors::{black, transparent, white};
 use crate::ui::icon::icon_element;
+use crate::ui::menu::{MenuBuilder, MenuEntry, MenuItem};
 use crate::video::project::RecordingFeatures;
 use crate::windows::history::model::format_relative_time;
 use crate::windows::history::HistoryWindow;
@@ -140,7 +141,6 @@ fn overlay_action(
     on_click: impl Fn(&mut HistoryWindow, &mut Window, &mut Context<HistoryWindow>) + 'static,
     cx: &mut Context<HistoryWindow>,
 ) -> AnyElement {
-    let radius = px(chrome::RADIUS_3XL);
     // `hover:bg-red-500/80`, a fixed Tailwind red rather than the theme's
     // danger token.
     let surface_hover = if danger {
@@ -155,9 +155,9 @@ fn overlay_action(
             Button::new(id)
                 .variant(Variant::Ghost)
                 .is_icon_only(true)
-                .radius(radius)
                 .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-                .sx(move |el| el.bg(resting).text_color(foreground))
+                .bg(resting)
+                .text_color(foreground)
                 .hover_bg(surface_hover)
                 .child(icon_element(icon, px(chrome::HISTORY_ITEM_ACTION_ICON)))
                 .on_press(cx.listener(move |this, _event, window, cx| {
@@ -248,12 +248,6 @@ pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement
             move |this, hovered: &bool, _window, cx| this.set_hovered(&id, *hovered, cx)
         }))
         .on_click(cx.listener(move |this, _event, window, cx| this.open_index(index, window, cx)))
-        .on_mouse_down(
-            gpui::MouseButton::Right,
-            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                this.open_item_menu(index, event.position, window, cx);
-            }),
-        )
         .child(media)
         .child(
             div()
@@ -294,7 +288,7 @@ pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement
             )
         });
 
-    card.into_any_element()
+    with_item_menu(view, card, cx)
 }
 
 pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement {
@@ -375,12 +369,6 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
             move |this, hovered: &bool, _window, cx| this.set_hovered(&id, *hovered, cx)
         }))
         .on_click(cx.listener(move |this, _event, window, cx| this.open_index(index, window, cx)))
-        .on_mouse_down(
-            gpui::MouseButton::Right,
-            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                this.open_item_menu(index, event.position, window, cx);
-            }),
-        )
         .child(thumb)
         .child(
             div()
@@ -439,9 +427,8 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                 Button::new(view.element_id("history-row-delete"))
                     .variant(Variant::Ghost)
                     .is_icon_only(true)
-                    .radius(px(chrome::RADIUS_3XL))
                     .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-                    .sx(move |el| el.text_color(foreground))
+                    .text_color(foreground)
                     .hover_bg(surface_hover)
                     .child(icon_element(
                         "trash-2",
@@ -453,5 +440,69 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
             });
     }
 
-    row.into_any_element()
+    with_item_menu(view, row, cx)
+}
+
+fn with_item_menu(
+    view: &ItemView,
+    content: impl IntoElement,
+    cx: &mut Context<HistoryWindow>,
+) -> AnyElement {
+    let entity = cx.entity().downgrade();
+    let open_state = entity.clone();
+    crate::ui::menu::context_menu(
+        view.element_id("history-item-menu"),
+        content,
+        &item_menu_entries(view.index, view.is_video(), entity),
+    )
+    .on_open_change(move |open, _window, cx| {
+        if let Some(entity) = open_state.upgrade() {
+            entity.update(cx, |this, cx| this.set_item_menu_open(*open, cx));
+        }
+    })
+    .into_any_element()
+}
+
+fn item_menu_entries(
+    index: usize,
+    is_video: bool,
+    entity: WeakEntity<HistoryWindow>,
+) -> Vec<MenuEntry> {
+    let action = |run: fn(&mut HistoryWindow, usize, &mut Window, &mut Context<HistoryWindow>)| {
+        let entity = entity.clone();
+        move |window: &mut Window, cx: &mut App| {
+            if let Some(entity) = entity.upgrade() {
+                entity.update(cx, |this, cx| run(this, index, window, cx));
+            }
+        }
+    };
+    MenuBuilder::new()
+        .item(
+            MenuItem::new(if is_video {
+                "Open in Video Editor"
+            } else {
+                "Open in Editor"
+            })
+            .icon(if is_video { "film" } else { "pencil" })
+            .on_select(action(|this, index, window, cx| {
+                this.open_index(index, window, cx)
+            })),
+        )
+        .item(
+            MenuItem::new("Show in Folder")
+                .icon("folder-open")
+                .on_select(action(|this, index, _window, cx| {
+                    this.reveal_index(index, cx)
+                })),
+        )
+        .separator()
+        .item(
+            MenuItem::new("Delete")
+                .icon("trash-2")
+                .danger()
+                .on_select(action(|this, index, _window, cx| {
+                    this.delete_index(index, cx)
+                })),
+        )
+        .build()
 }

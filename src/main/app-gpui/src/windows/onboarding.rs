@@ -799,7 +799,7 @@ impl Render for OnboardingWindow {
                 .on_press(cx.listener(|this, _event, window, cx| this.next(window, cx)))
         });
 
-        crate::ui::font::root()
+        let content = crate::ui::font::root()
             .id("onboarding-window")
             .key_context("Onboarding")
             .track_focus(&self.focus_handle)
@@ -856,7 +856,8 @@ impl Render for OnboardingWindow {
                         "onboarding-body-scrollbar",
                         &self.scroll,
                     )),
-            )
+            );
+        crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 

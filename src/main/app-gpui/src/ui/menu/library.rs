@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui::{div, prelude::*, px, AnyElement, App, SharedString, Window};
-use herogpui::components::{MenuItem as LibraryItem, PickerItem, Select, Size, Switch};
+use herogpui::components::{
+    InteractiveState, MenuItem as LibraryItem, PickerItem, Select, Size, Switch,
+};
 use herogpui::gpui;
 
 use super::model::{MenuEntry, MenuItem};
@@ -69,6 +72,36 @@ impl MenuItems {
                 converted
             })
             .collect()
+    }
+}
+
+pub type MenuEntries = Rc<HashMap<SharedString, MenuItem>>;
+
+pub fn item_content(
+    entries: MenuEntries,
+    compact: bool,
+) -> impl Fn(&SharedString, InteractiveState) -> AnyElement + 'static {
+    move |key, _| match entries.get(key) {
+        Some(item) => ItemContent {
+            key: key.clone(),
+            item: item.clone(),
+            compact,
+        }
+        .into_any_element(),
+        None => div().into_any_element(),
+    }
+}
+
+pub fn item_action(
+    entries: MenuEntries,
+) -> impl Fn(&SharedString, &mut Window, &mut App) + 'static {
+    move |key, window, cx| {
+        let Some(item) = entries.get(key).filter(|item| item.is_interactive()) else {
+            return;
+        };
+        if let Some(action) = &item.action {
+            action(window, cx);
+        }
     }
 }
 

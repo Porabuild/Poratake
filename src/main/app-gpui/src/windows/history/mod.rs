@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, FocusHandle, KeyDownEvent, Pixels, Point,
-    Render, ScrollHandle, Styled, Window,
+    div, prelude::*, px, size, App, Bounds, Context, FocusHandle, KeyDownEvent, Pixels, Render,
+    ScrollHandle, Styled, Window,
 };
 use herogpui::gpui;
 
@@ -17,7 +17,6 @@ use crate::history_store::{self, HistoryItem, HistoryItemType};
 use crate::system::desktop;
 use crate::system::native::TrayRect;
 use crate::theme::vars::active_theme;
-use crate::ui::menu::{MenuBuilder, MenuHandle, MenuItem};
 use crate::video::project::{recording_features, RecordingFeatures};
 use crate::windows::history::model::{
     visible_items, HistoryFilter, HistoryLayout, HistorySortOrder,
@@ -46,7 +45,7 @@ pub struct HistoryWindow {
     selected_index: usize,
     keyboard_navigation: bool,
     hovered_id: Option<String>,
-    menu: MenuHandle,
+    item_menu_open: bool,
     scroll: ScrollHandle,
     store: Arc<ConfigStore>,
     focus_handle: FocusHandle,
@@ -68,7 +67,7 @@ impl HistoryWindow {
             selected_index: 0,
             keyboard_navigation: false,
             hovered_id: None,
-            menu: MenuHandle::new(),
+            item_menu_open: false,
             scroll: ScrollHandle::new(),
             store,
             focus_handle: cx.focus_handle(),
@@ -80,7 +79,7 @@ impl HistoryWindow {
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
             if this.revealing
                 || this.closing
-                || !should_close_on_blur(window.is_window_active(), this.menu.is_open(cx))
+                || !should_close_on_blur(window.is_window_active(), this.item_menu_open)
             {
                 return;
             }
@@ -352,56 +351,11 @@ impl HistoryWindow {
         });
     }
 
-    pub fn open_item_menu(
-        &mut self,
-        index: usize,
-        position: Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(item) = self.visible().get(index).cloned() else {
+    pub fn set_item_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.item_menu_open == open {
             return;
-        };
-        let is_video = item.r#type == HistoryItemType::Video;
-        let path = PathBuf::from(&item.original_path);
-        let entity = cx.entity().downgrade();
-
-        let open_entity = entity.clone();
-        let reveal_path = path.clone();
-        let delete_entity = entity;
-        let entries =
-            MenuBuilder::new()
-                .item(
-                    MenuItem::new(if is_video {
-                        "Open in Video Editor"
-                    } else {
-                        "Open in Editor"
-                    })
-                    .icon(if is_video { "film" } else { "pencil" })
-                    .on_select(move |window, cx| {
-                        if let Some(entity) = open_entity.upgrade() {
-                            entity.update(cx, |this, cx| this.open_index(index, window, cx));
-                        }
-                    }),
-                )
-                .item(
-                    MenuItem::new("Show in Folder")
-                        .icon("folder-open")
-                        .on_select(move |_window, _cx| {
-                            desktop::reveal_in_file_manager(&reveal_path);
-                        }),
-                )
-                .separator()
-                .item(MenuItem::new("Delete").icon("trash-2").danger().on_select(
-                    move |_window, cx| {
-                        if let Some(entity) = delete_entity.upgrade() {
-                            entity.update(cx, |this, cx| this.delete_index(index, cx));
-                        }
-                    },
-                ))
-                .build();
-
-        self.menu.open_at(position, entries, window, cx);
+        }
+        self.item_menu_open = open;
         cx.notify();
     }
 
@@ -427,7 +381,7 @@ impl HistoryWindow {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.is_open(cx) {
+        if self.item_menu_open {
             return;
         }
         let columns = self.layout.columns() as isize;
@@ -537,7 +491,7 @@ impl Render for HistoryWindow {
             }
         }
 
-        crate::ui::font::root()
+        let content = crate::ui::font::root()
             .id("history-window")
             .key_context("HistoryWindow")
             .track_focus(&self.focus_handle)
@@ -572,8 +526,8 @@ impl Render for HistoryWindow {
                         "history-scrollbar",
                         &self.scroll,
                     )),
-            )
-            .children(self.menu.render(cx))
+            );
+        crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 

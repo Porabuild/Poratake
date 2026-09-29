@@ -1994,7 +1994,7 @@ impl Render for CapturePreviewWindow {
         if needs_frame {
             crate::ui::primitives::request_animation_frame(window);
         }
-        root
+        crate::ui::window_root::focus_root(root, window, cx)
     }
 }
 
