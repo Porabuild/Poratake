@@ -5,9 +5,13 @@
 use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
 use poratake_daemon_common::contract::{
-    ScrollCaptureStartRequest, ScrollSpeed, SCROLL_CAPTURE_AUTO_SCROLL_EVENT,
-    SCROLL_CAPTURE_CANCELLED_EVENT, SCROLL_CAPTURE_CURSOR_EVENT, SCROLL_CAPTURE_DONE_EVENT,
-    SCROLL_CAPTURE_FRAME_PREVIEW_EVENT, SYSTEM_EXIT_EVENT,
+    ScrollCaptureStartRequest, ScrollSpeed, SCROLL_CAPTURE_CANCELLED_EVENT,
+    SCROLL_CAPTURE_DONE_EVENT, SYSTEM_EXIT_EVENT,
+};
+#[cfg(target_os = "macos")]
+use poratake_daemon_common::contract::{
+    SCROLL_CAPTURE_AUTO_SCROLL_EVENT, SCROLL_CAPTURE_CURSOR_EVENT,
+    SCROLL_CAPTURE_FRAME_PREVIEW_EVENT,
 };
 
 use crate::capture::intent::CaptureIntent;
@@ -328,25 +332,28 @@ impl Coordinator {
         let (tx, rx) = smol::channel::bounded::<crate::capture::scroll::ScrollSessionSignal>(16);
         let daemon = service.daemon.clone();
         let event_tx = tx.clone();
-        let subscription = daemon.subscribe(std::sync::Arc::new(move |event: &str, payload| {
+        let subscription = daemon.subscribe(std::sync::Arc::new(move |event: &str, _payload| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
             let signal = match event {
                 SCROLL_CAPTURE_DONE_EVENT => Some(Signal::Finish),
                 SCROLL_CAPTURE_CANCELLED_EVENT | SYSTEM_EXIT_EVENT => Some(Signal::Cancel),
+                #[cfg(target_os = "macos")]
                 SCROLL_CAPTURE_FRAME_PREVIEW_EVENT => Some(Signal::Frame {
-                    preview: payload
+                    preview: _payload
                         .get("preview")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
                 }),
+                #[cfg(target_os = "macos")]
                 SCROLL_CAPTURE_AUTO_SCROLL_EVENT => Some(Signal::AutoScrolling(
-                    payload
+                    _payload
                         .get("scrolling")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false),
                 )),
+                #[cfg(target_os = "macos")]
                 SCROLL_CAPTURE_CURSOR_EVENT => Some(Signal::CursorOutside(
-                    payload
+                    _payload
                         .get("outside")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false),
@@ -405,8 +412,6 @@ impl Coordinator {
                             crate::windows::scroll_capture::apply_progress(&ui, progress, cx);
                         });
                     }
-                    #[cfg(not(target_os = "macos"))]
-                    _ => {}
                 }
             }
         })

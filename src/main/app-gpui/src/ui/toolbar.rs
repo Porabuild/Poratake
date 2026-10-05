@@ -109,6 +109,7 @@ pub fn filled_glyph(color: gpui::Hsla, round: bool) -> AnyElement {
     glyph.rounded(px(chrome::RADIUS_SM)).into_any_element()
 }
 
+#[cfg(target_os = "macos")]
 pub fn filled_play(color: gpui::Hsla) -> AnyElement {
     gpui::canvas(
         |_, _, _| {},

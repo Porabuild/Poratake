@@ -123,6 +123,7 @@ impl HotkeyRegistry {
             .is_some_and(|hotkey| hotkey.id() == id)
     }
 
+    #[cfg(target_os = "macos")]
     pub fn set_scroll_capture_shortcuts(&mut self, enabled: bool) {
         let Some(manager) = &self.manager else {
             return;

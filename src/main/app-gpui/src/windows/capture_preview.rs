@@ -274,7 +274,6 @@ impl CapturePreviewWindow {
             if !moved {
                 registry::forget(WindowKind::CapturePreview, cx);
             }
-            return;
         }
         #[cfg(not(windows))]
         {
