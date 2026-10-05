@@ -92,14 +92,14 @@ fn ocr_upscale_factor(width: u32, height: u32) -> f64 {
     (f64::from(OCR_MIN_LONG_SIDE) / long_side).max(1.0)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(test, not(target_os = "macos")))]
 fn preprocess_for_ocr(image: &Path) -> Option<std::path::PathBuf> {
     let source = image::ImageReader::open(image).ok()?.decode().ok()?;
     let factor = ocr_upscale_factor(source.width(), source.height());
     let width = ((source.width() as f64 * factor).round() as u32).max(1);
     let height = ((source.height() as f64 * factor).round() as u32).max(1);
     let resized = source.resize_exact(width, height, image::imageops::FilterType::Lanczos3);
-    let gray = resized.grayscale();
+    let gray = resized.to_luma8();
     let sharpened = image::imageops::unsharpen(&gray, 1.2, 1);
     let stem = image.file_stem()?.to_str()?;
     let output = std::env::temp_dir().join(format!("{stem}-processed.png"));
@@ -120,7 +120,6 @@ mod tests {
         assert_eq!(ocr_upscale_factor(0, 0), 1300.0);
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn ocr_preprocess_upscales_grays_and_sharpens() {
         let dir = tempfile::tempdir().expect("temp dir");
