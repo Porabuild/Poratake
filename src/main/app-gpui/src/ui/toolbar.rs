@@ -1,5 +1,7 @@
+#[cfg(target_os = "macos")]
+use gpui::App;
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Context, Div, ElementId, SharedString, Styled, Window,
+    div, prelude::*, px, AnyElement, Context, Div, ElementId, SharedString, Styled, Window,
 };
 use herogpui::components::{Button, Size, Variant};
 use herogpui::gpui;

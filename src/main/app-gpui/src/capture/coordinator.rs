@@ -376,36 +376,13 @@ impl Coordinator {
         let output = service.generate_screenshot_path();
         cx.spawn(async move |_entity, cx| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
-            loop {
+            #[cfg(not(target_os = "macos"))]
+            let finished = matches!(rx.recv().await, Ok(Signal::Finish));
+            #[cfg(target_os = "macos")]
+            let finished = loop {
                 match rx.recv().await.unwrap_or(Signal::Cancel) {
-                    Signal::Finish => {
-                        drop(subscription);
-                        #[cfg(target_os = "macos")]
-                        cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
-                        let daemon = service.daemon.clone();
-                        let stitched = cx
-                            .background_executor()
-                            .spawn(async move { crate::capture::scroll::finish(&daemon, &output) })
-                            .await;
-                        match stitched {
-                            Some(path) => finalize_capture(path, true, cx).await,
-                            None => show_capture_error(
-                                cx,
-                                "Scroll Capture Failed",
-                                "The scroll capture produced no image",
-                            ),
-                        }
-                        return;
-                    }
-                    Signal::Cancel => {
-                        drop(subscription);
-                        crate::capture::scroll::cancel(&service.daemon);
-                        crate::capture::desktop_icons::restore_after_capture(&service.daemon);
-                        #[cfg(target_os = "macos")]
-                        cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
-                        return;
-                    }
-                    #[cfg(target_os = "macos")]
+                    Signal::Finish => break true,
+                    Signal::Cancel => break false,
                     progress => {
                         let ui = ui.clone();
                         cx.update(|cx| {
@@ -413,6 +390,29 @@ impl Coordinator {
                         });
                     }
                 }
+            };
+            drop(subscription);
+            if !finished {
+                crate::capture::scroll::cancel(&service.daemon);
+                crate::capture::desktop_icons::restore_after_capture(&service.daemon);
+                #[cfg(target_os = "macos")]
+                cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+            let daemon = service.daemon.clone();
+            let stitched = cx
+                .background_executor()
+                .spawn(async move { crate::capture::scroll::finish(&daemon, &output) })
+                .await;
+            match stitched {
+                Some(path) => finalize_capture(path, true, cx).await,
+                None => show_capture_error(
+                    cx,
+                    "Scroll Capture Failed",
+                    "The scroll capture produced no image",
+                ),
             }
         })
         .detach();
