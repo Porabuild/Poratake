@@ -12,6 +12,21 @@ use gpui::{
 use herogpui::gpui;
 
 pub use model::{MenuBuilder, MenuEntry, MenuItem};
+
+pub fn context_menu(
+    id: impl Into<gpui::ElementId>,
+    child: impl IntoElement,
+    entries: &[MenuEntry],
+) -> herogpui::components::ContextMenu {
+    let converted = library::MenuItems::new(entries);
+    let entries = Rc::new(converted.entries);
+    herogpui::components::ContextMenu::new(id, child, converted.items)
+        .recipe(view::ACCENT_RECIPE)
+        .disabled_keys(converted.disabled)
+        .on_action(library::item_action(entries.clone()))
+        .item_content(library::item_content(entries, false))
+}
+
 pub use view::{DismissHandler, MenuEntrance, MenuView};
 
 struct MenuPopup {
@@ -466,10 +481,68 @@ mod tests {
         assert_eq!(exit.ms, crate::ui::primitives::OVERLAY_EXIT_MS);
         assert_eq!(exit.scale, 0.95);
         assert_eq!(
-            herogpui::components::EXITING_MS,
+            herogpui::components::anim::EXITING_MS,
             crate::ui::primitives::OVERLAY_EXIT_MS,
             "every overlay exit in the shell runs on HeroUI v3's 100ms"
         );
+    }
+
+    struct ContextHost {
+        entries: Vec<MenuEntry>,
+        open: Rc<Cell<bool>>,
+    }
+
+    impl gpui::Render for ContextHost {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            let open = self.open.clone();
+            div().size_full().child(
+                context_menu("context-probe", div().size(px(100.0)), &self.entries)
+                    .on_open_change(move |value, _, _| open.set(*value)),
+            )
+        }
+    }
+
+    #[herogpui::test]
+    fn a_context_menu_takes_the_app_menu_panel_and_runs_the_row_action(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+        let chosen = Rc::new(Cell::new(false));
+        let open = Rc::new(Cell::new(false));
+        let (_, cx) = herogpui::test::open_window(cx, {
+            let chosen = chosen.clone();
+            let open = open.clone();
+            move |_, cx| {
+                crate::theme::vars::init_theme(
+                    cx,
+                    crate::theme::presets::ThemeMode::Dark,
+                    crate::theme::presets::DEFAULT_THEME_ID,
+                );
+                ContextHost {
+                    entries: MenuBuilder::new()
+                        .item(MenuItem::new("A").on_select(move |_, _| chosen.set(true)))
+                        .build(),
+                    open,
+                }
+            }
+        });
+        let at = point(px(50.0), px(50.0));
+        cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::none());
+        let panel = cx.expect("context-menu");
+        assert!(open.get(), "a secondary press opens the menu");
+        assert_eq!(
+            panel.size.width,
+            px(128.0),
+            "the panel takes the app menus' width, not HeroGPUI's 220px"
+        );
+        cx.click_at(point(panel.origin.x + px(24.0), panel.origin.y + px(24.0)));
+        assert!(chosen.get(), "choosing the row runs its action");
+        assert!(!open.get(), "choosing a row closes the menu");
     }
 
     #[test]

@@ -267,15 +267,23 @@ pub fn ease_out() -> impl Fn(f32) -> f32 {
 pub const FOCUS_RING_WIDTH: f32 = 2.0;
 /// `--ring-offset-width: 2px`, used by `focus-ring` but not by
 /// `focus-field-ring`.
-#[allow(dead_code)]
 pub const FOCUS_RING_OFFSET: f32 = 2.0;
+
+pub fn keyboard_focus_ring<E: InteractiveElement>(el: E, theme: &ThemeVars, cx: &gpui::App) -> E {
+    if !herogpui::extend::focus_visible(cx) {
+        return el;
+    }
+    let ring = focus_ring(theme, FOCUS_RING_OFFSET);
+    el.focus(move |style| style.shadow(ring))
+}
 
 pub fn chrome_tick(theme: &ThemeVars) -> herogpui::Separator {
     let color = theme.border;
     herogpui::Separator::new()
         .orientation(herogpui::Orientation::Vertical)
         .mx(px(crate::ui::chrome::SEPARATOR_INSET))
-        .sx(move |el| el.h(px(crate::ui::chrome::SEPARATOR_HEIGHT)).bg(color))
+        .h(px(crate::ui::chrome::SEPARATOR_HEIGHT))
+        .bg(color)
 }
 
 #[cfg(test)]

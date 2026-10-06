@@ -2340,331 +2340,343 @@ impl Render for EditorWindow {
             root
         };
 
-        root.on_action(
-            cx.listener(|this, _: &actions::ToolSelect, _, _cx| this.set_tool(Tool::Select)),
-        )
-        .on_action(cx.listener(|this, _: &actions::ToolPen, _, _cx| this.set_tool(Tool::Pen)))
-        .on_action(
-            cx.listener(|this, _: &actions::ToolHighlight, _, _cx| this.set_tool(Tool::Highlight)),
-        )
-        .on_action(
-            cx.listener(|this, _: &actions::ToolRectangle, _, _cx| this.set_tool(Tool::Rectangle)),
-        )
-        .on_action(cx.listener(|this, _: &actions::ToolCircle, _, _cx| this.set_tool(Tool::Circle)))
-        .on_action(cx.listener(|this, _: &actions::ToolLine, _, _cx| this.set_tool(Tool::Line)))
-        .on_action(cx.listener(|this, _: &actions::ToolArrow, _, _cx| this.set_tool(Tool::Arrow)))
-        .on_action(cx.listener(|this, _: &actions::ToolText, _, _cx| this.set_tool(Tool::Text)))
-        .on_action(cx.listener(|this, _: &actions::ToolNumber, _, _cx| this.set_tool(Tool::Number)))
-        .on_action(cx.listener(|this, _: &actions::ToolRedact, _, _cx| this.set_tool(Tool::Redact)))
-        .on_action(cx.listener(|this, _: &actions::ToolCrop, _, _cx| this.set_tool(Tool::Crop)))
-        .on_action(
-            cx.listener(|this, _: &actions::ToolWallpaper, _, _cx| this.set_tool(Tool::Wallpaper)),
-        )
-        .on_action(cx.listener(|this, _: &actions::Undo, _, _cx| this.undo()))
-        .on_action(cx.listener(|this, _: &actions::Redo, _, _cx| this.redo()))
-        .on_action(
-            cx.listener(|this, _: &actions::SaveScreenshot, window, cx| {
-                this.save_as(window, cx);
-            }),
-        )
-        .on_action(cx.listener(|this, _: &actions::PrintScreenshot, _, cx| {
-            this.print(cx);
-        }))
-        .on_action(
-            cx.listener(|this, _: &actions::DeleteScreenshot, window, cx| {
-                this.delete_file(window, cx);
-            }),
-        )
-        .on_action(cx.listener(|this, _: &actions::ApplyCrop, _, cx| {
-            if this.crop.is_some() {
-                this.apply_crop(cx);
-            } else {
-                this.commit_text(cx);
-            }
-        }))
-        .on_action(cx.listener(|this, _: &actions::CancelCrop, _, cx| {
-            if this.crop.is_some() {
-                this.cancel_crop(cx);
-            } else if this.text_editor.is_some() || this.draft.is_some() {
-                this.text_editor = None;
-                this.draft = None;
-                this.sync_snapshot();
-                cx.notify();
-            } else {
-                this.selected_annotations.clear();
-                this.move_origin = None;
-                this.resize_state = None;
-                this.sync_snapshot();
-                cx.notify();
-            }
-        }))
-        .on_action(cx.listener(|this, _: &actions::ToggleCaptureMode, _, cx| {
-            this.toggle_capture_mode(cx);
-        }))
-        .on_action(cx.listener(|this, _: &actions::CloudUpload, _, cx| {
-            this.upload_to_cloud(cx);
-        }))
-        .on_action(
-            cx.listener(|this, _: &actions::CopyAnnotation, window, cx| {
-                // A selected annotation is copied; otherwise the whole image
-                // is, which is what the renderer's Ctrl+C falls back to.
-                if !this.copy_selected_annotation() {
-                    this.copy_to_clipboard(window, cx);
+        let content = root
+            .on_action(
+                cx.listener(|this, _: &actions::ToolSelect, _, _cx| this.set_tool(Tool::Select)),
+            )
+            .on_action(cx.listener(|this, _: &actions::ToolPen, _, _cx| this.set_tool(Tool::Pen)))
+            .on_action(cx.listener(|this, _: &actions::ToolHighlight, _, _cx| {
+                this.set_tool(Tool::Highlight)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ToolRectangle, _, _cx| {
+                this.set_tool(Tool::Rectangle)
+            }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToolCircle, _, _cx| this.set_tool(Tool::Circle)),
+            )
+            .on_action(cx.listener(|this, _: &actions::ToolLine, _, _cx| this.set_tool(Tool::Line)))
+            .on_action(
+                cx.listener(|this, _: &actions::ToolArrow, _, _cx| this.set_tool(Tool::Arrow)),
+            )
+            .on_action(cx.listener(|this, _: &actions::ToolText, _, _cx| this.set_tool(Tool::Text)))
+            .on_action(
+                cx.listener(|this, _: &actions::ToolNumber, _, _cx| this.set_tool(Tool::Number)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ToolRedact, _, _cx| this.set_tool(Tool::Redact)),
+            )
+            .on_action(cx.listener(|this, _: &actions::ToolCrop, _, _cx| this.set_tool(Tool::Crop)))
+            .on_action(cx.listener(|this, _: &actions::ToolWallpaper, _, _cx| {
+                this.set_tool(Tool::Wallpaper)
+            }))
+            .on_action(cx.listener(|this, _: &actions::Undo, _, _cx| this.undo()))
+            .on_action(cx.listener(|this, _: &actions::Redo, _, _cx| this.redo()))
+            .on_action(
+                cx.listener(|this, _: &actions::SaveScreenshot, window, cx| {
+                    this.save_as(window, cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &actions::PrintScreenshot, _, cx| {
+                this.print(cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &actions::DeleteScreenshot, window, cx| {
+                    this.delete_file(window, cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &actions::ApplyCrop, _, cx| {
+                if this.crop.is_some() {
+                    this.apply_crop(cx);
+                } else {
+                    this.commit_text(cx);
                 }
-            }),
-        )
-        .on_action(cx.listener(|this, _: &actions::CutAnnotation, _, cx| {
-            this.cut_selected_annotation(cx);
-        }))
-        .on_action(cx.listener(|this, _: &actions::PasteAnnotation, _, cx| {
-            this.paste_annotations(cx);
-        }))
-        .on_action(
-            cx.listener(|this, _: &actions::SelectAllAnnotations, _, cx| {
-                this.select_all_annotations(cx);
-            }),
-        )
-        .on_action(cx.listener(|this, _: &actions::DeleteAnnotation, _, cx| {
-            this.delete_selected_annotation(cx);
-        }))
-        .on_action(cx.listener(|this, _: &actions::ZoomIn, _, cx| {
-            this.set_zoom(this.zoom + ZOOM_STEP);
-            cx.notify();
-        }))
-        .on_action(cx.listener(|this, _: &actions::ZoomOut, _, cx| {
-            this.set_zoom(this.zoom - ZOOM_STEP);
-            cx.notify();
-        }))
-        .on_action(cx.listener(|this, _: &actions::ZoomReset, _, cx| {
-            this.set_zoom(1.0);
-            cx.notify();
-        }))
-        .child(TitleBar {
-            options: self.tool_options_state(),
-            highlight_color: self.highlight_color.clone().into(),
-            shortcuts: shortcuts.editor.clone(),
-            cloud_upload_shortcut: shortcuts.editor_actions.upload_to_cloud.clone().into(),
-            can_undo: self.history.can_undo(),
-            can_redo: self.history.can_redo(),
-            is_copied: self.is_copied,
-            is_uploading: self.cloud_upload == crate::cloud::UploadState::Uploading,
-            is_upload_done: self.cloud_upload == crate::cloud::UploadState::Success,
-            is_capture_mode: self.capture_mode,
-            menu: self.menu.clone(),
-            handlers: handlers.clone(),
-        })
-        .child(
-            div()
-                .id("editor-body")
-                .relative()
-                .flex()
-                .flex_row()
-                .flex_1()
-                .min_h_0()
-                .when(sheet_mounted, |el| {
-                    el.child(crate::editor::wallpaper_sheet::render(
-                        &crate::editor::wallpaper_sheet::SheetState {
-                            wallpaper: &self.wallpaper,
-                            has_layers: !self.layers.is_empty(),
-                            preset_id: &self.wallpaper_preset_id,
-                            draft: self.background_editor.as_ref(),
-                            previews: &self.background_previews,
-                            preset_draft: preset_draft.as_ref().map(|(field, name)| {
-                                crate::editor::wallpaper_sheet::PresetDraftView {
-                                    field,
-                                    name: name.as_str(),
-                                }
-                            }),
-                            closing: self.sheet_closing,
-                        },
-                        &handlers,
-                        window,
-                        cx,
-                    ))
-                })
-                .child(
-                    div()
-                        .id("canvas-area")
-                        .relative()
-                        .flex_1()
-                        .min_h_0()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .cursor(crate::editor::options::tool_cursor(self.tool))
-                        .child(EditorCanvas::new(
-                            snapshot_cell,
-                            bounds_cell,
-                            self.stage_scroll.clone(),
-                        ))
-                        .when(capture_overlay, |el| {
-                            let entity = cx.entity().downgrade();
-                            el.child(crate::editor::canvas::capture_edge_overlay(
-                                &theme,
-                                std::rc::Rc::new(move |edge, window, cx| {
-                                    if let Some(entity) = entity.upgrade() {
-                                        entity.update(cx, |editor, cx| {
-                                            editor.attach_layer(edge, window, cx)
-                                        });
+            }))
+            .on_action(cx.listener(|this, _: &actions::CancelCrop, _, cx| {
+                if this.crop.is_some() {
+                    this.cancel_crop(cx);
+                } else if this.text_editor.is_some() || this.draft.is_some() {
+                    this.text_editor = None;
+                    this.draft = None;
+                    this.sync_snapshot();
+                    cx.notify();
+                } else {
+                    this.selected_annotations.clear();
+                    this.move_origin = None;
+                    this.resize_state = None;
+                    this.sync_snapshot();
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &actions::ToggleCaptureMode, _, cx| {
+                this.toggle_capture_mode(cx);
+            }))
+            .on_action(cx.listener(|this, _: &actions::CloudUpload, _, cx| {
+                this.upload_to_cloud(cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &actions::CopyAnnotation, window, cx| {
+                    // A selected annotation is copied; otherwise the whole image
+                    // is, which is what the renderer's Ctrl+C falls back to.
+                    if !this.copy_selected_annotation() {
+                        this.copy_to_clipboard(window, cx);
+                    }
+                }),
+            )
+            .on_action(cx.listener(|this, _: &actions::CutAnnotation, _, cx| {
+                this.cut_selected_annotation(cx);
+            }))
+            .on_action(cx.listener(|this, _: &actions::PasteAnnotation, _, cx| {
+                this.paste_annotations(cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &actions::SelectAllAnnotations, _, cx| {
+                    this.select_all_annotations(cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &actions::DeleteAnnotation, _, cx| {
+                this.delete_selected_annotation(cx);
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomIn, _, cx| {
+                this.set_zoom(this.zoom + ZOOM_STEP);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomOut, _, cx| {
+                this.set_zoom(this.zoom - ZOOM_STEP);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomReset, _, cx| {
+                this.set_zoom(1.0);
+                cx.notify();
+            }))
+            .child(TitleBar {
+                options: self.tool_options_state(),
+                highlight_color: self.highlight_color.clone().into(),
+                shortcuts: shortcuts.editor.clone(),
+                cloud_upload_shortcut: shortcuts.editor_actions.upload_to_cloud.clone().into(),
+                can_undo: self.history.can_undo(),
+                can_redo: self.history.can_redo(),
+                is_copied: self.is_copied,
+                is_uploading: self.cloud_upload == crate::cloud::UploadState::Uploading,
+                is_upload_done: self.cloud_upload == crate::cloud::UploadState::Success,
+                is_capture_mode: self.capture_mode,
+                menu: self.menu.clone(),
+                handlers: handlers.clone(),
+            })
+            .child(
+                div()
+                    .id("editor-body")
+                    .relative()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    .when(sheet_mounted, |el| {
+                        el.child(crate::editor::wallpaper_sheet::render(
+                            &crate::editor::wallpaper_sheet::SheetState {
+                                wallpaper: &self.wallpaper,
+                                has_layers: !self.layers.is_empty(),
+                                preset_id: &self.wallpaper_preset_id,
+                                draft: self.background_editor.as_ref(),
+                                previews: &self.background_previews,
+                                preset_draft: preset_draft.as_ref().map(|(field, name)| {
+                                    crate::editor::wallpaper_sheet::PresetDraftView {
+                                        field,
+                                        name: name.as_str(),
                                     }
                                 }),
+                                closing: self.sheet_closing,
+                            },
+                            &handlers,
+                            window,
+                            cx,
+                        ))
+                    })
+                    .child(
+                        div()
+                            .id("canvas-area")
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .cursor(crate::editor::options::tool_cursor(self.tool))
+                            .child(EditorCanvas::new(
+                                snapshot_cell,
+                                bounds_cell,
+                                self.stage_scroll.clone(),
                             ))
-                        })
-                        .when(self.drop_edge.is_some(), |el| {
-                            el.child(crate::editor::canvas::drop_zone_overlay(
-                                self.drop_edge,
-                                &theme,
+                            .when(capture_overlay, |el| {
+                                let entity = cx.entity().downgrade();
+                                el.child(crate::editor::canvas::capture_edge_overlay(
+                                    &theme,
+                                    std::rc::Rc::new(move |edge, window, cx| {
+                                        if let Some(entity) = entity.upgrade() {
+                                            entity.update(cx, |editor, cx| {
+                                                editor.attach_layer(edge, window, cx)
+                                            });
+                                        }
+                                    }),
+                                ))
+                            })
+                            .when(self.drop_edge.is_some(), |el| {
+                                el.child(crate::editor::canvas::drop_zone_overlay(
+                                    self.drop_edge,
+                                    &theme,
+                                ))
+                            })
+                            .on_drag_move::<ExternalPaths>(cx.listener(
+                                |this, event: &DragMoveEvent<ExternalPaths>, _window, cx| {
+                                    if !event.drag(cx).0.iter().any(|path| is_image_path(path)) {
+                                        if this.drop_edge.take().is_some() {
+                                            cx.notify();
+                                        }
+                                        return;
+                                    }
+                                    let before = this.drop_edge;
+                                    this.update_drop_edge(event.event.position, event.bounds);
+                                    if this.drop_edge != before {
+                                        cx.notify();
+                                    }
+                                },
                             ))
-                        })
-                        .on_drag_move::<ExternalPaths>(cx.listener(
-                            |this, event: &DragMoveEvent<ExternalPaths>, _window, cx| {
-                                if !event.drag(cx).0.iter().any(|path| is_image_path(path)) {
+                            .on_drop::<ExternalPaths>(cx.listener(
+                                |this, paths: &ExternalPaths, _window, cx| {
+                                    this.handle_image_drop(paths, cx);
+                                },
+                            ))
+                            .on_file_drop_exit(cx.listener(
+                                |this, _event: &FileDropEvent, _window, cx| {
                                     if this.drop_edge.take().is_some() {
                                         cx.notify();
                                     }
-                                    return;
-                                }
-                                let before = this.drop_edge;
-                                this.update_drop_edge(event.event.position, event.bounds);
-                                if this.drop_edge != before {
-                                    cx.notify();
-                                }
-                            },
-                        ))
-                        .on_drop::<ExternalPaths>(cx.listener(
-                            |this, paths: &ExternalPaths, _window, cx| {
-                                this.handle_image_drop(paths, cx);
-                            },
-                        ))
-                        .on_file_drop_exit(cx.listener(
-                            |this, _event: &FileDropEvent, _window, cx| {
-                                if this.drop_edge.take().is_some() {
-                                    cx.notify();
-                                }
-                            },
-                        ))
-                        .on_mouse_down(gpui::MouseButton::Left, {
-                            let entity = down_entity;
-                            move |event: &MouseDownEvent, window, cx| {
-                                entity
-                                    .update(cx, |editor, cx| {
-                                        // Ctrl/Cmd-drag pans the stage instead of
-                                        // drawing, matching `usePanOnDrag`.
-                                        if event.modifiers.secondary() {
-                                            editor.pan_origin = Some((
+                                },
+                            ))
+                            .on_mouse_down(gpui::MouseButton::Left, {
+                                let entity = down_entity;
+                                move |event: &MouseDownEvent, window, cx| {
+                                    entity
+                                        .update(cx, |editor, cx| {
+                                            // Ctrl/Cmd-drag pans the stage instead of
+                                            // drawing, matching `usePanOnDrag`.
+                                            if event.modifiers.secondary() {
+                                                editor.pan_origin = Some((
+                                                    event.position,
+                                                    editor.stage_scroll.offset(),
+                                                ));
+                                                return;
+                                            }
+                                            let bounds = *editor.bounds.borrow();
+                                            let point = to_canvas_point(
                                                 event.position,
-                                                editor.stage_scroll.offset(),
-                                            ));
-                                            return;
-                                        }
-                                        let bounds = *editor.bounds.borrow();
-                                        let point =
-                                            to_canvas_point(event.position, bounds, editor.zoom);
-                                        if event.click_count >= 2 {
-                                            if let Some(id) = editor.annotation_at(point) {
-                                                let is_text =
-                                                    matches!(
+                                                bounds,
+                                                editor.zoom,
+                                            );
+                                            if event.click_count >= 2 {
+                                                if let Some(id) = editor.annotation_at(point) {
+                                                    let is_text = matches!(
                                                         editor.history.current().iter().find(
                                                             |annotation| annotation.id() == id
                                                         ),
                                                         Some(Annotation::Text { .. })
                                                     );
-                                                if is_text {
-                                                    editor.begin_text_reedit(&id, window, cx);
-                                                    cx.notify();
-                                                    return;
+                                                    if is_text {
+                                                        editor.begin_text_reedit(&id, window, cx);
+                                                        cx.notify();
+                                                        return;
+                                                    }
                                                 }
                                             }
-                                        }
-                                        editor.start_stroke(
-                                            point,
-                                            event.modifiers.shift,
-                                            window,
-                                            cx,
-                                        );
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .on_mouse_move({
-                            let entity = move_entity;
-                            move |event: &MouseMoveEvent, window, cx| {
-                                let position = event.position;
-                                entity
-                                    .update(cx, |editor, cx| {
-                                        if let Some((pointer, offset)) = editor.pan_origin {
-                                            editor.stage_scroll.set_offset(gpui::point(
-                                                offset.x + (position.x - pointer.x),
-                                                offset.y + (position.y - pointer.y),
-                                            ));
-                                            cx.notify();
-                                            return;
-                                        }
-                                        if editor.move_origin.is_some()
-                                            || editor.drag_start.is_some()
-                                            || editor.resize_state.is_some()
-                                            || editor.marquee.is_some()
-                                        {
-                                            let bounds = *editor.bounds.borrow();
-                                            let point =
-                                                to_canvas_point(position, bounds, editor.zoom);
-                                            editor.queue_pointer_update(
+                                            editor.start_stroke(
                                                 point,
                                                 event.modifiers.shift,
                                                 window,
                                                 cx,
                                             );
-                                        }
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .on_mouse_up(gpui::MouseButton::Left, {
-                            let entity = up_entity;
-                            move |_event: &MouseUpEvent, _window, cx| {
-                                entity
-                                    .update(cx, |editor, cx| {
-                                        editor.pan_origin = None;
-                                        editor.apply_pending_pointer_update();
-                                        editor.finish_stroke();
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .on_scroll_wheel({
-                            let entity = cx.entity().downgrade();
-                            move |event: &ScrollWheelEvent, _window, cx| {
-                                if !event.modifiers.secondary() {
-                                    return;
+                                            cx.notify();
+                                        })
+                                        .ok();
                                 }
-                                let delta = event.delta.pixel_delta(px(36.0)).y;
-                                entity
-                                    .update(cx, |editor, cx| {
-                                        let step = if delta > Pixels::ZERO {
-                                            -ZOOM_STEP
-                                        } else if delta < Pixels::ZERO {
-                                            ZOOM_STEP
-                                        } else {
-                                            return;
-                                        };
-                                        editor.set_zoom(editor.zoom + step);
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .child(zoom_control(
-                            self.zoom,
-                            self.zoom_backdrop.as_ref().map(|b| b.image()),
-                            self.zoom_bar_bounds.clone(),
-                            &handlers,
-                            &theme,
-                        )),
-                ),
-        )
-        .children(self.text_editor_overlay(cx))
+                            })
+                            .on_mouse_move({
+                                let entity = move_entity;
+                                move |event: &MouseMoveEvent, window, cx| {
+                                    let position = event.position;
+                                    entity
+                                        .update(cx, |editor, cx| {
+                                            if let Some((pointer, offset)) = editor.pan_origin {
+                                                editor.stage_scroll.set_offset(gpui::point(
+                                                    offset.x + (position.x - pointer.x),
+                                                    offset.y + (position.y - pointer.y),
+                                                ));
+                                                cx.notify();
+                                                return;
+                                            }
+                                            if editor.move_origin.is_some()
+                                                || editor.drag_start.is_some()
+                                                || editor.resize_state.is_some()
+                                                || editor.marquee.is_some()
+                                            {
+                                                let bounds = *editor.bounds.borrow();
+                                                let point =
+                                                    to_canvas_point(position, bounds, editor.zoom);
+                                                editor.queue_pointer_update(
+                                                    point,
+                                                    event.modifiers.shift,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        })
+                                        .ok();
+                                }
+                            })
+                            .on_mouse_up(gpui::MouseButton::Left, {
+                                let entity = up_entity;
+                                move |_event: &MouseUpEvent, _window, cx| {
+                                    entity
+                                        .update(cx, |editor, cx| {
+                                            editor.pan_origin = None;
+                                            editor.apply_pending_pointer_update();
+                                            editor.finish_stroke();
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                }
+                            })
+                            .on_scroll_wheel({
+                                let entity = cx.entity().downgrade();
+                                move |event: &ScrollWheelEvent, _window, cx| {
+                                    if !event.modifiers.secondary() {
+                                        return;
+                                    }
+                                    let delta = event.delta.pixel_delta(px(36.0)).y;
+                                    entity
+                                        .update(cx, |editor, cx| {
+                                            let step = if delta > Pixels::ZERO {
+                                                -ZOOM_STEP
+                                            } else if delta < Pixels::ZERO {
+                                                ZOOM_STEP
+                                            } else {
+                                                return;
+                                            };
+                                            editor.set_zoom(editor.zoom + step);
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                }
+                            })
+                            .child(zoom_control(
+                                self.zoom,
+                                self.zoom_backdrop.as_ref().map(|b| b.image()),
+                                self.zoom_bar_bounds.clone(),
+                                &handlers,
+                                &theme,
+                            )),
+                    ),
+            )
+            .children(self.text_editor_overlay(cx));
+        crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 

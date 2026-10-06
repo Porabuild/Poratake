@@ -1718,6 +1718,13 @@ fn conceal_recording_selector(window: &mut Window) {
 
 impl Render for AreaOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = self.surface(window, cx);
+        crate::ui::window_root::focus_root(content, window, cx)
+    }
+}
+
+impl AreaOverlay {
+    fn surface(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = crate::theme::vars::active_theme(cx);
         // The overlay's frame, handles and crosshairs are `border-primary` /
         // `bg-primary` / `bg-primary/70`, and `--primary` is the operating

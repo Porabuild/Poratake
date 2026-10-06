@@ -1,5 +1,6 @@
 pub mod accelerator;
 pub mod capabilities;
+#[cfg(target_os = "macos")]
 pub mod click_through;
 pub mod clipboard;
 pub mod desktop;

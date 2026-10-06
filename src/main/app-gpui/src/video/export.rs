@@ -303,6 +303,7 @@ fn audio_offset(seconds: f64) -> i64 {
     (seconds.max(0.0) * 10_000_000.0).round() as i64
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 const GIF_FRAME_PASS_SHARE: f32 = 0.7;
 const GIF_DIRECT_ENCODE_SHARE: f32 = 0.95;
 

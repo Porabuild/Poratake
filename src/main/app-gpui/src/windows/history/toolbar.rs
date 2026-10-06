@@ -84,7 +84,7 @@ pub fn toolbar(
         .label(option.label())
         .height(px(TAB_HEIGHT))
         .padding_x(px(TAB_PAD_X))
-        .sx(move |el| el.text_color(foreground))
+        .text_color(foreground)
         .on_press(cx.listener(move |this, _event, _window, cx| {
             this.set_filter(option, cx);
         }));

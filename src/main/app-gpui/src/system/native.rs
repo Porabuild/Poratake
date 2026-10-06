@@ -58,6 +58,7 @@ pub enum NativeCommand {
     SetTrayVisible(bool),
     SetHotkeys(Vec<(Intent, String)>),
     SetPreRecordingEscape(bool),
+    #[cfg(target_os = "macos")]
     SetScrollCaptureShortcuts(bool),
 }
 
@@ -199,6 +200,7 @@ impl Shell {
             NativeCommand::SetPreRecordingEscape(enabled) => {
                 self.hotkeys.set_pre_recording_escape(enabled)
             }
+            #[cfg(target_os = "macos")]
             NativeCommand::SetScrollCaptureShortcuts(enabled) => {
                 self.hotkeys.set_scroll_capture_shortcuts(enabled)
             }

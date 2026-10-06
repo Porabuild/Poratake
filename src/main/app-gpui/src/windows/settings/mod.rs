@@ -662,7 +662,7 @@ impl Render for SettingsWindow {
             category_page(self.active, self, &theme, cx)
         };
 
-        crate::ui::font::root()
+        let content = crate::ui::font::root()
             .id("settings-window")
             .key_context("Settings")
             .track_focus(&self.focus_handle)
@@ -726,7 +726,8 @@ impl Render for SettingsWindow {
                                 &self.content_scroll,
                             )),
                     ),
-            )
+            );
+        crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 
@@ -764,7 +765,7 @@ fn sidebar(
         div()
             .id(SharedString::from(key))
             .track_focus(&focus)
-            .focus(|style| style.shadow(crate::ui::primitives::focus_ring(theme, 2.0)))
+            .map(|el| crate::ui::primitives::keyboard_focus_ring(el, theme, cx))
             .flex()
             .flex_row()
             .items_center()
@@ -928,11 +929,7 @@ fn sidebar(
                 .pb(px(8.0))
                 // The `<Separator className="mb-2" />` spans the full sidebar
                 // width; only the button groups are inset.
-                .child(
-                    herogpui::Separator::new()
-                        .sx(|el| el.mb(px(8.0)))
-                        .into_any_element(),
-                )
+                .child(herogpui::Separator::new().mb(px(8.0)).into_any_element())
                 .child(footer),
         )
         .into_any_element()

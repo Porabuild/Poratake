@@ -274,7 +274,6 @@ impl CapturePreviewWindow {
             if !moved {
                 registry::forget(WindowKind::CapturePreview, cx);
             }
-            return;
         }
         #[cfg(not(windows))]
         {
@@ -1994,7 +1993,7 @@ impl Render for CapturePreviewWindow {
         if needs_frame {
             crate::ui::primitives::request_animation_frame(window);
         }
-        root
+        crate::ui::window_root::focus_root(root, window, cx)
     }
 }
 

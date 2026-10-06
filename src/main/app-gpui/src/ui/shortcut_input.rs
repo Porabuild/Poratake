@@ -129,11 +129,9 @@ pub fn render_sized<V: ShortcutRecorder>(
             .when(!recording, |el| el.variant(Variant::Outline))
             .size(metrics.size)
             .label(display)
-            .sx(move |el| {
-                el.min_w(px(metrics.min_width))
-                    .text_size(px(metrics.text_size))
-                    .font_weight(gpui::FontWeight::NORMAL)
-            })
+            .min_w(px(metrics.min_width))
+            .text_size(px(metrics.text_size))
+            .font_weight(gpui::FontWeight::NORMAL)
             .on_press(cx.listener(move |this, _event, window, cx| {
                 this.start_recording_shortcut(id, window, cx);
             })),

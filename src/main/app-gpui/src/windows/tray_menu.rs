@@ -397,8 +397,12 @@ fn build_menu(
 }
 
 impl Render for TrayMenuWindow {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let surface = crate::ui::font::root().size_full().child(self.menu.clone());
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let surface = crate::ui::window_root::focus_root(
+            crate::ui::font::root().size_full().child(self.menu.clone()),
+            window,
+            cx,
+        );
 
         #[cfg(windows)]
         return surface.into_any_element();

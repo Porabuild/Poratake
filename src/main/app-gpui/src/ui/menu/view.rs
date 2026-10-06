@@ -5,9 +5,11 @@ use gpui::{div, prelude::*, px, App, Context, FocusHandle, Pixels, Render, Windo
 use herogpui::components::Menu;
 use herogpui::gpui;
 
-use super::library::{ItemContent, MenuItems};
+use super::library::{item_action, item_content, MenuItems};
 use super::model::MenuEntry;
 use crate::ui::icon::icon_element;
+
+pub(super) const ACCENT_RECIPE: &str = "accent";
 
 pub type DismissHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -21,9 +23,9 @@ pub enum MenuEntrance {
 pub struct MenuView {
     entries: Vec<MenuEntry>,
     on_dismiss: DismissHandler,
-    min_width: Pixels,
+    min_width: Option<Pixels>,
     max_width: Option<Pixels>,
-    max_height: Pixels,
+    max_height: Option<Pixels>,
     compact: bool,
     neutral_highlight: bool,
     entrance: MenuEntrance,
@@ -40,9 +42,9 @@ impl MenuView {
         Self {
             entries,
             on_dismiss,
-            min_width: px(128.0),
+            min_width: None,
             max_width: None,
-            max_height: px(420.0),
+            max_height: None,
             compact: false,
             neutral_highlight: false,
             entrance: MenuEntrance::default(),
@@ -52,7 +54,7 @@ impl MenuView {
     }
 
     pub fn min_width(mut self, width: Pixels) -> Self {
-        self.min_width = width;
+        self.min_width = Some(width);
         self
     }
 
@@ -82,7 +84,7 @@ impl MenuView {
     }
 
     pub fn max_height(mut self, height: Pixels) -> Self {
-        self.max_height = height;
+        self.max_height = Some(height);
         self
     }
 
@@ -95,46 +97,34 @@ impl Render for MenuView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let converted = MenuItems::new(&self.entries);
         let entries = Rc::new(converted.entries);
-        let actions = entries.clone();
         let indicators = entries.clone();
         let dismiss = self.on_dismiss.clone();
         let compact = self.compact;
         let mut menu = Menu::new("menu", converted.items)
             .focus_handle(self.focus_handle.clone())
-            .panel_min_width(self.min_width)
-            .panel_max_height(self.max_height)
             .animate_entry(self.entrance == MenuEntrance::Overlay)
             .exiting(self.exiting.get())
             .disabled_keys(converted.disabled)
             .selected_keys(converted.selected)
             .on_dismiss(move |_, window, cx| dismiss(window, cx))
-            .on_action(move |key, window, cx| {
-                let Some(item) = actions.get(key).filter(|item| item.is_interactive()) else {
-                    return;
-                };
-                if let Some(action) = &item.action {
-                    action(window, cx);
-                }
-            })
-            .item_content(move |key, _| match entries.get(key) {
-                Some(item) => ItemContent {
-                    key: key.clone(),
-                    item: item.clone(),
-                    compact,
-                }
-                .into_any_element(),
-                None => div().into_any_element(),
-            });
+            .on_action(item_action(entries.clone()))
+            .item_content(item_content(entries, compact));
         if compact {
             menu = menu.recipe("compact");
         }
         menu = menu.recipe(if self.neutral_highlight {
             "neutral"
         } else {
-            "accent"
+            ACCENT_RECIPE
         });
+        if let Some(min_width) = self.min_width {
+            menu = menu.panel_min_width(min_width);
+        }
         if let Some(max_width) = self.max_width {
             menu = menu.panel_max_width(max_width);
+        }
+        if let Some(max_height) = self.max_height {
+            menu = menu.panel_max_height(max_height);
         }
         if converted.has_indicators {
             menu = menu.indicator_content(move |key, _, _| {

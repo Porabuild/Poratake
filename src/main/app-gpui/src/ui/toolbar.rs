@@ -1,5 +1,7 @@
+#[cfg(target_os = "macos")]
+use gpui::App;
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Context, Div, ElementId, SharedString, Styled, Window,
+    div, prelude::*, px, AnyElement, Context, Div, ElementId, SharedString, Styled, Window,
 };
 use herogpui::components::{Button, Size, Variant};
 use herogpui::gpui;
@@ -46,7 +48,7 @@ pub fn button(id: impl Into<ElementId>) -> Button {
 pub fn desktop(button: Button) -> Button {
     let foreground = crate::ui::colors::white(0.85);
     button
-        .sx(move |el| el.text_color(foreground))
+        .text_color(foreground)
         .hover_bg(crate::ui::colors::white(0.15))
 }
 
@@ -54,9 +56,7 @@ pub fn desktop_selected(button: Button, selected: bool, theme: &ThemeVars) -> Bu
     let foreground = crate::ui::colors::white(0.85);
     let (surface, hover) = selected_surfaces(selected, theme.default, theme.default_hover);
     let resting = surface.unwrap_or_else(gpui::transparent_black);
-    button
-        .sx(move |el| el.bg(resting).text_color(foreground))
-        .hover_bg(hover)
+    button.bg(resting).text_color(foreground).hover_bg(hover)
 }
 
 pub fn icon(id: impl Into<ElementId>, icon: &'static str) -> Button {
@@ -111,6 +111,7 @@ pub fn filled_glyph(color: gpui::Hsla, round: bool) -> AnyElement {
     glyph.rounded(px(chrome::RADIUS_SM)).into_any_element()
 }
 
+#[cfg(target_os = "macos")]
 pub fn filled_play(color: gpui::Hsla) -> AnyElement {
     gpui::canvas(
         |_, _, _| {},

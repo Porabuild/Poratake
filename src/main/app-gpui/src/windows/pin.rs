@@ -96,8 +96,8 @@ impl PinWindow {
 }
 
 impl Render for PinWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::ui::font::root()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = crate::ui::font::root()
             .id("pin-root")
             .size_full()
             .relative()
@@ -144,7 +144,8 @@ impl Render for PinWindow {
                         )
                         .child(crate::ui::icon::icon_element("x", px(14.0))),
                 )
-            })
+            });
+        crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 

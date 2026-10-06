@@ -140,6 +140,26 @@ mod tests {
         out
     }
 
+    fn chain_calls(chain: &str) -> Vec<(&str, &str)> {
+        let mut calls = Vec::new();
+        let Some(open) = chain.find('(') else {
+            return calls;
+        };
+        let mut end = call_end(chain, open);
+        loop {
+            let rest = &chain[end..];
+            let trimmed = rest.trim_start();
+            let Some(paren) = trimmed.find('(') else {
+                break;
+            };
+            let open = end + (rest.len() - trimmed.len()) + paren;
+            let close = call_end(chain, open);
+            calls.push((&trimmed[1..paren], &chain[open..close]));
+            end = close;
+        }
+        calls
+    }
+
     /// A button showing an icon *and* text must still carry an accessible name.
     /// `Button::label` is the name, and it paints before every child — so an
     /// icon written first still lands after the text, and moving the text into
@@ -179,25 +199,54 @@ mod tests {
     }
 
     #[test]
+    fn hand_rolled_focus_rings_wait_for_keyboard_input() {
+        let mut offenders = Vec::new();
+        for path in rust_sources() {
+            if path.ends_with("ui/primitives.rs") || path.ends_with("ui/lints.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read source");
+            for (index, line) in source.lines().enumerate() {
+                if line.contains("focus_ring(") && !line.contains("keyboard_focus_ring(") {
+                    offenders.push(format!("{}:{}", path.display(), index + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a hand-rolled focus ring must go through \
+             `primitives::keyboard_focus_ring` so it shows only after keyboard \
+             input, like HeroGPUI's controls. Found at:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    #[test]
     fn select_trigger_padding_comes_from_the_theme() {
         let mut offenders = Vec::new();
         for path in rust_sources() {
             let source = std::fs::read_to_string(&path).expect("read source");
             for (line, chain) in builder_chains(&source, "Select::new") {
-                let Some(at) = chain.find(".sx(") else {
-                    continue;
-                };
-                let start = at + ".sx(".len() - 1;
-                let arg = &chain[start..call_end(&chain, start)];
-                if arg.contains(".py(") || arg.contains(".pt(") || arg.contains(".pb(") {
+                let pads_vertically =
+                    chain_calls(&chain)
+                        .into_iter()
+                        .any(|(name, arg)| match name {
+                            "py" | "pt" | "pb" => true,
+                            "sx" => [".py(", ".pt(", ".pb("]
+                                .iter()
+                                .any(|call| arg.contains(call)),
+                            _ => false,
+                        });
+                if pads_vertically {
                     offenders.push(format!("{}:{}", path.display(), line));
                 }
             }
         }
         assert!(
             offenders.is_empty(),
-            "`Select::sx` pads the component root, not the trigger; set \
-             `SelectStyle::padding_y` in `theme/bridge.rs` instead. Found at:\n  {}",
+            "`Select`'s `Styled` padding pads the component root, not the \
+             trigger; set `SelectStyle::padding_y` in `theme/bridge.rs` instead. \
+             Found at:\n  {}",
             offenders.join("\n  ")
         );
     }

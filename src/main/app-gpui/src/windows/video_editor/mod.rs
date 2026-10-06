@@ -3456,7 +3456,7 @@ impl Render for VideoEditorWindow {
         .absolute()
         .inset_0();
 
-        div()
+        let content = div()
             .id("video-editor-window")
             .font_family(crate::ui::font::UI_FONT)
             .key_context("VideoEditor")
@@ -3493,7 +3493,8 @@ impl Render for VideoEditorWindow {
                 self.data_editor
                     .as_ref()
                     .map(|editor| data_editor::render(editor, &theme, cx)),
-            )
+            );
+        crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 

@@ -84,7 +84,7 @@ impl SettingsWindow {
                 Select::new(SharedString::from(format!("{}-select", item.id)), items)
                     .variant(FieldVariant::Secondary)
                     .value(value.clone())
-                    .sx(|el| el.w(px(CONTROL_WIDTH)))
+                    .w(px(CONTROL_WIDTH))
                     .on_selection_change(cx.listener(
                         move |this, value: &Option<SharedString>, _window, cx| {
                             let Some(value) = value else { return };
