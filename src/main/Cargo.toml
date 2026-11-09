@@ -6,7 +6,7 @@ members = ["daemon-common", "daemon-linux", "daemon-win", "app-gpui"]
 rust-version = "1.99"
 
 [workspace.dependencies]
-herogpui = "=0.15.0"
+herogpui = { git = "https://github.com/Porabuild/HeroGPUI", rev = "4293d4b55e7ae29516388621cf45b44debcc1ec8" }
 
 [profile.dev]
 opt-level = 1

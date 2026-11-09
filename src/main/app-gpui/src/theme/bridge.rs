@@ -61,6 +61,17 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                     .row_padding_y(gpui::px(2.0))
                     .row_text_size(gpui::px(12.0))
                     .panel_padding(gpui::px(4.0)),
+            )
+            .recipe(
+                "toolbar",
+                SelectStyle::default()
+                    .height(gpui::px(28.0))
+                    .padding_x(gpui::px(8.0))
+                    .padding_y(gpui::px(0.0))
+                    .panel_padding(gpui::px(6.0))
+                    .panel_gap(gpui::px(4.0))
+                    .panel_min_width(gpui::px(64.0))
+                    .radius(gpui::px(crate::ui::chrome::RADIUS_3XL)),
             ),
         )
         .menu(

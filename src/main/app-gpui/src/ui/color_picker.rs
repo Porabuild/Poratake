@@ -18,7 +18,8 @@ use crate::ui::menu::DismissHandler;
 
 const POPOVER_WIDTH: f32 = 256.0;
 const POPOVER_PAD: f32 = 12.0;
-const AREA_HEIGHT: f32 = (POPOVER_WIDTH - POPOVER_PAD * 2.0) * 3.0 / 4.0;
+const CONTENT_WIDTH: f32 = POPOVER_WIDTH - (POPOVER_PAD + 1.0) * 2.0;
+const AREA_HEIGHT: f32 = CONTENT_WIDTH * 3.0 / 4.0;
 const SHUFFLE_SIZE: f32 = 32.0;
 const TRIGGER_WIDTH: f32 = chrome::TOOL_OPTION_PAD_X * 2.0
     + chrome::COLOR_SWATCH_XS
@@ -195,7 +196,7 @@ impl Render for ColorPickerPopover {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let current = self.hsv.to_picker();
-        let area_width = POPOVER_WIDTH - POPOVER_PAD * 2.0;
+        let area_width = CONTENT_WIDTH;
         let swatches = self
             .palette
             .iter()
@@ -232,6 +233,7 @@ impl Render for ColorPickerPopover {
                 ColorSwatchPicker::new("color-swatches", swatches)
                     .size(SizeXl::Xs)
                     .shape(SwatchShape::Square)
+                    .sx(|el| el.w_full().gap(px(4.0)).flex_nowrap().justify_between())
                     .value(current)
                     .on_change(move |color, window, cx| {
                         if let Some(entity) = swatch_entity.upgrade() {

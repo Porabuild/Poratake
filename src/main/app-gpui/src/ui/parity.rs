@@ -119,6 +119,7 @@ pub fn capture_editor_interaction_states() {
     );
     cx.update(|cx| {
         crate::state::set_test_state(cx, store);
+        crate::editor::actions::init_bindings(cx);
         crate::ui::font::register(cx);
     });
     let editor = cx
@@ -163,16 +164,23 @@ pub fn capture_editor_interaction_states() {
     hover(&mut cx, window, 520.0, 20.0);
     capture(&mut cx, window, &output, "image-thickness-hover");
     click(&mut cx, window, 520.0, 20.0);
-    cx.update(|cx| {
-        assert!(editor
-            .read(cx)
-            .unwrap()
-            .menu
-            .is_open_for("tool-option-thickness", cx));
-    });
+    let panel_open = |cx: &mut HeadlessAppContext| {
+        cx.update_window(window, |_, window, _| {
+            let scale = window.scale_factor();
+            window.painted_quads().iter().any(|quad| {
+                quad.bounds.size.width.0 / scale <= 128.0
+                    && quad.bounds.size.height.0 / scale >= 150.0
+            })
+        })
+        .unwrap()
+    };
+    assert!(
+        panel_open(&mut cx),
+        "the thickness option list must be painted"
+    );
     capture(&mut cx, window, &output, "image-thickness-open");
     escape(&mut cx, window);
-    cx.update(|cx| assert!(!editor.read(cx).unwrap().menu.is_open(cx)));
+    assert!(!panel_open(&mut cx), "Escape must dismiss the option list");
     click(&mut cx, window, 580.0, 20.0);
     cx.update(|cx| {
         assert!(editor
@@ -200,6 +208,36 @@ pub fn capture_editor_interaction_states() {
             &output,
             &format!("image-{}-selected", tool.id()),
         );
+        if let Some(owner) = match tool {
+            crate::ui::colors::Tool::Number => Some("tool-option-number"),
+            crate::ui::colors::Tool::Text => Some("tool-option-text"),
+            crate::ui::colors::Tool::Redact => Some("tool-option-redact"),
+            _ => None,
+        } {
+            click(&mut cx, window, 520.0, 20.0);
+            cx.update(|cx| assert!(editor.read(cx).unwrap().menu.is_open_for(owner, cx)));
+            capture(
+                &mut cx,
+                window,
+                &output,
+                &format!("image-{}-open", tool.id()),
+            );
+            escape(&mut cx, window);
+        } else if matches!(
+            tool,
+            crate::ui::colors::Tool::Arrow
+                | crate::ui::colors::Tool::Rectangle
+                | crate::ui::colors::Tool::Highlight
+        ) {
+            click(&mut cx, window, 520.0, 20.0);
+            capture(
+                &mut cx,
+                window,
+                &output,
+                &format!("image-{}-open", tool.id()),
+            );
+            escape(&mut cx, window);
+        }
     }
     let video = cx
         .open_window(size(px(1280.0), px(738.0)), |_, cx| {

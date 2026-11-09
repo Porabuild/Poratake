@@ -180,6 +180,7 @@ Input::new(&state).recipe("search");
   - `MenuStyle`: `panel_min_width`, `panel_max_width`, `panel_max_height`, `panel_padding`, `panel_gap`, `row_height`, `row_padding_x`, `row_padding_y`, `row_text_size`, `row_gap`, `row_hover_bg`, `row_hover_foreground`, `radius`, `animate_entry`
   - `TextFieldStyle`: `variant`, `height`, `padding_x`, `text_size`, `radius`, `is_bare`, `background`, `foreground`, `placeholder`
   - `ButtonStyle`: `variant`, `size`, `radius`, `background`, `foreground`, `hover_bg`, `hover_foreground`, `pressed_bg`, `pressed_foreground`, `disabled_foreground`, `style`
+- The pinned 0.15 control-content patch also provides `Select::item_content(|key, selected, window, cx| ..)`, `panel_gap(px)` and `panel_min_width(px)` (including SelectStyle), plus `ColorSwatchPicker::sx` for group layout. Custom option content preserves the collection label for accessibility and typeahead.
 - `.recipe("name")` is on `Slider`, `Switch`, `Select`, `Menu`, `Dropdown`, `Button`, `Input`, `TextField`, `SearchField`. Recipes stack.
 - `SliderStyle.radius` reaches the track, thumb layers, and caps using the seam-safe per-corner join: an `sx` corner still wins where it is named.
 - `ActiveTheme::components()` / `cx.components()` reads the live table.

@@ -9,6 +9,8 @@ use herogpui::gpui;
 
 use crate::config::shortcuts::{EditorActionShortcuts, EditorShortcuts};
 
+const EDITOR_CONTEXT: &str = "Editor && !Select && !Menu && !Input";
+
 actions!(
     editor,
     [
@@ -55,7 +57,9 @@ pub fn capture_overlay_visible(capture_mode: bool, meta_held: bool) -> bool {
 }
 
 fn editor_context() -> Rc<KeyBindingContextPredicate> {
-    Rc::new(KeyBindingContextPredicate::parse("Editor").expect("the Editor key context parses"))
+    Rc::new(
+        KeyBindingContextPredicate::parse(EDITOR_CONTEXT).expect("the Editor key context parses"),
+    )
 }
 
 fn load_user_binding(
@@ -120,7 +124,7 @@ pub fn tool_bindings(shortcuts: &EditorShortcuts, cx: &App) -> Vec<KeyBinding> {
 }
 
 fn command_bindings() -> Vec<KeyBinding> {
-    let editor = Some("Editor");
+    let editor = Some(EDITOR_CONTEXT);
     let mut bindings = vec![
         KeyBinding::new("ctrl-z", Undo, editor),
         KeyBinding::new("ctrl-shift-z", Redo, editor),

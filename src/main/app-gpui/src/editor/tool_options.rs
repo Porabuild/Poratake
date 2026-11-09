@@ -6,6 +6,7 @@ use crate::editor::options::{
     HIGHLIGHT_OPACITIES, NUMBER_SIZES, NUMBER_START_VALUES, NUMBER_STYLES, REDACT_INTENSITIES,
     REDACT_STYLES, SHAPE_FILL_MODES, THICKNESS_OPTIONS,
 };
+use crate::editor::toolbar_select;
 use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
 use crate::ui::chrome;
@@ -123,39 +124,6 @@ fn trigger(
             div()
                 .text_color(theme.muted_foreground)
                 .child(chevron_element(px(chrome::TOOL_OPTION_CHEVRON), open)),
-        )
-        .child(menu.render_dropdown(id, cx))
-        .into_any_element()
-}
-
-/// A `Select.Trigger` option pill. HeroUI pads the content with `pe-7` and
-/// absolutely positions a `size-4` indicator at `end-2`, tinted
-/// `--field-placeholder`, so the trigger is wider than the popover-backed one
-/// and the chevron sits closer to the edge.
-fn select_trigger(
-    id: &'static str,
-    menu: &MenuHandle,
-    theme: &ThemeVars,
-    content: AnyElement,
-    entries: Vec<MenuEntry>,
-    window: &mut gpui::Window,
-    cx: &mut App,
-) -> AnyElement {
-    let open = menu.is_open_for(id, cx);
-    trigger_base(id, menu, theme, entries, window, cx)
-        .pl(px(chrome::TOOL_OPTION_PAD_X))
-        .pr(px(chrome::SELECT_INDICATOR_PAD_END))
-        .child(content)
-        .child(
-            div()
-                .absolute()
-                .right(px(chrome::SELECT_INDICATOR_INSET))
-                .top_0()
-                .bottom_0()
-                .flex()
-                .items_center()
-                .text_color(theme.field_placeholder)
-                .child(chevron_element(px(chrome::SELECT_INDICATOR_SIZE), open)),
         )
         .child(menu.render_dropdown(id, cx))
         .into_any_element()
@@ -402,12 +370,12 @@ pub fn render(
     ) {
         let height = options::thickness_bar_height(state.stroke_width);
         let bar_color = theme.muted_foreground;
-        children.push(select_trigger(
+        children.push(toolbar_select::render(
             "tool-option-thickness",
-            menu,
-            &theme,
-            thickness_bar(16.0, height, bar_color),
+            "Line thickness",
             thickness_entries(state, handlers),
+            move || thickness_bar(16.0, height, bar_color),
+            false,
             window,
             cx,
         ));
@@ -416,12 +384,12 @@ pub fn render(
 
     if state.tool == Tool::Arrow {
         let path = arrow_preview_path(&state.arrow_style);
-        children.push(select_trigger(
+        children.push(toolbar_select::render(
             "tool-option-arrow",
-            menu,
-            &theme,
-            icon(path).size(px(20.0)).into_any_element(),
+            "Arrow style",
             arrow_entries(state, handlers),
+            move || icon(path).size(px(20.0)).into_any_element(),
+            true,
             window,
             cx,
         ));
@@ -429,12 +397,12 @@ pub fn render(
     }
 
     if state.tool == Tool::Highlight {
-        children.push(select_trigger(
+        children.push(toolbar_select::render(
             "tool-option-highlight",
-            menu,
-            &theme,
-            icon_element("highlighter", px(16.0)),
+            "Highlight opacity",
             highlight_entries(state, handlers),
+            || icon_element("highlighter", px(16.0)),
+            true,
             window,
             cx,
         ));
@@ -487,12 +455,12 @@ pub fn render(
     if matches!(state.tool, Tool::Rectangle | Tool::Circle) {
         let color = Srgba::parse(&state.color_hex).to_hsla();
         let filled = state.shape_fill_mode.as_ref() == "filled";
-        children.push(select_trigger(
+        children.push(toolbar_select::render(
             "tool-option-shape",
-            menu,
-            &theme,
-            shape_fill_preview(filled, color, 16.0),
+            "Shape fill",
             shape_entries(state, handlers),
+            move || shape_fill_preview(filled, color, 16.0),
+            true,
             window,
             cx,
         ));
@@ -547,5 +515,53 @@ mod tests {
         assert!(trailing_separator("text"));
         assert!(!trailing_separator("highlight"));
         assert!(!trailing_separator("redact"));
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use herogpui::gpui;
+    use herogpui::test::TestWindowExt;
+    use std::sync::Arc;
+
+    #[herogpui::test]
+    fn toolbar_select_commits_and_keeps_editor_shortcuts_outside_the_open_list(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(scratch.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| config.editor.last_tool = "pen".into());
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store);
+            crate::editor::actions::init_bindings(cx);
+        });
+        let path = scratch.path().join("capture.png");
+        image::RgbaImage::from_pixel(600, 400, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .unwrap();
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            crate::editor::window::EditorWindow::from_file(path.to_str().unwrap(), window, cx)
+        });
+        cx.settle();
+        let trigger = "select-trigger-Name(\"tool-option-thickness\")";
+        cx.click(trigger);
+        cx.press("down enter");
+        assert_eq!(editor.read_with(cx, |editor, _| editor.stroke_width), 8.0);
+        cx.click(trigger);
+        cx.press("h");
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.tool),
+            crate::ui::colors::Tool::Pen
+        );
+        cx.press("escape");
+        let focus = editor.read_with(cx, |editor, _| editor.focus_handle.clone());
+        cx.update(|window, cx| window.focus(&focus, cx));
+        cx.press("h");
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.tool),
+            crate::ui::colors::Tool::Highlight
+        );
     }
 }

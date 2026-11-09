@@ -37,13 +37,6 @@ pub const TOOL_OPTION_RADIUS: f32 = RADIUS_3XL;
 pub const TOOL_OPTION_PAD_X: f32 = 8.0;
 pub const TOOL_OPTION_GAP: f32 = 8.0;
 pub const TOOL_OPTION_CHEVRON: f32 = 14.0;
-/// `.select__indicator[data-slot="select-default-indicator"] { size-4 }`.
-pub const SELECT_INDICATOR_SIZE: f32 = 16.0;
-/// `.select__indicator { end-2 }` — the indicator is absolutely placed.
-pub const SELECT_INDICATOR_INSET: f32 = 8.0;
-/// `.select__trigger:has(.select__indicator) { pe-7 }` — the content reserves
-/// room for the absolutely placed indicator.
-pub const SELECT_INDICATOR_PAD_END: f32 = 28.0;
 pub const COLOR_SWATCH_XS: f32 = 16.0;
 pub const ZOOM_INSET: f32 = 16.0;
 pub const ZOOM_PAD: f32 = 4.0;

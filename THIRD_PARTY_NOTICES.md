@@ -183,7 +183,7 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `serde`                    |   1.0.229 | MIT OR Apache-2.0         |
 | `serde_json`               |   1.0.151 | MIT OR Apache-2.0         |
 
-[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are version 0.15.0, published on [crates.io](https://crates.io/crates/herogpui); their versions and checksums are pinned in `src/main/Cargo.lock`. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
+[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are based on version 0.15.0 with the control-content/layout patch at [commit `4293d4b5`](https://github.com/Porabuild/HeroGPUI/commit/4293d4b55e7ae29516388621cf45b44debcc1ec8); all four sources are pinned to that exact Git revision in `src/main/Cargo.lock`. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
 
 ```text
 HeroGPUI

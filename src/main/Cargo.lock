@@ -3233,8 +3233,7 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 [[package]]
 name = "herogpui"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9260c8ad5eaa67f6be6361dd486f5ec85c72641556f1137a8771cc5e01f524ec"
+source = "git+https://github.com/Porabuild/HeroGPUI?rev=4293d4b55e7ae29516388621cf45b44debcc1ec8#4293d4b55e7ae29516388621cf45b44debcc1ec8"
 dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
@@ -3246,8 +3245,7 @@ dependencies = [
 [[package]]
 name = "herogpui-components"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a29b0d970235d4582a84dc99f2186e622b5fc8d89cd073371ddc68c0657f85d1"
+source = "git+https://github.com/Porabuild/HeroGPUI?rev=4293d4b55e7ae29516388621cf45b44debcc1ec8#4293d4b55e7ae29516388621cf45b44debcc1ec8"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
@@ -3267,8 +3265,7 @@ dependencies = [
 [[package]]
 name = "herogpui-core"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f76d61bbc3a477571c880422d666b8ed608453992c95fcccd484c8ad7e49345"
+source = "git+https://github.com/Porabuild/HeroGPUI?rev=4293d4b55e7ae29516388621cf45b44debcc1ec8#4293d4b55e7ae29516388621cf45b44debcc1ec8"
 dependencies = [
  "gpui-pre",
 ]
@@ -3276,8 +3273,7 @@ dependencies = [
 [[package]]
 name = "herogpui-theme"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "288c349071f2643b92af2662554917f5a013f6c7b40f04a74e2dc40d7bfed635"
+source = "git+https://github.com/Porabuild/HeroGPUI?rev=4293d4b55e7ae29516388621cf45b44debcc1ec8#4293d4b55e7ae29516388621cf45b44debcc1ec8"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
