@@ -265,19 +265,21 @@ impl Render for ColorPickerPopover {
                                 }
                             }),
                     )
-                    .child(
-                        herogpui::components::Tooltip::new("Choose a random color").child(
+                    .child({
+                        let random_name = "Choose a random color";
+                        herogpui::components::Tooltip::new(random_name).child(
                             Button::new("color-random")
                                 .variant(Variant::Tertiary)
                                 .size(Size::Sm)
                                 .is_icon_only(true)
+                                .aria_label(random_name)
                                 .rounded(px(9999.0))
                                 .child(icon_element("shuffle", px(chrome::TOOL_OPTION_CHEVRON)))
                                 .on_press(cx.listener(|this, _event, window, cx| {
                                     this.randomize(window, cx)
                                 })),
-                        ),
-                    ),
+                        )
+                    }),
             )
             .child(
                 ColorField::new("color-hex", current)

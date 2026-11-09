@@ -159,7 +159,7 @@ fn toolbar_button(
     cx: &mut Context<AreaOverlay>,
 ) -> AnyElement {
     toolbar::tooltip_button(
-        toolbar::selected_icon(id, icon, selected, theme),
+        toolbar::selected_icon(id, icon, selected, theme, tooltip),
         tooltip,
         cx,
         on_click,

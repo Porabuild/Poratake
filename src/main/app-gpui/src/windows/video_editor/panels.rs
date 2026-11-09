@@ -729,7 +729,7 @@ fn drawing_panel(
             .justify_between()
             .child(kit::label("Selected Drawing", theme))
             .child(
-                icon_button::compact_sm("drawing-delete", "trash-2")
+                icon_button::compact_sm("drawing-delete", "trash-2", "Delete drawing")
                     .recipe("danger-text")
                     .on_press(
                         cx.listener(|this, _event, _window, cx| this.delete_selected_drawing(cx)),
@@ -770,8 +770,9 @@ fn drawing_tool_grid(
                 .children(chunk.iter().map(|tool| {
                     let selected = tool.id() == active;
                     let id = tool.id();
+                    let label = tool.label();
                     div().flex_1().min_w_0().child(
-                        herogpui::components::Tooltip::new(tool.label()).child(
+                        herogpui::components::Tooltip::new(label).child(
                             Button::new(SharedString::from(format!("drawing-tool-{id}")))
                                 .child(crate::ui::icon::icon_element(tool.icon(), px(16.0)))
                                 .variant(if selected {
@@ -781,6 +782,7 @@ fn drawing_tool_grid(
                                 })
                                 .size(Size::Sm)
                                 .is_icon_only(true)
+                                .aria_label(label)
                                 .full_width(true)
                                 .on_press(cx.listener(move |this, _event, _window, cx| {
                                     this.update_drawing_tools(cx, |tools| {
@@ -1336,12 +1338,15 @@ fn audio_panel(
                         .child("Manage audio tracks in your project"),
                 ),
         )
-        .child(toolbar::tooltip_button(
-            icon_button::compact_sm("audio-add-music", "plus"),
-            "Add music",
-            cx,
-            |this, _window, cx| this.add_music_track(cx),
-        ))
+        .child({
+            let add_music_name = "Add music";
+            toolbar::tooltip_button(
+                icon_button::compact_sm("audio-add-music", "plus", add_music_name),
+                add_music_name,
+                cx,
+                |this, _window, cx| this.add_music_track(cx),
+            )
+        })
         .into_any_element()];
 
     let groups = music_groups(&state.music_tracks);
@@ -1389,6 +1394,7 @@ fn audio_panel(
         );
         if style.keyboard_sound_enabled {
             let demo = view.is_keyboard_demo_playing();
+            let demo_name = if demo { "Stop demo" } else { "Play demo" };
             children.push(
                 div()
                     .flex()
@@ -1414,9 +1420,10 @@ fn audio_panel(
                         icon_button::compact_sm(
                             "audio-keyboard-demo",
                             if demo { "square" } else { "play" },
+                            demo_name,
                         )
                         .variant(Variant::Tertiary),
-                        if demo { "Stop demo" } else { "Play demo" },
+                        demo_name,
                         cx,
                         move |this, _window, cx| {
                             if this.is_keyboard_demo_playing() {
@@ -1545,6 +1552,7 @@ fn music_row(
                                 icon_button::compact_sm(
                                     SharedString::from(format!("music-remove-{id}")),
                                     "trash-2",
+                                    "Remove music track",
                                 )
                                 .on_press(cx.listener({
                                     let id = id.clone();
@@ -1930,6 +1938,7 @@ fn video_backgrounds(
     }
 
     let add = entity.clone();
+    let add_name = "Add Background";
     div()
         .flex()
         .flex_col()
@@ -1942,9 +1951,9 @@ fn video_backgrounds(
                 .justify_between()
                 .child(kit::label("Backgrounds", theme))
                 .child(icon_button::with_tooltip(
-                    "Add Background",
-                    icon_button::compact_sm_muted("video-wallpaper-add", "plus").on_press(
-                        move |_event, _window, cx| {
+                    add_name,
+                    icon_button::compact_sm_muted("video-wallpaper-add", "plus", add_name)
+                        .on_press(move |_event, _window, cx| {
                             if let Some(entity) = add.upgrade() {
                                 entity.update(cx, |this, cx| {
                                     if let Some(path) = crate::editor::background::pick_image() {
@@ -1959,8 +1968,7 @@ fn video_backgrounds(
                                     }
                                 });
                             }
-                        },
-                    ),
+                        }),
                 )),
         )
         .child(
@@ -2349,11 +2357,15 @@ fn first_frame_panel(
                         |this, cx| this.pick_first_frame(cx),
                     ))
                     .child(
-                        icon_button::compact_sm("first-frame-remove", "trash-2")
-                            .variant(Variant::Tertiary)
-                            .on_press(
-                                cx.listener(|this, _event, _window, cx| this.clear_first_frame(cx)),
-                            ),
+                        icon_button::compact_sm(
+                            "first-frame-remove",
+                            "trash-2",
+                            "Remove first frame",
+                        )
+                        .variant(Variant::Tertiary)
+                        .on_press(
+                            cx.listener(|this, _event, _window, cx| this.clear_first_frame(cx)),
+                        ),
                     )
                     .into_any_element(),
             );

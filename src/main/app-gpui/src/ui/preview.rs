@@ -134,9 +134,11 @@ fn chip(
 ) -> AnyElement {
     let surface = theme.background.opacity(0.8);
     let foreground = theme.foreground;
+    let tooltip = tooltip.into();
     let button = Button::new(id)
         .variant(Variant::Ghost)
         .is_icon_only(icon_only)
+        .when(icon_only, |button| button.aria_label(tooltip.clone()))
         .is_disabled(disabled)
         .recipe(recipe)
         .bg(surface)

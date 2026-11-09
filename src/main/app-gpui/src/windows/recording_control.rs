@@ -1486,7 +1486,7 @@ fn overlay_icon(
     cx: &mut Context<RecordingControl>,
 ) -> AnyElement {
     toolbar::tooltip_button(
-        toolbar::icon(id, icon).is_disabled(disabled),
+        toolbar::icon(id, icon, tooltip).is_disabled(disabled),
         tooltip,
         cx,
         on_click,
@@ -1548,14 +1548,15 @@ impl Render for RecordingControl {
         }
 
         if self.mode == Mode::PreRecording {
+            let start_name = "Start recording";
             return recording_shell(
                 &self.focus_handle,
                 bar.child(toolbar::tooltip_button(
-                    toolbar::button("recording-start")
+                    toolbar::button("recording-start", start_name)
                         .is_disabled(self.countdown_active)
                         .hover_bg(crate::ui::colors::white(0.15))
                         .child(toolbar::filled_glyph(theme.accent, true)),
-                    "Start recording",
+                    start_name,
                     cx,
                     |this, window, cx| this.start(window, cx),
                 ))
@@ -1577,6 +1578,7 @@ impl Render for RecordingControl {
             );
         }
 
+        let stop_name = "Stop recording";
         recording_shell(
             &self.focus_handle,
             bar.child(overlay_icon(
@@ -1592,10 +1594,10 @@ impl Render for RecordingControl {
                 cx,
             ))
             .child(toolbar::tooltip_button(
-                toolbar::button("recording-stop")
+                toolbar::button("recording-stop", stop_name)
                     .hover_bg(crate::ui::colors::white(0.15))
                     .child(toolbar::filled_glyph(theme.destructive, false)),
-                "Stop recording",
+                stop_name,
                 cx,
                 |this, window, cx| this.finish(false, window, cx),
             ))

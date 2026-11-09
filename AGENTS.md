@@ -24,7 +24,7 @@ Tests use Vitest with vi.mock() for mocking modules (electron, AWS SDK, config),
 - **Typecheck**: TypeScript 7 native - use `bun run typecheck`
 - **All checks**: `bun run checks` runs typecheck + lint + format check + tests + the Windows native rustfmt/clippy/daemon tests (verify only, no fixing)
 - **Pre-commit**: `.githooks/pre-commit` runs fast checks on staged files (oxfmt format check + oxlint with `--deny-warnings`) followed by a full `bun run typecheck`
-- **Windows native**: `bun run test:daemon-win` runs `cargo fmt --check`, `cargo clippy`, and `cargo test` for `src/main/daemon-win/` and `src/main/app-gpui/`. It is a no-op off Windows or without cargo, so a Rust compile break can only be caught locally on Windows — CI's `windows-native` job is the backstop.
+- **Windows native**: `bun run test:daemon-win` runs `cargo fmt --check`, `cargo clippy`, and `cargo test` for `src/main/daemon-win/` and `src/main/app-gpui/`. It is a no-op off Windows or without cargo — CI's `windows-native` job is the backstop. From macOS, `cargo xwin clippy --locked --manifest-path src/main/Cargo.toml --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings` (needs `cargo-xwin`) compiles and lints the same crates for Windows without running their tests.
 - **Imports**: Group by external → components → hooks → types → utils. Use `type` for type-only imports (`import type { ToolType }`)
 - **Types**: Store shared types in `src/types/` (accessible to main + renderer). Use discriminated unions for polymorphic data
 - **Naming**: kebab-case (components), camelCase (functions/vars), SCREAMING_SNAKE_CASE (constants like `MACOS_COLORS`)

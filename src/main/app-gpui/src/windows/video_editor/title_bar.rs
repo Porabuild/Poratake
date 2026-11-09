@@ -135,6 +135,7 @@ fn export_indicator(
                 .variant(Variant::Ghost)
                 .size(Size::Sm)
                 .is_icon_only(true)
+                .aria_label("Export")
                 .child(div().size(px(RING_SIZE)).child(content))
                 .on_press(cx.listener(|this, _event, window, cx| {
                     this.toggle_export_popover(window, cx);
@@ -342,20 +343,26 @@ pub fn render(
         .mr(px(chrome::TITLE_BAR_PADDING_X));
 
     if state.project_path.is_some() {
+        let project_name = "Project Info";
         actions = actions.child(
             div()
                 .relative()
                 .flex()
                 .items_center()
                 .child(
-                    Tooltip::new("Project Info")
+                    Tooltip::new(project_name)
                         .placement(TooltipPlacement::Bottom)
                         .child(
-                            icon_button::compact_muted(PROJECT_POPOVER_ID, "folder-open").on_press(
-                                cx.listener(|this, _event, window, cx| {
+                            icon_button::compact_muted(
+                                PROJECT_POPOVER_ID,
+                                "folder-open",
+                                project_name,
+                            )
+                            .on_press(cx.listener(
+                                |this, _event, window, cx| {
                                     this.toggle_project_popover(window, cx);
-                                }),
-                            ),
+                                },
+                            )),
                         ),
                 )
                 .child(state.menu.render_dropdown(PROJECT_POPOVER_ID, cx)),
@@ -366,33 +373,40 @@ pub fn render(
         actions = actions.child(export_indicator(state, theme, cx));
     }
 
+    let undo_name = "Undo";
+    let redo_name = "Redo";
+    let reset_name = "Reset to Defaults";
+    let delete_name = "Delete Video";
+    let sidebar_name = if state.is_sidebar_open {
+        "Hide Sidebar"
+    } else {
+        "Show Sidebar"
+    };
     actions = actions
         .child(toolbar::tooltip_button(
-            icon_button::compact("video-undo", "rotate-ccw").is_disabled(!state.can_undo),
-            format!("Undo ({})", accelerator::display("CommandOrControl+Z")),
+            icon_button::compact("video-undo", "rotate-ccw", undo_name)
+                .is_disabled(!state.can_undo),
+            icon_button::hinted(undo_name, &accelerator::display("CommandOrControl+Z")),
             cx,
             |this, _window, cx| this.undo(cx),
         ))
         .child(toolbar::tooltip_button(
-            icon_button::compact("video-redo", "rotate-cw").is_disabled(!state.can_redo),
-            format!(
-                "Redo ({})",
-                accelerator::display("CommandOrControl+Shift+Z")
-            ),
+            icon_button::compact("video-redo", "rotate-cw", redo_name).is_disabled(!state.can_redo),
+            icon_button::hinted(redo_name, &accelerator::display("CommandOrControl+Shift+Z")),
             cx,
             |this, _window, cx| this.redo(cx),
         ))
         .child(tooltip_button_below(
-            icon_button::compact("video-reset", "refresh-ccw"),
-            "Reset to Defaults",
+            icon_button::compact("video-reset", "refresh-ccw", reset_name),
+            reset_name,
             cx,
             |this, _window, cx| this.confirm_reset(cx),
         ))
         .child(tooltip_button_below(
-            icon_button::compact("video-delete", "trash-2"),
-            format!(
-                "Delete Video ({})",
-                accelerator::display("CommandOrControl+Backspace")
+            icon_button::compact("video-delete", "trash-2", delete_name),
+            icon_button::hinted(
+                delete_name,
+                &accelerator::display("CommandOrControl+Backspace"),
             ),
             cx,
             |this, window, cx| this.delete_recording(window, cx),
@@ -405,12 +419,9 @@ pub fn render(
                 } else {
                     "panel-right-open"
                 },
+                sidebar_name,
             ),
-            if state.is_sidebar_open {
-                "Hide Sidebar"
-            } else {
-                "Show Sidebar"
-            },
+            sidebar_name,
             cx,
             |this, _window, cx| this.toggle_sidebar(cx),
         ));

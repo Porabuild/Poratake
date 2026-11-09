@@ -1,6 +1,6 @@
 use gpui::{
     div, linear_color_stop, linear_gradient, point, prelude::*, px, AnyElement, Context, Hsla,
-    MouseDownEvent, MouseMoveEvent, ScrollHandle, ScrollWheelEvent, SharedString, Styled,
+    MouseDownEvent, MouseMoveEvent, ScrollEvent, ScrollHandle, SharedString, Styled,
 };
 use herogpui::gpui;
 
@@ -780,9 +780,9 @@ pub fn render(
                         .relative()
                         .size_full()
                         .overflow_x_scroll()
-                        .on_scroll_wheel(cx.listener({
+                        .on_scroll(cx.listener({
                             let scroll = timeline.scroll.clone();
-                            move |this, event: &ScrollWheelEvent, _window, cx| {
+                            move |this, event: &ScrollEvent, _window, cx| {
                                 let delta = event.delta.pixel_delta(px(TRACK_HEIGHT));
                                 if event.modifiers.platform || event.modifiers.control {
                                     let pointer =

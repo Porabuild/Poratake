@@ -144,7 +144,7 @@ mod window_tests {
 
     #[herogpui::test]
     fn secondary_scroll_zooms_the_editor(cx: &mut gpui::TestAppContext) {
-        use gpui::{point, px, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+        use gpui::{point, px, Modifiers, ScrollDelta, ScrollEvent, TouchPhase};
         use herogpui::gpui;
 
         use crate::editor::window::EditorWindow;
@@ -166,11 +166,13 @@ mod window_tests {
         cx.run_until_parked();
         let initial_zoom = editor.read_with(cx, |editor, _| editor.zoom);
 
-        cx.simulate_event(ScrollWheelEvent {
+        let modifiers = cx.update(|_, cx| Modifiers::secondary_key(cx));
+        cx.simulate_event(ScrollEvent {
             position: point(px(400.0), px(300.0)),
             delta: ScrollDelta::Lines(point(0.0, -1.0)),
             touch_phase: TouchPhase::Moved,
-            modifiers: Modifiers::secondary_key(),
+            modifiers,
+            ..Default::default()
         });
 
         let zoom = editor.read_with(cx, |editor, _| editor.zoom);

@@ -199,6 +199,34 @@ mod tests {
     }
 
     #[test]
+    fn icon_only_buttons_have_an_accessible_name() {
+        let mut offenders = Vec::new();
+        for path in rust_sources() {
+            let source = std::fs::read_to_string(&path).expect("read source");
+            for (line, chain) in builder_chains(&source, "Button::new") {
+                let calls = chain_calls(&chain);
+                let icon_only = calls
+                    .iter()
+                    .any(|(name, arg)| *name == "is_icon_only" && *arg != "(false)");
+                let named = calls.iter().any(|(name, arg)| match *name {
+                    "aria_label" | "label" => true,
+                    "when" => arg.contains(".aria_label("),
+                    _ => false,
+                });
+                if icon_only && !named {
+                    offenders.push(format!("{}:{}", path.display(), line));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "icon-only buttons have no accessible name; add `.aria_label(..)` \
+             or `.label(..)`. Found at:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    #[test]
     fn hand_rolled_focus_rings_wait_for_keyboard_input() {
         let mut offenders = Vec::new();
         for path in rust_sources() {

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use gpui::{
     div, prelude::*, px, App, Context, DragMoveEvent, ExternalPaths, FileDropEvent, Focusable,
     ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
-    ScrollWheelEvent, Styled, Subscription, Window,
+    ScrollEvent, Styled, Subscription, Window,
 };
 use herogpui::gpui;
 
@@ -2326,7 +2326,7 @@ impl Render for EditorWindow {
             .track_focus(&self.focus_handle)
             .on_modifiers_changed(cx.listener(
                 |this, event: &ModifiersChangedEvent, _window, cx| {
-                    let held = actions::is_meta_held(&event.modifiers);
+                    let held = actions::is_meta_held(&event.modifiers, cx);
                     if this.meta_held == held {
                         return;
                     }
@@ -2558,7 +2558,7 @@ impl Render for EditorWindow {
                                         .update(cx, |editor, cx| {
                                             // Ctrl/Cmd-drag pans the stage instead of
                                             // drawing, matching `usePanOnDrag`.
-                                            if event.modifiers.secondary() {
+                                            if event.modifiers.secondary(cx) {
                                                 editor.pan_origin = Some((
                                                     event.position,
                                                     editor.stage_scroll.offset(),
@@ -2643,10 +2643,10 @@ impl Render for EditorWindow {
                                         .ok();
                                 }
                             })
-                            .on_scroll_wheel({
+                            .on_scroll({
                                 let entity = cx.entity().downgrade();
-                                move |event: &ScrollWheelEvent, _window, cx| {
-                                    if !event.modifiers.secondary() {
+                                move |event: &ScrollEvent, _window, cx| {
+                                    if !event.modifiers.secondary(cx) {
                                         return;
                                     }
                                     let delta = event.delta.pixel_delta(px(36.0)).y;
@@ -2737,6 +2737,8 @@ fn zoom_control(
     let zoom_out = handlers.option(EditorOption::Zoom(zoom - ZOOM_STEP));
     let zoom_reset = handlers.option(EditorOption::Zoom(1.0));
     let zoom_in = handlers.option(EditorOption::Zoom(zoom + ZOOM_STEP));
+    let zoom_out_name = "Zoom Out";
+    let zoom_in_name = "Zoom In";
 
     div()
         .id("zoom-control")
@@ -2790,8 +2792,8 @@ fn zoom_control(
         .p(px(chrome::ZOOM_PAD))
         .shadow_lg()
         .child(icon_button::with_tooltip(
-            "Zoom Out",
-            icon_button::compact_sm("zoom-out", "minus")
+            zoom_out_name,
+            icon_button::compact_sm("zoom-out", "minus", zoom_out_name)
                 .width(px(ZOOM_BUTTON_SIZE))
                 .height(px(ZOOM_BUTTON_SIZE))
                 .is_disabled(zoom <= MIN_ZOOM)
@@ -2812,8 +2814,8 @@ fn zoom_control(
             ),
         )
         .child(icon_button::with_tooltip(
-            "Zoom In",
-            icon_button::compact_sm("zoom-in", "plus")
+            zoom_in_name,
+            icon_button::compact_sm("zoom-in", "plus", zoom_in_name)
                 .width(px(ZOOM_BUTTON_SIZE))
                 .height(px(ZOOM_BUTTON_SIZE))
                 .is_disabled(zoom >= MAX_ZOOM)

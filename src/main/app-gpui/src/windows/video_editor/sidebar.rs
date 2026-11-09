@@ -5,6 +5,7 @@ use crate::config::shortcuts::VideoEditorSidebarShortcuts;
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
+use crate::ui::icon_button;
 use crate::windows::video_editor::VideoEditorWindow;
 use herogpui::components::{Button, Size, Tooltip, Variant};
 
@@ -178,11 +179,8 @@ pub fn tab_rail(
 
     for tab in SidebarTab::ALL {
         let shortcut = tab.shortcut(shortcuts);
-        let tooltip = if shortcut.is_empty() {
-            tab.label().to_string()
-        } else {
-            format!("{} ({})", tab.label(), shortcut.to_uppercase())
-        };
+        let label = tab.label();
+        let tooltip = icon_button::hinted(label, &shortcut.to_uppercase());
         rail = rail.child(
             Tooltip::new(tooltip).child(
                 Button::new(SharedString::from(format!("video-tab-{}", tab.id())))
@@ -193,6 +191,7 @@ pub fn tab_rail(
                     })
                     .size(Size::Sm)
                     .is_icon_only(true)
+                    .aria_label(label)
                     .child(icon_element(tab.icon(), px(16.0)))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
                         this.activate_tab(tab, cx);

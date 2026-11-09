@@ -155,6 +155,7 @@ fn overlay_action(
             Button::new(id)
                 .variant(Variant::Ghost)
                 .is_icon_only(true)
+                .aria_label(tooltip)
                 .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
                 .bg(resting)
                 .text_color(foreground)
@@ -409,6 +410,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                 Button::new(view.element_id("history-row-reveal"))
                     .variant(Variant::Ghost)
                     .is_icon_only(true)
+                    .aria_label("Show in folder")
                     .child(icon_element(
                         "folder-open",
                         px(chrome::HISTORY_ITEM_ACTION_ICON),
@@ -427,6 +429,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                 Button::new(view.element_id("history-row-delete"))
                     .variant(Variant::Ghost)
                     .is_icon_only(true)
+                    .aria_label("Delete")
                     .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
                     .text_color(foreground)
                     .hover_bg(surface_hover)

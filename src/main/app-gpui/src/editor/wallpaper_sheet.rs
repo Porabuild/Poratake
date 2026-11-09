@@ -223,7 +223,7 @@ fn background_editor_panel(
                         }),
                 )
                 .child(
-                    icon_button::compact_sm_muted("wallpaper-editor-close", "x")
+                    icon_button::compact_sm_muted("wallpaper-editor-close", "x", "Close")
                         .on_press(move |_event, window, cx| close(window, cx)),
                 ),
         )
@@ -469,6 +469,7 @@ fn editor_colors(
                         "wallpaper-editor-remove-{index}"
                     ))),
                     "trash-2",
+                    "Remove color",
                 )
                 .on_press(move |_event, window, cx| remove(window, cx)),
             );
@@ -638,6 +639,7 @@ fn editor_image(
 
 fn header(handlers: &EditorHandlers, theme: &ThemeVars) -> AnyElement {
     let close = handlers.option(EditorOption::Tool(crate::ui::colors::Tool::Select));
+    let close_name = "Close";
     div()
         .flex()
         .flex_row()
@@ -651,8 +653,8 @@ fn header(handlers: &EditorHandlers, theme: &ThemeVars) -> AnyElement {
                 .child("Wallpaper"),
         )
         .child(icon_button::with_tooltip(
-            "Close",
-            icon_button::compact_sm("wallpaper-sheet-close", "x")
+            close_name,
+            icon_button::compact_sm("wallpaper-sheet-close", "x", close_name)
                 .on_press(move |_event: &ClickEvent, window, cx| close(window, cx)),
         ))
         .into_any_element()
@@ -680,7 +682,7 @@ fn preset_save_panel(
                 .justify_between()
                 .child(label("Save Preset", theme, false))
                 .child(
-                    icon_button::compact_sm_muted("wallpaper-preset-cancel", "x")
+                    icon_button::compact_sm_muted("wallpaper-preset-cancel", "x", "Cancel")
                         .on_press(move |_event, window, cx| cancel(window, cx)),
                 ),
         )
@@ -813,14 +815,16 @@ fn preset_manager(
         let is_default = default_id == Some(selected_id);
         let toggle = handlers.option(EditorOption::WallpaperToggleDefaultPreset);
         let delete = handlers.option(EditorOption::WallpaperDeletePreset);
+        let star_name = if is_default {
+            "Stop using this preset for Polish"
+        } else {
+            "Use this preset for Polish"
+        };
+        let delete_name = "Delete preset";
         row = row
             .child(icon_button::with_tooltip(
-                if is_default {
-                    "Stop using this preset for Polish"
-                } else {
-                    "Use this preset for Polish"
-                },
-                icon_button::compact_sm("wallpaper-preset-star", "star")
+                star_name,
+                icon_button::compact_sm("wallpaper-preset-star", "star", star_name)
                     .text_color(if is_default {
                         theme.primary
                     } else {
@@ -829,8 +833,8 @@ fn preset_manager(
                     .on_press(move |_event, window, cx| toggle(window, cx)),
             ))
             .child(icon_button::with_tooltip(
-                "Delete preset",
-                icon_button::compact_sm_muted("wallpaper-preset-delete", "trash-2")
+                delete_name,
+                icon_button::compact_sm_muted("wallpaper-preset-delete", "trash-2", delete_name)
                     .on_press(move |_event, window, cx| delete(window, cx)),
             ));
     }
@@ -868,23 +872,26 @@ fn backgrounds_section(
         let edit = handlers.option(EditorOption::WallpaperEditorOpen(Some(SharedString::from(
             custom.id.clone(),
         ))));
+        let edit_name = "Edit";
         actions = actions.child(icon_button::with_tooltip(
-            "Edit",
-            icon_button::compact_sm_muted("wallpaper-custom-edit", "pencil")
+            edit_name,
+            icon_button::compact_sm_muted("wallpaper-custom-edit", "pencil", edit_name)
                 .on_press(move |_event, window, cx| edit(window, cx)),
         ));
         let delete = handlers.option(EditorOption::WallpaperDeleteCustom(SharedString::from(
             custom.id.clone(),
         )));
+        let delete_name = "Delete";
         actions = actions.child(icon_button::with_tooltip(
-            "Delete",
-            icon_button::compact_sm_muted("wallpaper-custom-delete", "trash-2")
+            delete_name,
+            icon_button::compact_sm_muted("wallpaper-custom-delete", "trash-2", delete_name)
                 .on_press(move |_event, window, cx| delete(window, cx)),
         ));
     }
+    let add_name = "Add Background";
     actions = actions.child(icon_button::with_tooltip(
-        "Add Background",
-        icon_button::compact_sm_muted("wallpaper-add-background", "plus")
+        add_name,
+        icon_button::compact_sm_muted("wallpaper-add-background", "plus", add_name)
             .on_press(move |_event, window, cx| add(window, cx)),
     ));
 

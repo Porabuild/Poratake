@@ -59,14 +59,10 @@ fn separator(theme: &crate::theme::vars::ThemeVars) -> herogpui::Separator {
 fn tool_button(tool: Tool, shortcut: &str, active: bool, handlers: &EditorHandlers) -> AnyElement {
     let name = tool.label();
     let select = handlers.option(EditorOption::Tool(tool));
-    let tooltip = if shortcut.is_empty() {
-        name.to_string()
-    } else {
-        format!("{name} ({})", shortcut.to_uppercase())
-    };
+    let tooltip = icon_button::hinted(name, &shortcut.to_uppercase());
     icon_button::with_tooltip(
         tooltip,
-        icon_button::compact(tool.id(), tool.icon())
+        icon_button::compact(tool.id(), tool.icon(), name)
             .variant(if active {
                 Variant::Tertiary
             } else {
@@ -79,15 +75,16 @@ fn tool_button(tool: Tool, shortcut: &str, active: bool, handlers: &EditorHandle
 fn compact_action(
     id: &'static str,
     icon: &'static str,
-    tooltip: String,
+    label: &'static str,
+    hint: String,
     action: EditorAction,
     handlers: &EditorHandlers,
     disabled: bool,
 ) -> AnyElement {
     let run = handlers.action(action);
     icon_button::with_tooltip(
-        tooltip,
-        icon_button::compact(id, icon)
+        icon_button::hinted(label, &hint),
+        icon_button::compact(id, icon, label)
             .is_disabled(disabled)
             .on_press(move |_event, window, cx| run(window, cx)),
     )
@@ -96,20 +93,24 @@ fn compact_action(
 fn action_button(
     id: &'static str,
     icon: &'static str,
-    tooltip: String,
+    label: &'static str,
+    hint: String,
     action: EditorAction,
     handlers: &EditorHandlers,
     disabled: bool,
     size: impl Fn(Button) -> Button,
 ) -> AnyElement {
-    action_button_spinning(id, icon, tooltip, action, handlers, disabled, size, false)
+    action_button_spinning(
+        id, icon, label, hint, action, handlers, disabled, size, false,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn action_button_spinning(
     id: &'static str,
     icon: &'static str,
-    tooltip: String,
+    label: &'static str,
+    hint: String,
     action: EditorAction,
     handlers: &EditorHandlers,
     disabled: bool,
@@ -125,9 +126,10 @@ fn action_button_spinning(
     } else {
         icon_element(icon, px(chrome::TOOL_BUTTON_ICON))
     };
-    herogpui::components::Tooltip::new(tooltip)
+    herogpui::components::Tooltip::new(icon_button::hinted(label, &hint))
         .child(
             size(Button::new(id))
+                .aria_label(label)
                 .variant(Variant::Ghost)
                 .child(glyph)
                 .is_disabled(disabled)
@@ -190,12 +192,16 @@ impl RenderOnce for TitleBar {
 
         {
             let capture = handlers.action(EditorAction::CaptureToggle);
+            let name = "Capture & Attach";
             tools = tools.child(icon_button::with_tooltip(
-                format!(
-                    "Capture & Attach (hold {} for edge picker)",
-                    accelerator::primary_modifier_label()
+                icon_button::hinted(
+                    name,
+                    &format!(
+                        "hold {} for edge picker",
+                        accelerator::primary_modifier_label()
+                    ),
                 ),
-                icon_button::compact("tool-capture", "camera")
+                icon_button::compact("tool-capture", "camera", name)
                     .variant(if self.is_capture_mode {
                         Variant::Tertiary
                     } else {
@@ -210,7 +216,8 @@ impl RenderOnce for TitleBar {
             .child(compact_action(
                 "undo",
                 "rotate-ccw",
-                format!("Undo ({})", accelerator::display("CommandOrControl+Z")),
+                "Undo",
+                accelerator::display("CommandOrControl+Z"),
                 EditorAction::Undo,
                 &handlers,
                 !self.can_undo,
@@ -218,10 +225,8 @@ impl RenderOnce for TitleBar {
             .child(compact_action(
                 "redo",
                 "rotate-cw",
-                format!(
-                    "Redo ({})",
-                    accelerator::display("CommandOrControl+Shift+Z")
-                ),
+                "Redo",
+                accelerator::display("CommandOrControl+Shift+Z"),
                 EditorAction::Redo,
                 &handlers,
                 !self.can_redo,
@@ -229,7 +234,8 @@ impl RenderOnce for TitleBar {
             .child(action_button(
                 "action-copy",
                 if self.is_copied { "check" } else { "copy" },
-                format!("Copy ({})", accelerator::display("CommandOrControl+C")),
+                "Copy",
+                accelerator::display("CommandOrControl+C"),
                 EditorAction::Copy,
                 &handlers,
                 false,
@@ -238,7 +244,8 @@ impl RenderOnce for TitleBar {
             .child(action_button(
                 "action-save",
                 "save",
-                format!("Save ({})", accelerator::display("CommandOrControl+S")),
+                "Save",
+                accelerator::display("CommandOrControl+S"),
                 EditorAction::Save,
                 &handlers,
                 false,
@@ -253,10 +260,8 @@ impl RenderOnce for TitleBar {
                 } else {
                     "cloud-upload"
                 },
-                match accelerator::display(&self.cloud_upload_shortcut) {
-                    hint if hint.is_empty() => "Upload to Cloud".to_string(),
-                    hint => format!("Upload to Cloud ({hint})"),
-                },
+                "Upload to Cloud",
+                accelerator::display(&self.cloud_upload_shortcut),
                 EditorAction::CloudUpload,
                 &handlers,
                 self.is_uploading,
@@ -266,7 +271,8 @@ impl RenderOnce for TitleBar {
             .child(action_button(
                 "action-pin",
                 "pin",
-                "Pin Screenshot".to_string(),
+                "Pin Screenshot",
+                String::new(),
                 EditorAction::Pin,
                 &handlers,
                 false,

@@ -46,6 +46,9 @@ pub fn render(
 ) -> AnyElement {
     let can_zoom_out = state.pixels_per_second > MIN_PIXELS_PER_SECOND;
     let can_zoom_in = state.pixels_per_second < MAX_PIXELS_PER_SECOND;
+    let play_name = if state.is_playing { "Pause" } else { "Play" };
+    let cut_name = "Cut Tool";
+    let delete_name = "Delete Segment";
 
     let mut bar = div()
         .flex()
@@ -56,12 +59,7 @@ pub fn render(
         .border_b_1()
         .border_color(theme.border)
         .child(
-            Tooltip::new(if state.is_playing {
-                "Pause (Space)"
-            } else {
-                "Play (Space)"
-            })
-            .child(
+            Tooltip::new(icon_button::hinted(play_name, "Space")).child(
                 Button::new("timeline-play")
                     .child(crate::ui::icon::icon_element(
                         if state.is_playing { "pause" } else { "play" },
@@ -70,12 +68,13 @@ pub fn render(
                     .variant(Variant::Ghost)
                     .size(Size::Md)
                     .is_icon_only(true)
+                    .aria_label(play_name)
                     .on_press(cx.listener(|this, _event, _window, cx| this.toggle_playback(cx))),
             ),
         )
         .child(separator(theme))
         .child(
-            Tooltip::new("Cut Tool (C)").child(
+            Tooltip::new(icon_button::hinted(cut_name, "C")).child(
                 Button::new("timeline-cut")
                     .child(crate::ui::icon::icon_element("scissors", px(16.0)))
                     .variant(if state.is_cut_tool_active {
@@ -85,18 +84,20 @@ pub fn render(
                     })
                     .size(Size::Md)
                     .is_icon_only(true)
+                    .aria_label(cut_name)
                     .on_press(cx.listener(|this, _event, _window, cx| this.toggle_cut_tool(cx))),
             ),
         );
 
     if state.has_selected_segment && state.can_delete_segment {
         bar = bar.child(separator(theme)).child(
-            Tooltip::new("Delete Segment (Backspace)").child(
+            Tooltip::new(icon_button::hinted(delete_name, "Backspace")).child(
                 Button::new("timeline-delete-segment")
                     .child(crate::ui::icon::icon_element("trash-2", px(16.0)))
                     .variant(Variant::Ghost)
                     .size(Size::Md)
                     .is_icon_only(true)
+                    .aria_label(delete_name)
                     .recipe("danger-text")
                     .on_press(
                         cx.listener(|this, _event, _window, cx| this.delete_selected_segment(cx)),
@@ -135,6 +136,9 @@ pub fn render(
         ));
     }
 
+    let zoom_out_name = "Zoom Out";
+    let zoom_in_name = "Zoom In";
+    let fit_name = "Fit to View";
     bar.child(div().flex_1())
         .child(separator(theme))
         .child(
@@ -144,9 +148,9 @@ pub fn render(
                 .items_center()
                 .gap(px(4.0))
                 .child(toolbar::tooltip_button(
-                    icon_button::compact_sm("timeline-zoom-out", "minus")
+                    icon_button::compact_sm("timeline-zoom-out", "minus", zoom_out_name)
                         .is_disabled(!can_zoom_out),
-                    format!("Zoom Out ({})", accelerator::display("CommandOrControl+-")),
+                    icon_button::hinted(zoom_out_name, &accelerator::display("CommandOrControl+-")),
                     cx,
                     |this, _window, cx| this.zoom_timeline_out(cx),
                 ))
@@ -165,14 +169,15 @@ pub fn render(
                     ),
                 )
                 .child(toolbar::tooltip_button(
-                    icon_button::compact_sm("timeline-zoom-in", "plus").is_disabled(!can_zoom_in),
-                    format!("Zoom In ({})", accelerator::display("CommandOrControl+=")),
+                    icon_button::compact_sm("timeline-zoom-in", "plus", zoom_in_name)
+                        .is_disabled(!can_zoom_in),
+                    icon_button::hinted(zoom_in_name, &accelerator::display("CommandOrControl+=")),
                     cx,
                     |this, _window, cx| this.zoom_timeline_in(cx),
                 ))
                 .child(toolbar::tooltip_button(
-                    icon_button::compact_sm("timeline-fit", "maximize-2"),
-                    "Fit to View (F)",
+                    icon_button::compact_sm("timeline-fit", "maximize-2", fit_name),
+                    icon_button::hinted(fit_name, "F"),
                     cx,
                     |this, _window, cx| this.fit_timeline_to_view(cx),
                 )),
@@ -214,6 +219,7 @@ pub fn render(
                     .variant(Variant::Ghost)
                     .size(Size::Md)
                     .is_icon_only(true)
+                    .aria_label("Keyboard shortcuts")
                     .recipe("muted"),
             ),
         )
@@ -228,14 +234,16 @@ fn speed_selector(
     let presets = crate::windows::video_editor::timeline::SPEED_PRESETS;
     let at_min = speed <= presets[0];
     let at_max = speed >= presets[presets.len() - 1];
+    let down_name = "Decrease speed";
+    let up_name = "Increase speed";
     div()
         .flex()
         .flex_row()
         .items_center()
         .gap(px(2.0))
         .child(toolbar::tooltip_button(
-            icon_button::compact_sm("timeline-speed-down", "minus").is_disabled(at_min),
-            "Decrease speed",
+            icon_button::compact_sm("timeline-speed-down", "minus", down_name).is_disabled(at_min),
+            down_name,
             cx,
             |this, _window, cx| this.step_selected_segment_speed(-1, cx),
         ))
@@ -250,8 +258,8 @@ fn speed_selector(
                 )),
         )
         .child(toolbar::tooltip_button(
-            icon_button::compact_sm("timeline-speed-up", "plus").is_disabled(at_max),
-            "Increase speed",
+            icon_button::compact_sm("timeline-speed-up", "plus", up_name).is_disabled(at_max),
+            up_name,
             cx,
             |this, _window, cx| this.step_selected_segment_speed(1, cx),
         ))

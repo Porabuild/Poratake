@@ -37,11 +37,12 @@ pub fn hairline(theme: &ThemeVars) -> AnyElement {
         .into_any_element()
 }
 
-pub fn button(id: impl Into<ElementId>) -> Button {
+pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     Button::new(id)
         .variant(Variant::Ghost)
         .size(Size::Sm)
         .is_icon_only(true)
+        .aria_label(label)
         .recipe("overlay")
 }
 
@@ -59,8 +60,12 @@ pub fn desktop_selected(button: Button, selected: bool, theme: &ThemeVars) -> Bu
     button.bg(resting).text_color(foreground).hover_bg(hover)
 }
 
-pub fn icon(id: impl Into<ElementId>, icon: &'static str) -> Button {
-    desktop(button(id).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))))
+pub fn icon(
+    id: impl Into<ElementId>,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+) -> Button {
+    desktop(button(id, label).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))))
 }
 
 pub fn selected_icon(
@@ -68,9 +73,10 @@ pub fn selected_icon(
     icon: &'static str,
     selected: bool,
     theme: &ThemeVars,
+    label: impl Into<SharedString>,
 ) -> Button {
     desktop_selected(
-        button(id).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))),
+        button(id, label).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))),
         selected,
         theme,
     )

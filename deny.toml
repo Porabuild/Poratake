@@ -42,6 +42,9 @@ ignore = [
   { id = "RUSTSEC-2024-0419", reason = "gtk3-macros is unmaintained but only used to build tray-icon's Linux GTK3 AppIndicator backend; no safe upgrade exists" },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained but only used by the Linux GTK3 build-time macros; no safe upgrade exists" },
   { id = "RUSTSEC-2024-0429", reason = "glib VariantStrIter is unsound but that API is not referenced by Poratake or the tray-icon GTK3 closure; tray-icon cannot yet use fixed glib 0.20" },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained but only reachable on Linux through the D-Bus stack (zbus, atspi, accesskit_unix, ashpd, oo7, notify-rust) that gpui-pre-linux and rfd's desktop-portal backend pull in; no safe upgrade exists" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained but only reachable on Linux through the D-Bus stack (zbus, atspi, accesskit_unix, ashpd, oo7, notify-rust) that gpui-pre-linux and rfd's desktop-portal backend pull in; no safe upgrade exists" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained but only used at build time by zvariant on Linux (the D-Bus stack that gpui-pre-linux and rfd's desktop-portal backend pull in); no safe upgrade exists" },
 ]
 
 [bans]
