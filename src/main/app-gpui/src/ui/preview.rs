@@ -141,6 +141,12 @@ fn chip(
         .when(icon_only, |button| button.aria_label(tooltip.clone()))
         .is_disabled(disabled)
         .recipe(recipe)
+        .height(px(chrome::PREVIEW_PILL_HEIGHT))
+        .padding_x(px(chrome::BUTTON_SM_PAD_X))
+        .text_size(px(chrome::BUTTON_XS_TEXT))
+        .when(icon_only, |button| {
+            button.width(px(chrome::PREVIEW_CONTROL))
+        })
         .bg(surface)
         .text_color(foreground)
         .when(disabled, |el| {

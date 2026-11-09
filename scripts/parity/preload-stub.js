@@ -3,16 +3,16 @@
 //
 // Loaded by `vite.renderer.mts` before the renderer entrypoint.
 //
-window.appPlatform = 'win32';
+const query = new URLSearchParams(location.search);
+window.appPlatform = query.get('platform') || 'win32';
 
 const APPEARANCE = { mode: 'dark', theme: 'default' };
 const SHORTCUTS = undefined; // undefined => the renderer's own defaults
 
-const query = new URLSearchParams(location.search);
 const TYPE = query.get('window') || 'settings';
 /// `?image=/@fs/C:/path/to/capture.png` for the windows that show one.
 const IMAGE = query.get('image');
-const FILE = query.get('file') || 'C:\\parity.mp4';
+const FILE = query.has('file') ? query.get('file') : 'C:\\parity.mp4';
 const isList = channel => /list$|:list/.test(channel);
 
 const windowParams = async () => {
@@ -27,8 +27,6 @@ const windowParams = async () => {
           closeOnSave: false,
           format: 'png',
         },
-        editorShortcuts: {},
-        editorActionShortcuts: {},
       };
     case 'video-editor':
       return { filePath: FILE };
@@ -112,6 +110,33 @@ window.ipcRenderer = {
         : { appearance: APPEARANCE };
     }
     if (channel === 'settings:get-appearance') return APPEARANCE;
+    if (channel === 'video-editor:getVideoMetadata') {
+      return {
+        width: 1280,
+        height: 720,
+        duration: 12,
+        fileSize: 0,
+        bitrate: 0,
+      };
+    }
+    if (
+      [
+        'video-editor:getState',
+        'video-editor:getCursorData',
+        'video-editor:getCameraData',
+        'video-editor:getKeyboardData',
+        'video-editor:getSubtitleData',
+      ].includes(channel)
+    ) {
+      return null;
+    }
+    if (channel === 'video-editor:getAudioPaths') {
+      return {
+        systemAudioPath: null,
+        micAudioPath: null,
+        hasEmbeddedAudio: false,
+      };
+    }
     // A handful of channels are read as arrays or strings rather than merged
     // over a default, so an empty object would throw.
     // The image editor loads its capture as base64 over IPC, so serve the

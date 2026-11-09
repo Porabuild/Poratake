@@ -7,6 +7,7 @@
 use gpui::{div, prelude::*, px, AnyElement, Context, ElementId, SharedString, Styled};
 
 use crate::theme::vars::ThemeVars;
+use crate::ui::button::CompactButton;
 use crate::ui::menu::MenuHandle;
 use crate::ui::rows;
 use crate::windows::video_editor::styles;
@@ -582,7 +583,7 @@ pub fn reset_named(
 ) -> AnyElement {
     Button::new(id)
         .variant(Variant::Ghost)
-        .recipe("compact")
+        .compact()
         .recipe("muted")
         .label(label)
         .full_width(true)
@@ -603,7 +604,7 @@ pub fn tertiary_button(
     let _ = theme;
     rows::icon_text_button(id, label, icon, 14.0, 8.0)
         .variant(Variant::Tertiary)
-        .recipe("compact")
+        .compact()
         .is_disabled(disabled)
         .full_width(true)
         .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
@@ -620,7 +621,7 @@ pub fn tertiary_text_button(
 ) -> AnyElement {
     let mut button = Button::new(id)
         .variant(Variant::Tertiary)
-        .recipe("compact")
+        .compact()
         .label(label)
         .is_disabled(disabled)
         .full_width(true);
@@ -641,7 +642,7 @@ pub fn tertiary_spinner_button(
     let label = label.into();
     Button::new(id)
         .variant(Variant::Tertiary)
-        .recipe("compact")
+        .compact()
         .label(label.clone())
         .is_disabled(true)
         .full_width(true)

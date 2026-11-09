@@ -1025,7 +1025,7 @@ impl VideoEditorWindow {
     }
 
     /// Builds the window without opening one, for the headless render tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "parity"))]
     pub fn new_for_test(path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         Self::new(path, cx)
     }

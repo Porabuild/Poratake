@@ -8,6 +8,7 @@ use gpui::{div, prelude::*, px, AnyElement, Context, Entity, SharedString, Style
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
+use crate::ui::button::CompactButton;
 use crate::ui::icon::icon_element;
 use crate::video::project;
 use crate::video::sidecars::{CursorData, SubtitleData};
@@ -286,7 +287,7 @@ pub fn render(
                                 .child(
                                     Button::new("data-editor-template")
                                         .variant(Variant::Ghost)
-                                        .recipe("compact")
+                                        .compact()
                                         .label("Load Template")
                                         .on_press(cx.listener(|this, _event, _window, cx| {
                                             this.load_data_editor_template(cx)
@@ -295,7 +296,7 @@ pub fn render(
                                 .child(
                                     Button::new("data-editor-example")
                                         .variant(Variant::Ghost)
-                                        .recipe("compact")
+                                        .compact()
                                         .label("Load Example")
                                         .on_press(cx.listener(|this, _event, _window, cx| {
                                             this.load_data_editor_example(cx)

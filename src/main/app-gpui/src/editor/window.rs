@@ -21,6 +21,7 @@ use crate::editor::options::{
 use crate::editor::title_bar::TitleBar;
 use crate::editor::tool_options::ToolOptionsState;
 use crate::theme::vars::active_theme;
+use crate::ui::button::CompactButton;
 use crate::ui::chrome;
 use crate::ui::colors::Tool;
 use crate::ui::icon_button;
@@ -2804,7 +2805,7 @@ fn zoom_control(
                 herogpui::components::Tooltip::new("Reset Zoom").child(
                     Button::new("zoom-reset")
                         .variant(Variant::Ghost)
-                        .recipe("compact")
+                        .compact()
                         .recipe("muted")
                         .full_width(true)
                         .height(px(ZOOM_BUTTON_SIZE))

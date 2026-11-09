@@ -3,13 +3,12 @@ use gpui::App;
 use gpui::{
     div, prelude::*, px, AnyElement, Context, Div, ElementId, SharedString, Styled, Window,
 };
-use herogpui::components::{Button, Size, Variant};
+use herogpui::components::{Button, Size, Tooltip, TooltipPlacement, Variant};
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
-use crate::ui::icon_button;
 
 pub fn surface(theme: &ThemeVars) -> Div {
     div()
@@ -88,12 +87,25 @@ pub fn tooltip_button<V: 'static>(
     cx: &mut Context<V>,
     on_click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> AnyElement {
-    icon_button::with_tooltip(
-        tooltip,
-        button.on_press(cx.listener(move |this, _event, window, cx| {
-            on_click(this, window, cx);
-        })),
-    )
+    tooltip_button_at(button, TooltipPlacement::Top, tooltip, cx, on_click)
+}
+
+pub fn tooltip_button_at<V: 'static>(
+    button: Button,
+    placement: TooltipPlacement,
+    tooltip: impl Into<SharedString>,
+    cx: &mut Context<V>,
+    on_click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> AnyElement {
+    Tooltip::new(tooltip)
+        .placement(placement)
+        .sx(|el| el.flex_shrink_0())
+        .child(
+            button.on_press(cx.listener(move |this, _event, window, cx| {
+                on_click(this, window, cx);
+            })),
+        )
+        .into_any_element()
 }
 
 pub fn selected_surfaces(

@@ -8,7 +8,6 @@
 //! `set_theme`. The two layers then agree on every token the components touch.
 
 use super::vars::ThemeVars;
-use gpui::prelude::*;
 use herogpui::gpui;
 use herogpui::theme::{
     ButtonStyle, ComponentColor, ComponentTheme, ComponentThemes, MenuStyle, SelectStyle,
@@ -102,19 +101,6 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
         .button(
             ComponentTheme::new(ButtonStyle::default())
                 .recipe(
-                    "compact",
-                    ButtonStyle::default().style(|el| {
-                        el.h(gpui::px(28.0))
-                            .px(gpui::px(10.0))
-                            .text_size(gpui::px(12.0))
-                            .line_height(gpui::px(16.0))
-                    }),
-                )
-                .recipe(
-                    "compact-icon",
-                    ButtonStyle::default().style(|el| el.size(gpui::px(28.0)).p(gpui::px(0.0))),
-                )
-                .recipe(
                     "muted",
                     ButtonStyle::default().foreground(ComponentColor::Muted),
                 )
@@ -129,40 +115,14 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                         .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS)),
                 )
                 .recipe(
-                    "chip",
-                    ButtonStyle::default().style(|el| {
-                        el.h(gpui::px(crate::ui::chrome::HISTORY_CHIP_HEIGHT))
-                            .px(gpui::px(crate::ui::chrome::HISTORY_CHIP_PAD_X))
-                            .text_size(gpui::px(12.0))
-                            .line_height(gpui::px(16.0))
-                            .gap(gpui::px(crate::ui::chrome::HISTORY_CHIP_ICON_GAP))
-                    }),
-                )
-                .recipe(
-                    "chip-icon",
-                    ButtonStyle::default().style(|el| {
-                        el.size(gpui::px(crate::ui::chrome::HISTORY_CHIP_HEIGHT))
-                            .p(gpui::px(0.0))
-                    }),
-                )
-                .recipe(
                     "preview",
                     ButtonStyle::default()
-                        .radius(gpui::px(crate::ui::chrome::PREVIEW_CONTROL / 2.0))
-                        .style(|el| {
-                            el.size(gpui::px(crate::ui::chrome::PREVIEW_CONTROL))
-                                .p(gpui::px(0.0))
-                        }),
+                        .radius(gpui::px(crate::ui::chrome::PREVIEW_CONTROL / 2.0)),
                 )
                 .recipe(
                     "preview-pill",
                     ButtonStyle::default()
-                        .radius(gpui::px(crate::ui::chrome::PREVIEW_PILL_HEIGHT / 2.0))
-                        .style(|el| {
-                            el.h(gpui::px(crate::ui::chrome::PREVIEW_PILL_HEIGHT))
-                                .px(gpui::px(crate::ui::chrome::BUTTON_SM_PAD_X))
-                                .text_size(gpui::px(crate::ui::chrome::BUTTON_XS_TEXT))
-                        }),
+                        .radius(gpui::px(crate::ui::chrome::PREVIEW_PILL_HEIGHT / 2.0)),
                 ),
         )
         .text_field(
@@ -608,8 +568,6 @@ mod tests {
         );
         assert_eq!(accent.panel_min_width, Some(gpui::px(MENU_MIN_WIDTH)));
         assert_eq!(accent.panel_max_height, Some(gpui::px(MENU_MAX_HEIGHT)));
-        let button = theme.components.button.resolve(&["compact".into()]);
-        assert!(button.style.is_some());
         let missing = theme.components.button.resolve(&["does-not-exist".into()]);
         assert!(missing.style.is_none());
         let search = theme.components.text_field.resolve(&["search".into()]);
@@ -630,8 +588,6 @@ mod tests {
             danger_text.foreground,
             Some(ComponentColor::Literal(vars.destructive))
         );
-        let chip = theme.components.button.resolve(&["chip".into()]);
-        assert!(chip.style.is_some());
         let preview = theme.components.button.resolve(&["preview".into()]);
         assert_eq!(
             preview.radius,

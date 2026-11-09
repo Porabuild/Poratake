@@ -5,6 +5,7 @@ use gpui::{div, prelude::*, px, AnyElement, Context, ElementId, SharedString, St
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
+use crate::ui::button::CompactButton;
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, spinner_element};
 use crate::ui::icon_button;
@@ -520,7 +521,7 @@ impl SettingsWindow {
                     Button::new(SharedString::from(format!("naming-token-{insert}")))
                         .variant(Variant::Ghost)
                         .label(insert)
-                        .recipe("compact")
+                        .compact()
                         .recipe("muted")
                         .on_press(cx.listener(move |this, _event, _window, cx| {
                             this.append_naming_token(insert, cx);
@@ -680,7 +681,7 @@ impl SettingsWindow {
             .child(
                 rows::icon_text_button("rest-header-add", "Add header", "plus", 14.0, 8.0)
                     .variant(Variant::Secondary)
-                    .recipe("compact")
+                    .compact()
                     .on_press(cx.listener(|this, _event, _window, cx| this.add_rest_header(cx))),
             )
             .into_any_element()

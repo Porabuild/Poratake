@@ -10,6 +10,9 @@ description = "Poratake native shell (GPUI)"
 name = "poratake-gpui"
 path = "src/main.rs"
 
+[features]
+parity = ["herogpui/test-support"]
+
 [dependencies]
 poratake-daemon-common = { path = "../daemon-common" }
 herogpui.workspace = true

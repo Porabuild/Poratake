@@ -60,16 +60,23 @@ fn tool_button(tool: Tool, shortcut: &str, active: bool, handlers: &EditorHandle
     let name = tool.label();
     let select = handlers.option(EditorOption::Tool(tool));
     let tooltip = icon_button::hinted(name, &shortcut.to_uppercase());
-    icon_button::with_tooltip(
-        tooltip,
-        icon_button::compact(tool.id(), tool.icon(), name)
-            .variant(if active {
-                Variant::Tertiary
-            } else {
-                Variant::Ghost
-            })
-            .on_press(move |_event, window, cx| select(window, cx)),
-    )
+    herogpui::components::Tooltip::new(tooltip)
+        .placement(if tool == Tool::Pen && !chrome::is_macos() {
+            herogpui::components::TooltipPlacement::BottomStart
+        } else {
+            herogpui::components::TooltipPlacement::Bottom
+        })
+        .sx(|el| el.flex_shrink_0())
+        .child(
+            icon_button::compact(tool.id(), tool.icon(), name)
+                .variant(if active {
+                    Variant::Tertiary
+                } else {
+                    Variant::Ghost
+                })
+                .on_press(move |_event, window, cx| select(window, cx)),
+        )
+        .into_any_element()
 }
 
 fn compact_action(
@@ -82,7 +89,7 @@ fn compact_action(
     disabled: bool,
 ) -> AnyElement {
     let run = handlers.action(action);
-    icon_button::with_tooltip(
+    icon_button::with_tooltip_below(
         icon_button::hinted(label, &hint),
         icon_button::compact(id, icon, label)
             .is_disabled(disabled)
@@ -127,6 +134,11 @@ fn action_button_spinning(
         icon_element(icon, px(chrome::TOOL_BUTTON_ICON))
     };
     herogpui::components::Tooltip::new(icon_button::hinted(label, &hint))
+        .placement(if action == EditorAction::Pin {
+            herogpui::components::TooltipPlacement::BottomEnd
+        } else {
+            herogpui::components::TooltipPlacement::Bottom
+        })
         .child(
             size(Button::new(id))
                 .aria_label(label)
@@ -193,7 +205,7 @@ impl RenderOnce for TitleBar {
         {
             let capture = handlers.action(EditorAction::CaptureToggle);
             let name = "Capture & Attach";
-            tools = tools.child(icon_button::with_tooltip(
+            tools = tools.child(icon_button::with_tooltip_below(
                 icon_button::hinted(
                     name,
                     &format!(

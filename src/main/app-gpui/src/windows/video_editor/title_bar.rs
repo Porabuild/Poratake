@@ -3,10 +3,10 @@ use herogpui::gpui;
 
 use crate::system::accelerator;
 use crate::theme::vars::ThemeVars;
+use crate::ui::button::CompactButton;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::icon_button;
-use crate::ui::toolbar;
 use crate::windows::video_editor::VideoEditorWindow;
 use herogpui::components::{Button, Size, Tooltip, TooltipPlacement, Variant};
 
@@ -28,22 +28,6 @@ pub struct TitleBarState {
     pub export_progress: f32,
     pub export_completed: bool,
     pub menu: crate::ui::menu::MenuHandle,
-}
-
-fn tooltip_button_below<V: 'static>(
-    button: Button,
-    tooltip: impl Into<SharedString>,
-    cx: &mut Context<V>,
-    on_click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
-) -> AnyElement {
-    Tooltip::new(tooltip)
-        .placement(TooltipPlacement::Bottom)
-        .child(
-            button.on_press(cx.listener(move |this, _event, window, cx| {
-                on_click(this, window, cx);
-            })),
-        )
-        .into_any_element()
 }
 
 fn progress_ring(progress: f32, theme: &ThemeVars) -> AnyElement {
@@ -210,7 +194,7 @@ pub fn export_popover(
     .child(
         crate::ui::rows::icon_text_button("video-export-popover-cancel", "Cancel", "x", 14.0, 6.0)
             .variant(Variant::Tertiary)
-            .recipe("compact")
+            .compact()
             .full_width(true)
             .on_press(move |_event, window, cx| on_cancel(window, cx)),
     )
@@ -259,7 +243,7 @@ pub fn project_popover(
                 .child(
                     Button::new("video-project-rename-save")
                         .variant(Variant::Primary)
-                        .recipe("compact")
+                        .compact()
                         .label("Save")
                         .on_press(move |_event, window, cx| {
                             let value = submit_field.read(cx).value().to_string();
@@ -304,7 +288,7 @@ pub fn project_popover(
                             6.0,
                         )
                         .variant(Variant::Tertiary)
-                        .recipe("compact")
+                        .compact()
                         .full_width(true)
                         .on_press(move |_event, window, cx| on_copy(window, cx)),
                     ),
@@ -319,7 +303,7 @@ pub fn project_popover(
                             6.0,
                         )
                         .variant(Variant::Tertiary)
-                        .recipe("compact")
+                        .compact()
                         .full_width(true)
                         .on_press(move |_event, window, cx| on_reveal(window, cx)),
                     ),
@@ -351,7 +335,7 @@ pub fn render(
                 .items_center()
                 .child(
                     Tooltip::new(project_name)
-                        .placement(TooltipPlacement::Bottom)
+                        .placement(TooltipPlacement::BottomEnd)
                         .child(
                             icon_button::compact_muted(
                                 PROJECT_POPOVER_ID,
@@ -383,27 +367,31 @@ pub fn render(
         "Show Sidebar"
     };
     actions = actions
-        .child(toolbar::tooltip_button(
+        .child(crate::ui::toolbar::tooltip_button_at(
             icon_button::compact("video-undo", "rotate-ccw", undo_name)
                 .is_disabled(!state.can_undo),
+            TooltipPlacement::Bottom,
             icon_button::hinted(undo_name, &accelerator::display("CommandOrControl+Z")),
             cx,
             |this, _window, cx| this.undo(cx),
         ))
-        .child(toolbar::tooltip_button(
+        .child(crate::ui::toolbar::tooltip_button_at(
             icon_button::compact("video-redo", "rotate-cw", redo_name).is_disabled(!state.can_redo),
+            TooltipPlacement::Bottom,
             icon_button::hinted(redo_name, &accelerator::display("CommandOrControl+Shift+Z")),
             cx,
             |this, _window, cx| this.redo(cx),
         ))
-        .child(tooltip_button_below(
+        .child(crate::ui::toolbar::tooltip_button_at(
             icon_button::compact("video-reset", "refresh-ccw", reset_name),
+            TooltipPlacement::Bottom,
             reset_name,
             cx,
             |this, _window, cx| this.confirm_reset(cx),
         ))
-        .child(tooltip_button_below(
+        .child(crate::ui::toolbar::tooltip_button_at(
             icon_button::compact("video-delete", "trash-2", delete_name),
+            TooltipPlacement::Bottom,
             icon_button::hinted(
                 delete_name,
                 &accelerator::display("CommandOrControl+Backspace"),
@@ -411,7 +399,7 @@ pub fn render(
             cx,
             |this, window, cx| this.delete_recording(window, cx),
         ))
-        .child(tooltip_button_below(
+        .child(crate::ui::toolbar::tooltip_button_at(
             icon_button::compact(
                 "video-toggle-sidebar",
                 if state.is_sidebar_open {
@@ -421,6 +409,7 @@ pub fn render(
                 },
                 sidebar_name,
             ),
+            TooltipPlacement::BottomEnd,
             sidebar_name,
             cx,
             |this, _window, cx| this.toggle_sidebar(cx),

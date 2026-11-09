@@ -1,4 +1,5 @@
 pub mod app_icon;
+pub mod button;
 pub mod chrome;
 pub mod color_picker;
 pub mod colors;
@@ -7,6 +8,8 @@ pub mod icon;
 pub mod icon_button;
 mod lints;
 pub mod menu;
+#[cfg(feature = "parity")]
+pub mod parity;
 pub mod preview;
 pub mod primitives;
 pub mod rows;

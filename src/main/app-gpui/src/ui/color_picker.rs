@@ -6,8 +6,8 @@ use gpui::{
 use herogpui::components::{Button, InputState, Size, Variant};
 use herogpui::gpui;
 use herogpui::{
-    ColorArea, ColorChannel, ColorField, ColorSlider, ColorSpace, ColorSwatchPicker, FieldVariant,
-    PickerColor, SizeXl, SwatchShape,
+    ColorArea, ColorChannel, ColorField, ColorSlider, ColorSpace, ColorSwatch, ColorSwatchPicker,
+    FieldVariant, PickerColor, SizeXl, SwatchShape,
 };
 
 use crate::theme::color::Srgba;
@@ -312,7 +312,7 @@ pub fn trigger(
     cx: &mut App,
 ) -> gpui::Stateful<gpui::Div> {
     let theme = active_theme(cx);
-    let swatch = Srgba::parse(color).to_hsla().opacity(opacity);
+    let swatch = hsv_from_hex(color).to_picker();
     let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
     div()
         .id(id)
@@ -338,13 +338,15 @@ pub fn trigger(
             }
         })
         .child(
-            div()
-                .size(px(chrome::COLOR_SWATCH_XS))
-                .rounded(px(4.0))
-                .bg(swatch),
+            ColorSwatch::new(swatch)
+                .size(SizeXl::Xs)
+                .shape(SwatchShape::Square)
+                .sx(|el| el.flex_none().opacity(opacity)),
         )
         .child(
             div()
+                .flex()
+                .flex_none()
                 .text_color(theme.muted_foreground)
                 .child(crate::ui::icon::chevron_element(
                     px(chrome::TOOL_OPTION_CHEVRON),
@@ -356,6 +358,30 @@ pub fn trigger(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use herogpui::test::TestWindowExt;
+
+    struct Trigger;
+
+    impl Render for Trigger {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            trigger("trigger", "#ff0000", 1.0, false, window, cx)
+                .debug_selector(|| "color-trigger".into())
+        }
+    }
+
+    #[herogpui::test]
+    fn the_closed_trigger_keeps_a_square_swatch(cx: &mut gpui::TestAppContext) {
+        let (_view, cx) = herogpui::test::open_window(cx, |_, _| Trigger);
+        assert_eq!(cx.expect("color-trigger").size.width, px(54.0));
+        let square = cx.update(|window, _| {
+            let edge = 16.0 * window.scale_factor();
+            window.painted_quads().iter().any(|quad| {
+                (quad.bounds.size.width.0 - edge).abs() < 0.01
+                    && (quad.bounds.size.height.0 - edge).abs() < 0.01
+            })
+        });
+        assert!(square, "the swatch must not shrink into a narrow pill");
+    }
 
     fn round_trip(hex: &str) {
         let hsv = hsv_from_hex(hex);

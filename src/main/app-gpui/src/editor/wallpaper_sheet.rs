@@ -16,6 +16,7 @@ use crate::editor::window::{
 };
 use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
+use crate::ui::button::CompactButton;
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, ICON_MD};
 use crate::ui::icon_button;
@@ -722,7 +723,7 @@ fn preset_save_panel(
                 .child(
                     Button::new("wallpaper-preset-cancel-button")
                         .variant(Variant::Ghost)
-                        .recipe("compact")
+                        .compact()
                         .label("Cancel")
                         .grow(true)
                         .on_press({
@@ -732,7 +733,7 @@ fn preset_save_panel(
                 )
                 .child(
                     Button::new("wallpaper-preset-save-button")
-                        .recipe("compact")
+                        .compact()
                         .label("Save")
                         .is_disabled(!can_save)
                         .grow(true)
@@ -770,7 +771,7 @@ fn preset_manager(
                     8.0,
                 )
                 .variant(Variant::Ghost)
-                .recipe("compact")
+                .compact()
                 .recipe("muted")
                 .on_press(move |_event, window, cx| save(window, cx)),
             ),

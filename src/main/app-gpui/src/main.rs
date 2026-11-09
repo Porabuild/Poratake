@@ -104,6 +104,12 @@ pub fn open_editor_for(cx: &mut App, path: &str) -> bool {
 }
 
 fn main() {
+    #[cfg(feature = "parity")]
+    if std::env::args().nth(1).as_deref() == Some("--parity") {
+        ui::parity::capture_editor_interaction_states();
+        return;
+    }
+
     let single_instance = system::single_instance::acquire();
     if single_instance.is_none() {
         eprintln!("[single-instance] another Poratake GPUI instance is running — exiting");
