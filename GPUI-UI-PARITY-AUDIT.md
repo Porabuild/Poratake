@@ -239,7 +239,8 @@ The audio check compares preview stems and a decoded AAC export across a cut and
 speed changes, including two independently checked keyboard clicks after raising
 their volume from zero. It also checks the source tones on both sides of the cut
 and the exported audio duration. A scheduler test covers undoing an edit while
-its audio rebuild is in flight. The native gate passes 970 tests with one skip.
+its audio rebuild is in flight. The native gate passes 971 tests with one skip
+after the Cut All fix.
 Tooltip usage across the GPUI source uses HeroGPUI components and their shared
 helpers; the tray icon retains its OS tooltip.
 The earlier camera/zoom export expansion passed the native gate with 960 tests and one
@@ -400,6 +401,8 @@ Bugs fixed in this pass:
 - Keyboard sounds enabled at zero volume did not become audible in preview when
   the volume increased. Audio rebuilds could also replace an undone timeline with
   a stale result. Both transitions have regression coverage.
+- Cut All split only the first overlapping drawing and audio clip. It now splits
+  each eligible clip, matching Electron and preserving the audio source trims.
 - Shared overlay buttons and recording device triggers used white foregrounds
   on light toolbars in both shells. Foreground and hover colors now follow the
   active theme. Electron light/dark computed styles were checked; browser
