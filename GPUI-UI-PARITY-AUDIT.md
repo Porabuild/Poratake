@@ -141,8 +141,13 @@ at `abc940f` passed 961 native tests with one skip and all 16 cases’ geometry,
 workflow and atlas checks. It rejected the incomplete state list as intended.
 Its 176 new tray/tooltip/Edit-hover images were reviewed, and all 1,928 earlier
 hosted images remained byte-identical. That 2,104-image profile was complete at
-`460ed6f`; its normal hosted comparison remains required. The artifact SHA-256 is
+`460ed6f`. The artifact SHA-256 is
 `53a763a3afcd985d4cba1c731526a88896a6f10ca5b480bc86e9793048e1e42a`.
+
+The next [hosted run](https://github.com/Porabuild/Poratake/actions/runs/42813783806)
+at `460ed6f` passed all jobs. Windows passed 963 native tests with one skip and
+all 16 exact visual cases against the 2,104-image Microsoft Basic Render Driver
+profile. The subsequent attachment-edge expansion still needs its hosted images.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
