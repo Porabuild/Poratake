@@ -27,13 +27,12 @@ and broad surface-level “Match” claims have been removed from this audit.
 
 The existing GPUI 0.3.11 Windows backend is patched from
 `vendor/gpui-pre-windows`, with provenance and the retained Apache-2.0 license in
-`THIRD_PARTY_NOTICES.md`. Only its image shader differs from the published archive;
-all dependency versions remain unchanged.
+`THIRD_PARTY_NOTICES.md`. Its image shader and clipboard handling differ from the
+published archive; all dependency versions remain unchanged.
 
-HeroGPUI components 0.15.1 resolve to `vendor/herogpui-components`. Only
-`src/select.rs` differs from that published archive: its virtual viewport keeps
-the existing panel padding inside the clipping bounds, preserving compact row
-and panel dimensions while leaving room for the focus ring. The archive checksum,
+HeroGPUI components 0.15.1 resolve to `vendor/herogpui-components`. The patched
+`src/select.rs` preserves focus-ring gutters and handles accessibility expansion;
+`src/slider.rs` handles accessibility value actions. The archive checksum,
 original licenses and NOTICE are retained.
 
 ## Automated visual gate
@@ -472,6 +471,12 @@ Bugs fixed in this pass:
 - Scroll capture cleared its active state before finish or cancellation completed,
   allowing a second session to start while the daemon was still processing the
   first. Held-response fixtures now verify the state through both RPCs.
+- The Windows GPUI backend wrote PNG without a standard bitmap format and
+  misread DIB headers with embedded masks. It now supplies CF_DIB alongside PNG;
+  five byte-level tests cover bitmap headers, alpha, 16-bit input and invalid
+  offsets. Native clipboard delivery still needs verification. A synthetic 4K
+  PNG-to-DIB conversion took 48–53 ms locally, excluding clipboard API calls,
+  and produced a 31.6 MiB bitmap; slower hardware has not been measured.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
 - A competing capture or second attachment could replace the active attachment
@@ -550,7 +555,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                       |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                            |
 | P1       | Scroll stitching with fixed footers                      | A synthetic 1280×320 capture with an 80px fixed footer reports changed scrolling content as repeated. With a 40px footer, two frames are accepted but the reopened PNG repeats the footer: 51,200 of 573,440 pixels differ from the expected image. Fix detection and composition together, and verify sparse content, moving animations and real scrolling surfaces.                                           |
-| P1       | Native Windows clipboard formats                         | The pinned GPUI platform writes registered PNG without CF_DIB; [Windows synthesis](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats#synthesized-clipboard-formats) documents bitmap conversion from DIB/bitmap formats. Verify native format enumeration and DIB-only paste in an isolated Windows session, and compare Electron.                                                     |
+| P1       | Native Windows clipboard formats                         | GPUI now supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. Verify native format enumeration and DIB-only paste in an isolated Windows session, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                 |
 | P1       | Native attachment compositor coverage                    | The frozen handoff fix passed a real pixel-exact native capture and save. Add automated native Windows coverage for hide/show transitions and verify freezing off, cancellation and repeated attachments.                                                                                                                                                                                                       |
 | P2       | QR photo robustness and latency                          | The native decoder matches 65/65 original corpus cases and 493/520 brightness/contrast variants without losing a prior match. Representative quarter-turns and multiple candidates are automated. Verify additional real photographs, perspective distortion and interactive app clipboard delivery; reduce the measured low-contrast 4K no-code latency and test slower hardware across both desktop versions. |
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                                         |

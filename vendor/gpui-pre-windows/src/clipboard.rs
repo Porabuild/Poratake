@@ -216,6 +216,11 @@ fn write_image(item: &Image) -> Result<()> {
             set_clipboard_bytes(&png_bytes, *CLIPBOARD_PNG_FORMAT)?;
         }
     }
+    if item.format != ImageFormat::Svg
+        && let Some(dib_bytes) = convert_to_dib(item.bytes(), item.format)
+    {
+        set_clipboard_bytes(&dib_bytes, CF_DIB.0 as u32)?;
+    }
     Ok(())
 }
 
@@ -230,6 +235,21 @@ fn convert_to_png(bytes: &[u8], format: ImageFormat) -> Option<Vec<u8>> {
         .map_err(|e| log::warn!("Failed to encode PNG: {e}"))
         .ok()?;
     Some(buf)
+}
+
+fn convert_to_dib(bytes: &[u8], format: ImageFormat) -> Option<Vec<u8>> {
+    let img_format = gpui_to_image_format(format)?;
+    let image = image::load_from_memory_with_format(bytes, img_format)
+        .map_err(|e| log::warn!("Failed to decode image for bitmap conversion: {e}"))
+        .ok()?
+        .into_rgba8();
+    let mut bmp = Vec::new();
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+        .map_err(|e| log::warn!("Failed to encode clipboard bitmap: {e}"))
+        .ok()?;
+    bmp.drain(..14);
+    Some(bmp)
 }
 
 fn read_string() -> Option<ClipboardEntry> {
@@ -290,15 +310,21 @@ fn convert_dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
             1u32 << bit_count
         } else {
             colors_used
-        }) * 4
-    } else if compression == 3 {
+        })
+        .checked_mul(4)?
+    } else if compression == 3 && header_size == 40 {
         12 // BI_BITFIELDS
     } else {
         0
     };
 
-    let pixel_offset = 14 + header_size + color_table_size;
-    let file_size = 14 + dib.len() as u32;
+    let pixel_offset = 14_u32
+        .checked_add(header_size)?
+        .checked_add(color_table_size)?;
+    let file_size = u32::try_from(dib.len()).ok()?.checked_add(14)?;
+    if pixel_offset > file_size {
+        return None;
+    }
 
     let mut bmp = Vec::with_capacity(file_size as usize);
     bmp.extend_from_slice(b"BM");
@@ -390,5 +416,103 @@ impl LockedGlobal {
 impl Drop for LockedGlobal {
     fn drop(&mut self) {
         unsafe { GlobalUnlock(self.global).ok() };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_bitmap_with_embedded_color_masks() {
+        let expected = image::RgbaImage::from_fn(3, 2, |x, y| {
+            image::Rgba([x as u8 * 80, y as u8 * 90, 180, 64 + x as u8 * 80])
+        });
+        let mut bmp = Vec::new();
+        image::DynamicImage::ImageRgba8(expected.clone())
+            .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+            .unwrap();
+        let restored = convert_dib_to_bmp(&bmp[14..]).unwrap();
+        assert_eq!(
+            image::load_from_memory_with_format(&restored, image::ImageFormat::Bmp)
+                .unwrap()
+                .to_rgba8(),
+            expected
+        );
+    }
+
+    #[test]
+    fn reads_a_bitmap_with_appended_color_masks() {
+        let mut dib = vec![0; 40];
+        dib[0..4].copy_from_slice(&40_u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&1_i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&1_i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1_u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&32_u16.to_le_bytes());
+        dib[16..20].copy_from_slice(&3_u32.to_le_bytes());
+        dib[20..24].copy_from_slice(&4_u32.to_le_bytes());
+        for mask in [0x00ff0000_u32, 0x0000ff00, 0x000000ff] {
+            dib.extend_from_slice(&mask.to_le_bytes());
+        }
+        dib.extend_from_slice(&[3, 2, 1, 255]);
+        let bmp = convert_dib_to_bmp(&dib).unwrap();
+        assert_eq!(
+            image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
+                .unwrap()
+                .to_rgb8()
+                .get_pixel(0, 0)
+                .0,
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn converts_png_to_a_bitmap_with_matching_pixels() {
+        let expected = image::RgbaImage::from_fn(3, 2, |x, y| {
+            image::Rgba([x as u8 * 80, y as u8 * 90, 180, 64 + x as u8 * 80])
+        });
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(expected.clone())
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let dib = convert_to_dib(&png, ImageFormat::Png).unwrap();
+        let bmp = convert_dib_to_bmp(&dib).unwrap();
+        assert_eq!(
+            image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
+                .unwrap()
+                .to_rgba8(),
+            expected
+        );
+    }
+
+    #[test]
+    fn converts_sixteen_bit_png_to_an_eight_bit_bitmap() {
+        let expected =
+            image::ImageBuffer::from_pixel(1, 1, image::Rgba([0_u16, 32768, 65535, 65535]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba16(expected)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let dib = convert_to_dib(&png, ImageFormat::Png).unwrap();
+        let bmp = convert_dib_to_bmp(&dib).unwrap();
+        assert_eq!(
+            image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
+                .unwrap()
+                .to_rgba8()
+                .get_pixel(0, 0)
+                .0,
+            [0, 128, 255, 255]
+        );
+    }
+
+    #[test]
+    fn rejects_bitmap_headers_with_overflowing_offsets() {
+        let mut dib = vec![0; 40];
+        dib[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(convert_dib_to_bmp(&dib).is_none());
+        dib[0..4].copy_from_slice(&40_u32.to_le_bytes());
+        dib[14..16].copy_from_slice(&8_u16.to_le_bytes());
+        dib[32..36].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(convert_dib_to_bmp(&dib).is_none());
     }
 }

@@ -230,6 +230,9 @@ jobs:
       - name: Test GPUI accessibility actions
         run: bun scripts/parity/gpui-accessibility-test.mjs
 
+      - name: Test Windows clipboard image formats
+        run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests
+
       - name: Visual regressions
         run: bun run test:visual
 
