@@ -804,6 +804,32 @@ mod tests {
         )
         .unwrap();
         let exported = audio::decode(&output).expect("exported audio");
+        let duration = exported.len() as f64 / f64::from(AUDIO_SAMPLE_RATE * AUDIO_CHANNELS);
+        assert!(
+            (duration - 2.).abs() < 0.05,
+            "exported audio duration {duration}s"
+        );
+        for (time, sign) in [(0.05, -1.), (0.35, -1.), (0.6, 1.), (1.4, 1.)] {
+            let start = (time * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
+            let end = start + AUDIO_SAMPLE_RATE as usize / 10 * 2;
+            for (name, samples) in [("preview", &preview), ("export", &exported)] {
+                let samples = &samples[start..end];
+                let (sum, power) = samples.iter().zip(&samples[110..]).fold(
+                    (0_f64, 0_f64),
+                    |(sum, power), (a, b)| {
+                        (
+                            sum + f64::from(*a) * f64::from(*b),
+                            power + f64::from(*a).powi(2),
+                        )
+                    },
+                );
+                let correlation = sum / power;
+                assert!(
+                    correlation * sign > 0.5,
+                    "{name} has the wrong source tone at {time}s: {correlation}"
+                );
+            }
+        }
         let count = exported.len().min(preview.len());
         assert!(count >= AUDIO_SAMPLE_RATE as usize * 3);
         let error: f64 = exported[..count]
