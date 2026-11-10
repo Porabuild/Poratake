@@ -2587,7 +2587,18 @@ fn export_panel(
         crate::cloud::UploadState::Idle => {}
     }
 
-    if is_exporting {
+    if is_exporting
+        && view
+            .export_cancelled
+            .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        footer.push(
+            div()
+                .debug_selector(|| "video-export-canceling".to_string())
+                .child(kit::progress_label("Canceling...", theme))
+                .into_any_element(),
+        );
+    } else if is_exporting {
         footer.push(
             div()
                 .flex()
@@ -2659,6 +2670,7 @@ fn export_panel(
 
     div()
         .id("video-export-panel")
+        .debug_selector(|| "video-export-panel".to_string())
         .flex()
         .flex_col()
         .size_full()

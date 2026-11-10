@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `4853e47` plus this change.
+Refreshed 2026-11-10 for Poratake 0.9.6, based on `372db36` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -180,6 +180,8 @@ passed the required Windows, Linux and macOS jobs, including the Windows visual
 comparison.
 The [hosted run at `9669cde`](https://github.com/Porabuild/Poratake/actions/runs/42851318895)
 also passed the required jobs, including the scaled selection and preview fixture.
+The [hosted run at `372db36`](https://github.com/Porabuild/Poratake/actions/runs/42862315214)
+passed all required jobs, including the Windows visual comparison.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -267,6 +269,17 @@ An edited GIF workflow now checks saved and reopened state, preview pixels and
 every decoded frame boundary at all six offered frame rates. Before the timing
 fix, a two-second export played for 1.8 seconds at 30 FPS and 1.92 at 24 FPS;
 afterward each frame boundary stays within 5 ms of the edited timeline.
+Windows export tests cancel MP4 and GIF at an early frame and at the last frame,
+then retry the same path and decode the result. A valid editor project also checks
+that retry is blocked until cancellation finishes and succeeds afterward, with no
+cancel notification and one success notification. The test passed ten isolated
+runs; the native gate passed 992 tests with one skip. The canceling status has an
+in-bounds geometry assertion but no image baseline yet.
+The normal local visual matrix passed all 16 cases and 2,136 existing images after
+the cancellation changes, without updating baselines.
+Isolated Linux encoder tests exercise blocked input, cancellation during mux and
+staged-file cleanup. A simulated macOS backend on Linux exercises blocked-input
+cleanup; neither fixture establishes actual macOS or Linux app behavior.
 The audio check compares preview stems and a decoded AAC export across a cut and
 speed changes. It verifies 440 Hz and 880 Hz source tones, two short sounds near
 their edited positions, two keyboard clicks after raising their volume from zero,
@@ -422,6 +435,10 @@ Bugs fixed in this pass:
 - GIF frame delays were truncated independently to centiseconds, speeding up
   24 and 30 FPS exports. Rounded cumulative frame boundaries preserve the edited
   timeline within GIF's centisecond precision.
+- Canceling an export could leave its worker writing while a retry reused the
+  output, or report success at the final frame. Cancellation now waits for the
+  worker and suppresses success actions; Unix encoder children are stopped and
+  reaped before the output can be reused.
 - Scroll capture subscribed after the start RPC, losing early completion or
   cancellation events and leaving the session active. Subscription now precedes
   start; both early events and a successful retry are exercised.
@@ -510,7 +527,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                                           |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                        |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                     |
-| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `9669cde`. Require the same normal comparison on the current PR head.                                                                                                                                                                                                                                                                                                         |
+| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `372db36`. Require the same normal comparison on the current PR head and add a reviewed canceling-state baseline.                                                                                                                                                                                                                                                             |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                        |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                          |
 

@@ -448,7 +448,19 @@ impl VideoEditorWindow {
             true => output.with_extension("gif"),
             false => output,
         };
+        self.start_export_to_path(project, output, state, cx);
+    }
 
+    fn start_export_to_path(
+        &mut self,
+        project: PathBuf,
+        output: PathBuf,
+        state: VideoEditorState,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_exporting {
+            return;
+        }
         self.is_exporting = true;
         self.export_error = None;
         self.export_completed_at = None;
@@ -486,6 +498,14 @@ impl VideoEditorWindow {
                 .await;
 
             let user_cancelled = was_cancelled.load(Ordering::Relaxed);
+            let result = if user_cancelled {
+                if let Ok(path) = result {
+                    let _ = std::fs::remove_file(path);
+                }
+                Err("the export was cancelled".to_string())
+            } else {
+                result
+            };
             let failure = match (&result, user_cancelled) {
                 (Err(error), false) => Some(error.clone()),
                 _ => None,
@@ -509,25 +529,34 @@ impl VideoEditorWindow {
             }
             let output = result.ok();
             let _ = entity.update(cx, |this, cx| {
-                this.is_exporting = false;
-                this.export_progress = 0.0;
-                this.displayed_progress = 0.0;
-                this.export_started_at = None;
-                this.export_remaining = None;
-                this.export_error = failure.map(SharedString::from);
-                if output.is_some() {
-                    this.export_completed_at = Some(cx.background_executor().now());
-                    this.schedule_export_completion_clear(cx);
-                }
-                if this.upload_to_cloud {
-                    if let Some(path) = output {
-                        this.upload_export(path, cx);
-                    }
-                }
-                cx.notify();
+                this.finish_export(failure, output, cx);
             });
         })
         .detach();
+    }
+
+    fn finish_export(
+        &mut self,
+        failure: Option<String>,
+        output: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.is_exporting = false;
+        self.export_progress = 0.0;
+        self.displayed_progress = 0.0;
+        self.export_started_at = None;
+        self.export_remaining = None;
+        self.export_error = failure.map(SharedString::from);
+        if output.is_some() {
+            self.export_completed_at = Some(cx.background_executor().now());
+            self.schedule_export_completion_clear(cx);
+        }
+        if self.upload_to_cloud {
+            if let Some(path) = output {
+                self.upload_export(path, cx);
+            }
+        }
+        cx.notify();
     }
 
     fn upload_export(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -564,7 +593,10 @@ impl VideoEditorWindow {
                 .timer(Duration::from_millis(100))
                 .await;
             let running = entity.update(cx, |this, cx| {
-                if !this.is_exporting {
+                if !this.is_exporting
+                    || !Arc::ptr_eq(&progress, &this.export_progress_permille)
+                    || this.export_cancelled.load(Ordering::Relaxed)
+                {
                     return false;
                 }
                 this.export_progress = progress.load(Ordering::Relaxed) as f32 / 1000.0;
@@ -2438,12 +2470,10 @@ impl VideoEditorWindow {
     }
 
     pub fn cancel_export(&mut self, cx: &mut Context<Self>) {
+        if !self.is_exporting {
+            return;
+        }
         self.export_cancelled.store(true, Ordering::Relaxed);
-        self.is_exporting = false;
-        self.export_progress = 0.0;
-        self.displayed_progress = 0.0;
-        self.export_started_at = None;
-        self.export_remaining = None;
         self.export_error = None;
         self.export_completed_at = None;
         cx.notify();
@@ -3481,6 +3511,7 @@ impl VideoEditorWindow {
         let body = match owner {
             title_bar::EXPORT_POPOVER_ID => title_bar::export_popover(
                 self.is_export_complete(cx),
+                self.export_cancelled.load(Ordering::Relaxed),
                 self.displayed_progress,
                 SharedString::from(format!(
                     "{} elapsed",
@@ -4023,12 +4054,116 @@ mod keyboard_demo_tests {
                 editor.cancel_export(cx);
 
                 assert!(editor.export_cancelled.load(Ordering::Relaxed));
-                assert!(!editor.is_exporting);
+                assert!(
+                    editor.is_exporting,
+                    "the worker must finish before another export starts"
+                );
                 assert_eq!(editor.export_error(), None, "a cancel is not a failure");
                 assert!(!editor.is_export_complete(cx));
-                assert_eq!(editor.displayed_progress, 0.0);
+                assert_eq!(editor.displayed_progress, 0.4);
             })
             .expect("update editor");
+    }
+
+    #[herogpui::test]
+    fn cancelling_export_replaces_the_action_with_an_in_bounds_status(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.ui.sidebar_open = true;
+            editor.state.ui.sidebar_tab = "export".into();
+            editor.is_exporting = true;
+            editor
+        });
+        cx.refresh().unwrap();
+        assert!(cx.debug_bounds("video-export-panel").is_some());
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cancel_export(cx);
+                assert!(editor.is_exporting);
+            });
+        });
+        cx.refresh().unwrap();
+        let status = cx.debug_bounds("video-export-canceling").unwrap();
+        let panel = cx.debug_bounds("video-export-panel").unwrap();
+        assert!(status.origin.x >= panel.origin.x && status.origin.y >= panel.origin.y);
+        assert!(status.origin.x + status.size.width <= panel.origin.x + panel.size.width);
+        assert!(status.origin.y + status.size.height <= panel.origin.y + panel.size.height);
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn cancelled_export_finishes_before_a_retry_can_start(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let notifications = crate::system::notification::capture_for_test();
+        let project = dir.path().join("Cancel workflow.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project::recording_video_path(&project),
+            include_bytes!("../../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let output = dir.path().join("retry.mp4");
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        let first = window
+            .update(cx, |editor, _, cx| {
+                editor.state.source_duration = Some(2.);
+                editor.state.segments = vec![model::Segment::spanning(2.)];
+                editor.state.wallpaper.enabled = false;
+                editor.state.export_settings.resolution = "original".into();
+                editor.state.export_settings.frame_rate = "10".into();
+                editor.state.export_settings.open_in_finder = false;
+                let state = editor.state.clone();
+                editor.start_export_to_path(project.clone(), output.clone(), state.clone(), cx);
+                let first = editor.export_cancelled.clone();
+                editor.cancel_export(cx);
+                editor.start_export_to_path(project.clone(), output.clone(), state, cx);
+                assert!(Arc::ptr_eq(&first, &editor.export_cancelled));
+                assert!(editor.is_exporting);
+                first
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.is_exporting);
+                assert!(editor.export_error.is_none());
+                assert!(editor.export_completed_at.is_none());
+            })
+            .unwrap();
+        assert!(!output.exists());
+        assert!(notifications.borrow().is_empty());
+
+        window
+            .update(cx, |editor, _, cx| {
+                editor.start_export_to_path(
+                    project.clone(),
+                    output.clone(),
+                    editor.state.clone(),
+                    cx,
+                );
+                assert!(!Arc::ptr_eq(&first, &editor.export_cancelled));
+                assert!(editor.is_exporting);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.is_exporting);
+                assert!(editor.export_error.is_none());
+                assert!(editor.export_completed_at.is_some());
+            })
+            .unwrap();
+        assert!(crate::video::decoder::VideoDecoder::open(&output)
+            .unwrap()
+            .frame_at(0.)
+            .is_some());
+        assert_eq!(&*notifications.borrow(), &["Export Complete"]);
     }
 
     #[herogpui::test]

@@ -38,7 +38,24 @@ use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 #[cfg(windows)]
 const APP_USER_MODEL_ID: &str = "electron.app.Poratake";
 
+#[cfg(all(test, windows))]
+thread_local! {
+    static TEST_NOTIFICATIONS: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<Vec<String>>>> = std::cell::RefCell::default();
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn capture_for_test() -> std::rc::Rc<std::cell::RefCell<Vec<String>>> {
+    let notifications = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    TEST_NOTIFICATIONS.with_borrow_mut(|capture| *capture = std::rc::Rc::downgrade(&notifications));
+    notifications
+}
+
 pub fn show(title: &str, body: &str) {
+    #[cfg(all(test, windows))]
+    if let Some(notifications) = TEST_NOTIFICATIONS.with_borrow(|capture| capture.upgrade()) {
+        notifications.borrow_mut().push(title.to_string());
+        return;
+    }
     #[cfg(feature = "parity")]
     if crate::ui::parity::record_notification(title, body, false) {
         return;

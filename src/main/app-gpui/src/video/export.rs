@@ -156,7 +156,7 @@ pub struct Request {
 pub fn run(
     request: Request,
     progress: &mut dyn FnMut(f32),
-    should_cancel: &dyn Fn() -> bool,
+    should_cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<PathBuf, String> {
     let is_gif = request.state.export_settings.format == "gif";
 
@@ -217,22 +217,26 @@ pub fn run(
         source_duration: request.state.source_duration.unwrap_or(info.duration),
     };
 
-    if is_gif {
-        return run_gif(&request, &mut session, progress, should_cancel);
-    }
-
-    let result = encode(
-        &request,
-        &request.output,
-        &mut session,
-        progress,
-        should_cancel,
-    );
-    if let Err(error) = result {
+    let result = if is_gif {
+        run_gif(&request, &mut session, progress, should_cancel)
+    } else {
+        let result = encode(
+            &request,
+            &request.output,
+            &mut session,
+            progress,
+            should_cancel,
+        );
+        if result.is_err() {
+            let _ = std::fs::remove_file(&request.output);
+        }
+        result.map(|()| request.output.clone())
+    };
+    if result.is_ok() && should_cancel() {
         let _ = std::fs::remove_file(&request.output);
-        return Err(error);
+        return Err("the export was cancelled".to_string());
     }
-    Ok(request.output)
+    result
 }
 
 struct Session<'a> {
@@ -287,6 +291,7 @@ fn encode(
 
     for index in 0..session.total_frames {
         if should_cancel() {
+            drop(encoder);
             return Err("the export was cancelled".to_string());
         }
 
@@ -296,7 +301,7 @@ fn encode(
         progress((index + 1) as f32 / session.total_frames as f32);
     }
 
-    encoder.finish()
+    encoder.finish_cancellable(should_cancel)
 }
 
 fn audio_offset(seconds: f64) -> i64 {
@@ -315,7 +320,7 @@ fn run_gif(
     request: &Request,
     session: &mut Session<'_>,
     progress: &mut dyn FnMut(f32),
-    should_cancel: &dyn Fn() -> bool,
+    should_cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<PathBuf, String> {
     if let Some(result) = run_gif_with_ffmpeg(request, session, progress, should_cancel) {
         return result;
@@ -328,7 +333,7 @@ fn run_gif_with_ffmpeg(
     request: &Request,
     session: &mut Session<'_>,
     progress: &mut dyn FnMut(f32),
-    should_cancel: &dyn Fn() -> bool,
+    should_cancel: &(dyn Fn() -> bool + Sync),
 ) -> Option<Result<PathBuf, String>> {
     let ffmpeg = crate::video::ffmpeg_path();
     if !ffmpeg.is_file() {
@@ -357,6 +362,7 @@ fn run_gif_with_ffmpeg(
             fps,
             duration,
             progress,
+            should_cancel,
         )
     })();
     let _ = std::fs::remove_file(&intermediate);
@@ -373,7 +379,7 @@ fn run_gif_with_ffmpeg(
     _request: &Request,
     _session: &mut Session<'_>,
     _progress: &mut dyn FnMut(f32),
-    _should_cancel: &dyn Fn() -> bool,
+    _should_cancel: &(dyn Fn() -> bool + Sync),
 ) -> Option<Result<PathBuf, String>> {
     None
 }
@@ -396,6 +402,7 @@ fn convert_to_gif(
     fps: u32,
     duration: f64,
     progress: &mut dyn FnMut(f32),
+    should_cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<(), String> {
     let filter = format!(
         "[0:v]fps={fps},scale={width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle[out]"
@@ -418,42 +425,45 @@ fn convert_to_gif(
         .stdin(std::process::Stdio::null());
 
     let (sender, receiver) = std::sync::mpsc::channel();
-    let worker = std::thread::Builder::new()
-        .name("gif-conversion".into())
-        .spawn(move || {
-            let mut command = command;
-            crate::video::command_stdout(
-                &mut command,
-                std::time::Duration::from_secs(1800),
-                move |stdout| {
-                    use std::io::BufRead as _;
+    let result = std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("gif-conversion".into())
+            .spawn_scoped(scope, move || {
+                let mut command = command;
+                crate::video::command_stdout(
+                    &mut command,
+                    std::time::Duration::from_secs(1800),
+                    should_cancel,
+                    move |stdout| {
+                        use std::io::BufRead as _;
 
-                    for line in std::io::BufReader::new(stdout).lines() {
-                        let Some(seconds) = ffmpeg_progress_seconds(&line?) else {
-                            continue;
-                        };
-                        if sender.send(seconds).is_err() {
-                            break;
+                        for line in std::io::BufReader::new(stdout).lines() {
+                            let Some(seconds) = ffmpeg_progress_seconds(&line?) else {
+                                continue;
+                            };
+                            if sender.send(seconds).is_err() {
+                                break;
+                            }
                         }
-                    }
-                    Ok(())
-                },
-            )
-        })
-        .map_err(|error| format!("could not run FFmpeg: {error}"))?;
+                        Ok(())
+                    },
+                )
+            })
+            .map_err(|error| format!("could not run FFmpeg: {error}"))?;
 
-    while let Ok(seconds) = receiver.recv() {
-        let completed = match duration > 0.0 {
-            true => (seconds / duration) as f32,
-            false => 0.0,
-        };
-        progress(phase_fraction(GIF_FRAME_PASS_SHARE, 1.0, completed));
-    }
+        while let Ok(seconds) = receiver.recv() {
+            let completed = match duration > 0.0 {
+                true => (seconds / duration) as f32,
+                false => 0.0,
+            };
+            progress(phase_fraction(GIF_FRAME_PASS_SHARE, 1.0, completed));
+        }
 
-    let result = worker
-        .join()
-        .map_err(|_| "the GIF conversion failed".to_string())?
-        .map_err(|error| format!("could not run FFmpeg: {error}"))?;
+        worker
+            .join()
+            .map_err(|_| "the GIF conversion failed".to_string())?
+            .map_err(|error| format!("could not run FFmpeg: {error}"))
+    })?;
     if result.status.success() {
         return Ok(());
     }
@@ -492,6 +502,7 @@ fn run_gif_direct(
 
     for index in 0..session.total_frames {
         if should_cancel() {
+            drop(encoder);
             let _ = std::fs::remove_file(&request.output);
             return Err("the export was cancelled".to_string());
         }
@@ -1384,6 +1395,96 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn cancelling_during_or_at_the_last_frame_removes_the_export() {
+        use crate::windows::video_editor::model;
+        use image::AnimationDecoder;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let directory = tempfile::tempdir().unwrap();
+        let recording = directory.path().join("recording.mp4");
+        let mut encoder = Encoder::create(
+            &recording,
+            Settings {
+                width: 160,
+                height: 90,
+                frame_rate: 10,
+                bitrate: 1_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for _ in 0..10 {
+            encoder
+                .write_frame([176, 96, 32, 255].repeat(160 * 90))
+                .unwrap();
+        }
+        encoder.finish().unwrap();
+        let mut state = VideoEditorState {
+            source_duration: Some(1.),
+            segments: vec![model::Segment::spanning(1.)],
+            ..VideoEditorState::default()
+        };
+        state.wallpaper.enabled = false;
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "10".into();
+
+        let mut failures = Vec::new();
+        for (format, cancel_progress) in [
+            ("mp4", 0.1),
+            ("mp4", 1.),
+            ("gif", 0.1),
+            ("gif", GIF_DIRECT_ENCODE_SHARE),
+        ] {
+            let output = directory
+                .path()
+                .join(format!("cancelled-{cancel_progress}.{format}"));
+            let cancelled = AtomicBool::new(false);
+            state.export_settings.format = format.into();
+            let result = run(
+                Request {
+                    project: recording.clone(),
+                    output: output.clone(),
+                    state: state.clone(),
+                },
+                &mut |fraction| {
+                    if fraction >= cancel_progress {
+                        cancelled.store(true, Ordering::Relaxed);
+                    }
+                },
+                &|| cancelled.load(Ordering::Relaxed),
+            );
+            if !matches!(&result, Err(error) if error.contains("cancelled")) || output.exists() {
+                failures.push(format!(
+                    "{format} at {cancel_progress}: result={result:?}, exists={}",
+                    output.exists()
+                ));
+                continue;
+            }
+            run(
+                Request {
+                    project: recording.clone(),
+                    output: output.clone(),
+                    state: state.clone(),
+                },
+                &mut |_| {},
+                &|| false,
+            )
+            .unwrap();
+            if format == "mp4" {
+                assert!(VideoDecoder::open(&output).unwrap().frame_at(0.).is_some());
+            } else {
+                let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+                    std::fs::File::open(&output).unwrap(),
+                ))
+                .unwrap();
+                assert!(decoder.into_frames().next().unwrap().is_ok());
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("; "));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn camera_ranges_and_zoom_export_the_preview_across_a_cut() {
         use crate::windows::video_editor::{model, preview};
 
@@ -1717,6 +1818,36 @@ mod tests {
         assert_eq!(ffmpeg_progress_seconds("out_time_us=N/A"), None);
         assert_eq!(ffmpeg_progress_seconds("frame=12"), None);
         assert_eq!(ffmpeg_progress_seconds("progress=end"), None);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cancelling_during_gif_conversion_stops_the_process() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let directory = tempfile::tempdir().unwrap();
+        let ffmpeg = directory.path().join("ffmpeg");
+        std::fs::write(
+            &ffmpeg,
+            "#!/bin/sh\nprintf 'out_time_us=500000\\n'\nexec sleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        let result = convert_to_gif(
+            &ffmpeg,
+            &directory.path().join("input.mp4"),
+            &directory.path().join("output.gif"),
+            160,
+            30,
+            1.,
+            &mut |_| cancelled.store(true, Ordering::Relaxed),
+            &|| cancelled.load(Ordering::Relaxed),
+        );
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]
