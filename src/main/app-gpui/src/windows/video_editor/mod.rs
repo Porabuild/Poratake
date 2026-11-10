@@ -2479,6 +2479,14 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
+    #[cfg(all(feature = "parity", windows))]
+    pub(crate) fn begin_export_for_parity(&mut self, cx: &mut Context<Self>) {
+        self.is_exporting = true;
+        self.export_progress = 0.4;
+        self.displayed_progress = 0.4;
+        cx.notify();
+    }
+
     fn schedule_export_completion_clear(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |entity, cx| {
             cx.background_executor()

@@ -921,5 +921,24 @@ pub(super) fn video(
         assert_eq!(saved.ui.sidebar_tab, tab.id());
         capture(cx, window, output, &format!("video-loaded-{}", tab.id()));
     }
+    cx.update(|cx| {
+        video
+            .update(cx, |editor, _, cx| {
+                editor.begin_export_for_parity(cx);
+                editor.cancel_export(cx);
+            })
+            .unwrap();
+    });
+    settle(cx, window);
+    capture(cx, window, output, "video-loaded-export-canceling");
+    let footer = super::measured("video-export-panel", 1);
+    let status = super::measured("video-export-canceling", 0);
+    assert!(status.left() >= footer.left() && status.right() <= footer.right());
+    assert!(status.top() >= footer.top() && status.bottom() <= footer.bottom());
+    let viewport = cx
+        .update_window(window, |_, window, _| window.viewport_size())
+        .unwrap();
+    assert!(footer.left() >= px(0.) && footer.right() <= viewport.width);
+    assert!(footer.top() >= px(0.) && footer.bottom() <= viewport.height);
     cx.update(|cx| registry::close(WindowKind::VideoEditor, cx));
 }

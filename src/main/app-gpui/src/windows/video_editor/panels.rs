@@ -2592,10 +2592,14 @@ fn export_panel(
             .export_cancelled
             .load(std::sync::atomic::Ordering::Relaxed)
     {
+        let status = div().child(kit::progress_label("Canceling...", theme));
+        #[cfg(feature = "parity")]
+        let status = status.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("video-export-canceling", bounds);
+        });
         footer.push(
-            div()
+            status
                 .debug_selector(|| "video-export-canceling".to_string())
-                .child(kit::progress_label("Canceling...", theme))
                 .into_any_element(),
         );
     } else if is_exporting {
@@ -2668,9 +2672,15 @@ fn export_panel(
         footer.push(kit::error(error, theme));
     }
 
-    div()
-        .id("video-export-panel")
-        .debug_selector(|| "video-export-panel".to_string())
+    let footer = div()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .border_t_1()
+        .border_color(theme.border)
+        .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
+        .children(footer);
+    let panel = div()
         .flex()
         .flex_col()
         .size_full()
@@ -2698,15 +2708,13 @@ fn export_panel(
                     &view.export_scroll,
                 )),
         )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(12.0))
-                .border_t_1()
-                .border_color(theme.border)
-                .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
-                .children(footer),
-        )
+        .child(footer);
+    #[cfg(feature = "parity")]
+    let panel = panel.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("video-export-panel", bounds);
+    });
+    panel
+        .id("video-export-panel")
+        .debug_selector(|| "video-export-panel".to_string())
         .into_any_element()
 }

@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `372db36` plus this change.
+Refreshed 2026-11-10 for Poratake 0.9.6, based on `a0168f3` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -273,10 +273,12 @@ Windows export tests cancel MP4 and GIF at an early frame and at the last frame,
 then retry the same path and decode the result. A valid editor project also checks
 that retry is blocked until cancellation finishes and succeeds afterward, with no
 cancel notification and one success notification. The test passed ten isolated
-runs; the native gate passed 992 tests with one skip. The canceling status has an
-in-bounds geometry assertion but no image baseline yet.
-The normal local visual matrix passed all 16 cases and 2,136 existing images after
-the cancellation changes, without updating baselines.
+runs; the native gate passed 992 tests with one skip. The canceling label and its
+footer are checked against their actual bounds at every matrix scale. Sixteen new
+local canceling-state images were reviewed, and the normal matrix passed all 16
+cases and 2,152 exact images without updating baselines. The hosted renderer's new
+images still need capture and review. The video editor fixture uses a 1,200px
+minimum width even when the matrix case is 950px.
 Isolated Linux encoder tests exercise blocked input, cancellation during mux and
 staged-file cleanup. A simulated macOS backend on Linux exercises blocked-input
 cleanup; neither fixture establishes actual macOS or Linux app behavior.
@@ -527,7 +529,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                                           |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                        |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                     |
-| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `372db36`. Require the same normal comparison on the current PR head and add a reviewed canceling-state baseline.                                                                                                                                                                                                                                                             |
+| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `372db36`. Capture and review the canceling-state images for the hosted renderer, then require the normal comparison on the current PR head.                                                                                                                                                                                                                                  |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                        |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                          |
 
