@@ -119,7 +119,7 @@ the editor with history enabled or disabled without adding history entries.
 Unit regressions invoke the OS should-close callback and verify annotated
 restoration with history disabled plus standalone close without an editor.
 Actual native close-event delivery and window destruction remain separate checks.
-The built-in 1280px, 100% cases add 28 workflow images each, for 2,232 baseline
+The built-in 1280px, 100% cases add 28 workflow images each, for 2,328 baseline
 images per renderer.
 
 Capture, timer and scroll completion first open a bottom-right preview without
@@ -148,8 +148,11 @@ tooltips. Close, delete, copy and upload tips must fit inside cards in all four
 corners. Polish preset names wrap or ellipsize within the card, and Edit remains
 clickable after each tooltip. Video Copy and Show in Folder tips use a missing-media
 fallback fixture. Edit has no tooltip. A build with tooltips disabled fails the
-presence assertion. Native docking, click-through regions and physical pointer
-ownership remain separate verification.
+presence assertion. A synthetic four-display menu must stay within each card and
+remain open after pointer leave. GPU samples check all four sides of the first
+and last keyboard focus rings; separate tests cover mouse selection, display
+removal, eviction and short-menu scrolling. Native docking, click-through regions,
+physical monitor changes and pointer ownership remain separate verification.
 
 Recording controls use the production window and recorder commands with a
 same-executable JSON-RPC fixture. Device names are deterministic, including long

@@ -128,6 +128,7 @@ pub struct CapturePreviewWindow {
     previews: Vec<CapturePreview>,
     layout_generation: u64,
     display_menu: crate::ui::menu::MenuHandle,
+    _display_observer: Option<gpui::Subscription>,
 }
 
 impl CapturePreviewWindow {
@@ -346,10 +347,20 @@ impl CapturePreviewWindow {
                         sync_preview_viewport(window, bounds);
                     }
                 }
+                let handle = window.window_handle();
+                let display_observer = cx.observe_displays(move |_, cx| {
+                    if let Some(handle) = handle.downcast::<CapturePreviewWindow>() {
+                        let _ = handle.update(cx, |view, window, cx| {
+                            view.display_menu.close(window, cx);
+                            cx.notify();
+                        });
+                    }
+                });
                 let view = cx.new(|_| Self {
                     previews,
                     layout_generation: 0,
                     display_menu: crate::ui::menu::MenuHandle::new(),
+                    _display_observer: Some(display_observer),
                 });
                 #[cfg(windows)]
                 if !cfg!(test) {
@@ -476,7 +487,7 @@ fn dismiss_verdict(
         return DismissVerdict::Gone;
     };
     handle
-        .update(cx, |view, window, _| {
+        .update(cx, |view, window, cx| {
             let Some(preview) = view.previews.iter().find(|preview| preview.id == id) else {
                 return DismissVerdict::Gone;
             };
@@ -485,7 +496,11 @@ fn dismiss_verdict(
                 generation,
                 preview.hovered,
                 window.is_window_hovered(),
-                preview.busy || preview.completed.is_some(),
+                preview.busy
+                    || preview.completed.is_some()
+                    || view
+                        .display_menu
+                        .is_open_for(&format!("preview-display-menu-{id}"), cx),
             )
         })
         .unwrap_or(DismissVerdict::Gone)
@@ -1153,6 +1168,12 @@ fn begin_remove_preview(
     if view.previews[index].dismiss_animation.is_some() {
         return;
     }
+    if view
+        .display_menu
+        .is_open_for(&format!("preview-display-menu-{id}"), cx)
+    {
+        view.display_menu.close(window, cx);
+    }
     let active_index = view.previews[..index]
         .iter()
         .filter(|preview| preview.dismiss_animation.is_none())
@@ -1322,6 +1343,7 @@ impl CapturePreviewWindow {
     fn control_frame(
         preview: &mut CapturePreview,
         window_hovered: bool,
+        menu_open: bool,
         now: Instant,
     ) -> (bool, f32, bool) {
         if let Some(progress) = preview
@@ -1331,7 +1353,7 @@ impl CapturePreviewWindow {
             preview.last_frame = None;
             return (true, progress, false);
         }
-        let hovered = preview.hovered && window_hovered;
+        let hovered = preview.hovered && window_hovered || menu_open;
         let (progress, animating) = Self::advance_hover(preview, hovered, now);
         (
             Self::show_controls(hovered, preview.busy, preview.completed.is_some()),
@@ -1346,7 +1368,7 @@ impl CapturePreviewWindow {
         cx: &mut Context<Self>,
         theme: &crate::theme::vars::ThemeVars,
         polish: Option<&crate::config::schema::WallpaperPreset>,
-        display_count: usize,
+        displays: &[(gpui::DisplayId, bool)],
         window_hovered: bool,
         target_y: f32,
         enter_offset: f32,
@@ -1354,8 +1376,12 @@ impl CapturePreviewWindow {
         needs_frame: &mut bool,
     ) -> gpui::AnyElement {
         let preview_entity = cx.entity().downgrade();
+        let id = self.previews[index].id;
+        let menu_open = self.display_menu.is_open(cx)
+            && self
+                .display_menu
+                .is_open_for(&format!("preview-display-menu-{id}"), cx);
         let preview = &mut self.previews[index];
-        let id = preview.id;
         let is_video = preview.kind == PreviewKind::Video;
         let polish = if is_video { None } else { polish };
         let path = preview.path.clone();
@@ -1365,7 +1391,7 @@ impl CapturePreviewWindow {
         let export_progress = preview.export_progress.clone();
         let gated = busy || finished.is_some();
         let (show_controls, progress, animating) =
-            Self::control_frame(preview, window_hovered, now);
+            Self::control_frame(preview, window_hovered, menu_open, now);
         let (layout_y, layout_animating) = advance_layout(preview, target_y, enter_offset, now);
         let (opacity, opacity_animating) = preview_opacity(preview, now);
         *needs_frame |= animating || layout_animating || opacity_animating;
@@ -1374,7 +1400,7 @@ impl CapturePreviewWindow {
         let scale = 1.0 + (PREVIEW_HOVER_SCALE - 1.0) * progress;
         let image_w = PREVIEW_WIDTH * scale;
         let image_h = PREVIEW_HEIGHT * scale;
-        let has_multiple_displays = display_count > 1;
+        let has_multiple_displays = displays.len() > 1;
 
         let mut root = div()
             .id(("capture-preview", id))
@@ -1882,10 +1908,7 @@ impl CapturePreviewWindow {
                     .display_id
                     .unwrap_or(0);
                 let mut builder = crate::ui::menu::MenuBuilder::new();
-                for (index, display) in cx.displays().iter().enumerate() {
-                    let bounds = crate::system::work_area::display_bounds(display.as_ref());
-                    let primary =
-                        f32::from(bounds.origin.x) == 0.0 && f32::from(bounds.origin.y) == 0.0;
+                for (index, &(display_id, primary)) in displays.iter().enumerate() {
                     let label = format!(
                         "Display {}{}",
                         index + 1,
@@ -1895,6 +1918,13 @@ impl CapturePreviewWindow {
                         crate::ui::menu::MenuItem::new(label)
                             .trailing_check(current == index as i64)
                             .on_select(move |_window, app| {
+                                let Some(index) = app
+                                    .displays()
+                                    .iter()
+                                    .position(|display| display.id() == display_id)
+                                else {
+                                    return;
+                                };
                                 let config = crate::state::state(app).config.clone();
                                 config.update(|settings| {
                                     settings.preview.display_id = Some(index as i64);
@@ -1924,7 +1954,18 @@ impl CapturePreviewWindow {
                             theme.primary,
                             move |window, cx| {
                                 handle.toggle(
-                                    crate::ui::menu::MenuPlacement::above(placement.clone()),
+                                    crate::ui::menu::MenuPlacement::below(placement.clone())
+                                        .aligned_right()
+                                        .offset(gpui::point(
+                                            px(PREVIEW_CONTROL),
+                                            px(PREVIEW_CONTROL_INSET * 2.0 + PREVIEW_CONTROL + 4.0
+                                                - PREVIEW_HEIGHT),
+                                        ))
+                                        .min_width(px(PREVIEW_WIDTH - PREVIEW_CONTROL_INSET * 2.0))
+                                        .max_width(px(PREVIEW_WIDTH - PREVIEW_CONTROL_INSET * 2.0))
+                                        .max_height(px(
+                                            PREVIEW_HEIGHT - PREVIEW_CONTROL_INSET * 2.0
+                                        )),
                                     entries.clone(),
                                     window,
                                     cx,
@@ -1965,10 +2006,29 @@ impl CapturePreviewWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let displays = cx
+            .displays()
+            .iter()
+            .map(|display| {
+                let bounds = crate::system::work_area::display_bounds(display.as_ref());
+                let primary =
+                    f32::from(bounds.origin.x) == 0.0 && f32::from(bounds.origin.y) == 0.0;
+                (display.id(), primary)
+            })
+            .collect::<Vec<_>>();
+        self.surface_with_displays(window_hovered, &displays, window, cx)
+    }
+
+    pub(crate) fn surface_with_displays(
+        &mut self,
+        window_hovered: bool,
+        displays: &[(gpui::DisplayId, bool)],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let corner = PreviewCorner::parse(&crate::state::state(cx).config.get().preview.corner);
         let theme = active_theme(cx);
         let polish = starred_preset(cx);
-        let display_count = cx.displays().len();
         let bottom_aligned = matches!(
             corner,
             PreviewCorner::BottomLeft | PreviewCorner::BottomRight
@@ -1997,7 +2057,7 @@ impl CapturePreviewWindow {
                 cx,
                 &theme,
                 polish.as_ref(),
-                display_count,
+                displays,
                 window_hovered,
                 target_y,
                 enter_offset,
@@ -2025,6 +2085,227 @@ impl Render for CapturePreviewWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct HoveredPreview {
+        preview: gpui::Entity<CapturePreviewWindow>,
+    }
+
+    impl Render for HoveredPreview {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.preview
+                .update(cx, |preview, cx| preview.surface(true, window, cx))
+        }
+    }
+
+    #[herogpui::test]
+    fn multi_display_menu_fits_and_selects_the_last_display(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.preview.corner = "bottom-right".into();
+            settings.preview.auto_dismiss = false;
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config.clone());
+        });
+        for id in 10..13 {
+            cx.simulate_display_added(gpui::DisplayId::new(id), None);
+        }
+        cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
+        let mut stack = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let mut check = preview.clone();
+        let (wrapper, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview { preview });
+        visual.simulate_resize(size(px(208.), px(604.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(184.), px(552.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.simulate_click(gpui::point(px(184.), px(552.)), gpui::Modifiers::none());
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.update(|window, _| {
+            let scale = window.scale_factor();
+            let panel = window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| {
+                    (quad.bounds.size.width.0 / scale - 184.).abs() < 0.5
+                        && (quad.bounds.size.height.0 / scale - 124.).abs() < 0.5
+                })
+                .expect("four-display menu must paint a bounded, scrollable panel");
+            let bounds = panel.bounds;
+            assert!(bounds.left().0 >= 4. * scale);
+            assert!(bounds.right().0 <= 204. * scale);
+            assert!(bounds.top().0 >= 460. * scale);
+            assert!(bounds.bottom().0 <= 600. * scale);
+        });
+        visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, gpui::Modifiers::none());
+        visual.settle();
+        let (id, generation, open, hovered) = visual.update(|_, cx| {
+            let view = check.read(cx);
+            let preview = &view.previews[0];
+            (
+                preview.id,
+                preview.dismiss_token.load(Ordering::Relaxed),
+                view.display_menu.is_open(cx),
+                preview.hovered,
+            )
+        });
+        assert!(open && !hovered, "the menu stays open after pointer leave");
+        assert_eq!(
+            visual.update(|_, cx| dismiss_verdict(stack.into(), id, generation, cx)),
+            DismissVerdict::Blocked
+        );
+        visual.press("home");
+        visual.press("end");
+        visual.press("enter");
+        assert_eq!(config.get().preview.display_id, Some(3));
+        assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        stack = stack_handle(visual)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        check = stack.update(visual, |_, _, cx| cx.entity()).unwrap();
+        visual.update(|_, cx| {
+            wrapper.update(cx, |view, cx| {
+                view.preview = check.clone();
+                cx.notify();
+            });
+        });
+        visual.settle();
+        assert_eq!(
+            visual.update(|_, cx| dismiss_verdict(stack.into(), id, generation, cx)),
+            DismissVerdict::Ready
+        );
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.click_at(gpui::point(px(184.), px(552.)));
+        assert!(visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.simulate_display_removed(gpui::DisplayId::new(10));
+        visual.settle();
+        assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.click_at(gpui::point(px(184.), px(552.)));
+        assert!(visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.press("end");
+        let position = visual.update(|window, _| {
+            let scale = window.scale_factor();
+            let row = window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| {
+                    (quad.bounds.size.width.0 / scale - 180.).abs() < 0.5
+                        && (quad.bounds.size.height.0 / scale - 40.).abs() < 0.5
+                })
+                .expect("the focused last display row must paint its gap");
+            gpui::point(
+                px(row.bounds.center().x.0 / scale),
+                px(row.bounds.center().y.0 / scale),
+            )
+        });
+        visual.click_at(position);
+        assert_eq!(config.get().preview.display_id, Some(2));
+        stack = stack_handle(visual)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        check = stack.update(visual, |_, _, cx| cx.entity()).unwrap();
+        visual.update(|_, cx| {
+            wrapper.update(cx, |view, cx| {
+                view.preview = check.clone();
+                cx.notify();
+            });
+        });
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.click_at(gpui::point(px(184.), px(552.)));
+        assert!(visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.press("escape");
+        assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.click_at(gpui::point(px(184.), px(552.)));
+        assert!(visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.simulate_display_removed(gpui::DisplayId::new(11));
+        visual.settle();
+        assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.click_at(gpui::point(px(184.), px(552.)));
+        visual.press("home");
+        let row_positions = |visual: &mut gpui::VisualTestContext| {
+            visual.update(|window, _| {
+                let scale = window.scale_factor();
+                let mut rows: Vec<_> = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        (quad.bounds.size.width.0 / scale - 180.).abs() < 0.5
+                            && (quad.bounds.size.height.0 / scale - 40.).abs() < 0.5
+                    })
+                    .map(|quad| quad.bounds.top().0 / scale)
+                    .collect();
+                rows.sort_by(f32::total_cmp);
+                rows
+            })
+        };
+        let before = row_positions(visual);
+        assert_eq!(before.len(), 4);
+        let pointer = gpui::point(px(100.), px(before[0] + 20.));
+        visual.simulate_mouse_move(pointer, None, gpui::Modifiers::none());
+        visual.simulate_event(gpui::ScrollEvent {
+            position: pointer,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.settle();
+        assert_eq!(
+            row_positions(visual),
+            before,
+            "a short menu must not scroll"
+        );
+        visual.simulate_display_removed(gpui::DisplayId::new(12));
+        visual.settle();
+        assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+
+        for id in 11..13 {
+            visual.simulate_display_added(gpui::DisplayId::new(id), None);
+        }
+        for _ in 1..PREVIEW_MAX_STACK {
+            visual.update(|_, cx| CapturePreviewWindow::open(cx, path.clone()));
+        }
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.click_at(gpui::point(px(184.), px(552.)));
+        assert!(visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        let (other_id, other_generation) = visual.update(|_, cx| {
+            let other = &check.read(cx).previews[1];
+            (other.id, other.dismiss_token.load(Ordering::Relaxed))
+        });
+        assert_eq!(
+            visual.update(|_, cx| dismiss_verdict(stack.into(), other_id, other_generation, cx)),
+            DismissVerdict::Ready
+        );
+        visual.update(|_, cx| CapturePreviewWindow::open(cx, path));
+        assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+    }
 
     #[herogpui::test]
     fn polish_copy_matches_electron_at_multiple_scales(cx: &mut gpui::TestAppContext) {
@@ -2277,6 +2558,7 @@ mod tests {
             previews: Vec::new(),
             layout_generation: 0,
             display_menu: crate::ui::menu::MenuHandle::new(),
+            _display_observer: None,
         };
         let first = start_layout_transition(&mut view, true, Instant::now());
         let second = start_layout_transition(&mut view, true, Instant::now());
@@ -2411,7 +2693,7 @@ mod tests {
         ));
 
         assert_eq!(
-            CapturePreviewWindow::control_frame(&mut preview, false, now),
+            CapturePreviewWindow::control_frame(&mut preview, false, false, now),
             (true, 0.75, false)
         );
     }
@@ -2607,7 +2889,7 @@ mod tests {
             assert!(control_call(id).contains("theme.primary,"), "{id}");
         }
         let display = source
-            .split_once("preview-display-menu")
+            .split_once("let owner = format!(\"preview-display-menu-")
             .unwrap_or_else(|| panic!("missing preview-display-menu"))
             .1
             .split_once("cx.stop_propagation")

@@ -6,9 +6,9 @@ use crate::windows::capture_preview::CapturePreviewWindow;
 use crate::windows::registry::{self, WindowKind};
 
 use super::{
-    capture, event, hover, measured, point, px, settle, size, Duration, HeadlessAppContext,
-    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path, PlatformInput,
-    GEOMETRY,
+    capture, click, event, hover, key, measured, point, px, settle, size, Duration,
+    HeadlessAppContext, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path,
+    PlatformInput, GEOMETRY,
 };
 
 struct HoveredPreview {
@@ -19,6 +19,24 @@ impl Render for HoveredPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         self.preview
             .update(cx, |preview, cx| preview.surface(true, window, cx))
+    }
+}
+
+struct MultiDisplayPreview {
+    preview: Entity<CapturePreviewWindow>,
+}
+
+impl Render for MultiDisplayPreview {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let displays = [
+            (gpui::DisplayId::new(1), true),
+            (gpui::DisplayId::new(2), false),
+            (gpui::DisplayId::new(3), false),
+            (gpui::DisplayId::new(4), false),
+        ];
+        self.preview.update(cx, |preview, cx| {
+            preview.surface_with_displays(true, &displays, window, cx)
+        })
     }
 }
 
@@ -160,6 +178,135 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             .unwrap();
             if corner.ends_with("right") {
                 capture(cx, hovered, output, &format!("preview-{corner}-edit-hover"));
+            }
+            cx.update_window(hovered, |_, window, _| window.remove_window())
+                .unwrap();
+            settle(cx, preview);
+        }
+        {
+            let view = cx
+                .update_window(preview, |view, _, _| {
+                    view.downcast::<CapturePreviewWindow>().unwrap()
+                })
+                .unwrap();
+            let hovered = cx
+                .open_window(size(px(208.), px(604.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|_| MultiDisplayPreview { preview: view })
+                })
+                .unwrap()
+                .into();
+            settle(cx, hovered);
+            hover(
+                cx,
+                hovered,
+                f32::from(single.center().x),
+                f32::from(single.top()) + 100.,
+            );
+            click(cx, hovered, 184., f32::from(single.top()) + 92.);
+            hover(cx, hovered, 0., 0.);
+            cx.update_window(hovered, |_, window, _| {
+                let panel = window
+                    .painted_quads()
+                    .into_iter()
+                    .find(|quad| {
+                        (quad.bounds.size.width.0 / scale - 184.).abs() < 0.5
+                            && (quad.bounds.size.height.0 / scale - 124.).abs() < 0.5
+                    })
+                    .expect("four-display menu must remain open inside the preview");
+                let bounds = panel.bounds;
+                assert!(bounds.left().0 >= f32::from(single.left()) * scale);
+                assert!(bounds.right().0 <= f32::from(single.right()) * scale);
+                assert!(bounds.top().0 >= f32::from(single.top()) * scale);
+                assert!(bounds.bottom().0 <= f32::from(single.bottom()) * scale);
+            })
+            .unwrap();
+            if corner.ends_with("right") {
+                capture(
+                    cx,
+                    hovered,
+                    output,
+                    &format!("preview-{corner}-display-menu"),
+                );
+            }
+            for (input, name) in [("home", "first"), ("end", "last")] {
+                key(cx, hovered, input);
+                if corner.ends_with("right") {
+                    capture(
+                        cx,
+                        hovered,
+                        output,
+                        &format!("preview-{corner}-display-menu-{name}"),
+                    );
+                }
+                let (row, focus, background) = cx
+                    .update_window(hovered, |_, window, cx| {
+                        let rows: Vec<_> = window
+                            .painted_quads()
+                            .into_iter()
+                            .filter(|quad| {
+                                (quad.bounds.size.width.0 / scale - 176.).abs() < 0.5
+                                    && (30. ..=42.).contains(&(quad.bounds.size.height.0 / scale))
+                            })
+                            .collect();
+                        assert_eq!(rows.len(), 4, "{corner}/{name}: all menu rows must paint");
+                        let row = if name == "first" {
+                            rows.iter()
+                                .min_by(|a, b| a.bounds.top().0.total_cmp(&b.bounds.top().0))
+                        } else {
+                            rows.iter()
+                                .max_by(|a, b| a.bounds.top().0.total_cmp(&b.bounds.top().0))
+                        }
+                        .unwrap()
+                        .bounds;
+                        let theme = crate::theme::vars::active_theme(cx);
+                        (
+                            row,
+                            gpui::Rgba::from(theme.accent),
+                            gpui::Rgba::from(theme.popover),
+                        )
+                    })
+                    .unwrap();
+                let image = cx.capture_screenshot(hovered).unwrap();
+                let distance = |pixel: &image::Rgba<u8>, color: gpui::Rgba| {
+                    pixel.0[..3]
+                        .iter()
+                        .zip([color.r, color.g, color.b])
+                        .map(|(actual, expected)| (f32::from(*actual) - expected * 255.).abs())
+                        .sum::<f32>()
+                };
+                for (side, x, y) in [
+                    (
+                        "left",
+                        row.left().0 - scale,
+                        (row.top().0 + row.bottom().0) / 2.,
+                    ),
+                    ("right", row.right().0, (row.top().0 + row.bottom().0) / 2.),
+                    (
+                        "top",
+                        (row.left().0 + row.right().0) / 2.,
+                        row.top().0 - scale,
+                    ),
+                    (
+                        "bottom",
+                        (row.left().0 + row.right().0) / 2.,
+                        row.bottom().0,
+                    ),
+                ] {
+                    let mut visible = 0;
+                    for dx in -1..=1 {
+                        for dy in -1..=1 {
+                            let pixel = image.get_pixel(
+                                (x.floor() as i32 + dx) as u32,
+                                (y.floor() as i32 + dy) as u32,
+                            );
+                            if distance(pixel, focus) < distance(pixel, background) {
+                                visible += 1;
+                            }
+                        }
+                    }
+                    assert!(visible >= 3, "{corner}/{name}: {side} focus ring clipped: {visible} focus pixels, row={row:?}, scale={scale}");
+                }
             }
             cx.update_window(hovered, |_, window, _| window.remove_window())
                 .unwrap();

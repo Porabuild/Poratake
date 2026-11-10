@@ -32,7 +32,8 @@ published archive; all dependency versions remain unchanged.
 
 HeroGPUI components 0.15.1 resolve to `vendor/herogpui-components`. The patched
 `src/select.rs` preserves focus-ring gutters and handles accessibility expansion;
-`src/slider.rs` handles accessibility value actions. The archive checksum,
+`src/dropdown.rs` preserves scrollable menu focus gutters within the available
+panel padding; `src/slider.rs` handles accessibility value actions. The archive checksum,
 original licenses and NOTICE are retained.
 
 ## Automated visual gate
@@ -44,22 +45,22 @@ input and frame scheduling use GPUI's headless harness. This is not installed-ap
 or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
-738 logical pixels high. Each case captures 136 states; the two 1280px, 100% cases
-also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,232 baseline images in a complete renderer profile.
+738 logical pixels high. Each case captures 142 states; the two 1280px, 100% cases
+also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,328 baseline images in a complete renderer profile. The 96 new menu images are reviewed locally; the hosted renderer profile still needs them.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
-| Surface             | Exercised evidence                                                                                                                           | Limits                                                                                             |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus      | Not every control's complete interaction matrix                                                    |
-| Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states     | No OCR/QR service result or stitched-scroll output from these fixtures                             |
-| All-in-one          | Screenshot/record area, window and display pickers, plus OCR area; frontmost and clipped window highlights, screen hover and pointer leave   | Window ownership is simulated; physical pointer transitions remain unverified                      |
-| Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices    | Fixture RPCs assume granted media permission; hardware and real consent remain native checks       |
-| Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                                | Playback and every panel's control states are not yet image baselines                              |
-| Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                   | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                       |
-| Pin window          | Default, hover, enlarged and narrow windows; image bounds and close control; annotated editor restoration with history enabled and disabled  | Native movement and Alt+F4 restoration verified on Windows at 100%; mixed DPI remains unverified   |
-| Capture preview     | Single cards and four-card stacks; four corners, eviction, explicit editor handoff, auto-dismiss, inward tooltips and Edit without a tooltip | Native bottom-right capture handoff and Close tooltip verified; other pointer/region checks remain |
-| Tray menu           | Window height equals the painted menu at every simulated scale; fitted-menu image baselines                                                  | Native prewarmed client height verified at 100%; physical mixed-DPI transitions remain unverified  |
+| Surface             | Exercised evidence                                                                                                                          | Limits                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                                           |
+| Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                                    |
+| All-in-one          | Screenshot/record area, window and display pickers, plus OCR area; frontmost and clipped window highlights, screen hover and pointer leave  | Window ownership is simulated; physical pointer transitions remain unverified                             |
+| Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks              |
+| Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                                     |
+| Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                  | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                              |
+| Pin window          | Default, hover, enlarged and narrow windows; image bounds and close control; annotated editor restoration with history enabled and disabled | Native movement and Alt+F4 restoration verified on Windows at 100%; mixed DPI remains unverified          |
+| Capture preview     | Single cards and four-card stacks; four corners, eviction, explicit editor handoff, auto-dismiss, inward tooltips and a four-display menu   | Native bottom-right capture handoff and Close tooltip verified; physical multi-monitor menu checks remain |
+| Tray menu           | Window height equals the painted menu at every simulated scale; fitted-menu image baselines                                                 | Native prewarmed client height verified at 100%; physical mixed-DPI transitions remain unverified         |
 
 Geometry assertions check 21 toolbar entries, 28/32px control sizes, spacing,
 nonoverlapping options, visible caption buttons and the ability to scroll overflow
@@ -198,8 +199,10 @@ The [run at `a16a0a7`](https://github.com/Porabuild/Poratake/actions/runs/428796
 passed all required jobs, including all 16 Windows visual cases and the normal
 2,152-image hosted comparison.
 The [run at `72f0f59`](https://github.com/Porabuild/Poratake/actions/runs/42913126458)
-also passed all required jobs and the 2,152-image hosted comparison. The 80 new
-tooltip images still need a reviewed hosted-renderer profile.
+also passed all required jobs and the 2,152-image hosted comparison. The next
+hosted run captured 80 new tooltip images; they were reviewed and added, while
+the previous 2,152 images remained byte-identical. Its Linux X11 test failed on
+daemon exit once and passed on retry; the cause of the first exit is unverified.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -265,6 +268,16 @@ name later produced a 254px Polish tooltip inside a 200px card; it now wraps
 within the card and limits very long visual labels to three lines. All 80 new
 local renderer images were reviewed, and the previous 2,152 stayed byte-identical.
 A normal run then passed all 16 cases and 2,232 images without updating baselines.
+The four-display preview menu originally painted 220×158px outside its 200×140px
+card. It now fits inside the card and scrolls, stays open after pointer leave,
+and closes when its owner is removed or display topology changes. Synthetic input
+checks keyboard and mouse selection, short-menu scrolling and auto-dismiss. GPU
+samples check all four sides of the first and last focus rings at every simulated
+scale and corner. The 96 local menu images were reviewed; the previous 2,232 local
+images were byte-identical. A normal run passed all 16 cases and 2,328 images
+without updating baselines. The Windows native gate passed 1,006 tests with one
+skip, and 74 vendored dropdown tests passed. Physical multi-monitor behavior
+remains unverified.
 The pooled-overlay regression reproduced retained selection and drag state, which
 are now cleared on park. The editor-size regression found no stored initial
 size; successful opening now remembers it before another image can choose a
@@ -583,6 +596,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                          |
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                          |
+| P1       | Preview display preference identity                      | GPUI stores a display-list index in the shared `preview.displayId` setting, whereas Electron stores its display ID. A reordered monitor list can select the wrong screen and the shells cannot reliably share this preference. Match the current Electron/Chromium platform ID mapping and verify real monitor changes and restarts; GPUI's Windows display ID is an HMONITOR, not the Electron ID.                                |
 | P1       | Framed screenshot preview versus export                  | At simulated 125%, a 640×360 patterned capture with a Windows frame, blur and shadow differs from its saved PNG at 1,400 pixels along the side and bottom border. The image covers the frame border in the preview. Fix the layer order and rounded corners, then compare preview and export for both frame styles, annotations and multiple scales.                                                                               |
 | P1       | Rounded screenshot preview versus export                 | The parent overflow clip is rectangular, so the live image and annotation overlay are not clipped together to wallpaper corners. The preview also paints an opaque surface beneath transparent image pixels in this mode. Compare rounded preview and PNG with annotations, attached layers and balance at multiple scales.                                                                                                        |
 | P1       | Zero-padding wallpaper effects                           | With no background or padding, a 1600×1000 Polish capture with a window frame remains 1600×1000 at 200%; Electron produces 1600×1056. The activation gate also skips corner and shadow effects. Source comparison shows attached layers and balance need coordinated preview/export handling before this gate can safely be widened.                                                                                               |

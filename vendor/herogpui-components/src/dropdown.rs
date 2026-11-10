@@ -936,6 +936,7 @@ impl RenderOnce for Menu {
         let panel_padding =
             self.panel_padding
                 .unwrap_or(if dropdown_composition { px(6.) } else { px(4.) });
+        let focus_gutter = panel_padding.max(px(0.)).min(px(4.));
         let viewport_width = (window.viewport_size().width - px(32.)).max(px(0.));
         let panel = gpui::div()
             .relative()
@@ -951,7 +952,8 @@ impl RenderOnce for Menu {
             // preserve the normal minimum instead of collapsing to 48svw.
             .max_w(self.panel_max_width.unwrap_or(if dropdown_composition { viewport_width } else { window.viewport_size().width * 0.48 }))
             .gap(self.panel_gap.unwrap_or(px(2.)))
-            .p(panel_padding)
+            .px(panel_padding)
+            .py((panel_padding - focus_gutter).max(px(0.)))
             .bg(colors.overlay.background)
             .rounded(radius)
             .shadow(cx.layout().overlay_shadow.clone());
@@ -1158,6 +1160,14 @@ impl RenderOnce for Menu {
         }
 
         let mut open_submenu = None;
+        let item_count = self.items.len();
+        let guttered = |index: usize, child: AnyElement| {
+            gpui::div()
+                .py(focus_gutter)
+                .mt(if index == 0 { px(0.) } else { -focus_gutter })
+                .mb(if index + 1 == item_count { px(0.) } else { -focus_gutter })
+                .child(child)
+        };
         for (i, item) in self.items.into_iter().enumerate() {
             match item {
                 MenuItem::Separator => {
@@ -1171,7 +1181,7 @@ impl RenderOnce for Menu {
                     // absolute one on each edge, for a panel that has to sit
                     // beside a platform menu whose own rule is a fixed inset
                     // rather than a share of the width.
-                    panel = panel.child(match separator_inset {
+                    let separator = match separator_inset {
                         Some(inset) => gpui::div().w_full().my(px(4.)).px(inset).child(
                             gpui::div()
                                 .w_full()
@@ -1184,10 +1194,12 @@ impl RenderOnce for Menu {
                             .w(gpui::relative(0.94))
                             .h(separator_thickness)
                             .bg(colors.separator),
-                    });
+                    };
+                    panel = panel.child(guttered(i, separator.into_any_element()));
                 }
                 MenuItem::SectionLabel(label) => {
-                    panel = panel.child(
+                    panel = panel.child(guttered(
+                        i,
                         gpui::div()
                             .px(px(8.))
                             .pt(px(6.))
@@ -1196,8 +1208,9 @@ impl RenderOnce for Menu {
                             .line_height(px(16.))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(colors.muted)
-                            .child(label.to_string()),
-                    );
+                            .child(label.to_string())
+                            .into_any_element(),
+                    ));
                 }
                 MenuItem::Item {
                     key,
@@ -1642,9 +1655,9 @@ impl RenderOnce for Menu {
                         if is_sub_open {
                             open_submenu = Some((i, open_key, submenu));
                         }
-                        panel = panel.child(slot);
+                        panel = panel.child(guttered(i, slot.into_any_element()));
                     } else {
-                        panel = panel.child(row);
+                        panel = panel.child(guttered(i, row.into_any_element()));
                     }
                 }
             }
@@ -1702,7 +1715,7 @@ impl RenderOnce for Menu {
         // mid-animation only the internal padding flexes, never the origin.
         // Animating the surface instead would hang its `py` between the
         // placed box and the painted panel (one RAC gap plus ~6px).
-        let zoom = crate::anim::ZoomBox::panel(panel_padding, radius);
+        let zoom = crate::anim::ZoomBox::panel((panel_padding - focus_gutter).max(px(0.)), radius);
         let panel = if self.exiting {
             crate::anim::exiting(
                 panel,
