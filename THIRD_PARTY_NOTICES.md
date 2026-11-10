@@ -154,7 +154,7 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `glib`                     |    0.18.5 | MIT                       |
 | `global-hotkey`            |     0.8.0 | Apache-2.0 OR MIT         |
 | `gpui-pre`                 |    0.3.11 | Apache-2.0                |
-| `herogpui`                 |    0.15.0 | Apache-2.0                |
+| `herogpui`                 |    0.15.1 | Apache-2.0                |
 | `gtk`                      |    0.18.2 | MIT                       |
 | `hmac`                     |    0.13.0 | MIT OR Apache-2.0         |
 | `image`                    |   0.25.10 | MIT OR Apache-2.0         |
@@ -183,7 +183,7 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `serde`                    |   1.0.229 | MIT OR Apache-2.0         |
 | `serde_json`               |   1.0.151 | MIT OR Apache-2.0         |
 
-[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are based on version 0.15.0 with the control-content, styling and popover patch at [commit `12ce9ad5`](https://github.com/Porabuild/HeroGPUI/commit/12ce9ad5104319e05ddc10daecbfab6c8ded1393); all four sources are pinned to that exact Git revision in `src/main/Cargo.lock`. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
+[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are published as version 0.15.1 on crates.io ([release source](https://github.com/Porabuild/HeroGPUI/tree/v0.15.1)); all four registry packages and their checksums are locked in `src/main/Cargo.lock`. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
 
 ```text
 HeroGPUI
