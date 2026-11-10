@@ -106,6 +106,67 @@ mod tests {
     }
 
     #[test]
+    fn detects_photographed_qr_against_distracting_surroundings() {
+        for (name, expected) in [
+            (
+                "qr-region-histogram.png",
+                "http://google.com/gwt/n?u=bluenile.com",
+            ),
+            (
+                "qr-region-original.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-framed.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-coarse.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-medium.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../daemon-win/tests/fixtures")
+                .join(name);
+            let payload = detect_qr_code(&path).expect("decode photographed QR code");
+            assert_eq!(payload, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn detects_photographed_qr_inside_a_4k_capture() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../daemon-win/tests/fixtures/qr-region-original.png");
+        let source = image::open(path)
+            .expect("load photographed QR code")
+            .into_luma8();
+        let (width, height) = (source.width() as usize, source.height() as usize);
+        let (screen_width, screen_height) = (3840, 2160);
+        for (x, y, background) in [
+            (300, 400, 225),
+            (1101, 601, 225),
+            (2048, 1024, 255),
+            (3199, 1679, 225),
+        ] {
+            let mut screen = vec![background; screen_width * screen_height];
+            for row in 0..height {
+                let target = (row + y) * screen_width + x;
+                screen[target..target + width]
+                    .copy_from_slice(&source.as_raw()[row * width..(row + 1) * width]);
+            }
+            assert_eq!(
+                detect_payload_from_greyscale(&screen, screen_width, screen_height),
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+                "position {x},{y} on {background}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_oversized_dimensions_before_decoding_pixels() {
         let path = std::env::temp_dir().join(format!(
             "poratake-qrcode-oversized-{}.png",

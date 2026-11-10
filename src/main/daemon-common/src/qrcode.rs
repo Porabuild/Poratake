@@ -102,17 +102,75 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
     if width == 0 || height == 0 || pixels.len() < width.saturating_mul(height) {
         return String::new();
     }
+    if pixels[..width * height]
+        .iter()
+        .all(|&pixel| pixel == pixels[0])
+    {
+        return String::new();
+    }
 
-    for pass in 0..5 {
+    let mut candidates = Vec::new();
+    let payload = detect_in_region(
+        pixels,
+        width,
+        height,
+        &[0, 1, 2, 3, 4],
+        Some(&mut candidates),
+    );
+    if !payload.is_empty() {
+        return payload;
+    }
+
+    let mut remaining = width * height;
+    for (left, top, right, bottom) in candidates {
+        let margin = (right - left).max(bottom - top) / 4;
+        let left = left.saturating_sub(margin);
+        let top = top.saturating_sub(margin);
+        let right = right.saturating_add(margin).min(width);
+        let bottom = bottom.saturating_add(margin).min(height);
+        let region_width = right - left;
+        let region_height = bottom - top;
+        let size = region_width * region_height;
+        if size > remaining {
+            continue;
+        }
+        let mut region = Vec::new();
+        if region.try_reserve_exact(size).is_err() {
+            continue;
+        }
+        remaining -= size;
+        for y in top..bottom {
+            region.extend_from_slice(&pixels[y * width + left..y * width + right]);
+        }
+        let payload = detect_in_region(&region, region_width, region_height, &[2, 5, 4], None);
+        if !payload.is_empty() {
+            return payload;
+        }
+    }
+    detect_in_region(pixels, width, height, &[6, 7], None)
+}
+
+#[cfg(feature = "qrcode-decode")]
+fn detect_in_region(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    passes: &[usize],
+    mut candidates: Option<&mut Vec<(usize, usize, usize, usize)>>,
+) -> String {
+    for &pass in passes {
         let mut image = match pass {
             0 => rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| {
                 pixels[y * width + x]
             }),
-            1 | 3 | 4 => {
+            1 | 3 | 4 | 5 | 6 | 7 => {
                 let block = match pass {
                     1 => 8,
                     3 => 4,
-                    _ => 16,
+                    4 => 16,
+                    5 => 12,
+                    6 => 24,
+                    _ => 10,
                 };
                 if width < block * 5 || height < block * 5 {
                     continue;
@@ -168,6 +226,52 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
                 && !content.is_empty()
             {
                 return content;
+            }
+            if let Some(candidates) = candidates.as_deref_mut()
+                && candidates.len() < 8
+            {
+                let left = grid
+                    .bounds
+                    .iter()
+                    .map(|point| point.x.max(0) as usize)
+                    .min()
+                    .unwrap()
+                    .min(width);
+                let top = grid
+                    .bounds
+                    .iter()
+                    .map(|point| point.y.max(0) as usize)
+                    .min()
+                    .unwrap()
+                    .min(height);
+                let right = grid
+                    .bounds
+                    .iter()
+                    .map(|point| point.x.max(0) as usize)
+                    .max()
+                    .unwrap()
+                    .saturating_add(1)
+                    .min(width);
+                let bottom = grid
+                    .bounds
+                    .iter()
+                    .map(|point| point.y.max(0) as usize)
+                    .max()
+                    .unwrap()
+                    .saturating_add(1)
+                    .min(height);
+                if left >= right || top >= bottom {
+                    continue;
+                }
+                let area = (right - left) * (bottom - top);
+                let duplicate = candidates.iter().any(|&(x0, y0, x1, y1)| {
+                    let overlap = right.min(x1).saturating_sub(left.max(x0))
+                        * bottom.min(y1).saturating_sub(top.max(y0));
+                    overlap * 4 >= area.min((x1 - x0) * (y1 - y0)) * 3
+                });
+                if !duplicate {
+                    candidates.push((left, top, right, bottom));
+                }
             }
         }
     }

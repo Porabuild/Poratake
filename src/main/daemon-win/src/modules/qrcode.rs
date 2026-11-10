@@ -214,6 +214,60 @@ mod tests {
     }
 
     #[test]
+    fn detects_photographed_qr_against_distracting_surroundings() {
+        for (name, expected) in [
+            (
+                "qr-region-histogram.png",
+                "http://google.com/gwt/n?u=bluenile.com",
+            ),
+            (
+                "qr-region-original.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-framed.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-coarse.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-medium.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+        ] {
+            let payload = detect_qr_code(&fixture_path(name)).expect("decode photographed QR code");
+            assert_eq!(payload, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn detects_photographed_qr_inside_a_4k_capture() {
+        let (source, width, height) = load_greyscale(&fixture_path("qr-region-original.png"))
+            .expect("load photographed QR code");
+        let (screen_width, screen_height) = (3840, 2160);
+        for (x, y, background) in [
+            (300, 400, 225),
+            (1101, 601, 225),
+            (2048, 1024, 255),
+            (3199, 1679, 225),
+        ] {
+            let mut screen = vec![background; screen_width * screen_height];
+            for row in 0..height {
+                let target = (row + y) * screen_width + x;
+                screen[target..target + width]
+                    .copy_from_slice(&source[row * width..(row + 1) * width]);
+            }
+            assert_eq!(
+                detect_payload_from_greyscale(&screen, screen_width, screen_height),
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+                "position {x},{y} on {background}"
+            );
+        }
+    }
+
+    #[test]
     fn returns_empty_payload_when_no_code_present() {
         let white = vec![255u8; 64 * 64];
         let payload = detect_payload_from_greyscale(&white, 64, 64);
