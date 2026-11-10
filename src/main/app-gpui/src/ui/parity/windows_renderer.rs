@@ -1,9 +1,9 @@
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use gpui::{
-    point, px, size, Bounds, DevicePixels, Empty, Platform, PlatformAtlas,
+    point, px, size, Bounds, DevicePixels, Empty, GpuSpecs, Platform, PlatformAtlas,
     PlatformHeadlessRenderer, PlatformWindow, Scene, Size, WindowHandle, WindowId, WindowKind,
     WindowParams,
 };
@@ -12,12 +12,40 @@ use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SIZE};
 
+static BASELINE_PROFILE: OnceLock<String> = OnceLock::new();
+
+pub(super) fn baseline_profile() -> &'static str {
+    BASELINE_PROFILE
+        .get()
+        .expect("the visual renderer is initialized")
+}
+
+fn profile_name(specs: &GpuSpecs) -> anyhow::Result<String> {
+    let device = specs
+        .device_name
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-");
+    anyhow::ensure!(
+        !device.is_empty(),
+        "the renderer has no baseline device name"
+    );
+    let kind = if specs.is_software_emulated {
+        "software"
+    } else {
+        "hardware"
+    };
+    Ok(format!("{kind}-{device}"))
+}
+
 pub(super) fn create(
     platform: &Rc<dyn Platform>,
 ) -> anyhow::Result<Option<Box<dyn PlatformHeadlessRenderer>>> {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    let handle =
-        WindowHandle::<Empty>::new(WindowId::from(NEXT_ID.fetch_add(1, Ordering::Relaxed)));
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let handle = WindowHandle::<Empty>::new(WindowId::from(id));
     let window = platform.open_window(
         handle.into(),
         WindowParams {
@@ -36,6 +64,19 @@ pub(super) fn create(
             window_min_size: None,
         },
     )?;
+    if id == 1 {
+        let specs = window
+            .gpu_specs()
+            .ok_or_else(|| anyhow::anyhow!("the visual renderer did not report its device"))?;
+        let profile = profile_name(&specs)?;
+        println!("Visual renderer: {profile}; {specs:?}");
+        let output = std::env::var("PORATAKE_PARITY_OUTPUT")?;
+        std::fs::write(
+            std::path::Path::new(&output).join("renderer.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({"profile": &profile, "gpu": specs}))?,
+        )?;
+        BASELINE_PROFILE.set(profile).unwrap();
+    }
     Ok(Some(Box::new(Renderer { window })))
 }
 
@@ -85,5 +126,29 @@ impl PlatformHeadlessRenderer for Renderer {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.window.sprite_atlas()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn baseline_profiles_are_path_safe_and_separate_software() {
+        let mut specs = GpuSpecs {
+            device_name: "../../NVIDIA/GeForce RTX 5080".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            profile_name(&specs).unwrap(),
+            "hardware-nvidia-geforce-rtx-5080"
+        );
+        specs.is_software_emulated = true;
+        assert_eq!(
+            profile_name(&specs).unwrap(),
+            "software-nvidia-geforce-rtx-5080"
+        );
+        specs.device_name = "../..\\".into();
+        assert!(profile_name(&specs).is_err());
     }
 }

@@ -75,7 +75,11 @@ pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
         &settings.appearance.mode,
     ));
     crate::theme::vars::init_theme(cx, mode, &settings.appearance.theme);
-    let service = CaptureService::new(DaemonHandle::new(), config);
+    #[cfg(test)]
+    let daemon = DaemonHandle::with_binary(std::path::PathBuf::new());
+    #[cfg(not(test))]
+    let daemon = DaemonHandle::new();
+    let service = CaptureService::new(daemon, config);
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));
     cx.set_global(AppState { service });
@@ -111,4 +115,25 @@ pub fn try_state(cx: &gpui::App) -> Option<CaptureService> {
 
 pub fn coordinator(cx: &gpui::App) -> Entity<Coordinator> {
     cx.global::<CoordinatorHandle>().0.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[herogpui::test]
+    fn render_state_never_starts_the_ambient_daemon(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        cx.update(|cx| set_test_state(cx, config));
+        let daemon = cx.read(|cx| state(cx).daemon);
+        let result = daemon.window_selector().list();
+        let running = daemon.is_running();
+        daemon.stop();
+        assert!(
+            result.is_err(),
+            "render fixtures must not connect to the ambient daemon"
+        );
+        assert!(!running);
+    }
 }

@@ -1993,6 +1993,10 @@ impl Render for CapturePreviewWindow {
         if needs_frame {
             crate::ui::primitives::request_animation_frame(window);
         }
+        #[cfg(feature = "parity")]
+        let root = root.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("capture-previews", bounds);
+        });
         crate::ui::window_root::focus_root(root, window, cx)
     }
 }

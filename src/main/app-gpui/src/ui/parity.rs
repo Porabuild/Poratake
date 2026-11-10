@@ -17,6 +17,7 @@ mod baselines;
 pub(crate) mod daemon_fixture;
 mod overlays;
 mod pin_workflows;
+mod preview_workflows;
 mod recording_controls;
 mod scroll_workflows;
 #[cfg(windows)]
@@ -481,6 +482,7 @@ pub fn capture_editor_interaction_states() {
     overlays::run(&mut cx, &output, width, scale);
     if source.is_none() {
         pin_workflows::run(&mut cx, &output, &scratch, scale);
+        preview_workflows::run(&mut cx, &output, &scratch, scale);
     }
     recording_controls::run(&mut cx, &output, &scratch, scale);
     #[cfg(windows)]

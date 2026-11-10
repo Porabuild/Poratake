@@ -478,36 +478,13 @@ pub(super) fn video(
     width: f32,
     scale: f32,
 ) {
-    use crate::video::encoder::{Encoder, Settings};
     use crate::windows::registry::{self, WindowKind};
     use crate::windows::video_editor::{model, preview, sidebar::SidebarTab, VideoEditorWindow};
 
     let project = scratch.join("Visual regression.poratake");
     std::fs::create_dir_all(&project).unwrap();
     let recording = crate::video::project::recording_video_path(&project);
-    let mut encoder = Encoder::create(
-        &recording,
-        Settings {
-            width: 320,
-            height: 180,
-            frame_rate: 12,
-            bitrate: 4_000_000,
-            has_audio: false,
-        },
-    )
-    .unwrap();
-    let mut pixels = image::open(scratch.join("capture.png"))
-        .unwrap()
-        .resize_exact(320, 180, image::imageops::FilterType::Nearest)
-        .to_rgba8()
-        .into_raw();
-    for pixel in pixels.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
-    }
-    for _ in 0..24 {
-        encoder.write_frame(pixels.clone()).unwrap();
-    }
-    encoder.finish().unwrap();
+    std::fs::write(&recording, include_bytes!("fixtures/capture.mov")).unwrap();
     let mut state = model::VideoEditorState {
         source_duration: Some(2.),
         segments: vec![model::Segment::spanning(2.)],

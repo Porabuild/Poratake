@@ -18,10 +18,12 @@ pub(super) fn check(output: &Path) {
     let Some(baselines) = std::env::var_os("PORATAKE_PARITY_BASELINES") else {
         return;
     };
-    let baselines = Path::new(&baselines);
+    let baselines = std::path::PathBuf::from(baselines);
+    #[cfg(windows)]
+    let baselines = baselines.join(super::windows_renderer::baseline_profile());
     let update = std::env::var("PORATAKE_PARITY_UPDATE_BASELINES").as_deref() == Ok("1");
     if update {
-        std::fs::create_dir_all(baselines).unwrap();
+        std::fs::create_dir_all(&baselines).unwrap();
     }
     let mut files: Vec<_> = std::fs::read_dir(output)
         .unwrap()
@@ -38,7 +40,7 @@ pub(super) fn check(output: &Path) {
     files.sort();
     assert!(!files.is_empty(), "no visual evidence was captured");
     if update {
-        for entry in std::fs::read_dir(baselines).unwrap() {
+        for entry in std::fs::read_dir(&baselines).unwrap() {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|extension| extension == "png")
                 && path
@@ -54,7 +56,7 @@ pub(super) fn check(output: &Path) {
             }
         }
     } else {
-        let mut expected: Vec<_> = std::fs::read_dir(baselines).unwrap_or_else(|error| panic!("missing visual baselines {}: {error}; record and review them with --update-baselines", baselines.display()))
+        let mut expected: Vec<_> = std::fs::read_dir(&baselines).unwrap_or_else(|error| panic!("missing visual baselines {}: {error}; record and review them with --update-baselines", baselines.display()))
             .map(|entry| entry.unwrap().file_name())
             .filter(|name| name.to_string_lossy().starts_with("gpui-") && Path::new(name).extension().is_some_and(|extension| extension == "png"))
             .collect();

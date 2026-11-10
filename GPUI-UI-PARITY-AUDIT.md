@@ -34,20 +34,21 @@ input and frame scheduling use GPUI's headless harness. This is not installed-ap
 or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
-738 logical pixels high. Each case captures 113 states; the two 1280px, 100% cases
-also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 1,864 baseline images in total.
+738 logical pixels high. Each case captures 117 states; the two 1280px, 100% cases
+also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 1,928 baseline images per renderer.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
-| Surface             | Exercised evidence                                                                                                                          | Limits                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                              |
-| Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                       |
-| All-in-one          | Screenshot/record area, window and display pickers, plus OCR area; frontmost and clipped window highlights, screen hover and pointer leave  | Window ownership is simulated; physical pointer transitions remain unverified                |
-| Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks |
-| Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                        |
-| Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                  | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                 |
-| Pin window          | Default, hover, enlarged and narrow windows; image bounds and close control; annotated editor restoration with history enabled and disabled | Simulated scale and headless input; native movement and OS close remain unverified           |
+| Surface             | Exercised evidence                                                                                                                          | Limits                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                                           |
+| Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                                    |
+| All-in-one          | Screenshot/record area, window and display pickers, plus OCR area; frontmost and clipped window highlights, screen hover and pointer leave  | Window ownership is simulated; physical pointer transitions remain unverified                             |
+| Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks              |
+| Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                                     |
+| Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                  | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                              |
+| Pin window          | Default, hover, enlarged and narrow windows; image bounds and close control; annotated editor restoration with history enabled and disabled | Simulated scale and headless input; native movement and OS close remain unverified                        |
+| Capture preview     | Single cards and four-card stacks; four corner configurations, newest-four eviction, editor handoff and auto-dismiss                        | Headless content/layout proof; native docking, click-through regions and hover controls remain unverified |
 
 Geometry assertions check 21 toolbar entries, 28/32px control sizes, spacing,
 nonoverlapping options, visible caption buttons and the ability to scroll overflow
@@ -77,8 +78,20 @@ Baseline comparison requires identical image dimensions, state filenames and eve
 pixel. A changed pixel fails; failed images get a highlighted diff. Updates require
 `bun run test:visual --update-baselines`, which records replacements and removes
 obsolete `gpui-*.png` states. Review images and geometry before committing updates.
-CI runs the visual gate in the Windows native job and preserves PNG evidence.
-Hosted-runner agreement with these local baselines must be verified in CI.
+CI runs the visual gate in the Windows native job and preserves PNG evidence
+and GPU/driver metadata. Exact images are selected by GPUI's software/hardware
+flag and device name, under each matrix case's renderer directory. Missing
+profiles fail; no tolerance or fallback accepts another renderer's output.
+Loaded-video captures use one pinned synthetic H.264 checker fixture rather than
+re-encoding their input on each host. Separate workflow tests still encode/export.
+
+The first [hosted Windows run](https://github.com/Porabuild/Poratake/actions/runs/42779094342/job/129704528224)
+at `db35386` passed native checks and every visual case's geometry/workflow
+assertions, then failed all 16 exact image comparisons against the local GPU's
+images. Many differences were one or two channel levels; some UI edges and video
+preview pixels differed more. Renderer-specific reviewed baselines and the fixed
+video input address the differing capture environments without weakening the
+pixel check. The hosted profile must still be recorded, reviewed and rerun.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -91,12 +104,19 @@ base: 180 Vitest files, 2,224 tests passed and three skipped; 956 native tests
 passed and one skipped. Typecheck, lint, format, React Compiler, Rust Clippy and
 license/advisory checks passed. After the composition-fit change, typecheck,
 lint, format, the native gates and parity-feature Clippy passed again.
-Nextest marked the passing freeze-order test as leaky in the latest full run;
-an isolated rerun passed without that flag, and no new daemon remained running.
-The intermittent test-isolation warning still needs diagnosis if CI repeats it.
-The final 16-case comparison passed all 1,864 images, including the permission
-isolation and icon-only contrast checks. The 82 added pin/attachment images were
-reviewed; all earlier 1,782 baseline hashes remain unchanged. The attachment fit
+Render-unit-test state could lazily start the ambient native daemon, leaving
+deferred capture work running after a test. Unit fixtures now inject an empty
+daemon path. A controlled fake ambient daemon reproduced the failure before the
+fix and was never started afterward. The native suite then passed 957 tests and
+one skip without leak warnings; 40 repetitions of the previously flagged tests
+also passed without leaks. Parity builds retain their explicit fake RPC client.
+The latest completed 16-case comparison passed all 1,928 images, including the
+permission isolation, icon-only contrast and capture-preview checks. The 64 added
+preview images were reviewed; the preceding 1,864 images stayed byte-identical.
+Moving these 1,928 images into the local NVIDIA renderer profile preserved every
+hash. The fixed video input and renderer-profile lookup then passed a fresh
+16-case exact comparison of all 1,928 images.
+The attachment fit
 assertion first failed with a 2,201.6px composition in a 1,280px viewport, then
 passed after the fit cache included content dimensions. The pin's annotated
 render has zero changed pixels against its saved PNG in the fixed fixture.
@@ -107,6 +127,17 @@ The full-window QR regression failed before the fix and passed afterward. The
 rebuilt native daemon improved exact payload matches from 38/65 to 43/65 without
 losing a previous success. The single-pixel baseline failure regression also
 passed separately.
+
+Hosted [Linux GPUI CI](https://github.com/Porabuild/Poratake/actions/runs/42779094342/job/129704528155)
+passed at `db35386`: 797 GPUI tests, 28 Linux-daemon tests including the full-window
+photographed QR regression, and both X11 capture runs (normal and `GDK_SCALE=2`).
+This adds Linux service/test evidence; it does not establish interactive Linux
+app parity or physical monitor scaling.
+
+Hosted [macOS tests](https://github.com/Porabuild/Poratake/actions/runs/42779094342/job/129704528234)
+passed at `db35386`, including 799 GPUI tests, the Swift daemon build, Rust checks
+for Apple Silicon and Intel, and Clippy. Interactive macOS app parity remains
+separate verification.
 
 | Check                           | Verified result                                                                                                                                                                                                                                                                                                                    |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -127,6 +158,7 @@ passed separately.
 | Scroll capture lifecycle        | Seven production scenarios cover selection cancellation, terminal events before the start response, start/finish errors, empty output and retry. Exact live-screen parameters, cleanup and saved 640×900 output/history/editor equality are asserted. Actual stitching is outside the fake RPC fixture.                            |
 | Editor attachment lifecycle     | Eight production scenarios cover all four edges, frozen/live/fallback pixels, partial capture failure, invalid image, cancellation and retry. Exact composed pixels and history reopen match; temporary files, new history entries and clipboard changes are rejected.                                                             |
 | Pin composition and restoration | Rendered pin pixels match the annotated PNG within two channel levels. Closing the pin restores annotations and identical export bytes with history enabled or disabled, without adding history entries. Enlarged/narrow bounds are checked against natural logical size.                                                          |
+| Capture preview lifecycle       | Four corner configurations preserve 200×140 cards with 12px gaps. Adding a fifth capture evicts the oldest card without deleting its file; color pixels verify order. Double-click opens the selected capture with identical PNG export. Auto-dismiss closes the stack while preserving files and history.                         |
 | Native analysis services        | Windows capture of an owned OCR editor window contains the expected recognized text. The rebuilt QR service now reads the full 952×651 captured window, including its toolbar/margins. Before/after checks improve 38/65 to 43/65 exact payloads with zero regressions. These probes do not certify native app clipboard delivery. |
 | Native live window pick         | Background input selected an owned editor window, closed the selector and opened its 952×651 capture; decoded pixels exactly matched a direct daemon capture of that target.                                                                                                                                                       |
 | Native frozen window pick       | With freeze enabled, the former path captured a rectangle added after opening selection. The fixed saved output preserves the pre-change region: zero changed pixels versus before, while the live target differs by 3,761 pixels in that region.                                                                                  |
@@ -176,7 +208,8 @@ Bugs fixed in this pass:
   code surrounded by toolbar/margins. A local threshold pass now runs when the
   original decoder finds no payload. The full-window regression changed from
   empty to the exact expected payload; existing successful corpus cases remain
-  unchanged. Windows and Linux loaders share the fix; Linux runtime is unverified.
+  unchanged. Windows and Linux loaders share the fix; Linux's regression passed
+  in hosted CI. Interactive Linux app behavior remains unverified.
 - Scroll capture subscribed after the start RPC, losing early completion or
   cancellation events and leaving the session active. Subscription now precedes
   start; both early events and a successful retry are exercised.
@@ -222,20 +255,20 @@ Bugs fixed in this pass:
 Entries distinguish observed defects from missing evidence. An unverified path
 is not a demonstrated product defect; reproduce before changing its behavior.
 
-| Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                            |
-| -------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                      |
-| P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                      |
-| P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Extend complete native display/OCR/QR/scroll workflows, real stitching, clipboard, save, pin and attach; compare output with Electron.                                                                               |
-| P2       | QR photo robustness                                      | The reproduced full-window failure is fixed. The native decoder matches 26/40 grayscale original/framed QR corpus cases, up from 23/40, preserving every previous success. Fourteen stress cases remain unmatched; diagnose their detector/decoder failures before changing behavior. Linux runtime and native app clipboard delivery still need verification. |
-| P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                        |
-| P1       | Extended video interactions and export matrix            | Loaded panels are baselined. Add timeline/control interactions and verify zoom, camera, cursor, keyboard, subtitles, audio, cuts and trims across preview and exported frames. Current export workflow covers a documented subset.                                                                                                                             |
-| P2       | Pre-recording preference parity                          | GPUI toggle actions change the pending take but leave stored enable flags unchanged; Electron regular pre-recording controls persist them and all-in-one uses session choices. Verify both entry paths and align their persistence rules.                                                                                                                      |
-| P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                          |
-| P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                    |
-| P2       | Review hosted Windows visual results                     | Confirm local-versus-runner rendering determinism; review any diffs before accepting new baselines.                                                                                                                                                                                                                                                            |
-| P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                       |
-| P2       | Other app surfaces                                       | Settings, history, onboarding, tray and capture preview need refreshed runtime comparison and their own image baselines. Pin's representative geometry and restoration states now have automated coverage; full native interaction remains outstanding.                                                                                                        |
+| Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                             |
+| -------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                       |
+| P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                       |
+| P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Extend complete native display/OCR/QR/scroll workflows, real stitching, clipboard, save, pin and attach; compare output with Electron.                                                                                                                |
+| P2       | QR photo robustness                                      | The reproduced full-window failure is fixed. The native decoder matches 26/40 grayscale original/framed QR corpus cases, up from 23/40, preserving every previous success. Fourteen stress cases remain unmatched; diagnose their detector/decoder failures before changing behavior. Linux loader regression passes in hosted CI; interactive app clipboard delivery still needs verification. |
+| P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                         |
+| P1       | Extended video interactions and export matrix            | Loaded panels are baselined. Add timeline/control interactions and verify zoom, camera, cursor, keyboard, subtitles, audio, cuts and trims across preview and exported frames. Current export workflow covers a documented subset.                                                                                                                                                              |
+| P2       | Pre-recording preference parity                          | GPUI toggle actions change the pending take but leave stored enable flags unchanged; Electron regular pre-recording controls persist them and all-in-one uses session choices. Verify both entry paths and align their persistence rules.                                                                                                                                                       |
+| P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                           |
+| P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                     |
+| P2       | Review hosted Windows visual results                     | Geometry and workflows passed in the first hosted run; exact shared images differed. Record GPU metadata, review the hosted renderer's own exact baselines, and require a second run to compare them without updates.                                                                                                                                                                           |
+| P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                        |
+| P2       | Other app surfaces                                       | Settings, history, onboarding and tray need refreshed runtime comparison and their own image baselines. Pin and capture-preview representative layout/lifecycle states now have automated coverage; full native interaction, preview docking and hover controls remain outstanding.                                                                                                             |
 
 Keep known platform differences explicit: preview/zoom use a baked blur because
 GPUI has no live backdrop filter; the capture eyedropper remains an app overlay;
@@ -244,11 +277,11 @@ These are not evidence that unrelated features match.
 
 ## Review gate
 
-| Review category                       | Result                                                                                                                                                                                                                                                                          |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scope reviewed                        | Changed capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence against `ac384ae`; independent behavior/interface and proof/simplification passes, with targeted review of attachment, pin, permission and icon measurement changes. |
-| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                             |
-| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                       |
-| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                           |
-| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                    |
-| Blocked or unverified                 | Hosted CI agreement, physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. The approved permission isolation and icon-only contrast refinements are implemented.                                                              |
+| Review category                       | Result                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope reviewed                        | Changed capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence against `ac384ae`; independent behavior/interface and proof/simplification passes, with targeted review of attachment, pin, permission, icon measurement, capture previews, unit isolation and renderer profiles. |
+| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                          |
+| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                    |
+| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                                        |
+| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                                 |
+| Blocked or unverified                 | Hosted renderer baseline review and repeat CI, physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. The approved permission isolation and icon-only contrast refinements are implemented.                                                                                 |

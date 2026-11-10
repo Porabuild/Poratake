@@ -235,7 +235,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: windows-visual-evidence
-          path: ${{ runner.temp }}/poratake-visual-*/**/*.png
+          path: |
+            ${{ runner.temp }}/poratake-visual-*/**/*.png
+            ${{ runner.temp }}/poratake-visual-*/**/renderer.json
           if-no-files-found: ignore
 
       - name: Tests

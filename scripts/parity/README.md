@@ -9,7 +9,15 @@ bun run test:visual
 It covers light/dark, 950/1280 logical pixels and 100/125/150/200% simulated
 scale with the native Windows renderer and embedded fonts. Geometry and exact
 pixel comparisons fail independently. The Windows CI job uploads captured and
-diff PNGs. Physical monitor scaling remains a separate native check.
+diff PNGs plus `renderer.json`, which records the GPU and driver. Physical monitor
+scaling remains a separate native check.
+
+Exact baselines live in `baselines/win32/<theme>-<width>-<scale>/<renderer>/`.
+The renderer name comes from GPUI's software/hardware flag and device name;
+the console and `renderer.json` show the selected profile. An unreviewed renderer
+fails rather than falling back to another device's images. Record its images,
+review the geometry and visual output, then commit that profile. Driver changes
+must still pass the exact pixel comparison.
 
 To replace baselines deliberately:
 
@@ -89,14 +97,22 @@ four edges, live/frozen/fallback pixels, capture and invalid-image failures,
 cancellation, cleanup, clipboard preservation and identical history reopen.
 Pin workflows compare rendered annotations with exported pixels and restore
 the editor with history enabled or disabled without adding history entries.
-The built-in 1280px, 100% cases add 28 workflow images each, for 1,864 baseline
-images overall.
+The built-in 1280px, 100% cases add 28 workflow images each, for 1,928 baseline
+images per renderer.
 
 Pin default, hover, enlarged and narrow windows run in every matrix case.
 Source pixels must remain centered, fit the viewport and never upscale beyond
 their natural logical size; close controls must stay inside the viewport.
 The daemon fixture makes pin sizing use the matrix's simulated DPI rather than
 the host monitor's geometry.
+
+Capture-preview single cards and four-card stacks have top/bottom image
+baselines in every matrix case. Four corner configurations check exact card
+sizes, spacing, newest-four eviction and source-color order. Double-clicking
+the newest card must open that capture in the editor with identical exported
+pixels. Auto-dismiss must close the preview without deleting source files or
+changing history. These are content/layout checks; native screen docking,
+click-through regions and hover controls remain separate verification.
 
 Recording controls use the production window and recorder commands with a
 same-executable JSON-RPC fixture. Device names are deterministic, including long
@@ -111,7 +127,12 @@ white icon on a light toolbar cannot become an accepted baseline. Its dropdown
 chevron is excluded from the measured region.
 
 Loaded-video baselines cover all ten panels using a real encoded project with a
-drawing. Wallpaper changes autosave through the production editor; the preview
+drawing. `src/main/app-gpui/src/ui/parity/fixtures/capture.mov` fixes the input
+across encoder backends: an owned synthetic blue/gray checker, H.264, 320×180,
+24 frames at 12 fps, without audio. Its SHA-256 is
+`69b5a0e2111a59e2d25c7389833d5583c5c012e7932677f77104586f6f5e57c0`.
+Encoding and export are exercised separately by the video workflow tests.
+Wallpaper changes autosave through the production editor; the preview
 must equal a fresh composition of that saved project. Video windows respect the
 editor's 1200×750 minimum, so the 950px matrix case uses 1200px for loaded video.
 See [the audit](../../GPUI-UI-PARITY-AUDIT.md) for the current
