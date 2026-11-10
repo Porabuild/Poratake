@@ -140,6 +140,81 @@ fn frame(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
     .unwrap();
 }
 
+fn assert_text_submenu_focus(
+    cx: &mut HeadlessAppContext,
+    window: AnyWindowHandle,
+    index: usize,
+    output: &Path,
+) {
+    use herogpui::theme::ActiveTheme;
+
+    let (panel, scale, padding, row_height, focus, background) = cx
+        .update_window(window, |_, window, cx| {
+            let style = cx.components().select.resolve(&["tool-popover".into()]);
+            let padding = f32::from(style.panel_padding.unwrap());
+            let row_height = f32::from(style.row_height.unwrap());
+            let scale = window.scale_factor();
+            let height =
+                crate::editor::options::FONT_SIZES.len() as f32 * row_height + 2. * padding;
+            let panel = window
+                .painted_quads()
+                .into_iter()
+                .rev()
+                .find(|quad| {
+                    (quad.bounds.size.height.0 / scale - height).abs() <= 3.
+                        && (64. ..=200.).contains(&(quad.bounds.size.width.0 / scale))
+                })
+                .expect("the font-size submenu must be painted at its row height");
+            let theme = crate::theme::vars::active_theme(cx);
+            (
+                panel,
+                scale,
+                padding,
+                row_height,
+                gpui::Rgba::from(theme.accent),
+                gpui::Rgba::from(theme.popover),
+            )
+        })
+        .unwrap();
+    let image = cx.capture_screenshot(window).unwrap();
+    image
+        .save(output.join(format!("submenu-text-focus-{index}.png")))
+        .unwrap();
+    let left = panel.bounds.left().0 + padding * scale + panel.border_widths.left.0;
+    let right = panel.bounds.right().0 - padding * scale - panel.border_widths.right.0;
+    let top = panel.bounds.top().0
+        + (padding + index as f32 * row_height) * scale
+        + panel.border_widths.top.0;
+    let bottom = top + row_height * scale;
+    let distance = |pixel: &image::Rgba<u8>, color: gpui::Rgba| {
+        pixel.0[..3]
+            .iter()
+            .zip([color.r, color.g, color.b])
+            .map(|(actual, expected)| (f32::from(*actual) - expected * 255.).abs())
+            .sum::<f32>()
+    };
+    for (side, x, y) in [
+        ("left", left - 3. * scale, (top + bottom) / 2.),
+        ("right", right + 3. * scale, (top + bottom) / 2.),
+        ("top", (left + right) / 2., top - 3. * scale),
+        ("bottom", (left + right) / 2., bottom + 3. * scale),
+    ] {
+        let mut visible = 0;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                let pixel = image.get_pixel(
+                    (x.floor() as i32 + dx) as u32,
+                    (y.floor() as i32 + dy) as u32,
+                );
+                if distance(pixel, focus) < distance(pixel, background) {
+                    visible += 1;
+                }
+            }
+        }
+        assert!(visible >= 3, "font-size option {index} clips its {side} focus ring: {visible} focus pixels; panel={:?}, scale={scale}", panel.bounds);
+    }
+}
+
 fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
     if !cx.update(|cx| cx.windows().contains(&window)) {
         return;
@@ -322,6 +397,8 @@ pub fn capture_editor_interaction_states() {
         crate::capture::overlay::init_bindings(cx);
         crate::ui::font::register(cx);
     });
+    #[cfg(windows)]
+    windows_renderer::verify_image_sampling(&mut cx, &output, scale);
     let editor = cx
         .open_window(size(px(width), px(738.0)), |window, cx| {
             window.set_scale_factor(scale);
@@ -445,6 +522,25 @@ pub fn capture_editor_interaction_states() {
                 &output,
                 &format!("image-{}-keyboard-open", tool.id()),
             );
+            if tool == crate::ui::colors::Tool::Text {
+                let index = cx.update(|cx| {
+                    let value = editor.read(cx).unwrap().text_font_size;
+                    crate::editor::options::FONT_SIZES
+                        .iter()
+                        .position(|size| *size == value)
+                        .unwrap()
+                });
+                assert_text_submenu_focus(&mut cx, window, index, &output);
+                key(&mut cx, window, "home");
+                assert_text_submenu_focus(&mut cx, window, 0, &output);
+                key(&mut cx, window, "end");
+                assert_text_submenu_focus(
+                    &mut cx,
+                    window,
+                    crate::editor::options::FONT_SIZES.len() - 1,
+                    &output,
+                );
+            }
             escape(&mut cx, window);
             escape(&mut cx, window);
         } else if matches!(

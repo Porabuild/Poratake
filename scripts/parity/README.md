@@ -12,6 +12,19 @@ pixel comparisons fail independently. The Windows CI job uploads captured and
 diff PNGs plus `renderer.json`, which records the GPU and driver. Physical monitor
 scaling remains a separate native check.
 
+Each Windows case first renders adjacent red/white image atlas tiles at fractional
+bounds. Interior and edge samples must retain the red source color independently
+of image baselines; `image-atlas-sampling.png` preserves the GPU evidence.
+The vendored GPUI 0.3.11 Windows backend clamps sampling to tile texel centers.
+Without that shader fix, the local probe sampled neighboring white pixels.
+
+The font-size submenu checks all four sides of the keyboard focus ring on the
+current, first and last options. Samples must resemble the active focus color
+more than the panel background. `submenu-text-focus-*.png` preserves those
+checks separately from the baselines. The vendored HeroGPUI 0.15.1 Select keeps
+its existing row/panel dimensions while moving padding inside the virtual
+viewport so the ring remains visible.
+
 Exact baselines live in `baselines/win32/<theme>-<width>-<scale>/<renderer>/`.
 The renderer name comes from GPUI's software/hardware flag and device name;
 the console and `renderer.json` show the selected profile. An unreviewed renderer

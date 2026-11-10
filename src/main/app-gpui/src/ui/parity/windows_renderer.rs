@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use gpui::{
-    point, px, size, Bounds, DevicePixels, Empty, GpuSpecs, Platform, PlatformAtlas,
-    PlatformHeadlessRenderer, PlatformWindow, Scene, Size, WindowHandle, WindowId, WindowKind,
-    WindowParams,
+    div, img, point, prelude::*, px, size, Bounds, Context, DevicePixels, Empty, GpuSpecs,
+    Platform, PlatformAtlas, PlatformHeadlessRenderer, PlatformWindow, Render, Scene, Size, Window,
+    WindowHandle, WindowId, WindowKind, WindowParams,
 };
 use herogpui::gpui;
 use raw_window_handle::RawWindowHandle;
@@ -126,6 +126,83 @@ impl PlatformHeadlessRenderer for Renderer {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.window.sprite_atlas()
+    }
+}
+
+pub(super) fn verify_image_sampling(
+    cx: &mut super::HeadlessAppContext,
+    output: &std::path::Path,
+    scale: f32,
+) {
+    let images = [[64, 80, 240, 255], [255, 255, 255, 255]].map(|color| {
+        Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(image::RgbaImage::from_pixel(16, 16, image::Rgba(color)))
+        ]))
+    });
+    let probe = cx
+        .open_window(size(px(640.), px(360.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|_| ImageSamplingProbe { images })
+        })
+        .unwrap();
+    let probe = probe.into();
+    super::settle(cx, probe);
+    let bounds = super::measured("atlas-images", 0);
+    for (actual, expected) in [
+        (bounds.left(), 20.25),
+        (bounds.top(), 20.25),
+        (bounds.size.width, 275.2),
+        (bounds.size.height, 275.2),
+    ] {
+        assert!(
+            (f32::from(actual) - expected).abs() * scale <= 0.501,
+            "atlas image metric {actual:?} differs from {expected} at scale {scale}; {bounds:?}"
+        );
+    }
+    let image = cx.capture_screenshot(probe).unwrap();
+    image.save(output.join("image-atlas-sampling.png")).unwrap();
+    for x in [
+        (f32::from(bounds.center().x) * scale).floor() as u32,
+        (f32::from(bounds.right()) * scale).floor() as u32 - 3,
+    ] {
+        for fraction in [0.25, 0.5, 0.75] {
+            let y = ((f32::from(bounds.top()) + f32::from(bounds.size.height) * fraction) * scale)
+                .floor() as u32;
+            let pixel = image.get_pixel(x, y);
+            assert!(
+                pixel.0[..3]
+                    .iter()
+                    .zip([240_u8, 80, 64])
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                "an image must not sample neighbouring atlas tiles at ({x}, {y}): {pixel:?}"
+            );
+        }
+    }
+    cx.update_window(probe, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    println!("scaled image sampling stayed inside its atlas tile");
+}
+
+struct ImageSamplingProbe {
+    images: [Arc<gpui::RenderImage>; 2],
+}
+
+impl Render for ImageSamplingProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .relative()
+            .bg(gpui::black())
+            .children(self.images.iter().enumerate().map(|(index, image)| {
+                img(image.clone())
+                    .absolute()
+                    .left(px(20.25 + index as f32 * 320.))
+                    .top(px(20.25))
+                    .w(px(275.2))
+                    .h(px(275.2))
+            }))
+            .on_children_prepainted(|bounds, _, _| super::record("atlas-images", bounds))
     }
 }
 

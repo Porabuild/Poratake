@@ -7,13 +7,13 @@ list. A source comparison or passing unit test does not establish full manual pa
 
 ## Versions and dependency evidence
 
-| Component          | Current source                                                                                                                                                              |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HeroGPUI           | Registry version exactly 0.15.1 in `src/main/Cargo.toml`, with all four crate checksums in `Cargo.lock`; source tag `v0.15.1` at `09ec52be169bf25a6351a14088e34e22fe89fe9f` |
-| GPUI               | `gpui-pre` and `gpui-pre-platform` exactly 0.3.11, matching HeroGPUI's workspace                                                                                            |
-| Electron reference | `@heroui/react` and `@heroui/styles` 3.2.4 in the installed lockfile; manifest range `^3.2.4`                                                                               |
-| HeroGPUI reference | HeroUI 3.2.7; its component audit is separate from Poratake's app parity                                                                                                    |
-| Bundled guide      | `.agents/skills/herogpui/upstream.json` records revision, versions, source hashes and adapted local hashes                                                                  |
+| Component          | Current source                                                                                                                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HeroGPUI           | Exactly 0.15.1 in `src/main/Cargo.toml`; components use the source patch below and the other three crates retain registry checksums; source tag `v0.15.1` at `09ec52be169bf25a6351a14088e34e22fe89fe9f` |
+| GPUI               | `gpui-pre` and `gpui-pre-platform` exactly 0.3.11, matching HeroGPUI's workspace                                                                                                                        |
+| Electron reference | `@heroui/react` and `@heroui/styles` 3.2.4 in the installed lockfile; manifest range `^3.2.4`                                                                                                           |
+| HeroGPUI reference | HeroUI 3.2.7; its component audit is separate from Poratake's app parity                                                                                                                                |
+| Bundled guide      | `.agents/skills/herogpui/upstream.json` records revision, versions, source hashes and adapted local hashes                                                                                              |
 
 [HeroGPUI #43](https://github.com/Porabuild/HeroGPUI/pull/43) is merged. The
 `v0.15.1` tag points to the release source commit. Release workflow
@@ -24,6 +24,17 @@ Poratake's published-registry update in `ac384ae` is retained as the base of thi
 
 The former 0.3.3 GPUI reference, old HeroGPUI revision, hand-rolled control findings
 and broad surface-level “Match” claims have been removed from this audit.
+
+The existing GPUI 0.3.11 Windows backend is patched from
+`vendor/gpui-pre-windows`, with provenance and the retained Apache-2.0 license in
+`THIRD_PARTY_NOTICES.md`. Only its image shader differs from the published archive;
+all dependency versions remain unchanged.
+
+HeroGPUI components 0.15.1 resolve to `vendor/herogpui-components`. Only
+`src/select.rs` differs from that published archive: its virtual viewport keeps
+the existing panel padding inside the clipping bounds, preserving compact row
+and panel dimensions while leaving room for the focus ring. The archive checksum,
+original licenses and NOTICE are retained.
 
 ## Automated visual gate
 
@@ -73,6 +84,11 @@ checks return granted only in a parity build running the daemon fixture, before
 reading host consent or opening a permission dialog.
 Held-button capture advances the mock clock before reading pixels and must
 differ from hover inside the measured microphone button bounds.
+The font-size submenu samples the keyboard focus ring on all four sides of the
+current, first and last options, independently of baselines, and preserves each
+as `submenu-text-focus-*.png`. The original virtual viewport failed with zero
+focus pixels on the selected option's left edge. The shared Select fix passed
+that probe while preserving its 24px rows and 64×276px light-theme panel.
 
 Baseline comparison requires identical image dimensions, state filenames and every
 pixel. A changed pixel fails; failed images get a highlighted diff. Updates require
@@ -92,6 +108,23 @@ images. Many differences were one or two channel levels; some UI edges and video
 preview pixels differed more. Renderer-specific reviewed baselines and the fixed
 video input address the differing capture environments without weakening the
 pixel check. The hosted profile must still be recorded, reviewed and rerun.
+
+The next [hosted Windows run](https://github.com/Porabuild/Poratake/actions/runs/42786386596/job/129728542684)
+at `2cfb70e` passed 957 native tests with one skip and all 16 cases' geometry and
+workflow assertions. Exact comparisons failed because the reported
+`hardware-microsoft-basic-render-driver` profile had no reviewed baseline.
+Review of all 1,928 captures found two image-edge changes against the preceding
+hosted run; the other 1,686 shared non-video states were byte-identical.
+Those edge changes exposed actual atlas bleed, so these images were not accepted
+as baselines. A new GPU probe reproduced it locally: source `[240, 80, 64]`
+became `[245, 142, 132]` near an image edge. Clamping samples to each tile's texel
+centers passed the same probe and the capture workflows. Every Windows matrix
+case runs this color assertion before baseline comparison and saves
+`image-atlas-sampling.png`. After the atlas and Select fixes, 340 changed local
+baselines were reviewed and regenerated. A fresh run of the frozen verified
+binary passed all 16 cases and 1,928 exact images with updates disabled. The Select
+fix changed only the 48 keyboard submenu images; the other 1,880 captures stayed
+byte-identical to the atlas-only run. The hosted profile still needs fresh evidence.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -116,6 +149,8 @@ verified the original file, annotations and exact exported PNG with history
 disabled. A standalone pin closes without opening an editor. These tests invoke
 the platform should-close callback and dispose the test window separately;
 native OS event delivery and destruction remain unverified.
+Pin windows now have an OS title so native window inspection can identify them;
+the title change passed the four pin tests and parity-feature Clippy.
 Adding camera/zoom export coverage passed the native gate with 960 tests and one
 skip, plus typecheck, lint, formatting and parity-feature Clippy. The seven decoded
 samples verify camera visibility and source-frame changes across a cut; an
@@ -138,14 +173,14 @@ rebuilt native daemon improved exact payload matches from 38/65 to 43/65 without
 losing a previous success. The single-pixel baseline failure regression also
 passed separately.
 
-Hosted [Linux GPUI CI](https://github.com/Porabuild/Poratake/actions/runs/42779094342/job/129704528155)
-passed at `db35386`: 797 GPUI tests, 28 Linux-daemon tests including the full-window
+Hosted [Linux GPUI CI](https://github.com/Porabuild/Poratake/actions/runs/42786386596/job/129728542346)
+passed at `2cfb70e`: 798 GPUI tests, 28 Linux-daemon tests including the full-window
 photographed QR regression, and both X11 capture runs (normal and `GDK_SCALE=2`).
 This adds Linux service/test evidence; it does not establish interactive Linux
 app parity or physical monitor scaling.
 
-Hosted [macOS tests](https://github.com/Porabuild/Poratake/actions/runs/42779094342/job/129704528234)
-passed at `db35386`, including 799 GPUI tests, the Swift daemon build, Rust checks
+Hosted [macOS tests](https://github.com/Porabuild/Poratake/actions/runs/42786386596/job/129728542646)
+passed at `2cfb70e`, including 800 GPUI tests, the Swift daemon build, Rust checks
 for Apple Silicon and Intel, and Clippy. Interactive macOS app parity remains
 separate verification.
 
