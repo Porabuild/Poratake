@@ -402,7 +402,20 @@ fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
 
 /// Opens the shared area overlay for one of the selection-driven flows.
 pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
+    if intent != intent::CaptureIntent::EditorAttach
+        && crate::state::coordinator(cx)
+            .read(cx)
+            .has_pending_editor_attach()
+    {
+        return;
+    }
     if !capture_topology_supported(cx) {
+        if intent == intent::CaptureIntent::EditorAttach {
+            let coordinator = crate::state::coordinator(cx);
+            cx.defer(move |cx| {
+                coordinator.update(cx, |coordinator, cx| coordinator.cancel_editor_attach(cx));
+            });
+        }
         return;
     }
     let release_first = overlay::replace_all(cx);
@@ -413,7 +426,7 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
         release_first,
         freeze,
         move |cx, deferred_show, generation| {
-            each_display(cx, |service, id, bounds, focus, cx| {
+            let opened = each_display(cx, |service, id, bounds, focus, cx| {
                 overlay::AreaOverlay::open(
                     service,
                     id,
@@ -427,7 +440,14 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
                     cx,
                 )
                 .is_some()
-            })
+            });
+            if !opened && intent == intent::CaptureIntent::EditorAttach {
+                let coordinator = crate::state::coordinator(cx);
+                cx.defer(move |cx| {
+                    coordinator.update(cx, |coordinator, cx| coordinator.cancel_editor_attach(cx));
+                });
+            }
+            opened
         },
     );
 }
@@ -435,6 +455,12 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
 /// Opens the all-in-one overlay: one surface that switches between the
 /// screenshot, recording and OCR flows over area, window or screen.
 pub fn start_all_in_one(cx: &mut gpui::App) {
+    if crate::state::coordinator(cx)
+        .read(cx)
+        .has_pending_editor_attach()
+    {
+        return;
+    }
     if !capture_topology_supported(cx) {
         return;
     }
@@ -492,6 +518,12 @@ fn selected_display(cx: &mut gpui::App) -> Option<std::rc::Rc<dyn gpui::Platform
 /// (`recordScreen` picks through the overlay too); a click opens the
 /// pre-recording bar for that display.
 pub fn start_screen_recording(cx: &mut gpui::App) {
+    if crate::state::coordinator(cx)
+        .read(cx)
+        .has_pending_editor_attach()
+    {
+        return;
+    }
     let targets = match screen_targets(cx) {
         Ok(targets) if !targets.is_empty() => targets,
         Ok(_) => {
@@ -565,6 +597,12 @@ fn open_screen_recording_bar(target: &ScreenTarget, cx: &mut gpui::App) {
 }
 
 fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
+    if crate::state::coordinator(cx)
+        .read(cx)
+        .has_pending_editor_attach()
+    {
+        return;
+    }
     let service = crate::state::state(cx);
     let release_first = overlay::replace_all(cx);
     restart_capture_hide(None, cx);
@@ -755,6 +793,12 @@ fn all_screen_targets_opened(opened: usize, target_count: usize) -> bool {
 }
 
 pub fn start_screen_capture(cx: &mut gpui::App) {
+    if crate::state::coordinator(cx)
+        .read(cx)
+        .has_pending_editor_attach()
+    {
+        return;
+    }
     if !capture_topology_supported(cx) {
         return;
     }
@@ -867,6 +911,57 @@ mod tests {
         assert!(super::all_screen_targets_opened(2, 2));
         assert!(!super::all_screen_targets_opened(1, 2));
         assert!(!super::all_screen_targets_opened(0, 2));
+    }
+
+    #[herogpui::test]
+    fn unavailable_attachment_selector_does_not_leave_the_editor_pending(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::editor::layers::Edge;
+        use crate::editor::window::EditorWindow;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config.clone()));
+        let image = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([64, 112, 192, 255]))
+            .save(&image)
+            .unwrap();
+        let editors: Vec<_> = (0..2)
+            .map(|_| {
+                cx.add_window(|window, cx| {
+                    EditorWindow::from_file(image.to_str().unwrap(), window, cx)
+                })
+            })
+            .collect();
+        let displays = cx.read(|cx| {
+            cx.displays()
+                .iter()
+                .map(|display| display.id())
+                .collect::<Vec<_>>()
+        });
+        for display in displays {
+            cx.simulate_display_removed(display);
+        }
+        for (index, freeze) in [false, true].into_iter().enumerate() {
+            let editor = editors[index];
+            editors[1 - index]
+                .update(cx, |_, window, _| window.activate_window())
+                .unwrap();
+            assert_ne!(cx.read(|cx| cx.active_window()), Some(editor.into()));
+            config.update(|config| config.screenshot.freeze_screen = freeze);
+            editor
+                .update(cx, |editor, window, cx| {
+                    editor.attach_layer(Edge::Right, window, cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+            assert!(!cx.read(|cx| crate::state::coordinator(cx)
+                .read(cx)
+                .has_pending_editor_attach()));
+            assert_eq!(cx.read(|cx| cx.active_window()), Some(editor.into()));
+        }
     }
 
     #[cfg(windows)]

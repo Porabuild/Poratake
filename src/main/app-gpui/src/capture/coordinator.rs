@@ -180,6 +180,10 @@ fn restore_editor_window(window: AnyWindowHandle, cx: &mut gpui::App) {
 }
 
 impl Coordinator {
+    pub(crate) fn has_pending_editor_attach(&self) -> bool {
+        self.pending_attach.is_some()
+    }
+
     /// Remembers which editor edge a pending attach capture belongs to. The
     /// editor hides itself before the overlay opens, so the frozen frame and
     /// the pixels both come out without it — the `screenshot:capture-for-editor`

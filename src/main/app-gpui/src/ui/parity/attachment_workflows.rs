@@ -179,6 +179,50 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             );
         });
         let picker = area_picker(cx);
+        if name == "left" {
+            use crate::system::tray::Intent;
+
+            for intent in [
+                Intent::AllInOne,
+                Intent::CaptureScreen,
+                Intent::CaptureArea,
+                Intent::CaptureWindow,
+                Intent::ScrollCapture,
+                Intent::CaptureText,
+                Intent::ScanQrCode,
+                Intent::TimerCapture,
+                Intent::RecordScreen,
+                Intent::RecordArea,
+                Intent::RecordWindow,
+            ] {
+                cx.update(|cx| crate::intents::dispatch(intent, None, cx));
+                cx.run_until_parked();
+                assert_eq!(
+                    area_picker(cx),
+                    picker,
+                    "{intent:?} replaced the attachment"
+                );
+            }
+            let other = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            other
+                .update(cx, |editor, window, cx| {
+                    editor.attach_layer(Edge::Right, window, cx)
+                })
+                .unwrap();
+            other
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+            cx.run_until_parked();
+            assert_eq!(
+                area_picker(cx),
+                picker,
+                "a second editor replaced the attachment"
+            );
+        }
         if name == "cancelled" {
             escape(cx, picker);
         } else {

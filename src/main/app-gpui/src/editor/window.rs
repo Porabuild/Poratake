@@ -887,10 +887,13 @@ impl EditorWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let coordinator = crate::state::coordinator(cx);
+        if coordinator.read(cx).has_pending_editor_attach() {
+            return;
+        }
         self.capture_mode = false;
         let handle = window.window_handle();
         let editor = cx.entity().downgrade();
-        let coordinator = crate::state::coordinator(cx);
         coordinator.update(cx, |coordinator, _| {
             coordinator.begin_editor_attach(handle, editor, edge);
         });
