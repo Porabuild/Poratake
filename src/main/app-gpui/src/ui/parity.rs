@@ -624,6 +624,7 @@ pub fn capture_editor_interaction_states() {
     workflows::video(&mut cx, &output, &scratch, width, scale);
     if source.is_none() && width == 1280. && scale == 1. {
         workflows::selection_captures(&mut cx, &output, &scratch);
+        workflows::recording_preference_handoffs(&mut cx, &output);
         workflows::timer_captures(&mut cx, &output, &scratch);
         analysis_workflows::run(&mut cx, &output, &scratch);
         scroll_workflows::run(&mut cx, &output, &scratch);

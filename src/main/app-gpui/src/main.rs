@@ -325,6 +325,7 @@ fn main() {
                             None,
                             None,
                             None,
+                            windows::recording_control::PreferenceScope::Global,
                         );
                     }
                     other => eprintln!("[cli] unknown --preview-window target: {other:?}"),

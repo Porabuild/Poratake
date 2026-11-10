@@ -367,6 +367,14 @@ Bugs fixed in this pass:
   reaching the control bar. Countdown now moves focus to the bar.
 - The recording popup had no native or accessibility window title. It is now
   named "Poratake recording controls" and can be identified by desktop tools.
+- Pre-recording audio and camera choices now use Electron's global or
+  all-in-one preference scope. The fixture exercises ordinary controls,
+  remembered and temporary all-in-one choices, live recording changes, and
+  area, window and screen handoffs. Closing the bar also hides its camera
+  preview; physical media-device verification remains in the backlog.
+- The all-in-one toolbar's full-width positioning container intercepted clicks
+  outside its visible controls. The fixture now starts a recording selection
+  beside the toolbar and verifies that a toolbar click does not start a box.
 - Shared overlay buttons and recording device triggers used white foregrounds
   on light toolbars in both shells. Foreground and hover colors now follow the
   active theme. Electron light/dark computed styles were checked; browser
@@ -389,7 +397,6 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P2       | QR photo robustness                                      | The reproduced full-window failure is fixed. The native decoder matches 26/40 grayscale original/framed QR corpus cases, up from 23/40, preserving every previous success. Fourteen stress cases remain unmatched; diagnose their detector/decoder failures before changing behavior. Linux loader regression passes in hosted CI; interactive app clipboard delivery still needs verification. |
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                         |
 | P1       | Extended video interactions and export matrix            | Loaded panels are baselined; preview/export checks include one manual zoom and camera on-periods across a cut. Add timeline/control interactions, remaining zoom/camera cases, cursor, keyboard, subtitles and audio; extend combined cuts, trims and speed cases. This is representative coverage.                                                                                             |
-| P2       | Pre-recording preference parity                          | GPUI toggle actions change the pending take but leave stored enable flags unchanged; Electron regular pre-recording controls persist them and all-in-one uses session choices. Verify both entry paths and align their persistence rules.                                                                                                                                                       |
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                           |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                        |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                     |

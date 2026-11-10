@@ -64,7 +64,7 @@ pub fn render(
             this.set_all_in_one_mode(Mode::parse(key), cx);
         }));
 
-    let mut bar = div()
+    let bar = div()
         .absolute()
         .top(px(chrome::overlay_toolbar_top()))
         .left_0()
@@ -73,6 +73,9 @@ pub fn render(
         .justify_center()
         .child(
             toolbar::surface(theme)
+                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation();
+                })
                 .child(modes)
                 .when(choices.mode != Mode::Ocr, |el| {
                     el.child(target_menu(choices, menu, cx))
@@ -118,9 +121,6 @@ pub fn render(
                     cx,
                 )),
         );
-    bar = bar.on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-        cx.stop_propagation();
-    });
     bar.into_any_element()
 }
 

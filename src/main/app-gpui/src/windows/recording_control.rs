@@ -38,6 +38,19 @@ enum Mode {
     Recording,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PreferenceScope {
+    Global,
+    AllInOne,
+}
+
+#[derive(Clone, Copy)]
+enum RecordingPreference {
+    SystemAudio(bool),
+    Microphone(bool),
+    Camera(bool),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DeviceMenuKind {
     Media(crate::system::devices::DeviceKind),
@@ -60,6 +73,7 @@ fn set_pre_recording_escape(enabled: bool, cx: &App) {
 
 pub struct RecordingControl {
     mode: Mode,
+    preference_scope: PreferenceScope,
     #[allow(dead_code)]
     target: RecordingTarget,
     target_name: Option<SharedString>,
@@ -95,13 +109,14 @@ pub struct RecordingControl {
 }
 
 impl RecordingControl {
-    pub fn open(
+    pub(crate) fn open(
         cx: &mut App,
         target: RecordingTarget,
         rect: ScreenRect,
         display_id: Option<u32>,
         window_id: Option<i64>,
         target_name: Option<String>,
+        preference_scope: PreferenceScope,
     ) {
         if recorder::is_recording() {
             return;
@@ -113,11 +128,24 @@ impl RecordingControl {
             display_id,
             window_id,
             target_name.as_deref(),
+            preference_scope,
         ) {
             set_pre_recording_escape(true, cx);
             return;
         }
-        let config = crate::state::state(cx).config.get().recording;
+        let config = crate::state::state(cx).config.get();
+        let toggles = match preference_scope {
+            PreferenceScope::Global => crate::config::schema::AllInOneRecordingChoices {
+                system_audio: config.recording.system_audio,
+                mic_enabled: config.recording.mic_enabled,
+                camera_enabled: config.recording.camera.enabled,
+            },
+            PreferenceScope::AllInOne if config.all_in_one.remember_choices => {
+                config.all_in_one.recording
+            }
+            PreferenceScope::AllInOne => Default::default(),
+        };
+        let config = config.recording;
         let width = recording_control_width(false, target_name.is_some());
         let bounds = bar_bounds(cx, rect, width, false, false);
         let display = display_for_rect(cx, rect);
@@ -141,15 +169,16 @@ impl RecordingControl {
                     configure_toolbar_window(window);
                     let view = cx.new(|cx| Self {
                         mode: Mode::PreRecording,
+                        preference_scope,
                         target,
                         target_name: target_name.map(SharedString::from),
                         rect,
                         display_id,
                         window_id,
                         project: None,
-                        system_audio: config.system_audio,
-                        microphone: config.mic_enabled,
-                        camera: config.camera.enabled,
+                        system_audio: toggles.system_audio,
+                        microphone: toggles.mic_enabled,
+                        camera: toggles.camera_enabled,
                         camera_locked: false,
                         camera_preview_visible: false,
                         selected_mic_id: config.selected_mic_id.clone(),
@@ -184,6 +213,10 @@ impl RecordingControl {
                         if this.camera {
                             if let Err(error) = this.show_camera_preview(cx) {
                                 this.camera = false;
+                                this.persist_pre_recording_preference(
+                                    RecordingPreference::Camera(false),
+                                    cx,
+                                );
                                 crate::windows::toast::Toast::show(
                                     cx,
                                     "Camera preview failed",
@@ -257,6 +290,7 @@ impl RecordingControl {
         display_id: Option<u32>,
         window_id: Option<i64>,
         target_name: Option<&str>,
+        preference_scope: PreferenceScope,
     ) -> bool {
         #[cfg(not(windows))]
         let bounds = bar_bounds(
@@ -274,6 +308,11 @@ impl RecordingControl {
             let updated = handle
                 .update(cx, |this, window, cx| {
                     if this.mode != Mode::PreRecording {
+                        return false;
+                    }
+                    if this.preference_scope != preference_scope {
+                        this.hide_camera_preview(cx);
+                        window.remove_window();
                         return false;
                     }
                     #[cfg(not(windows))]
@@ -463,6 +502,38 @@ impl RecordingControl {
         .detach();
     }
 
+    fn persist_pre_recording_preference(&self, preference: RecordingPreference, cx: &App) {
+        if self.mode != Mode::PreRecording {
+            return;
+        }
+        let config = crate::state::state(cx).config;
+        if self.preference_scope == PreferenceScope::AllInOne
+            && !config.get().all_in_one.remember_choices
+        {
+            return;
+        }
+        config.update(|config| match (self.preference_scope, preference) {
+            (PreferenceScope::Global, RecordingPreference::SystemAudio(enabled)) => {
+                config.recording.system_audio = enabled;
+            }
+            (PreferenceScope::Global, RecordingPreference::Microphone(enabled)) => {
+                config.recording.mic_enabled = enabled;
+            }
+            (PreferenceScope::Global, RecordingPreference::Camera(enabled)) => {
+                config.recording.camera.enabled = enabled;
+            }
+            (PreferenceScope::AllInOne, RecordingPreference::SystemAudio(enabled)) => {
+                config.all_in_one.recording.system_audio = enabled;
+            }
+            (PreferenceScope::AllInOne, RecordingPreference::Microphone(enabled)) => {
+                config.all_in_one.recording.mic_enabled = enabled;
+            }
+            (PreferenceScope::AllInOne, RecordingPreference::Camera(enabled)) => {
+                config.all_in_one.recording.camera_enabled = enabled;
+            }
+        });
+    }
+
     /// AGENTS documents that the microphone, system-sound and camera toggles
     /// stay live while a recording runs, so they are applied through the
     /// recorder's setters instead of being frozen at start.
@@ -475,6 +546,7 @@ impl RecordingControl {
             }
         }
         self.system_audio = enabled;
+        self.persist_pre_recording_preference(RecordingPreference::SystemAudio(enabled), cx);
         cx.notify();
         true
     }
@@ -497,6 +569,7 @@ impl RecordingControl {
             }
         }
         self.microphone = enabled;
+        self.persist_pre_recording_preference(RecordingPreference::Microphone(enabled), cx);
         cx.notify();
         true
     }
@@ -528,6 +601,7 @@ impl RecordingControl {
             }
         }
         self.camera = enabled;
+        self.persist_pre_recording_preference(RecordingPreference::Camera(enabled), cx);
         cx.notify();
         true
     }
@@ -1196,6 +1270,7 @@ impl RecordingControl {
         self.countdown_generation += 1;
         self.countdown_active = false;
         self.countdown_remaining = None;
+        self.hide_camera_preview(cx);
         set_pre_recording_escape(false, cx);
         window.remove_window();
         registry::close(RegistryKind::RecordingControl, cx);
@@ -1651,6 +1726,134 @@ fn recording_shell(
 mod tests {
     use super::*;
 
+    #[herogpui::test]
+    fn pre_recording_preferences_follow_the_entry_scope(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        config.update(|config| {
+            config.recording.system_audio = false;
+            config.recording.mic_enabled = true;
+            config.all_in_one.recording.system_audio = true;
+            config.all_in_one.recording.mic_enabled = false;
+        });
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config.clone());
+            let rect = ScreenRect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 360,
+            };
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::Global,
+            );
+            let global = registry::handle(RegistryKind::RecordingControl, cx)
+                .unwrap()
+                .downcast::<RecordingControl>()
+                .unwrap();
+            global
+                .update(cx, |control, _, cx| {
+                    assert!(!control.system_audio);
+                    assert!(control.microphone);
+                    assert!(control.set_system_audio(true, cx));
+                    assert!(control.set_microphone(false, cx));
+                })
+                .unwrap();
+            assert!(config.get().recording.system_audio);
+            assert!(!config.get().recording.mic_enabled);
+
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::AllInOne,
+            );
+            let all_in_one = registry::handle(RegistryKind::RecordingControl, cx)
+                .unwrap()
+                .downcast::<RecordingControl>()
+                .unwrap();
+            all_in_one
+                .update(cx, |control, _, cx| {
+                    assert_eq!(control.preference_scope, PreferenceScope::AllInOne);
+                    assert!(control.system_audio);
+                    assert!(!control.microphone);
+                    assert!(control.set_system_audio(false, cx));
+                })
+                .unwrap();
+            assert!(config.get().recording.system_audio);
+            assert!(!config.get().all_in_one.recording.system_audio);
+
+            config.update(|config| {
+                config.all_in_one.remember_choices = false;
+                config.all_in_one.recording.mic_enabled = true;
+                config.all_in_one.recording.camera_enabled = true;
+            });
+            all_in_one
+                .update(cx, |control, _, cx| {
+                    assert!(control.set_system_audio(true, cx));
+                    control.mode = Mode::Recording;
+                    control.persist_pre_recording_preference(
+                        RecordingPreference::Microphone(false),
+                        cx,
+                    );
+                    control
+                        .persist_pre_recording_preference(RecordingPreference::Camera(false), cx);
+                    control.mode = Mode::PreRecording;
+                })
+                .unwrap();
+            assert!(!config.get().all_in_one.recording.system_audio);
+            assert!(config.get().all_in_one.recording.mic_enabled);
+            assert!(config.get().all_in_one.recording.camera_enabled);
+
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::AllInOne,
+            );
+            all_in_one
+                .update(cx, |control, _, _| assert!(control.system_audio))
+                .unwrap();
+            registry::close(RegistryKind::RecordingControl, cx);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::AllInOne,
+            );
+            let reopened = registry::handle(RegistryKind::RecordingControl, cx)
+                .unwrap()
+                .downcast::<RecordingControl>()
+                .unwrap();
+            reopened
+                .update(cx, |control, _, _| {
+                    assert!(control.system_audio);
+                    assert!(!control.microphone);
+                    assert!(!control.camera);
+                })
+                .unwrap();
+            registry::close(RegistryKind::RecordingControl, cx);
+        });
+    }
+
     #[test]
     fn camera_bubble_sits_in_the_recording_area_bottom_right() {
         assert_eq!(
@@ -1770,6 +1973,7 @@ mod tests {
         let control = cx.update(|cx| {
             cx.new(|cx| RecordingControl {
                 mode: Mode::PreRecording,
+                preference_scope: PreferenceScope::Global,
                 target: RecordingTarget::Area,
                 target_name: None,
                 rect: ScreenRect {
@@ -1916,6 +2120,7 @@ mod tests {
         let (control, cx) = cx.add_window_view(|window, cx| -> RecordingControl {
             let mut control = RecordingControl {
                 mode: Mode::PreRecording,
+                preference_scope: PreferenceScope::Global,
                 target: RecordingTarget::Area,
                 target_name: None,
                 rect: ScreenRect {

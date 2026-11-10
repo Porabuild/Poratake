@@ -64,16 +64,7 @@ pub(super) fn editor_sizes(cx: &mut HeadlessAppContext, scratch: &Path) {
 }
 
 pub(super) fn area_picker(cx: &mut HeadlessAppContext) -> gpui::AnyWindowHandle {
-    let picker = cx.update(|cx| {
-        cx.windows()
-            .into_iter()
-            .find(|window| {
-                window
-                    .downcast::<crate::capture::overlay::AreaOverlay>()
-                    .is_some()
-            })
-            .unwrap()
-    });
+    let picker = cx.update(|cx| crate::capture::overlay::parity_active_overlay(cx).unwrap());
     settle(cx, picker);
     picker
 }
@@ -104,6 +95,103 @@ pub(super) fn select_area(cx: &mut HeadlessAppContext, picker: gpui::AnyWindowHa
         }),
     ] {
         event(cx, picker, input);
+    }
+}
+
+pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output: &Path) {
+    use crate::windows::registry::{self, WindowKind};
+
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({"freeze": "frozen"})).unwrap(),
+    )
+    .unwrap();
+    for target in ["area", "window", "screen"] {
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.recording.system_audio = false;
+                config.recording.mic_enabled = false;
+                config.recording.camera.enabled = false;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "record".into();
+                config.all_in_one.last_targets.record = target.into();
+                config.all_in_one.recording.system_audio = true;
+                config.all_in_one.recording.mic_enabled = false;
+                config.all_in_one.recording.camera_enabled = false;
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        if target == "area" {
+            select_area(cx, picker);
+        } else {
+            event(
+                cx,
+                picker,
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position: point(px(240.), px(180.)),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    modifiers: Modifiers::none(),
+                    first_mouse: false,
+                }),
+            );
+        }
+        cx.run_until_parked();
+        let control = cx
+            .update(|cx| registry::handle(WindowKind::RecordingControl, cx))
+            .unwrap_or_else(|| panic!("{target} selection did not open recording controls"));
+        settle(cx, control);
+        let audio = if target == "window" { 6 } else { 4 };
+        click_measured(cx, control, "recording-controls", audio);
+        cx.update(|cx| {
+            let config = crate::state::state(cx).config.get();
+            assert!(
+                !config.recording.system_audio,
+                "{target} changed global preferences"
+            );
+            assert!(
+                !config.all_in_one.recording.system_audio,
+                "{target} did not update all-in-one preferences"
+            );
+        });
+        if target == "area" {
+            for input in [
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position: point(px(200.), px(150.)),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    modifiers: Modifiers::none(),
+                    first_mouse: false,
+                }),
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: point(px(210.), px(160.)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::none(),
+                }),
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position: point(px(210.), px(160.)),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    modifiers: Modifiers::none(),
+                }),
+            ] {
+                event(cx, picker, input);
+            }
+            settle(cx, control);
+            click_measured(cx, control, "recording-controls", audio);
+            cx.update(|cx| {
+                let config = crate::state::state(cx).config.get();
+                assert!(!config.recording.system_audio);
+                assert!(config.all_in_one.recording.system_audio);
+            });
+        }
+        cx.update(|cx| {
+            assert!(crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx));
+            crate::capture::overlay::close_all(cx);
+        });
+        cx.run_until_parked();
     }
 }
 

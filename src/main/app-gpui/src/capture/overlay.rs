@@ -76,6 +76,11 @@ pub(crate) fn parity_is_active(cx: &mut App) -> bool {
     !session(cx).handles.is_empty()
 }
 
+#[cfg(feature = "parity")]
+pub(crate) fn parity_active_overlay(cx: &mut App) -> Option<AnyWindowHandle> {
+    session(cx).handles.first().map(|overlay| overlay.handle)
+}
+
 pub fn close_all(cx: &mut App) {
     if let Some(generation) = remove_all(cx, true) {
         release_frozen_screen(generation, cx);
@@ -765,6 +770,7 @@ fn begin_recording(
     display_id: Option<u32>,
     window_id: Option<i64>,
     target_name: Option<String>,
+    preference_scope: crate::windows::recording_control::PreferenceScope,
 ) {
     crate::windows::recording_control::RecordingControl::open(
         cx,
@@ -773,6 +779,7 @@ fn begin_recording(
         display_id,
         window_id,
         target_name,
+        preference_scope,
     );
 }
 
@@ -796,6 +803,7 @@ pub struct AreaOverlay {
     interaction: Option<Interaction>,
     cursor: gpui::CursorStyle,
     screen_picker: bool,
+    recording_preference_scope: crate::windows::recording_control::PreferenceScope,
     /// Set in all-in-one mode: the toolbar's current mode and target.
     all_in_one: Option<crate::capture::all_in_one::Choices>,
     all_in_one_targets: [crate::capture::all_in_one::Target; 2],
@@ -830,6 +838,7 @@ impl AreaOverlay {
             window_list_generation: 0,
             hovered_window: None,
             screen_picker: false,
+            recording_preference_scope: crate::windows::recording_control::PreferenceScope::Global,
             all_in_one: None,
             all_in_one_targets: [crate::capture::all_in_one::Target::Area; 2],
             picking_color: false,
@@ -880,6 +889,8 @@ impl AreaOverlay {
     pub fn with_all_in_one(mut self, choices: crate::capture::all_in_one::Choices) -> Self {
         use crate::capture::all_in_one::{Mode, Target};
 
+        self.recording_preference_scope =
+            crate::windows::recording_control::PreferenceScope::AllInOne;
         let config = self.service.config.get();
         if config.all_in_one.remember_choices {
             self.all_in_one_targets = [
@@ -982,6 +993,7 @@ impl AreaOverlay {
                 self.display_id,
                 Some(window_id),
                 Some(label),
+                self.recording_preference_scope,
             );
             if !show_window_recording_outline(window_id, cx) {
                 eprintln!("[recording-overlay] failed to outline window {window_id}");
@@ -1417,6 +1429,7 @@ impl AreaOverlay {
                 self.display_id,
                 None,
                 None,
+                self.recording_preference_scope,
             );
             cx.notify();
             return;
@@ -2097,6 +2110,7 @@ impl AreaOverlay {
                 self.display_id,
                 None,
                 None,
+                self.recording_preference_scope,
             );
             cx.notify();
             return;
@@ -2765,6 +2779,43 @@ mod tests {
                 .into_iter()
                 .all(|window| window.downcast::<super::AreaOverlay>().is_none())
         }));
+    }
+
+    #[herogpui::test]
+    fn all_in_one_toolbar_click_does_not_start_a_selection(cx: &mut TestAppContext) {
+        use gpui::{point, Modifiers, MouseButton};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let (overlay, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus,
+            )
+            .with_all_in_one(crate::capture::all_in_one::Choices::default())
+        });
+        cx.simulate_resize(bounds.size);
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+
+        cx.simulate_mouse_down(
+            point(px(400.0), px(chrome::overlay_toolbar_top() + 22.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        assert!(overlay.read_with(cx, |overlay, _| overlay.interaction.is_none()));
     }
 
     #[herogpui::test]

@@ -44,6 +44,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 None,
                 (!area).then_some(1),
                 (!area).then(|| "Fixture capture window with a long name".into()),
+                crate::windows::recording_control::PreferenceScope::Global,
             );
             registry::handle(WindowKind::RecordingControl, cx).unwrap()
         });
@@ -206,9 +207,15 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         }
         let configured = cx.update(|cx| {
             let recording = crate::state::state(cx).config.get().recording;
+            assert!(recording.mic_enabled);
+            assert!(recording.camera.enabled);
+            assert!(recording.system_audio);
             serde_json::to_value(recording).unwrap()
         });
         capture(cx, window, output, "record-control-configured");
+        click_measured(cx, window, "recording-controls", 6);
+        assert!(!cx.update(|cx| crate::state::state(cx).config.get().recording.system_audio));
+        click_measured(cx, window, "recording-controls", 6);
         click_measured(cx, window, "recording-controls", 2);
         capture(cx, window, output, "record-control-countdown");
         for _ in 0..3 {
@@ -292,5 +299,70 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         if method.starts_with("set") {
             assert_eq!(calls[0]["params"]["enabled"], false);
         }
+    }
+
+    for remember in [true, false] {
+        let window = cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.recording.system_audio = false;
+                config.recording.mic_enabled = false;
+                config.recording.camera.enabled = false;
+                config.all_in_one.remember_choices = remember;
+                config.all_in_one.recording.system_audio = remember;
+                config.all_in_one.recording.mic_enabled = !remember;
+                config.all_in_one.recording.camera_enabled = !remember;
+            });
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                crate::capture::overlay::ScreenRect {
+                    x: 40,
+                    y: 80,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                None,
+                None,
+                crate::windows::recording_control::PreferenceScope::AllInOne,
+            );
+            registry::handle(WindowKind::RecordingControl, cx).unwrap()
+        });
+        settle(cx, window);
+        for index in [2, 3] {
+            click_measured(cx, window, "recording-controls", index);
+            key(cx, window, "home");
+            key(cx, window, "enter");
+            settle(cx, window);
+        }
+        click_measured(cx, window, "recording-controls", 4);
+        cx.update(|cx| {
+            let config = crate::state::state(cx).config.get();
+            assert!(!config.recording.system_audio);
+            assert!(!config.recording.mic_enabled);
+            assert!(!config.recording.camera.enabled);
+            assert!(!config.all_in_one.recording.system_audio);
+            assert!(config.all_in_one.recording.mic_enabled);
+            assert!(config.all_in_one.recording.camera_enabled);
+        });
+        let hides_before = std::fs::read_to_string(output.join("daemon-fixture.jsonl"))
+            .unwrap()
+            .lines()
+            .filter(|line| {
+                line.contains("\"module\":\"camera-preview\"")
+                    && line.contains("\"method\":\"hide\"")
+            })
+            .count();
+        click_measured(cx, window, "recording-controls", 6);
+        assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        let hides_after = std::fs::read_to_string(output.join("daemon-fixture.jsonl"))
+            .unwrap()
+            .lines()
+            .filter(|line| {
+                line.contains("\"module\":\"camera-preview\"")
+                    && line.contains("\"method\":\"hide\"")
+            })
+            .count();
+        assert_eq!(hides_after, hides_before + 1);
     }
 }

@@ -560,6 +560,7 @@ fn open_screen_recording_bar(target: &ScreenTarget, cx: &mut gpui::App) {
         target.capture_display_id,
         None,
         None,
+        crate::windows::recording_control::PreferenceScope::Global,
     );
 }
 
