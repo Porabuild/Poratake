@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `a0168f3` plus this change.
+Refreshed 2026-11-10 for Poratake 0.9.6, based on `831c9de` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -182,6 +182,14 @@ The [hosted run at `9669cde`](https://github.com/Porabuild/Poratake/actions/runs
 also passed the required jobs, including the scaled selection and preview fixture.
 The [hosted run at `372db36`](https://github.com/Porabuild/Poratake/actions/runs/42862315214)
 passed all required jobs, including the Windows visual comparison.
+The [hosted run at `a0168f3`](https://github.com/Porabuild/Poratake/actions/runs/42871830573)
+also passed all required jobs, including Windows, Linux and macOS tests.
+The [run at `831c9de`](https://github.com/Porabuild/Poratake/actions/runs/42876204997)
+passed Windows native tests and the visual geometry checks, then rejected the
+16 new canceling-state images absent from the hosted profile. All 2,136 existing
+hosted images were byte-identical; the 16 new images were reviewed and added.
+GitHub reports artifact `13791799183` with SHA-256
+`9a5748d75fd3255d023979cd25b9a30b6ec95ca97cd867d439dff8eaba5ff356`.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -277,8 +285,9 @@ runs; the native gate passed 992 tests with one skip. The canceling label and it
 footer are checked against their actual bounds at every matrix scale. Sixteen new
 local canceling-state images were reviewed, and the normal matrix passed all 16
 cases and 2,152 exact images without updating baselines. The hosted renderer's new
-images still need capture and review. The video editor fixture uses a 1,200px
-minimum width even when the matrix case is 950px.
+images were also captured and reviewed. Moving the label outside the footer made
+the geometry assertion fail; the restored layout passed. The video editor fixture
+uses a 1,200px minimum width even when the matrix case is 950px.
 Isolated Linux encoder tests exercise blocked input, cancellation during mux and
 staged-file cleanup. A simulated macOS backend on Linux exercises blocked-input
 cleanup; neither fixture establishes actual macOS or Linux app behavior.
@@ -529,7 +538,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                                           |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                        |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                     |
-| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `372db36`. Capture and review the canceling-state images for the hosted renderer, then require the normal comparison on the current PR head.                                                                                                                                                                                                                                  |
+| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `a0168f3`. The 16 canceling-state images are reviewed; require the normal 2,152-image comparison on the current PR head.                                                                                                                                                                                                                                                      |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                        |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                          |
 
