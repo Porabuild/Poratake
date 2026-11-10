@@ -45,18 +45,15 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Butto
         .recipe("overlay")
 }
 
-pub fn desktop(button: Button) -> Button {
-    let foreground = crate::ui::colors::white(0.85);
-    button
-        .text_color(foreground)
-        .hover_bg(crate::ui::colors::white(0.15))
-}
-
 pub fn desktop_selected(button: Button, selected: bool, theme: &ThemeVars) -> Button {
-    let foreground = crate::ui::colors::white(0.85);
-    let (surface, hover) = selected_surfaces(selected, theme.default, theme.default_hover);
+    let (surface, hover) = selected_surfaces(
+        selected,
+        theme.default,
+        theme.default_hover,
+        theme.foreground,
+    );
     let resting = surface.unwrap_or_else(gpui::transparent_black);
-    button.bg(resting).text_color(foreground).hover_bg(hover)
+    button.bg(resting).hover_bg(hover)
 }
 
 pub fn icon(
@@ -64,7 +61,7 @@ pub fn icon(
     icon: &'static str,
     label: impl Into<SharedString>,
 ) -> Button {
-    desktop(button(id, label).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))))
+    button(id, label).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
 }
 
 pub fn selected_icon(
@@ -112,11 +109,12 @@ pub fn selected_surfaces(
     selected: bool,
     selected_surface: gpui::Hsla,
     selected_hover: gpui::Hsla,
+    foreground: gpui::Hsla,
 ) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if selected {
         return (Some(selected_surface), selected_hover);
     }
-    (None, crate::ui::colors::white(0.15))
+    (None, foreground.opacity(0.15))
 }
 
 pub const FILLED_GLYPH_SIZE: f32 = 14.0;
@@ -163,13 +161,14 @@ mod tests {
     fn selected_toolbar_buttons_use_the_active_hover_surface() {
         let selected_surface = gpui::hsla(0.0, 0.0, 0.2, 1.0);
         let selected_hover = gpui::hsla(0.0, 0.0, 0.3, 1.0);
+        let foreground = gpui::hsla(0.0, 0.0, 0.0, 1.0);
         assert_eq!(
-            selected_surfaces(true, selected_surface, selected_hover),
+            selected_surfaces(true, selected_surface, selected_hover, foreground),
             (Some(selected_surface), selected_hover)
         );
         assert_eq!(
-            selected_surfaces(false, selected_surface, selected_hover),
-            (None, crate::ui::colors::white(0.15))
+            selected_surfaces(false, selected_surface, selected_hover, foreground),
+            (None, foreground.opacity(0.15))
         );
     }
 }

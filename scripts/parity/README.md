@@ -1,5 +1,27 @@
 # UI comparison
 
+On Windows, run the visual regression matrix:
+
+```sh
+bun run test:visual
+```
+
+It covers light/dark, 950/1280 logical pixels and 100/125/150/200% simulated
+scale with the native Windows renderer and embedded fonts. Geometry and exact
+pixel comparisons fail independently. The Windows CI job uploads captured and
+diff PNGs. Physical monitor scaling remains a separate native check.
+
+To replace baselines deliberately:
+
+```sh
+bun run test:visual --update-baselines
+```
+
+Review the captured states before committing `baselines/win32/`. This command
+also removes obsolete baseline states; normal runs reject changed state lists.
+The console prints the temporary evidence directory. Do not accept a baseline
+update to silence a regression without inspecting the changed image.
+
 Run the Electron renderer with its fixture preload bridge:
 
 ```sh
@@ -21,11 +43,79 @@ cargo run --locked --manifest-path src/main/Cargo.toml \
 
 The optional `parity` feature is excluded from normal builds. The command uses
 a fresh isolated profile and exits before normal app startup. It renders at
-1280×738 logical pixels and advances GPUI's clock for hover and press animations.
+1280×738 logical pixels by default and advances GPUI's clock for hover and press
+animations. `PORATAKE_PARITY_THEME`, `PORATAKE_PARITY_WIDTH` and
+`PORATAKE_PARITY_SCALE` select a matrix case.
 Captures include the editor header, held buttons, selected tools, open dropdowns,
-the color picker, and video header/sidebar states. The runner asserts selected
+the color picker, recording controls and loaded video sidebars. The runner asserts selected
 tools and menu state so a failed interaction cannot silently produce mislabeled
-evidence.
+evidence. The held microphone button advances through its press animation and
+must differ visibly from hover within that button's measured bounds.
+
+The built-in fixture additionally checks annotation save/history reopen/flattened
+PNG reopen at 1280px and 100% scale, comparing the preview with saved pixels.
+Custom `PORATAKE_PARITY_IMAGE` inputs skip that fixed-size workflow. Overlays use
+a synthetic desktop with ordered overlapping windows, negative display origins
+and correctly scaled physical bounds. Window/display picker states cover hover,
+clipping at display edges and pointer leave. Pixel assertions check highlighted
+and dimmed regions independently of baselines. GPUI's headless windows always
+report non-hovered, so the fixture supplies ownership to the shared production
+surface; physical pointer ownership still needs native verification.
+
+The 1280px, 100% built-in cases also run production window, area and all-in-one
+display capture startup and save/history/editor output for live, frozen, failed
+and unavailable-freeze paths. The fixture checks exact physical rectangles and
+requires the frozen frame to remain alive until cropping finishes. An error or
+a successful `frozen: false` response must capture live pixels. Area input checks
+the release coordinate independently of the last pointer move.
+
+Timer workflows verify completion, cancellation, timeout, countdown-start
+failure and a successful retry. The selection frame must be released before the
+countdown, and the eventual capture must use live pixels. Events can arrive
+before the countdown's `show` response. Cancelled, timed-out and failed timers
+must leave no saved image, history entry or active selector.
+
+Twelve OCR/QR scenarios check successful trimming, empty recognition, service
+and capture failures, Escape cancellation and retry. They verify clipboard
+preservation, notification copy, temporary-file cleanup and absence of library
+entries. The headless app owns its clipboard; parity notifications are recorded
+at the platform boundary instead of being sent to the OS.
+
+Seven scroll scenarios check selection cancellation, completion/cancellation
+before the start response, start/finish failures, empty output and retry. Scroll
+selection must stay live even when freezing is enabled. Saved portrait output
+must match history/editor exports. Eight editor-attachment scenarios check all
+four edges, live/frozen/fallback pixels, capture and invalid-image failures,
+cancellation, cleanup, clipboard preservation and identical history reopen.
+Pin workflows compare rendered annotations with exported pixels and restore
+the editor with history enabled or disabled without adding history entries.
+The built-in 1280px, 100% cases add 28 workflow images each, for 1,864 baseline
+images overall.
+
+Pin default, hover, enlarged and narrow windows run in every matrix case.
+Source pixels must remain centered, fit the viewport and never upscale beyond
+their natural logical size; close controls must stay inside the viewport.
+The daemon fixture makes pin sizing use the matrix's simulated DPI rather than
+the host monitor's geometry.
+
+Recording controls use the production window and recorder commands with a
+same-executable JSON-RPC fixture. Device names are deterministic, including long
+labels. Assertions cover scoped device enumeration, countdown cancellation,
+pause/resume, live toggles, saved-preference preservation and project discard.
+These checks verify UI state and requests, not hardware media capture. A
+parity-only guard assumes granted permission while the daemon fixture is
+active, before reading host consent or opening permission dialogs. Normal app
+permission checks retain their platform behavior.
+The microphone icon's actual canvas bounds have a contrast assertion, so a
+white icon on a light toolbar cannot become an accepted baseline. Its dropdown
+chevron is excluded from the measured region.
+
+Loaded-video baselines cover all ten panels using a real encoded project with a
+drawing. Wallpaper changes autosave through the production editor; the preview
+must equal a fresh composition of that saved project. Video windows respect the
+editor's 1200×750 minimum, so the 950px matrix case uses 1200px for loaded video.
+See [the audit](../../GPUI-UI-PARITY-AUDIT.md) for the current
+workflow evidence and remaining backlog.
 
 Match viewport, scale, theme, fixture and interaction state before comparing
 images. Compare the changed surface separately from video playback, OS window

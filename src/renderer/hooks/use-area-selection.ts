@@ -208,6 +208,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
   const endDrag = useCallback(
     (point: Point) => {
       const interaction = interactionRef.current;
+      dragTo(point);
       interactionRef.current = null;
       setInteracting(false);
 
@@ -217,7 +218,6 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
       if (!interaction || !current) return;
 
       if (interaction.type !== 'creating') {
-        optionsRef.current.onUpdated(current);
         return;
       }
 
@@ -229,7 +229,7 @@ export default function useAreaSelection(options: AreaSelectionOptions) {
 
       optionsRef.current.onSelected(current);
     },
-    [applyRect]
+    [applyRect, dragTo]
   );
 
   useEffect(() => {

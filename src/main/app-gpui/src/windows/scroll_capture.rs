@@ -370,7 +370,7 @@ impl ScrollControlBar {
     ) -> AnyElement {
         let tooltip: SharedString = tooltip.into();
         toolbar::tooltip_button(
-            toolbar::desktop(toolbar::button(id, tooltip.clone()).child(glyph)),
+            toolbar::button(id, tooltip.clone()).child(glyph),
             tooltip,
             cx,
             on_click,

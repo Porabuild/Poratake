@@ -71,6 +71,11 @@ fn session(cx: &mut App) -> &mut OverlaySession {
     cx.default_global::<OverlaySession>()
 }
 
+#[cfg(feature = "parity")]
+pub(crate) fn parity_is_active(cx: &mut App) -> bool {
+    !session(cx).handles.is_empty()
+}
+
 pub fn close_all(cx: &mut App) {
     if let Some(generation) = remove_all(cx, true) {
         release_frozen_screen(generation, cx);
@@ -262,7 +267,7 @@ pub fn raise_all(generation: u64, cx: &mut App) {
 
 /// Drops the daemon's frozen snapshot. Cheap and idempotent when the screen was
 /// never frozen, which is why the callers do not track whether it was.
-fn release_frozen_screen(generation: u64, cx: &mut App) {
+pub(crate) fn release_frozen_screen(generation: u64, cx: &mut App) {
     let service = crate::state::state(cx);
     cx.background_executor()
         .spawn(async move { service.release_screen(generation) })
@@ -270,11 +275,17 @@ fn release_frozen_screen(generation: u64, cx: &mut App) {
 }
 
 pub(crate) fn dismiss(window: &mut Window, cx: &mut App) {
-    let tracked = !session(cx).handles.is_empty();
-    close_all(cx);
-    if !cfg!(windows) || !tracked {
+    if let Some(generation) = conceal_for_capture(window, cx) {
+        release_frozen_screen(generation, cx);
+    }
+}
+
+fn conceal_for_capture(window: &mut Window, cx: &mut App) -> Option<u64> {
+    let generation = remove_all(cx, true);
+    if !cfg!(windows) || generation.is_none() {
         window.remove_window();
     }
+    generation
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -581,7 +592,8 @@ fn take_pooled_overlay(
     Some(pooled.swap_remove(index).handle)
 }
 
-fn prepare_overlay_window(window: &Window, display_bounds: Bounds<Pixels>) {
+fn prepare_overlay_window(window: &mut Window, display_bounds: Bounds<Pixels>) {
+    window.set_window_title("Poratake capture overlay");
     #[cfg(all(windows, not(test)))]
     if let Some(hwnd) = crate::windows::window_hwnd(window) {
         crate::system::window_composition::configure_transparent_surface(hwnd);
@@ -664,7 +676,16 @@ fn open_overlay_window(
                 view.display_id = Some(u64::from(display_id) as u32);
                 view
             });
-            view.update(cx, after_new);
+            view.update(cx, |overlay, cx| {
+                #[cfg(all(windows, not(test)))]
+                cx.observe_window_activation(window, |overlay, window, _| {
+                    if window.is_window_active() {
+                        prepare_overlay_window(window, overlay.display_bounds);
+                    }
+                })
+                .detach();
+                after_new(overlay, cx);
+            });
             let shown = reveal_overlay_window(window, launch, active);
             if launch.focus && shown {
                 window.activate_window();
@@ -913,6 +934,19 @@ impl AreaOverlay {
         ))
     }
 
+    fn window_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let scale = capture_coordinate_scale(self.scale);
+        let x = f32::from(self.display_bounds.left() + position.x) * scale;
+        let y = f32::from(self.display_bounds.top() + position.y) * scale;
+        crate::capture::windows_list::hit_test(&self.windows, x as f64, y as f64).and_then(
+            |picked| {
+                self.windows
+                    .iter()
+                    .position(|window| window.window_id == picked.window_id)
+            },
+        )
+    }
+
     fn confirm_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.hovered_window else {
             return;
@@ -959,11 +993,25 @@ impl AreaOverlay {
             cx.notify();
             return;
         }
+        let mut capture = display_capture(self.display_bounds, self.scale, self.display_id);
+        capture.rect = CaptureRect {
+            x: picked.bounds.x as i32,
+            y: picked.bounds.y as i32,
+            width: picked.bounds.width as i32,
+            height: picked.bounds.height as i32,
+        };
+        let reservation = self
+            .service
+            .config
+            .get()
+            .screenshot
+            .freeze_screen
+            .then(|| self.service.reserve_cached_capture());
+        let release_after = conceal_for_capture(window, cx);
         let coordinator = crate::state::coordinator(cx);
         coordinator.update(cx, |coordinator, cx| {
-            coordinator.capture_window(picked.window_id, cx);
+            coordinator.capture_window(picked.window_id, capture, reservation, release_after, cx);
         });
-        dismiss(window, cx);
     }
 
     /// Opens the overlay covering one display.
@@ -1240,17 +1288,13 @@ impl AreaOverlay {
         display_bounds: Bounds<Pixels>,
         intent: crate::capture::intent::CaptureIntent,
         windows: Vec<crate::capture::windows_list::WindowListItem>,
-        focus: bool,
+        launch: OverlayLaunch,
         cx: &mut App,
     ) -> Option<gpui::WindowHandle<AreaOverlay>> {
         open_overlay_window(
             display_id,
             display_bounds,
-            OverlayLaunch {
-                focus,
-                deferred_show: false,
-                generation: 0,
-            },
+            launch,
             |scale, focus_handle| {
                 AreaOverlay::with_focus(display_bounds, scale, service, intent, focus_handle)
                     .with_windows(windows)
@@ -1390,8 +1434,8 @@ impl AreaOverlay {
         let retained = retains_overlay_after_selection(intent);
         let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
             .then(|| self.service.reserve_cached_capture());
-        if !retained {
-            dismiss(window, cx);
+        let release_after = if !retained {
+            conceal_for_capture(window, cx)
         } else if !hand_off_for_timer(cx) {
             crate::windows::toast::Toast::show(
                 cx,
@@ -1400,7 +1444,9 @@ impl AreaOverlay {
             );
             dismiss(window, cx);
             return;
-        }
+        } else {
+            None
+        };
         cx.defer(move |cx| {
             coordinator.update(cx, |coordinator, cx| {
                 coordinator.capture_area_reserved(
@@ -1420,6 +1466,7 @@ impl AreaOverlay {
                     ),
                     intent,
                     reservation,
+                    release_after,
                     cx,
                 );
             });
@@ -1718,13 +1765,18 @@ fn conceal_recording_selector(window: &mut Window) {
 
 impl Render for AreaOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = self.surface(window, cx);
+        let content = self.surface(window.is_window_hovered(), window, cx);
         crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 
 impl AreaOverlay {
-    fn surface(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn surface(
+        &mut self,
+        window_hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = crate::theme::vars::active_theme(cx);
         // The overlay's frame, handles and crosshairs are `border-primary` /
         // `bg-primary` / `bg-primary/70`, and `--primary` is the operating
@@ -1807,7 +1859,7 @@ impl AreaOverlay {
             // overlay draws neither a frame nor a name label in this mode.
             let viewport = window.viewport_size();
             let mut picking = root;
-            let hovered_frame = if window.is_window_hovered() {
+            let hovered_frame = if window_hovered {
                 self.hovered_frame()
             } else {
                 None
@@ -1829,7 +1881,7 @@ impl AreaOverlay {
             ));
         }
 
-        if let Some(dimmed) = self.screen_picker_dimmed(window.is_window_hovered()) {
+        if let Some(dimmed) = self.screen_picker_dimmed(window_hovered) {
             let mut picking = if dimmed {
                 root.child(div().absolute().inset_0().bg(dim))
             } else {
@@ -1985,6 +2037,8 @@ impl AreaOverlay {
             return;
         }
         if self.is_picking_windows() {
+            self.hovered_window = self.window_at(event.position);
+            cx.notify();
             self.confirm_window(window, cx);
             return;
         }
@@ -2053,8 +2107,8 @@ impl AreaOverlay {
         let retained = retains_overlay_after_selection(intent);
         let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
             .then(|| self.service.reserve_cached_capture());
-        if !retained {
-            dismiss(window, cx);
+        let release_after = if !retained {
+            conceal_for_capture(window, cx)
         } else if !hand_off_for_timer(cx) {
             crate::windows::toast::Toast::show(
                 cx,
@@ -2063,10 +2117,12 @@ impl AreaOverlay {
             );
             dismiss(window, cx);
             return;
-        }
+        } else {
+            None
+        };
         cx.defer(move |cx| {
             coordinator.update(cx, |coordinator, cx| {
-                coordinator.capture_area_reserved(capture, intent, reservation, cx);
+                coordinator.capture_area_reserved(capture, intent, reservation, release_after, cx);
             });
         });
     }
@@ -2090,15 +2146,7 @@ impl AreaOverlay {
             return;
         }
         if self.is_picking_windows() {
-            let scale = capture_coordinate_scale(self.scale);
-            let x = f32::from(self.display_bounds.left() + event.position.x) * scale;
-            let y = f32::from(self.display_bounds.top() + event.position.y) * scale;
-            let hovered = crate::capture::windows_list::hit_test(&self.windows, x as f64, y as f64)
-                .and_then(|picked| {
-                    self.windows
-                        .iter()
-                        .position(|window| window.window_id == picked.window_id)
-                });
+            let hovered = self.window_at(event.position);
             if hovered != self.hovered_window {
                 self.hovered_window = hovered;
                 cx.notify();
@@ -2127,10 +2175,10 @@ impl AreaOverlay {
         if self.is_picking_windows() {
             return;
         }
+        self.drag_to(event.position, cx);
         let Some(interaction) = self.interaction.take() else {
             return;
         };
-        self.drag_to(event.position, cx);
 
         let bounds = self.viewport();
         let point = selection::clamp_point(self.to_selection_point(event.position), bounds);
@@ -2804,10 +2852,38 @@ mod tests {
 
         overlay
             .update(cx, |overlay, window, cx| {
-                overlay.hovered_window = Some(0);
-                overlay.confirm_window(window, cx);
+                overlay.on_move(
+                    &gpui::MouseMoveEvent {
+                        position: gpui::point(px(200.0), px(200.0)),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                overlay.on_down(
+                    &gpui::MouseDownEvent {
+                        position: gpui::point(px(780.0), px(580.0)),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
             })
-            .expect("confirm window");
+            .expect("click outside the hovered window");
+        cx.run_until_parked();
+        assert!(overlay.update(cx, |_, _, _| ()).is_ok());
+        overlay
+            .update(cx, |overlay, window, cx| {
+                overlay.on_down(
+                    &gpui::MouseDownEvent {
+                        position: gpui::point(px(300.0), px(300.0)),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .expect("confirm from the click without another move");
         cx.run_until_parked();
 
         assert!(overlay.update(cx, |_, _, _| ()).is_err());
@@ -3050,26 +3126,65 @@ mod tests {
         assert!(first.update(cx, |_, _, _| ()).is_err());
     }
 
-    #[test]
-    fn selection_reserves_frozen_pixels_before_dismissal() {
-        let source = include_str!("overlay.rs");
-        for (start, end) in [
-            ("fn confirm(", "fn prompt("),
-            ("fn confirm_screen(", "fn on_move("),
-        ] {
-            let start = source.find(start).expect("selection handler");
-            let source = &source[start..];
-            let body = &source[..source.find(end).expect("next selection handler")];
-            let reserved = body
-                .find("reserve_cached_capture()")
-                .expect("cached reservation");
-            let dismissed = body.find("dismiss(window, cx)").expect("dismissal");
-            let captured = body
-                .find("capture_area_reserved(")
-                .expect("reserved capture");
+    #[herogpui::test]
+    fn selection_uses_the_release_position_when_moving_and_resizing(cx: &mut TestAppContext) {
+        use gpui::{point, Modifiers, MouseButton};
 
-            assert!(reserved < dismissed);
-            assert!(dismissed < captured);
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (overlay, cx) = cx.add_window_view(|_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(point(px(-800.), px(0.)), size(px(800.), px(600.))),
+                1.5,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        for (start, moved, released, expected) in [
+            (
+                (150., 150.),
+                (160., 160.),
+                (175., 180.),
+                (125., 130., 200., 150.),
+            ),
+            (
+                (300., 250.),
+                (310., 260.),
+                (330., 280.),
+                (100., 100., 230., 180.),
+            ),
+        ] {
+            overlay.update(cx, |overlay, cx| {
+                overlay.rect = Some(super::selection::Rect {
+                    x: 100.,
+                    y: 100.,
+                    width: 200.,
+                    height: 150.,
+                });
+                cx.notify();
+            });
+            cx.refresh().unwrap();
+            cx.run_until_parked();
+            cx.simulate_mouse_down(
+                point(px(start.0), px(start.1)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            cx.simulate_mouse_move(
+                point(px(moved.0), px(moved.1)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            cx.simulate_mouse_up(
+                point(px(released.0), px(released.1)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            let rect = overlay.read_with(cx, |overlay, _| overlay.rect.unwrap());
+            assert_eq!((rect.x, rect.y, rect.width, rect.height), expected);
         }
     }
 }

@@ -39,6 +39,10 @@ use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 const APP_USER_MODEL_ID: &str = "electron.app.Poratake";
 
 pub fn show(title: &str, body: &str) {
+    #[cfg(feature = "parity")]
+    if crate::ui::parity::record_notification(title, body, false) {
+        return;
+    }
     #[cfg(windows)]
     if let Err(error) = show_toast(title, body, None) {
         eprintln!("[notification] failed to show the toast: {error}");
@@ -66,6 +70,10 @@ const TRANSIENT_DURATION: std::time::Duration = std::time::Duration::from_secs(5
 /// dismissal runs on the main thread — on Windows the history call needs the
 /// COM apartment `show_toast` already runs in.
 pub fn show_transient(cx: &mut gpui::App, title: &str, body: &str) {
+    #[cfg(feature = "parity")]
+    if crate::ui::parity::record_notification(title, body, true) {
+        return;
+    }
     #[cfg(windows)]
     {
         let tag = format!(

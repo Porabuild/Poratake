@@ -671,6 +671,133 @@ fn build_audio(
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn edited_video_exports_the_preview_and_reopens_the_saved_project() {
+        use crate::editor::annotations::Annotation;
+        use crate::windows::video_editor::{model, preview};
+
+        let directory = tempfile::tempdir().unwrap();
+        let recording = directory.path().join("recording.mp4");
+        let mut encoder = Encoder::create(
+            &recording,
+            Settings {
+                width: 320,
+                height: 180,
+                frame_rate: 12,
+                bitrate: 12_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for index in 0..36 {
+            let color = match index / 12 {
+                0 => [176, 96, 32, 255],
+                1 => [64, 160, 64, 255],
+                _ => [48, 80, 192, 255],
+            };
+            encoder.write_frame(color.repeat(320 * 180)).unwrap();
+        }
+        encoder.finish().unwrap();
+        let mut state = VideoEditorState {
+            source_duration: Some(3.),
+            segments: vec![
+                model::Segment {
+                    original_start: 0.25,
+                    original_end: 1.,
+                    speed: Some(2.),
+                    ..model::Segment::spanning(3.)
+                },
+                model::Segment {
+                    id: "second".into(),
+                    original_start: 2.,
+                    original_end: 2.5,
+                    speed: Some(0.5),
+                    ..model::Segment::spanning(3.)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "8".into();
+        state.wallpaper.enabled = true;
+        state.wallpaper.padding = 12.;
+        state.wallpaper.corners = 8.;
+        state.drawing_segments.push(model::DrawingSegment {
+            id: "drawing".into(),
+            start_time: 0.,
+            end_time: 2.,
+            canvas_width: 320.,
+            canvas_height: 180.,
+            annotations: vec![Annotation::Rectangle {
+                id: "shape".into(),
+                x: 24.,
+                y: 24.,
+                width: 72.,
+                height: 48.,
+                stroke: "#ffffff".into(),
+                stroke_width: 3.,
+                fill: Some("#e04040".into()),
+            }],
+        });
+        model::save_state(&recording, &state);
+        assert_eq!(model::load_state(&recording), state);
+        let mut preview = preview::Source::open(&recording, model::load_state(&recording)).unwrap();
+        let output = directory.path().join("edited.mp4");
+        let mut progress = 0.;
+        run(
+            Request {
+                project: recording,
+                output: output.clone(),
+                state,
+            },
+            &mut |value| progress = value,
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(progress, 1.);
+        let exported = VideoDecoder::open(&output).unwrap();
+        let info = exported.info();
+        assert_eq!((info.width, info.height), (344, 204));
+        assert!((info.duration - 1.375).abs() <= 1. / 8., "{info:?}");
+        for time in [0., 0.25, 0.5, 1.25] {
+            let expected = preview.compose(time, None).unwrap();
+            let expected = to_bgra(&expected);
+            let actual = exported.frame_at(time).unwrap();
+            assert_eq!(actual.bgra.len(), expected.len());
+            let error: u64 = actual
+                .bgra
+                .iter()
+                .zip(&expected)
+                .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+                .sum();
+            let mean_error = error as f64 / expected.len() as f64;
+            assert!(
+                mean_error < 3.,
+                "preview/export mean channel error {mean_error} at {time}s"
+            );
+            let mut drawing_error = 0_u64;
+            for y in 48..72 {
+                for x in 48..88 {
+                    let pixel = (y * info.width as usize + x) * 4;
+                    for (channel, expected_color) in [64_u8, 64, 224].into_iter().enumerate() {
+                        assert!(
+                            expected[pixel + channel].abs_diff(expected_color) <= 2,
+                            "the preview must contain the drawing at {time}s"
+                        );
+                        drawing_error += u64::from(
+                            actual.bgra[pixel + channel].abs_diff(expected[pixel + channel]),
+                        );
+                    }
+                }
+            }
+            assert!(
+                drawing_error as f64 / (24. * 40. * 3.) < 3.,
+                "the exported drawing differs from preview at {time}s"
+            );
+        }
+    }
+
     #[test]
     fn the_original_resolution_keeps_the_composition_size() {
         let dimensions = export_dimensions(1920, 1080, "original");

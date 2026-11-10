@@ -145,9 +145,9 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                     "overlay-trigger",
                     ButtonStyle::default()
                         .size(herogpui::Size::Sm)
-                        .foreground(ComponentColor::Literal(crate::ui::colors::white(0.85)))
-                        .hover_foreground(ComponentColor::Literal(crate::ui::colors::white(1.0)))
-                        .hover_bg(ComponentColor::Literal(crate::ui::colors::white(0.15)))
+                        .foreground(ComponentColor::Literal(vars.foreground.opacity(0.85)))
+                        .hover_foreground(ComponentColor::Foreground)
+                        .hover_bg(ComponentColor::Literal(vars.foreground.opacity(0.15)))
                         .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS))
                         .style(|el| {
                             use gpui::Styled;
@@ -207,6 +207,9 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                 .recipe(
                     "overlay",
                     ButtonStyle::default()
+                        .foreground(ComponentColor::Literal(vars.foreground.opacity(0.85)))
+                        .hover_foreground(ComponentColor::Foreground)
+                        .hover_bg(ComponentColor::Literal(vars.foreground.opacity(0.15)))
                         .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS)),
                 )
                 .recipe(

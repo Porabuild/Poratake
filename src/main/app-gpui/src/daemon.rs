@@ -836,13 +836,15 @@ pub struct FreezeScreenClient<'a> {
 impl FreezeScreenClient<'_> {
     pub fn freeze(&self) -> Result<()> {
         self.daemon.ensure_running()?;
-        self.daemon
-            .call(
-                FREEZE_SCREEN_MODULE,
-                FreezeScreenMethod::Freeze.id(),
-                Some(json!({})),
-            )
-            .map(|_| ())
+        let response = self.daemon.call(
+            FREEZE_SCREEN_MODULE,
+            FreezeScreenMethod::Freeze.id(),
+            Some(json!({})),
+        )?;
+        match response.get("frozen").and_then(Value::as_bool) {
+            Some(true) => Ok(()),
+            _ => Err(anyhow!("Screen freezing is unavailable")),
+        }
     }
 
     pub fn release(&self) -> Result<()> {

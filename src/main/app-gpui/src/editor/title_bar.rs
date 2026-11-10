@@ -173,6 +173,7 @@ impl RenderOnce for TitleBar {
         let mut tools = div()
             .flex()
             .flex_row()
+            .flex_shrink_0()
             .items_center()
             .gap(px(chrome::TITLE_BAR_GAP));
 
@@ -289,9 +290,15 @@ impl RenderOnce for TitleBar {
                 |button| button.size(Size::Sm).is_icon_only(true),
             ));
 
+        #[cfg(feature = "parity")]
+        let tools = tools.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("editor-tools", bounds);
+        });
+
         let mut options = div()
             .flex()
             .flex_row()
+            .flex_shrink_0()
             .items_center()
             .gap(px(chrome::TITLE_BAR_GAP));
         for control in tool_options::render(&state, &handlers, window, cx) {
@@ -317,6 +324,11 @@ impl RenderOnce for TitleBar {
             cx,
         ));
 
+        #[cfg(feature = "parity")]
+        let options = options.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("editor-options", bounds);
+        });
+
         let macos = chrome::is_macos();
         let cluster = if macos {
             div()
@@ -339,6 +351,9 @@ impl RenderOnce for TitleBar {
                 .child(separator(&theme))
                 .child(options)
         };
+        let cluster = cluster.id("editor-title-cluster").when(!macos, |cluster| {
+            cluster.min_w_0().flex_shrink_1().overflow_x_scroll()
+        });
 
         let drag = crate::ui::window_controls::drag_area("editor-title-drag")
             .flex_1()
@@ -346,7 +361,6 @@ impl RenderOnce for TitleBar {
             .h_full();
 
         let mut bar = div()
-            .id("editor-title-bar")
             .flex()
             .flex_row()
             .items_center()
@@ -367,7 +381,11 @@ impl RenderOnce for TitleBar {
                 .child(drag)
                 .child(crate::ui::window_controls::render(window, cx, &theme));
         }
-        bar
+        #[cfg(feature = "parity")]
+        let bar = bar.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("editor-chrome", bounds);
+        });
+        bar.id("editor-title-bar")
     }
 }
 

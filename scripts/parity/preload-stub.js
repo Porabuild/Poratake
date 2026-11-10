@@ -6,7 +6,10 @@
 const query = new URLSearchParams(location.search);
 window.appPlatform = query.get('platform') || 'win32';
 
-const APPEARANCE = { mode: 'dark', theme: 'default' };
+const APPEARANCE = {
+  mode: query.get('theme') === 'light' ? 'light' : 'dark',
+  theme: 'default',
+};
 const SHORTCUTS = undefined; // undefined => the renderer's own defaults
 
 const TYPE = query.get('window') || 'settings';
@@ -21,7 +24,7 @@ const windowParams = async () => {
       return {
         filePath: FILE,
         imageUrl: IMAGE,
-        initialPreferences: {},
+        initialPreferences: { lastTool: 'pen', color: '#f43f5e' },
         screenshotSettings: {
           closeOnCopy: false,
           closeOnSave: false,
@@ -60,10 +63,25 @@ const windowParams = async () => {
         interactive: true,
         autoConfirm: false,
         repeatablePicks: false,
-        showPrompt: true,
-        rect: null,
+        showPrompt: query.get('intent') !== 'timer',
+        rect:
+          query.get('selected') === '1'
+            ? { x: 90, y: 120, width: 520, height: 300 }
+            : null,
         aspectRatio: null,
-        toolbar: null,
+        toolbar: query.has('toolbar')
+          ? {
+              kind: 'all-in-one',
+              recordingEnabled: true,
+              ocrEnabled: true,
+              activeMode: ['record', 'ocr'].includes(query.get('toolbar'))
+                ? query.get('toolbar')
+                : 'screenshot',
+              activeTarget: ['window', 'screen'].includes(query.get('target'))
+                ? query.get('target')
+                : 'area',
+            }
+          : null,
         pickTargets: null,
         prompt: null,
       };
@@ -152,7 +170,7 @@ window.ipcRenderer = {
     if (channel === 'storage:getTokens') return [];
     if (channel === 'storage:previewFilename') return 'Screenshot.png';
     // The About tab renders these straight into the tree.
-    if (channel === 'app:getVersion') return '0.9.5';
+    if (channel === 'app:getVersion') return '0.9.6';
     if (channel === 'update:getState') return { status: 'idle', progress: 0 };
     // `devices:list` resolves to a `MediaDeviceLists`, not an array.
     if (channel === 'devices:list') {

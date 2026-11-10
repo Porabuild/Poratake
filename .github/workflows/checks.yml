@@ -227,6 +227,17 @@ jobs:
       - name: Format, Clippy, and test Windows native
         run: bun run test:daemon-win
 
+      - name: Visual regressions
+        run: bun run test:visual
+
+      - name: Preserve visual evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-visual-evidence
+          path: ${{ runner.temp }}/poratake-visual-*/**/*.png
+          if-no-files-found: ignore
+
       - name: Tests
         run: bun run test:run
 

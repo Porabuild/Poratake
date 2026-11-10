@@ -66,6 +66,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn detects_photographed_qr_with_surrounding_controls() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../daemon-win/tests/fixtures/qr-window.png");
+        assert_eq!(
+            detect_qr_code(&path).expect("decode window capture"),
+            r"MEBKM:URL:http\://en.wikipedia.org/wiki/Main_Page;;"
+        );
+    }
+
+    #[test]
     fn rejects_oversized_dimensions_before_decoding_pixels() {
         let path = std::env::temp_dir().join(format!(
             "poratake-qrcode-oversized-{}.png",

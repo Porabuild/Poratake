@@ -294,6 +294,7 @@ fn paint_annotations(
         .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()))
         .collect();
     let surface = preview_raster::Surface {
+        image_id: snapshot.image.as_ref().map(|image| image.id),
         width: snapshot.image_width.max(0.0) as u32,
         height: snapshot.image_height.max(0.0) as u32,
         pixels: snapshot.image.as_ref().and_then(|image| image.as_bytes(0)),

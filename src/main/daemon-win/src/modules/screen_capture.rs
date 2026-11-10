@@ -47,8 +47,8 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MT_FIXED_SIZE_SAMPLES, MF_MT_MPEG2_PROFILE, MF_MT_SAMPLE_SIZE,
     MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_D3D_MANAGER, MF_VERSION,
     MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer, MFCreateSinkWriterFromURL,
-    MFCreateTrackedSample, MFSTARTUP_FULL, MFShutdown, MFStartup, MFVideoFormat_ARGB32,
-    MFVideoFormat_H264,
+    MFCreateTrackedSample, MFGetSystemTime, MFSTARTUP_FULL, MFShutdown, MFStartup,
+    MFVideoFormat_ARGB32, MFVideoFormat_H264,
 };
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
@@ -664,6 +664,7 @@ fn handle_command(
                 return false;
             }
             *paused = true;
+            runtime.timeline.observe(unsafe { MFGetSystemTime() });
             runtime.timeline.pause();
             if let Some(audio) = runtime.audio.as_ref() {
                 audio.pause(runtime.timeline.source_time());
@@ -694,6 +695,14 @@ fn handle_command(
                 return false;
             }
             *paused = false;
+            let source_time = unsafe { MFGetSystemTime() };
+            runtime.timeline.resume(source_time);
+            if let Some(audio) = runtime.audio.as_ref() {
+                audio.resume(source_time);
+            }
+            if let Some(input) = runtime.input.as_ref() {
+                input.resume();
+            }
             let status = RecorderStatus {
                 state: RecorderState::Recording,
                 duration: runtime.timeline.duration(),
@@ -871,14 +880,6 @@ impl RecordingRuntime {
         frame: &Direct3D11CaptureFrame,
         source_time: i64,
     ) -> Result<Option<f64>, RecorderError> {
-        if self.timeline.is_resuming() {
-            if let Some(audio) = self.audio.as_ref() {
-                audio.resume(source_time);
-            }
-            if let Some(input) = self.input.as_ref() {
-                input.resume();
-            }
-        }
         let content = frame.ContentSize().map_err(|error| {
             RecorderError::capture(format!("Failed to read captured frame size: {error}"))
         })?;
@@ -990,6 +991,7 @@ impl RecordingRuntime {
     }
 
     fn finish(&mut self) -> Result<RecordingResult, RecorderError> {
+        self.timeline.observe(unsafe { MFGetSystemTime() });
         if let Some(capture) = self.capture.take() {
             capture.close();
         }
@@ -1020,7 +1022,7 @@ impl RecordingRuntime {
             .encoder
             .take()
             .ok_or_else(|| RecorderError::stop("Video encoder is unavailable"))
-            .and_then(MediaFoundationEncoder::finish);
+            .and_then(|encoder| encoder.finish(self.timeline.end_timestamp()));
         let mut staged_assets = Vec::new();
         let mut failure = None;
 
@@ -1231,7 +1233,7 @@ impl VideoTimeline {
     }
 
     fn observe(&mut self, source_time: i64) {
-        self.last_source = source_time;
+        self.last_source = self.last_source.max(source_time);
     }
 
     fn pause(&mut self) {
@@ -1239,14 +1241,8 @@ impl VideoTimeline {
     }
 
     fn timestamp_for(&mut self, source_time: i64) -> Option<i64> {
-        self.last_source = source_time;
+        self.resume(source_time);
         let first = *self.first_source.get_or_insert(source_time);
-
-        if let Some(pause_start) = self.pause_start.take() {
-            self.total_pause = self
-                .total_pause
-                .saturating_add(source_time.saturating_sub(pause_start));
-        }
 
         let timestamp = source_time
             .saturating_sub(first)
@@ -1272,8 +1268,13 @@ impl VideoTimeline {
         self.last_source
     }
 
-    fn is_resuming(&self) -> bool {
-        self.pause_start.is_some()
+    fn resume(&mut self, source_time: i64) {
+        self.observe(source_time);
+        if let Some(pause_start) = self.pause_start.take() {
+            self.total_pause = self
+                .total_pause
+                .saturating_add(source_time.saturating_sub(pause_start));
+        }
     }
 
     fn pause_duration(&self) -> i64 {
@@ -1284,10 +1285,23 @@ impl VideoTimeline {
     }
 
     fn duration(&self) -> f64 {
+        self.end_timestamp() as f64 / HNS_PER_SECOND
+    }
+
+    fn end_timestamp(&self) -> i64 {
+        let elapsed = self
+            .first_source
+            .map(|first| {
+                self.pause_start
+                    .unwrap_or(self.last_source)
+                    .saturating_sub(first)
+                    .saturating_sub(self.total_pause)
+            })
+            .unwrap_or(0);
         self.last_written
             .map(|timestamp| timestamp.saturating_add(self.frame_duration))
-            .unwrap_or(0) as f64
-            / HNS_PER_SECOND
+            .unwrap_or(0)
+            .max(elapsed)
     }
 }
 
@@ -1884,6 +1898,7 @@ fn create_d3d_device_with_levels(
 
 struct MediaFoundationEncoder {
     writer: Option<IMFSinkWriter>,
+    pending_sample: Option<IMFSample>,
     stream_index: u32,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
@@ -2167,6 +2182,7 @@ impl MediaFoundationEncoder {
 
         Ok(Self {
             writer: Some(writer),
+            pending_sample: None,
             stream_index,
             device,
             context,
@@ -2374,6 +2390,21 @@ impl MediaFoundationEncoder {
             sample.SetSampleDuration(duration).map_err(|error| {
                 RecorderError::capture(format!("Failed to set frame duration: {error}"))
             })?;
+        }
+        self.write_pending_sample(timestamp)?;
+        self.pending_sample = Some(sample);
+        Ok(())
+    }
+
+    fn write_pending_sample(&mut self, end_timestamp: i64) -> Result<(), RecorderError> {
+        let Some(sample) = self.pending_sample.take() else {
+            return Ok(());
+        };
+        unsafe {
+            let timestamp = sample.GetSampleTime().map_err(mf_attribute_error)?;
+            sample
+                .SetSampleDuration(end_timestamp.saturating_sub(timestamp).max(1))
+                .map_err(mf_attribute_error)?;
             self.writer
                 .as_ref()
                 .ok_or_else(|| RecorderError::capture("H.264 sink writer is unavailable"))?
@@ -2405,7 +2436,8 @@ impl MediaFoundationEncoder {
         }
     }
 
-    fn finish(mut self) -> Result<StagedAsset, RecorderError> {
+    fn finish(mut self, end_timestamp: i64) -> Result<StagedAsset, RecorderError> {
+        self.write_pending_sample(end_timestamp)?;
         let writer = self
             .writer
             .take()
@@ -2435,6 +2467,7 @@ impl MediaFoundationEncoder {
         if !self.mf_started {
             return;
         }
+        self.pending_sample.take();
         self.release_callbacks.clear();
         self.textures.clear();
         unsafe {
@@ -2562,6 +2595,23 @@ mod tests {
     }
 
     #[test]
+    fn static_video_keeps_elapsed_time_and_excludes_pauses_without_new_frames() {
+        let mut timeline = VideoTimeline::new(30);
+        assert_eq!(timeline.timestamp_for(50_000_000), Some(0));
+        timeline.commit(0);
+        timeline.observe(62_000_000);
+        assert_eq!(timeline.duration(), 1.2);
+        timeline.pause();
+        timeline.observe(82_000_000);
+        assert_eq!(timeline.duration(), 1.2);
+        timeline.resume(82_000_000);
+        timeline.observe(90_000_000);
+        assert_eq!(timeline.duration(), 2.);
+        assert_eq!(timeline.end_timestamp(), 20_000_000);
+        assert_eq!(timeline.timestamp_for(90_000_000), Some(20_000_000));
+    }
+
+    #[test]
     fn video_timeline_excludes_paused_source_time() {
         let mut timeline = VideoTimeline::new(10);
         let first = timeline.timestamp_for(10_000_000);
@@ -2573,9 +2623,9 @@ mod tests {
 
         timeline.pause();
         timeline.observe(42_000_000);
-        assert!(timeline.is_resuming());
+        assert!(timeline.pause_start.is_some());
         assert_eq!(timeline.timestamp_for(52_000_000), None);
-        assert!(!timeline.is_resuming());
+        assert!(timeline.pause_start.is_none());
         assert_eq!(timeline.timestamp_for(53_000_000), Some(3_000_000));
     }
 

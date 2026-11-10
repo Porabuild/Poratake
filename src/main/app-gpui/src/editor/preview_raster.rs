@@ -2,14 +2,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use gpui::RenderImage;
 use herogpui::gpui;
 use tiny_skia::Pixmap;
 
-use crate::editor::annotations::{number_size_config, Annotation};
+use crate::editor::annotations::{
+    arrow_curve_control, arrow_head_size, number_size_config, Annotation,
+};
 use crate::render::annotations as renderer;
 use crate::render::canvas::Canvas;
 
@@ -17,6 +19,7 @@ const MAX_PATCH_PIXELS: f64 = 8_388_608.0;
 const CACHE_TTL_FRAMES: u64 = 4;
 
 pub struct Surface<'a> {
+    pub image_id: Option<gpui::ImageId>,
     pub width: u32,
     pub height: u32,
     pub pixels: Option<&'a [u8]>,
@@ -44,6 +47,10 @@ pub fn is_rasterized(annotation: &Annotation) -> bool {
         annotation,
         Annotation::Pen { .. }
             | Annotation::Highlight { .. }
+            | Annotation::Rectangle { .. }
+            | Annotation::Circle { .. }
+            | Annotation::Line { .. }
+            | Annotation::Arrow { .. }
             | Annotation::Number { .. }
             | Annotation::Text { .. }
     )
@@ -65,6 +72,33 @@ fn raster_bounds(annotation: &Annotation) -> Option<(f64, f64, f64, f64)> {
         }
         Annotation::Highlight { stroke_width, .. } => {
             Some(padded(annotation.bounds(), stroke_width / 2.0 + 2.0))
+        }
+        Annotation::Rectangle { stroke_width, .. }
+        | Annotation::Circle { stroke_width, .. }
+        | Annotation::Line { stroke_width, .. } => {
+            Some(padded(annotation.bounds(), stroke_width / 2.0 + 2.0))
+        }
+        Annotation::Arrow {
+            points,
+            stroke_width,
+            arrow_style,
+            bend_offset,
+            ..
+        } => {
+            let mut bounds = annotation.bounds();
+            if let Some((x, y)) = arrow_curve_control(points, arrow_style.as_deref(), *bend_offset)
+            {
+                bounds = (
+                    bounds.0.min(x),
+                    bounds.1.min(y),
+                    bounds.2.max(x),
+                    bounds.3.max(y),
+                );
+            }
+            Some(padded(
+                bounds,
+                arrow_head_size(*stroke_width) + stroke_width / 2.0 + 2.0,
+            ))
         }
         Annotation::Number { size, .. } => {
             let (_, font_size) = number_size_config(size);
@@ -303,6 +337,7 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u32(surface.width);
     hasher.write_u32(surface.height);
     hasher.write_u8(u8::from(surface.pixels.is_some()));
+    surface.image_id.hash(&mut hasher);
     Some(hasher.finish())
 }
 
@@ -384,6 +419,7 @@ mod tests {
 
         let bgra = to_bgra(base);
         let surface = Surface {
+            image_id: None,
             width: base.width(),
             height: base.height(),
             pixels: Some(&bgra),
@@ -488,9 +524,102 @@ mod tests {
     }
 
     #[test]
+    fn cached_shapes_keep_each_editors_capture_pixels() {
+        let mut first = base_pixmap(180, 140);
+        let mut second = first.clone();
+        first.fill(tiny_skia::Color::from_rgba8(20, 40, 80, 255));
+        second.fill(tiny_skia::Color::from_rgba8(180, 200, 220, 255));
+        let first = render_image(&first);
+        let second = render_image(&second);
+        let annotation = Annotation::Rectangle {
+            id: "ann-1".into(),
+            x: 20.,
+            y: 20.,
+            width: 80.,
+            height: 60.,
+            stroke: "#f43f5e".into(),
+            stroke_width: 3.,
+            fill: None,
+        };
+        let first_surface = Surface {
+            image_id: Some(first.id),
+            width: 180,
+            height: 140,
+            pixels: first.as_bytes(0),
+        };
+        let second_surface = Surface {
+            image_id: Some(second.id),
+            pixels: second.as_bytes(0),
+            ..first_surface
+        };
+        let keys = begin_frame(&[&annotation]);
+        let first_patch = image(&keys, 0, &annotation, &[], &first_surface, 1.).unwrap();
+        let repeated = image(&keys, 0, &annotation, &[], &first_surface, 1.).unwrap();
+        let second_patch = image(&keys, 0, &annotation, &[], &second_surface, 1.).unwrap();
+        assert!(Arc::ptr_eq(&first_patch.image, &repeated.image));
+        assert_ne!(
+            first_patch.image.as_bytes(0),
+            second_patch.image.as_bytes(0)
+        );
+    }
+
+    #[test]
     fn highlight_previews_as_it_exports() {
         let base = base_pixmap(140, 110);
         assert_matches(&base, &[highlight()], 1.0);
+    }
+
+    #[test]
+    fn shapes_preview_as_they_export_at_each_dpi_scale() {
+        let base = base_pixmap(180, 140);
+        let mut shapes = vec![
+            Annotation::Rectangle {
+                id: "rectangle".into(),
+                x: 110.5,
+                y: 95.5,
+                width: -90.,
+                height: -65.,
+                stroke: "#f43f5e".into(),
+                stroke_width: 3.,
+                fill: Some("#40a08080".into()),
+            },
+            Annotation::Circle {
+                id: "circle".into(),
+                x: 85.5,
+                y: 65.5,
+                radius: 35.,
+                stroke: "#f43f5e".into(),
+                stroke_width: 3.,
+                fill: None,
+            },
+            Annotation::Line {
+                id: "line".into(),
+                points: [10.5, 20.5, 150.5, 100.5],
+                stroke: "#f43f5e".into(),
+                stroke_width: 2.5,
+            },
+        ];
+        for style in ["standard", "double", "curved", "double-curved"] {
+            for bend_offset in [
+                None,
+                Some(crate::editor::annotations::Offset { x: 0., y: -100. }),
+            ] {
+                shapes.push(Annotation::Arrow {
+                    id: format!("arrow-{style}-{bend_offset:?}"),
+                    points: [15., 75., 155., 85.],
+                    stroke: "#f43f5e".into(),
+                    stroke_width: 4.,
+                    arrow_style: Some(style.into()),
+                    bend_offset,
+                });
+            }
+        }
+        for scale in [1., 1.25, 1.5, 2.] {
+            for shape in &shapes {
+                assert_matches(&base, std::slice::from_ref(shape), scale);
+            }
+            assert_matches(&base, &shapes, scale);
+        }
     }
 
     #[test]

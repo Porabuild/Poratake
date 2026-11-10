@@ -180,6 +180,16 @@ mod tests {
     }
 
     #[test]
+    fn detects_photographed_qr_with_surrounding_controls() {
+        let payload =
+            detect_qr_code(&fixture_path("qr-window.png")).expect("decode window capture");
+        assert_eq!(
+            payload,
+            r"MEBKM:URL:http\://en.wikipedia.org/wiki/Main_Page;;"
+        );
+    }
+
+    #[test]
     fn returns_empty_payload_when_no_code_present() {
         let white = vec![255u8; 64 * 64];
         let payload = detect_payload_from_greyscale(&white, 64, 64);

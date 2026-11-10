@@ -26,9 +26,9 @@ use crate::ui::colors::Tool;
 use crate::ui::icon_button;
 use herogpui::components::{Button, InputState, TextField, Variant};
 
-#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistedEditorState {
+pub(crate) struct PersistedEditorState {
     #[serde(default)]
     annotations: Vec<Annotation>,
     #[serde(default)]
@@ -385,9 +385,7 @@ pub struct EditorWindow {
     /// The blurred crop behind the zoom control, rebuilt only when the sampled
     /// region moves.
     zoom_backdrop: Option<crate::editor::zoom_backdrop::ZoomBackdrop>,
-    /// The viewport and sheet state the current fit-to-window zoom was computed
-    /// for, so it is recomputed on a resize or a sheet toggle and not otherwise.
-    fit_for: Option<(gpui::Size<Pixels>, bool)>,
+    fit_for: Option<(gpui::Size<Pixels>, bool, (f32, f32))>,
     pub wallpaper: crate::editor::wallpaper::WallpaperSettings,
     wallpaper_preset_id: String,
     background_editor: Option<BackgroundDraft>,
@@ -450,6 +448,18 @@ pub type SnapshotCell = Rc<RefCell<CanvasSnapshot>>;
 
 impl EditorWindow {
     pub fn from_file(path: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let persisted = crate::history_store::editor_state_for_path(std::path::Path::new(path))
+            .and_then(|state| serde_json::from_value::<PersistedEditorState>(state).ok())
+            .unwrap_or_default();
+        Self::from_file_with_state(path, persisted, window, cx)
+    }
+
+    pub(crate) fn from_file_with_state(
+        path: &str,
+        persisted: PersistedEditorState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (image, base, width, height) = match load_image(path) {
             Ok(result) => result,
             Err(error) => {
@@ -458,9 +468,6 @@ impl EditorWindow {
             }
         };
 
-        let persisted = crate::history_store::editor_state_for_path(std::path::Path::new(path))
-            .and_then(|state| serde_json::from_value::<PersistedEditorState>(state).ok())
-            .unwrap_or_default();
         let prefs = crate::state::try_state(cx)
             .map(|service| service.config.get().editor)
             .unwrap_or_default();
@@ -1552,7 +1559,6 @@ impl EditorWindow {
                 cx.notify();
             });
         });
-        window.request_animation_frame();
     }
 
     fn apply_pending_pointer_update(&mut self) {
@@ -2159,18 +2165,16 @@ impl EditorWindow {
         }
     }
 
-    /// `calculateOptimalZoom` runs on the first frame, on every resize, and on
-    /// every wallpaper-sheet toggle -- so a manual zoom is deliberately
-    /// discarded when any of those change, exactly as in Electron.
     fn fit_to_window(&mut self, window: &mut Window) {
         let sheet_open = self.tool == Tool::Wallpaper;
         let viewport = window.viewport_size();
-        if self.fit_for == Some((viewport, sheet_open)) {
+        let content = self.content_size();
+        if self.fit_for == Some((viewport, sheet_open, content)) {
             return;
         }
-        self.fit_for = Some((viewport, sheet_open));
+        self.fit_for = Some((viewport, sheet_open, content));
 
-        let (width, height) = self.content_size();
+        let (width, height) = content;
         if width <= 0.0 || height <= 0.0 {
             return;
         }
@@ -2628,10 +2632,33 @@ impl Render for EditorWindow {
                             })
                             .on_mouse_up(gpui::MouseButton::Left, {
                                 let entity = up_entity;
-                                move |_event: &MouseUpEvent, _window, cx| {
+                                move |event: &MouseUpEvent, window, cx| {
                                     entity
                                         .update(cx, |editor, cx| {
-                                            editor.pan_origin = None;
+                                            if let Some((pointer, offset)) =
+                                                editor.pan_origin.take()
+                                            {
+                                                editor.stage_scroll.set_offset(gpui::point(
+                                                    offset.x + (event.position.x - pointer.x),
+                                                    offset.y + (event.position.y - pointer.y),
+                                                ));
+                                            } else if editor.move_origin.is_some()
+                                                || editor.drag_start.is_some()
+                                                || editor.resize_state.is_some()
+                                                || editor.marquee.is_some()
+                                            {
+                                                let point = to_canvas_point(
+                                                    event.position,
+                                                    *editor.bounds.borrow(),
+                                                    editor.zoom,
+                                                );
+                                                editor.queue_pointer_update(
+                                                    point,
+                                                    event.modifiers.shift,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
                                             editor.apply_pending_pointer_update();
                                             editor.finish_stroke();
                                             cx.notify();
@@ -2708,7 +2735,17 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
                 let png = editor.export_png().ok();
                 let file_path = editor.file_path.clone();
                 if let Some(bytes) = png {
-                    crate::windows::pin::PinWindow::open_for_editor(cx, bytes, file_path);
+                    let restore_state = PersistedEditorState {
+                        annotations: editor.history.current().to_vec(),
+                        wallpaper: editor.wallpaper.clone(),
+                        layers: editor.layers.clone(),
+                    };
+                    crate::windows::pin::PinWindow::open_for_editor(
+                        cx,
+                        bytes,
+                        file_path,
+                        restore_state,
+                    );
                     window.remove_window();
                 }
                 return;
@@ -3785,6 +3822,44 @@ impl EditorWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use herogpui::test::TestWindowExt;
+
+    #[herogpui::test]
+    fn pointer_updates_schedule_a_frame_and_keep_every_stroke_sample(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::new(320, 240).save(&source).unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(source.to_str().unwrap(), window, cx);
+            editor.file_path.clear();
+            editor.tool = Tool::Pen;
+            editor
+        });
+        cx.settle();
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.start_stroke(point(10., 10.), false, window, cx);
+                editor.queue_pointer_update(point(20., 20.), false, window, cx);
+                editor.queue_pointer_update(point(30., 30.), false, window, cx);
+                assert!(editor.pointer_update_scheduled);
+            })
+        });
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.update(|_, cx| editor.update(cx, |editor, _| {
+            assert!(!editor.pointer_update_scheduled);
+            editor.finish_stroke();
+            assert!(matches!(&editor.history.current()[0], Annotation::Pen { points, .. } if points == &[10., 10., 20., 20., 30., 30.]));
+        }));
+    }
 
     fn point(x: f32, y: f32) -> Point {
         Point { x, y }

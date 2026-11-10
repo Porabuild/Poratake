@@ -49,6 +49,7 @@ cp "$ROOT_DIR/LICENSE" "$STAGING/licenses/Poratake-AGPL-3.0.txt"
 cp "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$STAGING/licenses/THIRD_PARTY_NOTICES.md"
 cp "$ROOT_DIR/licenses/FFmpeg-LGPL-2.1.txt" "$STAGING/licenses/FFmpeg-LGPL-2.1.txt"
 cp "$ROOT_DIR/licenses/HeroGPUI-Apache-2.0.txt" "$STAGING/licenses/HeroGPUI-Apache-2.0.txt"
+cp "$ROOT_DIR/licenses/ZXing-LICENSE.txt" "$STAGING/licenses/ZXing-LICENSE.txt"
 cp "$ROOT_DIR/licenses/Geist-OFL-1.1.txt" "$STAGING/licenses/Geist-OFL-1.1.txt"
 
 if [[ -f "$ROOT_DIR/src/main/binaries/ffmpeg/ffmpeg" ]]; then

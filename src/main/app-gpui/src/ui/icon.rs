@@ -108,7 +108,13 @@ impl RenderOnce for Icon {
         let rotation = self.rotation;
 
         canvas(
-            |_, _, _| {},
+            move |bounds, _, _| {
+                let _ = bounds;
+                #[cfg(feature = "parity")]
+                if Some(path_data) == icon_data("mic") || Some(path_data) == icon_data("mic-off") {
+                    crate::ui::parity::record("microphone-icon", vec![bounds]);
+                }
+            },
             move |bounds, _: (), window, _cx| {
                 if let Some(path) =
                     build_stroked_path(path_data, bounds.origin, scale, stroke_width, rotation)

@@ -137,6 +137,7 @@ impl RecordingControl {
                     },
                 ),
                 |window, cx| {
+                    window.set_window_title("Poratake recording controls");
                     configure_toolbar_window(window);
                     let view = cx.new(|cx| Self {
                         mode: Mode::PreRecording,
@@ -319,6 +320,7 @@ impl RecordingControl {
         let generation = self.countdown_generation;
         self.countdown_active = true;
         self.countdown_remaining = Some(delay);
+        window.focus(&self.focus_handle, cx);
         self.sync_window_bounds(window, cx, false);
         cx.notify();
         cx.spawn_in(window, async move |entity, cx| loop {
@@ -1464,9 +1466,7 @@ impl Render for RecordingControl {
         let toggles = self.input_toggles(cx);
         let countdown = self.countdown_remaining;
 
-        let mut bar = toolbar::surface(&theme)
-            .id("recording-control-bar")
-            .h(px(chrome::recording_inner_bar_height()));
+        let mut bar = toolbar::surface(&theme).h(px(chrome::recording_inner_bar_height()));
 
         if let Some(name) = &self.target_name {
             bar = bar
@@ -1485,6 +1485,12 @@ impl Render for RecordingControl {
                 .child(toolbar::hairline(&theme));
         }
 
+        #[cfg(feature = "parity")]
+        let bar = bar.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("recording-controls", bounds);
+        });
+        let bar = bar.id("recording-control-bar");
+
         if self.mode == Mode::PreRecording {
             let start_name = "Start recording";
             return recording_shell(
@@ -1492,7 +1498,6 @@ impl Render for RecordingControl {
                 bar.child(toolbar::tooltip_button(
                     toolbar::button("recording-start", start_name)
                         .is_disabled(self.countdown_active)
-                        .hover_bg(crate::ui::colors::white(0.15))
                         .child(toolbar::filled_glyph(theme.accent, true)),
                     start_name,
                     cx,
@@ -1533,7 +1538,6 @@ impl Render for RecordingControl {
             ))
             .child(toolbar::tooltip_button(
                 toolbar::button("recording-stop", stop_name)
-                    .hover_bg(crate::ui::colors::white(0.15))
                     .child(toolbar::filled_glyph(theme.destructive, false)),
                 stop_name,
                 cx,

@@ -1,16 +1,138 @@
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    point, px, size, AnyWindowHandle, AppContext, HeadlessAppContext, KeyDownEvent, Keystroke,
-    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+    point, px, size, AnyWindowHandle, AppContext, Bounds, HeadlessAppContext, KeyDownEvent,
+    KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, PlatformInput,
 };
 use herogpui::gpui;
+
+mod analysis_workflows;
+mod attachment_workflows;
+mod baselines;
+pub(crate) mod daemon_fixture;
+mod overlays;
+mod pin_workflows;
+mod recording_controls;
+mod scroll_workflows;
+#[cfg(windows)]
+mod windows_renderer;
+mod workflows;
+
+thread_local! {
+    static GEOMETRY: RefCell<BTreeMap<&'static str, Vec<Bounds<Pixels>>>> = RefCell::default();
+    static NOTIFICATIONS: RefCell<Vec<(String, String, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn record_notification(title: &str, body: &str, transient: bool) -> bool {
+    if std::env::var_os(daemon_fixture::PROCESS_ENV).is_none() {
+        return false;
+    }
+    NOTIFICATIONS.with_borrow_mut(|notifications| {
+        notifications.push((title.into(), body.into(), transient));
+    });
+    true
+}
+
+fn take_notifications() -> Vec<(String, String, bool)> {
+    NOTIFICATIONS.with_borrow_mut(std::mem::take)
+}
+
+pub(crate) fn record(name: &'static str, bounds: Vec<Bounds<Pixels>>) {
+    GEOMETRY.with_borrow_mut(|geometry| {
+        geometry.insert(name, bounds);
+    });
+}
+
+fn measured(group: &str, index: usize) -> Bounds<Pixels> {
+    GEOMETRY.with_borrow(|geometry| geometry[group][index])
+}
+
+fn click_measured(cx: &mut HeadlessAppContext, window: AnyWindowHandle, group: &str, index: usize) {
+    if group.starts_with("editor-") && !crate::ui::chrome::is_macos() {
+        let viewport = measured("editor-chrome", 0);
+        let bounds = measured(group, index);
+        let delta = if bounds.left() < viewport.left() {
+            viewport.left() - bounds.left()
+        } else if bounds.right() > viewport.right() {
+            viewport.right() - bounds.right()
+        } else {
+            px(0.)
+        };
+        if delta != px(0.) {
+            event(
+                cx,
+                window,
+                PlatformInput::Scroll(gpui::ScrollEvent {
+                    position: viewport.center(),
+                    delta: gpui::ScrollDelta::Pixels(point(delta, px(0.))),
+                    ..Default::default()
+                }),
+            );
+            settle(cx, window);
+        }
+        let bounds = measured(group, index);
+        assert!(
+            bounds.left() + px(0.001) >= viewport.left()
+                && bounds.right() <= viewport.right() + px(0.001),
+            "the toolbar control must scroll fully into view: {bounds:?}, {viewport:?}"
+        );
+    }
+    let center = measured(group, index).center();
+    click(cx, window, f32::from(center.x), f32::from(center.y));
+}
+
+fn assert_toolbar(width: f32, scale: f32) {
+    GEOMETRY.with_borrow(|geometry| {
+        if !crate::ui::chrome::is_macos() {
+            let captions = geometry["editor-chrome"][2];
+            assert!(
+                captions.right() <= px(width),
+                "window buttons clipped: {captions:?}"
+            );
+            let caption_width =
+                (crate::ui::chrome::WINDOW_CONTROL_WIDTH * scale - 0.5).ceil() / scale;
+            assert!((f32::from(captions.size.width) - 3. * caption_width).abs() < 0.001);
+        }
+        let tools = &geometry["editor-tools"];
+        assert_eq!(tools.len(), 21);
+        for (index, bounds) in tools.iter().enumerate() {
+            assert!(
+                bounds.top() >= px(0.) && bounds.bottom() <= px(40.),
+                "tool {index}: {bounds:?}"
+            );
+            if index != 10 && index != 14 {
+                let edge = if index >= 17 { 32. } else { 28. };
+                assert_eq!(bounds.size, size(px(edge), px(edge)), "tool {index}");
+            }
+            if let Some(previous) = index.checked_sub(1).map(|index| tools[index]) {
+                assert!(
+                    bounds.left() + px(0.001) >= previous.right() + px(4.),
+                    "tools overlap: {previous:?}, {bounds:?}"
+                );
+            }
+        }
+        for pair in geometry["editor-options"].windows(2) {
+            assert!(
+                pair[0].right() <= pair[1].left(),
+                "tool options overlap: {pair:?}"
+            );
+        }
+    });
+}
 
 fn frame(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
     cx.run_until_parked();
     cx.update_window(window, |_, window, cx| {
+        if window.viewport_size() != window.bounds().size {
+            let scale = window.scale_factor();
+            window.bounds_changed(cx);
+            window.set_scale_factor(scale);
+        }
         window.refresh();
         window.draw(cx).clear(cx);
     })
@@ -18,6 +140,9 @@ fn frame(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
 }
 
 fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
+    if !cx.update(|cx| cx.windows().contains(&window)) {
+        return;
+    }
     for _ in 0..40 {
         cx.advance_clock(Duration::from_millis(10));
         cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx))
@@ -29,7 +154,9 @@ fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
 fn event(cx: &mut HeadlessAppContext, window: AnyWindowHandle, event: PlatformInput) {
     cx.update_window(window, |_, window, cx| window.dispatch_event(event, cx))
         .unwrap();
-    frame(cx, window);
+    if cx.update(|cx| cx.windows().contains(&window)) {
+        frame(cx, window);
+    }
 }
 
 fn hover(cx: &mut HeadlessAppContext, window: AnyWindowHandle, x: f32, y: f32) {
@@ -71,30 +198,73 @@ fn click(cx: &mut HeadlessAppContext, window: AnyWindowHandle, x: f32, y: f32) {
     settle(cx, window);
 }
 
-fn escape(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
+fn key(cx: &mut HeadlessAppContext, window: AnyWindowHandle, key: &'static str) {
+    let keystroke = Keystroke::parse(key).unwrap();
     event(
         cx,
         window,
         PlatformInput::KeyDown(KeyDownEvent {
-            keystroke: Keystroke::parse("escape").unwrap(),
+            keystroke: keystroke.clone(),
             is_held: false,
             prefer_character_input: false,
         }),
     );
+    if !cx.update(|cx| cx.windows().contains(&window)) {
+        return;
+    }
+    event(cx, window, PlatformInput::KeyUp(KeyUpEvent { keystroke }));
     settle(cx, window);
+}
+
+fn escape(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
+    key(cx, window, "escape");
 }
 
 fn capture(cx: &mut HeadlessAppContext, window: AnyWindowHandle, output: &Path, name: &str) {
     frame(cx, window);
-    cx.capture_screenshot(window)
-        .unwrap()
+    let (viewport, scale) = cx
+        .update_window(window, |_, window, _| {
+            (window.viewport_size(), window.scale_factor())
+        })
+        .unwrap();
+    let image = cx.capture_screenshot(window).unwrap();
+    let width = (f32::from(viewport.width) * scale).round() as u32;
+    let logical_height = if name.starts_with("image-")
+        && name != "image-wallpaper-selected"
+        && !name.ends_with("-open")
+    {
+        80.
+    } else {
+        f32::from(viewport.height)
+    };
+    let height = (logical_height * scale).round() as u32;
+    assert!(
+        image.width() >= width && image.height() >= height,
+        "renderer target {:?} is smaller than requested {width}x{height}",
+        image.dimensions()
+    );
+    image::imageops::crop_imm(&image, 0, 0, width, height)
+        .to_image()
         .save(output.join(format!("gpui-{name}.png")))
         .unwrap();
 }
 
 pub fn capture_editor_interaction_states() {
     let output = std::path::PathBuf::from(std::env::var("PORATAKE_PARITY_OUTPUT").unwrap());
-    let source = std::env::var("PORATAKE_PARITY_IMAGE").unwrap();
+    let source = std::env::var("PORATAKE_PARITY_IMAGE")
+        .ok()
+        .filter(|source| !source.is_empty());
+    let theme = std::env::var("PORATAKE_PARITY_THEME").unwrap_or_else(|_| "dark".into());
+    assert!(matches!(theme.as_str(), "light" | "dark"));
+    let width: f32 = std::env::var("PORATAKE_PARITY_WIDTH")
+        .unwrap_or_else(|_| "1280".into())
+        .parse()
+        .unwrap();
+    let scale: f32 = std::env::var("PORATAKE_PARITY_SCALE")
+        .unwrap_or_else(|_| "2".into())
+        .parse()
+        .unwrap();
+    assert!((1.0..=2.0).contains(&scale));
     std::fs::create_dir_all(&output).unwrap();
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -102,28 +272,58 @@ pub fn capture_editor_interaction_states() {
         .as_nanos();
     let scratch = output.join(format!("profile-{nonce}"));
     std::fs::create_dir_all(&scratch).unwrap();
-    unsafe { std::env::set_var(crate::config::store::CONFIG_DIR_ENV, &scratch) };
+    unsafe {
+        std::env::set_var(crate::config::store::CONFIG_DIR_ENV, &scratch);
+        std::env::set_var("PORATAKE_DAEMON_PATH", std::env::current_exe().unwrap());
+        std::env::set_var(daemon_fixture::PROCESS_ENV, "1");
+    }
     let image = scratch.join("capture.png");
-    std::fs::copy(source, &image).unwrap();
+    if let Some(source) = &source {
+        std::fs::copy(source, &image).unwrap();
+    } else {
+        image::RgbaImage::from_fn(640, 360, |x, y| {
+            if (x / 40 + y / 40) % 2 == 0 {
+                image::Rgba([64, 112, 192, 255])
+            } else {
+                image::Rgba([224, 232, 240, 255])
+            }
+        })
+        .save(&image)
+        .unwrap();
+    }
     let store =
         Arc::new(crate::config::store::ConfigStore::load_at(scratch.join("config.json")).unwrap());
     store.update(|config| {
-        config.appearance.mode = "dark".into();
+        config.appearance.mode = theme;
         config.appearance.theme = "default".into();
         config.editor.color = "#f43f5e".into();
+        config.editor.last_tool = "pen".into();
     });
+    let platform = herogpui::platform::current_platform(!cfg!(windows));
+    #[cfg(windows)]
+    smol::block_on(platform.request_windowing(gpui::WindowingRequest::Windowed(
+        gpui::GraphicalEnvironment::detect(),
+    )))
+    .unwrap();
     let mut cx = HeadlessAppContext::with_platform(
-        herogpui::platform::current_platform(true).text_system(),
+        platform.text_system(),
         Arc::new(herogpui::HeroGpuiAssets),
-        herogpui::platform::current_headless_renderer,
+        move || {
+            #[cfg(windows)]
+            return windows_renderer::create(&platform);
+            #[cfg(not(windows))]
+            herogpui::platform::current_headless_renderer()
+        },
     );
     cx.update(|cx| {
         crate::state::set_test_state(cx, store);
         crate::editor::actions::init_bindings(cx);
+        crate::capture::overlay::init_bindings(cx);
         crate::ui::font::register(cx);
     });
     let editor = cx
-        .open_window(size(px(1280.0), px(738.0)), |window, cx| {
+        .open_window(size(px(width), px(738.0)), |window, cx| {
+            window.set_scale_factor(scale);
             cx.new(|cx| {
                 crate::editor::window::EditorWindow::from_file(image.to_str().unwrap(), window, cx)
             })
@@ -131,15 +331,17 @@ pub fn capture_editor_interaction_states() {
         .unwrap();
     let window = editor.into();
     settle(&mut cx, window);
+    assert_toolbar(width, scale);
     hover(&mut cx, window, 300.0, 300.0);
     capture(&mut cx, window, &output, "image-default");
-    hover(&mut cx, window, 896.0, 20.0);
+    let redact = measured("editor-tools", 8).center();
+    hover(&mut cx, window, f32::from(redact.x), f32::from(redact.y));
     capture(&mut cx, window, &output, "image-redact-hover");
     event(
         &mut cx,
         window,
         PlatformInput::MouseDown(MouseDownEvent {
-            position: point(px(896.0), px(20.0)),
+            position: redact,
             button: MouseButton::Left,
             click_count: 1,
             modifiers: Modifiers::none(),
@@ -152,18 +354,30 @@ pub fn capture_editor_interaction_states() {
         &mut cx,
         window,
         PlatformInput::MouseUp(MouseUpEvent {
-            position: point(px(896.0), px(20.0)),
+            position: redact,
             button: MouseButton::Left,
             click_count: 1,
             modifiers: Modifiers::none(),
         }),
     );
-    click(&mut cx, window, 640.0, 20.0);
+    click_measured(&mut cx, window, "editor-tools", 0);
     cx.update(|cx| assert_eq!(editor.read(cx).unwrap().tool, crate::ui::colors::Tool::Pen));
     capture(&mut cx, window, &output, "image-pen-selected");
-    hover(&mut cx, window, 520.0, 20.0);
+    key(&mut cx, window, "tab");
+    assert!(cx
+        .update_window(window, |_, window, cx| window.focused(cx).is_some()
+            && herogpui::extend::focus_visible(cx))
+        .unwrap());
+    capture(&mut cx, window, &output, "image-keyboard-focused");
+    let thickness = measured("editor-options", 0).center();
+    hover(
+        &mut cx,
+        window,
+        f32::from(thickness.x),
+        f32::from(thickness.y),
+    );
     capture(&mut cx, window, &output, "image-thickness-hover");
-    click(&mut cx, window, 520.0, 20.0);
+    click_measured(&mut cx, window, "editor-options", 0);
     let panel_open = |cx: &mut HeadlessAppContext| {
         cx.update_window(window, |_, window, _| {
             let scale = window.scale_factor();
@@ -182,20 +396,22 @@ pub fn capture_editor_interaction_states() {
     capture(&mut cx, window, &output, "image-thickness-open");
     escape(&mut cx, window);
     assert!(!panel_open(&mut cx), "Escape must dismiss the option list");
-    click(&mut cx, window, 580.0, 20.0);
+    let color_index = GEOMETRY.with_borrow(|geometry| geometry["editor-options"].len() - 1);
+    click_measured(&mut cx, window, "editor-options", color_index);
     capture(&mut cx, window, &output, "image-color-open");
     escape(&mut cx, window);
-    for (tool, x) in [
-        (crate::ui::colors::Tool::Highlight, 672.0),
-        (crate::ui::colors::Tool::Rectangle, 704.0),
-        (crate::ui::colors::Tool::Arrow, 800.0),
-        (crate::ui::colors::Tool::Text, 832.0),
-        (crate::ui::colors::Tool::Number, 864.0),
-        (crate::ui::colors::Tool::Redact, 896.0),
-        (crate::ui::colors::Tool::Wallpaper, 1005.0),
+    for (tool, index) in [
+        (crate::ui::colors::Tool::Highlight, 1),
+        (crate::ui::colors::Tool::Rectangle, 2),
+        (crate::ui::colors::Tool::Arrow, 5),
+        (crate::ui::colors::Tool::Text, 6),
+        (crate::ui::colors::Tool::Number, 7),
+        (crate::ui::colors::Tool::Redact, 8),
+        (crate::ui::colors::Tool::Wallpaper, 12),
     ] {
-        click(&mut cx, window, x, 20.0);
+        click_measured(&mut cx, window, "editor-tools", index);
         cx.update(|cx| assert_eq!(editor.read(cx).unwrap().tool, tool));
+        assert_toolbar(width, scale);
         capture(
             &mut cx,
             window,
@@ -208,7 +424,7 @@ pub fn capture_editor_interaction_states() {
                 | crate::ui::colors::Tool::Text
                 | crate::ui::colors::Tool::Redact
         ) {
-            click(&mut cx, window, 520.0, 20.0);
+            click_measured(&mut cx, window, "editor-options", 0);
             assert!(panel_open(&mut cx), "tool popover must open");
             capture(
                 &mut cx,
@@ -216,17 +432,17 @@ pub fn capture_editor_interaction_states() {
                 &output,
                 &format!("image-{}-open", tool.id()),
             );
-            let nested = match tool {
-                crate::ui::colors::Tool::Number => (569.0, 225.0, "number-start"),
-                crate::ui::colors::Tool::Text => (551.0, 185.0, "text-size"),
-                _ => (568.0, 185.0, "redact-intensity"),
-            };
-            click(&mut cx, window, nested.0, nested.1);
+            key(&mut cx, window, "tab");
+            key(&mut cx, window, "enter");
+            assert!(
+                panel_open(&mut cx),
+                "keyboard activation must leave the tool panel open"
+            );
             capture(
                 &mut cx,
                 window,
                 &output,
-                &format!("image-{}-open", nested.2),
+                &format!("image-{}-keyboard-open", tool.id()),
             );
             escape(&mut cx, window);
             escape(&mut cx, window);
@@ -236,7 +452,7 @@ pub fn capture_editor_interaction_states() {
                 | crate::ui::colors::Tool::Rectangle
                 | crate::ui::colors::Tool::Highlight
         ) {
-            click(&mut cx, window, 520.0, 20.0);
+            click_measured(&mut cx, window, "editor-options", 0);
             capture(
                 &mut cx,
                 window,
@@ -247,7 +463,8 @@ pub fn capture_editor_interaction_states() {
         }
     }
     let video = cx
-        .open_window(size(px(1280.0), px(738.0)), |_, cx| {
+        .open_window(size(px(width), px(738.0)), |window, cx| {
+            window.set_scale_factor(scale);
             cx.new(|cx| crate::windows::video_editor::VideoEditorWindow::new_for_test(None, cx))
         })
         .unwrap();
@@ -255,10 +472,28 @@ pub fn capture_editor_interaction_states() {
     settle(&mut cx, window);
     hover(&mut cx, window, 300.0, 300.0);
     capture(&mut cx, window, &output, "video-default");
-    hover(&mut cx, window, 1258.0, 20.0);
+    hover(&mut cx, window, width - 22.0, 20.0);
     capture(&mut cx, window, &output, "video-header-hover");
-    hover(&mut cx, window, 1260.0, 208.0);
+    hover(&mut cx, window, width - 20.0, 208.0);
     capture(&mut cx, window, &output, "video-audio-hover");
-    click(&mut cx, window, 1260.0, 208.0);
+    click(&mut cx, window, width - 20.0, 208.0);
     capture(&mut cx, window, &output, "video-audio-open");
+    overlays::run(&mut cx, &output, width, scale);
+    if source.is_none() {
+        pin_workflows::run(&mut cx, &output, &scratch, scale);
+    }
+    recording_controls::run(&mut cx, &output, &scratch, scale);
+    #[cfg(windows)]
+    workflows::video(&mut cx, &output, &scratch, width, scale);
+    if source.is_none() && width == 1280. && scale == 1. {
+        workflows::selection_captures(&mut cx, &output, &scratch);
+        workflows::timer_captures(&mut cx, &output, &scratch);
+        analysis_workflows::run(&mut cx, &output, &scratch);
+        scroll_workflows::run(&mut cx, &output, &scratch);
+        attachment_workflows::run(&mut cx, &output, &scratch);
+        pin_workflows::editor_roundtrip(&mut cx, &output, &scratch);
+        workflows::screenshot(&mut cx, &output, &scratch);
+    }
+    baselines::check(&output);
+    cx.update(|cx| crate::state::state(cx).daemon.stop());
 }

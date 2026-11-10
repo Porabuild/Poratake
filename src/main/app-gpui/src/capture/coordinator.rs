@@ -59,7 +59,7 @@ impl Coordinator {
     ) {
         let freeze = self.service.config.get().screenshot.freeze_screen;
         let reservation = freeze.then(|| self.service.reserve_cached_capture());
-        self.capture_area_reserved(capture, intent, reservation, cx);
+        self.capture_area_reserved(capture, intent, reservation, None, cx);
     }
 
     pub(crate) fn capture_area_reserved(
@@ -67,13 +67,14 @@ impl Coordinator {
         capture: DisplayCapture,
         intent: CaptureIntent,
         reservation: Option<CachedCaptureReservation>,
+        release_after: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         if intent == CaptureIntent::EditorAttach {
-            return self.attach_area(capture, reservation, cx);
+            return self.attach_area(capture, reservation, release_after, cx);
         }
         if !intent.saves_to_library() {
-            return self.analyze_area(capture, intent, reservation, cx);
+            return self.analyze_area(capture, intent, reservation, release_after, cx);
         }
         if intent == CaptureIntent::Timer {
             return self.run_countdown(capture, cx);
@@ -86,7 +87,7 @@ impl Coordinator {
 
         let task = cx.background_executor().spawn(async move {
             service
-                .capture_area_cached(capture, &path, reservation)
+                .capture_area_cached(capture, &path, reservation, release_after)
                 .map(|_| path)
         });
 
@@ -210,9 +211,14 @@ impl Coordinator {
         &mut self,
         capture: DisplayCapture,
         reservation: Option<CachedCaptureReservation>,
+        release_after: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         let Some(pending) = self.pending_attach.take() else {
+            drop(reservation);
+            if let Some(generation) = release_after {
+                crate::capture::overlay::release_frozen_screen(generation, cx);
+            }
             crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
             return;
         };
@@ -223,9 +229,11 @@ impl Coordinator {
             uuid_simple()
         ));
         let task = cx.background_executor().spawn(async move {
-            service
-                .capture_area_cached(capture, &path, reservation)
-                .map(|_| path)
+            let result = service.capture_area_cached(capture, &path, reservation, release_after);
+            if result.is_err() {
+                let _ = std::fs::remove_file(&path);
+            }
+            result.map(|_| path)
         });
         cx.spawn(async move |_entity, cx| {
             let captured = match task.await {
@@ -287,13 +295,24 @@ impl Coordinator {
 
     /// Captures a picked window through the daemon and routes the file the
     /// same way an area capture is routed.
-    pub fn capture_window(&mut self, window_id: i64, cx: &mut Context<Self>) {
+    pub fn capture_window(
+        &mut self,
+        window_id: i64,
+        capture: DisplayCapture,
+        reservation: Option<CachedCaptureReservation>,
+        release_after: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         let service = self.service.clone();
         let path = service.generate_screenshot_path();
         let task = cx.background_executor().spawn(async move {
-            service
-                .capture_window_to_file(window_id, &path)
-                .map(|_| path)
+            let result = service
+                .capture_window_to_file(window_id, capture, &path, reservation)
+                .map(|_| path);
+            if let Some(generation) = release_after {
+                service.release_screen(generation);
+            }
+            result
         });
 
         cx.spawn(async move |_entity, cx| match task.await {
@@ -319,16 +338,6 @@ impl Coordinator {
             native_controls: Some(!cfg!(target_os = "macos")),
             boundary_only: cfg!(target_os = "macos").then_some(true),
         };
-        if !crate::capture::scroll::start(&service.daemon, &request) {
-            crate::capture::desktop_icons::restore_after_capture(&service.daemon);
-            crate::windows::toast::Toast::show(
-                cx,
-                "Scroll Capture Failed",
-                "The scroll capture could not be started",
-            );
-            return;
-        }
-
         let (tx, rx) = smol::channel::bounded::<crate::capture::scroll::ScrollSessionSignal>(16);
         let daemon = service.daemon.clone();
         let event_tx = tx.clone();
@@ -364,6 +373,15 @@ impl Coordinator {
                 let _ = event_tx.try_send(signal);
             }
         }));
+        if !crate::capture::scroll::start(&service.daemon, &request) {
+            crate::capture::desktop_icons::restore_after_capture(&service.daemon);
+            crate::windows::toast::Toast::show(
+                cx,
+                "Scroll Capture Failed",
+                "The scroll capture could not be started",
+            );
+            return;
+        }
 
         #[cfg(target_os = "macos")]
         let ui = crate::windows::scroll_capture::ScrollCaptureSession::open(
@@ -450,6 +468,7 @@ impl Coordinator {
         ) {
             drop(subscription);
             drop(session);
+            crate::capture::overlay::close_all(cx);
             crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
             crate::windows::toast::Toast::show(
                 cx,
@@ -491,6 +510,7 @@ impl Coordinator {
                             capture,
                             CaptureIntent::Screenshot,
                             None,
+                            None,
                             cx,
                         );
                     });
@@ -505,6 +525,7 @@ impl Coordinator {
         capture: DisplayCapture,
         intent: CaptureIntent,
         reservation: Option<CachedCaptureReservation>,
+        release_after: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         let service = self.service.clone();
@@ -512,20 +533,25 @@ impl Coordinator {
             std::env::temp_dir().join(format!("{}-{}.png", intent.temp_prefix(), uuid_simple()));
 
         let task = cx.background_executor().spawn(async move {
-            service
-                .capture_area_cached(capture, &path, reservation)
-                .map(|_| path)
+            if let Err(error) =
+                service.capture_area_cached(capture, &path, reservation, release_after)
+            {
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+            Ok(path)
         });
 
         cx.spawn(async move |entity, cx| {
             let captured = match task.await {
                 Ok(path) => path,
                 Err(error) => {
+                    eprintln!("[capture] analysis capture failed: {error}");
                     let title = match intent {
                         CaptureIntent::Ocr => "OCR Failed",
                         _ => "Scan Failed",
                     };
-                    show_capture_error(cx, title, &error.to_string());
+                    show_capture_error(cx, title, "Failed to capture the selected area");
                     return;
                 }
             };

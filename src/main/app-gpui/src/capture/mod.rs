@@ -34,6 +34,7 @@ struct FreezeProgress {
     captures: BTreeMap<u64, usize>,
     next_generation: u64,
     completed_generation: u64,
+    frozen_generation: Option<u64>,
 }
 
 pub(crate) struct CachedCaptureReservation {
@@ -57,11 +58,12 @@ impl Drop for CachedCaptureReservation {
 }
 
 impl CachedCaptureReservation {
-    pub(crate) fn wait_for_freeze(&self) {
+    pub(crate) fn wait_for_freeze(&self) -> bool {
         let mut state = self.freeze.state.lock();
         while state.completed_generation < self.generation {
             self.freeze.settled.wait(&mut state);
         }
+        state.frozen_generation == Some(self.generation)
     }
 }
 
@@ -148,6 +150,7 @@ impl CaptureService {
     fn finish_freeze(&self, generation: u64, result: Result<()>) -> Result<()> {
         let mut state = self.freeze.state.lock();
         state.completed_generation = generation;
+        state.frozen_generation = result.is_ok().then_some(generation);
         self.freeze.settled.notify_all();
         result
     }
@@ -181,13 +184,16 @@ impl CaptureService {
         capture: DisplayCapture,
         path: &std::path::Path,
         reservation: Option<CachedCaptureReservation>,
+        release_after: Option<u64>,
     ) -> Result<()> {
-        let cached = reservation.is_some();
-        if let Some(reservation) = reservation.as_ref() {
-            reservation.wait_for_freeze();
-        }
+        let cached = reservation
+            .as_ref()
+            .is_some_and(CachedCaptureReservation::wait_for_freeze);
         let result = self.capture_area_to_file_with_options(capture, path, cached);
         drop(reservation);
+        if let Some(generation) = release_after {
+            self.release_screen(generation);
+        }
         result
     }
 
@@ -222,7 +228,24 @@ impl CaptureService {
         }
     }
 
-    pub fn capture_window_to_file(&self, window_id: i64, path: &std::path::Path) -> Result<()> {
+    pub(crate) fn capture_window_to_file(
+        &self,
+        window_id: i64,
+        capture: DisplayCapture,
+        path: &std::path::Path,
+        reservation: Option<CachedCaptureReservation>,
+    ) -> Result<()> {
+        if reservation
+            .as_ref()
+            .is_some_and(CachedCaptureReservation::wait_for_freeze)
+        {
+            return self.daemon.screenshot().capture_area(&CaptureAreaRequest {
+                capture,
+                path: path.to_path_buf(),
+                cached: true,
+                window_id: Some(window_id),
+            });
+        }
         self.daemon
             .screenshot()
             .capture_window(&CaptureWindowRequest {
@@ -542,62 +565,69 @@ fn open_screen_recording_bar(target: &ScreenTarget, cx: &mut gpui::App) {
 
 fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
     let service = crate::state::state(cx);
-    if let Some(generation) = overlay::replace_all(cx) {
-        let releasing = service.clone();
-        cx.background_executor()
-            .spawn(async move { releasing.release_screen(generation) })
-            .detach();
-    }
+    let release_first = overlay::replace_all(cx);
     restart_capture_hide(None, cx);
-    let mut pending = Vec::new();
-    each_display(cx, |service, id, bounds, focus, cx| {
-        let Some(handle) = overlay::AreaOverlay::open_with_windows(
-            service,
-            id,
-            bounds,
-            intent,
-            Vec::new(),
-            focus,
-            cx,
-        ) else {
-            return false;
-        };
-        let request_generation = handle
-            .update(cx, |overlay, _, _| overlay.window_list_generation())
-            .unwrap_or(0);
-        pending.push((handle, request_generation));
-        true
-    });
-    if pending.is_empty() {
-        return;
-    }
-    let daemon = service.daemon.clone();
-    cx.spawn(async move |cx| {
-        let windows = cx
-            .background_executor()
-            .spawn(async move { windows_list::list(&daemon) })
-            .await;
-        cx.update(|cx| {
-            let mut applied = false;
-            for (handle, request_generation) in pending {
-                let window_list = windows.clone();
-                applied |= handle
-                    .update(cx, |overlay, _, cx| {
-                        overlay.apply_window_list(request_generation, window_list, cx)
-                    })
-                    .unwrap_or(false);
-            }
-            if applied && windows.is_empty() {
-                overlay::close_all(cx);
-                crate::windows::toast::Toast::show(
+    with_frozen_screen(
+        cx,
+        release_first,
+        intent == intent::CaptureIntent::Screenshot,
+        move |cx, deferred_show, generation| {
+            let mut pending = Vec::new();
+            each_display(cx, |service, id, bounds, focus, cx| {
+                let Some(handle) = overlay::AreaOverlay::open_with_windows(
+                    service,
+                    id,
+                    bounds,
+                    intent,
+                    Vec::new(),
+                    overlay::OverlayLaunch {
+                        focus,
+                        deferred_show,
+                        generation,
+                    },
                     cx,
-                    "No windows found",
-                    "The daemon did not report any capturable windows",
-                );
+                ) else {
+                    return false;
+                };
+                let request_generation = handle
+                    .update(cx, |overlay, _, _| overlay.window_list_generation())
+                    .unwrap_or(0);
+                pending.push((handle, request_generation));
+                true
+            });
+            if pending.is_empty() {
+                return false;
             }
-        });
-    })
-    .detach();
+            let daemon = service.daemon.clone();
+            cx.spawn(async move |cx| {
+                let windows = cx
+                    .background_executor()
+                    .spawn(async move { windows_list::list(&daemon) })
+                    .await;
+                cx.update(|cx| {
+                    let mut applied = false;
+                    for (handle, request_generation) in pending {
+                        let window_list = windows.clone();
+                        applied |= handle
+                            .update(cx, |overlay, _, cx| {
+                                overlay.apply_window_list(request_generation, window_list, cx)
+                            })
+                            .unwrap_or(false);
+                    }
+                    if applied && windows.is_empty() {
+                        overlay::close_all(cx);
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "No windows found",
+                            "The daemon did not report any capturable windows",
+                        );
+                    }
+                });
+            })
+            .detach();
+            true
+        },
+    );
 }
 
 /// Picks a window to record through the same overlay the window screenshot
@@ -712,6 +742,7 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
                 capture,
                 intent::CaptureIntent::Screenshot,
                 reservation,
+                None,
                 cx,
             );
         });
