@@ -673,6 +673,234 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn cursor_keyboard_and_subtitles_match_export_across_timeline_edits() {
+        use crate::windows::video_editor::{model, preview};
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Overlay workflow.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let mut encoder = Encoder::create(
+            &project::recording_video_path(&project),
+            Settings {
+                width: 960,
+                height: 720,
+                frame_rate: 12,
+                bitrate: 12_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for index in 0..24 {
+            let color = if index < 12 {
+                [176, 96, 32, 255]
+            } else {
+                [48, 80, 192, 255]
+            };
+            encoder.write_frame(color.repeat(960 * 720)).unwrap();
+        }
+        encoder.finish().unwrap();
+        for (path, data) in [
+            (
+                project::cursor_path(&project),
+                serde_json::json!({
+                    "recordingArea": {"width": 960, "height": 720},
+                    "events": [
+                        {"timestamp": 0., "x": 0.2, "y": 0.1, "type": "move"},
+                        {"timestamp": 1.25, "x": 0.7, "y": 0.1, "type": "move"}
+                    ]
+                }),
+            ),
+            (
+                project::keys_path(&project),
+                serde_json::json!({
+                    "events": [
+                        {"timestamp": 0.25, "key": "c", "modifiers": ["control"], "type": "down"},
+                        {"timestamp": 1.3, "key": "v", "modifiers": ["control"], "type": "down"}
+                    ],
+                    "meta": {"platform": "windows"}
+                }),
+            ),
+            (
+                project::subtitle_path(&project),
+                serde_json::json!({
+                    "segments": [
+                        {"start": 0.2, "end": 0.6, "text": "A"},
+                        {"start": 1.3, "end": 1.6, "text": "B"}
+                    ]
+                }),
+            ),
+        ] {
+            std::fs::write(path, serde_json::to_vec(&data).unwrap()).unwrap();
+        }
+        let mut state = VideoEditorState {
+            source_duration: Some(2.),
+            segments: vec![
+                model::Segment {
+                    original_end: 0.75,
+                    speed: Some(1.5),
+                    ..model::Segment::spanning(2.)
+                },
+                model::Segment {
+                    id: "after-cut".into(),
+                    original_start: 1.25,
+                    speed: Some(0.5),
+                    ..model::Segment::spanning(2.)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        state.wallpaper.enabled = false;
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "12".into();
+        state.cursor_style.smoothing = 0.;
+        state.cursor_style.motion_blur = false;
+        state.keyboard_style.visible = true;
+        state.keyboard_style.display_duration = 0.3;
+        let segments = crate::video::composition::segments::to_video_segments(&state.segments);
+        let keys = sidecars::load_keyboard(&project).unwrap();
+        let subtitles = sidecars::load_subtitle(&project).unwrap();
+        for (time, key, caption) in [
+            (0.25, Some("Ctrl+C"), Some("A")),
+            (0.75, Some("Ctrl+V"), Some("B")),
+            (1.25, None, None),
+        ] {
+            let active = crate::video::composition::keyboard::active_keys(
+                &keys,
+                &segments,
+                time,
+                &state.keyboard_style,
+            );
+            assert_eq!(active.first().map(|value| value.display_text.as_str()), key);
+            assert_eq!(active.len(), usize::from(key.is_some()));
+            let active =
+                crate::video::composition::subtitle::active_subtitle(&subtitles, &segments, time);
+            assert_eq!(
+                active
+                    .as_ref()
+                    .and_then(|value| value.words.first())
+                    .map(String::as_str),
+                caption
+            );
+        }
+        model::save_state(&project, &state);
+        assert_eq!(model::load_state(&project), state);
+
+        let mut plain_state = state.clone();
+        plain_state.cursor_style.enabled = false;
+        plain_state.keyboard_style.visible = false;
+        plain_state.subtitle_style.visible = false;
+        let mut cursor_state = plain_state.clone();
+        cursor_state.cursor_style.enabled = true;
+        let mut keyboard_state = plain_state.clone();
+        keyboard_state.keyboard_style.visible = true;
+        let mut subtitle_state = plain_state.clone();
+        subtitle_state.subtitle_style.visible = true;
+        let mut plain = preview::Source::open(&project, plain_state).unwrap();
+        let mut cursor = preview::Source::open(&project, cursor_state).unwrap();
+        let mut keyboard = preview::Source::open(&project, keyboard_state).unwrap();
+        let mut subtitle = preview::Source::open(&project, subtitle_state).unwrap();
+        let mut combined = preview::Source::open(&project, model::load_state(&project)).unwrap();
+        let mut without_cursor = state.clone();
+        without_cursor.cursor_style.enabled = false;
+        let mut without_keyboard = state.clone();
+        without_keyboard.keyboard_style.visible = false;
+        let mut without_subtitle = state.clone();
+        without_subtitle.subtitle_style.visible = false;
+        let mut without_cursor = preview::Source::open(&project, without_cursor).unwrap();
+        let mut without_keyboard = preview::Source::open(&project, without_keyboard).unwrap();
+        let mut without_subtitle = preview::Source::open(&project, without_subtitle).unwrap();
+
+        let output = directory.path().join("overlay-edited.mp4");
+        run(
+            Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = VideoDecoder::open(&output).unwrap();
+        assert!((exported.info().duration - 2.).abs() <= 1. / 12.);
+        for (time, overlays_visible, source_color) in [
+            (0.25, true, [176_u8, 96, 32]),
+            (0.75, true, [48, 80, 192]),
+            (1.25, false, [48, 80, 192]),
+        ] {
+            let baseline = plain.compose(time, None).unwrap();
+            for (name, source, visible) in [
+                ("cursor", &mut cursor, true),
+                ("keyboard", &mut keyboard, overlays_visible),
+                ("subtitle", &mut subtitle, overlays_visible),
+            ] {
+                let frame = source.compose(time, None).unwrap();
+                let changed = frame
+                    .data()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(baseline.data().as_chunks::<4>().0)
+                    .filter(|(actual, baseline)| actual != baseline)
+                    .count();
+                if visible {
+                    assert!(changed > 30, "{name} must be visible at {time}s");
+                } else {
+                    assert_eq!(changed, 0, "{name} must be hidden at {time}s");
+                }
+            }
+            let expected = to_bgra(&combined.compose(time, None).unwrap());
+            let actual = exported.frame_at(time).unwrap();
+            assert_eq!(actual.bgra.len(), expected.len());
+            let error: u64 = actual
+                .bgra
+                .iter()
+                .zip(&expected)
+                .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+                .sum();
+            let mean = error as f64 / expected.len() as f64;
+            assert!(mean < 3., "preview/export channel error {mean} at {time}s");
+            for (name, source, visible) in [
+                ("cursor", &mut without_cursor, true),
+                ("keyboard", &mut without_keyboard, overlays_visible),
+                ("subtitle", &mut without_subtitle, overlays_visible),
+            ] {
+                if !visible {
+                    continue;
+                }
+                let without = to_bgra(&source.compose(time, None).unwrap());
+                let (error, count) = expected
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(without.as_chunks::<4>().0)
+                    .zip(actual.bgra.as_chunks::<4>().0)
+                    .filter(|((expected, without), _)| expected != without)
+                    .fold((0_u64, 0_u64), |(error, count), ((expected, _), actual)| {
+                        let delta: u64 = expected[..3]
+                            .iter()
+                            .zip(&actual[..3])
+                            .map(|(expected, actual)| u64::from(expected.abs_diff(*actual)))
+                            .sum();
+                        (error + delta, count + 1)
+                    });
+                assert!(
+                    count > 30,
+                    "{name} must affect the combined preview at {time}s"
+                );
+                let mean = error as f64 / (count * 3) as f64;
+                assert!(mean < 8., "{name} preview/export error {mean} at {time}s");
+            }
+            let pixel = (50 * 960 + 800) * 4;
+            for channel in 0..3 {
+                assert!(expected[pixel + channel].abs_diff(source_color[channel]) < 8);
+                assert!(actual.bgra[pixel + channel].abs_diff(source_color[channel]) < 8);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn edited_video_exports_the_preview_and_reopens_the_saved_project() {
         use crate::editor::annotations::Annotation;
         use crate::windows::video_editor::{model, preview};
