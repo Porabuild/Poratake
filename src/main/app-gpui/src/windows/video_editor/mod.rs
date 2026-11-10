@@ -2367,7 +2367,7 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
-    pub fn toggle_project_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn prepare_project_popover(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = self.path.as_deref() {
             let name = model::project_display_name(path);
             self.rename_field.update(cx, |field, cx| {
@@ -2377,34 +2377,6 @@ impl VideoEditorWindow {
         }
         self.rename_error = None;
         self.path_copied_at = None;
-        self.open_title_popover(title_bar::PROJECT_POPOVER_ID, window, cx);
-    }
-
-    pub fn toggle_export_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_title_popover(title_bar::EXPORT_POPOVER_ID, window, cx);
-    }
-
-    fn open_title_popover(
-        &mut self,
-        owner: &'static str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let entity = cx.entity().downgrade();
-        let theme = active_theme(cx);
-        self.menu.toggle_with(
-            crate::ui::menu::MenuPlacement::below(owner).aligned_right(),
-            move |_dismiss, cx| {
-                let view = cx.new(move |_cx| TitlePopover {
-                    owner,
-                    editor: entity,
-                    theme,
-                });
-                (view.into(), None)
-            },
-            window,
-            cx,
-        );
         cx.notify();
     }
 
@@ -2427,7 +2399,7 @@ impl VideoEditorWindow {
         })
     }
 
-    pub fn rename_project(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn rename_project(&mut self, value: &str, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(old_path) = self.path.clone() else {
             return;
         };
@@ -2460,10 +2432,8 @@ impl VideoEditorWindow {
         crate::history_store::update_item_path(&old_path, &new_path);
         self.path = Some(new_path);
         self.rename_error = None;
-        self.menu.close(window, cx);
         self.persist(cx);
         self.load_preview(cx);
-        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 
@@ -2948,9 +2918,7 @@ impl VideoEditorWindow {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.data_editor.is_some() && event.keystroke.key.as_str() == "escape" {
-            self.close_data_editor(cx);
-            cx.stop_propagation();
+        if self.data_editor.is_some() {
             return;
         }
         if event.keystroke.key.as_str() == "escape" {
@@ -2962,7 +2930,7 @@ impl VideoEditorWindow {
             cx.stop_propagation();
             return;
         }
-        if self.editing_text(window, cx) {
+        if !self.focus_handle.is_focused(window) || self.editing_text(window, cx) {
             return;
         }
 
@@ -3190,7 +3158,7 @@ impl Render for VideoEditorWindow {
             .is_some_and(|path| project::mic_audio_path(path).is_file());
 
         let title = title_bar::render(
-            &title_bar::TitleBarState {
+            title_bar::TitleBarState {
                 file_name: file_name.into(),
                 project_path: self
                     .path
@@ -3202,7 +3170,14 @@ impl Render for VideoEditorWindow {
                 is_exporting: self.is_exporting,
                 export_progress: self.displayed_progress,
                 export_completed: self.is_export_complete(cx),
-                menu: self.menu.clone(),
+                project_content: has_project.then(|| {
+                    self.title_popover_body(title_bar::PROJECT_POPOVER_ID, cx)
+                        .into_any_element()
+                }),
+                export_content: (self.is_exporting || self.is_export_complete(cx)).then(|| {
+                    self.title_popover_body(title_bar::EXPORT_POPOVER_ID, cx)
+                        .into_any_element()
+                }),
             },
             &theme,
             window,
@@ -3489,38 +3464,29 @@ impl Render for VideoEditorWindow {
             .child(title)
             .child(stage)
             .children(self.menu.render(cx))
-            .children(
-                self.data_editor
-                    .as_ref()
-                    .map(|editor| data_editor::render(editor, &theme, cx)),
-            );
+            .child(data_editor::render(
+                self.data_editor.as_ref(),
+                &theme,
+                window,
+                cx,
+            ));
         crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 
-struct TitlePopover {
-    owner: &'static str,
-    editor: gpui::WeakEntity<VideoEditorWindow>,
-    theme: crate::theme::vars::ThemeVars,
-}
-
-impl Render for TitlePopover {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(editor) = self.editor.upgrade() else {
-            return div();
-        };
-        let owner = self.owner;
-        let theme = self.theme.clone();
-        let view = editor.read(cx);
+impl VideoEditorWindow {
+    pub(super) fn title_popover_body(&self, owner: &'static str, cx: &Context<Self>) -> gpui::Div {
+        let editor = cx.entity();
+        let theme = active_theme(cx);
         let body = match owner {
             title_bar::EXPORT_POPOVER_ID => title_bar::export_popover(
-                view.is_export_complete(cx),
-                view.displayed_progress,
+                self.is_export_complete(cx),
+                self.displayed_progress,
                 SharedString::from(format!(
                     "{} elapsed",
-                    panels::format_export_time(view.export_elapsed_secs(cx))
+                    panels::format_export_time(self.export_elapsed_secs(cx))
                 )),
-                SharedString::from(match view.export_remaining_secs() {
+                SharedString::from(match self.export_remaining_secs() {
                     Some(remaining) => {
                         format!("{} remaining", panels::format_export_time(remaining))
                     }
@@ -3536,14 +3502,14 @@ impl Render for TitlePopover {
             ),
             _ => title_bar::project_popover(
                 SharedString::from(
-                    view.path
+                    self.path
                         .as_deref()
                         .map(|path| path.to_string_lossy().to_string())
                         .unwrap_or_default(),
                 ),
-                view.rename_field.clone(),
-                view.rename_error.clone(),
-                view.path_recently_copied(cx),
+                self.rename_field.clone(),
+                self.rename_error.clone(),
+                self.path_recently_copied(cx),
                 &theme,
                 {
                     let editor = editor.clone();
@@ -3566,12 +3532,7 @@ impl Render for TitlePopover {
                 },
             ),
         };
-        body.rounded(px(crate::ui::chrome::RADIUS_LG))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.popover)
-            .text_color(theme.popover_foreground)
-            .shadow_lg()
+        body
     }
 }
 
@@ -3806,6 +3767,32 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn window_shortcuts_ignore_focus_owned_by_a_child_control(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, window, cx| {
+                let child = cx.focus_handle().tab_stop(true);
+                window.focus(&child, cx);
+                let event = gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("space").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                };
+                editor.on_key(&event, window, cx);
+                assert!(!editor.is_playing);
+                window.focus(&editor.focus_handle, cx);
+                editor.on_key(&event, window, cx);
+                assert!(editor.is_playing);
+            })
+            .unwrap();
     }
 
     #[herogpui::test]

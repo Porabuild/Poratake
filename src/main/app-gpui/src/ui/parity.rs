@@ -168,8 +168,9 @@ pub fn capture_editor_interaction_states() {
         cx.update_window(window, |_, window, _| {
             let scale = window.scale_factor();
             window.painted_quads().iter().any(|quad| {
-                quad.bounds.size.width.0 / scale <= 128.0
+                quad.bounds.size.width.0 / scale <= 200.0
                     && quad.bounds.size.height.0 / scale >= 150.0
+                    && quad.bounds.size.height.0 / scale <= 260.0
             })
         })
         .unwrap()
@@ -182,13 +183,6 @@ pub fn capture_editor_interaction_states() {
     escape(&mut cx, window);
     assert!(!panel_open(&mut cx), "Escape must dismiss the option list");
     click(&mut cx, window, 580.0, 20.0);
-    cx.update(|cx| {
-        assert!(editor
-            .read(cx)
-            .unwrap()
-            .menu
-            .is_open_for("editor-color-picker", cx))
-    });
     capture(&mut cx, window, &output, "image-color-open");
     escape(&mut cx, window);
     for (tool, x) in [
@@ -208,20 +202,33 @@ pub fn capture_editor_interaction_states() {
             &output,
             &format!("image-{}-selected", tool.id()),
         );
-        if let Some(owner) = match tool {
-            crate::ui::colors::Tool::Number => Some("tool-option-number"),
-            crate::ui::colors::Tool::Text => Some("tool-option-text"),
-            crate::ui::colors::Tool::Redact => Some("tool-option-redact"),
-            _ => None,
-        } {
+        if matches!(
+            tool,
+            crate::ui::colors::Tool::Number
+                | crate::ui::colors::Tool::Text
+                | crate::ui::colors::Tool::Redact
+        ) {
             click(&mut cx, window, 520.0, 20.0);
-            cx.update(|cx| assert!(editor.read(cx).unwrap().menu.is_open_for(owner, cx)));
+            assert!(panel_open(&mut cx), "tool popover must open");
             capture(
                 &mut cx,
                 window,
                 &output,
                 &format!("image-{}-open", tool.id()),
             );
+            let nested = match tool {
+                crate::ui::colors::Tool::Number => (569.0, 225.0, "number-start"),
+                crate::ui::colors::Tool::Text => (551.0, 185.0, "text-size"),
+                _ => (568.0, 185.0, "redact-intensity"),
+            };
+            click(&mut cx, window, nested.0, nested.1);
+            capture(
+                &mut cx,
+                window,
+                &output,
+                &format!("image-{}-open", nested.2),
+            );
+            escape(&mut cx, window);
             escape(&mut cx, window);
         } else if matches!(
             tool,

@@ -162,6 +162,7 @@ fn overlay_action(
                 .hover_bg(surface_hover)
                 .child(icon_element(icon, px(chrome::HISTORY_ITEM_ACTION_ICON)))
                 .on_press(cx.listener(move |this, _event, window, cx| {
+                    cx.stop_propagation();
                     on_click(this, window, cx);
                 })),
         )
@@ -419,6 +420,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                     .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
                     .width(px(28.0))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
+                        cx.stop_propagation();
                         this.reveal_index(index, cx);
                     })),
             )
@@ -438,6 +440,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                         px(chrome::HISTORY_ITEM_ACTION_ICON),
                     ))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
+                        cx.stop_propagation();
                         this.delete_index(index, cx);
                     }))
             });

@@ -21,11 +21,9 @@ use crate::editor::options::{
 use crate::editor::title_bar::TitleBar;
 use crate::editor::tool_options::ToolOptionsState;
 use crate::theme::vars::active_theme;
-use crate::ui::button::CompactButton;
 use crate::ui::chrome;
 use crate::ui::colors::Tool;
 use crate::ui::icon_button;
-use crate::ui::menu::MenuHandle;
 use herogpui::components::{Button, InputState, TextField, Variant};
 
 #[derive(Default, serde::Deserialize, serde::Serialize)]
@@ -369,7 +367,6 @@ pub struct EditorWindow {
     pending_stroke_points: Vec<Point>,
     pending_stroke_shift: bool,
     pointer_update_scheduled: bool,
-    pub menu: MenuHandle,
     /// The inline field shown while a text annotation is being typed.
     text_editor: Option<(String, gpui::Entity<InputState>)>,
     /// The pending crop rectangle in image coordinates.
@@ -524,7 +521,6 @@ impl EditorWindow {
             pending_stroke_points: Vec::new(),
             pending_stroke_shift: false,
             pointer_update_scheduled: false,
-            menu: MenuHandle::new(),
             text_editor: None,
             crop: None,
             crop_drag: None,
@@ -2460,7 +2456,6 @@ impl Render for EditorWindow {
                 is_uploading: self.cloud_upload == crate::cloud::UploadState::Uploading,
                 is_upload_done: self.cloud_upload == crate::cloud::UploadState::Success,
                 is_capture_mode: self.capture_mode,
-                menu: self.menu.clone(),
                 handlers: handlers.clone(),
             })
             .child(
@@ -2805,7 +2800,7 @@ fn zoom_control(
                 herogpui::components::Tooltip::new("Reset Zoom").child(
                     Button::new("zoom-reset")
                         .variant(Variant::Ghost)
-                        .compact()
+                        .recipe("compact")
                         .recipe("muted")
                         .full_width(true)
                         .height(px(ZOOM_BUTTON_SIZE))

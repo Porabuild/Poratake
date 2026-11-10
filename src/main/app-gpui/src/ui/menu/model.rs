@@ -20,8 +20,6 @@ pub struct MenuItem {
     pub radio: Option<bool>,
     pub trailing_check: bool,
     pub leading: Option<MenuDecoration>,
-    pub row_label: Option<SharedString>,
-    pub trailing_switch: Option<bool>,
     pub inset: bool,
     pub submenu: Vec<MenuEntry>,
     pub action: Option<MenuAction>,
@@ -39,8 +37,6 @@ impl MenuItem {
             radio: None,
             trailing_check: false,
             leading: None,
-            row_label: None,
-            trailing_switch: None,
             inset: false,
             submenu: Vec::new(),
             action: None,
@@ -91,19 +87,6 @@ impl MenuItem {
 
     pub fn leading(mut self, render: impl Fn(&mut App) -> AnyElement + 'static) -> Self {
         self.leading = Some(Rc::new(render));
-        self
-    }
-
-    /// Renders the entry as a settings row: a muted label on the left and this
-    /// item's label as a compact pill on the right, matching the small selects
-    /// inside the renderer's tool-option popovers.
-    pub fn row(mut self, label: impl Into<SharedString>) -> Self {
-        self.row_label = Some(label.into());
-        self
-    }
-
-    pub fn trailing_switch(mut self, checked: bool) -> Self {
-        self.trailing_switch = Some(checked);
         self
     }
 

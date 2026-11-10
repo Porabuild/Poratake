@@ -1,20 +1,7 @@
-use herogpui::components::{Button, Size};
+use herogpui::components::Button;
+
+#[cfg(test)]
 use herogpui::gpui::px;
-
-use crate::ui::chrome;
-
-pub trait CompactButton {
-    fn compact(self) -> Self;
-}
-
-impl CompactButton for Button {
-    fn compact(self) -> Self {
-        self.size(Size::Sm)
-            .height(px(chrome::TOOL_OPTION_HEIGHT))
-            .padding_x(px(10.0))
-            .text_size(px(chrome::BUTTON_XS_TEXT))
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -45,7 +32,7 @@ mod tests {
                             .is_disabled(disabled)
                         }),
                 )
-                .child(Button::new("labelled").compact().label("Save"))
+                .child(Button::new("labelled").recipe("compact").label("Save"))
                 .child(
                     crate::ui::icon_button::chip_icon("chip", "settings", "Settings")
                         .variant(Variant::Tertiary),

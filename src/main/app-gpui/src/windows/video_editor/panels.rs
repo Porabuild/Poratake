@@ -39,10 +39,10 @@ pub fn render(
     match tab {
         SidebarTab::Cursor => cursor_panel(view, state, has_cursor_data, theme, cx),
         SidebarTab::Zoom => zoom_panel(view, state, has_cursor_data, theme, cx),
-        SidebarTab::Drawing => drawing_panel(view, state, menu, theme, window, cx),
+        SidebarTab::Drawing => drawing_panel(view, state, theme, window, cx),
         SidebarTab::Camera => camera_panel(view, state, has_camera, theme, cx),
         SidebarTab::Audio => audio_panel(view, state, has_keyboard, menu, theme, cx),
-        SidebarTab::Wallpaper => wallpaper_panel(view, state, theme, window, cx),
+        SidebarTab::Wallpaper => wallpaper_panel(view, state, theme, cx),
         SidebarTab::Keyboard => keyboard_panel(view, state, has_keyboard, theme, cx),
         SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, cx),
         SidebarTab::FirstFrame => first_frame_panel(view, state, theme, cx),
@@ -685,7 +685,6 @@ fn segment_row(title: &str, trailing: &str, theme: &ThemeVars) -> AnyElement {
 fn drawing_panel(
     view: &VideoEditorWindow,
     state: &VideoEditorState,
-    menu: &MenuHandle,
     theme: &ThemeVars,
     window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
@@ -712,7 +711,7 @@ fn drawing_panel(
         drawing_tool_grid(&tools.active_tool, theme, cx),
         kit::label("Style", theme),
     ];
-    children.extend(drawing_style_rows(&tools, &style, menu, theme, window, cx));
+    children.extend(drawing_style_rows(&tools, &style, theme, window, cx));
     children.push(kit::separator(theme));
     let Some(annotation) = annotation else {
         children.push(kit::note(
@@ -809,12 +808,9 @@ fn drawing_color_trigger(
     color: SharedString,
     opacity: f32,
     is_highlight: bool,
-    menu: &MenuHandle,
     window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
-    let open = menu.is_open_for(DRAWING_COLOR_PICKER_ID, cx);
-    let handle = menu.clone();
     let palette: Vec<SharedString> = crate::ui::colors::palette_for_tool(if is_highlight {
         crate::ui::colors::Tool::Highlight
     } else {
@@ -824,56 +820,36 @@ fn drawing_color_trigger(
     .map(|value| SharedString::from(*value))
     .collect();
     let owner = cx.entity().downgrade();
-    let current = color.clone();
-    crate::ui::color_picker::trigger(DRAWING_COLOR_PICKER_ID, &color, opacity, open, window, cx)
-        .child(menu.render_dropdown(DRAWING_COLOR_PICKER_ID, cx))
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            let palette = palette.clone();
-            let current = current.clone();
-            let owner = owner.clone();
-            handle.toggle_with(
-                crate::ui::menu::MenuPlacement::below(DRAWING_COLOR_PICKER_ID),
-                move |dismiss, cx| {
-                    let handler: crate::ui::color_picker::ColorHandler = std::rc::Rc::new(
-                        move |value: SharedString,
-                              _window: &mut gpui::Window,
-                              cx: &mut gpui::App| {
-                            let _ = owner.update(cx, |this, cx| {
-                                let value = value.to_string();
-                                this.update_drawing_tools(cx, |tools| match is_highlight {
-                                    true => tools.highlight_color = value.clone(),
-                                    false => tools.selected_color = value.clone(),
-                                });
-                                this.update_selected_annotation(
-                                    match is_highlight {
-                                        true => EditorOption::HighlightColor(value.into()),
-                                        false => EditorOption::Color(value.into()),
-                                    },
-                                    cx,
-                                );
-                            });
-                        },
-                    );
-                    let view = cx.new(|cx| {
-                        crate::ui::color_picker::ColorPickerPopover::new(
-                            &current, palette, handler, dismiss, cx,
-                        )
-                    });
-                    let focus = view.read(cx).focus_handle();
-                    (view.into(), Some(focus))
-                },
-                window,
-                cx,
-            );
-            cx.stop_propagation();
-        })
-        .into_any_element()
+    crate::ui::color_picker::control(
+        DRAWING_COLOR_PICKER_ID,
+        color,
+        opacity,
+        palette,
+        std::rc::Rc::new(move |value, _, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                let value = value.to_string();
+                this.update_drawing_tools(cx, |tools| match is_highlight {
+                    true => tools.highlight_color = value.clone(),
+                    false => tools.selected_color = value.clone(),
+                });
+                this.update_selected_annotation(
+                    if is_highlight {
+                        EditorOption::HighlightColor(value.into())
+                    } else {
+                        EditorOption::Color(value.into())
+                    },
+                    cx,
+                );
+            });
+        }),
+        window,
+        cx,
+    )
 }
 
 fn drawing_style_rows(
     tools: &styles::DrawingToolSettings,
     style: &drawing_overlay::DisplayedStyle,
-    menu: &MenuHandle,
     theme: &ThemeVars,
     window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
@@ -895,7 +871,6 @@ fn drawing_style_rows(
                 1.0
             },
             is_highlight,
-            menu,
             window,
             cx,
         ),
@@ -1262,26 +1237,28 @@ fn camera_position_grid(
                 let selected = *position == value;
                 let label = position.replace('-', " ");
                 let position = (*position).to_string();
-                let cell = div()
-                    .id(SharedString::from(format!(
-                        "camera-pos-{row_index}-{col_index}"
-                    )))
-                    .h(px(24.0))
-                    .flex_1()
-                    .rounded(px(8.0))
-                    .bg(if selected {
-                        theme.accent
-                    } else {
-                        theme.default
-                    })
-                    .when(!selected, |el| el.hover(|s| s.bg(theme.default_hover)))
-                    .cursor_pointer()
-                    .on_mouse_down(gpui::MouseButton::Left, {
-                        cx.listener(move |this, _event, _window, cx| {
-                            let value = position.clone();
-                            this.update_camera(cx, move |style| style.position = value);
-                        })
-                    });
+                let cell = Button::new(SharedString::from(format!(
+                    "camera-pos-{row_index}-{col_index}"
+                )))
+                .aria_label(SharedString::from(label.clone()))
+                .variant(Variant::Ghost)
+                .height(px(24.0))
+                .full_width(true)
+                .radius(px(8.0))
+                .bg(if selected {
+                    theme.accent
+                } else {
+                    theme.default
+                })
+                .hover_bg(if selected {
+                    theme.accent
+                } else {
+                    theme.default_hover
+                })
+                .on_press(cx.listener(move |this, _event, _window, cx| {
+                    let value = position.clone();
+                    this.update_camera(cx, move |style| style.position = value);
+                }));
                 div()
                     .flex_1()
                     .child(herogpui::components::Tooltip::new(label).child(cell))
@@ -1625,7 +1602,6 @@ fn wallpaper_panel(
     view: &VideoEditorWindow,
     state: &VideoEditorState,
     theme: &ThemeVars,
-    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let wallpaper = state.wallpaper.clone();
@@ -1688,8 +1664,6 @@ fn wallpaper_panel(
                     }
                 }
             },
-            window,
-            cx,
         ));
         children.push(kit::separator(theme));
         children.push(kit::slider_row(

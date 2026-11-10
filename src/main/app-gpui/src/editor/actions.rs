@@ -9,7 +9,7 @@ use herogpui::gpui;
 
 use crate::config::shortcuts::{EditorActionShortcuts, EditorShortcuts};
 
-const EDITOR_CONTEXT: &str = "Editor && !Select && !Menu && !Input";
+const EDITOR_CONTEXT: &str = "Editor && !Select && !Menu && !Input && !ListBox && !Popover";
 
 actions!(
     editor,
@@ -140,7 +140,11 @@ fn command_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-0", ZoomReset, editor),
         KeyBinding::new("ctrl-p", PrintScreenshot, editor),
         KeyBinding::new("ctrl-backspace", DeleteScreenshot, editor),
-        KeyBinding::new("enter", ApplyCrop, editor),
+        KeyBinding::new(
+            "enter",
+            ApplyCrop,
+            Some(&format!("{EDITOR_CONTEXT} && !Button")),
+        ),
         KeyBinding::new("escape", CancelCrop, editor),
     ];
     // The renderer answers both Cmd and Control (`e.metaKey || e.ctrlKey`) while

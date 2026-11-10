@@ -283,19 +283,6 @@ impl MenuHandle {
         );
     }
 
-    /// Opens an arbitrary popover view in the same anchored layer the menus
-    /// use. The builder receives the dismiss handler the view must call when
-    /// it wants to close, and returns an optional focus handle to focus.
-    pub fn open_with(
-        &self,
-        placement: MenuPlacement,
-        build: impl FnOnce(DismissHandler, &mut App) -> (AnyView, Option<gpui::FocusHandle>),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.open_layer(placement, build, None, window, cx);
-    }
-
     fn open_layer(
         &self,
         placement: MenuPlacement,
@@ -336,19 +323,6 @@ impl MenuHandle {
         });
         drop(state);
         window.refresh();
-    }
-
-    pub fn toggle_with(
-        &self,
-        placement: MenuPlacement,
-        build: impl FnOnce(DismissHandler, &mut App) -> (AnyView, Option<gpui::FocusHandle>),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        if self.toggled_closed(&placement, window, cx) {
-            return;
-        }
-        self.open_with(placement, build, window, cx);
     }
 
     /// Renders the layer for a window-anchored menu opened with `open_at`.

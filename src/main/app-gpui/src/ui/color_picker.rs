@@ -14,7 +14,6 @@ use crate::theme::color::Srgba;
 use crate::theme::vars::active_theme;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
-use crate::ui::menu::DismissHandler;
 
 const POPOVER_WIDTH: f32 = 256.0;
 const POPOVER_PAD: f32 = 12.0;
@@ -124,7 +123,6 @@ pub struct ColorPickerPopover {
     hsv: Hsv,
     palette: Vec<SharedString>,
     on_change: ColorHandler,
-    on_dismiss: DismissHandler,
     focus_handle: FocusHandle,
     hex_field: Entity<InputState>,
 }
@@ -134,7 +132,6 @@ impl ColorPickerPopover {
         color: &str,
         palette: Vec<SharedString>,
         on_change: ColorHandler,
-        on_dismiss: DismissHandler,
         cx: &mut Context<Self>,
     ) -> Self {
         let hsv = hsv_from_hex(color);
@@ -143,14 +140,9 @@ impl ColorPickerPopover {
             hsv,
             palette,
             on_change,
-            on_dismiss,
             focus_handle: cx.focus_handle(),
             hex_field: cx.new(|cx| InputState::with_value(cx, hex)),
         }
-    }
-
-    pub fn focus_handle(&self) -> FocusHandle {
-        self.focus_handle.clone()
     }
 
     fn sync_hex_field(&self, cx: &mut App) {
@@ -212,10 +204,6 @@ impl Render for ColorPickerPopover {
             .id("color-picker-popover")
             .track_focus(&self.focus_handle)
             .occlude()
-            .on_mouse_down_out(cx.listener(|this, _event, window, cx| {
-                let dismiss = this.on_dismiss.clone();
-                dismiss(window, cx);
-            }))
             .flex()
             .flex_col()
             .gap(px(12.0))
@@ -305,40 +293,45 @@ impl Render for ColorPickerPopover {
     }
 }
 
-pub fn trigger(
+pub fn control(
     id: &'static str,
-    color: &str,
+    color: SharedString,
     opacity: f32,
-    open: bool,
+    palette: Vec<SharedString>,
+    on_change: ColorHandler,
     window: &mut Window,
     cx: &mut App,
-) -> gpui::Stateful<gpui::Div> {
+) -> gpui::AnyElement {
+    let state = window.use_keyed_state((gpui::ElementId::from(id), "color-control"), cx, |_, _| {
+        (false, None::<Entity<ColorPickerPopover>>)
+    });
+    let (open, picker) = state.read(cx).clone();
     let theme = active_theme(cx);
-    let swatch = hsv_from_hex(color).to_picker();
-    let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
-    div()
-        .id(id)
-        .relative()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(chrome::TOOL_OPTION_GAP))
-        .h(px(chrome::TOOL_OPTION_HEIGHT))
-        .w(px(TRIGGER_WIDTH))
-        .rounded(px(chrome::TOOL_OPTION_RADIUS))
-        .px(px(chrome::TOOL_OPTION_PAD_X))
-        .flex_shrink_0()
-        .bg(if open || hovered {
-            theme.default_hover
-        } else {
-            theme.default
-        })
-        .on_hover({
-            let hover = hover.clone();
-            move |over: &bool, _window, cx| {
-                crate::ui::primitives::track_hover(&hover, *over, cx);
+    let swatch = hsv_from_hex(&color).to_picker();
+    let change = Rc::new(move |open: &bool, _: &mut Window, cx: &mut App| {
+        let picker = open.then(|| {
+            cx.new(|cx| ColorPickerPopover::new(&color, palette.clone(), on_change.clone(), cx))
+        });
+        state.update(cx, |state, cx| {
+            state.0 = *open;
+            if picker.is_some() {
+                state.1 = picker;
             }
+            cx.notify();
+        });
+    });
+    let press_change = change.clone();
+    let trigger = Button::new((gpui::ElementId::from(id), "button"))
+        .aria_label("Choose color")
+        .on_press(move |_, window, cx| {
+            press_change(&!open, window, cx);
+            cx.stop_propagation();
         })
+        .variant(Variant::Secondary)
+        .width(px(TRIGGER_WIDTH))
+        .height(px(chrome::TOOL_OPTION_HEIGHT))
+        .padding_x(px(chrome::TOOL_OPTION_PAD_X))
+        .radius(px(chrome::TOOL_OPTION_RADIUS))
         .child(
             ColorSwatch::new(swatch)
                 .size(SizeXl::Xs)
@@ -354,7 +347,18 @@ pub fn trigger(
                     px(chrome::TOOL_OPTION_CHEVRON),
                     open,
                 )),
-        )
+        );
+    herogpui::components::Popover::new(trigger)
+        .id(id)
+        .aria_label("Choose color")
+        .panel_width(px(POPOVER_WIDTH))
+        .padding(px(0.))
+        .radius(px(chrome::RADIUS_2XL))
+        .placement(herogpui::Placement::Bottom)
+        .is_open(open)
+        .on_open_change(move |open, window, cx| change(open, window, cx))
+        .children(picker)
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -366,8 +370,19 @@ mod tests {
 
     impl Render for Trigger {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            trigger("trigger", "#ff0000", 1.0, false, window, cx)
+            div()
+                .flex()
+                .w(px(TRIGGER_WIDTH))
                 .debug_selector(|| "color-trigger".into())
+                .child(control(
+                    "trigger",
+                    "#ff0000".into(),
+                    1.0,
+                    Vec::new(),
+                    Rc::new(|_, _, _| {}),
+                    window,
+                    cx,
+                ))
         }
     }
 
@@ -468,13 +483,7 @@ mod tests {
     fn a_rejected_hex_reverts_to_the_committed_colour(cx: &mut gpui::TestAppContext) {
         cx.update(herogpui::init);
         let window = cx.add_window(|_window, cx| {
-            ColorPickerPopover::new(
-                "#ff0000",
-                Vec::new(),
-                Rc::new(|_, _, _| {}),
-                Rc::new(|_, _| {}),
-                cx,
-            )
+            ColorPickerPopover::new("#ff0000", Vec::new(), Rc::new(|_, _, _| {}), cx)
         });
         cx.refresh().unwrap();
         cx.run_until_parked();

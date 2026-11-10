@@ -2,7 +2,6 @@ use gpui::{div, prelude::*, px, AnyElement, Context, ElementId, SharedString, St
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::CompactButton;
 use crate::ui::chrome;
 use crate::ui::icon_button;
 use crate::ui::toolbar;
@@ -31,7 +30,7 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
                 chrome::HISTORY_CHIP_ICON_GAP,
             )
             .variant(Variant::Ghost)
-            .compact()
+            .recipe("compact")
             .recipe("muted")
             .padding_x(px(HEADER_ACTION_PAD_X))
             .on_press(cx.listener(|this, _event, _window, cx| this.clear_all(cx))),

@@ -16,7 +16,6 @@ use crate::editor::window::{
 };
 use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
-use crate::ui::button::CompactButton;
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, ICON_MD};
 use crate::ui::icon_button;
@@ -85,8 +84,6 @@ pub fn render(
                     state.previews,
                     handlers,
                     &theme,
-                    window,
-                    cx,
                 ))
                 .child(Separator::new())
                 .child(aspect_row(wallpaper, handlers, &theme))
@@ -404,18 +401,14 @@ fn editor_colors(
             .child(label("Colors", theme, false))
             .child(if draft.colors.len() < BACKGROUND_MAX_COLORS {
                 let add = handlers.option(EditorOption::WallpaperEditorAddColor);
-                div()
-                    .id("wallpaper-editor-add-color")
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.0))
+                Button::new("wallpaper-editor-add-color")
+                    .aria_label("Add gradient color")
+                    .variant(Variant::Ghost)
+                    .height(px(20.0))
+                    .padding_x(px(0.0))
                     .text_size(px(chrome::TEXT_XS))
-                    .text_color(theme.muted_foreground)
-                    .cursor_pointer()
-                    .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-                        add(window, cx);
-                    })
+                    .recipe("muted")
+                    .on_press(move |_, window, cx| add(window, cx))
                     .child(icon_element("plus", px(12.0)))
                     .child("Add")
                     .into_any_element()
@@ -428,20 +421,22 @@ fn editor_colors(
         let active = draft.active_color == Some(index);
         let toggle = handlers.option(EditorOption::WallpaperEditorActiveColor(index));
         let mut row = div().flex().flex_row().items_center().gap(px(8.0)).child(
-            div()
-                .id(ElementId::Name(SharedString::from(format!(
-                    "wallpaper-editor-swatch-{index}"
-                ))))
-                .w(px(32.0))
-                .h(px(32.0))
-                .rounded(px(6.0))
-                .border_2()
-                .border_color(if active { theme.ring } else { theme.border })
-                .bg(Srgba::parse(color).to_hsla())
-                .cursor_pointer()
-                .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-                    toggle(window, cx);
-                }),
+            Button::new(SharedString::from(format!(
+                "wallpaper-editor-swatch-{index}"
+            )))
+            .aria_label(SharedString::from(format!(
+                "Edit gradient color {}",
+                index + 1
+            )))
+            .width(px(32.0))
+            .height(px(32.0))
+            .radius(px(6.0))
+            .bg(Srgba::parse(color).to_hsla())
+            .sx(|el| {
+                el.border_2()
+                    .border_color(if active { theme.ring } else { theme.border })
+            })
+            .on_press(move |_, window, cx| toggle(window, cx)),
         );
         if let Some(field) = draft.fields.get(index) {
             let apply = handlers.on_option.clone();
@@ -723,7 +718,7 @@ fn preset_save_panel(
                 .child(
                     Button::new("wallpaper-preset-cancel-button")
                         .variant(Variant::Ghost)
-                        .compact()
+                        .recipe("compact")
                         .label("Cancel")
                         .grow(true)
                         .on_press({
@@ -733,7 +728,7 @@ fn preset_save_panel(
                 )
                 .child(
                     Button::new("wallpaper-preset-save-button")
-                        .compact()
+                        .recipe("compact")
                         .label("Save")
                         .is_disabled(!can_save)
                         .grow(true)
@@ -771,7 +766,7 @@ fn preset_manager(
                     8.0,
                 )
                 .variant(Variant::Ghost)
-                .compact()
+                .recipe("compact")
                 .recipe("muted")
                 .on_press(move |_event, window, cx| save(window, cx)),
             ),
@@ -860,8 +855,6 @@ fn backgrounds_section(
     previews: &BackgroundPreviews,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
-    window: &mut Window,
-    cx: &mut App,
 ) -> AnyElement {
     let tile =
         chrome::wallpaper_tile_size(chrome::WALLPAPER_SHEET_WIDTH, chrome::WALLPAPER_SHEET_PAD);
@@ -970,27 +963,13 @@ fn backgrounds_section(
             ))
             .child({
                 let clear = handlers.option(EditorOption::WallpaperClear);
-                let (clear_hover, clear_hovered) =
-                    crate::ui::primitives::hover_flag("wallpaper-clear", window, cx);
-                div()
-                    .id("wallpaper-clear")
+                Button::new("wallpaper-clear")
+                    .label("Clear background")
+                    .variant(Variant::Ghost)
+                    .height(px(24.0))
+                    .recipe("muted")
                     .text_size(px(chrome::TEXT_XS))
-                    .text_color(if clear_hovered {
-                        theme.foreground
-                    } else {
-                        theme.muted_foreground
-                    })
-                    .cursor_pointer()
-                    .on_hover({
-                        let clear_hover = clear_hover.clone();
-                        move |over: &bool, _window, cx| {
-                            crate::ui::primitives::track_hover(&clear_hover, *over, cx);
-                        }
-                    })
-                    .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-                        clear(window, cx);
-                    })
-                    .child("Clear background")
+                    .on_press(move |_, window, cx| clear(window, cx))
             });
     }
 
@@ -1123,8 +1102,9 @@ fn tile_shell(
 ) -> AnyElement {
     let ring = theme.ring;
     let border = theme.border;
+    let id = id.into();
     let mut tile = div()
-        .id(id)
+        .id((id.clone(), "visual"))
         .w(px(size))
         .h(px(size))
         .flex()
@@ -1148,12 +1128,31 @@ fn tile_shell(
         );
     match interaction {
         TileInteraction::Click(handler) => {
-            tile = tile.cursor_pointer().on_mouse_down(
-                gpui::MouseButton::Left,
-                move |_event, window, cx| {
-                    handler(window, cx);
-                },
-            );
+            let label = if tooltip.is_empty() {
+                "Background"
+            } else {
+                tooltip
+            };
+            let button = Button::new(id)
+                .aria_label(SharedString::from(if selected {
+                    format!("{label} (selected)")
+                } else {
+                    label.to_string()
+                }))
+                .variant(Variant::Ghost)
+                .width(px(size))
+                .height(px(size))
+                .padding_x(px(0.))
+                .hover_bg(gpui::transparent_black())
+                .child(tile.w_full().h_full())
+                .on_press(move |_, window, cx| handler(window, cx));
+            return if tooltip.is_empty() {
+                button.into_any_element()
+            } else {
+                herogpui::components::Tooltip::new(SharedString::from(tooltip.to_string()))
+                    .child(button)
+                    .into_any_element()
+            };
         }
         TileInteraction::Inert => tile = tile.cursor_default(),
         TileInteraction::Blocked => {
@@ -1528,10 +1527,7 @@ fn frame_preview(
             ),
     };
 
-    div()
-        .id(ElementId::Name(SharedString::from(format!(
-            "frame-{style}"
-        ))))
+    let visual = div()
         .w(px(inner_w))
         .flex()
         .flex_col()
@@ -1550,10 +1546,6 @@ fn frame_preview(
             el.hover(move |style| style.border_color(border))
         })
         .p(px(chrome::WALLPAPER_FRAME_PAD))
-        .cursor_pointer()
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            handler(window, cx);
-        })
         .child(preview)
         .child(
             div()
@@ -1565,6 +1557,16 @@ fn frame_preview(
                 })
                 .child(name),
         )
+        .into_any_element();
+    Button::new(SharedString::from(format!("frame-{style}")))
+        .aria_label(SharedString::from(format!("{name} frame")))
+        .variant(Variant::Ghost)
+        .width(px(inner_w))
+        .sx(|el| el.h_auto())
+        .padding_x(px(0.0))
+        .hover_bg(gpui::transparent_black())
+        .child(visual)
+        .on_press(move |_, window, cx| handler(window, cx))
         .into_any_element()
 }
 
@@ -1697,8 +1699,6 @@ pub fn video_aspect_grid(
     selected: Option<(f64, f64)>,
     theme: &ThemeVars,
     on_select: impl Fn(Option<(f64, f64)>, &mut Window, &mut App) + 'static,
-    window: &mut Window,
-    cx: &mut App,
 ) -> AnyElement {
     let handler = Rc::new(on_select);
     let buttons: Vec<AnyElement> = wallpaper::VIDEO_ASPECT_RATIOS
@@ -1717,42 +1717,19 @@ pub fn video_aspect_grid(
                 Some((*width, *height))
             };
             let on_click = handler.clone();
-            let inner_w = (chrome::VIDEO_SIDEBAR_WIDTH
-                - chrome::VIDEO_PANEL_PAD * 2.0
-                - chrome::VIDEO_ASPECT_GAP * (chrome::VIDEO_ASPECT_COLS as f32 - 1.0))
-                / chrome::VIDEO_ASPECT_COLS as f32;
             let tile_key = format!("video-aspect-{label}");
-            let (tile_hover, tile_hovered) =
-                crate::ui::primitives::hover_flag(&tile_key, window, cx);
-            let filled = is_selected || tile_hovered;
-            div()
-                .id(SharedString::from(tile_key))
-                .w(px(inner_w))
-                .rounded(px(chrome::VIDEO_ASPECT_RADIUS))
-                .px(px(chrome::VIDEO_ASPECT_PAD_X))
-                .py(px(chrome::VIDEO_ASPECT_PAD_Y))
-                .text_size(px(chrome::TEXT_XS))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .bg(if filled {
-                    theme.accent
-                } else {
-                    theme.muted_background
-                })
-                .text_color(if filled {
-                    theme.accent_foreground
-                } else {
-                    theme.muted_foreground
-                })
-                .on_hover({
-                    let tile_hover = tile_hover.clone();
-                    move |over: &bool, _window, cx| {
-                        crate::ui::primitives::track_hover(&tile_hover, *over, cx);
-                    }
-                })
-                .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-                    on_click(value, window, cx);
-                })
-                .child(*label)
+            Button::new(SharedString::from(tile_key))
+                .aria_label(SharedString::from(format!("Aspect ratio {label}")))
+                .variant(Variant::Ghost)
+                .recipe("video-aspect")
+                .when(is_selected, |button| button.recipe("video-aspect-selected"))
+                .full_width(true)
+                .on_press(move |_, window, cx| on_click(value, window, cx))
+                .child(
+                    div()
+                        .debug_selector(move || format!("aspect-label-{label}"))
+                        .child(*label),
+                )
                 .into_any_element()
         })
         .collect();
@@ -1763,9 +1740,8 @@ pub fn video_aspect_grid(
         .child(section_label("Aspect Ratio", theme, true))
         .child(
             div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
+                .grid()
+                .grid_cols(chrome::VIDEO_ASPECT_COLS as u16)
                 .gap(px(chrome::VIDEO_ASPECT_GAP))
                 .children(buttons),
         )
@@ -1775,6 +1751,54 @@ pub fn video_aspect_grid(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct AspectGrid {
+        width: f32,
+    }
+
+    impl gpui::Render for AspectGrid {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            div().w(px(self.width)).p(px(16.)).child(video_aspect_grid(
+                None,
+                &active_theme(cx),
+                |_, _, _| {},
+            ))
+        }
+    }
+
+    #[herogpui::test]
+    fn aspect_choices_keep_four_columns_without_overflow_at_sidebar_limits(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let (grid, cx) = cx.add_window_view(|_, _| AspectGrid { width: 240. });
+        for width in [240., 560.] {
+            cx.update(|_, cx| {
+                grid.update(cx, |grid, cx| {
+                    grid.width = width;
+                    cx.notify();
+                })
+            });
+            cx.settle();
+            let bounds: Vec<_> = wallpaper::VIDEO_ASPECT_RATIOS
+                .iter()
+                .map(|(label, _, _)| cx.expect(&format!("aspect-label-{label}")))
+                .collect();
+            assert!(
+                bounds
+                    .iter()
+                    .all(|bounds| bounds.left() >= px(16.) && bounds.right() <= px(width - 16.)),
+                "{bounds:?}"
+            );
+            assert!(bounds[..4].iter().all(|item| item.top() == bounds[0].top()));
+            assert!(bounds[4].top() > bounds[0].top());
+        }
+    }
 
     #[test]
     fn every_editor_type_segment_is_its_own_focus_stop() {

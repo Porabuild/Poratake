@@ -8,6 +8,29 @@ use herogpui::theme::ActiveTheme as _;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuEntry, MenuItem};
 
+pub(super) fn text_width(
+    text: &gpui::SharedString,
+    size: gpui::Pixels,
+    window: &gpui::Window,
+) -> f32 {
+    let mut font = window.text_style().font();
+    font.weight = gpui::FontWeight::NORMAL;
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    f32::from(
+        window
+            .text_system()
+            .shape_line(text.clone(), size, &[run], None)
+            .width,
+    )
+}
+
 pub fn render(
     id: &'static str,
     label: &'static str,
@@ -28,8 +51,11 @@ pub fn render(
     );
     let style = cx.components().select.resolve(&["toolbar".into()]);
     let text_size = style.row_text_size.unwrap_or(px(14.0));
-    let padding = f32::from(style.panel_padding.unwrap_or(px(6.0)))
-        + f32::from(style.row_padding_x.unwrap_or(px(10.0)));
+    let panel_padding = f32::from(style.panel_padding.unwrap_or(px(6.0)));
+    let row_padding = f32::from(style.row_padding_x.unwrap_or(px(10.0)));
+    let padding = panel_padding * 2.0
+        + row_padding
+        + row_padding.max(crate::ui::chrome::SELECT_INDICATOR_GUTTER);
     let mut panel_width = f32::from(style.panel_min_width.unwrap_or(px(0.0)));
     for item in entries.iter() {
         let leading_width = item
@@ -45,20 +71,7 @@ pub fn render(
             })
             .unwrap_or(0.0);
         let label_width = if show_labels || item.leading.is_none() {
-            let run = gpui::TextRun {
-                len: item.label.len(),
-                font: window.text_style().font(),
-                color: gpui::black(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            f32::from(
-                window
-                    .text_system()
-                    .shape_line(item.label.clone(), text_size, &[run], None)
-                    .width,
-            )
+            text_width(&item.label, text_size, window)
         } else {
             0.0
         };
@@ -67,7 +80,7 @@ pub fn render(
         } else {
             0.0
         };
-        panel_width = panel_width.max(leading_width + gap + label_width + padding * 2.0);
+        panel_width = panel_width.max(leading_width + gap + label_width + padding);
     }
     let items = entries
         .iter()
@@ -86,9 +99,13 @@ pub fn render(
         .panel_min_width(px(panel_width))
         .value(selected)
         .value_content(move |_| content())
-        .indicator(|selected| {
+        .indicator(move |selected| {
             if selected {
-                return icon_element("check", px(10.0));
+                return div()
+                    .size(px(10.))
+                    .debug_selector(move || format!("{id}-selected-indicator"))
+                    .child(icon_element("check", px(10.0)))
+                    .into_any_element();
             }
             div().into_any_element()
         })
@@ -100,7 +117,9 @@ pub fn render(
             let Some(draw) = &item.leading else {
                 return div().flex_1().child(item.label.clone()).into_any_element();
             };
+            let probe = format!("{id}-content-{key}");
             div()
+                .debug_selector(move || probe.clone())
                 .flex_1()
                 .h(px(16.))
                 .flex()

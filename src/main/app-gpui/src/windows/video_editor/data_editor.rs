@@ -4,11 +4,11 @@
 
 use std::path::PathBuf;
 
+use gpui::Focusable as _;
 use gpui::{div, prelude::*, px, AnyElement, Context, Entity, SharedString, Styled};
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::CompactButton;
 use crate::ui::icon::icon_element;
 use crate::video::project;
 use crate::video::sidecars::{CursorData, SubtitleData};
@@ -171,6 +171,7 @@ impl DataKind {
 }
 
 /// The open editor's state, owned by the video editor window.
+#[derive(Clone)]
 pub struct DataEditor {
     pub kind: DataKind,
     pub field: Entity<InputState>,
@@ -201,61 +202,65 @@ impl DataEditor {
 
 /// The dialog surface, rendered above the editor.
 pub fn render(
-    editor: &DataEditor,
+    editor: Option<&DataEditor>,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
+    let held = window.use_keyed_state("data-editor-content", cx, |_, _| None::<DataEditor>);
+    let was_open = window.use_keyed_state("data-editor-open", cx, |_, _| false);
+    let open = editor.is_some();
+    if let Some(editor) = editor {
+        held.update(cx, |held, _| *held = Some(editor.clone()));
+    }
+    let snapshot = held.read(cx).clone();
+    let Some(editor) = snapshot.as_ref() else {
+        return herogpui::components::Modal::new()
+            .id("data-editor-dialog")
+            .into_any_element();
+    };
+    if open && !*was_open.read(cx) {
+        let field = editor.field.clone();
+        window.on_next_frame(move |window, cx| {
+            let focus = field.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+    }
+    was_open.update(cx, |was_open, _| *was_open = open);
     let kind = editor.kind;
     let error = editor.error.clone();
     let saving = editor.saving;
 
-    div()
-        .id("data-editor-backdrop")
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(crate::ui::colors::black(0.5))
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(|this, _event, _window, cx| this.close_data_editor(cx)),
-        )
+    herogpui::components::Modal::new()
+        .id("data-editor-dialog")
+        .is_open(open)
+        .title(kind.title())
+        .panel_width(px(672.0))
+        .padding(px(16.0))
+        .radius(px(10.0))
+        .on_open_change(cx.listener(|this, open: &bool, _, cx| {
+            if !open {
+                this.close_data_editor(cx);
+            }
+        }))
         .child(
             div()
                 .id("data-editor-card")
                 .flex()
                 .flex_col()
                 .gap(px(12.0))
-                .w(px(672.0))
-                .max_h(gpui::relative(0.9))
+                .w_full()
                 .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
                     cx.stop_propagation();
                 })
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.popover)
                 .text_color(theme.popover_foreground)
-                .shadow_lg()
-                .p(px(16.0))
                 .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .text_size(px(15.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(kind.title()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(theme.muted_foreground)
-                                .child(kind.description()),
-                        ),
+                    div().flex().flex_col().gap(px(2.0)).child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme.muted_foreground)
+                            .child(kind.description()),
+                    ),
                 )
                 .child(
                     div()
@@ -287,7 +292,7 @@ pub fn render(
                                 .child(
                                     Button::new("data-editor-template")
                                         .variant(Variant::Ghost)
-                                        .compact()
+                                        .recipe("compact")
                                         .label("Load Template")
                                         .on_press(cx.listener(|this, _event, _window, cx| {
                                             this.load_data_editor_template(cx)
@@ -296,7 +301,7 @@ pub fn render(
                                 .child(
                                     Button::new("data-editor-example")
                                         .variant(Variant::Ghost)
-                                        .compact()
+                                        .recipe("compact")
                                         .label("Load Example")
                                         .on_press(cx.listener(|this, _event, _window, cx| {
                                             this.load_data_editor_example(cx)
@@ -410,5 +415,54 @@ mod tests {
         let project = std::path::Path::new("/tmp/Take.poratake");
         assert!(DataKind::Cursor.path(project).ends_with("cursor.json"));
         assert!(DataKind::Subtitle.path(project).ends_with("subtitle.json"));
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+    use herogpui::test::TestWindowExt;
+    use std::sync::Arc;
+
+    #[herogpui::test]
+    fn data_dialog_focus_and_escape_do_not_reach_the_editor(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (editor, cx) = cx.add_window_view(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                window.focus(&editor.focus_handle, cx);
+                editor.path = Some(dir.path().to_path_buf());
+                editor.selected_clip = Some("retained-selection".into());
+                editor.open_data_editor(DataKind::Cursor, cx);
+            })
+        });
+        cx.settle();
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.settle();
+        let field = editor.read_with(cx, |editor, cx| {
+            editor
+                .data_editor
+                .as_ref()
+                .unwrap()
+                .field
+                .read(cx)
+                .focus_handle(cx)
+        });
+        assert!(cx.update(|window, _| field.is_focused(window)));
+        cx.press("escape");
+        assert!(editor.read_with(cx, |editor, _| editor.data_editor.is_none()));
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.selected_clip.clone()),
+            Some("retained-selection".into())
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(110));
+        cx.settle();
+        let focus = editor.read_with(cx, |editor, _| editor.focus_handle.clone());
+        assert!(cx.update(|window, _| focus.is_focused(window)));
     }
 }

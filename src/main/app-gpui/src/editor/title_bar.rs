@@ -17,7 +17,6 @@ use crate::ui::color_picker;
 use crate::ui::colors::Tool;
 use crate::ui::icon::{icon_element, spinner_element};
 use crate::ui::icon_button;
-use crate::ui::menu::MenuHandle;
 use herogpui::components::{Button, Size, Variant};
 
 pub const TITLE_BAR_HEIGHT: f32 = chrome::TITLE_BAR_HEIGHT;
@@ -162,7 +161,6 @@ pub struct TitleBar {
     pub is_uploading: bool,
     pub is_upload_done: bool,
     pub is_capture_mode: bool,
-    pub menu: MenuHandle,
     pub handlers: EditorHandlers,
 }
 
@@ -296,7 +294,7 @@ impl RenderOnce for TitleBar {
             .flex_row()
             .items_center()
             .gap(px(chrome::TITLE_BAR_GAP));
-        for control in tool_options::render(&state, &self.menu, &handlers, window, cx) {
+        for control in tool_options::render(&state, &handlers, window, cx) {
             options = options.child(control);
         }
         let is_highlight = state.tool == Tool::Highlight;
@@ -314,7 +312,6 @@ impl RenderOnce for TitleBar {
             picker_color,
             picker_opacity,
             is_highlight,
-            &self.menu,
             &handlers,
             window,
             cx,
@@ -380,13 +377,10 @@ fn color_trigger(
     color: SharedString,
     opacity: f32,
     is_highlight: bool,
-    menu: &MenuHandle,
     handlers: &EditorHandlers,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) -> AnyElement {
-    let open = menu.is_open_for(COLOR_PICKER_ID, cx);
-    let handle = menu.clone();
     let palette: Vec<SharedString> = crate::ui::colors::palette_for_tool(if is_highlight {
         Tool::Highlight
     } else {
@@ -396,41 +390,23 @@ fn color_trigger(
     .map(|value| SharedString::from(*value))
     .collect();
     let on_option = handlers.on_option.clone();
-    let current = color.clone();
-
-    color_picker::trigger(COLOR_PICKER_ID, &color, opacity, open, window, cx)
-        .child(menu.render_dropdown(COLOR_PICKER_ID, cx))
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            let palette = palette.clone();
-            let current = current.clone();
-            let on_option = on_option.clone();
-            handle.toggle_with(
-                crate::ui::menu::MenuPlacement::below(COLOR_PICKER_ID),
-                move |dismiss, cx| {
-                    let handler: color_picker::ColorHandler = std::rc::Rc::new(
-                        move |value: SharedString,
-                              window: &mut gpui::Window,
-                              cx: &mut gpui::App| {
-                            let option = if is_highlight {
-                                EditorOption::HighlightColor(value)
-                            } else {
-                                EditorOption::Color(value)
-                            };
-                            on_option(option, window, cx);
-                        },
-                    );
-                    let view = cx.new(|cx| {
-                        color_picker::ColorPickerPopover::new(
-                            &current, palette, handler, dismiss, cx,
-                        )
-                    });
-                    let focus = view.read(cx).focus_handle();
-                    (view.into(), Some(focus))
+    color_picker::control(
+        COLOR_PICKER_ID,
+        color,
+        opacity,
+        palette,
+        std::rc::Rc::new(move |value, window, cx| {
+            on_option(
+                if is_highlight {
+                    EditorOption::HighlightColor(value)
+                } else {
+                    EditorOption::Color(value)
                 },
                 window,
                 cx,
             );
-            cx.stop_propagation();
-        })
-        .into_any_element()
+        }),
+        window,
+        cx,
+    )
 }

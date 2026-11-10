@@ -13,10 +13,10 @@ interface NumberOptionsProps {
 }
 
 const NUMBER_STYLES: { value: NumberStyle; label: string }[] = [
-  { value: 'numeric', label: '1, 2, 3, 4 ...' },
-  { value: 'alpha-upper', label: 'A, B, C, D ...' },
-  { value: 'roman', label: 'I, II, III, IV ...' },
-  { value: 'alpha-lower', label: 'a, b, c, d ...' },
+  { value: 'numeric', label: '1, 2, 3, 4' },
+  { value: 'alpha-upper', label: 'A, B, C, D' },
+  { value: 'roman', label: 'I, II, III, IV' },
+  { value: 'alpha-lower', label: 'a, b, c, d' },
 ];
 
 const NUMBER_SIZES: { value: NumberSize; label: string }[] = [

@@ -1785,7 +1785,7 @@ impl AreaOverlay {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up));
 
         let toolbar = self.all_in_one.map(|choices| {
-            crate::capture::all_in_one_toolbar::render(choices, &self.menu, &theme, window, cx)
+            crate::capture::all_in_one_toolbar::render(choices, &self.menu, &theme, cx)
         });
 
         if self.picking_color {

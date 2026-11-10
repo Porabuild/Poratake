@@ -25,3 +25,5 @@ pub use open::open_clipboard;
 pub use window::EditorWindow;
 
 mod toolbar_select;
+
+mod tool_popover;

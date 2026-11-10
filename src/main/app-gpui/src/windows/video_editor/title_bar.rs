@@ -3,7 +3,6 @@ use herogpui::gpui;
 
 use crate::system::accelerator;
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::CompactButton;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::ui::icon_button;
@@ -27,7 +26,8 @@ pub struct TitleBarState {
     pub is_exporting: bool,
     pub export_progress: f32,
     pub export_completed: bool,
-    pub menu: crate::ui::menu::MenuHandle,
+    pub project_content: Option<AnyElement>,
+    pub export_content: Option<AnyElement>,
 }
 
 fn progress_ring(progress: f32, theme: &ThemeVars) -> AnyElement {
@@ -99,9 +99,57 @@ fn completion_badge(size: f32, theme: &ThemeVars) -> AnyElement {
         .into_any_element()
 }
 
+fn title_popover(
+    id: &'static str,
+    label: &'static str,
+    width: f32,
+    trigger: Button,
+    body: AnyElement,
+    window: &mut Window,
+    cx: &mut Context<VideoEditorWindow>,
+) -> AnyElement {
+    let state = window.use_keyed_state((gpui::ElementId::from(id), "open"), cx, |_, _| false);
+    let open = *state.read(cx);
+    let change = std::rc::Rc::new(cx.listener(move |this, value: &bool, _, cx| {
+        state.update(cx, |open, cx| {
+            *open = *value;
+            cx.notify();
+        });
+        if *value && id == PROJECT_POPOVER_ID {
+            this.prepare_project_popover(cx);
+        }
+    }));
+    let press_change = change.clone();
+    let trigger = trigger.on_press(move |_, window, cx| {
+        press_change(&!open, window, cx);
+        cx.stop_propagation();
+    });
+    let trigger = if id == PROJECT_POPOVER_ID {
+        Tooltip::new(label)
+            .placement(TooltipPlacement::BottomEnd)
+            .child(trigger)
+            .into_any_element()
+    } else {
+        trigger.into_any_element()
+    };
+    herogpui::components::Popover::new(trigger)
+        .id((gpui::ElementId::from(id), "popover"))
+        .aria_label(label)
+        .panel_width(px(width))
+        .padding(px(0.))
+        .radius(px(chrome::RADIUS_LG))
+        .placement(herogpui::Placement::BottomEnd)
+        .is_open(open)
+        .on_open_change(move |value, window, cx| change(value, window, cx))
+        .child(body)
+        .into_any_element()
+}
+
 fn export_indicator(
     state: &TitleBarState,
     theme: &ThemeVars,
+    body: AnyElement,
+    window: &mut Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let complete = state.export_completed;
@@ -110,23 +158,20 @@ fn export_indicator(
         true => completion_badge(RING_SIZE, theme),
         false => progress_ring(progress, theme),
     };
-    div()
-        .relative()
-        .flex()
-        .items_center()
-        .child(
-            Button::new(EXPORT_POPOVER_ID)
-                .variant(Variant::Ghost)
-                .size(Size::Sm)
-                .is_icon_only(true)
-                .aria_label("Export")
-                .child(div().size(px(RING_SIZE)).child(content))
-                .on_press(cx.listener(|this, _event, window, cx| {
-                    this.toggle_export_popover(window, cx);
-                })),
-        )
-        .child(state.menu.render_dropdown(EXPORT_POPOVER_ID, cx))
-        .into_any_element()
+    title_popover(
+        EXPORT_POPOVER_ID,
+        "Export progress",
+        EXPORT_POPOVER_WIDTH,
+        Button::new(EXPORT_POPOVER_ID)
+            .variant(Variant::Ghost)
+            .size(Size::Sm)
+            .is_icon_only(true)
+            .aria_label("Export")
+            .child(div().size(px(RING_SIZE)).child(content)),
+        body,
+        window,
+        cx,
+    )
 }
 
 pub fn export_popover(
@@ -194,7 +239,7 @@ pub fn export_popover(
     .child(
         crate::ui::rows::icon_text_button("video-export-popover-cancel", "Cancel", "x", 14.0, 6.0)
             .variant(Variant::Tertiary)
-            .compact()
+            .recipe("compact")
             .full_width(true)
             .on_press(move |_event, window, cx| on_cancel(window, cx)),
     )
@@ -243,7 +288,7 @@ pub fn project_popover(
                 .child(
                     Button::new("video-project-rename-save")
                         .variant(Variant::Primary)
-                        .compact()
+                        .recipe("compact")
                         .label("Save")
                         .on_press(move |_event, window, cx| {
                             let value = submit_field.read(cx).value().to_string();
@@ -288,7 +333,7 @@ pub fn project_popover(
                             6.0,
                         )
                         .variant(Variant::Tertiary)
-                        .compact()
+                        .recipe("compact")
                         .full_width(true)
                         .on_press(move |_event, window, cx| on_copy(window, cx)),
                     ),
@@ -303,7 +348,7 @@ pub fn project_popover(
                             6.0,
                         )
                         .variant(Variant::Tertiary)
-                        .compact()
+                        .recipe("compact")
                         .full_width(true)
                         .on_press(move |_event, window, cx| on_reveal(window, cx)),
                     ),
@@ -312,7 +357,7 @@ pub fn project_popover(
 }
 
 pub fn render(
-    state: &TitleBarState,
+    mut state: TitleBarState,
     theme: &ThemeVars,
     window: &mut Window,
     cx: &mut Context<VideoEditorWindow>,
@@ -328,33 +373,28 @@ pub fn render(
 
     if state.project_path.is_some() {
         let project_name = "Project Info";
-        actions = actions.child(
-            div()
-                .relative()
-                .flex()
-                .items_center()
-                .child(
-                    Tooltip::new(project_name)
-                        .placement(TooltipPlacement::BottomEnd)
-                        .child(
-                            icon_button::compact_muted(
-                                PROJECT_POPOVER_ID,
-                                "folder-open",
-                                project_name,
-                            )
-                            .on_press(cx.listener(
-                                |this, _event, window, cx| {
-                                    this.toggle_project_popover(window, cx);
-                                },
-                            )),
-                        ),
-                )
-                .child(state.menu.render_dropdown(PROJECT_POPOVER_ID, cx)),
-        );
+        let body = state
+            .project_content
+            .take()
+            .unwrap_or_else(|| div().into_any_element());
+        let trigger = icon_button::compact_muted(PROJECT_POPOVER_ID, "folder-open", project_name);
+        actions = actions.child(title_popover(
+            PROJECT_POPOVER_ID,
+            project_name,
+            PROJECT_POPOVER_WIDTH,
+            trigger,
+            body,
+            window,
+            cx,
+        ));
     }
 
     if state.is_exporting || state.export_completed {
-        actions = actions.child(export_indicator(state, theme, cx));
+        let body = state
+            .export_content
+            .take()
+            .unwrap_or_else(|| div().into_any_element());
+        actions = actions.child(export_indicator(&state, theme, body, window, cx));
     }
 
     let undo_name = "Undo";

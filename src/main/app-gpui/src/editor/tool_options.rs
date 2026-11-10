@@ -2,17 +2,15 @@ use gpui::{div, prelude::*, px, AnyElement, App, Hsla, SharedString, Styled};
 use herogpui::gpui;
 
 use crate::editor::options::{
-    self, EditorHandlers, EditorOption, ARROW_STYLES, FONT_FAMILIES, FONT_SIZES,
-    HIGHLIGHT_OPACITIES, NUMBER_SIZES, NUMBER_START_VALUES, NUMBER_STYLES, REDACT_INTENSITIES,
-    REDACT_STYLES, SHAPE_FILL_MODES, THICKNESS_OPTIONS,
+    self, EditorHandlers, EditorOption, ARROW_STYLES, HIGHLIGHT_OPACITIES, REDACT_STYLES,
+    SHAPE_FILL_MODES, THICKNESS_OPTIONS,
 };
 use crate::editor::toolbar_select;
 use crate::theme::color::Srgba;
 use crate::theme::vars::{active_theme, ThemeVars};
-use crate::ui::chrome;
 use crate::ui::colors::Tool;
-use crate::ui::icon::{chevron_element, icon, icon_element};
-use crate::ui::menu::{MenuBuilder, MenuEntry, MenuHandle, MenuItem, MenuPlacement};
+use crate::ui::icon::{icon, icon_element};
+use crate::ui::menu::{MenuBuilder, MenuEntry, MenuItem};
 
 pub const ARROW_PREVIEW_STANDARD: &str = "M 20 12 L 4 12 M4 12 L8 8 M4 12 L8 16";
 pub const ARROW_PREVIEW_CURVED: &str = "M20 6 Q12 6 8 18 M8 18 L12 14 M8 18 L4 14";
@@ -63,7 +61,7 @@ fn thickness_bar(width: f32, height: f32, color: Hsla) -> AnyElement {
 /// `NumberBadgePreview` in `number-options.tsx`: a `<circle r="10">` inside a
 /// 24-unit viewBox scaled to `size`, so the disc is 5/6 of the box, with an
 /// 11-unit bold glyph.
-fn number_badge(glyph: &'static str, size: f32, theme: &ThemeVars) -> AnyElement {
+pub(super) fn number_badge(glyph: &'static str, size: f32, theme: &ThemeVars) -> AnyElement {
     div()
         .size(px(size))
         .flex()
@@ -102,67 +100,6 @@ fn shape_fill_preview(filled: bool, color: Hsla, size: f32) -> AnyElement {
                 .when(filled, |el| el.bg(color)),
         )
         .into_any_element()
-}
-
-/// A `Popover.Trigger` option pill: `h-7 gap-2 rounded-3xl bg-default px-2`
-/// with an in-flow `size-3.5` chevron that rotates while the popover is open.
-fn trigger(
-    id: &'static str,
-    menu: &MenuHandle,
-    theme: &ThemeVars,
-    content: AnyElement,
-    entries: Vec<MenuEntry>,
-    window: &mut gpui::Window,
-    cx: &mut App,
-) -> AnyElement {
-    let open = menu.is_open_for(id, cx);
-    trigger_base(id, menu, theme, entries, window, cx)
-        .gap(px(chrome::TOOL_OPTION_GAP))
-        .px(px(chrome::TOOL_OPTION_PAD_X))
-        .child(content)
-        .child(
-            div()
-                .text_color(theme.muted_foreground)
-                .child(chevron_element(px(chrome::TOOL_OPTION_CHEVRON), open)),
-        )
-        .child(menu.render_dropdown(id, cx))
-        .into_any_element()
-}
-
-fn trigger_base(
-    id: &'static str,
-    menu: &MenuHandle,
-    theme: &ThemeVars,
-    entries: Vec<MenuEntry>,
-    window: &mut gpui::Window,
-    cx: &mut App,
-) -> gpui::Stateful<gpui::Div> {
-    let handle = menu.clone();
-    let (hover, hovered) = crate::ui::primitives::hover_flag(id, window, cx);
-    div()
-        .id(id)
-        .relative()
-        .flex()
-        .flex_row()
-        .items_center()
-        .h(px(chrome::TOOL_OPTION_HEIGHT))
-        .rounded(px(chrome::TOOL_OPTION_RADIUS))
-        .flex_shrink_0()
-        .bg(if hovered {
-            theme.default_hover
-        } else {
-            theme.default
-        })
-        .on_hover({
-            let hover = hover.clone();
-            move |over: &bool, _window, cx| {
-                crate::ui::primitives::track_hover(&hover, *over, cx);
-            }
-        })
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            handle.toggle(MenuPlacement::below(id), entries.clone(), window, cx);
-            cx.stop_propagation();
-        })
 }
 
 fn separator(theme: &ThemeVars) -> AnyElement {
@@ -217,126 +154,6 @@ fn highlight_entries(state: &ToolOptionsState, handlers: &EditorHandlers) -> Vec
     builder.build()
 }
 
-fn number_entries(state: &ToolOptionsState, handlers: &EditorHandlers) -> Vec<MenuEntry> {
-    let mut builder = MenuBuilder::new();
-    for (value, label) in NUMBER_STYLES {
-        let glyph = options::number_preview_glyph(value);
-        builder = builder.item(
-            MenuItem::new(label)
-                .trailing_check(state.number_style.as_ref() == value)
-                .leading(move |cx| number_badge(glyph, 20.0, &active_theme(cx)))
-                .on_select(handlers.option(EditorOption::NumberStyle(value.into()))),
-        );
-    }
-
-    let mut start_values = MenuBuilder::new();
-    for value in NUMBER_START_VALUES {
-        start_values = start_values.item(
-            MenuItem::new(options::number_display_value(value, &state.number_style))
-                .trailing_check((value - state.number_start_value).abs() < 0.01)
-                .on_select(handlers.option(EditorOption::NumberStartValue(value))),
-        );
-    }
-
-    let mut sizes = MenuBuilder::new();
-    for (value, label) in NUMBER_SIZES {
-        sizes = sizes.item(
-            MenuItem::new(label)
-                .trailing_check(state.number_size.as_ref() == value)
-                .on_select(handlers.option(EditorOption::NumberSize(value.into()))),
-        );
-    }
-
-    builder
-        .separator()
-        .item(
-            MenuItem::new(options::number_display_value(
-                state.number_start_value,
-                &state.number_style,
-            ))
-            .row("Starting:")
-            .submenu(start_values.build()),
-        )
-        .separator()
-        .item(
-            MenuItem::new(options::label_for(&NUMBER_SIZES, &state.number_size))
-                .row("Size:")
-                .submenu(sizes.build()),
-        )
-        .build()
-}
-
-fn text_entries(state: &ToolOptionsState, handlers: &EditorHandlers) -> Vec<MenuEntry> {
-    let mut builder = MenuBuilder::new();
-    for (value, label) in FONT_FAMILIES {
-        builder = builder.item(
-            MenuItem::new(label)
-                .trailing_check(state.text_font_family.as_ref() == value)
-                .on_select(handlers.option(EditorOption::TextFontFamily(value.into()))),
-        );
-    }
-
-    let mut sizes = MenuBuilder::new();
-    for size in FONT_SIZES {
-        sizes = sizes.item(
-            MenuItem::new(format!("{}", size as i32))
-                .trailing_check((size - state.text_font_size).abs() < 0.01)
-                .on_select(handlers.option(EditorOption::TextFontSize(size))),
-        );
-    }
-
-    let background = state.text_background;
-    builder
-        .separator()
-        .item(
-            MenuItem::new(format!("{}", state.text_font_size as i32))
-                .row("Size:")
-                .submenu(sizes.build()),
-        )
-        .separator()
-        .item(
-            MenuItem::new("")
-                .row("Background:")
-                .trailing_switch(background)
-                .on_select(handlers.option(EditorOption::TextBackground(!background))),
-        )
-        .build()
-}
-
-fn redact_entries(state: &ToolOptionsState, handlers: &EditorHandlers) -> Vec<MenuEntry> {
-    let mut builder = MenuBuilder::new();
-    for (value, label, icon_name) in REDACT_STYLES {
-        builder = builder.item(
-            MenuItem::new(label)
-                .icon(icon_name)
-                .trailing_check(state.redact_style.as_ref() == value)
-                .on_select(handlers.option(EditorOption::RedactStyle(value.into()))),
-        );
-    }
-
-    if state.redact_style.as_ref() == "blackout" {
-        return builder.build();
-    }
-
-    let mut intensities = MenuBuilder::new();
-    for level in REDACT_INTENSITIES {
-        intensities = intensities.item(
-            MenuItem::new(format!("{}", level as i32))
-                .trailing_check((level - state.redact_intensity).abs() < 0.01)
-                .on_select(handlers.option(EditorOption::RedactIntensity(level))),
-        );
-    }
-
-    builder
-        .separator()
-        .item(
-            MenuItem::new(format!("{}", state.redact_intensity as i32))
-                .row("Intensity:")
-                .submenu(intensities.build()),
-        )
-        .build()
-}
-
 fn shape_entries(state: &ToolOptionsState, handlers: &EditorHandlers) -> Vec<MenuEntry> {
     let color = Srgba::parse(&state.color_hex).to_hsla();
     let mut builder = MenuBuilder::new();
@@ -356,7 +173,6 @@ fn shape_entries(state: &ToolOptionsState, handlers: &EditorHandlers) -> Vec<Men
 /// followed by a hairline separator.
 pub fn render(
     state: &ToolOptionsState,
-    menu: &MenuHandle,
     handlers: &EditorHandlers,
     window: &mut gpui::Window,
     cx: &mut App,
@@ -410,12 +226,11 @@ pub fn render(
 
     if state.tool == Tool::Number {
         let glyph = options::number_preview_glyph(&state.number_style);
-        children.push(trigger(
+        children.push(super::tool_popover::render(
             "tool-option-number",
-            menu,
-            &theme,
+            state,
+            handlers,
             number_badge(glyph, 20.0, &theme),
-            number_entries(state, handlers),
             window,
             cx,
         ));
@@ -423,12 +238,11 @@ pub fn render(
     }
 
     if state.tool == Tool::Text {
-        children.push(trigger(
+        children.push(super::tool_popover::render(
             "tool-option-text",
-            menu,
-            &theme,
+            state,
+            handlers,
             icon_element("type", px(16.0)),
-            text_entries(state, handlers),
             window,
             cx,
         ));
@@ -441,12 +255,11 @@ pub fn render(
             .find(|(value, _, _)| *value == state.redact_style.as_ref())
             .map(|(_, _, icon_name)| *icon_name)
             .unwrap_or("grid-3x3");
-        children.push(trigger(
+        children.push(super::tool_popover::render(
             "tool-option-redact",
-            menu,
-            &theme,
+            state,
+            handlers,
             icon_element(icon_name, px(16.0)),
-            redact_entries(state, handlers),
             window,
             cx,
         ));
@@ -547,6 +360,12 @@ mod interaction_tests {
         cx.settle();
         let trigger = "select-trigger-Name(\"tool-option-thickness\")";
         cx.click(trigger);
+        let content = cx.expect("tool-option-thickness-content-1");
+        let indicator = cx.expect("tool-option-thickness-selected-indicator");
+        assert!(
+            content.right() + gpui::px(4.) <= indicator.left(),
+            "{content:?} overlaps {indicator:?}"
+        );
         cx.press("down enter");
         assert_eq!(editor.read_with(cx, |editor, _| editor.stroke_width), 8.0);
         cx.click(trigger);

@@ -7,7 +7,6 @@
 use gpui::{div, prelude::*, px, AnyElement, Context, ElementId, SharedString, Styled};
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::button::CompactButton;
 use crate::ui::menu::MenuHandle;
 use crate::ui::rows;
 use crate::windows::video_editor::styles;
@@ -86,6 +85,7 @@ pub fn header(
                 cx,
                 on_toggle,
             )
+            .aria_label(title)
             .size(Size::Sm),
         );
     }
@@ -182,7 +182,11 @@ pub fn switch_row(
         .justify_between()
         .gap(px(8.0))
         .child(left)
-        .child(rows::switch(id, checked, cx, on_change).size(Size::Sm))
+        .child(
+            rows::switch(id, checked, cx, on_change)
+                .aria_label(text)
+                .size(Size::Sm),
+        )
         .into_any_element()
 }
 
@@ -221,7 +225,9 @@ pub fn select_row(
     let items = rows::picker_items(options.iter().copied());
     field(
         text,
-        select_control(scoped_id(key, scope), value, items, cx, on_change).into_any_element(),
+        select_control(scoped_id(key, scope), value, items, cx, on_change)
+            .aria_label(text)
+            .into_any_element(),
         theme,
     )
 }
@@ -244,6 +250,7 @@ pub fn color_select_row(
     field(
         text,
         select_control(scoped_id(key, None), value, items, cx, on_change)
+            .aria_label(text)
             .placeholder("Custom")
             .item_leading(|key, _selected| {
                 Some(
@@ -368,15 +375,7 @@ pub fn slider_row(
                         .child(display),
                 ),
         )
-        .child(slider(
-            scoped_id(key, scope),
-            key,
-            value,
-            min,
-            max,
-            cx,
-            on_change,
-        ))
+        .child(slider(scoped_id(key, scope), key, value, min, max, cx, on_change).aria_label(text))
         .into_any_element()
 }
 
@@ -404,15 +403,12 @@ pub fn slider_inline_row(
                 .child(text),
         );
     }
-    row.child(div().flex_1().min_w_0().child(slider(
-        scoped_id(key, scope),
-        key,
-        value,
-        min,
-        max,
-        cx,
-        on_change,
-    )))
+    row.child(
+        div().flex_1().min_w_0().child(
+            slider(scoped_id(key, scope), key, value, min, max, cx, on_change)
+                .aria_label(text.unwrap_or(key)),
+        ),
+    )
     .child(
         div()
             .w(px(32.0))
@@ -450,13 +446,9 @@ pub fn select_inline_row(
                 .text_color(theme.muted_foreground)
                 .child(text),
         )
-        .child(div().flex_1().min_w_0().child(select_control(
-            scoped_id(key, scope),
-            value,
-            items,
-            cx,
-            on_change,
-        )))
+        .child(div().flex_1().min_w_0().child(
+            select_control(scoped_id(key, scope), value, items, cx, on_change).aria_label(text),
+        ))
         .into_any_element()
 }
 
@@ -583,7 +575,7 @@ pub fn reset_named(
 ) -> AnyElement {
     Button::new(id)
         .variant(Variant::Ghost)
-        .compact()
+        .recipe("compact")
         .recipe("muted")
         .label(label)
         .full_width(true)
@@ -604,7 +596,7 @@ pub fn tertiary_button(
     let _ = theme;
     rows::icon_text_button(id, label, icon, 14.0, 8.0)
         .variant(Variant::Tertiary)
-        .compact()
+        .recipe("compact")
         .is_disabled(disabled)
         .full_width(true)
         .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
@@ -621,7 +613,7 @@ pub fn tertiary_text_button(
 ) -> AnyElement {
     let mut button = Button::new(id)
         .variant(Variant::Tertiary)
-        .compact()
+        .recipe("compact")
         .label(label)
         .is_disabled(disabled)
         .full_width(true);
@@ -642,7 +634,7 @@ pub fn tertiary_spinner_button(
     let label = label.into();
     Button::new(id)
         .variant(Variant::Tertiary)
-        .compact()
+        .recipe("compact")
         .label(label.clone())
         .is_disabled(true)
         .full_width(true)

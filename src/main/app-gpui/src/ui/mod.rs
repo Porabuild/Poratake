@@ -1,4 +1,5 @@
 pub mod app_icon;
+#[cfg(test)]
 pub mod button;
 pub mod chrome;
 pub mod color_picker;

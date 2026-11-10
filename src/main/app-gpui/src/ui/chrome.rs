@@ -102,6 +102,7 @@ pub const OVERLAY_HAIRLINE_INSET: f32 = 2.0;
 /// `capture-target-menu.tsx`: `h-8 w-12 min-w-12 gap-1 px-1.5` with a
 /// `size-3` chevron.
 pub const OVERLAY_TARGET_TRIGGER_WIDTH: f32 = 48.0;
+#[cfg(test)]
 pub const OVERLAY_TARGET_TRIGGER_PAD_X: f32 = 6.0;
 pub const OVERLAY_TARGET_CHEVRON: f32 = 12.0;
 pub const OVERLAY_TOOLBAR_TOP: f32 = 24.0;
@@ -139,12 +140,13 @@ pub const WALLPAPER_FRAME_PREVIEW_H: f32 = 48.0;
 pub const WALLPAPER_FRAME_TITLE_H: f32 = 14.0;
 pub const WALLPAPER_FRAME_PAD: f32 = 8.0;
 pub const WALLPAPER_FRAME_GAP: f32 = 6.0;
+pub const SELECT_INDICATOR_GUTTER: f32 = 28.0;
+pub const TOOL_POPOVER_PANEL_PAD: f32 = 6.0;
+pub const TOOL_POPOVER_ROW_PAD: f32 = 8.0;
 pub const TEXT_SM: f32 = 14.0;
 pub const TEXT_XS: f32 = 12.0;
 pub const VIDEO_ASPECT_COLS: u32 = 4;
 pub const VIDEO_ASPECT_GAP: f32 = 6.0;
-pub const VIDEO_ASPECT_PAD_X: f32 = 8.0;
-pub const VIDEO_ASPECT_PAD_Y: f32 = 6.0;
 pub const VIDEO_ASPECT_RADIUS: f32 = RADIUS_MD;
 pub const VIDEO_PANEL_PAD: f32 = 16.0;
 pub const VIDEO_PANEL_GAP: f32 = 16.0;

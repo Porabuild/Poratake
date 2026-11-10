@@ -1,0 +1,60 @@
+{
+  "repository": "https://github.com/Porabuild/HeroGPUI",
+  "revision": "12ce9ad5104319e05ddc10daecbfab6c8ded1393",
+  "heroGpuiVersion": "0.15.0",
+  "gpuiPreVersion": "0.3.11",
+  "adaptations": [
+    "The active skill resolves bundled references and Poratake Cargo commands.",
+    "Markdown formatting follows Poratake; upstream and vendored checksums are recorded separately."
+  ],
+  "files": [
+    {
+      "source": "skills/herogpui/SKILL.md",
+      "local": "SKILL.md",
+      "sourceSha256": "ee56ae597643c351751e180f1717699612815a961ce4549b342dede37c56d8ff",
+      "vendoredSha256": "1aa1d79cb591d7b1d905edfed80f036cff0537f0cedb95ff8296693b8ae4b641"
+    },
+    {
+      "source": "skills/herogpui/LICENSE.txt",
+      "local": "LICENSE.txt",
+      "sourceSha256": "0b661c2395077744b44e0f01305a1042fa01ebf9fdd3c07a75c5cdfe4809764c",
+      "vendoredSha256": "0b661c2395077744b44e0f01305a1042fa01ebf9fdd3c07a75c5cdfe4809764c"
+    },
+    {
+      "source": "NOTICE",
+      "local": "NOTICE",
+      "sourceSha256": "5b10c88ba6091511ae69fa7685675905d2ed3095bf61d22750c9f41374baf6a6",
+      "vendoredSha256": "5b10c88ba6091511ae69fa7685675905d2ed3095bf61d22750c9f41374baf6a6"
+    },
+    {
+      "source": "llms.txt",
+      "local": "references/llms.txt",
+      "sourceSha256": "60ecfc06f5e2d42112921005d4d7592df045e96cf0e4198f812c53eb6347fe0d",
+      "vendoredSha256": "60ecfc06f5e2d42112921005d4d7592df045e96cf0e4198f812c53eb6347fe0d"
+    },
+    {
+      "source": "docs/agents/workflow.md",
+      "local": "references/agents/workflow.md",
+      "sourceSha256": "5864c0e237280e0453f86f1e1d14116dba634d52387b6d247a11f6e991e98e77",
+      "vendoredSha256": "886a251ea92eb7e80963ca1ae4604e7f5ccd2304deb070f44e99da3f8841983c"
+    },
+    {
+      "source": "docs/agents/components.md",
+      "local": "references/agents/components.md",
+      "sourceSha256": "bda0d43cd48ffb48b2a61364a149f1b5e9842b17c5a684e22cbc4f384887904d",
+      "vendoredSha256": "136268c0371247a8e32904afa25476d24b4459ec5474af2194bc9ac6c94bbef3"
+    },
+    {
+      "source": "docs/agents/parity.md",
+      "local": "references/agents/parity.md",
+      "sourceSha256": "3a57cc440fb385d8b9ed81371cfedbfd5b9575c9eea5ae1629add8f3126e403c",
+      "vendoredSha256": "58bf891427234befd0f9316ada5d171e36c36e6bbe25f2a908d950f07651bf91"
+    },
+    {
+      "source": "docs/agents/gallery.md",
+      "local": "references/agents/gallery.md",
+      "sourceSha256": "c8c9a3daeda3d37f8ba0b48fa3b50de885876a3e94d33caa76cfca39818c21f9",
+      "vendoredSha256": "c8c9a3daeda3d37f8ba0b48fa3b50de885876a3e94d33caa76cfca39818c21f9"
+    }
+  ]
+}

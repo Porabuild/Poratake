@@ -63,6 +63,20 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                     .panel_padding(gpui::px(4.0)),
             )
             .recipe(
+                "tool-popover",
+                SelectStyle::default()
+                    .height(gpui::px(24.0))
+                    .padding_x(gpui::px(8.0))
+                    .padding_y(gpui::px(0.0))
+                    .trigger_text_size(gpui::px(12.0))
+                    .row_height(gpui::px(24.0))
+                    .row_padding_x(gpui::px(crate::ui::chrome::TOOL_POPOVER_ROW_PAD))
+                    .row_padding_y(gpui::px(0.0))
+                    .row_text_size(gpui::px(12.0))
+                    .panel_padding(gpui::px(crate::ui::chrome::TOOL_POPOVER_PANEL_PAD))
+                    .panel_gap(gpui::px(0.0)),
+            )
+            .recipe(
                 "toolbar",
                 SelectStyle::default()
                     .height(gpui::px(28.0))
@@ -111,6 +125,76 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
         )
         .button(
             ComponentTheme::new(ButtonStyle::default())
+                .recipe(
+                    "compact",
+                    ButtonStyle::default().size(herogpui::Size::Sm).style(|el| {
+                        use gpui::Styled;
+                        el.h(gpui::px(28.0))
+                            .px(gpui::px(10.0))
+                            .text_size(gpui::px(12.0))
+                            .line_height(gpui::px(16.0))
+                    }),
+                )
+                .recipe(
+                    "muted-action",
+                    ButtonStyle::default()
+                        .foreground(ComponentColor::Muted)
+                        .hover_foreground(ComponentColor::Foreground),
+                )
+                .recipe(
+                    "overlay-trigger",
+                    ButtonStyle::default()
+                        .size(herogpui::Size::Sm)
+                        .foreground(ComponentColor::Literal(crate::ui::colors::white(0.85)))
+                        .hover_foreground(ComponentColor::Literal(crate::ui::colors::white(1.0)))
+                        .hover_bg(ComponentColor::Literal(crate::ui::colors::white(0.15)))
+                        .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS))
+                        .style(|el| {
+                            use gpui::Styled;
+                            el.h(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_SIZE))
+                                .w(gpui::px(48.0))
+                                .px(gpui::px(6.0))
+                                .gap(gpui::px(4.0))
+                        }),
+                )
+                .recipe(
+                    "overlay-disabled",
+                    ButtonStyle::default().style(|el| {
+                        use gpui::Styled;
+                        el.opacity(0.35)
+                    }),
+                )
+                .recipe(
+                    "overlay-trigger-tinted",
+                    ButtonStyle::default()
+                        .foreground(ComponentColor::Role(Color::Accent))
+                        .hover_foreground(ComponentColor::Role(Color::Accent)),
+                )
+                .recipe(
+                    "video-aspect",
+                    ButtonStyle::default()
+                        .size(herogpui::Size::Sm)
+                        .radius(gpui::px(crate::ui::chrome::VIDEO_ASPECT_RADIUS))
+                        .background(ComponentColor::Literal(vars.muted_background))
+                        .foreground(ComponentColor::Muted)
+                        .hover_bg(ComponentColor::Role(Color::Accent))
+                        .hover_foreground(ComponentColor::RoleForeground(Color::Accent))
+                        .pressed_bg(ComponentColor::Role(Color::Accent))
+                        .pressed_foreground(ComponentColor::RoleForeground(Color::Accent))
+                        .style(|el| {
+                            use gpui::Styled;
+                            el.h(gpui::px(28.0))
+                                .px(gpui::px(8.0))
+                                .text_size(gpui::px(12.0))
+                                .line_height(gpui::px(16.0))
+                        }),
+                )
+                .recipe(
+                    "video-aspect-selected",
+                    ButtonStyle::default()
+                        .background(ComponentColor::Role(Color::Accent))
+                        .foreground(ComponentColor::RoleForeground(Color::Accent)),
+                )
                 .recipe(
                     "muted",
                     ButtonStyle::default().foreground(ComponentColor::Muted),

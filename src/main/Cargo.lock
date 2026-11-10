@@ -3233,7 +3233,7 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 [[package]]
 name = "herogpui"
 version = "0.15.0"
-source = "git+https://github.com/Porabuild/HeroGPUI?rev=2066c897c23a5591a5de49ec032133bd9605f114#2066c897c23a5591a5de49ec032133bd9605f114"
+source = "git+https://github.com/Porabuild/HeroGPUI?rev=12ce9ad5104319e05ddc10daecbfab6c8ded1393#12ce9ad5104319e05ddc10daecbfab6c8ded1393"
 dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
@@ -3245,7 +3245,7 @@ dependencies = [
 [[package]]
 name = "herogpui-components"
 version = "0.15.0"
-source = "git+https://github.com/Porabuild/HeroGPUI?rev=2066c897c23a5591a5de49ec032133bd9605f114#2066c897c23a5591a5de49ec032133bd9605f114"
+source = "git+https://github.com/Porabuild/HeroGPUI?rev=12ce9ad5104319e05ddc10daecbfab6c8ded1393#12ce9ad5104319e05ddc10daecbfab6c8ded1393"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
@@ -3265,7 +3265,7 @@ dependencies = [
 [[package]]
 name = "herogpui-core"
 version = "0.15.0"
-source = "git+https://github.com/Porabuild/HeroGPUI?rev=2066c897c23a5591a5de49ec032133bd9605f114#2066c897c23a5591a5de49ec032133bd9605f114"
+source = "git+https://github.com/Porabuild/HeroGPUI?rev=12ce9ad5104319e05ddc10daecbfab6c8ded1393#12ce9ad5104319e05ddc10daecbfab6c8ded1393"
 dependencies = [
  "gpui-pre",
 ]
@@ -3273,7 +3273,7 @@ dependencies = [
 [[package]]
 name = "herogpui-theme"
 version = "0.15.0"
-source = "git+https://github.com/Porabuild/HeroGPUI?rev=2066c897c23a5591a5de49ec032133bd9605f114#2066c897c23a5591a5de49ec032133bd9605f114"
+source = "git+https://github.com/Porabuild/HeroGPUI?rev=12ce9ad5104319e05ddc10daecbfab6c8ded1393#12ce9ad5104319e05ddc10daecbfab6c8ded1393"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
