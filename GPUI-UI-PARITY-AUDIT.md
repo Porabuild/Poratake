@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `9669cde` plus this change.
+Refreshed 2026-11-10 for Poratake 0.9.6, based on `4853e47` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -263,6 +263,10 @@ subtitles before and after a cut at 1.5× and 0.5× speeds. It checks which keys
 and captions are active, proves each layer changes the preview, and compares
 the affected pixels in the export with the preview. The native gate passes 968
 tests with one skip after this addition.
+An edited GIF workflow now checks saved and reopened state, preview pixels and
+every decoded frame boundary at all six offered frame rates. Before the timing
+fix, a two-second export played for 1.8 seconds at 30 FPS and 1.92 at 24 FPS;
+afterward each frame boundary stays within 5 ms of the edited timeline.
 The audio check compares preview stems and a decoded AAC export across a cut and
 speed changes. It verifies 440 Hz and 880 Hz source tones, two short sounds near
 their edited positions, two keyboard clicks after raising their volume from zero,
@@ -368,8 +372,13 @@ inside a synthetic 3840×2160 image. An isolated WSL harness compiled the actual
 Linux QR loader and passed its eight tests; it did not build the full Linux daemon.
 In an interleaved release benchmark, a 4K gradient without a QR took 493–496 ms
 versus 334–370 ms before the regional and extra threshold retries. A uniform 4K
-image took about 2 ms after an early exit, versus 291–323 ms before. Evidence is
-in `.scratch-parity/qr-medium-native.log` and `.scratch-parity/qr-medium-bench.log`.
+image took about 2 ms after an early exit, versus 291–323 ms before. A later
+same-machine run measured 481–505 ms before the transition preflight and
+381–404 ms afterward; an embedded 4K QR remained around 367–385 ms in both.
+The Windows daemon still matched all 65 payloads and the Linux loader passed its
+eight isolated tests. The preflight preserves thresholded rows with at least four
+color transitions, including edge patterns. Evidence is in
+`.scratch-parity/qr-preflight-corpus.log` and `.scratch-parity/qr-preflight-bench-idle.log`.
 
 Bugs fixed in this pass:
 
@@ -410,6 +419,9 @@ Bugs fixed in this pass:
   surroundings, or needed a different threshold scale. Bounded regional retries
   and two final threshold scales recover the remaining corpus cases, including a
   QR at four positions inside a synthetic 4K capture.
+- GIF frame delays were truncated independently to centiseconds, speeding up
+  24 and 30 FPS exports. Rounded cumulative frame boundaries preserve the edited
+  timeline within GIF's centisecond precision.
 - Scroll capture subscribed after the start RPC, losing early completion or
   cancellation events and leaving the session active. Subscription now precedes
   start; both early events and a successful retry are exercised.

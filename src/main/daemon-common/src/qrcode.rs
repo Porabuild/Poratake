@@ -114,7 +114,13 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
         pixels,
         width,
         height,
-        &[0, 1, 2, 3, 4],
+        &[
+            ThresholdPass::Adaptive,
+            ThresholdPass::Local(8),
+            ThresholdPass::Histogram,
+            ThresholdPass::Local(4),
+            ThresholdPass::Local(16),
+        ],
         Some(&mut candidates),
     );
     if !payload.is_empty() {
@@ -142,12 +148,40 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
         for y in top..bottom {
             region.extend_from_slice(&pixels[y * width + left..y * width + right]);
         }
-        let payload = detect_in_region(&region, region_width, region_height, &[2, 5, 4], None);
+        let payload = detect_in_region(
+            &region,
+            region_width,
+            region_height,
+            &[
+                ThresholdPass::Histogram,
+                ThresholdPass::Local(12),
+                ThresholdPass::Local(16),
+            ],
+            None,
+        );
         if !payload.is_empty() {
             return payload;
         }
     }
-    detect_in_region(pixels, width, height, &[6, 7], None)
+    detect_in_region(
+        pixels,
+        width,
+        height,
+        &[
+            ThresholdPass::LocalWithPreflight(24),
+            ThresholdPass::LocalWithPreflight(10),
+        ],
+        None,
+    )
+}
+
+#[cfg(feature = "qrcode-decode")]
+#[derive(Clone, Copy)]
+enum ThresholdPass {
+    Adaptive,
+    Histogram,
+    Local(usize),
+    LocalWithPreflight(usize),
 }
 
 #[cfg(feature = "qrcode-decode")]
@@ -155,33 +189,32 @@ fn detect_in_region(
     pixels: &[u8],
     width: usize,
     height: usize,
-    passes: &[usize],
+    passes: &[ThresholdPass],
     mut candidates: Option<&mut Vec<(usize, usize, usize, usize)>>,
 ) -> String {
     for &pass in passes {
         let mut image = match pass {
-            0 => rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| {
-                pixels[y * width + x]
-            }),
-            1 | 3 | 4 | 5 | 6 | 7 => {
-                let block = match pass {
-                    1 => 8,
-                    3 => 4,
-                    4 => 16,
-                    5 => 12,
-                    6 => 24,
-                    _ => 10,
-                };
+            ThresholdPass::Adaptive => {
+                rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| {
+                    pixels[y * width + x]
+                })
+            }
+            ThresholdPass::Local(block) | ThresholdPass::LocalWithPreflight(block) => {
                 if width < block * 5 || height < block * 5 {
                     continue;
                 }
                 let thresholds = local_thresholds(pixels, width, height, block);
                 let columns = width.div_ceil(block);
+                if matches!(pass, ThresholdPass::LocalWithPreflight(_))
+                    && !has_finder_transitions(pixels, width, height, block, &thresholds)
+                {
+                    continue;
+                }
                 rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
                     pixels[y * width + x] <= thresholds[(y / block) * columns + x / block]
                 })
             }
-            _ => {
+            ThresholdPass::Histogram => {
                 let mut histogram = [0u64; 256];
                 for &pixel in &pixels[..width * height] {
                     histogram[pixel as usize] += 1;
@@ -276,6 +309,32 @@ fn detect_in_region(
         }
     }
     String::new()
+}
+
+#[cfg(feature = "qrcode-decode")]
+fn has_finder_transitions(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    block: usize,
+    thresholds: &[u8],
+) -> bool {
+    let columns = width.div_ceil(block);
+    for y in 0..height {
+        let mut last = pixels[y * width] <= thresholds[(y / block) * columns];
+        let mut changes = 0;
+        for x in 1..width {
+            let black = pixels[y * width + x] <= thresholds[(y / block) * columns + x / block];
+            if black != last {
+                changes += 1;
+                last = black;
+                if changes >= 4 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /*
@@ -425,6 +484,61 @@ mod tests {
         let pixels = vec![0u8; 4];
         assert_eq!(detect_payload_from_greyscale(&pixels, 0, 0), "");
         assert_eq!(detect_payload_from_greyscale(&pixels, 10, 10), "");
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn finder_transition_preflight_keeps_patterns_at_image_edges() {
+        let thresholds = [127; 8];
+        for row in [
+            [0, 255, 0, 0, 0, 255, 0, 255],
+            [255, 0, 255, 0, 0, 0, 255, 0],
+            [0, 255, 0, 0, 0, 255, 0, 0],
+        ] {
+            assert!(has_finder_transitions(&row, 8, 1, 1, &thresholds));
+        }
+        let rows = [
+            0, 255, 0, 255, 255, 255, 255, 255, 255, 0, 255, 0, 0, 0, 0, 0,
+        ];
+        assert!(!has_finder_transitions(&rows, 8, 2, 1, &[127; 16]));
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn finder_transition_preflight_uses_each_blocks_threshold() {
+        let pixels = [128; 10];
+        assert!(has_finder_transitions(
+            &pixels,
+            10,
+            1,
+            2,
+            &[127, 128, 127, 128, 127]
+        ));
+        assert!(!has_finder_transitions(&pixels, 10, 1, 2, &[128; 5]));
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn finder_transition_preflight_skips_a_gradient_without_grids() {
+        let (width, height) = (240, 120);
+        let pixels: Vec<u8> = (0..width * height)
+            .map(|index| ((index % width) * 255 / (width - 1)) as u8)
+            .collect();
+        for block in [10, 24] {
+            let thresholds = local_thresholds(&pixels, width, height, block);
+            assert!(!has_finder_transitions(
+                &pixels,
+                width,
+                height,
+                block,
+                &thresholds
+            ));
+            let columns = width.div_ceil(block);
+            let mut image = rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
+                pixels[y * width + x] <= thresholds[(y / block) * columns + x / block]
+            });
+            assert!(image.detect_grids().is_empty());
+        }
     }
 
     #[test]

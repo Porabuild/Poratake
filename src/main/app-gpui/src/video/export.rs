@@ -486,7 +486,8 @@ fn run_gif_direct(
         .set_repeat(Repeat::Infinite)
         .map_err(|error| format!("could not start the GIF: {error}"))?;
 
-    let delay = image::Delay::from_numer_denom_ms(1000, session.fps.max(1));
+    let fps = u64::from(session.fps);
+    let mut elapsed_centiseconds = 0;
     let first_frame_duration = session.engine.first_frame_duration();
 
     for index in 0..session.total_frames {
@@ -497,6 +498,12 @@ fn run_gif_direct(
 
         let timeline_time = index as f64 / session.fps as f64;
         let composed = compose_pixmap(session, first_frame_duration, timeline_time)?;
+        let next_centiseconds = ((index + 1) * 100 + fps / 2) / fps;
+        let delay = image::Delay::from_numer_denom_ms(
+            ((next_centiseconds - elapsed_centiseconds) * 10) as u32,
+            1,
+        );
+        elapsed_centiseconds = next_centiseconds;
         let frame = image::Frame::from_parts(to_rgba_buffer(&composed), 0, 0, delay);
         encoder
             .encode_frame(frame)
@@ -1235,6 +1242,144 @@ mod tests {
                 "the exported drawing differs from preview at {time}s"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn edited_gif_exports_match_the_preview_and_timeline_at_each_frame_rate() {
+        use crate::editor::annotations::Annotation;
+        use crate::windows::video_editor::{model, preview, styles};
+        use image::AnimationDecoder;
+
+        let directory = tempfile::tempdir().unwrap();
+        let recording = directory.path().join("recording.mp4");
+        let mut encoder = Encoder::create(
+            &recording,
+            Settings {
+                width: 160,
+                height: 90,
+                frame_rate: 12,
+                bitrate: 1_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for index in 0..24 {
+            let color = if index < 12 {
+                [176, 96, 32, 255]
+            } else {
+                [48, 80, 192, 255]
+            };
+            encoder.write_frame(color.repeat(160 * 90)).unwrap();
+        }
+        encoder.finish().unwrap();
+
+        let mut state = VideoEditorState {
+            source_duration: Some(2.),
+            segments: vec![
+                model::Segment {
+                    original_end: 0.75,
+                    speed: Some(1.5),
+                    ..model::Segment::spanning(2.)
+                },
+                model::Segment {
+                    id: "after-cut".into(),
+                    original_start: 1.25,
+                    speed: Some(0.5),
+                    ..model::Segment::spanning(2.)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        state.wallpaper.enabled = false;
+        state.export_settings.format = "gif".into();
+        state.export_settings.resolution = "480p".into();
+        state.drawing_segments.push(model::DrawingSegment {
+            id: "drawing".into(),
+            start_time: 0.,
+            end_time: 2.,
+            canvas_width: 160.,
+            canvas_height: 90.,
+            annotations: vec![Annotation::Rectangle {
+                id: "shape".into(),
+                x: 20.,
+                y: 20.,
+                width: 40.,
+                height: 25.,
+                stroke: "#ffffff".into(),
+                stroke_width: 3.,
+                fill: Some("#e04040".into()),
+            }],
+        });
+        model::save_state(&recording, &state);
+        assert_eq!(model::load_state(&recording), state);
+
+        let mut timing_errors = Vec::new();
+        for rate in styles::GIF_FRAME_RATES {
+            let fps: usize = rate.parse().unwrap();
+            let mut state = model::load_state(&recording);
+            state.export_settings.frame_rate = (*rate).into();
+            let mut preview = preview::Source::open(&recording, state.clone()).unwrap();
+            let output = directory.path().join(format!("edited-{fps}.gif"));
+            let mut progress = 0.;
+            run(
+                Request {
+                    project: recording.clone(),
+                    output: output.clone(),
+                    state,
+                },
+                &mut |value| progress = value,
+                &|| false,
+            )
+            .unwrap();
+            assert_eq!(progress, 1.);
+            let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+                std::fs::File::open(&output).unwrap(),
+            ))
+            .unwrap();
+            let frames = decoder.into_frames().collect_frames().unwrap();
+            assert_eq!(frames.len(), fps * 2, "{fps} fps");
+            let mut elapsed_ms = 0.;
+            let mut max_error_ms = 0_f64;
+            for (index, frame) in frames.iter().enumerate() {
+                assert_eq!(frame.buffer().dimensions(), (160, 90));
+                for (sample, source_color) in [
+                    (fps / 4, [32_u8, 96, 176]),
+                    (fps * 3 / 4, [192, 80, 48]),
+                    (fps * 3 / 2, [192, 80, 48]),
+                ] {
+                    if index != sample {
+                        continue;
+                    }
+                    let expected = preview.compose(index as f64 / fps as f64, None).unwrap();
+                    let actual = frame.buffer().as_raw();
+                    let error: u64 = actual
+                        .iter()
+                        .zip(expected.data())
+                        .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+                        .sum();
+                    let mean = error as f64 / actual.len() as f64;
+                    assert!(mean < 4., "{fps} fps, frame {index}: mean error {mean}");
+                    for (x, y, color) in [(120, 60, source_color), (30, 30, [224, 64, 64])] {
+                        let pixel = (y * 160 + x) * 4;
+                        for (channel, expected_color) in color.into_iter().enumerate() {
+                            assert!(expected.data()[pixel + channel].abs_diff(expected_color) < 8);
+                            assert!(actual[pixel + channel].abs_diff(expected_color) < 8);
+                        }
+                    }
+                }
+                let (numerator, denominator) = frame.delay().numer_denom_ms();
+                elapsed_ms += f64::from(numerator) / f64::from(denominator);
+                let expected_ms = (index + 1) as f64 * 1000. / fps as f64;
+                max_error_ms = max_error_ms.max((elapsed_ms - expected_ms).abs());
+            }
+            if max_error_ms > 5.01 {
+                timing_errors.push(format!(
+                    "{fps} fps: {elapsed_ms} ms, max error {max_error_ms} ms"
+                ));
+            }
+        }
+        assert!(timing_errors.is_empty(), "{}", timing_errors.join("; "));
     }
 
     #[cfg(windows)]
