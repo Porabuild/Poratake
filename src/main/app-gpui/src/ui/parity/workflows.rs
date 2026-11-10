@@ -915,6 +915,188 @@ pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &P
     println!("annotation, PNG save, history reopen and flattened reopen passed; preview/export changed pixels above two channel levels: {significant}");
 }
 
+pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Path) {
+    let source = scratch.join("scaled-wallpaper.png");
+    image::RgbaImage::from_fn(640, 360, |x, y| {
+        if (x / 80 + y / 60) % 2 == 0 {
+            image::Rgba([240, 80, 64, 255])
+        } else {
+            image::Rgba([64, 112, 192, 255])
+        }
+    })
+    .save(&source)
+    .unwrap();
+    let editor = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(2.);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    let window = editor.into();
+    editor
+        .update(cx, |editor, _, cx| {
+            editor
+                .wallpaper
+                .set_gradient(crate::editor::wallpaper::preset("slate"));
+            editor.wallpaper.padding = 20.;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, window);
+    let previous = cx.update(|cx| {
+        editor
+            .read(cx)
+            .unwrap()
+            .snapshot
+            .borrow()
+            .backdrop
+            .clone()
+            .unwrap()
+    });
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.wallpaper.background_blur = 30.;
+            cx.notify();
+        })
+        .unwrap();
+    super::frame(cx, window);
+    cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        let snapshot = editor.snapshot.borrow();
+        assert!(snapshot
+            .backdrop
+            .as_ref()
+            .is_some_and(|backdrop| std::sync::Arc::ptr_eq(backdrop, &previous)));
+    });
+    cx.update_window(window, |_, window, _| window.set_scale_factor(1.25))
+        .unwrap();
+    super::frame(cx, window);
+    cx.update(|cx| {
+        assert!(editor
+            .read(cx)
+            .unwrap()
+            .snapshot
+            .borrow()
+            .backdrop
+            .is_none());
+    });
+    settle(cx, window);
+    cx.update(|cx| {
+        assert!(editor
+            .read(cx)
+            .unwrap()
+            .snapshot
+            .borrow()
+            .backdrop
+            .is_some());
+    });
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.wallpaper.padding = 40.;
+            cx.notify();
+        })
+        .unwrap();
+    super::frame(cx, window);
+    cx.update(|cx| {
+        assert!(editor
+            .read(cx)
+            .unwrap()
+            .snapshot
+            .borrow()
+            .backdrop
+            .is_none());
+    });
+    for (scale, padding, transparent, blurred) in [
+        (1.25_f32, 25_u32, false, false),
+        (2., 40, false, false),
+        (1.25, 25, true, false),
+        (2., 40, true, false),
+        (1.25, 25, false, true),
+        (2., 40, false, true),
+    ] {
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.wallpaper.set_gradient(if transparent {
+                    None
+                } else {
+                    crate::editor::wallpaper::preset("slate")
+                });
+                editor.wallpaper.padding = 20.;
+                editor.wallpaper.background_blur = if blurred { 30. } else { 0. };
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+            .unwrap();
+        settle(cx, window);
+        cx.update(|cx| {
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = 1. / scale;
+                    cx.notify();
+                })
+                .unwrap();
+        });
+        cx.advance_clock(std::time::Duration::from_millis(32));
+        settle(cx, window);
+        let (bounds, saved) = cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            (
+                editor.bounds.borrow().unwrap(),
+                image::load_from_memory(&editor.export_png().unwrap())
+                    .unwrap()
+                    .to_rgba8(),
+            )
+        });
+        assert_eq!(saved.dimensions(), (640 + 2 * padding, 360 + 2 * padding));
+        let mut expected = saved.clone();
+        if transparent {
+            assert_eq!(saved.get_pixel(0, 0).0[3], 0);
+            expected = image::RgbaImage::from_pixel(
+                saved.width(),
+                saved.height(),
+                image::Rgba([24, 24, 27, 255]),
+            );
+            image::imageops::overlay(&mut expected, &saved, 0, 0);
+        }
+        let screenshot = cx.capture_screenshot(window).unwrap();
+        let left = (f32::from(bounds.left()) * scale).round() as u32 - padding;
+        let top = (f32::from(bounds.top()) * scale).round() as u32 - padding;
+        let preview =
+            image::imageops::crop_imm(&screenshot, left, top, saved.width(), saved.height())
+                .to_image();
+        let significant = preview
+            .pixels()
+            .zip(expected.pixels())
+            .filter(|(actual, expected)| {
+                actual
+                    .0
+                    .iter()
+                    .zip(expected.0)
+                    .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+            })
+            .count();
+        if significant > 0 {
+            preview
+                .save(scratch.join("scaled-wallpaper-preview.png"))
+                .unwrap();
+            expected
+                .save(scratch.join("scaled-wallpaper-expected.png"))
+                .unwrap();
+        }
+        assert_eq!(
+            significant, 0,
+            "wallpaper preview/export at {scale}x, transparent: {transparent}, blurred: {blurred}"
+        );
+    }
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    println!(
+        "scaled wallpaper preview and saved pixels match at 1.25x and 2x, including transparency and blur"
+    );
+}
+
 #[cfg(windows)]
 pub(super) fn video(
     cx: &mut HeadlessAppContext,

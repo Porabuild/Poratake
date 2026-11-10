@@ -19,8 +19,17 @@ pub fn compose(
     height: u32,
     annotations: &[Annotation],
     wallpaper: &WallpaperSettings,
+    frame_scale: f64,
 ) -> RgbaImage {
-    compose_with_layers(base, width, height, annotations, wallpaper, &[])
+    compose_with_layers(
+        base,
+        width,
+        height,
+        annotations,
+        wallpaper,
+        &[],
+        frame_scale,
+    )
 }
 
 /// The full composition, including any images attached to the capture's edges.
@@ -31,6 +40,7 @@ pub fn compose_with_layers(
     annotations: &[Annotation],
     wallpaper: &WallpaperSettings,
     layers: &[crate::editor::layers::ImageLayer],
+    frame_scale: f64,
 ) -> RgbaImage {
     let (width, height) = match base {
         Some(image) => (image.width().max(1), image.height().max(1)),
@@ -69,7 +79,7 @@ pub fn compose_with_layers(
             annotated = cropped;
         }
     }
-    to_rgba(&compose_wallpaper(&annotated, wallpaper))
+    to_rgba(&compose_wallpaper(&annotated, wallpaper, frame_scale))
 }
 
 /// Lays the primary image and its attached layers out on one surface.
@@ -162,10 +172,10 @@ fn balance_crop(image: &Pixmap) -> Option<Pixmap> {
 }
 
 /// Draws the annotated image onto the wallpaper backdrop at export size.
-fn compose_wallpaper(image: &Pixmap, wallpaper: &WallpaperSettings) -> Pixmap {
+fn compose_wallpaper(image: &Pixmap, wallpaper: &WallpaperSettings, frame_scale: f64) -> Pixmap {
     let (image_width, image_height) = (image.width() as f64, image.height() as f64);
     let ((canvas_width, canvas_height), (offset_x, offset_y, _, _)) =
-        crate::editor::wallpaper::layout(wallpaper, image_width, image_height);
+        crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
     let (canvas_width, canvas_height) = (
         canvas_width.round().max(1.0) as u32,
         canvas_height.round().max(1.0) as u32,
@@ -206,8 +216,8 @@ fn compose_wallpaper(image: &Pixmap, wallpaper: &WallpaperSettings) -> Pixmap {
             image_width,
             image_height,
             &wallpaper.window_frame.style,
-            image_shadow(wallpaper.shadow),
-            1.0,
+            image_shadow_at_scale(wallpaper.shadow, frame_scale),
+            frame_scale,
         );
         return canvas.into_pixmap();
     }
@@ -269,6 +279,14 @@ pub fn image_shadow(shadow: f64) -> Option<Shadow> {
     })
 }
 
+fn image_shadow_at_scale(shadow: f64, scale: f64) -> Option<Shadow> {
+    image_shadow(shadow).map(|mut shadow| {
+        shadow.blur *= scale as f32;
+        shadow.offset_y *= scale as f32;
+        shadow
+    })
+}
+
 fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32, height: f32) {
     paint_background_source(canvas, wallpaper, width, height);
 
@@ -302,7 +320,9 @@ fn paint_background_source(
         }
     }
     let Some(preset) = wallpaper.gradient.as_ref() else {
-        canvas.fill_all(Color::from_rgba8(24, 24, 27, 255));
+        if wallpaper.background_image.is_some() {
+            canvas.fill_all(Color::from_rgba8(24, 24, 27, 255));
+        }
         return;
     };
     let option = gradient::GradientOption {
@@ -334,15 +354,19 @@ pub fn render_backdrop(
     image_height: f64,
     inset_color: Option<String>,
     layers: &[crate::editor::layers::ImageLayer],
+    frame_scale: f64,
 ) -> Option<std::sync::Arc<gpui::RenderImage>> {
     let mut canvas = Canvas::new(width.max(1), height.max(1))?;
+    if !wallpaper.has_background() {
+        canvas.fill_all(Color::from_rgba8(24, 24, 27, 255));
+    }
     paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
 
     // Attached images are static, so they belong to the backdrop; only the
     // primary capture and its annotations stay live.
     if !layers.is_empty() {
         let (_, (offset_x, offset_y, _, _)) =
-            crate::editor::wallpaper::layout(wallpaper, image_width, image_height);
+            crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
         let layout = crate::editor::layers::compute(
             image_width,
             image_height,
@@ -371,7 +395,7 @@ pub fn render_backdrop(
     // image on top of it.
     if let Some(color_value) = inset_color.filter(|_| wallpaper.inset > 0.0) {
         let (_, (offset_x, offset_y, _, _)) =
-            crate::editor::wallpaper::layout(wallpaper, image_width, image_height);
+            crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
         let inset = wallpaper.inset as f32;
         if let Some(path) = rounded_rect_path(
             offset_x.round() as f32 - inset,
@@ -395,7 +419,7 @@ pub fn render_backdrop(
     // image and its annotations inside it.
     if crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some() {
         let (_, (offset_x, offset_y, _, _)) =
-            crate::editor::wallpaper::layout(wallpaper, image_width, image_height);
+            crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
         crate::render::window_frame::render_chrome(
             &mut canvas,
             offset_x.round(),
@@ -403,8 +427,8 @@ pub fn render_backdrop(
             image_width,
             image_height,
             &wallpaper.window_frame.style,
-            image_shadow(wallpaper.shadow),
-            1.0,
+            image_shadow_at_scale(wallpaper.shadow, frame_scale),
+            frame_scale,
             None,
         );
     }
@@ -530,7 +554,7 @@ mod tests {
             30,
             image::Rgba([255, 0, 0, 255]),
         ));
-        let composed = compose(Some(&base), 40, 30, &[], &settings);
+        let composed = compose(Some(&base), 40, 30, &[], &settings, 1.0);
         assert_eq!(composed.dimensions(), (80, 70));
         assert_eq!(composed.get_pixel(40, 35).0, [255, 0, 0, 255]);
         assert_ne!(composed.get_pixel(2, 2).0, [255, 0, 0, 255]);
@@ -543,7 +567,7 @@ mod tests {
             8,
             image::Rgba([1, 2, 3, 255]),
         ));
-        let composed = compose(Some(&base), 8, 8, &[], &WallpaperSettings::default());
+        let composed = compose(Some(&base), 8, 8, &[], &WallpaperSettings::default(), 1.0);
         assert_eq!(composed.dimensions(), (8, 8));
         assert_eq!(composed.get_pixel(4, 4).0, [1, 2, 3, 255]);
     }
@@ -560,7 +584,7 @@ mod tests {
             60,
             image::Rgba([255, 0, 0, 255]),
         ));
-        let composed = compose(Some(&base), 60, 60, &[], &settings);
+        let composed = compose(Some(&base), 60, 60, &[], &settings, 1.0);
         // The image's own corner is cut away, its centre is not.
         assert_ne!(composed.get_pixel(11, 11).0[0], 255);
         assert_eq!(composed.get_pixel(40, 40).0, [255, 0, 0, 255]);
@@ -596,6 +620,7 @@ mod tests {
                 natural_height: 50.0,
                 edge: Edge::Right,
             }],
+            1.0,
         );
 
         // The side image is scaled to the capture's height and placed beside it.
@@ -617,7 +642,7 @@ mod tests {
         base.put_pixel(30, 30, image::Rgba([255, 255, 255, 255]));
         let base = image::DynamicImage::ImageRgba8(base);
 
-        let composed = compose(Some(&base), 60, 60, &[], &settings);
+        let composed = compose(Some(&base), 60, 60, &[], &settings, 1.0);
         // The band sits just outside the image and takes its border colour.
         let band = composed.get_pixel(20 - 3, 50).0;
         assert_eq!(&band[..3], &[10, 200, 10]);
@@ -635,7 +660,7 @@ mod tests {
             60,
             image::Rgba([255, 0, 0, 255]),
         ));
-        let composed = compose(Some(&base), 100, 60, &[], &settings);
+        let composed = compose(Some(&base), 100, 60, &[], &settings, 1.0);
         // 28px of title bar sits between the padding and the image.
         assert_eq!(composed.dimensions(), (120, 108));
         assert_ne!(composed.get_pixel(60, 20).0, [255, 0, 0, 255]);

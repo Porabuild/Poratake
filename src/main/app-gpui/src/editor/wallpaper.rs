@@ -85,6 +85,16 @@ impl Default for WallpaperSettings {
 }
 
 impl WallpaperSettings {
+    pub fn for_scale(&self, scale: f64) -> Self {
+        let mut settings = self.clone();
+        settings.padding = (settings.padding * scale).round();
+        settings.corners = (settings.corners * scale).round();
+        settings.inset = (settings.inset * scale).round();
+        settings.spacing = (settings.spacing * scale).round();
+        settings.background_blur *= scale;
+        settings
+    }
+
     /// A capture with attached layers is framed as one group, so the wallpaper
     /// is active even without a background or padding.
     pub fn is_active_with_layers(&self, has_layers: bool) -> bool {
@@ -120,6 +130,15 @@ impl WallpaperSettings {
     pub fn has_background(&self) -> bool {
         self.gradient.is_some() || self.background_image.is_some()
     }
+}
+
+pub fn native_scale(image_width: f64, image_height: f64, scale_factor: f64) -> f64 {
+    if image_width <= 0.0 || image_height <= 0.0 {
+        return 1.0;
+    }
+    let display_width = (image_width / scale_factor).floor().max(1.0);
+    let display_height = (image_height / scale_factor).floor().max(1.0);
+    (image_width / display_width).max(image_height / display_height)
 }
 
 pub const BLUR_MAX: f64 = 100.0;
@@ -312,10 +331,11 @@ pub fn layout(
     settings: &WallpaperSettings,
     image_width: f64,
     image_height: f64,
+    frame_scale: f64,
 ) -> ((f64, f64), (f64, f64, f64, f64)) {
     let padding = settings.padding.max(0.0);
     let title_bar =
-        crate::render::window_frame::title_bar_height(&settings.window_frame.style, 1.0);
+        crate::render::window_frame::title_bar_height(&settings.window_frame.style, frame_scale);
     let content_height = image_height + title_bar;
     let mut canvas_width = image_width + padding * 2.0;
     let mut canvas_height = content_height + padding * 2.0;
@@ -409,7 +429,7 @@ mod tests {
             padding: 40.0,
             ..WallpaperSettings::default()
         };
-        let ((width, height), (x, y, w, h)) = layout(&settings, 200.0, 100.0);
+        let ((width, height), (x, y, w, h)) = layout(&settings, 200.0, 100.0, 1.0);
         assert_eq!((width, height), (280.0, 180.0));
         assert_eq!((x, y, w, h), (40.0, 40.0, 200.0, 100.0));
     }
@@ -424,7 +444,7 @@ mod tests {
             ..WallpaperSettings::default()
         };
         let ((width, height), (_, _, image_width, content_height)) =
-            layout(&settings, 200.0, 100.0);
+            layout(&settings, 200.0, 100.0, 1.0);
         assert_eq!((width, height), (220.0, 148.0));
         assert_eq!(image_width, 200.0);
         assert_eq!(content_height, 128.0);
@@ -437,7 +457,7 @@ mod tests {
             aspect_ratio: "16:9".into(),
             ..WallpaperSettings::default()
         };
-        let ((width, height), _) = layout(&settings, 100.0, 100.0);
+        let ((width, height), _) = layout(&settings, 100.0, 100.0, 1.0);
         assert!(width > height);
         assert!((width / height - 16.0 / 9.0).abs() < 0.001);
     }

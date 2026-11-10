@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `a16a0a7` plus this change.
+Refreshed 2026-11-10 for Poratake 0.9.6, based on `ac0bfff` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -44,8 +44,8 @@ input and frame scheduling use GPUI's headless harness. This is not installed-ap
 or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
-738 logical pixels high. Each case captures 130 states; the two 1280px, 100% cases
-also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,136 baseline images in a complete renderer profile.
+738 logical pixels high. Each case captures 131 states; the two 1280px, 100% cases
+also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,152 baseline images in a complete renderer profile.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -364,6 +364,7 @@ separate verification.
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Annotate → save → reopen        | Real pointer events create pen, highlight, rectangle and redact annotations. Mouse release differs from the last move. Persisted history reopens identically; flattened PNG reopens without editable annotations and with identical decoded output.                                                                                                                                   |
 | Screenshot preview versus PNG   | Native rendered image region versus saved output: zero pixels differ by more than two channel levels. Rectangle/circle/line/arrow previews use the export rasterizer; cache tests distinguish captures with identical annotations.                                                                                                                                                    |
+| Wallpaper scaling and output    | A patterned capture at simulated 125% and 200% compares the rendered unframed editor preview with the PNG, including transparent and blurred backgrounds. Polish-copy and editor export are compared at 200%; framed preview borders remain a known discrepancy below.                                                                                                                |
 | Edited video versus MP4         | Windows Media Foundation fixture, trim/gap removal, 2×/0.5× speed, wallpaper and drawing; project save/reload; decoded output dimensions/duration, four sampled frames, whole-frame and drawing-region error checks.                                                                                                                                                                  |
 | Camera and zoom versus MP4      | Synthetic two-color camera, recorded on-periods mapped across a source cut, manual 2× checker zoom, saved-state reload and seven decoded frames. Independent visibility, source-color and zoom-change assertions accompany preview/export error checks.                                                                                                                               |
 | Audio preview versus MP4        | Synthetic audio and keyboard sounds are mixed in preview and compared with a decoded AAC export across a cut and speed changes. Both source pitches, two short sounds, the two-second duration and each keyboard click are checked independently.                                                                                                                                     |
@@ -477,6 +478,12 @@ Bugs fixed in this pass:
   offsets. Native clipboard delivery still needs verification. A synthetic 4K
   PNG-to-DIB conversion took 48–53 ms locally, excluding clipboard API calls,
   and produced a 31.6 MiB bitmap; slower hardware has not been measured.
+- Polish-copy and editor wallpaper padding previously used unscaled image pixels.
+  A 1600×1000 capture with 50px padding produced 1700×1100 at 200% instead of
+  Electron's 1800×1200. Wallpaper geometry and frame scaling now use the same
+  displayed-image ratio; padding without a background remains transparent in the
+  saved PNG. Same-size effect edits retain the prior preview while its replacement
+  renders. Physical monitor changes remain unverified.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
 - A competing capture or second attachment could replace the active attachment
@@ -553,6 +560,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | -------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                       |
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                       |
+| P1       | Framed screenshot preview versus export                  | At simulated 125%, a 640×360 patterned capture with a Windows frame, blur and shadow differs from its saved PNG at 1,400 pixels along the side and bottom border. The image covers the frame border in the preview. Fix the layer order and rounded corners, then compare preview and export for both frame styles, annotations and multiple scales.                                                            |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                            |
 | P1       | Scroll stitching with fixed footers                      | A synthetic 1280×320 capture with an 80px fixed footer reports changed scrolling content as repeated. With a 40px footer, two frames are accepted but the reopened PNG repeats the footer: 51,200 of 573,440 pixels differ from the expected image. Fix detection and composition together, and verify sparse content, moving animations and real scrolling surfaces.                                           |
 | P1       | Native Windows clipboard formats                         | GPUI now supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. Verify native format enumeration and DIB-only paste in an isolated Windows session, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                 |

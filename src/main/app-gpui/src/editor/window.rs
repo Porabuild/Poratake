@@ -387,6 +387,7 @@ pub struct EditorWindow {
     zoom_backdrop: Option<crate::editor::zoom_backdrop::ZoomBackdrop>,
     fit_for: Option<(gpui::Size<Pixels>, bool, (f32, f32))>,
     pub wallpaper: crate::editor::wallpaper::WallpaperSettings,
+    native_scale: f64,
     wallpaper_preset_id: String,
     background_editor: Option<BackgroundDraft>,
     background_previews: crate::editor::background::BackgroundPreviews,
@@ -423,6 +424,7 @@ pub struct EditorWindow {
         u32,
         u32,
         Vec<crate::editor::layers::ImageLayer>,
+        f64,
     )>,
     backdrop_generation: u64,
     backdrop_task: Option<gpui::Task<()>>,
@@ -536,6 +538,11 @@ impl EditorWindow {
             fit_for: None,
             zoom_backdrop: None,
             wallpaper: persisted.wallpaper,
+            native_scale: crate::editor::wallpaper::native_scale(
+                f64::from(width),
+                f64::from(height),
+                f64::from(window.scale_factor()),
+            ),
             wallpaper_preset_id: String::new(),
             background_editor: None,
             background_previews: crate::editor::background::BackgroundPreviews::default(),
@@ -559,6 +566,7 @@ impl EditorWindow {
                 stroke_width: prefs.stroke_width,
                 crop: None,
                 wallpaper: crate::editor::wallpaper::WallpaperSettings::default(),
+                frame_scale: 1.0,
                 backdrop: None,
                 selected: Vec::new(),
                 editing_text: None,
@@ -683,10 +691,8 @@ impl EditorWindow {
     /// Renders the wallpaper backdrop when the settings or the image size have
     /// changed since the last one.
     fn refresh_backdrop(&mut self, cx: &mut Context<Self>) {
-        if !self
-            .wallpaper
-            .is_active_with_layers(!self.layers.is_empty())
-        {
+        let wallpaper = self.wallpaper.for_scale(self.native_scale);
+        if !wallpaper.is_active_with_layers(!self.layers.is_empty()) {
             if self.backdrop.is_some()
                 || self.backdrop_key.is_some()
                 || self.backdrop_task.is_some()
@@ -704,22 +710,37 @@ impl EditorWindow {
             self.image_width as f64,
             self.image_height as f64,
             &self.layers,
-            self.wallpaper.spacing.max(0.0),
+            wallpaper.spacing.max(0.0),
         );
-        let ((width, height), _) =
-            crate::editor::wallpaper::layout(&self.wallpaper, group.width, group.height);
+        let ((width, height), _) = crate::editor::wallpaper::layout(
+            &wallpaper,
+            group.width,
+            group.height,
+            self.native_scale,
+        );
         let size = (
             width.round().max(1.0) as u32,
             height.round().max(1.0) as u32,
         );
-        let key = (self.wallpaper.clone(), size.0, size.1, self.layers.clone());
+        let key = (
+            wallpaper.clone(),
+            size.0,
+            size.1,
+            self.layers.clone(),
+            self.native_scale,
+        );
         if self.backdrop_key.as_ref() == Some(&key) {
             return;
+        }
+        if self.backdrop_key.as_ref().is_some_and(|previous| {
+            previous.1 != key.1 || previous.2 != key.2 || previous.4 != key.4
+        }) {
+            self.backdrop = None;
         }
         self.backdrop_key = Some(key);
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         let generation = self.backdrop_generation;
-        let wallpaper = self.wallpaper.clone();
+        let frame_scale = self.native_scale;
         let image_width = self.image_width as f64;
         let image_height = self.image_height as f64;
         let layers = self.layers.clone();
@@ -748,6 +769,7 @@ impl EditorWindow {
                 image_height,
                 inset_color.clone(),
                 &layers,
+                frame_scale,
             );
             (rendered, inset_color)
         });
@@ -766,11 +788,13 @@ impl EditorWindow {
     }
 
     fn sync_snapshot(&self) {
+        let wallpaper = self.wallpaper.for_scale(self.native_scale);
         {
             let mut snap = self.snapshot.borrow_mut();
             snap.redact_patches = self.redact_patches_by_id();
             snap.crop = self.crop;
-            snap.wallpaper = self.wallpaper.clone();
+            snap.wallpaper = wallpaper.clone();
+            snap.frame_scale = self.native_scale;
             snap.backdrop = self.backdrop.clone();
             snap.selected = self.selected_annotations.clone();
             snap.editing_text = self.text_editor.as_ref().map(|(id, _)| id.clone());
@@ -783,7 +807,7 @@ impl EditorWindow {
             });
             snap.balance_crop = self.balance_crop;
             snap.layers = self.layers.clone();
-            snap.spacing = self.wallpaper.spacing;
+            snap.spacing = wallpaper.spacing;
             snap.image = self.image.clone();
             snap.image_width = self.image_width;
             snap.image_height = self.image_height;
@@ -2150,18 +2174,20 @@ impl EditorWindow {
     /// The canvas at 1x, wallpaper frame and attached layers included -- the
     /// `canvasWidth`/`canvasHeight` that `useContentDimensions` reports.
     fn content_size(&self) -> (f32, f32) {
+        let wallpaper = self.wallpaper.for_scale(self.native_scale);
         let group = crate::editor::layers::compute(
             self.image_width as f64,
             self.image_height as f64,
             &self.layers,
-            self.wallpaper.spacing.max(0.0),
+            wallpaper.spacing.max(0.0),
         );
-        if self
-            .wallpaper
-            .is_active_with_layers(!self.layers.is_empty())
-        {
-            let ((width, height), _) =
-                crate::editor::wallpaper::layout(&self.wallpaper, group.width, group.height);
+        if wallpaper.is_active_with_layers(!self.layers.is_empty()) {
+            let ((width, height), _) = crate::editor::wallpaper::layout(
+                &wallpaper,
+                group.width,
+                group.height,
+                self.native_scale,
+            );
             (width as f32, height as f32)
         } else {
             (group.width as f32, group.height as f32)
@@ -2287,9 +2313,14 @@ impl Render for EditorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
         let theme = active_theme(cx);
+        self.native_scale = crate::editor::wallpaper::native_scale(
+            f64::from(self.image_width),
+            f64::from(self.image_height),
+            f64::from(window.scale_factor()),
+        );
         self.fit_to_window(window);
-        self.sync_snapshot();
         self.refresh_backdrop(cx);
+        self.sync_snapshot();
         self.refresh_zoom_backdrop(cx);
 
         let handlers = build_handlers(&weak);
@@ -3560,13 +3591,15 @@ impl EditorWindow {
     /// Renders the current composition (base + annotations) to PNG bytes at
     /// natural size.
     pub fn export_png(&self) -> anyhow::Result<Vec<u8>> {
+        let wallpaper = self.wallpaper.for_scale(self.native_scale);
         let canvas = crate::editor::export::compose_with_layers(
             self.base_image.as_deref(),
             self.image_width as u32,
             self.image_height as u32,
             self.history.current(),
-            &self.wallpaper,
+            &wallpaper,
             &self.layers,
+            self.native_scale,
         );
         crate::editor::export::encode_png(&canvas)
     }
@@ -3826,6 +3859,36 @@ impl EditorWindow {
 mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
+
+    #[herogpui::test]
+    fn wallpaper_export_matches_polish_at_two_x(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(1600, 1000, image::Rgba([240, 80, 64, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            window.set_scale_factor(2.);
+            let mut editor = EditorWindow::from_file(source.to_str().unwrap(), window, cx);
+            editor.file_path.clear();
+            editor.wallpaper.padding = 50.;
+            editor.wallpaper.corners = 12.;
+            editor
+        });
+        let bytes = cx.update(|_, cx| editor.read(cx).export_png().unwrap());
+        assert_eq!(
+            image::load_from_memory(&bytes)
+                .unwrap()
+                .to_rgba8()
+                .dimensions(),
+            (1800, 1200)
+        );
+    }
 
     #[herogpui::test]
     fn pointer_updates_schedule_a_frame_and_keep_every_stroke_sample(

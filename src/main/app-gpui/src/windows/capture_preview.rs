@@ -1063,7 +1063,7 @@ fn starred_preset(cx: &mut App) -> Option<crate::config::schema::WallpaperPreset
 /// Composes the capture with the starred preset and puts the result on the
 /// clipboard -- `polish` in `use-polish-copy.ts`, which renders the capture over
 /// the preset's wallpaper and copies it rather than saving it.
-fn polish_and_copy(path: &Path, cx: &mut App) -> bool {
+fn polish_and_copy(path: &Path, scale_factor: f32, cx: &mut App) -> bool {
     let Some(preset) = starred_preset(cx) else {
         return false;
     };
@@ -1078,17 +1078,19 @@ fn polish_and_copy(path: &Path, cx: &mut App) -> bool {
 
     let mut settings = crate::editor::wallpaper::WallpaperSettings::default();
     crate::editor::wallpaper::apply_preset(&mut settings, &preset);
-    let ((canvas_width, canvas_height), _) = crate::editor::wallpaper::layout(
-        &settings,
-        decoded.width() as f64,
-        decoded.height() as f64,
+    let native_scale = crate::editor::wallpaper::native_scale(
+        f64::from(decoded.width()),
+        f64::from(decoded.height()),
+        f64::from(scale_factor),
     );
+    let settings = settings.for_scale(native_scale);
     let canvas = crate::editor::export::compose(
         Some(&decoded),
-        canvas_width.max(1.0) as u32,
-        canvas_height.max(1.0) as u32,
+        decoded.width(),
+        decoded.height(),
         &[],
         &settings,
+        native_scale,
     );
 
     let (width, height) = (canvas.width(), canvas.height());
@@ -1618,7 +1620,7 @@ impl CapturePreviewWindow {
                                         if gated {
                                             return;
                                         }
-                                        if polish_and_copy(&path, cx) {
+                                        if polish_and_copy(&path, window.scale_factor(), cx) {
                                             let _ = preview_entity.update(cx, |view, cx| {
                                                 begin_remove_preview(
                                                     view,
@@ -2018,6 +2020,202 @@ impl Render for CapturePreviewWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[herogpui::test]
+    fn polish_copy_matches_electron_at_multiple_scales(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(1600, 1000, image::Rgba([240, 80, 64, 255]))
+            .save(&path)
+            .unwrap();
+        let odd_path = dir.path().join("odd-capture.png");
+        image::RgbaImage::from_pixel(641, 361, image::Rgba([240, 80, 64, 255]))
+            .save(&odd_path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.wallpaper.presets = vec![serde_json::from_value(serde_json::json!({
+                "id": "scaled", "name": "Scaled", "padding": 50,
+                "corners": 12, "shadow": 0,
+            }))
+            .unwrap()];
+            settings.wallpaper.default_preset_id = Some("scaled".into());
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, config.clone()));
+        cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
+        let preview = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        for (path, scale, dimensions, padding) in [
+            (&path, 1., (1700, 1100), 50),
+            (&path, 1.25, (1726, 1126), 63),
+            (&odd_path, 1.25, (767, 487), 63),
+            (&path, 2., (1800, 1200), 100),
+        ] {
+            let copied = preview
+                .update(cx, |_, window, cx| {
+                    window.set_scale_factor(scale);
+                    assert_eq!(window.scale_factor(), scale);
+                    assert!(polish_and_copy(path, window.scale_factor(), cx));
+                    let copied =
+                        crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+                    image::load_from_memory(&copied.bytes).unwrap().to_rgba8()
+                })
+                .unwrap();
+            assert_eq!(copied.dimensions(), dimensions);
+            assert_eq!(copied.get_pixel(padding, padding).0[3], 0);
+            assert_eq!(
+                copied.get_pixel(padding + 30, padding + 30).0,
+                [240, 80, 64, 255]
+            );
+        }
+        config.update(|settings| {
+            settings.wallpaper.presets[0].window_frame =
+                Some(crate::config::schema::WindowFrameSettings {
+                    style: "macos-light".into(),
+                });
+        });
+        let framed = preview
+            .update(cx, |_, window, cx| {
+                window.set_scale_factor(2.);
+                assert!(polish_and_copy(&path, window.scale_factor(), cx));
+                let copied = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+                image::load_from_memory(&copied.bytes).unwrap().to_rgba8()
+            })
+            .unwrap();
+        assert_eq!(framed.dimensions(), (1800, 1256));
+        assert_eq!(framed.get_pixel(900, 600).0, [240, 80, 64, 255]);
+    }
+
+    #[herogpui::test]
+    fn polish_copy_matches_editor_export_at_two_x(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(640, 360, image::Rgba([240, 80, 64, 255]))
+            .save(&path)
+            .unwrap();
+        let preset: crate::config::schema::WallpaperPreset =
+            serde_json::from_value(serde_json::json!({
+                "id": "scaled", "name": "Scaled", "padding": 20,
+                "corners": 12, "shadow": 0,
+                "windowFrame": { "style": "windows-dark" },
+            }))
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.wallpaper.presets = vec![preset.clone()];
+            settings.wallpaper.default_preset_id = Some("scaled".into());
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            window.set_scale_factor(2.);
+            let mut editor =
+                crate::editor::window::EditorWindow::from_file(path.to_str().unwrap(), window, cx);
+            editor.file_path.clear();
+            crate::editor::wallpaper::apply_preset(&mut editor.wallpaper, &preset);
+            editor
+        });
+        let (saved, copied) = cx.update(|window, cx| {
+            let saved = editor.read(cx).export_png().unwrap();
+            assert!(polish_and_copy(&path, window.scale_factor(), cx));
+            let copied = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+            (saved, copied.bytes)
+        });
+        let saved = image::load_from_memory(&saved).unwrap().to_rgba8();
+        let copied = image::load_from_memory(&copied).unwrap().to_rgba8();
+        assert_eq!(saved.dimensions(), (720, 496));
+        assert_eq!(copied, saved);
+    }
+
+    #[herogpui::test]
+    fn polish_copy_scales_blur_and_framed_shadow(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let background = dir.path().join("background.png");
+        image::RgbaImage::from_fn(80, 80, |x, _| {
+            if x < 40 {
+                image::Rgba([0, 0, 0, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        })
+        .save(&background)
+        .unwrap();
+        let one = dir.path().join("one.png");
+        let two = dir.path().join("two.png");
+        for (path, width, height) in [(&one, 160, 100), (&two, 320, 200)] {
+            image::RgbaImage::from_pixel(width, height, image::Rgba([240, 80, 64, 255]))
+                .save(path)
+                .unwrap();
+        }
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.wallpaper.presets = vec![serde_json::from_value(serde_json::json!({
+                "id": "effects", "name": "Effects", "padding": 80,
+                "backgroundImage": background.to_string_lossy(),
+                "windowFrame": { "style": "windows-dark" },
+            }))
+            .unwrap()];
+            settings.wallpaper.default_preset_id = Some("effects".into());
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, config.clone()));
+        let mut images = Vec::new();
+        for (path, scale) in [(&one, 1.), (&two, 2.)] {
+            for (blur, shadow) in [(0., 0.), (30., 0.), (30., 70.)] {
+                config.update(|settings| {
+                    settings.wallpaper.presets[0].background_blur = Some(blur);
+                    settings.wallpaper.presets[0].shadow = shadow;
+                });
+                images.push(cx.update(|cx| {
+                    assert!(polish_and_copy(path, scale, cx));
+                    let copied =
+                        crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+                    image::load_from_memory(&copied.bytes).unwrap().to_rgba8()
+                }));
+            }
+        }
+        let blur_delta: u64 = (140..180)
+            .flat_map(|x| (20..60).map(move |y| (x, y)))
+            .map(|(x, y)| {
+                u64::from(images[0].get_pixel(x, y)[0].abs_diff(images[1].get_pixel(x, y)[0]))
+            })
+            .sum();
+        let shadow_delta: u64 = (180..220)
+            .flat_map(|x| (209..235).map(move |y| (x, y)))
+            .map(|(x, y)| {
+                u64::from(images[1].get_pixel(x, y)[0].abs_diff(images[2].get_pixel(x, y)[0]))
+            })
+            .sum();
+        assert!(blur_delta > 10_000, "background blur had no visible effect");
+        assert!(shadow_delta > 5_000, "frame shadow had no visible effect");
+        let half_blur =
+            image::imageops::resize(&images[4], 320, 288, image::imageops::FilterType::Triangle);
+        let half_shadow =
+            image::imageops::resize(&images[5], 320, 288, image::imageops::FilterType::Triangle);
+        let blur_error: u64 = (140..180)
+            .flat_map(|x| (20..60).map(move |y| (x, y)))
+            .map(|(x, y)| {
+                u64::from(images[1].get_pixel(x, y)[0].abs_diff(half_blur.get_pixel(x, y)[0]))
+            })
+            .sum();
+        let shadow_error: u64 = (180..220)
+            .flat_map(|x| (209..235).map(move |y| (x, y)))
+            .map(|(x, y)| {
+                u64::from(images[2].get_pixel(x, y)[0].abs_diff(half_shadow.get_pixel(x, y)[0]))
+            })
+            .sum();
+        assert!(blur_error < 4_800, "scaled blur differs: {blur_error}");
+        assert!(
+            shadow_error < 3_120,
+            "scaled shadow differs: {shadow_error}"
+        );
+    }
 
     fn stack_handle(cx: &mut gpui::TestAppContext) -> Option<AnyWindowHandle> {
         cx.update(|cx| registry::handle(WindowKind::CapturePreview, cx))

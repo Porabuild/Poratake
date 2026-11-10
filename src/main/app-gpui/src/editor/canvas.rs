@@ -44,6 +44,7 @@ pub struct CanvasSnapshot {
     /// The pending crop rectangle in image coordinates.
     pub crop: Option<(f64, f64, f64, f64)>,
     pub wallpaper: crate::editor::wallpaper::WallpaperSettings,
+    pub frame_scale: f64,
     /// The wallpaper backdrop, rendered by the same rasterizer the export
     /// uses. A gradient could be drawn with GPUI, but a background image with
     /// blur and grain could not, and preview and export have to agree.
@@ -96,6 +97,7 @@ impl RenderOnce for EditorCanvas {
         let content_height = px(snap.image_height * snap.zoom);
 
         let wallpaper = snap.wallpaper.clone();
+        let frame_scale = snap.frame_scale;
         let mut frame = div()
             .relative()
             .w(content_width)
@@ -189,8 +191,12 @@ impl RenderOnce for EditorCanvas {
         let framed = wallpaper.is_active_with_layers(!layers.is_empty());
 
         let (stage_width, stage_height) = if framed {
-            let ((canvas_width, canvas_height), _) =
-                crate::editor::wallpaper::layout(&wallpaper, group.width, group.height);
+            let ((canvas_width, canvas_height), _) = crate::editor::wallpaper::layout(
+                &wallpaper,
+                group.width,
+                group.height,
+                frame_scale,
+            );
             (
                 px(canvas_width as f32 * zoom),
                 px(canvas_height as f32 * zoom),
@@ -204,7 +210,12 @@ impl RenderOnce for EditorCanvas {
 
         let stage_child: gpui::AnyElement = if framed {
             let ((canvas_width, canvas_height), (offset_x, offset_y, _, _)) =
-                crate::editor::wallpaper::layout(&wallpaper, group.width, group.height);
+                crate::editor::wallpaper::layout(
+                    &wallpaper,
+                    group.width,
+                    group.height,
+                    frame_scale,
+                );
             // The capture sits wherever the group's layout put it.
             let (offset_x, offset_y) = (offset_x + group.primary.x, offset_y + group.primary.y);
             let mut backdrop = div()
@@ -226,8 +237,10 @@ impl RenderOnce for EditorCanvas {
             };
             // A window frame's title bar sits between the padding and the
             // image, so the image starts below it.
-            let title_bar =
-                crate::render::window_frame::title_bar_height(&wallpaper.window_frame.style, 1.0);
+            let title_bar = crate::render::window_frame::title_bar_height(
+                &wallpaper.window_frame.style,
+                frame_scale,
+            );
             let crop = self.snapshot.borrow().balance_crop;
             let (crop_left, crop_top, crop_right, crop_bottom) =
                 crop.unwrap_or((0.0, 0.0, 0.0, 0.0));
