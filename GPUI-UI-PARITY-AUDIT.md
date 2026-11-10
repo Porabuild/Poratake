@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `831c9de` plus this change.
+Refreshed 2026-11-10 for Poratake 0.9.6, based on `a16a0a7` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -190,6 +190,9 @@ passed Windows native tests and the visual geometry checks, then rejected the
 hosted images were byte-identical; the 16 new images were reviewed and added.
 GitHub reports artifact `13791799183` with SHA-256
 `9a5748d75fd3255d023979cd25b9a30b6ec95ca97cd867d439dff8eaba5ff356`.
+The [run at `a16a0a7`](https://github.com/Porabuild/Poratake/actions/runs/42879631430)
+passed all required jobs, including all 16 Windows visual cases and the normal
+2,152-image hosted comparison.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -334,6 +337,18 @@ earlier 38/65 and 43/65 counts normalized line
 endings on only the expected side and undercounted CRLF payloads. The single-pixel
 baseline failure regression also passed separately. The Windows native gate passed
 980 tests with one skip after the earlier QR threshold regressions.
+
+A low-contrast photographed code failed before the guarded normalization retry.
+Against 520 original and brightness/contrast variants of 40 existing photographs,
+the shared decoder improved from 367 exact matches to 493, with no prior match lost.
+The Windows regression also covers quarter-turns and a valid code beside a damaged
+candidate. These generated variants are development evidence, not a CI fixture.
+The Linux QR loader passed eight isolated tests against the same shared decoder.
+For a synthetic low-contrast 4K UI without a code, an alternating-order run with
+two warmups and eight measured samples had a median of 1.32 seconds before the
+retry and 2.04 seconds with the guard. The guard avoids the final retry when it
+finds no candidate, but its threshold scans still add latency. The normalization
+buffer can reach 64 MiB at the supported image limit.
 
 Hosted [Linux GPUI CI](https://github.com/Porabuild/Poratake/actions/runs/42786386596/job/129728542346)
 passed at `2cfb70e`: 798 GPUI tests, 28 Linux-daemon tests including the full-window
@@ -531,14 +546,13 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                       |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                            |
 | P1       | Native attachment compositor coverage                    | The frozen handoff fix passed a real pixel-exact native capture and save. Add automated native Windows coverage for hide/show transitions and verify freezing off, cancellation and repeated attachments.                                                                                                                                                                                                       |
-| P2       | QR photo robustness and latency                          | The native decoder matches 65/65 corpus cases, including all 40 grayscale original/framed variants, without losing a previous success. Verify additional real photographs and interactive app clipboard delivery; a 4K no-code gradient takes longer because of the extra fallback passes. Test rotated, distorted and low-contrast codes, multiple candidates, and no-code screen captures on slower hardware. |
+| P2       | QR photo robustness and latency                          | The native decoder matches 65/65 original corpus cases and 493/520 brightness/contrast variants without losing a prior match. Representative quarter-turns and multiple candidates are automated. Verify additional real photographs, perspective distortion and interactive app clipboard delivery; reduce the measured low-contrast 4K no-code latency and test slower hardware across both desktop versions. |
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                                         |
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                       |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Representative coverage only.                                                                                                                                                                                 |
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                                           |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                        |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                     |
-| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `a0168f3`. The 16 canceling-state images are reviewed; require the normal 2,152-image comparison on the current PR head.                                                                                                                                                                                                                                                      |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                        |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                          |
 

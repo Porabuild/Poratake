@@ -197,6 +197,106 @@ mod tests {
     }
 
     #[test]
+    fn detects_low_contrast_photographed_qr() {
+        let (pixels, width, height) = load_greyscale(&fixture_path("qr-region-original.png"))
+            .expect("load photographed QR code");
+        for divisor in [5, 10, 20] {
+            for offset in [0, 72, 180] {
+                let faded: Vec<_> = pixels
+                    .iter()
+                    .map(|pixel| offset + pixel / divisor)
+                    .collect();
+                assert_eq!(
+                    detect_payload_from_greyscale(&faded, width, height),
+                    "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+                    "divisor {divisor}, offset {offset}"
+                );
+            }
+        }
+        for (name, expected) in [
+            (
+                "qr-region-histogram.png",
+                "http://google.com/gwt/n?u=bluenile.com",
+            ),
+            (
+                "qr-region-framed.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-medium.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+        ] {
+            let (pixels, width, height) =
+                load_greyscale(&fixture_path(name)).expect("load photographed QR code");
+            let faded: Vec<_> = pixels.iter().map(|pixel| 72 + pixel / 10).collect();
+            assert_eq!(
+                detect_payload_from_greyscale(&faded, width, height),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_rotated_photographed_qr() {
+        let (mut pixels, mut width, mut height) =
+            load_greyscale(&fixture_path("qr-region-original.png"))
+                .expect("load photographed QR code");
+        for turn in 1..=3 {
+            let mut rotated = vec![0; pixels.len()];
+            for y in 0..height {
+                for x in 0..width {
+                    rotated[x * height + height - y - 1] = pixels[y * width + x];
+                }
+            }
+            pixels = rotated;
+            std::mem::swap(&mut width, &mut height);
+            assert_eq!(
+                detect_payload_from_greyscale(&pixels, width, height),
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+                "quarter turn {turn}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_valid_qr_beside_another_candidate() {
+        let clean = std::fs::read(fixture_path("qr-hello.gray")).expect("fixture grayscale");
+        let (photo, photo_width, photo_height) =
+            load_greyscale(&fixture_path("qr-region-original.png"))
+                .expect("load photographed QR code");
+        let width = 264 + 60 + photo_width + 40;
+        let height = photo_height.max(264) + 80;
+        for damaged in [false, true] {
+            let mut screen = vec![255; width * height];
+            for y in 0..264 {
+                let target = (y + 20) * width + 20;
+                screen[target..target + 264].copy_from_slice(&clean[y * 264..(y + 1) * 264]);
+            }
+            if damaged {
+                for y in 90..175 {
+                    let target = (y + 20) * width + 20;
+                    screen[target + 90..target + 175].fill(255);
+                }
+            }
+            for y in 0..photo_height {
+                let target = (y + 20) * width + 264 + 60;
+                screen[target..target + photo_width]
+                    .copy_from_slice(&photo[y * photo_width..(y + 1) * photo_width]);
+            }
+            let payload = detect_payload_from_greyscale(&screen, width, height);
+            let photo_payload =
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com";
+            if damaged {
+                assert_eq!(payload, photo_payload);
+            } else {
+                assert!(payload == photo_payload || payload == "https://example.com/qr-test");
+            }
+        }
+    }
+
+    #[test]
     fn detects_qr_when_the_finder_ring_blends_into_the_background() {
         let payload = detect_qr_code(&fixture_path("qr-small-block.png"))
             .expect("decode photographed QR code");

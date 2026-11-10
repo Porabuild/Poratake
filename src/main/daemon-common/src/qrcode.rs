@@ -163,7 +163,7 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
             return payload;
         }
     }
-    detect_in_region(
+    let payload = detect_in_region(
         pixels,
         width,
         height,
@@ -172,7 +172,50 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
             ThresholdPass::LocalWithPreflight(10),
         ],
         None,
-    )
+    );
+    if !payload.is_empty() {
+        return payload;
+    }
+
+    let (minimum, maximum) = pixels[..width * height]
+        .iter()
+        .fold((u8::MAX, u8::MIN), |(minimum, maximum), &pixel| {
+            (minimum.min(pixel), maximum.max(pixel))
+        });
+    let range = maximum - minimum;
+    if range == 0 || range > 127 {
+        return String::new();
+    }
+
+    let mut normalized = Vec::new();
+    if normalized.try_reserve_exact(width * height).is_err() {
+        return String::new();
+    }
+    normalized.extend(
+        pixels[..width * height]
+            .iter()
+            .map(|&pixel| ((u16::from(pixel - minimum) * 255) / u16::from(range)) as u8),
+    );
+    let mut candidates = Vec::new();
+    let payload = detect_in_region(
+        &normalized,
+        width,
+        height,
+        &[
+            ThresholdPass::LocalWithPreflight(8),
+            ThresholdPass::LocalWithPreflight(10),
+            ThresholdPass::LocalWithPreflight(12),
+            ThresholdPass::LocalWithPreflight(20),
+        ],
+        Some(&mut candidates),
+    );
+    if !payload.is_empty() {
+        return payload;
+    }
+    if candidates.is_empty() {
+        return String::new();
+    }
+    detect_payload_from_greyscale(&normalized, width, height)
 }
 
 #[cfg(feature = "qrcode-decode")]
@@ -564,6 +607,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn returns_no_payload_for_low_contrast_screen_without_qr() {
+        let (width, height) = (320, 180);
+        let mut pixels = vec![120u8; width * height];
+        for y in 15..165 {
+            for x in 15..305 {
+                if y % 50 < 32 && x % 100 < 75 {
+                    pixels[y * width + x] = 100;
+                }
+            }
+        }
+        assert_eq!(detect_payload_from_greyscale(&pixels, width, height), "");
     }
 
     #[test]
