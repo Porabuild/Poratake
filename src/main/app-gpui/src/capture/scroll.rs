@@ -44,12 +44,11 @@ pub fn start(daemon: &DaemonHandle, request: &ScrollCaptureStartRequest) -> bool
 
 /// Stitches and writes the capture, returning the file the daemon produced.
 pub fn finish(daemon: &DaemonHandle, output_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let response = daemon.scroll_capture().finish(&ScrollCaptureFinishRequest {
+        output_path: output_path.to_path_buf(),
+    });
     ACTIVE.store(false, Ordering::SeqCst);
-    let response = daemon
-        .scroll_capture()
-        .finish(&ScrollCaptureFinishRequest {
-            output_path: output_path.to_path_buf(),
-        })
+    let response = response
         .map_err(|error| eprintln!("[scroll-capture] finish failed: {error}"))
         .ok()?;
 
@@ -60,10 +59,12 @@ pub fn finish(daemon: &DaemonHandle, output_path: &std::path::Path) -> Option<st
 }
 
 pub fn cancel(daemon: &DaemonHandle) {
-    if !ACTIVE.swap(false, Ordering::SeqCst) {
+    if !is_active() {
         return;
     }
-    if let Err(error) = daemon.scroll_capture().cancel() {
+    let result = daemon.scroll_capture().cancel();
+    ACTIVE.store(false, Ordering::SeqCst);
+    if let Err(error) = result {
         eprintln!("[scroll-capture] cancel failed: {error}");
     }
 }

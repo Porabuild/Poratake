@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::Path;
 
 use poratake_daemon_common::protocol::{self, Request};
@@ -18,6 +18,18 @@ pub(super) fn calls(output: &Path) -> Vec<serde_json::Value> {
 fn capture_fixture(output: &str) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(Path::new(output).join("capture-fixture.json")).unwrap())
         .unwrap()
+}
+
+fn wait_for_scroll_barrier(fixture: &serde_json::Value) {
+    let Some(address) = fixture["barrier"].as_str() else {
+        return;
+    };
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(&[1]).unwrap();
+    stream.read_exact(&mut [0]).unwrap();
 }
 
 pub fn run() {
@@ -136,7 +148,10 @@ pub fn run() {
                     continue;
                 }
                 scrolling = true;
-                if fixture["scroll"] == "early-cancel" {
+                if matches!(
+                    fixture["scroll"].as_str(),
+                    Some("early-cancel" | "cancel-held")
+                ) {
                     scrolling = false;
                     protocol::send_event(
                         poratake_daemon_common::contract::SCROLL_CAPTURE_CANCELLED_EVENT,
@@ -155,6 +170,7 @@ pub fn run() {
                 assert!(scrolling);
                 scrolling = false;
                 let fixture = capture_fixture(&output);
+                wait_for_scroll_barrier(&fixture);
                 if fixture["scroll"] == "finish-failed" {
                     protocol::respond_error(
                         &request.id,
@@ -175,6 +191,7 @@ pub fn run() {
             }
             ("scroll-capture", "cancel") => {
                 scrolling = false;
+                wait_for_scroll_barrier(&capture_fixture(&output));
                 json!({})
             }
             ("screenshot", method @ ("capture-area" | "capture-window")) => {

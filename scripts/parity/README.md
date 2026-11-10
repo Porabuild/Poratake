@@ -102,11 +102,12 @@ preservation, notification copy, temporary-file cleanup and absence of library
 entries. The headless app owns its clipboard; parity notifications are recorded
 at the platform boundary instead of being sent to the OS.
 
-Seven scroll scenarios check selection cancellation, completion/cancellation
-before the start response, start/finish failures, empty output and retry. Scroll
-selection must stay live even when freezing is enabled. Saved portrait output
-must match history/editor exports. Eight editor-attachment scenarios check all
-four edges, live/frozen/fallback pixels, capture and invalid-image failures,
+Nine scroll scenarios check selection cancellation, completion/cancellation
+before the start response, start/finish failures, empty output, held finish and
+cancel responses, and retry. The session stays active until each held response.
+Scroll selection must stay live even when freezing is enabled. Saved portrait
+output must match history/editor exports. Eight editor-attachment scenarios
+check all four edges, live/frozen/fallback pixels, capture and invalid-image failures,
 cancellation, cleanup, clipboard preservation and identical history reopen.
 They activate the actual edge strips with left and right mouse buttons and reject
 an annotation draft from the same click. Each matrix case checks the strips' 32px

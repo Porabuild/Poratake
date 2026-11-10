@@ -1,5 +1,6 @@
 use crate::capture::intent::CaptureIntent;
 use crate::system::clipboard::ClipboardService;
+use std::io::{Read, Write};
 
 use super::daemon_fixture::calls;
 use super::workflows::{area_picker, select_area, verify_saved_capture, SELECTED_RECT};
@@ -13,14 +14,32 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         "start-failed",
         "finish-failed",
         "empty",
+        "finish-held",
+        "cancel-held",
         "retry",
     ] {
+        let barrier = if name.ends_with("-held") {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.read_exact(&mut [0]).unwrap();
+                let active = crate::capture::scroll::is_active();
+                stream.write_all(&[1]).unwrap();
+                tx.send(active).unwrap();
+            });
+            Some((address, rx))
+        } else {
+            None
+        };
         let captures = scratch.join(format!("scroll-{name}"));
         std::fs::create_dir_all(&captures).unwrap();
         std::fs::write(
             output.join("capture-fixture.json"),
             serde_json::to_vec(&serde_json::json!({
                 "freeze": "frozen", "rect": SELECTED_RECT, "windowId": null, "scroll": name,
+                "barrier": barrier.as_ref().map(|(address, _)| address),
             }))
             .unwrap(),
         )
@@ -50,6 +69,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             select_area(cx, picker);
         }
         cx.run_until_parked();
+        if let Some((_, rx)) = barrier {
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+                "{name}: scroll capture must remain active until the daemon responds"
+            );
+        }
         assert!(
             !crate::capture::scroll::is_active(),
             "{name}: scroll session must settle"
@@ -62,11 +87,15 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
             Some(sentinel)
         );
-        let saved = matches!(name, "early-finish" | "retry");
+        let saved = matches!(name, "early-finish" | "finish-held" | "retry");
         if saved {
             verify_saved_capture(
                 cx,
-                output,
+                if name == "finish-held" {
+                    scratch
+                } else {
+                    output
+                },
                 &captures,
                 (
                     poratake_daemon_common::geometry::CaptureRect {
@@ -110,10 +139,13 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 "finish",
                 usize::from(matches!(
                     name,
-                    "early-finish" | "finish-failed" | "empty" | "retry"
+                    "early-finish" | "finish-failed" | "empty" | "finish-held" | "retry"
                 )),
             ),
-            ("cancel", usize::from(name == "early-cancel")),
+            (
+                "cancel",
+                usize::from(matches!(name, "early-cancel" | "cancel-held")),
+            ),
         ] {
             assert_eq!(
                 calls
