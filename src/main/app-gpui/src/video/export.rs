@@ -673,6 +673,171 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn audio_preview_and_export_follow_volume_changes_across_a_cut() {
+        use crate::video::audio_tracks::VolumeSource;
+        use crate::video::preview_audio::{self, RebuildInputs, StemSignature};
+        use crate::windows::video_editor::model;
+        use std::collections::HashMap;
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Audio workflow.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let mut encoder = Encoder::create(
+            &project::recording_video_path(&project),
+            Settings {
+                width: 320,
+                height: 180,
+                frame_rate: 12,
+                bitrate: 1_000_000,
+                has_audio: true,
+            },
+        )
+        .unwrap();
+        let samples: Vec<i16> = (0..AUDIO_SAMPLE_RATE * 2)
+            .flat_map(|frame| {
+                let frequency = if frame < AUDIO_SAMPLE_RATE {
+                    440.
+                } else {
+                    880.
+                };
+                let phase =
+                    frame as f64 * frequency * std::f64::consts::TAU / f64::from(AUDIO_SAMPLE_RATE);
+                let sample = (phase.sin() * 5000.) as i16;
+                [sample, sample]
+            })
+            .collect();
+        encoder.write_audio(audio::to_bytes(&samples), 0).unwrap();
+        for _ in 0..24 {
+            encoder
+                .write_frame([32, 64, 128, 255].repeat(320 * 180))
+                .unwrap();
+        }
+        encoder.finish().unwrap();
+        std::fs::write(
+            project::keys_path(&project),
+            serde_json::to_vec(&serde_json::json!({
+                "events": [
+                    {"timestamp": 0.3, "key": "a", "type": "down"},
+                    {"timestamp": 1.0, "key": "b", "type": "down"},
+                    {"timestamp": 1.4, "key": "c", "type": "down"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut state = VideoEditorState {
+            source_duration: Some(2.),
+            segments: vec![
+                model::Segment {
+                    original_end: 0.75,
+                    speed: Some(1.5),
+                    ..model::Segment::spanning(2.)
+                },
+                model::Segment {
+                    id: "after-cut".into(),
+                    original_start: 1.25,
+                    speed: Some(0.5),
+                    ..model::Segment::spanning(2.)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        state.wallpaper.enabled = false;
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "12".into();
+        state.audio_style.system_audio_volume = 0.35;
+        state.audio_style.keyboard_sound_enabled = true;
+        state.audio_style.keyboard_sound_volume = 0.;
+        let built =
+            preview_audio::build_stems(RebuildInputs::capture(&project, &state, &HashMap::new()));
+        let keyboard = built
+            .stems
+            .iter()
+            .find(|stem| stem.volume == VolumeSource::Keyboard)
+            .expect("keyboard clicks must be ready while muted");
+        for start in [0.2, 0.8] {
+            let start = (start * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
+            let end = start + AUDIO_SAMPLE_RATE as usize / 10 * 2;
+            assert!(keyboard.samples[start..end]
+                .iter()
+                .any(|sample| *sample != 0));
+        }
+        assert!(built
+            .stems
+            .iter()
+            .any(|stem| stem.volume == VolumeSource::SystemAudio));
+
+        state.audio_style.keyboard_sound_volume = 0.6;
+        assert_eq!(built.signature, StemSignature::capture(&state));
+        model::save_state(&project, &state);
+        assert_eq!(model::load_state(&project), state);
+        let tracks: Vec<audio::Track> = built
+            .stems
+            .iter()
+            .map(|stem| audio::Track {
+                samples: stem.samples.as_ref().clone(),
+                volume: stem.volume.resolve(&state),
+            })
+            .collect();
+        let preview = audio::mix(&tracks, AUDIO_SAMPLE_RATE as usize * 2);
+        let other_tracks: Vec<audio::Track> = built
+            .stems
+            .iter()
+            .filter(|stem| stem.volume != VolumeSource::Keyboard)
+            .map(|stem| audio::Track {
+                samples: stem.samples.as_ref().clone(),
+                volume: stem.volume.resolve(&state),
+            })
+            .collect();
+        let without_keyboard = audio::mix(&other_tracks, AUDIO_SAMPLE_RATE as usize * 2);
+        assert_eq!(build_audio(&project, &state, 2., 2.).unwrap(), preview);
+
+        let output = directory.path().join("audio-edited.mp4");
+        run(
+            Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = audio::decode(&output).expect("exported audio");
+        let count = exported.len().min(preview.len());
+        assert!(count >= AUDIO_SAMPLE_RATE as usize * 3);
+        let error: f64 = exported[..count]
+            .iter()
+            .zip(&preview[..count])
+            .map(|(actual, expected)| f64::from((*actual as i32 - *expected as i32).abs()))
+            .sum::<f64>()
+            / count as f64;
+        assert!(error < 500., "preview/export audio error {error}");
+        for time in [0.2, 0.8] {
+            let start = (time * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
+            let end = start + AUDIO_SAMPLE_RATE as usize / 10 * 2;
+            let difference: f64 = preview[start..end]
+                .iter()
+                .zip(&without_keyboard[start..end])
+                .map(|(actual, baseline)| f64::from((*actual as i32 - *baseline as i32).abs()))
+                .sum::<f64>()
+                / (end - start) as f64;
+            let error: f64 = exported[start..end]
+                .iter()
+                .zip(&preview[start..end])
+                .map(|(actual, expected)| f64::from((*actual as i32 - *expected as i32).abs()))
+                .sum::<f64>()
+                / (end - start) as f64;
+            assert!(difference > 100., "keyboard click missing at {time}s");
+            assert!(
+                error < difference / 2.,
+                "keyboard click export error {error} at {time}s"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn cursor_keyboard_and_subtitles_match_export_across_timeline_edits() {
         use crate::windows::video_editor::{model, preview};
 

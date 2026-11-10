@@ -1163,10 +1163,10 @@ impl VideoEditorWindow {
         let Some(project) = self.path.clone() else {
             return;
         };
+        self.audio_generation += 1;
         if !self.preview_audio.needs_rebuild(&self.state) {
             return;
         }
-        self.audio_generation += 1;
         let generation = self.audio_generation;
         let inputs = crate::video::preview_audio::RebuildInputs::capture(
             &project,
@@ -3767,6 +3767,40 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn undo_while_audio_is_building_keeps_the_restored_timeline(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let project = dir.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.source_duration = Some(3.0);
+                editor.state.segments = vec![model::Segment::spanning(3.0)];
+                let inputs = crate::video::preview_audio::RebuildInputs::capture(
+                    &project,
+                    &editor.state,
+                    editor.preview_audio.cache(),
+                );
+                let built = crate::video::preview_audio::build_stems(inputs);
+                editor.preview_audio.install(built, &editor.state, 0.0);
+                assert!(!editor.preview_audio.needs_rebuild(&editor.state));
+
+                editor.commit(cx, |state| state.segments[0].original_end = 2.0);
+                editor.undo(cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.state.segments[0].original_end, 3.0);
+                assert!(!editor.preview_audio.needs_rebuild(&editor.state));
+            })
+            .unwrap();
     }
 
     #[herogpui::test]
