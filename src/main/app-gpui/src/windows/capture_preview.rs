@@ -787,7 +787,15 @@ fn selected_display(cx: &mut App) -> Option<(Bounds<gpui::Pixels>, gpui::Display
     config
         .preview
         .display_id
-        .and_then(|id| displays.get(id.max(0) as usize).cloned())
+        .and_then(|id| {
+            displays
+                .iter()
+                .find(|display| {
+                    crate::system::work_area::display_preference_id(display.id()) == Some(id)
+                })
+                .cloned()
+        })
+        .or_else(|| cx.primary_display())
         .or_else(|| displays.first().cloned())
         .map(|display| {
             (
@@ -1901,41 +1909,7 @@ impl CapturePreviewWindow {
 
             if has_multiple_displays {
                 let owner = format!("preview-display-menu-{id}");
-                let current = crate::state::state(cx)
-                    .config
-                    .get()
-                    .preview
-                    .display_id
-                    .unwrap_or(0);
-                let mut builder = crate::ui::menu::MenuBuilder::new();
-                for (index, &(display_id, primary)) in displays.iter().enumerate() {
-                    let label = format!(
-                        "Display {}{}",
-                        index + 1,
-                        if primary { " (Primary)" } else { "" }
-                    );
-                    builder = builder.item(
-                        crate::ui::menu::MenuItem::new(label)
-                            .trailing_check(current == index as i64)
-                            .on_select(move |_window, app| {
-                                let Some(index) = app
-                                    .displays()
-                                    .iter()
-                                    .position(|display| display.id() == display_id)
-                                else {
-                                    return;
-                                };
-                                let config = crate::state::state(app).config.clone();
-                                config.update(|settings| {
-                                    settings.preview.display_id = Some(index as i64);
-                                });
-                                crate::windows::capture_preview::CapturePreviewWindow::reposition(
-                                    app,
-                                );
-                            }),
-                    );
-                }
-                let entries = builder.build();
+                let displays = displays.to_vec();
                 let handle = self.display_menu.clone();
                 let placement = owner.clone();
                 root = root.child(
@@ -1953,6 +1927,54 @@ impl CapturePreviewWindow {
                             theme,
                             theme.primary,
                             move |window, cx| {
+                                let current =
+                                    crate::state::state(cx).config.get().preview.display_id;
+                                let ids = displays
+                                    .iter()
+                                    .map(|&(id, primary)| {
+                                        (
+                                            id,
+                                            primary,
+                                            crate::system::work_area::display_preference_id(id),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                let selected = ids
+                                    .iter()
+                                    .find(|(_, _, id)| id.is_some() && *id == current)
+                                    .or_else(|| ids.iter().find(|(_, primary, _)| *primary))
+                                    .or_else(|| ids.first())
+                                    .map(|(id, _, _)| *id);
+                                let mut builder = crate::ui::menu::MenuBuilder::new();
+                                for (index, &(display_id, primary, _)) in ids.iter().enumerate() {
+                                    let label = format!(
+                                        "Display {}{}",
+                                        index + 1,
+                                        if primary { " (Primary)" } else { "" }
+                                    );
+                                    builder = builder.item(
+                                        crate::ui::menu::MenuItem::new(label)
+                                            .trailing_check(selected == Some(display_id))
+                                            .on_select(move |_window, app| {
+                                                if app.find_display(display_id).is_none() {
+                                                    return;
+                                                }
+                                                let Some(id) =
+                                                    crate::system::work_area::display_preference_id(
+                                                        display_id,
+                                                    )
+                                                else {
+                                                    return;
+                                                };
+                                                let config =
+                                                    crate::state::state(app).config.clone();
+                                                config.update(|settings| {
+                                                    settings.preview.display_id = Some(id);
+                                                });
+                                                CapturePreviewWindow::reposition(app);
+                                            }),
+                                    );
+                                }
                                 handle.toggle(
                                     crate::ui::menu::MenuPlacement::below(placement.clone())
                                         .aligned_right()
@@ -1966,7 +1988,7 @@ impl CapturePreviewWindow {
                                         .max_height(px(
                                             PREVIEW_HEIGHT - PREVIEW_CONTROL_INSET * 2.0
                                         )),
-                                    entries.clone(),
+                                    builder.build(),
                                     window,
                                     cx,
                                 );
@@ -2177,7 +2199,7 @@ mod tests {
         visual.press("home");
         visual.press("end");
         visual.press("enter");
-        assert_eq!(config.get().preview.display_id, Some(3));
+        assert_eq!(config.get().preview.display_id, Some(12));
         assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
         stack = stack_handle(visual)
             .unwrap()
@@ -2201,6 +2223,10 @@ mod tests {
         visual.simulate_display_removed(gpui::DisplayId::new(10));
         visual.settle();
         assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        assert_eq!(
+            visual.update(|_, cx| selected_display(cx).unwrap().1),
+            gpui::DisplayId::new(12)
+        );
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.click_at(gpui::point(px(184.), px(552.)));
         assert!(visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
@@ -2221,7 +2247,7 @@ mod tests {
             )
         });
         visual.click_at(position);
-        assert_eq!(config.get().preview.display_id, Some(2));
+        assert_eq!(config.get().preview.display_id, Some(12));
         stack = stack_handle(visual)
             .unwrap()
             .downcast::<CapturePreviewWindow>()
@@ -2284,6 +2310,13 @@ mod tests {
         visual.simulate_display_removed(gpui::DisplayId::new(12));
         visual.settle();
         assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.update(|_, cx| {
+            assert_eq!(
+                selected_display(cx).unwrap().1,
+                cx.primary_display().unwrap().id()
+            );
+        });
+        assert_eq!(config.get().preview.display_id, Some(12));
 
         for id in 11..13 {
             visual.simulate_display_added(gpui::DisplayId::new(id), None);
