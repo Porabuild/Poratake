@@ -147,7 +147,16 @@ hosted images remained byte-identical. That 2,104-image profile was complete at
 The next [hosted run](https://github.com/Porabuild/Poratake/actions/runs/42813783806)
 at `460ed6f` passed all jobs. Windows passed 963 native tests with one skip and
 all 16 exact visual cases against the 2,104-image Microsoft Basic Render Driver
-profile. The subsequent attachment-edge expansion still needs its hosted images.
+profile.
+
+The [next hosted run](https://github.com/Porabuild/Poratake/actions/runs/42819345589)
+at `d83494f` passed 965 native tests with one skip and reached the visual
+state-list assertion in all 16 cases. The gate rejected the 32 new edge images
+because they were not yet in the hosted profile. All 2,104 existing images are
+byte-identical to their baselines; the 32 new default and hover images were
+reviewed across themes, widths and scales. Artifact `13768140621` has SHA-256
+`3365f2021acf721a6425bc179dfbb78e34dde355b84e9e92eb29001446233bdf`.
+The hosted profile now contains 2,136 images and still needs a normal CI pass.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -219,6 +228,8 @@ The native gate passed 963 tests with one skip after the tray anchor tests and
 compositor fix; typecheck, lint, formatting and parity-feature Clippy also passed.
 With the attachment-edge interaction and focus tests, it passed 965 tests with
 one skip; typecheck, lint, formatting and parity-feature Clippy also passed.
+After the recording-preference and toolbar-hit fixes, the local matrix again
+passed all 16 cases and the native gate passed 967 tests with one skip.
 Tooltip usage across the GPUI source uses HeroGPUI components and their shared
 helpers; the tray icon retains its OS tooltip.
 The earlier camera/zoom export expansion passed the native gate with 960 tests and one
@@ -400,7 +411,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                           |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                        |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                     |
-| P2       | Review hosted Windows visual results                     | The reviewed dd6b68e and abc940f artifacts supply the first 2,104 hosted images. Review the new attachment-edge states on the hosted renderer and require a normal CI run without updates.                                                                                                                                                                                                      |
+| P2       | Verify hosted Windows visual results                     | The hosted profile now includes all 2,136 reviewed images. Require a normal CI run without updates against the expanded profile.                                                                                                                                                                                                                                                                |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                        |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                          |
 
