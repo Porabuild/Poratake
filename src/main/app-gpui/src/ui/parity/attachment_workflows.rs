@@ -10,8 +10,78 @@ use crate::system::clipboard::ClipboardService;
 use super::daemon_fixture::calls;
 use super::workflows::{area_picker, select_area, SELECTED_RECT};
 use super::{
-    capture, escape, hover, px, settle, size, take_notifications, HeadlessAppContext, Path,
+    capture, escape, event, hover, measured, px, settle, size, take_notifications,
+    HeadlessAppContext, Modifiers, MouseButton, MouseDownEvent, Path, PlatformInput,
 };
+
+pub(super) fn check_edge_overlay(
+    cx: &mut HeadlessAppContext,
+    editor: gpui::WindowHandle<EditorWindow>,
+    output: &Path,
+    scale: f32,
+) {
+    let window = editor.into();
+    editor
+        .update(cx, |editor, _, cx| editor.toggle_capture_mode(cx))
+        .unwrap();
+    settle(cx, window);
+    let top = measured("capture-edges", 0);
+    let left = measured("capture-edges", 2);
+    for index in 0..4 {
+        let bounds = measured("capture-edges", index);
+        let thickness = if index < 2 {
+            bounds.size.height
+        } else {
+            bounds.size.width
+        };
+        assert_eq!(thickness, px(32.0), "edge {index} hit target thickness");
+    }
+    hover(
+        cx,
+        window,
+        f32::from(top.center().x),
+        f32::from(left.center().y),
+    );
+    capture(cx, window, output, "attachment-edges-default");
+    let idle = cx.capture_screenshot(window).unwrap();
+    for index in 0..4 {
+        let bounds = measured("capture-edges", index);
+        let center = bounds.center();
+        hover(cx, window, f32::from(center.x), f32::from(center.y));
+        let hovered = cx.capture_screenshot(window).unwrap();
+        if index == 3 {
+            capture(cx, window, output, "attachment-edges-hover");
+        }
+        let x = (f32::from(center.x) * scale) as u32;
+        let y = (f32::from(center.y) * scale) as u32;
+        let radius = (12.0 * scale) as u32;
+        let changed = (y - radius..y + radius)
+            .flat_map(|y| (x - radius..x + radius).map(move |x| (x, y)))
+            .filter(|&(x, y)| idle.get_pixel(x, y) != hovered.get_pixel(x, y))
+            .count();
+        assert!(
+            changed > 50,
+            "edge {index} hover must brighten its camera icon"
+        );
+        let (line_x, line_y) = match index {
+            0 => (f32::from(center.x) - 60.0, f32::from(bounds.top()) + 0.5),
+            1 => (f32::from(center.x) - 60.0, f32::from(bounds.bottom()) - 0.5),
+            2 => (f32::from(bounds.left()) + 0.5, f32::from(center.y) - 60.0),
+            3 => (f32::from(bounds.right()) - 0.5, f32::from(center.y) - 60.0),
+            _ => unreachable!(),
+        };
+        let (x, y) = ((line_x * scale) as u32, (line_y * scale) as u32);
+        assert_ne!(
+            idle.get_pixel(x, y),
+            hovered.get_pixel(x, y),
+            "edge {index} hover must paint its border"
+        );
+    }
+    editor
+        .update(cx, |editor, _, cx| editor.toggle_capture_mode(cx))
+        .unwrap();
+    settle(cx, window);
+}
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     for (name, edge, freeze, frozen) in [
@@ -74,11 +144,40 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         take_notifications();
         let before = calls(output).len();
         editor
-            .update(cx, |editor, window, cx| {
-                editor.attach_layer(edge, window, cx)
-            })
+            .update(cx, |editor, _, cx| editor.toggle_capture_mode(cx))
             .unwrap();
+        settle(cx, window);
+        let index = match edge {
+            Edge::Top => 0,
+            Edge::Bottom => 1,
+            Edge::Left => 2,
+            Edge::Right => 3,
+            Edge::Primary => unreachable!(),
+        };
+        let at = measured("capture-edges", index).center();
+        hover(cx, window, f32::from(at.x), f32::from(at.y));
+        event(
+            cx,
+            window,
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: at,
+                button: if matches!(name, "retry" | "cancelled" | "left" | "bottom") {
+                    MouseButton::Right
+                } else {
+                    MouseButton::Left
+                },
+                click_count: 1,
+                modifiers: Modifiers::none(),
+                first_mouse: false,
+            }),
+        );
         cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                editor.read(cx).unwrap().snapshot.borrow().draft.is_none(),
+                "attach-{name}: choosing an edge must not start an annotation"
+            );
+        });
         let picker = area_picker(cx);
         if name == "cancelled" {
             escape(cx, picker);

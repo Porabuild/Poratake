@@ -45,8 +45,8 @@ input and frame scheduling use GPUI's headless harness. This is not installed-ap
 or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
-738 logical pixels high. Each case captures 128 states; the two 1280px, 100% cases
-also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,104 baseline images in the complete local renderer profile.
+738 logical pixels high. Each case captures 130 states; the two 1280px, 100% cases
+also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,136 baseline images in a complete renderer profile.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -140,8 +140,8 @@ The next [hosted run](https://github.com/Porabuild/Poratake/actions/runs/4280665
 at `abc940f` passed 961 native tests with one skip and all 16 cases’ geometry,
 workflow and atlas checks. It rejected the incomplete state list as intended.
 Its 176 new tray/tooltip/Edit-hover images were reviewed, and all 1,928 earlier
-hosted images remained byte-identical. The full 2,104-image profile is now
-present; a normal hosted comparison remains required. The artifact SHA-256 is
+hosted images remained byte-identical. That 2,104-image profile was complete at
+`460ed6f`; its normal hosted comparison remains required. The artifact SHA-256 is
 `53a763a3afcd985d4cba1c731526a88896a6f10ca5b480bc86e9793048e1e42a`.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
@@ -207,8 +207,13 @@ The expanded local matrix recorded all 16 cases and 2,104 images. All 176 new
 images were reviewed, and the existing 1,928 local images stayed byte-identical.
 A fresh normal matrix passed all 16 cases and 2,104 exact images with baseline
 updates disabled.
+The attachment-edge expansion adds 32 reviewed local images; the earlier 2,104
+local images remain unchanged. A normal run passed all 16 cases and 2,136 exact
+images. The four edge indicators are also checked independently of baselines.
 The native gate passed 963 tests with one skip after the tray anchor tests and
 compositor fix; typecheck, lint, formatting and parity-feature Clippy also passed.
+With the attachment-edge interaction and focus tests, it passed 965 tests with
+one skip; typecheck, lint, formatting and parity-feature Clippy also passed.
 Tooltip usage across the GPUI source uses HeroGPUI components and their shared
 helpers; the tray icon retains its OS tooltip.
 The earlier camera/zoom export expansion passed the native gate with 960 tests and one
@@ -321,6 +326,13 @@ Bugs fixed in this pass:
   start; both early events and a successful retry are exercised.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
+- Choosing an attachment edge could also begin an annotation on the editor
+  canvas. Edge presses now stop at the overlay; both mouse buttons work, and
+  the edge and camera icon highlight on hover as in Electron. The workflow
+  fixture presses the actual strips and rejects an unintended draft. The four
+  edges now have names, keyboard activation and in-bounds focus borders. Windows
+  accessibility inspection exposed all four buttons; invoking the right edge
+  opened the selector, and Escape returned to the isolated test editor.
 - The editor retained its original zoom after an attachment expanded the
   composition, clipping the result. The fit cache now includes composition
   dimensions, matching Electron's recalculation dependencies. Attachment checks
@@ -374,8 +386,9 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Extended video interactions and export matrix            | Loaded panels are baselined; preview/export checks include one manual zoom and camera on-periods across a cut. Add timeline/control interactions, remaining zoom/camera cases, cursor, keyboard, subtitles and audio; extend combined cuts, trims and speed cases. This is representative coverage.                                                                                             |
 | P2       | Pre-recording preference parity                          | GPUI toggle actions change the pending take but leave stored enable flags unchanged; Electron regular pre-recording controls persist them and all-in-one uses session choices. Verify both entry paths and align their persistence rules.                                                                                                                                                       |
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                           |
+| P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                        |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                     |
-| P2       | Review hosted Windows visual results                     | The reviewed dd6b68e and abc940f artifacts supply all 2,104 hosted images. Require a normal CI run to compare the complete profile without updates.                                                                                                                                                                                                                                             |
+| P2       | Review hosted Windows visual results                     | The reviewed dd6b68e and abc940f artifacts supply the first 2,104 hosted images. Review the new attachment-edge states on the hosted renderer and require a normal CI run without updates.                                                                                                                                                                                                      |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                        |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                          |
 

@@ -108,12 +108,17 @@ selection must stay live even when freezing is enabled. Saved portrait output
 must match history/editor exports. Eight editor-attachment scenarios check all
 four edges, live/frozen/fallback pixels, capture and invalid-image failures,
 cancellation, cleanup, clipboard preservation and identical history reopen.
+They activate the actual edge strips with left and right mouse buttons and reject
+an annotation draft from the same click. Each matrix case checks the strips' 32px
+hit targets and all four hover indicators, with default and hover image baselines.
+Native controls expose named buttons; unit tests exercise keyboard activation and
+verify the focus borders remain inside the strips.
 Pin workflows compare rendered annotations with exported pixels and restore
 the editor with history enabled or disabled without adding history entries.
 Unit regressions invoke the OS should-close callback and verify annotated
 restoration with history disabled plus standalone close without an editor.
 Actual native close-event delivery and window destruction remain separate checks.
-The built-in 1280px, 100% cases add 28 workflow images each, for 2,104 baseline
+The built-in 1280px, 100% cases add 28 workflow images each, for 2,136 baseline
 images per renderer.
 
 Capture, timer and scroll completion first open a bottom-right preview without

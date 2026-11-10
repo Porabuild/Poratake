@@ -1155,17 +1155,53 @@ pub fn capture_edge_overlay(
     let mut overlay = div().absolute().inset_0();
     for (edge, name) in edges {
         let handler = on_edge.clone();
+        let keyboard_handler = on_edge.clone();
+        let focus_color = theme.accent;
+        let group = gpui::SharedString::from(format!("capture-edge-{name}"));
+        let indicator = div()
+            .absolute()
+            .bg(theme.accent)
+            .opacity(0.0)
+            .group_hover(group.clone(), |style| style.opacity(1.0));
+        let indicator = match edge {
+            Edge::Top => indicator.top_0().left_0().right_0().h(px(1.0)),
+            Edge::Bottom => indicator.bottom_0().left_0().right_0().h(px(1.0)),
+            Edge::Left => indicator.left_0().top_0().bottom_0().w(px(1.0)),
+            Edge::Right => indicator.right_0().top_0().bottom_0().w(px(1.0)),
+            Edge::Primary => indicator,
+        };
         let mut strip = div()
-            .id(gpui::SharedString::from(format!("capture-edge-{name}")))
+            .id(group.clone())
+            .role(gpui::accesskit::Role::Button)
+            .aria_label(gpui::SharedString::from(format!(
+                "Capture and attach at the {name} edge"
+            )))
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.border_2().border_color(focus_color))
+            .group(group.clone())
             .absolute()
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                move |_event, window, cx: &mut App| handler(edge, window, cx),
-            )
+            .on_any_mouse_down(move |event, window, cx: &mut App| {
+                if !matches!(
+                    event.button,
+                    gpui::MouseButton::Left | gpui::MouseButton::Right
+                ) {
+                    return;
+                }
+                cx.stop_propagation();
+                handler(edge, window, cx);
+            })
+            .on_click(move |event, window, cx| {
+                if event.is_keyboard() {
+                    cx.stop_propagation();
+                    keyboard_handler(edge, window, cx);
+                }
+            })
+            .child(indicator)
             .child(
                 div()
                     .size(px(24.0))
@@ -1176,6 +1212,7 @@ pub fn capture_edge_overlay(
                     .bg(theme.accent)
                     .text_color(theme.accent_foreground)
                     .opacity(0.4)
+                    .group_hover(group, |style| style.opacity(1.0))
                     .child(crate::ui::icon::icon_element("camera", px(12.0))),
             );
 
@@ -1188,6 +1225,10 @@ pub fn capture_edge_overlay(
         };
         overlay = overlay.child(strip);
     }
+    #[cfg(feature = "parity")]
+    let overlay = overlay.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("capture-edges", bounds);
+    });
     overlay.into_any_element()
 }
 
@@ -1401,6 +1442,134 @@ fn crop_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{point, Context, Modifiers, MouseButton, Render, Window};
+    use herogpui::test::TestWindowExt;
+
+    struct CaptureEdgeSurface {
+        edges: Rc<RefCell<Vec<crate::editor::layers::Edge>>>,
+        bubbled: Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Render for CaptureEdgeSurface {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let edges = self.edges.clone();
+            let bubbled = self.bubbled.clone();
+            let surface = div()
+                .relative()
+                .w(px(400.0))
+                .h(px(300.0))
+                .overflow_hidden()
+                .on_any_mouse_down(move |_, _, _| bubbled.set(bubbled.get() + 1))
+                .child(capture_edge_overlay(
+                    &crate::theme::vars::ThemeVars::default(),
+                    Rc::new(move |edge, _, _| edges.borrow_mut().push(edge)),
+                ));
+            crate::ui::window_root::focus_root(surface, window, cx)
+        }
+    }
+
+    #[herogpui::test]
+    fn capture_edges_accept_both_mouse_buttons_without_bubbling(cx: &mut gpui::TestAppContext) {
+        use crate::editor::layers::Edge;
+
+        let edges = Rc::new(RefCell::new(Vec::new()));
+        let bubbled = Rc::new(std::cell::Cell::new(0));
+        let (_view, cx) = herogpui::test::open_window(cx, {
+            let edges = edges.clone();
+            let bubbled = bubbled.clone();
+            move |_, _| CaptureEdgeSurface { edges, bubbled }
+        });
+        cx.settle();
+        for (edge, x, y) in [
+            (Edge::Top, 200.0, 16.0),
+            (Edge::Bottom, 200.0, 284.0),
+            (Edge::Left, 16.0, 150.0),
+            (Edge::Right, 384.0, 150.0),
+        ] {
+            let at = point(px(x), px(y));
+            for button in [MouseButton::Left, MouseButton::Right] {
+                cx.simulate_mouse_move(at, None, Modifiers::none());
+                cx.simulate_mouse_down(at, button, Modifiers::none());
+                cx.simulate_mouse_up(at, button, Modifiers::none());
+                assert_eq!(edges.borrow_mut().pop(), Some(edge));
+                assert_eq!(bubbled.get(), 0);
+            }
+        }
+        let at = point(px(200.0), px(16.0));
+        cx.simulate_mouse_move(at, None, Modifiers::none());
+        cx.simulate_mouse_down(at, MouseButton::Middle, Modifiers::none());
+        assert!(edges.borrow().is_empty());
+        assert_eq!(bubbled.get(), 1);
+    }
+
+    #[herogpui::test]
+    fn capture_edges_can_be_activated_from_the_keyboard(cx: &mut gpui::TestAppContext) {
+        use crate::editor::layers::Edge;
+
+        let edges = Rc::new(RefCell::new(Vec::new()));
+        let (_view, cx) = herogpui::test::open_window(cx, {
+            let edges = edges.clone();
+            move |_, _| CaptureEdgeSurface {
+                edges,
+                bubbled: Rc::new(std::cell::Cell::new(0)),
+            }
+        });
+        cx.settle();
+        for (edge, key, width, height) in [
+            (Edge::Top, "enter", 400.0, 32.0),
+            (Edge::Bottom, "space", 400.0, 32.0),
+            (Edge::Left, "enter", 32.0, 300.0),
+            (Edge::Right, "space", 32.0, 300.0),
+        ] {
+            cx.press("tab");
+            cx.settle();
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let quads = window.painted_quads();
+                let border: Vec<_> = quads
+                    .iter()
+                    .filter(|quad| {
+                        (quad.bounds.size.width.0 / scale - width).abs() < 0.01
+                            && (quad.bounds.size.height.0 / scale - height).abs() < 0.01
+                            && quad.border_widths.top.0 / scale >= 2.0
+                            && quad.border_widths.right.0 / scale >= 2.0
+                            && quad.border_widths.bottom.0 / scale >= 2.0
+                            && quad.border_widths.left.0 / scale >= 2.0
+                    })
+                    .collect();
+                let bounds = border
+                    .first()
+                    .expect("the focused strip must have a border")
+                    .bounds;
+                let (left, top, right, bottom) = (
+                    bounds.left().0,
+                    bounds.top().0,
+                    bounds.right().0,
+                    bounds.bottom().0,
+                );
+                for (x, y) in [
+                    ((left + right) / 2.0, top + scale),
+                    ((left + right) / 2.0, bottom - scale),
+                    (left + scale, (top + bottom) / 2.0),
+                    (right - scale, (top + bottom) / 2.0),
+                ] {
+                    assert!(
+                        border.iter().any(|quad| {
+                            let mask = quad.content_mask.bounds;
+                            x >= mask.left().0
+                                && x < mask.right().0
+                                && y >= mask.top().0
+                                && y < mask.bottom().0
+                        }),
+                        "the focused {edge:?} strip border must not be clipped"
+                    );
+                }
+            });
+            cx.press(key);
+            assert_eq!(edges.borrow_mut().pop(), Some(edge));
+            assert!(edges.borrow().is_empty());
+        }
+    }
 
     #[test]
     fn shape_halo_restrokes_six_pixels_wider() {

@@ -450,6 +450,7 @@ pub fn capture_editor_interaction_states() {
     assert_toolbar(width, scale);
     hover(&mut cx, window, 300.0, 300.0);
     capture(&mut cx, window, &output, "image-default");
+    attachment_workflows::check_edge_overlay(&mut cx, editor, &output, scale);
     let redact = measured("editor-tools", 8).center();
     hover(&mut cx, window, f32::from(redact.x), f32::from(redact.y));
     capture(&mut cx, window, &output, "image-redact-hover");
