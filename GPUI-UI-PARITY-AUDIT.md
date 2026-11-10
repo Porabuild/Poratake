@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `d294041` plus this change.
+Refreshed 2026-11-10 for Poratake 0.9.6, based on `9407fa6` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -71,6 +71,12 @@ must fit their viewport without overlapping. The recorder fixture asserts one
 start/pause/resume/stop call, enabled inputs at start, disabled live toggles and
 unchanged saved preferences. Discard must remove the sole project inside the
 isolated recordings directory.
+At each simulated scale, an unfrozen screenshot fixture drags from device-pixel
+coordinates on a negative-origin display to its right and bottom edges. It checks
+the painted selection, exact daemon request, saved image dimensions and four
+preview pixels against the saved four-color synthetic image. The fixture does not
+capture physical monitor pixels. Temporarily disabling edge snapping made its
+125% frame check fail.
 Picker fixtures place ordered overlapping windows on a negative-origin display
 in correctly scaled physical coordinates. Pixel samples independently check the
 undimmed candidate and 50% scrim, including targets crossing left, right and bottom edges
@@ -169,6 +175,9 @@ passed the required jobs, including 972 Windows native tests with one skip and a
 16 visual cases against 2,136 exact images. Its visual artifact `13774605959` has SHA-256
 `4ee4a1c8778869a8527cc2784c354fe0b986cf9314a7c2806ae7d59a6b3237ed`. Linux also
 passed the unevenly lit QR photograph regression.
+The [hosted run at `9407fa6`](https://github.com/Porabuild/Poratake/actions/runs/42845902225)
+passed the required Windows, Linux and macOS jobs, including the Windows visual
+comparison.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -392,7 +401,7 @@ Bugs fixed in this pass:
 - The fixed local threshold size could merge a photographed finder ring into its
   background, or leave an otherwise detected grid undecodable. Two bounded local
   threshold scales run only after the earlier passes fail. Two new photographs
-  now decode through the Windows loader; Linux loader tests await hosted CI.
+  now decode through the Windows loader; Linux loader tests passed hosted CI.
 - Scroll capture subscribed after the start RPC, losing early completion or
   cancellation events and leaving the session active. Subscription now precedes
   start; both early events and a successful retry are exercised.
@@ -481,7 +490,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                                           |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                        |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                     |
-| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `da95f73`. Require the same normal comparison on the current PR head.                                                                                                                                                                                                                                                                                                         |
+| P2       | Verify hosted Windows visual results                     | The 2,136-image profile passed on `9407fa6`. Require the same normal comparison on the current PR head.                                                                                                                                                                                                                                                                                                         |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                        |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                          |
 

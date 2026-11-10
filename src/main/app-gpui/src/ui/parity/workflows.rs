@@ -308,6 +308,183 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
     );
 }
 
+#[cfg(windows)]
+pub(super) fn scaled_selection_capture(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    scratch: &Path,
+    scale: f32,
+) {
+    let expected = CaptureRect {
+        x: -517,
+        y: -103,
+        width: 517,
+        height: 383,
+    };
+    let captures = scratch.join("scaled-selection");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live", "rect": expected, "windowId": null, "pattern": "quadrants",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+            config.screenshot.freeze_screen = false;
+            config.screenshot.show_preview = true;
+            config.screenshot.hide_desktop_icons = false;
+            config.screenshot.capture_to_clipboard = false;
+            config.screenshot.auto_copy_to_clipboard = false;
+            config.preview.corner = "bottom-right".into();
+            config.preview.auto_dismiss = false;
+        });
+    });
+    let bounds = gpui::Bounds::new(
+        point(px(-640. / scale), px(-200. / scale)),
+        size(px(640. / scale), px(480. / scale)),
+    );
+    let picker = cx
+        .open_window(bounds.size, |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| {
+                crate::capture::overlay::AreaOverlay::with_focus(
+                    bounds,
+                    scale,
+                    crate::state::state(cx),
+                    crate::capture::intent::CaptureIntent::Screenshot,
+                    cx.focus_handle(),
+                )
+            })
+        })
+        .unwrap()
+        .into();
+    settle(cx, picker);
+    let start = point(px(123. / scale), px(97. / scale));
+    let end = point(px(639. / scale), px(479. / scale));
+    event(
+        cx,
+        picker,
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    event(
+        cx,
+        picker,
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: end,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::none(),
+        }),
+    );
+    settle(cx, picker);
+    assert!(
+        cx.update_window(picker, |_, window, _| {
+            window.painted_quads().iter().any(|quad| {
+                [
+                    (quad.bounds.left().0, 123.),
+                    (quad.bounds.top().0, 97.),
+                    (quad.bounds.right().0, 640.),
+                    (quad.bounds.bottom().0, 480.),
+                ]
+                .iter()
+                .all(|(actual, expected)| (actual - expected).abs() < 0.01)
+            })
+        })
+        .unwrap(),
+        "selection frame must reach the display edge at {scale}x"
+    );
+    event(
+        cx,
+        picker,
+        PlatformInput::MouseUp(MouseUpEvent {
+            position: end,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+        }),
+    );
+    cx.run_until_parked();
+    let calls = super::daemon_fixture::calls(output);
+    let call = calls
+        .iter()
+        .rev()
+        .find(|call| call["module"] == "screenshot" && call["method"] == "capture-area")
+        .expect("the selected area must reach the screenshot daemon");
+    for (key, value) in [
+        ("x", expected.x),
+        ("y", expected.y),
+        ("width", expected.width),
+        ("height", expected.height),
+    ] {
+        assert_eq!(call["params"][key], value, "capture {key} at {scale}x");
+    }
+    let files: Vec<_> = std::fs::read_dir(&captures)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1);
+    let image = image::open(&files[0]).unwrap().to_rgba8();
+    assert_eq!(image.dimensions(), (517, 383));
+    assert!(cx.update(|cx| cx
+        .windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<EditorWindow>())
+        .all(|editor| Path::new(&editor.read(cx).unwrap().file_path) != files[0])));
+    let preview = cx
+        .update(|cx| {
+            crate::windows::registry::handle(
+                crate::windows::registry::WindowKind::CapturePreview,
+                cx,
+            )
+        })
+        .expect("capture must open a preview");
+    cx.update_window(preview, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    settle(cx, preview);
+    let bounds = super::measured("capture-previews", 0);
+    let rendered = cx.capture_screenshot(preview).unwrap();
+    for (x, y) in [(1, 1), (3, 1), (1, 3), (3, 3)] {
+        let saved = image
+            .get_pixel(image.width() * x / 4, image.height() * y / 4)
+            .0;
+        assert_eq!(
+            saved,
+            [
+                if x == 1 { 240 } else { 40 },
+                if y == 1 { 80 } else { 180 },
+                64,
+                255
+            ]
+        );
+        let preview_x = f32::from(bounds.left()) + f32::from(bounds.size.width) * x as f32 / 4.;
+        let preview_y = f32::from(bounds.top()) + f32::from(bounds.size.height) * y as f32 / 4.;
+        assert_eq!(
+            rendered
+                .get_pixel(
+                    (preview_x * scale).round() as u32,
+                    (preview_y * scale).round() as u32,
+                )
+                .0,
+            saved,
+            "preview must match the saved capture at {scale}x ({x}, {y})"
+        );
+    }
+    cx.update(|cx| {
+        crate::windows::registry::close(crate::windows::registry::WindowKind::CapturePreview, cx)
+    });
+    cx.run_until_parked();
+    println!("scaled selection, saved crop and preview passed at {scale}x");
+}
+
 pub(super) fn verify_saved_capture(
     cx: &mut HeadlessAppContext,
     output: &Path,

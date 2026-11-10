@@ -633,6 +633,10 @@ pub fn capture_editor_interaction_states() {
         workflows::screenshot(&mut cx, &output, &scratch);
     }
     #[cfg(windows)]
+    if source.is_none() {
+        workflows::scaled_selection_capture(&mut cx, &output, &scratch, scale);
+    }
+    #[cfg(windows)]
     capture_tray_menu(&mut cx, &output, scale);
     baselines::check(&output);
     cx.update(|cx| crate::state::state(cx).daemon.stop());

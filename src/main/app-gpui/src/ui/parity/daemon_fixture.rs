@@ -205,9 +205,19 @@ pub fn run() {
                 if fixture["outcome"] == "invalid-image" {
                     std::fs::write(path, b"invalid image").unwrap();
                 } else {
-                    image::RgbaImage::from_pixel(width, height, color)
-                        .save(path)
-                        .unwrap();
+                    let image = if fixture["pattern"] == "quadrants" {
+                        image::RgbaImage::from_fn(width, height, |x, y| {
+                            image::Rgba([
+                                if x < width / 2 { 240 } else { 40 },
+                                if y < height / 2 { 80 } else { 180 },
+                                64,
+                                255,
+                            ])
+                        })
+                    } else {
+                        image::RgbaImage::from_pixel(width, height, color)
+                    };
+                    image.save(path).unwrap();
                 }
                 if fixture["outcome"] == "capture-failed" {
                     protocol::respond_error(
