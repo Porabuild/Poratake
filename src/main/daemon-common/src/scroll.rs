@@ -166,6 +166,7 @@ pub fn find_overlap(
 ) -> Option<usize> {
     let strip_height = 8_usize.min(height / 2).min(expected.max(1));
     if strip_height == 0
+        || width == 0
         || previous.width != width
         || previous.height != height
         || previous.pixels.len() != width.checked_mul(height)?.checked_mul(4)?
@@ -227,7 +228,52 @@ pub fn find_overlap(
     }
 
     let sampled_channels = strip_width.div_ceil(2) * strip_height.div_ceil(2) * 3;
-    (best_score <= sampled_channels as u64 * MAX_OVERLAP_CHANNEL_DIFFERENCE).then_some(best_overlap)
+    let acceptable = best_score <= sampled_channels as u64 * MAX_OVERLAP_CHANNEL_DIFFERENCE;
+    if acceptable && best_overlap == expected {
+        return Some(best_overlap);
+    }
+
+    if let Some(exact) = unique_exact_overlap(&previous.pixels, current_pixels, width, min_overlap)
+        && (!acceptable || exact.abs_diff(expected) <= best_overlap.abs_diff(expected))
+    {
+        return Some(exact);
+    }
+    acceptable.then_some(best_overlap)
+}
+
+fn unique_exact_overlap(
+    previous: &[u8],
+    current: &[u8],
+    width: usize,
+    min_overlap: usize,
+) -> Option<usize> {
+    let row_bytes = width * 4;
+    let rows: Vec<_> = current.chunks_exact(row_bytes).collect();
+    let mut prefix = vec![0; rows.len()];
+    for index in 1..rows.len() {
+        let mut matched = prefix[index - 1];
+        while matched > 0 && rows[index] != rows[matched] {
+            matched = prefix[matched - 1];
+        }
+        if rows[index] == rows[matched] {
+            matched += 1;
+        }
+        prefix[index] = matched;
+    }
+
+    let mut matched = 0;
+    for row in previous.chunks_exact(row_bytes) {
+        while matched > 0 && row != rows[matched] {
+            matched = prefix[matched - 1];
+        }
+        if row == rows[matched] {
+            matched += 1;
+        }
+    }
+    if matched < min_overlap || prefix[matched - 1] >= min_overlap {
+        return None;
+    }
+    Some(matched)
 }
 
 fn overlap_score(
@@ -529,6 +575,109 @@ mod tests {
             find_overlap(&previous, &current.pixels, width, height, overlap),
             Some(overlap)
         );
+    }
+
+    #[test]
+    fn finds_exact_overlap_between_coarse_samples() {
+        for (width, height, overlap) in [(1280, 320, 97), (800, 720, 217)] {
+            let previous = frame(0, width, height);
+            let current = frame(height - overlap, width, height);
+            assert_eq!(
+                find_overlap(&previous, &current.pixels, width, height, overlap),
+                Some(overlap)
+            );
+        }
+    }
+
+    #[test]
+    fn prefers_exact_overlap_when_sampled_candidates_are_equally_close() {
+        let (width, height, overlap, expected) = (1000, 160, 101, 100);
+        let make_frame = |start: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in start..start + height {
+                for x in 0..width {
+                    let pixel = if x == 0 {
+                        [y as u8, (y >> 8) as u8, y.wrapping_mul(17) as u8, 255]
+                    } else {
+                        [100 + (y % 2) as u8, 0, 0, 255]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            CapturedFrame {
+                width,
+                height,
+                pixels,
+                overlap: 0,
+            }
+        };
+        let previous = make_frame(0);
+        let current = make_frame(height - overlap);
+        assert_eq!(
+            find_overlap(&previous, &current.pixels, width, height, expected),
+            Some(overlap)
+        );
+    }
+
+    #[test]
+    fn exact_overlap_requires_a_unique_full_row_match() {
+        let previous = [1, 2, 3, 4, 5]
+            .into_iter()
+            .flat_map(|value| [value, 0, 0, 255])
+            .collect::<Vec<_>>();
+        let current = [3, 4, 5, 6, 7]
+            .into_iter()
+            .flat_map(|value| [value, 0, 0, 255])
+            .collect::<Vec<_>>();
+        assert_eq!(unique_exact_overlap(&previous, &current, 1, 1), Some(3));
+
+        let repeated = [0, 0, 0, 255].repeat(5);
+        assert_eq!(unique_exact_overlap(&repeated, &repeated, 1, 1), None);
+        assert_eq!(unique_exact_overlap(&previous, &current, 1, 4), None);
+
+        let previous = [1, 2, 1, 2, 1]
+            .into_iter()
+            .flat_map(|value| [value, 0, 0, 255])
+            .collect::<Vec<_>>();
+        let current = [1, 2, 1, 3, 4]
+            .into_iter()
+            .flat_map(|value| [value, 0, 0, 255])
+            .collect::<Vec<_>>();
+        assert_eq!(unique_exact_overlap(&previous, &current, 1, 1), None);
+        assert_eq!(unique_exact_overlap(&previous, &current, 1, 2), Some(3));
+    }
+
+    #[test]
+    fn exact_overlap_matches_exhaustive_small_sequences() {
+        let frames = (0..3_usize.pow(5))
+            .map(|mut value| {
+                (0..5)
+                    .flat_map(|_| {
+                        let pixel = [(value % 3) as u8, 0, 0, 255];
+                        value /= 3;
+                        pixel
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        for previous in &frames {
+            for current in &frames {
+                for minimum in 1..=3 {
+                    let mut matches = (minimum..=5)
+                        .filter(|overlap| previous[(5 - overlap) * 4..] == current[..overlap * 4]);
+                    let first = matches.next();
+                    let expected = if matches.next().is_none() {
+                        first
+                    } else {
+                        None
+                    };
+                    assert_eq!(
+                        unique_exact_overlap(previous, current, 1, minimum),
+                        expected
+                    );
+                }
+            }
+        }
     }
 
     #[test]

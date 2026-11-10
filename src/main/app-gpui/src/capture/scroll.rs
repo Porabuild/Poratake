@@ -86,34 +86,56 @@ mod tests {
     fn stitched_scroll_frames_reopen_with_identical_pixels() {
         use poratake_daemon_common::scroll::{write_png, CaptureOutcome, FrameAccumulator};
 
-        let (width, height, overlap) = (96, 160, 64);
-        let source = image::RgbaImage::from_fn(width, height * 2 - overlap, |x, y| {
-            let seed = y.wrapping_mul(0x45d9f3b) ^ x.wrapping_mul(0x119de1f3);
-            image::Rgba([
-                seed as u8,
-                seed.rotate_left(9) as u8,
-                seed.rotate_left(17) as u8,
-                255,
-            ])
-        });
-        let first = image::imageops::crop_imm(&source, 0, 0, width, height).to_image();
-        let second =
-            image::imageops::crop_imm(&source, 0, height - overlap, width, height).to_image();
-        let mut accumulator = FrameAccumulator::default();
-        for frame in [first, second] {
+        for (width, height, overlap, expected, repeating) in [
+            (96, 160, 64, 64, false),
+            (1280, 320, 97, 97, false),
+            (800, 720, 217, 217, false),
+            (1000, 160, 101, 100, true),
+        ] {
+            let source = image::RgbaImage::from_fn(width, height * 2 - overlap, |x, y| {
+                if repeating {
+                    return image::Rgba(if x == 0 {
+                        [y as u8, (y >> 8) as u8, y.wrapping_mul(17) as u8, 255]
+                    } else {
+                        [100 + (y % 2) as u8, 0, 0, 255]
+                    });
+                }
+                let seed = y.wrapping_mul(0x45d9f3b) ^ x.wrapping_mul(0x119de1f3);
+                image::Rgba([
+                    seed as u8,
+                    seed.rotate_left(9) as u8,
+                    seed.rotate_left(17) as u8,
+                    255,
+                ])
+            });
+            let first = image::imageops::crop_imm(&source, 0, 0, width, height).to_image();
+            let second =
+                image::imageops::crop_imm(&source, 0, height - overlap, width, height).to_image();
+            let mut accumulator = FrameAccumulator::default();
+            for frame in [first, second] {
+                assert_eq!(
+                    accumulator.submit(
+                        frame.into_raw(),
+                        width as usize,
+                        height as usize,
+                        expected as usize,
+                    ),
+                    CaptureOutcome::Added
+                );
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("scroll.png");
+            write_png(&path, &accumulator.take_frames()).unwrap();
+            let stitched = image::open(path).unwrap().to_rgba8();
+            assert_eq!(stitched.dimensions(), source.dimensions());
             assert_eq!(
-                accumulator.submit(
-                    frame.into_raw(),
-                    width as usize,
-                    height as usize,
-                    overlap as usize,
-                ),
-                CaptureOutcome::Added
+                stitched
+                    .pixels()
+                    .zip(source.pixels())
+                    .filter(|(actual, expected)| actual != expected)
+                    .count(),
+                0
             );
         }
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scroll.png");
-        write_png(&path, &accumulator.take_frames()).unwrap();
-        assert_eq!(image::open(path).unwrap().to_rgba8(), source);
     }
 }
