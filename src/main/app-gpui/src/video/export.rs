@@ -702,7 +702,15 @@ mod tests {
                 };
                 let phase =
                     frame as f64 * frequency * std::f64::consts::TAU / f64::from(AUDIO_SAMPLE_RATE);
-                let sample = (phase.sin() * 5000.) as i16;
+                let mut value = phase.sin() * 5000.;
+                for start in [AUDIO_SAMPLE_RATE * 48 / 100, AUDIO_SAMPLE_RATE * 160 / 100] {
+                    if (start..start + AUDIO_SAMPLE_RATE / 100).contains(&frame) {
+                        let phase = f64::from(frame - start) * 3000. * std::f64::consts::TAU
+                            / f64::from(AUDIO_SAMPLE_RATE);
+                        value += phase.sin() * 12_000.;
+                    }
+                }
+                let sample = value as i16;
                 [sample, sample]
             })
             .collect();
@@ -809,25 +817,37 @@ mod tests {
             (duration - 2.).abs() < 0.05,
             "exported audio duration {duration}s"
         );
-        for (time, sign) in [(0.05, -1.), (0.35, -1.), (0.6, 1.), (1.4, 1.)] {
+        for (time, frequency) in [
+            (0.05, 440.),
+            (0.35, 440.),
+            (0.6, 880.),
+            (1.4, 880.),
+            (1.85, 880.),
+        ] {
             let start = (time * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
             let end = start + AUDIO_SAMPLE_RATE as usize / 10 * 2;
             for (name, samples) in [("preview", &preview), ("export", &exported)] {
-                let samples = &samples[start..end];
-                let (sum, power) = samples.iter().zip(&samples[110..]).fold(
-                    (0_f64, 0_f64),
-                    |(sum, power), (a, b)| {
-                        (
-                            sum + f64::from(*a) * f64::from(*b),
-                            power + f64::from(*a).powi(2),
-                        )
-                    },
-                );
-                let correlation = sum / power;
+                let strength = audio::tone_strength(&samples[start..end], frequency);
                 assert!(
-                    correlation * sign > 0.5,
-                    "{name} has the wrong source tone at {time}s: {correlation}"
+                    strength > 0.5,
+                    "{name} has the wrong {frequency} Hz tone at {time}s: {strength}"
                 );
+            }
+        }
+        for time in [0.32, 1.2] {
+            let center = (time * f64::from(AUDIO_SAMPLE_RATE)) as usize;
+            let radius = AUDIO_SAMPLE_RATE as usize / 25;
+            let length = AUDIO_SAMPLE_RATE as usize / 100;
+            let step = AUDIO_SAMPLE_RATE as usize / 200;
+            for (name, samples) in [("preview", &preview), ("export", &exported)] {
+                let present = (center - radius..center + radius - length)
+                    .step_by(step)
+                    .any(|start| {
+                        let samples = &samples[start * 2..(start + length) * 2];
+                        audio::tone_strength(samples, 3000.) > 0.5
+                            && samples.iter().any(|sample| sample.unsigned_abs() > 2500)
+                    });
+                assert!(present, "{name} lost the short sound near {time}s");
             }
         }
         let count = exported.len().min(preview.len());
