@@ -110,6 +110,12 @@ daemon path. A controlled fake ambient daemon reproduced the failure before the
 fix and was never started afterward. The native suite then passed 957 tests and
 one skip without leak warnings; 40 repetitions of the previously flagged tests
 also passed without leaks. Parity builds retain their explicit fake RPC client.
+The pin close-callback fix subsequently passed the native gate with 959 tests
+and one skip. Its regression first found no restored editor; after the fix it
+verified the original file, annotations and exact exported PNG with history
+disabled. A standalone pin closes without opening an editor. These tests invoke
+the platform should-close callback and dispose the test window separately;
+native OS event delivery and destruction remain unverified.
 The latest completed 16-case comparison passed all 1,928 images, including the
 permission isolation, icon-only contrast and capture-preview checks. The 64 added
 preview images were reviewed; the preceding 1,864 images stayed byte-identical.
@@ -226,6 +232,8 @@ Bugs fixed in this pass:
 - Closing a pin restored annotations only through persisted history, losing
   edits for untracked images or when history was disabled. The pin now retains
   the current annotations, wallpaper and layers in memory for restoration.
+- OS close requests bypassed the pin's hover Close handler and never restored
+  the editor. Both close paths now consume the same in-memory state once.
 - The native timer panel had an empty accessibility window name. It is now named
   "Poratake timer capture", making the countdown identifiable by users and tools.
 - GPUI's first activation restored a hidden Windows selector's initial placement

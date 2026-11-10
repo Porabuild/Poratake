@@ -97,6 +97,9 @@ four edges, live/frozen/fallback pixels, capture and invalid-image failures,
 cancellation, cleanup, clipboard preservation and identical history reopen.
 Pin workflows compare rendered annotations with exported pixels and restore
 the editor with history enabled or disabled without adding history entries.
+Unit regressions invoke the OS should-close callback and verify annotated
+restoration with history disabled plus standalone close without an editor.
+Actual native close-event delivery and window destruction remain separate checks.
 The built-in 1280px, 100% cases add 28 workflow images each, for 1,928 baseline
 images per renderer.
 
