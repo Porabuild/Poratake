@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `ac0bfff` plus this change.
+Refreshed 2026-11-10 for Poratake 0.9.6, based on `72f0f59` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -44,8 +44,8 @@ input and frame scheduling use GPUI's headless harness. This is not installed-ap
 or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
-738 logical pixels high. Each case captures 131 states; the two 1280px, 100% cases
-also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,152 baseline images in a complete renderer profile.
+738 logical pixels high. Each case captures 136 states; the two 1280px, 100% cases
+also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,232 baseline images in a complete renderer profile.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -95,6 +95,11 @@ current, first and last options, independently of baselines, and preserves each
 as `submenu-text-focus-*.png`. The original virtual viewport failed with zero
 focus pixels on the selected option's left edge. The shared Select fix passed
 that probe while preserving its 24px rows and 64×276px light-theme panel.
+Capture-preview icon tooltips are checked inside all four corners. Polish preset
+names wrap inside the card, with very long names visually ellipsized while the
+full tooltip name remains available to accessibility tools. The fixture checks
+that Edit remains clickable after each tooltip. Video Copy and Show in Folder
+tooltip images use a missing-media fallback, not a decoded recording preview.
 
 Baseline comparison requires identical image dimensions, state filenames and every
 pixel. A changed pixel fails; failed images get a highlighted diff. Updates require
@@ -192,6 +197,9 @@ GitHub reports artifact `13791799183` with SHA-256
 The [run at `a16a0a7`](https://github.com/Porabuild/Poratake/actions/runs/42879631430)
 passed all required jobs, including all 16 Windows visual cases and the normal
 2,152-image hosted comparison.
+The [run at `72f0f59`](https://github.com/Porabuild/Poratake/actions/runs/42913126458)
+also passed all required jobs and the 2,152-image hosted comparison. The 80 new
+tooltip images still need a reviewed hosted-renderer profile.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -252,8 +260,12 @@ identity and matches Windows' monitor and work rectangles for a valid one. The
 physical mixed-DPI and monitor-transition checks remain outstanding.
 A tooltip regression reproduced a 94x32px label above and left of the preview.
 Preview controls now use inward HeroGPUI tooltip placements; Edit has no tooltip.
-The tooltip-presence guard also rejects a build with tooltips disabled. The
-pooled-overlay regression reproduced retained selection and drag state, which
+The tooltip-presence guard also rejects a build with tooltips disabled. A preset
+name later produced a 254px Polish tooltip inside a 200px card; it now wraps
+within the card and limits very long visual labels to three lines. All 80 new
+local renderer images were reviewed, and the previous 2,152 stayed byte-identical.
+A normal run then passed all 16 cases and 2,232 images without updating baselines.
+The pooled-overlay regression reproduced retained selection and drag state, which
 are now cleared on park. The editor-size regression found no stored initial
 size; successful opening now remembers it before another image can choose a
 different size. Reopening small/large images and a resized editor are exercised.

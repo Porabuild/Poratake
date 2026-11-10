@@ -119,7 +119,7 @@ the editor with history enabled or disabled without adding history entries.
 Unit regressions invoke the OS should-close callback and verify annotated
 restoration with history disabled plus standalone close without an editor.
 Actual native close-event delivery and window destruction remain separate checks.
-The built-in 1280px, 100% cases add 28 workflow images each, for 2,136 baseline
+The built-in 1280px, 100% cases add 28 workflow images each, for 2,232 baseline
 images per renderer.
 
 Capture, timer and scroll completion first open a bottom-right preview without
@@ -144,8 +144,10 @@ sizes, spacing, newest-four eviction and source-color order. Double-clicking
 the newest card must open that capture in the editor with identical exported
 pixels. Auto-dismiss must close the preview without deleting source files or
 changing history. Hover fixtures use the production preview surface and HeroGPUI
-tooltips. Close, delete, copy and upload tips must fit inside their top/bottom
-preview cards. Edit has no tooltip. A build with tooltips disabled fails the
+tooltips. Close, delete, copy and upload tips must fit inside cards in all four
+corners. Polish preset names wrap or ellipsize within the card, and Edit remains
+clickable after each tooltip. Video Copy and Show in Folder tips use a missing-media
+fallback fixture. Edit has no tooltip. A build with tooltips disabled fails the
 presence assertion. Native docking, click-through regions and physical pointer
 ownership remain separate verification.
 

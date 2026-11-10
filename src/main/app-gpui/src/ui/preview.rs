@@ -106,6 +106,7 @@ pub fn pill(
     id: impl Into<gpui::ElementId>,
     label: &'static str,
     tooltip: Option<SharedString>,
+    placement: TooltipPlacement,
     theme: &ThemeVars,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
@@ -117,7 +118,7 @@ pub fn pill(
         theme.primary,
         false,
         tooltip,
-        TooltipPlacement::Top,
+        placement,
         move |button| button.label(label),
         on_click,
     )
@@ -163,11 +164,22 @@ fn chip(
         });
     let button = content(button);
     match tooltip {
-        Some(tooltip) => Tooltip::new(tooltip)
-            .placement(placement)
-            .sx(|el| el.flex_shrink_0())
-            .child(button)
-            .into_any_element(),
+        Some(tooltip) => {
+            let mut tip = Tooltip::new(tooltip.clone())
+                .placement(placement)
+                .sx(|el| el.flex_shrink_0());
+            if !icon_only {
+                tip = tip.body(move |_, _| {
+                    div()
+                        .max_w(px(chrome::PREVIEW_WIDTH - 20.))
+                        .line_clamp(3)
+                        .text_ellipsis()
+                        .child(tooltip.clone())
+                        .into_any_element()
+                });
+            }
+            tip.child(button).into_any_element()
+        }
         None => button.into_any_element(),
     }
 }

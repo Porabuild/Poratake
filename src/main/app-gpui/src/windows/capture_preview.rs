@@ -1584,6 +1584,7 @@ impl CapturePreviewWindow {
                                 ("preview-copy-video", id),
                                 "Copy",
                                 Some("Copy".into()),
+                                TooltipPlacement::Top,
                                 theme,
                                 {
                                     let path = path.clone();
@@ -1600,6 +1601,7 @@ impl CapturePreviewWindow {
                                 ("preview-exporting", id),
                                 "Exporting...",
                                 Some("Exporting...".into()),
+                                TooltipPlacement::Top,
                                 theme,
                                 |_, cx| {
                                     cx.stop_propagation();
@@ -1612,6 +1614,7 @@ impl CapturePreviewWindow {
                                 ("preview-polish", id),
                                 "Polish",
                                 Some(tooltip.into()),
+                                TooltipPlacement::Bottom,
                                 theme,
                                 {
                                     let path = path.clone();
@@ -1640,6 +1643,7 @@ impl CapturePreviewWindow {
                                 ("preview-edit", id),
                                 "Edit",
                                 None,
+                                TooltipPlacement::Top,
                                 theme,
                                 {
                                     let path = path.clone();
@@ -1672,6 +1676,7 @@ impl CapturePreviewWindow {
                                 ("preview-cancel-export", id),
                                 "Cancel",
                                 Some("Cancel".into()),
+                                TooltipPlacement::Top,
                                 theme,
                                 move |_, cx| {
                                     cancel_video_export(id, cx);
