@@ -570,7 +570,7 @@ mod tests {
                     [sample, -sample]
                 })
                 .collect();
-            for speed in [0.5, 0.75, 1.5, 2., 3., 4.] {
+            for speed in [0.5, 0.75, 1.25, 1.5, 2., 3., 4.] {
                 let stretched = time_stretch(&source, speed);
                 assert_eq!(
                     frames(&stretched),
@@ -608,7 +608,7 @@ mod tests {
                 source[(start + frame) * FRAME_SIZE + 1] += sample;
             }
         }
-        for speed in [0.5, 1.5, 2., 3., 4.] {
+        for speed in [0.5, 0.75, 1.25, 1.5, 2., 3., 4.] {
             let stretched = time_stretch(&source, speed);
             for index in 1..=9 {
                 let center = (index as f64 * 0.5 / speed * rate as f64) as usize;
