@@ -139,7 +139,7 @@ impl Encoder {
 
     /// Finalizes the file. Consuming the encoder guarantees no frame can be
     /// appended after the container is closed.
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub fn finish(self) -> Result<(), String> {
         self.finish_cancellable(&|| false)
     }
