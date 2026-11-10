@@ -776,9 +776,7 @@ fn selected_display(cx: &mut App) -> Option<(Bounds<gpui::Pixels>, gpui::Display
         .or_else(|| displays.first().cloned())
         .map(|display| {
             (
-                crate::system::work_area::work_area(crate::system::work_area::display_bounds(
-                    display.as_ref(),
-                )),
+                crate::system::work_area::work_area(display.as_ref()),
                 display.id(),
             )
         })

@@ -1,16 +1,5 @@
 //! The usable area of a display, i.e. what is left once the taskbar is taken
 //! out.
-//!
-//! Electron positions the capture previews against `display.workArea`
-//! (`capture-preview/index.ts`, `getPreviewPosition`). gpui 0.2.2 has no
-//! equivalent -- `PlatformDisplay` exposes only `bounds()`, the full monitor
-//! rectangle -- so this shell anchored to the full bounds and every
-//! bottom-anchored preview sat a taskbar's height too low, tucked underneath it.
-//! Measured on a 3440x1440 display with a 48px taskbar: the preview landed at
-//! y=1276 where Electron puts it at y=1228.
-//!
-//! Windows reports both rectangles for a monitor, so the inset between them is
-//! the taskbar (and any other appbar).
 
 use gpui::{px, Bounds, Pixels};
 use herogpui::gpui;
@@ -36,7 +25,7 @@ pub fn capture_scale_factor(display: &dyn gpui::PlatformDisplay, cx: &mut gpui::
     #[cfg(windows)]
     {
         let bounds = display.bounds();
-        let Some((monitor, _)) = monitor_rects(bounds) else {
+        let Some((monitor, _)) = monitor_rects(display) else {
             return 1.0;
         };
         if let Some(scale) =
@@ -172,10 +161,11 @@ unsafe extern "C" {
 
 /// The work area of the monitor showing `display`, or `display` unchanged if
 /// the platform will not say.
-pub fn work_area(display: Bounds<Pixels>) -> Bounds<Pixels> {
+pub fn work_area(display: &dyn gpui::PlatformDisplay) -> Bounds<Pixels> {
+    let bounds = display_bounds(display);
     match monitor_rects(display) {
-        Some((monitor, work)) => inset_bounds(display, monitor, work),
-        None => display,
+        Some((monitor, work)) => inset_bounds(bounds, monitor, work),
+        None => bounds,
     }
 }
 
@@ -224,32 +214,17 @@ fn inset_bounds(display: Bounds<Pixels>, monitor: Rect, work: Rect) -> Bounds<Pi
 }
 
 #[cfg(windows)]
-fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
-
-    // The centre of the display, so the lookup cannot land on a neighbouring
-    // monitor the way an edge coordinate can.
-    let point = POINT {
-        x: (f32::from(display.origin.x) + f32::from(display.size.width) / 2.0) as i32,
-        y: (f32::from(display.origin.y) + f32::from(display.size.height) / 2.0) as i32,
-    };
+fn monitor_rects(display: &dyn gpui::PlatformDisplay) -> Option<(Rect, Rect)> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
 
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
 
-    // SAFETY: `cbSize` is set as the API requires and `info` is fully
-    // initialised; `MONITOR_DEFAULTTONEAREST` never returns a null handle.
-    let ok = unsafe {
-        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-        GetMonitorInfoW(monitor, &mut info).as_bool()
-    };
+    let monitor = HMONITOR(u64::from(display.id()) as _);
+    let ok = unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() };
     if !ok {
-        eprintln!("[work-area] GetMonitorInfoW failed; using the full display bounds");
         return None;
     }
 
@@ -270,12 +245,13 @@ fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
 }
 
 #[cfg(target_os = "macos")]
-fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
+fn monitor_rects(display: &dyn gpui::PlatformDisplay) -> Option<(Rect, Rect)> {
     use cocoa::appkit::NSScreen;
     use cocoa::base::nil;
     use cocoa::foundation::{NSArray, NSDictionary, NSString};
     use objc::{msg_send, sel, sel_impl};
 
+    let display = display_bounds(display);
     unsafe {
         let screens = NSScreen::screens(nil);
         let key = NSString::alloc(nil).init_str("NSScreenNumber");
@@ -346,7 +322,7 @@ fn appkit_visible_work_rect(
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn monitor_rects(_display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
+fn monitor_rects(_display: &dyn gpui::PlatformDisplay) -> Option<(Rect, Rect)> {
     None
 }
 
@@ -411,6 +387,51 @@ mod tests {
     fn capture_scale_uses_the_selected_displays_physical_width() {
         assert_eq!(scale_from_widths(1280.0, 1920.0), Some(1.5));
         assert_eq!(scale_from_widths(1920.0, 1920.0), Some(1.0));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn invalid_monitor_identity_does_not_select_a_nearby_monitor(cx: &mut gpui::TestAppContext) {
+        let id = gpui::DisplayId::new(0);
+        cx.simulate_display_added(id, None);
+        let display = cx.read(|cx| cx.displays().into_iter().find(|display| display.id() == id));
+        assert!(monitor_rects(display.unwrap().as_ref()).is_none());
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn monitor_rectangles_come_from_the_selected_identity(cx: &mut gpui::TestAppContext) {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+        };
+
+        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        let id = gpui::DisplayId::new(monitor.0 as u64);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        assert!(unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() });
+        cx.simulate_display_added(id, None);
+        let display = cx.read(|cx| cx.displays().into_iter().find(|display| display.id() == id));
+        assert_eq!(
+            monitor_rects(display.unwrap().as_ref()),
+            Some((
+                (
+                    info.rcMonitor.left,
+                    info.rcMonitor.top,
+                    info.rcMonitor.right,
+                    info.rcMonitor.bottom,
+                ),
+                (
+                    info.rcWork.left,
+                    info.rcWork.top,
+                    info.rcWork.right,
+                    info.rcWork.bottom,
+                ),
+            ))
+        );
     }
 
     #[test]

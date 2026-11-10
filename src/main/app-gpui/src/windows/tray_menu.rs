@@ -556,7 +556,7 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
     let Some(rect) = tray_rect else {
         let display = displays.first()?;
         return Some(MenuDisplay {
-            work_area: crate::system::work_area::work_area(display.bounds()),
+            work_area: crate::system::work_area::work_area(display.as_ref()),
             tray_rect: None,
             id: display.id(),
             #[cfg(windows)]
@@ -649,9 +649,8 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
             })
         })
         .or_else(|| displays.first())?;
-    let bounds = crate::system::work_area::display_bounds(display.as_ref());
     Some(MenuDisplay {
-        work_area: crate::system::work_area::work_area(bounds),
+        work_area: crate::system::work_area::work_area(display.as_ref()),
         tray_rect,
         id: display.id(),
     })

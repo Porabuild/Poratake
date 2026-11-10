@@ -1423,9 +1423,7 @@ fn bar_bounds(
 ) -> Bounds<gpui::Pixels> {
     let (work_x, work_y, work_width) = display_for_rect(cx, rect)
         .map(|display| {
-            let bounds = crate::system::work_area::work_area(
-                crate::system::work_area::display_bounds(display.as_ref()),
-            );
+            let bounds = crate::system::work_area::work_area(display.as_ref());
             (
                 f32::from(bounds.origin.x),
                 f32::from(bounds.origin.y),
