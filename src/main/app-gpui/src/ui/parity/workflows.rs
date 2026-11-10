@@ -918,6 +918,9 @@ pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &P
 pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Path) {
     let source = scratch.join("scaled-wallpaper.png");
     image::RgbaImage::from_fn(640, 360, |x, y| {
+        if (240..320).contains(&x) && (120..180).contains(&y) {
+            return image::Rgba([240, 80, 64, 128]);
+        }
         if (x / 80 + y / 60) % 2 == 0 {
             image::Rgba([240, 80, 64, 255])
         } else {
@@ -1022,7 +1025,9 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                     crate::editor::wallpaper::preset("slate")
                 });
                 editor.wallpaper.padding = 20.;
+                editor.wallpaper.corners = 0.;
                 editor.wallpaper.background_blur = if blurred { 30. } else { 0. };
+                editor.wallpaper.shadow = 0.;
                 cx.notify();
             })
             .unwrap();
