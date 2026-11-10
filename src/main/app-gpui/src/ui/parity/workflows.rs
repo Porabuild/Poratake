@@ -227,6 +227,7 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
         ] {
             let captures = scratch.join(format!("{kind}-{name}"));
             std::fs::create_dir_all(&captures).unwrap();
+            let sentinel = format!("clipboard before {kind}-{name}");
             std::fs::write(
                 output.join("capture-fixture.json"),
                 serde_json::to_vec(&serde_json::json!({
@@ -245,11 +246,12 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
                     config.preview.corner = "bottom-right".into();
                     config.screenshot.hide_desktop_icons = false;
                     config.screenshot.capture_to_clipboard = false;
-                    config.screenshot.auto_copy_to_clipboard = false;
+                    config.screenshot.auto_copy_to_clipboard = kind == "area";
                     config.all_in_one.remember_choices = true;
                     config.all_in_one.last_mode = "screenshot".into();
                     config.all_in_one.last_targets.screenshot = "screen".into();
                 });
+                crate::system::clipboard::ClipboardService::write_text(cx, sentinel.clone());
                 start(cx);
             });
             cx.run_until_parked();
@@ -277,6 +279,30 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
                 (rect, color),
                 &format!("workflow-{kind}-{name}"),
             );
+            if kind == "area" {
+                let path = std::fs::read_dir(&captures)
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                let clipboard = cx.update(|cx| {
+                    crate::system::clipboard::ClipboardService::read_image(cx).unwrap()
+                });
+                assert_eq!(
+                    image::load_from_memory(&clipboard.bytes)
+                        .unwrap()
+                        .to_rgba8(),
+                    image::open(path).unwrap().to_rgba8(),
+                    "{kind}-{name}: the copied pixels must match the saved capture"
+                );
+            } else {
+                assert_eq!(
+                    cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                    Some(sentinel),
+                    "{kind}-{name}: disabled automatic copy must not change the clipboard"
+                );
+            }
         }
     }
     let calls: Vec<serde_json::Value> =
@@ -306,6 +332,67 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             "capture-area",
         ]
     );
+
+    let captures = scratch.join("clipboard-only");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live", "rect": SELECTED_RECT, "windowId": null,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+            config.screenshot.freeze_screen = false;
+            config.screenshot.show_preview = false;
+            config.screenshot.capture_to_clipboard = true;
+            config.screenshot.auto_copy_to_clipboard = false;
+        });
+        crate::system::clipboard::ClipboardService::write_text(cx, "before capture".into());
+        crate::capture::start_area_capture(cx);
+    });
+    cx.run_until_parked();
+    let picker = area_picker(cx);
+    select_area(cx, picker);
+    cx.run_until_parked();
+    let files: Vec<_> = std::fs::read_dir(&captures)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1, "clipboard-only capture must be saved");
+    let path = &files[0];
+    let copied = cx
+        .update(|cx| crate::system::clipboard::ClipboardService::read_image(cx))
+        .expect("clipboard-only capture must replace the clipboard with an image");
+    let saved = image::open(path).unwrap().to_rgba8();
+    assert_eq!(saved.dimensions(), (640, 360));
+    assert!(saved.pixels().all(|pixel| pixel.0 == [240, 80, 64, 255]));
+    assert_eq!(
+        image::load_from_memory(&copied.bytes).unwrap().to_rgba8(),
+        saved
+    );
+    assert!(crate::history_store::load_history()
+        .iter()
+        .any(|item| Path::new(&item.original_path) == path));
+    assert!(cx.update(|cx| {
+        crate::windows::registry::handle(crate::windows::registry::WindowKind::CapturePreview, cx)
+            .is_none()
+            && cx
+                .windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<EditorWindow>())
+                .all(|editor| Path::new(&editor.read(cx).unwrap().file_path) != path)
+    }));
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.screenshot.show_preview = true;
+            config.screenshot.capture_to_clipboard = false;
+        });
+    });
+    println!("selection capture clipboard modes and saved pixels passed");
 }
 
 #[cfg(windows)]
