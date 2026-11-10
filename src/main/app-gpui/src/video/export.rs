@@ -798,6 +798,200 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn camera_ranges_and_zoom_export_the_preview_across_a_cut() {
+        use crate::windows::video_editor::{model, preview};
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Camera workflow.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project::recording_video_path(&project),
+            include_bytes!("../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let mut camera = Encoder::create(
+            &project::camera_video_path(&project),
+            Settings {
+                width: 160,
+                height: 120,
+                frame_rate: 12,
+                bitrate: 12_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for index in 0..24 {
+            let red = if index < 18 { 224 } else { 64 };
+            camera
+                .write_frame([48, 192, red, 255].repeat(160 * 120))
+                .unwrap();
+        }
+        camera.finish().unwrap();
+        let source_camera = VideoDecoder::open(&project::camera_video_path(&project)).unwrap();
+        assert!(source_camera.frame_at(1.).unwrap().bgra[2] > 180);
+        assert!(source_camera.frame_at(1.5).unwrap().bgra[2] < 90);
+        std::fs::write(
+            project::camera_meta_path(&project),
+            serde_json::to_vec(&serde_json::json!({
+                "videoFile": "camera.mov",
+                "meta": {
+                    "duration": 2.,
+                    "visibleRanges": [{"start": 0.25, "end": 0.65}, {"start": 1.45, "end": 1.8}]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut state = VideoEditorState {
+            source_duration: Some(2.),
+            segments: vec![
+                model::Segment {
+                    original_end: 0.75,
+                    ..model::Segment::spanning(2.)
+                },
+                model::Segment {
+                    id: "after-cut".into(),
+                    original_start: 1.25,
+                    ..model::Segment::spanning(2.)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        let meta = sidecars::load_camera_meta(&project).unwrap();
+        state.camera_segments = sidecars::map_visible_ranges_to_segments(
+            meta.visible_ranges.as_deref(),
+            &state.segments,
+            1.5,
+        );
+        assert_eq!(state.camera_segments.len(), 2);
+        for (segment, (start, end)) in state
+            .camera_segments
+            .iter()
+            .zip([(0.25, 0.65), (0.95, 1.3)])
+        {
+            assert!((segment.start_time - start).abs() < 1e-9);
+            assert!((segment.end_time - end).abs() < 1e-9);
+        }
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "12".into();
+        state.wallpaper.enabled = false;
+        state.camera_style.position = "top-left".into();
+        state.camera_style.size = "large".into();
+        state.camera_style.padding = 0.;
+        state.camera_style.border_radius = 0.;
+        state.camera_style.shadow = 0.;
+        state.zoom_segments.push(model::ZoomSegment {
+            id: "zoom".into(),
+            start_time: 0.25,
+            end_time: 1.25,
+            zoom_level: 2.,
+            transition_in_duration: Some(0.125),
+            transition_out_duration: Some(0.125),
+            target_mode: Some("manual".into()),
+            focus_point: Some(model::FocusPoint { x: 0.75, y: 0.35 }),
+        });
+        model::save_state(&project, &state);
+        assert_eq!(model::load_state(&project), state);
+        let mut preview = preview::Source::open(&project, model::load_state(&project)).unwrap();
+        let mut unzoomed = state.clone();
+        unzoomed.zoom_segments.clear();
+        let unzoomed = preview::Source::open(&project, unzoomed)
+            .unwrap()
+            .compose(0.75, None)
+            .unwrap();
+        let zoomed = preview.compose(0.75, None).unwrap();
+        let changed = zoomed
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(unzoomed.data().as_chunks::<4>().0)
+            .filter(|(zoomed, unzoomed)| zoomed != unzoomed)
+            .count();
+        assert!(changed > 320 * 180 / 4, "the checker must visibly zoom");
+        let output = directory.path().join("camera-edited.mp4");
+        run(
+            Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = VideoDecoder::open(&output).unwrap();
+        let info = exported.info();
+        assert_eq!((info.width, info.height), (320, 180));
+        assert!((info.duration - 1.5).abs() <= 1. / 12., "{info:?}");
+        for (time, visible) in [
+            (0., false),
+            (1. / 3., true),
+            (0.5, true),
+            (0.75, false),
+            (1., true),
+            (1.25, true),
+            (17. / 12., false),
+        ] {
+            let expected = to_bgra(&preview.compose(time, None).unwrap());
+            let actual = exported.frame_at(time).unwrap();
+            assert_eq!(actual.bgra.len(), expected.len());
+            let error: u64 = actual
+                .bgra
+                .iter()
+                .zip(&expected)
+                .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+                .sum();
+            let mean = error as f64 / expected.len() as f64;
+            assert!(mean < 3., "preview/export channel error {mean} at {time}s");
+            if visible {
+                let (error, channels) = expected
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(actual.bgra.as_chunks::<4>().0)
+                    .filter(|(pixel, _)| pixel[0] < 90 && pixel[1] > 170)
+                    .fold((0_u64, 0), |(error, channels), (expected, actual)| {
+                        let delta: u64 = expected[..3]
+                            .iter()
+                            .zip(&actual[..3])
+                            .map(|(expected, actual)| u64::from(expected.abs_diff(*actual)))
+                            .sum();
+                        (error + delta, channels + 3)
+                    });
+                let mean = error as f64 / channels as f64;
+                assert!(
+                    mean < 3.,
+                    "camera preview/export channel error {mean} at {time}s"
+                );
+            }
+            for (name, pixels) in [
+                ("preview", expected.as_slice()),
+                ("export", actual.bgra.as_ref()),
+            ] {
+                let camera_pixels = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[0] < 90 && pixel[1] > 170)
+                    .count();
+                if !visible {
+                    assert_eq!(camera_pixels, 0, "{name}: camera must be hidden at {time}s");
+                    continue;
+                }
+                assert!(camera_pixels > 1_000, "{name}: camera missing at {time}s");
+                let pixel = (20 * info.width as usize + 20) * 4;
+                let red = pixels[pixel + 2];
+                assert!(
+                    if time < 0.75 { red > 180 } else { red < 90 },
+                    "{name}: wrong camera source frame at {time}s"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_original_resolution_keeps_the_composition_size() {
         let dimensions = export_dimensions(1920, 1080, "original");

@@ -135,6 +135,11 @@ across encoder backends: an owned synthetic blue/gray checker, H.264, 320×180,
 24 frames at 12 fps, without audio. Its SHA-256 is
 `69b5a0e2111a59e2d25c7389833d5583c5c012e7932677f77104586f6f5e57c0`.
 Encoding and export are exercised separately by the video workflow tests.
+The Windows export checks include camera on-periods mapped across a cut and a
+manual 2× zoom, with project save/reload and seven decoded preview/output samples.
+Independent camera visibility, source-color and checker-change assertions prevent
+both pipelines from passing by ignoring a layer. Hardware capture and editor
+control delivery remain separate verification.
 Wallpaper changes autosave through the production editor; the preview
 must equal a fresh composition of that saved project. Video windows respect the
 editor's 1200×750 minimum, so the 950px matrix case uses 1200px for loaded video.
