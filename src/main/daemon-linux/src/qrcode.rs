@@ -76,6 +76,16 @@ mod tests {
     }
 
     #[test]
+    fn detects_photographed_qr_with_uneven_lighting() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../daemon-win/tests/fixtures/qr-uneven-light.png");
+        assert_eq!(
+            detect_qr_code(&path).expect("decode photographed QR code"),
+            "http://google.com/gwt/n?u=bluenile.com"
+        );
+    }
+
+    #[test]
     fn rejects_oversized_dimensions_before_decoding_pixels() {
         let path = std::env::temp_dir().join(format!(
             "poratake-qrcode-oversized-{}.png",

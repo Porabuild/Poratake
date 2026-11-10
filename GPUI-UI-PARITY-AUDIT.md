@@ -263,10 +263,13 @@ render has zero changed pixels against its saved PNG in the fixed fixture.
 
 OCR/QR/scroll checks passed 19 production workflow scenarios and 53 Electron
 reference tests in four files. Packaging/compliance checks passed 15 tests.
-The full-window QR regression failed before the fix and passed afterward. The
-rebuilt native daemon improved exact payload matches from 38/65 to 43/65 without
-losing a previous success. The single-pixel baseline failure regression also
-passed separately.
+The full-window QR regression failed before the fix and passed afterward. Against
+the original payload files, the local-threshold fix improved exact native matches
+from 42/65 to 48/65; a global-threshold fallback raised this to 50/65 without
+losing a previous success. The earlier 38/65 and 43/65 counts normalized line
+endings on only the expected side and undercounted CRLF payloads. The single-pixel
+baseline failure regression also passed separately. The Windows native gate passed
+972 tests with one skip after the new QR regression.
 
 Hosted [Linux GPUI CI](https://github.com/Porabuild/Poratake/actions/runs/42786386596/job/129728542346)
 passed at `2cfb70e`: 798 GPUI tests, 28 Linux-daemon tests including the full-window
@@ -301,7 +304,7 @@ separate verification.
 | Editor attachment lifecycle     | Eight production scenarios cover all four edges, frozen/live/fallback pixels, partial capture failure, invalid image, cancellation and retry. Exact composed pixels and history reopen match; temporary files, new history entries and clipboard changes are rejected.                                                             |
 | Pin composition and restoration | Rendered pin pixels match the annotated PNG within two channel levels. Closing the pin restores annotations and identical export bytes with history enabled or disabled, without adding history entries. Enlarged/narrow bounds are checked against natural logical size.                                                          |
 | Capture preview lifecycle       | Four corner configurations preserve 200×140 cards with 12px gaps. Adding a fifth capture evicts the oldest card without deleting its file; color pixels verify order. Double-click opens the selected capture with identical PNG export. Auto-dismiss closes the stack while preserving files and history.                         |
-| Native analysis services        | Windows capture of an owned OCR editor window contains the expected recognized text. The rebuilt QR service now reads the full 952×651 captured window, including its toolbar/margins. Before/after checks improve 38/65 to 43/65 exact payloads with zero regressions. These probes do not certify native app clipboard delivery. |
+| Native analysis services        | Windows capture of an owned OCR editor window contains the expected recognized text. The rebuilt QR service reads the full 952×651 captured window, including its toolbar/margins. Native corpus checks improve from 42/65 to 50/65 exact payloads without regressions. These probes do not certify native app clipboard delivery. |
 | Native live window pick         | Background input selected an owned editor window, closed the selector and opened its 952×651 capture; decoded pixels exactly matched a direct daemon capture of that target.                                                                                                                                                       |
 | Native frozen window pick       | With freeze enabled, the former path captured a rectangle added after opening selection. The fixed saved output preserves the pre-change region: zero changed pixels versus before, while the live target differs by 3,761 pixels in that region.                                                                                  |
 | Native frozen area capture      | The selector client origin formerly sat four pixels above the display after activation. It now aligns at (0,0); the saved 400×240 region exactly matches the intended frozen crop, excluding a later annotation that changes 2,393 live pixels.                                                                                    |
@@ -323,7 +326,11 @@ The grayscale full-window regression is retained in the native test fixtures;
 its source and license are recorded in `THIRD_PARTY_NOTICES.md`. The remaining
 probe assets stay outside the app and visual baselines. Native before/after
 results for 20 QR photos, their grayscale originals and framed/resized variants
-are in `.scratch-parity/qr-corpus-*/native-{before,after}.json`.
+are in `.scratch-parity/qr-corpus-*/native-{before,after,otsu}.json`.
+On two synthetic 3840×2160 images without a code, three warm native requests
+took 157–205 ms with the current decoder and 76–95 ms with the older adaptive-only
+binary. That comparison includes both later fallback passes; it does not isolate
+the cost of the global pass. Measurements are in `.scratch-parity/qr-perf-results.log`.
 
 Bugs fixed in this pass:
 
@@ -352,6 +359,9 @@ Bugs fixed in this pass:
   empty to the exact expected payload; existing successful corpus cases remain
   unchanged. Windows and Linux loaders share the fix; Linux's regression passed
   in hosted CI. Interactive Linux app behavior remains unverified.
+- A photograph with uneven lighting needed a global histogram threshold after
+  both adaptive passes failed. Windows and Linux loader regressions use the same
+  test-only photograph; the Windows service returned the exact expected payload.
 - Scroll capture subscribed after the start RPC, losing early completion or
   cancellation events and leaving the session active. Subscription now precedes
   start; both early events and a successful retry are exercised.
@@ -425,7 +435,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                       |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                            |
 | P1       | Native attachment compositor coverage                    | The frozen handoff fix passed a real pixel-exact native capture and save. Add automated native Windows coverage for hide/show transitions and verify freezing off, cancellation and repeated attachments.                                                                                                                                                                                       |
-| P2       | QR photo robustness                                      | The reproduced full-window failure is fixed. The native decoder matches 26/40 grayscale original/framed QR corpus cases, up from 23/40, preserving every previous success. Fourteen stress cases remain unmatched; diagnose their detector/decoder failures before changing behavior. Linux loader regression passes in hosted CI; interactive app clipboard delivery still needs verification. |
+| P2       | QR photo robustness                                      | The reproduced full-window failure is fixed. The native decoder matches 27/40 grayscale original/framed QR corpus cases, up from 23/40, preserving every previous success. 13 stress cases remain unmatched; diagnose their detector/decoder failures before changing this behavior. New Linux loader regression awaits hosted CI; interactive app clipboard delivery still needs verification. |
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                         |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Representative coverage only.                                                                                                                                                                 |
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                           |

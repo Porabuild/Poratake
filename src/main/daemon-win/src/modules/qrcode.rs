@@ -190,6 +190,13 @@ mod tests {
     }
 
     #[test]
+    fn detects_photographed_qr_with_uneven_lighting() {
+        let payload = detect_qr_code(&fixture_path("qr-uneven-light.png"))
+            .expect("decode photographed QR code");
+        assert_eq!(payload, "http://google.com/gwt/n?u=bluenile.com");
+    }
+
+    #[test]
     fn returns_empty_payload_when_no_code_present() {
         let white = vec![255u8; 64 * 64];
         let payload = detect_payload_from_greyscale(&white, 64, 64);

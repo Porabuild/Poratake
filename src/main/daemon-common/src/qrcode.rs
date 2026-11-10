@@ -103,18 +103,58 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
         return String::new();
     }
 
-    for use_local_thresholds in [false, true] {
-        if use_local_thresholds && (width < 40 || height < 40) {
-            break;
-        }
-        let mut image = if use_local_thresholds {
-            let thresholds = local_thresholds(pixels, width, height);
-            let columns = width.div_ceil(8);
-            rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
-                pixels[y * width + x] <= thresholds[(y / 8) * columns + x / 8]
-            })
-        } else {
-            rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| pixels[y * width + x])
+    for pass in 0..3 {
+        let mut image = match pass {
+            0 => rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| {
+                pixels[y * width + x]
+            }),
+            1 if width >= 40 && height >= 40 => {
+                let thresholds = local_thresholds(pixels, width, height);
+                let columns = width.div_ceil(8);
+                rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
+                    pixels[y * width + x] <= thresholds[(y / 8) * columns + x / 8]
+                })
+            }
+            1 => continue,
+            _ => {
+                let mut histogram = [0u64; 256];
+                for &pixel in &pixels[..width * height] {
+                    histogram[pixel as usize] += 1;
+                }
+                let total = (width * height) as f64;
+                let sum: f64 = histogram
+                    .iter()
+                    .enumerate()
+                    .map(|(value, count)| value as f64 * *count as f64)
+                    .sum();
+                let mut lower_count = 0.0;
+                let mut lower_sum = 0.0;
+                let mut best = 0.0;
+                let mut threshold = None;
+                for (value, count) in histogram.iter().enumerate() {
+                    lower_count += *count as f64;
+                    lower_sum += value as f64 * *count as f64;
+                    if lower_count == 0.0 {
+                        continue;
+                    }
+                    let upper_count = total - lower_count;
+                    if upper_count == 0.0 {
+                        break;
+                    }
+                    let difference = lower_sum / lower_count - (sum - lower_sum) / upper_count;
+                    let variance = lower_count * upper_count * difference * difference;
+                    if variance > best {
+                        best = variance;
+                        threshold = Some(value as u8);
+                    }
+                }
+                let Some(threshold) = threshold else {
+                    continue;
+                };
+                rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
+                    pixels[y * width + x] <= threshold
+                })
+            }
         };
         for grid in image.detect_grids() {
             if let Ok((_meta, content)) = grid.decode()
