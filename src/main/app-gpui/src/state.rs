@@ -64,7 +64,7 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
 
 /// Installs the globals the windows read, without starting a daemon or
 /// touching the real configuration. Used by the headless render tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "parity"))]
 pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
     // HeroGPUI components read their tokens from the `ThemeProvider` global and
     // panic without it, so the harness installs the same provider `main` does

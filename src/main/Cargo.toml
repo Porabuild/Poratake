@@ -3,10 +3,10 @@ resolver = "2"
 members = ["daemon-common", "daemon-linux", "daemon-win", "app-gpui"]
 
 [workspace.package]
-rust-version = "1.98"
+rust-version = "1.99"
 
 [workspace.dependencies]
-herogpui = "=0.14.0"
+herogpui = { git = "https://github.com/Porabuild/HeroGPUI", rev = "12ce9ad5104319e05ddc10daecbfab6c8ded1393" }
 
 [profile.dev]
 opt-level = 1

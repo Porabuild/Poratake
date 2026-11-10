@@ -17,7 +17,6 @@ use crate::ui::color_picker;
 use crate::ui::colors::Tool;
 use crate::ui::icon::{icon_element, spinner_element};
 use crate::ui::icon_button;
-use crate::ui::menu::MenuHandle;
 use herogpui::components::{Button, Size, Variant};
 
 pub const TITLE_BAR_HEIGHT: f32 = chrome::TITLE_BAR_HEIGHT;
@@ -59,35 +58,39 @@ fn separator(theme: &crate::theme::vars::ThemeVars) -> herogpui::Separator {
 fn tool_button(tool: Tool, shortcut: &str, active: bool, handlers: &EditorHandlers) -> AnyElement {
     let name = tool.label();
     let select = handlers.option(EditorOption::Tool(tool));
-    let tooltip = if shortcut.is_empty() {
-        name.to_string()
-    } else {
-        format!("{name} ({})", shortcut.to_uppercase())
-    };
-    icon_button::with_tooltip(
-        tooltip,
-        icon_button::compact(tool.id(), tool.icon())
-            .variant(if active {
-                Variant::Tertiary
-            } else {
-                Variant::Ghost
-            })
-            .on_press(move |_event, window, cx| select(window, cx)),
-    )
+    let tooltip = icon_button::hinted(name, &shortcut.to_uppercase());
+    herogpui::components::Tooltip::new(tooltip)
+        .placement(if tool == Tool::Pen && !chrome::is_macos() {
+            herogpui::components::TooltipPlacement::BottomStart
+        } else {
+            herogpui::components::TooltipPlacement::Bottom
+        })
+        .sx(|el| el.flex_shrink_0())
+        .child(
+            icon_button::compact(tool.id(), tool.icon(), name)
+                .variant(if active {
+                    Variant::Tertiary
+                } else {
+                    Variant::Ghost
+                })
+                .on_press(move |_event, window, cx| select(window, cx)),
+        )
+        .into_any_element()
 }
 
 fn compact_action(
     id: &'static str,
     icon: &'static str,
-    tooltip: String,
+    label: &'static str,
+    hint: String,
     action: EditorAction,
     handlers: &EditorHandlers,
     disabled: bool,
 ) -> AnyElement {
     let run = handlers.action(action);
-    icon_button::with_tooltip(
-        tooltip,
-        icon_button::compact(id, icon)
+    icon_button::with_tooltip_below(
+        icon_button::hinted(label, &hint),
+        icon_button::compact(id, icon, label)
             .is_disabled(disabled)
             .on_press(move |_event, window, cx| run(window, cx)),
     )
@@ -96,20 +99,24 @@ fn compact_action(
 fn action_button(
     id: &'static str,
     icon: &'static str,
-    tooltip: String,
+    label: &'static str,
+    hint: String,
     action: EditorAction,
     handlers: &EditorHandlers,
     disabled: bool,
     size: impl Fn(Button) -> Button,
 ) -> AnyElement {
-    action_button_spinning(id, icon, tooltip, action, handlers, disabled, size, false)
+    action_button_spinning(
+        id, icon, label, hint, action, handlers, disabled, size, false,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn action_button_spinning(
     id: &'static str,
     icon: &'static str,
-    tooltip: String,
+    label: &'static str,
+    hint: String,
     action: EditorAction,
     handlers: &EditorHandlers,
     disabled: bool,
@@ -125,9 +132,15 @@ fn action_button_spinning(
     } else {
         icon_element(icon, px(chrome::TOOL_BUTTON_ICON))
     };
-    herogpui::components::Tooltip::new(tooltip)
+    herogpui::components::Tooltip::new(icon_button::hinted(label, &hint))
+        .placement(if action == EditorAction::Pin {
+            herogpui::components::TooltipPlacement::BottomEnd
+        } else {
+            herogpui::components::TooltipPlacement::Bottom
+        })
         .child(
             size(Button::new(id))
+                .aria_label(label)
                 .variant(Variant::Ghost)
                 .child(glyph)
                 .is_disabled(disabled)
@@ -148,7 +161,6 @@ pub struct TitleBar {
     pub is_uploading: bool,
     pub is_upload_done: bool,
     pub is_capture_mode: bool,
-    pub menu: MenuHandle,
     pub handlers: EditorHandlers,
 }
 
@@ -190,12 +202,16 @@ impl RenderOnce for TitleBar {
 
         {
             let capture = handlers.action(EditorAction::CaptureToggle);
-            tools = tools.child(icon_button::with_tooltip(
-                format!(
-                    "Capture & Attach (hold {} for edge picker)",
-                    accelerator::primary_modifier_label()
+            let name = "Capture & Attach";
+            tools = tools.child(icon_button::with_tooltip_below(
+                icon_button::hinted(
+                    name,
+                    &format!(
+                        "hold {} for edge picker",
+                        accelerator::primary_modifier_label()
+                    ),
                 ),
-                icon_button::compact("tool-capture", "camera")
+                icon_button::compact("tool-capture", "camera", name)
                     .variant(if self.is_capture_mode {
                         Variant::Tertiary
                     } else {
@@ -210,7 +226,8 @@ impl RenderOnce for TitleBar {
             .child(compact_action(
                 "undo",
                 "rotate-ccw",
-                format!("Undo ({})", accelerator::display("CommandOrControl+Z")),
+                "Undo",
+                accelerator::display("CommandOrControl+Z"),
                 EditorAction::Undo,
                 &handlers,
                 !self.can_undo,
@@ -218,10 +235,8 @@ impl RenderOnce for TitleBar {
             .child(compact_action(
                 "redo",
                 "rotate-cw",
-                format!(
-                    "Redo ({})",
-                    accelerator::display("CommandOrControl+Shift+Z")
-                ),
+                "Redo",
+                accelerator::display("CommandOrControl+Shift+Z"),
                 EditorAction::Redo,
                 &handlers,
                 !self.can_redo,
@@ -229,7 +244,8 @@ impl RenderOnce for TitleBar {
             .child(action_button(
                 "action-copy",
                 if self.is_copied { "check" } else { "copy" },
-                format!("Copy ({})", accelerator::display("CommandOrControl+C")),
+                "Copy",
+                accelerator::display("CommandOrControl+C"),
                 EditorAction::Copy,
                 &handlers,
                 false,
@@ -238,7 +254,8 @@ impl RenderOnce for TitleBar {
             .child(action_button(
                 "action-save",
                 "save",
-                format!("Save ({})", accelerator::display("CommandOrControl+S")),
+                "Save",
+                accelerator::display("CommandOrControl+S"),
                 EditorAction::Save,
                 &handlers,
                 false,
@@ -253,10 +270,8 @@ impl RenderOnce for TitleBar {
                 } else {
                     "cloud-upload"
                 },
-                match accelerator::display(&self.cloud_upload_shortcut) {
-                    hint if hint.is_empty() => "Upload to Cloud".to_string(),
-                    hint => format!("Upload to Cloud ({hint})"),
-                },
+                "Upload to Cloud",
+                accelerator::display(&self.cloud_upload_shortcut),
                 EditorAction::CloudUpload,
                 &handlers,
                 self.is_uploading,
@@ -266,7 +281,8 @@ impl RenderOnce for TitleBar {
             .child(action_button(
                 "action-pin",
                 "pin",
-                "Pin Screenshot".to_string(),
+                "Pin Screenshot",
+                String::new(),
                 EditorAction::Pin,
                 &handlers,
                 false,
@@ -278,7 +294,7 @@ impl RenderOnce for TitleBar {
             .flex_row()
             .items_center()
             .gap(px(chrome::TITLE_BAR_GAP));
-        for control in tool_options::render(&state, &self.menu, &handlers, window, cx) {
+        for control in tool_options::render(&state, &handlers, window, cx) {
             options = options.child(control);
         }
         let is_highlight = state.tool == Tool::Highlight;
@@ -296,7 +312,6 @@ impl RenderOnce for TitleBar {
             picker_color,
             picker_opacity,
             is_highlight,
-            &self.menu,
             &handlers,
             window,
             cx,
@@ -362,13 +377,10 @@ fn color_trigger(
     color: SharedString,
     opacity: f32,
     is_highlight: bool,
-    menu: &MenuHandle,
     handlers: &EditorHandlers,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) -> AnyElement {
-    let open = menu.is_open_for(COLOR_PICKER_ID, cx);
-    let handle = menu.clone();
     let palette: Vec<SharedString> = crate::ui::colors::palette_for_tool(if is_highlight {
         Tool::Highlight
     } else {
@@ -378,41 +390,23 @@ fn color_trigger(
     .map(|value| SharedString::from(*value))
     .collect();
     let on_option = handlers.on_option.clone();
-    let current = color.clone();
-
-    color_picker::trigger(COLOR_PICKER_ID, &color, opacity, open, window, cx)
-        .child(menu.render_dropdown(COLOR_PICKER_ID, cx))
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            let palette = palette.clone();
-            let current = current.clone();
-            let on_option = on_option.clone();
-            handle.toggle_with(
-                crate::ui::menu::MenuPlacement::below(COLOR_PICKER_ID),
-                move |dismiss, cx| {
-                    let handler: color_picker::ColorHandler = std::rc::Rc::new(
-                        move |value: SharedString,
-                              window: &mut gpui::Window,
-                              cx: &mut gpui::App| {
-                            let option = if is_highlight {
-                                EditorOption::HighlightColor(value)
-                            } else {
-                                EditorOption::Color(value)
-                            };
-                            on_option(option, window, cx);
-                        },
-                    );
-                    let view = cx.new(|cx| {
-                        color_picker::ColorPickerPopover::new(
-                            &current, palette, handler, dismiss, cx,
-                        )
-                    });
-                    let focus = view.read(cx).focus_handle();
-                    (view.into(), Some(focus))
+    color_picker::control(
+        COLOR_PICKER_ID,
+        color,
+        opacity,
+        palette,
+        std::rc::Rc::new(move |value, window, cx| {
+            on_option(
+                if is_highlight {
+                    EditorOption::HighlightColor(value)
+                } else {
+                    EditorOption::Color(value)
                 },
                 window,
                 cx,
             );
-            cx.stop_propagation();
-        })
-        .into_any_element()
+        }),
+        window,
+        cx,
+    )
 }

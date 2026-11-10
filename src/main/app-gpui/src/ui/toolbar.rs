@@ -3,13 +3,12 @@ use gpui::App;
 use gpui::{
     div, prelude::*, px, AnyElement, Context, Div, ElementId, SharedString, Styled, Window,
 };
-use herogpui::components::{Button, Size, Variant};
+use herogpui::components::{Button, Size, Tooltip, TooltipPlacement, Variant};
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
-use crate::ui::icon_button;
 
 pub fn surface(theme: &ThemeVars) -> Div {
     div()
@@ -37,11 +36,12 @@ pub fn hairline(theme: &ThemeVars) -> AnyElement {
         .into_any_element()
 }
 
-pub fn button(id: impl Into<ElementId>) -> Button {
+pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     Button::new(id)
         .variant(Variant::Ghost)
         .size(Size::Sm)
         .is_icon_only(true)
+        .aria_label(label)
         .recipe("overlay")
 }
 
@@ -59,8 +59,12 @@ pub fn desktop_selected(button: Button, selected: bool, theme: &ThemeVars) -> Bu
     button.bg(resting).text_color(foreground).hover_bg(hover)
 }
 
-pub fn icon(id: impl Into<ElementId>, icon: &'static str) -> Button {
-    desktop(button(id).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))))
+pub fn icon(
+    id: impl Into<ElementId>,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+) -> Button {
+    desktop(button(id, label).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))))
 }
 
 pub fn selected_icon(
@@ -68,9 +72,10 @@ pub fn selected_icon(
     icon: &'static str,
     selected: bool,
     theme: &ThemeVars,
+    label: impl Into<SharedString>,
 ) -> Button {
     desktop_selected(
-        button(id).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))),
+        button(id, label).child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON))),
         selected,
         theme,
     )
@@ -82,12 +87,25 @@ pub fn tooltip_button<V: 'static>(
     cx: &mut Context<V>,
     on_click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> AnyElement {
-    icon_button::with_tooltip(
-        tooltip,
-        button.on_press(cx.listener(move |this, _event, window, cx| {
-            on_click(this, window, cx);
-        })),
-    )
+    tooltip_button_at(button, TooltipPlacement::Top, tooltip, cx, on_click)
+}
+
+pub fn tooltip_button_at<V: 'static>(
+    button: Button,
+    placement: TooltipPlacement,
+    tooltip: impl Into<SharedString>,
+    cx: &mut Context<V>,
+    on_click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> AnyElement {
+    Tooltip::new(tooltip)
+        .placement(placement)
+        .sx(|el| el.flex_shrink_0())
+        .child(
+            button.on_press(cx.listener(move |this, _event, window, cx| {
+                on_click(this, window, cx);
+            })),
+        )
+        .into_any_element()
 }
 
 pub fn selected_surfaces(

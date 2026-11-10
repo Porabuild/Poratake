@@ -151,11 +151,10 @@ pub fn visible_items(
     items: &[HistoryItem],
     filter: HistoryFilter,
     order: HistorySortOrder,
-) -> Vec<HistoryItem> {
-    let mut result: Vec<HistoryItem> = items
+) -> Vec<&HistoryItem> {
+    let mut result: Vec<&HistoryItem> = items
         .iter()
         .filter(|item| filter.matches(item.r#type))
-        .cloned()
         .collect();
     if order == HistorySortOrder::Oldest {
         result.reverse();

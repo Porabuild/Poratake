@@ -138,7 +138,9 @@ fn quit(cx: &mut App) {
 /// current config, the way Electron's `rebuildTrayMenu` does after a change.
 pub fn refresh_shell(cx: &mut App) {
     let config = crate::state::state(cx).config.get();
-    let bridge = crate::state::native(cx);
+    let Some(bridge) = crate::state::try_native(cx) else {
+        return;
+    };
     bridge.send(crate::system::native::NativeCommand::RebuildMenu(
         crate::system::tray::TrayMenuState::from_config(
             &config,

@@ -211,7 +211,7 @@ impl HistoryWindow {
         .detach();
     }
 
-    fn visible(&self) -> Vec<HistoryItem> {
+    fn visible(&self) -> Vec<&HistoryItem> {
         visible_items(&self.items, self.filter, self.sort_order)
     }
 
@@ -276,7 +276,7 @@ impl HistoryWindow {
     }
 
     pub fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = self.visible().get(index).cloned() else {
+        let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
         let path = item.original_path.clone();
@@ -297,7 +297,7 @@ impl HistoryWindow {
     }
 
     pub fn reveal_index(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(item) = self.visible().get(index).cloned() else {
+        let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
         desktop::reveal_in_file_manager(std::path::Path::new(&item.original_path));
@@ -305,7 +305,7 @@ impl HistoryWindow {
     }
 
     pub fn delete_index(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(item) = self.visible().get(index).cloned() else {
+        let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
         if !history_store::delete_item(&item.id) {
@@ -381,7 +381,7 @@ impl HistoryWindow {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.item_menu_open {
+        if self.item_menu_open || !self.focus_handle.is_focused(window) {
             return;
         }
         let columns = self.layout.columns() as isize;

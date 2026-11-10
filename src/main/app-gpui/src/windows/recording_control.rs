@@ -593,7 +593,7 @@ impl RecordingControl {
         }
     }
 
-    fn input_toggles(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn input_toggles(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut toggles = Vec::new();
         if self.mode == Mode::PreRecording || self.camera_locked {
             toggles.push(self.device_dropdown(
@@ -602,7 +602,6 @@ impl RecordingControl {
                 "Select camera",
                 DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
                 false,
-                window,
                 cx,
             ));
         }
@@ -613,7 +612,6 @@ impl RecordingControl {
                 "Select microphone",
                 DeviceMenuKind::Media(crate::system::devices::DeviceKind::Microphone),
                 false,
-                window,
                 cx,
             ),
             overlay_icon(
@@ -647,7 +645,6 @@ impl RecordingControl {
                 "Select iPhone or iPad",
                 DeviceMenuKind::Ios,
                 self.selected_ios_id.is_some(),
-                window,
                 cx,
             ));
         }
@@ -661,78 +658,35 @@ impl RecordingControl {
         tooltip: &'static str,
         kind: DeviceMenuKind,
         tinted: bool,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let owner = format!("recording-{id}");
+        let owner = SharedString::from(format!("recording-{id}"));
         let entity = cx.entity().downgrade();
-        let key_entity = entity.clone();
         let menu_id = owner.clone();
-        let key_menu_id = menu_id.clone();
-        let theme = active_theme(cx);
-        let focus = crate::ui::primitives::control_focus(&owner, false, window, cx);
-        let (trigger_hover, trigger_hovered) =
-            crate::ui::primitives::hover_flag(&owner, window, cx);
-        let text = device_trigger_color(&theme, tinted, trigger_hovered);
-        herogpui::components::Tooltip::new(tooltip)
-            .id(SharedString::from(format!("{owner}-tip")))
-            .child(
-                div()
-                    .id(SharedString::from(owner.clone()))
-                    .track_focus(&focus)
-                    .map(|el| crate::ui::primitives::keyboard_focus_ring(el, &theme, cx))
-                    .relative()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(4.0))
-                    .h(px(chrome::OVERLAY_BUTTON_SIZE))
-                    .w(px(48.0))
-                    .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-                    .opacity(if self.countdown_active { 0.35 } else { 1.0 })
-                    .text_color(text)
-                    .when(trigger_hovered, |el| el.bg(crate::ui::colors::white(0.15)))
-                    .on_hover({
-                        let trigger_hover = trigger_hover.clone();
-                        move |over: &bool, _window, cx| {
-                            crate::ui::primitives::track_hover(&trigger_hover, *over, cx);
-                        }
-                    })
-                    .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
-                    .child(icon_element("chevron-down", px(12.0)))
-                    .child(self.menu.render_dropdown(&menu_id, cx))
-                    .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-                        if let Some(entity) = entity.upgrade() {
-                            entity.update(cx, |this, cx| {
-                                if this.countdown_active {
-                                    return;
-                                }
-                                this.toggle_device_menu(kind, menu_id.clone().into(), window, cx);
-                            });
-                        }
-                        cx.stop_propagation();
-                    })
-                    .on_key_down(move |event, window, cx| {
-                        if !activates_device_menu(event.keystroke.key.as_str()) {
-                            return;
-                        }
-                        if let Some(entity) = key_entity.upgrade() {
-                            entity.update(cx, |this, cx| {
-                                if this.countdown_active {
-                                    return;
-                                }
-                                this.toggle_device_menu(
-                                    kind,
-                                    key_menu_id.clone().into(),
-                                    window,
-                                    cx,
-                                );
-                            });
-                        }
-                        cx.stop_propagation();
-                    }),
-            )
+        let trigger = herogpui::components::Button::new(owner)
+            .aria_label(tooltip)
+            .variant(herogpui::Variant::Ghost)
+            .is_disabled(self.countdown_active)
+            .recipe("overlay-trigger")
+            .when(self.countdown_active, |button| {
+                button.recipe("overlay-disabled")
+            })
+            .when(tinted, |button| button.recipe("overlay-trigger-tinted"))
+            .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
+            .child(icon_element("chevron-down", px(12.0)))
+            .on_press(move |_, window, cx| {
+                if let Some(entity) = entity.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        this.toggle_device_menu(kind, menu_id.clone(), window, cx)
+                    });
+                }
+                cx.stop_propagation();
+            });
+        div()
+            .relative()
+            .flex()
+            .child(herogpui::components::Tooltip::new(tooltip).child(trigger))
+            .child(self.menu.render_dropdown(&format!("recording-{id}"), cx))
             .into_any_element()
     }
 
@@ -999,10 +953,12 @@ impl RecordingControl {
                     cx.notify();
                     return;
                 }
-                crate::state::state(cx).config.update(move |config| {
-                    config.recording.selected_mic_id = id;
-                    config.recording.selected_mic_name = name;
-                });
+                if self.mode == Mode::PreRecording {
+                    crate::state::state(cx).config.update(move |config| {
+                        config.recording.selected_mic_id = id;
+                        config.recording.selected_mic_name = name;
+                    });
+                }
             }
             crate::system::devices::DeviceKind::Camera => {
                 if self.mode == Mode::Recording {
@@ -1288,20 +1244,6 @@ impl RecordingControl {
     }
 }
 
-fn device_trigger_color(
-    theme: &crate::theme::vars::ThemeVars,
-    tinted: bool,
-    hovered: bool,
-) -> gpui::Hsla {
-    if tinted {
-        return theme.accent;
-    }
-    if hovered {
-        return crate::ui::colors::white(1.0);
-    }
-    crate::ui::colors::white(0.85)
-}
-
 fn device_menu_placement(owner: impl Into<SharedString>) -> MenuPlacement {
     MenuPlacement::below(owner)
         .min_width(px(DEVICE_DROPDOWN_MIN_WIDTH))
@@ -1353,10 +1295,6 @@ fn recording_control_width(recording: bool, has_target_name: bool) -> f32 {
     } else {
         width
     }
-}
-
-fn activates_device_menu(key: &str) -> bool {
-    matches!(key, "enter" | "space")
 }
 
 fn report_toggle_failure(cx: &mut Context<RecordingControl>, error: &anyhow::Error) {
@@ -1486,7 +1424,7 @@ fn overlay_icon(
     cx: &mut Context<RecordingControl>,
 ) -> AnyElement {
     toolbar::tooltip_button(
-        toolbar::icon(id, icon).is_disabled(disabled),
+        toolbar::icon(id, icon, tooltip).is_disabled(disabled),
         tooltip,
         cx,
         on_click,
@@ -1523,7 +1461,7 @@ impl Render for RecordingControl {
         }
         let theme = active_theme(cx);
         let paused = recorder::state() == recorder::RecorderState::Paused;
-        let toggles = self.input_toggles(window, cx);
+        let toggles = self.input_toggles(cx);
         let countdown = self.countdown_remaining;
 
         let mut bar = toolbar::surface(&theme)
@@ -1548,14 +1486,15 @@ impl Render for RecordingControl {
         }
 
         if self.mode == Mode::PreRecording {
+            let start_name = "Start recording";
             return recording_shell(
                 &self.focus_handle,
                 bar.child(toolbar::tooltip_button(
-                    toolbar::button("recording-start")
+                    toolbar::button("recording-start", start_name)
                         .is_disabled(self.countdown_active)
                         .hover_bg(crate::ui::colors::white(0.15))
                         .child(toolbar::filled_glyph(theme.accent, true)),
-                    "Start recording",
+                    start_name,
                     cx,
                     |this, window, cx| this.start(window, cx),
                 ))
@@ -1577,6 +1516,7 @@ impl Render for RecordingControl {
             );
         }
 
+        let stop_name = "Stop recording";
         recording_shell(
             &self.focus_handle,
             bar.child(overlay_icon(
@@ -1592,10 +1532,10 @@ impl Render for RecordingControl {
                 cx,
             ))
             .child(toolbar::tooltip_button(
-                toolbar::button("recording-stop")
+                toolbar::button("recording-stop", stop_name)
                     .hover_bg(crate::ui::colors::white(0.15))
                     .child(toolbar::filled_glyph(theme.destructive, false)),
-                "Stop recording",
+                stop_name,
                 cx,
                 |this, window, cx| this.finish(false, window, cx),
             ))
@@ -2059,13 +1999,6 @@ mod tests {
             control.pending_device_menu.is_none()
                 && control.menu.is_open_for("recording-camera", cx)
         }));
-    }
-
-    #[test]
-    fn device_menu_supports_keyboard_activation() {
-        assert!(activates_device_menu("enter"));
-        assert!(activates_device_menu("space"));
-        assert!(!activates_device_menu("escape"));
     }
 }
 

@@ -5,8 +5,9 @@ use crate::config::shortcuts::VideoEditorSidebarShortcuts;
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
+use crate::ui::icon_button;
 use crate::windows::video_editor::VideoEditorWindow;
-use herogpui::components::{Button, Size, Tooltip, Variant};
+use herogpui::components::{Button, Size, Tooltip, TooltipPlacement, Variant};
 
 pub const TAB_RAIL_WIDTH: f32 = chrome::VIDEO_TAB_RAIL_WIDTH;
 #[allow(dead_code)]
@@ -178,26 +179,27 @@ pub fn tab_rail(
 
     for tab in SidebarTab::ALL {
         let shortcut = tab.shortcut(shortcuts);
-        let tooltip = if shortcut.is_empty() {
-            tab.label().to_string()
-        } else {
-            format!("{} ({})", tab.label(), shortcut.to_uppercase())
-        };
+        let label = tab.label();
+        let tooltip = icon_button::hinted(label, &shortcut.to_uppercase());
         rail = rail.child(
-            Tooltip::new(tooltip).child(
-                Button::new(SharedString::from(format!("video-tab-{}", tab.id())))
-                    .variant(if active == Some(tab) {
-                        Variant::Tertiary
-                    } else {
-                        Variant::Ghost
-                    })
-                    .size(Size::Sm)
-                    .is_icon_only(true)
-                    .child(icon_element(tab.icon(), px(16.0)))
-                    .on_press(cx.listener(move |this, _event, _window, cx| {
-                        this.activate_tab(tab, cx);
-                    })),
-            ),
+            Tooltip::new(tooltip)
+                .placement(TooltipPlacement::Left)
+                .offset(px(8.0))
+                .child(
+                    Button::new(SharedString::from(format!("video-tab-{}", tab.id())))
+                        .variant(if active == Some(tab) {
+                            Variant::Tertiary
+                        } else {
+                            Variant::Ghost
+                        })
+                        .size(Size::Sm)
+                        .is_icon_only(true)
+                        .aria_label(label)
+                        .child(icon_element(tab.icon(), px(16.0)))
+                        .on_press(cx.listener(move |this, _event, _window, cx| {
+                            this.activate_tab(tab, cx);
+                        })),
+                ),
         );
     }
 

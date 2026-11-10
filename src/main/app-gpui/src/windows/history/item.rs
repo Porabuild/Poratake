@@ -155,12 +155,14 @@ fn overlay_action(
             Button::new(id)
                 .variant(Variant::Ghost)
                 .is_icon_only(true)
+                .aria_label(tooltip)
                 .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
                 .bg(resting)
                 .text_color(foreground)
                 .hover_bg(surface_hover)
                 .child(icon_element(icon, px(chrome::HISTORY_ITEM_ACTION_ICON)))
                 .on_press(cx.listener(move |this, _event, window, cx| {
+                    cx.stop_propagation();
                     on_click(this, window, cx);
                 })),
         )
@@ -409,6 +411,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                 Button::new(view.element_id("history-row-reveal"))
                     .variant(Variant::Ghost)
                     .is_icon_only(true)
+                    .aria_label("Show in folder")
                     .child(icon_element(
                         "folder-open",
                         px(chrome::HISTORY_ITEM_ACTION_ICON),
@@ -417,6 +420,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                     .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
                     .width(px(28.0))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
+                        cx.stop_propagation();
                         this.reveal_index(index, cx);
                     })),
             )
@@ -427,6 +431,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                 Button::new(view.element_id("history-row-delete"))
                     .variant(Variant::Ghost)
                     .is_icon_only(true)
+                    .aria_label("Delete")
                     .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
                     .text_color(foreground)
                     .hover_bg(surface_hover)
@@ -435,6 +440,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                         px(chrome::HISTORY_ITEM_ACTION_ICON),
                     ))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
+                        cx.stop_propagation();
                         this.delete_index(index, cx);
                     }))
             });

@@ -352,7 +352,13 @@ impl ScrollControlBar {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        toolbar::tooltip_button(toolbar::icon(id, icon), tooltip, cx, on_click)
+        let tooltip: SharedString = tooltip.into();
+        toolbar::tooltip_button(
+            toolbar::icon(id, icon, tooltip.clone()),
+            tooltip,
+            cx,
+            on_click,
+        )
     }
 
     fn filled_button(
@@ -362,8 +368,9 @@ impl ScrollControlBar {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let tooltip: SharedString = tooltip.into();
         toolbar::tooltip_button(
-            toolbar::desktop(toolbar::button(id).child(glyph)),
+            toolbar::desktop(toolbar::button(id, tooltip.clone()).child(glyph)),
             tooltip,
             cx,
             on_click,

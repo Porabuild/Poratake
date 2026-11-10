@@ -153,8 +153,8 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `fontdue`                  |     0.9.4 | MIT OR Apache-2.0 OR Zlib |
 | `glib`                     |    0.18.5 | MIT                       |
 | `global-hotkey`            |     0.8.0 | Apache-2.0 OR MIT         |
-| `gpui-pre`                 |     0.3.5 | Apache-2.0                |
-| `herogpui`                 |    0.14.0 | Apache-2.0                |
+| `gpui-pre`                 |    0.3.11 | Apache-2.0                |
+| `herogpui`                 |    0.15.0 | Apache-2.0                |
 | `gtk`                      |    0.18.2 | MIT                       |
 | `hmac`                     |    0.13.0 | MIT OR Apache-2.0         |
 | `image`                    |   0.25.10 | MIT OR Apache-2.0         |
@@ -183,11 +183,79 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `serde`                    |   1.0.229 | MIT OR Apache-2.0         |
 | `serde_json`               |   1.0.151 | MIT OR Apache-2.0         |
 
-[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are version 0.14.0, published on [crates.io](https://crates.io/crates/herogpui) and licensed Apache-2.0; their versions and checksums are pinned in `src/main/Cargo.lock`. The unmodified license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`.
+[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are based on version 0.15.0 with the control-content, styling and popover patch at [commit `12ce9ad5`](https://github.com/Porabuild/HeroGPUI/commit/12ce9ad5104319e05ddc10daecbfab6c8ded1393); all four sources are pinned to that exact Git revision in `src/main/Cargo.lock`. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
 
-The GPUI implementation is the Apache-2.0 `gpui-pre` 0.3.5 family, replacing `gpui` 0.2.2: `gpui-pre`, `gpui-pre-apple`, `gpui-pre-collections`, `gpui-pre-derive-refineable`, `gpui-pre-http-client`, `gpui-pre-linux`, `gpui-pre-macos`, `gpui-pre-macros`, `gpui-pre-media`, `gpui-pre-perf`, `gpui-pre-platform`, `gpui-pre-refineable`, `gpui-pre-scheduler`, `gpui-pre-shared-string`, `gpui-pre-sum-tree`, `gpui-pre-util`, `gpui-pre-util-macros`, `gpui-pre-web`, `gpui-pre-wgpu`, `gpui-pre-windows`, `gpui-pre-zlog`, `gpui-pre-ztracing`, and `gpui-pre-ztracing-macro`. Platform-specific crates are linked only for their respective targets. `gpui-pre-http-client` compresses through `async-compression` 0.4.43, which pulls in `bzip2` 0.6.1 and `libbz2-rs-sys` 0.2.5 (bzip2-1.0.6).
+```text
+HeroGPUI
+Copyright 2026 HeroGPUI contributors
 
-HeroGPUI also introduces ICU4X calendar and date/time components and compiled locale data: `icu_calendar` 2.2.1, `icu_calendar_data`, `icu_datetime`, `icu_datetime_data`, `icu_decimal`, `icu_decimal_data`, `icu_locale`, `icu_locale_data`, `icu_plurals`, `icu_plurals_data`, `icu_time` 2.2.0, `icu_time_data` 2.2.1, and `icu_pattern` 0.4.2 (Unicode-3.0). Local time and locale detection use `jiff`/`jiff-static` 0.2.35, `jiff-core` 0.1.0, `jiff-tzdb` 0.1.8, and `jiff-tzdb-platform` 0.1.3 (MIT OR Unlicense).
+This product is a Rust/GPUI port derived from HeroUI v3.
+HeroUI is Copyright 2025 NextUI Inc. and is licensed under the Apache License,
+Version 2.0.
+
+HeroGPUI includes modified and translated implementations of HeroUI component
+behavior, design tokens, styles, and documentation structure.
+
+This product includes icons from Lucide (https://lucide.dev), copied from the
+lucide-static 1.31.0 release into crates/herogpui-components/assets/lucide/.
+Lucide is Copyright (c) 2026 Lucide Icons and Contributors and is licensed
+under the ISC License. The Lucide icons derived from the Feather project are
+Copyright (c) 2013-present Cole Bemis and are licensed under the MIT License.
+The full license text, including the list of Feather-derived icons, is in
+crates/herogpui-components/assets/lucide/LICENSE.
+```
+
+The license of the Lucide icons embedded in `herogpui-components`, reproduced from the crate's `assets/lucide/LICENSE`:
+
+```text
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+The following Lucide icons are derived from the Feather project:
+
+airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circle, arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle, arrow-left, arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left, arrow-up-right, arrow-up, at-sign, calendar, cast, check, chevron-down, chevron-left, chevron-right, chevron-up, chevrons-down, chevrons-left, chevrons-right, chevrons-up, circle, clipboard, clock, code, columns, command, compass, corner-down-left, corner-down-right, corner-left-down, corner-left-up, corner-right-down, corner-right-up, corner-up-left, corner-up-right, crosshair, database, divide-circle, divide-square, dollar-sign, download, external-link, feather, frown, hash, headphones, help-circle, info, italic, key, layout, life-buoy, link-2, link, loader, lock, log-in, log-out, maximize, meh, minimize, minimize-2, minus-circle, minus-square, minus, monitor, moon, more-horizontal, more-vertical, move, music, navigation-2, navigation, octagon, pause-circle, percent, plus-circle, plus-square, plus, power, radio, rss, search, server, share, shopping-bag, sidebar, smartphone, smile, square, table-2, tablet, target, terminal, trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon, x-square, x, zoom-in, zoom-out
+
+The MIT License (MIT) (for the icons listed above)
+
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The GPUI implementation is the Apache-2.0 `gpui-pre` 0.3.11 family, replacing `gpui` 0.2.2: `gpui-pre`, `gpui-pre-apple`, `gpui-pre-bench-metrics`, `gpui-pre-collections`, `gpui-pre-derive-refineable`, `gpui-pre-http-client`, `gpui-pre-ios`, `gpui-pre-linux`, `gpui-pre-macos`, `gpui-pre-macros`, `gpui-pre-platform`, `gpui-pre-refineable`, `gpui-pre-scheduler`, `gpui-pre-shared-string`, `gpui-pre-sum-tree`, `gpui-pre-util`, `gpui-pre-web`, `gpui-pre-wgpu`, `gpui-pre-windows`, `gpui-pre-ztracing`, and `gpui-pre-ztracing-macro`. Platform-specific crates are linked only for their respective targets. GPUI itself links ICU4X `icu_segmenter` and `icu_segmenter_data` 2.4.0 (Unicode-3.0). On macOS the GPUI crates also link `mach2` 0.6.0 (BSD-2-Clause OR MIT OR Apache-2.0) and `objc2-core-text`, `objc2-core-video`, `objc2-metal`, `objc2-quartz-core`, `objc2-security`, and `objc2-uniform-type-identifiers` 0.3.2 (Zlib OR Apache-2.0 OR MIT).
+
+HeroGPUI also introduces ICU4X calendar and date/time components and compiled locale data: `icu_calendar` 2.4.0, `icu_calendar_data`, `icu_datetime`, `icu_datetime_data`, `icu_decimal`, `icu_decimal_data`, `icu_locale`, `icu_locale_data`, `icu_locale_fallback`, `icu_locale_fallback_data`, `icu_plurals`, `icu_plurals_data`, `icu_time` 2.4.0, `icu_time_data` 2.4.0, and `icu_pattern` 0.5.1 (Unicode-3.0). Local time and locale detection use `jiff`/`jiff-static` 0.2.35, `jiff-core` 0.1.0, `jiff-tzdb` 0.1.8, and `jiff-tzdb-platform` 0.1.3 (MIT OR Unlicense).
 
 `tray-icon` pulls in `dpi` 0.1.2 (Apache-2.0 AND MIT).
 
@@ -195,11 +263,11 @@ On Linux, `tray-icon` uses its GTK/AppIndicator backend. The locked runtime clos
 
 On Linux, `poratake-daemon-linux` captures and presents exact physical X11 frames through `xcb`, captures Wayland through `zed-scap`, the desktop portal and PipeWire, and uses an event-driven GTK runtime for timer control and printing. The Wayland runtime closure adds `dbus` 0.9.12 and `libdbus-sys` 0.2.7 (Apache-2.0 OR MIT), `pipewire`/`pipewire-sys`/`libspa`/`libspa-sys` 0.8.0 (MIT), `cookie-factory` 0.3.3 (MIT), and `nix` 0.27.1 (MIT). Its build closure adds `annotate-snippets` 0.9.2 (Apache-2.0 OR MIT), `bindgen` 0.69.5 (BSD-3-Clause), `convert_case` 0.6.0 (MIT), `itertools` 0.12.1 (MIT OR Apache-2.0), `lazycell` 1.3.0 (MIT OR Apache-2.0), `unicode-width` 0.1.14 (MIT OR Apache-2.0), and `yansi-term` 0.1.2 (MIT).
 
-The application requests only the PNG, JPEG, and GIF codecs from `image`, but GPUI (`gpui-pre` 0.3.5) also enables `image`'s default codec set. The locked Windows closure therefore includes `ravif` 0.13.0 (BSD-3-Clause), `rav1e` 0.8.1 (BSD-2-Clause), `exr` 1.74.2 (BSD-3-Clause), `image-webp` 0.2.4 (MIT OR Apache-2.0), `qoi` 0.4.1 (MIT OR Apache-2.0), and `tiff` 0.11.3 (MIT). The GIF codec pulls in `gif` 0.14.2 and `weezl` 0.1.12 (both MIT OR Apache-2.0) and `color_quant` 1.1.0 (MIT). GPUI's Windows TLS path also includes `ring` 0.17.14 (Apache-2.0 AND ISC).
+The application requests only the PNG, JPEG, and GIF codecs from `image`, but GPUI (`gpui-pre` 0.3.11) also enables its BMP, DDS, OpenEXR, Farbfeld, Radiance HDR, ICO, PNM, QOI, TGA, TIFF, and WebP codecs. The locked closure therefore includes `exr` 1.74.2 (BSD-3-Clause), `image-webp` 0.2.4 (MIT OR Apache-2.0), `qoi` 0.4.1 (MIT OR Apache-2.0), and `tiff` 0.11.3 (MIT). The GIF codec pulls in `gif` 0.14.2 and `weezl` 0.1.12 (both MIT OR Apache-2.0) and `color_quant` 1.1.0 (MIT).
 
 `tiny-skia` is the shell's software rasterizer. The image editor's export and the video editor's frame composition draw through it, which is what keeps a saved file identical to the on-screen preview. It pulls in `tiny-skia-path` 0.11.4 (BSD-3-Clause), `strict-num` 0.1.1 (MIT) and `arrayref` 0.3.9 (BSD-2-Clause). `usvg`/`resvg` render the recorded pointer, whose artwork is the same SVG markup the renderer draws; they pull in `svgtypes` 0.15.3, `simplecss` 0.2.2, `roxmltree` 0.20.0 and `kurbo` 0.11.3 (all Apache-2.0 OR MIT) plus `fontdb` 0.23.0, `rustybuzz` 0.20.1 and `imagesize` 0.13.0 (all MIT).
 
-`ureq` performs the cloud uploads. It is built with `--no-default-features --features rustls`, which pulls in `ureq-proto` 0.6.1 (MIT OR Apache-2.0), `rustls` 0.23.45 (Apache-2.0 OR ISC OR MIT) and the `webpki-roots` 1.0.9 trust store (CDLA-Permissive-2.0). `hmac` and `sha2` implement the AWS Signature Version 4 signing the S3-compatible provider requires; uploads go only to the user's own storage, never to Capty infrastructure.
+`ureq` performs the cloud uploads. It is built with `--no-default-features --features rustls`, which pulls in `ureq-proto` 0.6.1 (MIT OR Apache-2.0), `rustls` 0.23.46 (Apache-2.0 OR ISC OR MIT) with its `ring` 0.17.14 crypto provider (Apache-2.0 AND ISC) and `rustls-webpki` 0.103.16 (ISC), and the `webpki-roots` 1.0.11 trust store (CDLA-Permissive-2.0). `hmac` and `sha2` implement the AWS Signature Version 4 signing the S3-compatible provider requires; uploads go only to the user's own storage, never to Capty infrastructure.
 
 `fontdue` rasterizes the editor's text annotations, the video captions and the keyboard overlay for export. No font is bundled: it loads the platform UI font already installed on the machine (Segoe UI, Georgia, Consolas or Comic Sans MS on Windows; the San Francisco, Georgia, Menlo and Comic Sans MS equivalents on macOS; DejaVu on other systems), so the exported image matches the on-screen preview without redistributing any typeface.
 

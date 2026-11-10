@@ -8,7 +8,6 @@
 //! `set_theme`. The two layers then agree on every token the components touch.
 
 use super::vars::ThemeVars;
-use gpui::prelude::*;
 use herogpui::gpui;
 use herogpui::theme::{
     ButtonStyle, ComponentColor, ComponentTheme, ComponentThemes, MenuStyle, SelectStyle,
@@ -62,6 +61,31 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                     .row_padding_y(gpui::px(2.0))
                     .row_text_size(gpui::px(12.0))
                     .panel_padding(gpui::px(4.0)),
+            )
+            .recipe(
+                "tool-popover",
+                SelectStyle::default()
+                    .height(gpui::px(24.0))
+                    .padding_x(gpui::px(8.0))
+                    .padding_y(gpui::px(0.0))
+                    .trigger_text_size(gpui::px(12.0))
+                    .row_height(gpui::px(24.0))
+                    .row_padding_x(gpui::px(crate::ui::chrome::TOOL_POPOVER_ROW_PAD))
+                    .row_padding_y(gpui::px(0.0))
+                    .row_text_size(gpui::px(12.0))
+                    .panel_padding(gpui::px(crate::ui::chrome::TOOL_POPOVER_PANEL_PAD))
+                    .panel_gap(gpui::px(0.0)),
+            )
+            .recipe(
+                "toolbar",
+                SelectStyle::default()
+                    .height(gpui::px(28.0))
+                    .padding_x(gpui::px(8.0))
+                    .padding_y(gpui::px(0.0))
+                    .panel_padding(gpui::px(6.0))
+                    .panel_gap(gpui::px(4.0))
+                    .panel_min_width(gpui::px(64.0))
+                    .radius(gpui::px(crate::ui::chrome::RADIUS_3XL)),
             ),
         )
         .menu(
@@ -103,7 +127,8 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
             ComponentTheme::new(ButtonStyle::default())
                 .recipe(
                     "compact",
-                    ButtonStyle::default().style(|el| {
+                    ButtonStyle::default().size(herogpui::Size::Sm).style(|el| {
+                        use gpui::Styled;
                         el.h(gpui::px(28.0))
                             .px(gpui::px(10.0))
                             .text_size(gpui::px(12.0))
@@ -111,8 +136,64 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                     }),
                 )
                 .recipe(
-                    "compact-icon",
-                    ButtonStyle::default().style(|el| el.size(gpui::px(28.0)).p(gpui::px(0.0))),
+                    "muted-action",
+                    ButtonStyle::default()
+                        .foreground(ComponentColor::Muted)
+                        .hover_foreground(ComponentColor::Foreground),
+                )
+                .recipe(
+                    "overlay-trigger",
+                    ButtonStyle::default()
+                        .size(herogpui::Size::Sm)
+                        .foreground(ComponentColor::Literal(crate::ui::colors::white(0.85)))
+                        .hover_foreground(ComponentColor::Literal(crate::ui::colors::white(1.0)))
+                        .hover_bg(ComponentColor::Literal(crate::ui::colors::white(0.15)))
+                        .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS))
+                        .style(|el| {
+                            use gpui::Styled;
+                            el.h(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_SIZE))
+                                .w(gpui::px(48.0))
+                                .px(gpui::px(6.0))
+                                .gap(gpui::px(4.0))
+                        }),
+                )
+                .recipe(
+                    "overlay-disabled",
+                    ButtonStyle::default().style(|el| {
+                        use gpui::Styled;
+                        el.opacity(0.35)
+                    }),
+                )
+                .recipe(
+                    "overlay-trigger-tinted",
+                    ButtonStyle::default()
+                        .foreground(ComponentColor::Role(Color::Accent))
+                        .hover_foreground(ComponentColor::Role(Color::Accent)),
+                )
+                .recipe(
+                    "video-aspect",
+                    ButtonStyle::default()
+                        .size(herogpui::Size::Sm)
+                        .radius(gpui::px(crate::ui::chrome::VIDEO_ASPECT_RADIUS))
+                        .background(ComponentColor::Literal(vars.muted_background))
+                        .foreground(ComponentColor::Muted)
+                        .hover_bg(ComponentColor::Role(Color::Accent))
+                        .hover_foreground(ComponentColor::RoleForeground(Color::Accent))
+                        .pressed_bg(ComponentColor::Role(Color::Accent))
+                        .pressed_foreground(ComponentColor::RoleForeground(Color::Accent))
+                        .style(|el| {
+                            use gpui::Styled;
+                            el.h(gpui::px(28.0))
+                                .px(gpui::px(8.0))
+                                .text_size(gpui::px(12.0))
+                                .line_height(gpui::px(16.0))
+                        }),
+                )
+                .recipe(
+                    "video-aspect-selected",
+                    ButtonStyle::default()
+                        .background(ComponentColor::Role(Color::Accent))
+                        .foreground(ComponentColor::RoleForeground(Color::Accent)),
                 )
                 .recipe(
                     "muted",
@@ -129,40 +210,14 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                         .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS)),
                 )
                 .recipe(
-                    "chip",
-                    ButtonStyle::default().style(|el| {
-                        el.h(gpui::px(crate::ui::chrome::HISTORY_CHIP_HEIGHT))
-                            .px(gpui::px(crate::ui::chrome::HISTORY_CHIP_PAD_X))
-                            .text_size(gpui::px(12.0))
-                            .line_height(gpui::px(16.0))
-                            .gap(gpui::px(crate::ui::chrome::HISTORY_CHIP_ICON_GAP))
-                    }),
-                )
-                .recipe(
-                    "chip-icon",
-                    ButtonStyle::default().style(|el| {
-                        el.size(gpui::px(crate::ui::chrome::HISTORY_CHIP_HEIGHT))
-                            .p(gpui::px(0.0))
-                    }),
-                )
-                .recipe(
                     "preview",
                     ButtonStyle::default()
-                        .radius(gpui::px(crate::ui::chrome::PREVIEW_CONTROL / 2.0))
-                        .style(|el| {
-                            el.size(gpui::px(crate::ui::chrome::PREVIEW_CONTROL))
-                                .p(gpui::px(0.0))
-                        }),
+                        .radius(gpui::px(crate::ui::chrome::PREVIEW_CONTROL / 2.0)),
                 )
                 .recipe(
                     "preview-pill",
                     ButtonStyle::default()
-                        .radius(gpui::px(crate::ui::chrome::PREVIEW_PILL_HEIGHT / 2.0))
-                        .style(|el| {
-                            el.h(gpui::px(crate::ui::chrome::PREVIEW_PILL_HEIGHT))
-                                .px(gpui::px(crate::ui::chrome::BUTTON_SM_PAD_X))
-                                .text_size(gpui::px(crate::ui::chrome::BUTTON_XS_TEXT))
-                        }),
+                        .radius(gpui::px(crate::ui::chrome::PREVIEW_PILL_HEIGHT / 2.0)),
                 ),
         )
         .text_field(
@@ -608,8 +663,6 @@ mod tests {
         );
         assert_eq!(accent.panel_min_width, Some(gpui::px(MENU_MIN_WIDTH)));
         assert_eq!(accent.panel_max_height, Some(gpui::px(MENU_MAX_HEIGHT)));
-        let button = theme.components.button.resolve(&["compact".into()]);
-        assert!(button.style.is_some());
         let missing = theme.components.button.resolve(&["does-not-exist".into()]);
         assert!(missing.style.is_none());
         let search = theme.components.text_field.resolve(&["search".into()]);
@@ -630,8 +683,6 @@ mod tests {
             danger_text.foreground,
             Some(ComponentColor::Literal(vars.destructive))
         );
-        let chip = theme.components.button.resolve(&["chip".into()]);
-        assert!(chip.style.is_some());
         let preview = theme.components.button.resolve(&["preview".into()]);
         assert_eq!(
             preview.radius,

@@ -1,6 +1,6 @@
 use gpui::{
-    div, prelude::*, px, AnyElement, Context, MouseDownEvent, MouseMoveEvent, ScrollHandle,
-    ScrollWheelEvent, Styled,
+    div, prelude::*, px, AnyElement, Context, MouseDownEvent, MouseMoveEvent, ScrollEvent,
+    ScrollHandle, Styled,
 };
 use herogpui::gpui;
 
@@ -89,9 +89,9 @@ pub fn render(
                 .flex_1()
                 .overflow_x_scroll()
                 .cursor_pointer()
-                .on_scroll_wheel(cx.listener({
+                .on_scroll(cx.listener({
                     let scroll = scroll.clone();
-                    move |this, event: &ScrollWheelEvent, _window, cx| {
+                    move |this, event: &ScrollEvent, _window, cx| {
                         let delta = event.delta.pixel_delta(px(TRACK_HEIGHT));
                         if event.modifiers.platform || event.modifiers.control {
                             let pointer =

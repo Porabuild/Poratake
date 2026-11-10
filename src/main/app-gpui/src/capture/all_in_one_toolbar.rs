@@ -25,7 +25,6 @@ pub fn render(
     choices: Choices,
     menu: &MenuHandle,
     theme: &ThemeVars,
-    window: &mut Window,
     cx: &mut Context<AreaOverlay>,
 ) -> AnyElement {
     let recording_enabled = is_supported(Feature::Recording);
@@ -76,7 +75,7 @@ pub fn render(
             toolbar::surface(theme)
                 .child(modes)
                 .when(choices.mode != Mode::Ocr, |el| {
-                    el.child(target_menu(choices, menu, theme, window, cx))
+                    el.child(target_menu(choices, menu, cx))
                 })
                 .child(toolbar::hairline(theme))
                 .when(ocr_enabled, |el| {
@@ -159,7 +158,7 @@ fn toolbar_button(
     cx: &mut Context<AreaOverlay>,
 ) -> AnyElement {
     toolbar::tooltip_button(
-        toolbar::selected_icon(id, icon, selected, theme),
+        toolbar::selected_icon(id, icon, selected, theme, tooltip),
         tooltip,
         cx,
         on_click,
@@ -170,13 +169,7 @@ fn target_menu_placement() -> MenuPlacement {
     MenuPlacement::below(TARGET_MENU_ID).min_width(px(TARGET_MENU_MIN_WIDTH))
 }
 
-fn target_menu(
-    choices: Choices,
-    menu: &MenuHandle,
-    theme: &ThemeVars,
-    window: &mut Window,
-    cx: &mut Context<AreaOverlay>,
-) -> AnyElement {
+fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay>) -> AnyElement {
     let handle = menu.clone();
     let entries = {
         let mut builder = MenuBuilder::new();
@@ -203,64 +196,35 @@ fn target_menu(
         builder.build()
     };
 
-    let focus = crate::ui::primitives::control_focus(TARGET_MENU_ID, false, window, cx);
-    let (trigger_hover, trigger_hovered) =
-        crate::ui::primitives::hover_flag(TARGET_MENU_ID, window, cx);
-    let key_handle = handle.clone();
-    let key_entries = entries.clone();
     div()
-        .id(TARGET_MENU_ID)
-        .track_focus(&focus)
-        .map(|el| crate::ui::primitives::keyboard_focus_ring(el, theme, cx))
         .relative()
         .flex()
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .h(px(chrome::OVERLAY_BUTTON_SIZE))
-        .w(px(chrome::OVERLAY_TARGET_TRIGGER_WIDTH))
-        .min_w(px(chrome::OVERLAY_TARGET_TRIGGER_WIDTH))
-        .px(px(chrome::OVERLAY_TARGET_TRIGGER_PAD_X))
-        .rounded(px(chrome::OVERLAY_BUTTON_RADIUS))
-        .text_color(if trigger_hovered {
-            crate::ui::colors::white(1.0)
-        } else {
-            crate::ui::colors::white(0.85)
-        })
-        .when(trigger_hovered, |el| el.bg(crate::ui::colors::white(0.15)))
-        .on_hover({
-            let trigger_hover = trigger_hover.clone();
-            move |over: &bool, _window, cx| {
-                crate::ui::primitives::track_hover(&trigger_hover, *over, cx);
-            }
-        })
         .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w(px(TARGET_ICON_GROUP_WIDTH))
-                .gap(px(TARGET_ICON_GAP))
-                .child(icon_element(
-                    choices.target.icon(),
-                    px(chrome::TOOL_BUTTON_ICON),
-                ))
-                .child(icon_element(
-                    "chevron-down",
-                    px(chrome::OVERLAY_TARGET_CHEVRON),
-                )),
+            herogpui::components::Button::new(TARGET_MENU_ID)
+                .aria_label("Capture target")
+                .variant(herogpui::Variant::Ghost)
+                .recipe("overlay-trigger")
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .w(px(TARGET_ICON_GROUP_WIDTH))
+                        .gap(px(TARGET_ICON_GAP))
+                        .child(icon_element(
+                            choices.target.icon(),
+                            px(chrome::TOOL_BUTTON_ICON),
+                        ))
+                        .child(icon_element(
+                            "chevron-down",
+                            px(chrome::OVERLAY_TARGET_CHEVRON),
+                        )),
+                )
+                .on_press(move |_, window, cx| {
+                    handle.toggle(target_menu_placement(), entries.clone(), window, cx);
+                    cx.stop_propagation();
+                }),
         )
         .child(menu.render_dropdown(TARGET_MENU_ID, cx))
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            handle.toggle(target_menu_placement(), entries.clone(), window, cx);
-            cx.stop_propagation();
-        })
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                key_handle.toggle(target_menu_placement(), key_entries.clone(), window, cx);
-                cx.stop_propagation();
-            }
-        })
         .into_any_element()
 }
 

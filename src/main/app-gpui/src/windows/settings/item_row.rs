@@ -419,6 +419,7 @@ impl SettingsWindow {
     ) -> AnyElement {
         let current = self.path_for(kind);
         let custom = !current.is_empty();
+        let browse_name = "Choose folder";
         // `<div className="space-y-2"><Label>Save Location</Label><div
         // className="flex gap-2">…`: the label sits *above* the field, and the
         // label text is hard-coded rather than taken from the registry. Laying
@@ -455,8 +456,9 @@ impl SettingsWindow {
                 icon_button::tertiary_md_icon(
                     SharedString::from(format!("{}-browse", item.id)),
                     "folder-open",
+                    browse_name,
                 ),
-                "Choose folder",
+                browse_name,
                 cx,
                 move |this, _window, cx| {
                     this.pick_path(kind, cx);
@@ -464,12 +466,14 @@ impl SettingsWindow {
             ));
         // The reset button only exists while a custom path is set.
         if custom {
+            let reset_name = "Reset to default";
             row = row.child(toolbar::tooltip_button(
                 icon_button::tertiary_md_icon(
                     SharedString::from(format!("{}-reset", item.id)),
                     "rotate-ccw",
+                    reset_name,
                 ),
-                "Reset to default",
+                reset_name,
                 cx,
                 move |this, _window, cx| {
                     this.reset_path(kind, cx);
@@ -542,6 +546,8 @@ impl SettingsWindow {
                     )
                 })
                 .collect();
+        let tokens_name = "Available tokens";
+        let reset_name = "Reset to default";
         let mut block = div()
             .flex()
             .flex_col()
@@ -554,19 +560,25 @@ impl SettingsWindow {
                     .gap(px(8.0))
                     .child(rows::label("Naming Pattern", theme))
                     .child(
-                        herogpui::components::Tooltip::new("Available tokens")
+                        herogpui::components::Tooltip::new(tokens_name)
                             .placement(herogpui::components::TooltipPlacement::Right)
                             .body(move |_window, _cx| {
                                 naming_token_table(&token_rows, code_background, muted)
                             })
                             .child(
-                                icon_button::compact_sm_muted("naming-pattern-help", "help-circle")
-                                    .on_press(cx.listener(|this, _event, _window, cx| {
+                                icon_button::compact_sm_muted(
+                                    "naming-pattern-help",
+                                    "help-circle",
+                                    tokens_name,
+                                )
+                                .on_press(cx.listener(
+                                    |this, _event, _window, cx| {
                                         if !this.extras_open.remove(NAMING_TOKENS_KEY) {
                                             this.extras_open.insert(NAMING_TOKENS_KEY);
                                         }
                                         cx.notify();
-                                    })),
+                                    },
+                                )),
                             ),
                     ),
             )
@@ -578,8 +590,12 @@ impl SettingsWindow {
                     .gap(px(8.0))
                     .child(div().flex_1().min_w_0().child(field))
                     .child(toolbar::tooltip_button(
-                        icon_button::tertiary_md_icon("naming-pattern-reset", "rotate-ccw"),
-                        "Reset to default",
+                        icon_button::tertiary_md_icon(
+                            "naming-pattern-reset",
+                            "rotate-ccw",
+                            reset_name,
+                        ),
+                        reset_name,
                         cx,
                         |this, _window, cx| {
                             this.reset_naming_pattern(cx);
@@ -633,6 +649,7 @@ impl SettingsWindow {
         let count = self.config().cloud.rest.headers.len();
         let mut list = div().flex().flex_col().gap(px(6.0));
         for index in 0..count {
+            let remove_name = "Remove header";
             let (key_field, value_field) = self.rest_header_fields(index, cx);
             list = list.child(
                 div()
@@ -646,9 +663,10 @@ impl SettingsWindow {
                         icon_button::compact_sm(
                             SharedString::from(format!("rest-header-remove-{index}")),
                             "trash-2",
+                            remove_name,
                         )
                         .recipe("danger"),
-                        "Remove header",
+                        remove_name,
                         cx,
                         move |this, _window, cx| {
                             this.remove_rest_header(index, cx);

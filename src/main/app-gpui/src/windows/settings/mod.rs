@@ -24,12 +24,11 @@ use crate::theme::vars::{active_mode, active_theme, update_theme, ThemeVars};
 use crate::ui::chrome;
 use crate::ui::icon::icon_element;
 use crate::windows::settings::registry::{Category, Item, PathKind};
-use herogpui::components::{InputState, InputType, TextField};
+use herogpui::components::{Button, InputState, InputType, TextField, Variant};
 
 const SIDEBAR_WIDTH: f32 = chrome::SETTINGS_SIDEBAR_WIDTH;
 const CONTENT_MAX_WIDTH: f32 = chrome::SETTINGS_CONTENT_MAX;
 const SIDEBAR_ROW_HEIGHT: f32 = 32.0;
-const SIDEBAR_ROW_TEXT_LINE: f32 = 20.0;
 const SIDEBAR_SEARCH_HEIGHT: f32 = 32.0;
 const CONTENT_PAD_RIGHT: f32 = chrome::SETTINGS_CONTENT_PAD_X * 2.0;
 
@@ -144,15 +143,15 @@ impl SettingsWindow {
     }
 
     pub fn mutate(&mut self, cx: &mut Context<Self>, apply: impl FnOnce(&mut SettingsConfig)) {
+        self.config = self.store.get();
         let before_theme = (
             self.config.appearance.mode.clone(),
             self.config.appearance.theme.clone(),
         );
         let before_shortcuts = self.config.shortcuts.clone();
         let before_preview_corner = self.config.preview.corner.clone();
-        apply(&mut self.config);
-        let snapshot = self.config.clone();
-        self.store.update(move |config| *config = snapshot);
+        self.store.update(apply);
+        self.config = self.store.get();
         crate::intents::refresh_shell(cx);
 
         if before_preview_corner != self.config.preview.corner {
@@ -627,6 +626,7 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.config = self.store.get();
         let theme = active_theme(cx);
         #[cfg(windows)]
         {
@@ -757,42 +757,32 @@ fn sidebar(
         35.0
     };
 
-    let mut entry = |category: Category, cx: &mut Context<SettingsWindow>| {
+    let entry = |category: Category, cx: &mut Context<SettingsWindow>| {
         let selected = !searching && active == category;
         let key = format!("settings-nav-{}", category.id());
-        let focus = crate::ui::primitives::control_focus(&key, false, ui_window, cx);
-        let (hover, hovered) = crate::ui::primitives::hover_flag(&key, ui_window, cx);
-        div()
-            .id(SharedString::from(key))
-            .track_focus(&focus)
-            .map(|el| crate::ui::primitives::keyboard_focus_ring(el, theme, cx))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(chrome::SETTINGS_NAV_GAP))
-            .w_full()
-            .rounded(px(chrome::SETTINGS_NAV_RADIUS))
-            .h(px(SIDEBAR_ROW_HEIGHT))
-            .px(px(chrome::SETTINGS_NAV_PX))
-            .py(px(chrome::SETTINGS_NAV_PY))
+        Button::new(SharedString::from(key))
+            .aria_label(category.label())
+            .variant(Variant::Ghost)
+            .full_width(true)
+            .height(px(SIDEBAR_ROW_HEIGHT))
+            .radius(px(chrome::SETTINGS_NAV_RADIUS))
             .text_size(px(14.0))
-            .line_height(px(SIDEBAR_ROW_TEXT_LINE))
             .text_color(if selected {
                 theme.foreground
             } else {
                 theme.muted_foreground
             })
-            .when(hovered, |el| el.bg(theme.row_hover))
-            .when(!hovered && selected, |el| el.bg(theme.row_active))
-            .on_hover({
-                let hover = hover.clone();
-                move |over: &bool, _window, cx| {
-                    crate::ui::primitives::track_hover(&hover, *over, cx);
-                }
+            .hover_bg(theme.row_hover)
+            .when(selected, |el| el.bg(theme.row_active))
+            .sx(|el| {
+                el.justify_start()
+                    .gap(px(chrome::SETTINGS_NAV_GAP))
+                    .px(px(chrome::SETTINGS_NAV_PX))
+                    .py(px(chrome::SETTINGS_NAV_PY))
             })
-            .on_click(cx.listener(move |this, _event, _window, cx| {
-                this.select_category(category, cx);
-            }))
+            .on_press(
+                cx.listener(move |this, _event, _window, cx| this.select_category(category, cx)),
+            )
             .child(icon_element(category.icon(), px(16.0)))
             .child(category.label())
     };
@@ -887,18 +877,14 @@ fn sidebar(
                     )
                     .when(searching, |el| {
                         el.child(
-                            div()
-                                .id("settings-search-clear")
-                                .flex()
-                                .flex_shrink_0()
-                                .items_center()
-                                .justify_center()
-                                .size(px(20.0))
-                                .rounded(px(4.0))
-                                .text_color(theme.muted_foreground)
-                                .hover(|style| style.text_color(theme.foreground))
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _event, _window, cx| {
+                            Button::new("settings-search-clear")
+                                .aria_label("Clear settings search")
+                                .variant(Variant::Ghost)
+                                .is_icon_only(true)
+                                .width(px(20.0))
+                                .height(px(20.0))
+                                .recipe("muted-action")
+                                .on_press(cx.listener(|this, _event, _window, cx| {
                                     this.search.update(cx, |field, cx| {
                                         field.set_value("");
                                         cx.notify();
@@ -1263,6 +1249,26 @@ mod tests {
 #[cfg(test)]
 mod render_tests {
     use super::*;
+
+    #[herogpui::test]
+    fn settings_mutation_preserves_preferences_changed_by_another_window(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let settings =
+            cx.add_window(|_, cx| SettingsWindow::new(store.clone(), Category::General, cx));
+        store.update(|config| config.history.layout = "list".into());
+        settings
+            .update(cx, |settings, _, cx| {
+                settings.mutate(cx, |config| config.general.start_on_login = true)
+            })
+            .unwrap();
+        let config = store.get();
+        assert_eq!(config.history.layout, "list");
+        assert!(config.general.start_on_login);
+    }
 
     #[herogpui::test]
     fn every_category_page_draws(cx: &mut gpui::TestAppContext) {

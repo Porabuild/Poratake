@@ -8,7 +8,7 @@ use std::sync::Arc;
 use gpui::{
     div, prelude::*, px, App, Context, DragMoveEvent, ExternalPaths, FileDropEvent, Focusable,
     ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
-    ScrollWheelEvent, Styled, Subscription, Window,
+    ScrollEvent, Styled, Subscription, Window,
 };
 use herogpui::gpui;
 
@@ -24,7 +24,6 @@ use crate::theme::vars::active_theme;
 use crate::ui::chrome;
 use crate::ui::colors::Tool;
 use crate::ui::icon_button;
-use crate::ui::menu::MenuHandle;
 use herogpui::components::{Button, InputState, TextField, Variant};
 
 #[derive(Default, serde::Deserialize, serde::Serialize)]
@@ -368,7 +367,6 @@ pub struct EditorWindow {
     pending_stroke_points: Vec<Point>,
     pending_stroke_shift: bool,
     pointer_update_scheduled: bool,
-    pub menu: MenuHandle,
     /// The inline field shown while a text annotation is being typed.
     text_editor: Option<(String, gpui::Entity<InputState>)>,
     /// The pending crop rectangle in image coordinates.
@@ -523,7 +521,6 @@ impl EditorWindow {
             pending_stroke_points: Vec::new(),
             pending_stroke_shift: false,
             pointer_update_scheduled: false,
-            menu: MenuHandle::new(),
             text_editor: None,
             crop: None,
             crop_drag: None,
@@ -2326,7 +2323,7 @@ impl Render for EditorWindow {
             .track_focus(&self.focus_handle)
             .on_modifiers_changed(cx.listener(
                 |this, event: &ModifiersChangedEvent, _window, cx| {
-                    let held = actions::is_meta_held(&event.modifiers);
+                    let held = actions::is_meta_held(&event.modifiers, cx);
                     if this.meta_held == held {
                         return;
                     }
@@ -2459,7 +2456,6 @@ impl Render for EditorWindow {
                 is_uploading: self.cloud_upload == crate::cloud::UploadState::Uploading,
                 is_upload_done: self.cloud_upload == crate::cloud::UploadState::Success,
                 is_capture_mode: self.capture_mode,
-                menu: self.menu.clone(),
                 handlers: handlers.clone(),
             })
             .child(
@@ -2558,7 +2554,7 @@ impl Render for EditorWindow {
                                         .update(cx, |editor, cx| {
                                             // Ctrl/Cmd-drag pans the stage instead of
                                             // drawing, matching `usePanOnDrag`.
-                                            if event.modifiers.secondary() {
+                                            if event.modifiers.secondary(cx) {
                                                 editor.pan_origin = Some((
                                                     event.position,
                                                     editor.stage_scroll.offset(),
@@ -2643,10 +2639,10 @@ impl Render for EditorWindow {
                                         .ok();
                                 }
                             })
-                            .on_scroll_wheel({
+                            .on_scroll({
                                 let entity = cx.entity().downgrade();
-                                move |event: &ScrollWheelEvent, _window, cx| {
-                                    if !event.modifiers.secondary() {
+                                move |event: &ScrollEvent, _window, cx| {
+                                    if !event.modifiers.secondary(cx) {
                                         return;
                                     }
                                     let delta = event.delta.pixel_delta(px(36.0)).y;
@@ -2737,6 +2733,8 @@ fn zoom_control(
     let zoom_out = handlers.option(EditorOption::Zoom(zoom - ZOOM_STEP));
     let zoom_reset = handlers.option(EditorOption::Zoom(1.0));
     let zoom_in = handlers.option(EditorOption::Zoom(zoom + ZOOM_STEP));
+    let zoom_out_name = "Zoom Out";
+    let zoom_in_name = "Zoom In";
 
     div()
         .id("zoom-control")
@@ -2790,8 +2788,8 @@ fn zoom_control(
         .p(px(chrome::ZOOM_PAD))
         .shadow_lg()
         .child(icon_button::with_tooltip(
-            "Zoom Out",
-            icon_button::compact_sm("zoom-out", "minus")
+            zoom_out_name,
+            icon_button::compact_sm("zoom-out", "minus", zoom_out_name)
                 .width(px(ZOOM_BUTTON_SIZE))
                 .height(px(ZOOM_BUTTON_SIZE))
                 .is_disabled(zoom <= MIN_ZOOM)
@@ -2812,8 +2810,8 @@ fn zoom_control(
             ),
         )
         .child(icon_button::with_tooltip(
-            "Zoom In",
-            icon_button::compact_sm("zoom-in", "plus")
+            zoom_in_name,
+            icon_button::compact_sm("zoom-in", "plus", zoom_in_name)
                 .width(px(ZOOM_BUTTON_SIZE))
                 .height(px(ZOOM_BUTTON_SIZE))
                 .is_disabled(zoom >= MAX_ZOOM)

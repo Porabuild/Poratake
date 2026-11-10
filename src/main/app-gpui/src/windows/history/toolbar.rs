@@ -37,9 +37,11 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
         );
     }
 
-    actions = actions.child(toolbar::tooltip_button(
-        icon_button::compact_muted("history-open-settings", "settings"),
-        "Settings",
+    let settings_name = "Settings";
+    actions = actions.child(toolbar::tooltip_button_at(
+        icon_button::compact_muted("history-open-settings", "settings", settings_name),
+        herogpui::components::TooltipPlacement::BottomEnd,
+        settings_name,
         cx,
         |this, window, cx| this.open_settings(window, cx),
     ));
@@ -103,6 +105,8 @@ pub fn toolbar(
         filters = filters.child(button);
     }
 
+    let sort_tooltip = order.tooltip();
+    let layout_tooltip = layout.toggle_tooltip();
     div()
         .flex()
         .items_center()
@@ -117,14 +121,14 @@ pub fn toolbar(
                 .items_center()
                 .gap(px(2.0))
                 .child(toolbar::tooltip_button(
-                    icon_button::chip_icon("history-sort", "arrow-up-down"),
-                    order.tooltip(),
+                    icon_button::chip_icon("history-sort", "arrow-up-down", sort_tooltip),
+                    sort_tooltip,
                     cx,
                     |this, _window, cx| this.toggle_sort_order(cx),
                 ))
                 .child(toolbar::tooltip_button(
-                    icon_button::chip_icon("history-layout", layout.toggle_icon()),
-                    layout.toggle_tooltip(),
+                    icon_button::chip_icon("history-layout", layout.toggle_icon(), layout_tooltip),
+                    layout_tooltip,
                     cx,
                     |this, _window, cx| this.toggle_layout(cx),
                 )),

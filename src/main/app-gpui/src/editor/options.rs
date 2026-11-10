@@ -23,10 +23,10 @@ pub const ARROW_STYLES: [(&str, &str); 4] = [
 pub const HIGHLIGHT_OPACITIES: [f64; 5] = [0.2, 0.3, 0.4, 0.5, 0.6];
 
 pub const NUMBER_STYLES: [(&str, &str); 4] = [
-    ("numeric", "1, 2, 3, 4 ..."),
-    ("alpha-upper", "A, B, C, D ..."),
-    ("roman", "I, II, III, IV ..."),
-    ("alpha-lower", "a, b, c, d ..."),
+    ("numeric", "1, 2, 3, 4"),
+    ("alpha-upper", "A, B, C, D"),
+    ("roman", "I, II, III, IV"),
+    ("alpha-lower", "a, b, c, d"),
 ];
 
 pub const NUMBER_SIZES: [(&str, &str); 3] =
@@ -170,14 +170,6 @@ pub fn thickness_bar_height(stroke_width: f64) -> f32 {
         .unwrap_or(4.0)
 }
 
-pub fn label_for(options: &[(&'static str, &'static str)], value: &str) -> &'static str {
-    options
-        .iter()
-        .find(|(candidate, _)| *candidate == value)
-        .map(|(_, label)| *label)
-        .unwrap_or("")
-}
-
 pub fn number_display_value(value: f64, style: &str) -> String {
     let value = value.max(1.0).round() as u32;
     match style {
@@ -287,12 +279,5 @@ mod tests {
         ] {
             assert_eq!(tool_cursor(tool), CursorStyle::Crosshair);
         }
-    }
-
-    #[test]
-    fn resolves_labels_from_option_tables() {
-        assert_eq!(label_for(&ARROW_STYLES, "double-curved"), "Double Curved");
-        assert_eq!(label_for(&NUMBER_SIZES, "large"), "Large");
-        assert_eq!(label_for(&SHAPE_FILL_MODES, "nope"), "");
     }
 }
