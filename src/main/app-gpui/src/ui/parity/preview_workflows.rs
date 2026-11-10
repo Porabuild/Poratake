@@ -1,11 +1,25 @@
+use gpui::{AppContext, Context, Entity, Render, Window};
+use herogpui::gpui;
+
 use crate::editor::window::EditorWindow;
 use crate::windows::capture_preview::CapturePreviewWindow;
 use crate::windows::registry::{self, WindowKind};
 
 use super::{
-    capture, event, measured, point, px, settle, size, Duration, HeadlessAppContext, Modifiers,
-    MouseButton, MouseDownEvent, MouseUpEvent, Path, PlatformInput, GEOMETRY,
+    capture, event, hover, measured, point, px, settle, size, Duration, HeadlessAppContext,
+    Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Path, PlatformInput, GEOMETRY,
 };
+
+struct HoveredPreview {
+    preview: Entity<CapturePreviewWindow>,
+}
+
+impl Render for HoveredPreview {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        self.preview
+            .update(cx, |preview, cx| preview.surface(true, window, cx))
+    }
+}
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, scale: f32) {
     let config = cx.update(|cx| crate::state::state(cx).config.get().preview);
@@ -59,6 +73,77 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         );
         if corner.ends_with("right") {
             capture(cx, preview, output, &format!("preview-{corner}-single"));
+            let view = cx
+                .update_window(preview, |view, _, _| {
+                    view.downcast::<CapturePreviewWindow>().unwrap()
+                })
+                .unwrap();
+            let hovered = cx
+                .open_window(size(px(208.), px(604.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|_| HoveredPreview { preview: view })
+                })
+                .unwrap()
+                .into();
+            settle(cx, hovered);
+            for (name, x, y) in [
+                ("close", 24., 20.),
+                ("delete", 184., 20.),
+                ("copy", 24., 120.),
+                ("upload", 184., 120.),
+            ] {
+                hover(cx, hovered, x, f32::from(single.top()) + y);
+                capture(
+                    cx,
+                    hovered,
+                    output,
+                    &format!("preview-{corner}-tooltip-{name}"),
+                );
+                cx.update_window(hovered, |_, window, _| {
+                    let tips: Vec<_> = window
+                        .painted_quads()
+                        .into_iter()
+                        .filter(|quad| {
+                            let height = quad.bounds.size.height.0 / scale;
+                            (31. ..=35.).contains(&height) && quad.bounds.size.width.0 / scale > 30.
+                        })
+                        .collect();
+                    assert!(!tips.is_empty(), "{corner}/{name}: tooltip must paint");
+                    for tip in tips {
+                        let bounds = tip.bounds;
+                        assert!(
+                            bounds.left().0 >= f32::from(single.left()) * scale - 0.5
+                                && bounds.right().0 <= f32::from(single.right()) * scale + 0.5
+                                && bounds.top().0 >= f32::from(single.top()) * scale - 0.5
+                                && bounds.bottom().0 <= f32::from(single.bottom()) * scale + 0.5,
+                            "{corner}/{name}: tooltip {bounds:?} must fit its preview {single:?}"
+                        );
+                    }
+                })
+                .unwrap();
+            }
+            hover(cx, hovered, -5., -5.);
+            cx.advance_clock(Duration::from_millis(600));
+            hover(
+                cx,
+                hovered,
+                f32::from(single.center().x),
+                f32::from(single.center().y),
+            );
+            cx.update_window(hovered, |_, window, _| {
+                assert!(
+                    window.painted_quads().into_iter().all(|quad| {
+                        let height = quad.bounds.size.height.0 / scale;
+                        !(31. ..=35.).contains(&height) || quad.bounds.size.width.0 / scale <= 30.
+                    }),
+                    "Edit is already labelled and must not show a tooltip"
+                );
+            })
+            .unwrap();
+            capture(cx, hovered, output, &format!("preview-{corner}-edit-hover"));
+            cx.update_window(hovered, |_, window, _| window.remove_window())
+                .unwrap();
+            settle(cx, preview);
         }
         for path in &paths[1..] {
             cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));

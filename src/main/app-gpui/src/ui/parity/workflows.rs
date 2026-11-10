@@ -17,6 +17,52 @@ pub(super) const SELECTED_RECT: CaptureRect = CaptureRect {
     height: 360,
 };
 
+pub(super) fn editor_sizes(cx: &mut HeadlessAppContext, scratch: &Path) {
+    let mut expected = None;
+    for (index, width, height) in [(0, 1800, 900), (1, 320, 240), (2, 2200, 1200)] {
+        let path = scratch.join(format!("editor-size-{index}.png"));
+        image::RgbaImage::from_pixel(width, height, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        assert!(cx.update(|cx| crate::open_editor_for(cx, path.to_str().unwrap())));
+        let editor = cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .find(|handle| handle.downcast::<EditorWindow>().is_some())
+                .unwrap()
+        });
+        settle(cx, editor);
+        let viewport = cx
+            .update_window(editor, |_, window, _| window.viewport_size())
+            .unwrap();
+        let actual = (f32::from(viewport.width), f32::from(viewport.height));
+        assert_eq!(
+            crate::config::window_state::get(crate::config::window_state::SCREENSHOT_EDITOR),
+            Some(actual),
+            "the first editor size must be remembered without requiring a resize"
+        );
+        if let Some(expected) = expected {
+            assert_eq!(
+                actual, expected,
+                "opening another image must retain the editor size"
+            );
+        }
+        expected = Some(actual);
+        if index == 1 {
+            cx.update_window(editor, |_, window, _| {
+                window.resize(size(px(1200.), px(800.)))
+            })
+            .unwrap();
+            settle(cx, editor);
+            expected = Some((1200., 800.));
+        }
+        cx.update_window(editor, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+    }
+    println!("editor initial and resized dimensions survive reopening different image sizes");
+}
+
 pub(super) fn area_picker(cx: &mut HeadlessAppContext) -> gpui::AnyWindowHandle {
     let picker = cx.update(|cx| {
         cx.windows()
@@ -107,7 +153,8 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
                 crate::state::state(cx).config.update(|config| {
                     config.storage.screenshots_path = captures.to_string_lossy().into_owned();
                     config.screenshot.freeze_screen = freeze;
-                    config.screenshot.show_preview = false;
+                    config.screenshot.show_preview = true;
+                    config.preview.corner = "bottom-right".into();
                     config.screenshot.hide_desktop_icons = false;
                     config.screenshot.capture_to_clipboard = false;
                     config.screenshot.auto_copy_to_clipboard = false;
@@ -190,6 +237,52 @@ pub(super) fn verify_saved_capture(
         path.parent().unwrap().canonicalize().unwrap(),
         captures.canonicalize().unwrap()
     );
+    assert!(
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<EditorWindow>())
+                .all(|editor| Path::new(&editor.read(cx).unwrap().file_path) != path)
+        }),
+        "{name}: capturing must show a preview without opening an editor"
+    );
+    let preview = cx
+        .update(|cx| {
+            crate::windows::registry::handle(
+                crate::windows::registry::WindowKind::CapturePreview,
+                cx,
+            )
+        })
+        .expect("capturing with previews enabled must open its preview");
+    cx.update_window(preview, |_, window, _| window.set_scale_factor(1.))
+        .unwrap();
+    settle(cx, preview);
+    let position = super::measured("capture-previews", 0).center();
+    event(
+        cx,
+        preview,
+        PlatformInput::MouseDown(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    if cx.update(|cx| cx.windows().contains(&preview)) {
+        event(
+            cx,
+            preview,
+            PlatformInput::MouseUp(MouseUpEvent {
+                position,
+                button: MouseButton::Left,
+                click_count: 2,
+                modifiers: Modifiers::none(),
+            }),
+        );
+    }
+    cx.advance_clock(std::time::Duration::from_millis(300));
+    cx.run_until_parked();
     let editor = cx.update(|cx| {
         cx.windows()
             .into_iter()

@@ -210,7 +210,7 @@ mod tests {
                     .any(|(name, arg)| *name == "is_icon_only" && *arg != "(false)");
                 let named = calls.iter().any(|(name, arg)| match *name {
                     "aria_label" | "label" => true,
-                    "when" => arg.contains(".aria_label("),
+                    "when" | "when_some" => arg.contains(".aria_label("),
                     _ => false,
                 });
                 if icon_only && !named {

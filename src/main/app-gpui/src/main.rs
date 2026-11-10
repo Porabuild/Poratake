@@ -113,6 +113,11 @@ pub(crate) fn open_editor_with_state(
         );
         return false;
     }
+    crate::config::window_state::set(
+        crate::config::window_state::SCREENSHOT_EDITOR,
+        width,
+        height,
+    );
     true
 }
 

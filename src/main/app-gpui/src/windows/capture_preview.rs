@@ -11,6 +11,7 @@ use gpui::{
     div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Render,
     Styled, Window,
 };
+use herogpui::components::TooltipPlacement;
 use herogpui::gpui;
 
 use crate::theme::vars::active_theme;
@@ -331,8 +332,7 @@ impl CapturePreviewWindow {
                 },
             ),
             |window, cx| {
-                #[cfg(not(windows))]
-                let _ = window;
+                window.set_window_title("Poratake capture preview");
                 #[cfg(windows)]
                 if !cfg!(test) {
                     if let Some(hwnd) = crate::windows::window_hwnd(window) {
@@ -1501,6 +1501,7 @@ impl CapturePreviewWindow {
                             "x",
                             false,
                             "Close preview",
+                            TooltipPlacement::BottomStart,
                             theme,
                             theme.destructive,
                             {
@@ -1537,6 +1538,7 @@ impl CapturePreviewWindow {
                             } else {
                                 "Delete screenshot"
                             },
+                            TooltipPlacement::BottomEnd,
                             theme,
                             theme.destructive,
                             {
@@ -1581,7 +1583,7 @@ impl CapturePreviewWindow {
                             el.child(preview::pill(
                                 ("preview-copy-video", id),
                                 "Copy",
-                                "Copy",
+                                Some("Copy".into()),
                                 theme,
                                 {
                                     let path = path.clone();
@@ -1597,7 +1599,7 @@ impl CapturePreviewWindow {
                             el.child(preview::pill(
                                 ("preview-exporting", id),
                                 "Exporting...",
-                                "Exporting...",
+                                Some("Exporting...".into()),
                                 theme,
                                 |_, cx| {
                                     cx.stop_propagation();
@@ -1609,7 +1611,7 @@ impl CapturePreviewWindow {
                             el.child(preview::pill(
                                 ("preview-polish", id),
                                 "Polish",
-                                tooltip,
+                                Some(tooltip.into()),
                                 theme,
                                 {
                                     let path = path.clone();
@@ -1637,7 +1639,7 @@ impl CapturePreviewWindow {
                             el.child(preview::pill(
                                 ("preview-edit", id),
                                 "Edit",
-                                "Edit",
+                                None,
                                 theme,
                                 {
                                     let path = path.clone();
@@ -1669,7 +1671,7 @@ impl CapturePreviewWindow {
                             el.child(preview::pill(
                                 ("preview-cancel-export", id),
                                 "Cancel",
-                                "Cancel",
+                                Some("Cancel".into()),
                                 theme,
                                 move |_, cx| {
                                     cancel_video_export(id, cx);
@@ -1690,6 +1692,7 @@ impl CapturePreviewWindow {
                                 "copy",
                                 false,
                                 "Copy",
+                                TooltipPlacement::TopStart,
                                 theme,
                                 theme.primary,
                             {
@@ -1729,6 +1732,7 @@ impl CapturePreviewWindow {
                                 "folder-open",
                                 false,
                                 "Show in Folder",
+                                TooltipPlacement::TopStart,
                                 theme,
                                 theme.primary,
                                 {
@@ -1753,6 +1757,7 @@ impl CapturePreviewWindow {
                                 "cloud-upload",
                                 busy,
                                 "Upload to Cloud",
+                                TooltipPlacement::TopEnd,
                                 theme,
                                 theme.primary,
                             {
@@ -1909,6 +1914,7 @@ impl CapturePreviewWindow {
                             "monitor",
                             false,
                             "Move previews to another display",
+                            TooltipPlacement::TopEnd,
                             theme,
                             theme.primary,
                             move |window, cx| {
@@ -1947,13 +1953,17 @@ impl CapturePreviewWindow {
     }
 }
 
-impl Render for CapturePreviewWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl CapturePreviewWindow {
+    pub(crate) fn surface(
+        &mut self,
+        window_hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let corner = PreviewCorner::parse(&crate::state::state(cx).config.get().preview.corner);
         let theme = active_theme(cx);
         let polish = starred_preset(cx);
         let display_count = cx.displays().len();
-        let window_hovered = window.is_window_hovered();
         let bottom_aligned = matches!(
             corner,
             PreviewCorner::BottomLeft | PreviewCorner::BottomRight
@@ -1998,6 +2008,12 @@ impl Render for CapturePreviewWindow {
             crate::ui::parity::record("capture-previews", bounds);
         });
         crate::ui::window_root::focus_root(root, window, cx)
+    }
+}
+
+impl Render for CapturePreviewWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.surface(window.is_window_hovered(), window, cx)
     }
 }
 

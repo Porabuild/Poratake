@@ -1,11 +1,10 @@
 use gpui::{div, prelude::*, px, AnyElement, App, SharedString, Window};
-use herogpui::components::{Button, Variant};
+use herogpui::components::{Button, Tooltip, TooltipPlacement, Variant};
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
 use crate::ui::chrome;
 use crate::ui::icon::{icon_element, Icon};
-use crate::ui::icon_button;
 
 pub const FINISHED_BADGE: f32 = 40.0;
 pub const FINISHED_CHECK: f32 = 20.0;
@@ -75,6 +74,7 @@ pub fn circle(
     icon: &'static str,
     busy: bool,
     tooltip: impl Into<SharedString>,
+    placement: TooltipPlacement,
     theme: &ThemeVars,
     hover_bg: gpui::Hsla,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
@@ -86,7 +86,8 @@ pub fn circle(
         theme,
         hover_bg,
         busy,
-        tooltip,
+        Some(tooltip.into()),
+        placement,
         move |button| {
             if busy {
                 button.child(crate::ui::icon::spinner_element(
@@ -104,7 +105,7 @@ pub fn circle(
 pub fn pill(
     id: impl Into<gpui::ElementId>,
     label: &'static str,
-    tooltip: impl Into<SharedString>,
+    tooltip: Option<SharedString>,
     theme: &ThemeVars,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
@@ -116,6 +117,7 @@ pub fn pill(
         theme.primary,
         false,
         tooltip,
+        TooltipPlacement::Top,
         move |button| button.label(label),
         on_click,
     )
@@ -128,17 +130,19 @@ fn chip(
     theme: &ThemeVars,
     hover_bg: gpui::Hsla,
     disabled: bool,
-    tooltip: impl Into<SharedString>,
+    tooltip: Option<SharedString>,
+    placement: TooltipPlacement,
     content: impl FnOnce(Button) -> Button + 'static,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let surface = theme.background.opacity(0.8);
     let foreground = theme.foreground;
-    let tooltip = tooltip.into();
     let button = Button::new(id)
         .variant(Variant::Ghost)
         .is_icon_only(icon_only)
-        .when(icon_only, |button| button.aria_label(tooltip.clone()))
+        .when_some(tooltip.clone().filter(|_| icon_only), |button, tooltip| {
+            button.aria_label(tooltip)
+        })
         .is_disabled(disabled)
         .recipe(recipe)
         .height(px(chrome::PREVIEW_PILL_HEIGHT))
@@ -157,5 +161,13 @@ fn chip(
             on_click(window, cx);
             cx.stop_propagation();
         });
-    icon_button::with_tooltip(tooltip, content(button))
+    let button = content(button);
+    match tooltip {
+        Some(tooltip) => Tooltip::new(tooltip)
+            .placement(placement)
+            .sx(|el| el.flex_shrink_0())
+            .child(button)
+            .into_any_element(),
+        None => button.into_any_element(),
+    }
 }

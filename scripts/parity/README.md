@@ -113,8 +113,18 @@ the editor with history enabled or disabled without adding history entries.
 Unit regressions invoke the OS should-close callback and verify annotated
 restoration with history disabled plus standalone close without an editor.
 Actual native close-event delivery and window destruction remain separate checks.
-The built-in 1280px, 100% cases add 28 workflow images each, for 1,928 baseline
+The built-in 1280px, 100% cases add 28 workflow images each, for 2,104 baseline
 images per renderer.
+
+Capture, timer and scroll completion first open a bottom-right preview without
+opening an editor. The workflow explicitly double-clicks that preview before
+checking editor/export pixels. Initial editor dimensions are saved immediately;
+opening small and large images preserves them, including after a user resize.
+The pooled selector regression requires old rectangles and drag state to clear
+when the overlay is parked.
+
+Tray window height must equal its painted menu at every scale; the estimate is
+used only until layout is measured. Each case also records the fitted tray menu.
 
 Pin default, hover, enlarged and narrow windows run in every matrix case.
 Source pixels must remain centered, fit the viewport and never upscale beyond
@@ -127,8 +137,11 @@ baselines in every matrix case. Four corner configurations check exact card
 sizes, spacing, newest-four eviction and source-color order. Double-clicking
 the newest card must open that capture in the editor with identical exported
 pixels. Auto-dismiss must close the preview without deleting source files or
-changing history. These are content/layout checks; native screen docking,
-click-through regions and hover controls remain separate verification.
+changing history. Hover fixtures use the production preview surface and HeroGPUI
+tooltips. Close, delete, copy and upload tips must fit inside their top/bottom
+preview cards. Edit has no tooltip. A build with tooltips disabled fails the
+presence assertion. Native docking, click-through regions and physical pointer
+ownership remain separate verification.
 
 Recording controls use the production window and recorder commands with a
 same-executable JSON-RPC fixture. Device names are deterministic, including long

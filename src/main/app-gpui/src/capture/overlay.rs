@@ -226,13 +226,17 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
         #[cfg(windows)]
         if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
             if handle
-                .update(cx, |overlay, window, _| {
+                .update(cx, |overlay, window, cx| {
                     overlay.window_list_generation = overlay.window_list_generation.wrapping_add(1);
                     overlay.picking_windows = false;
                     overlay.color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
                     overlay.picking_color = false;
                     overlay.color_frame = None;
+                    overlay.rect = None;
+                    overlay.interaction = None;
+                    overlay.pointer = None;
                     park_overlay(window);
+                    cx.notify();
                 })
                 .is_ok()
             {
@@ -2526,6 +2530,15 @@ mod tests {
                 .update(cx, |overlay, _, _| {
                     overlay.picking_windows = true;
                     overlay.picking_color = true;
+                    overlay.rect = Some(crate::capture::selection::Rect {
+                        x: 100.,
+                        y: 100.,
+                        width: 200.,
+                        height: 100.,
+                    });
+                    overlay.interaction = Some(super::Interaction::Creating {
+                        start: crate::capture::selection::Point { x: 100., y: 100. },
+                    });
                     (
                         overlay.window_list_generation,
                         overlay.color_frame_generation,
@@ -2533,6 +2546,15 @@ mod tests {
                 })
                 .expect("prepare pending work");
             assert_eq!(super::replace_all(cx), Some(0));
+            opened
+                .update(cx, |overlay, _, _| {
+                    assert!(overlay.rect.is_none(), "parked selections must be cleared");
+                    assert!(
+                        overlay.interaction.is_none(),
+                        "parked gestures must be cleared"
+                    );
+                })
+                .unwrap();
             assert!(super::session(cx)
                 .pooled
                 .iter()

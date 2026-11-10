@@ -215,6 +215,41 @@ fn assert_text_submenu_focus(
     }
 }
 
+#[cfg(windows)]
+fn capture_tray_menu(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
+    let tray =
+        cx.update(|cx| crate::windows::tray_menu::TrayMenuWindow::open(None, false, cx).unwrap());
+    let window = tray.into();
+    cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    settle(cx, window);
+    cx.update_window(window, |_, window, _| {
+        let panel = window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| (quad.bounds.size.width.0 / scale - 304.).abs() < 0.01)
+            .max_by(|left, right| {
+                left.bounds
+                    .size
+                    .height
+                    .partial_cmp(&right.bounds.size.height)
+                    .unwrap()
+            })
+            .unwrap();
+        let viewport = window.viewport_size();
+        assert!(
+            (f32::from(viewport.height) * scale - panel.bounds.size.height.0).abs() < 0.01,
+            "the tray window must fit its painted menu: {viewport:?}, {:?}",
+            panel.bounds
+        );
+    })
+    .unwrap();
+    capture(cx, window, output, "tray-default");
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
 fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
     if !cx.update(|cx| cx.windows().contains(&window)) {
         return;
@@ -399,6 +434,9 @@ pub fn capture_editor_interaction_states() {
     });
     #[cfg(windows)]
     windows_renderer::verify_image_sampling(&mut cx, &output, scale);
+    if source.is_none() && width == 1280. && scale == 1. {
+        workflows::editor_sizes(&mut cx, &scratch);
+    }
     let editor = cx
         .open_window(size(px(width), px(738.0)), |window, cx| {
             window.set_scale_factor(scale);
@@ -592,6 +630,8 @@ pub fn capture_editor_interaction_states() {
         pin_workflows::editor_roundtrip(&mut cx, &output, &scratch);
         workflows::screenshot(&mut cx, &output, &scratch);
     }
+    #[cfg(windows)]
+    capture_tray_menu(&mut cx, &output, scale);
     baselines::check(&output);
     cx.update(|cx| crate::state::state(cx).daemon.stop());
 }
