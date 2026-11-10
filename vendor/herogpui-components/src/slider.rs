@@ -1265,6 +1265,108 @@ impl RenderOnce for Slider {
                         .when(small, |t| t.top(-cross_overhang))
                 })
                 .flex_shrink_0();
+            if thumb_enabled[index] {
+                let action_thumbs = thumbs.clone();
+                let action_own = own.clone();
+                let action_range_own = range_own.clone();
+                let action_on_change = self.on_change.clone();
+                let action_on_change_all = self.on_change_all.clone();
+                let action_end = self.on_change_end.clone();
+                let action_end_all = self.on_change_end_all.clone();
+                let action_form_state = self.form_state.clone();
+                let action_form_thumb_states = self.form_thumb_states.clone();
+                let action_disabled_keys = self.disabled_keys.clone();
+                let action_steps = steps.clone();
+                let (min, max, step) = (self.min, self.max, self.step);
+                let current = thumbs[index];
+                let update = Rc::new(move |value: f32, window: &mut Window, cx: &mut App| {
+                    let next = snap_value(value, min, max, step, &action_steps);
+                    let next_values = set_thumb(
+                        index,
+                        next,
+                        &action_thumbs,
+                        range_mode,
+                        &action_range_own,
+                        &action_on_change,
+                        &action_on_change_all,
+                        &action_own,
+                        window,
+                        cx,
+                    );
+                    sync_form_values(
+                        &action_form_state,
+                        &action_form_thumb_states,
+                        &next_values,
+                        false,
+                        &action_disabled_keys,
+                    );
+                    if range_mode {
+                        if let Some(callback) = &action_end_all {
+                            callback(&next_values, window, cx);
+                        }
+                    } else if let Some(callback) = &action_end {
+                        callback(&next_values[0], window, cx);
+                    }
+                });
+                for action in [
+                    gpui::accesskit::Action::SetValue,
+                    gpui::accesskit::Action::Increment,
+                    gpui::accesskit::Action::Decrement,
+                ] {
+                    let update = update.clone();
+                    let action_steps = steps.clone();
+                    thumb_el = thumb_el.on_a11y_action(action, move |data, window, cx| {
+                        if !min.is_finite() || !max.is_finite() || min > max {
+                            return;
+                        }
+                        let value = match action {
+                            gpui::accesskit::Action::SetValue => {
+                                let Some(gpui::accesskit::ActionData::NumericValue(value)) = data
+                                else {
+                                    return;
+                                };
+                                if !value.is_finite() {
+                                    return;
+                                }
+                                value.clamp(f64::from(min), f64::from(max)) as f32
+                            }
+                            gpui::accesskit::Action::Increment if !action_steps.is_empty() => {
+                                action_steps
+                                    .iter()
+                                    .copied()
+                                    .find(|value| *value > current)
+                                    .unwrap_or(current)
+                            }
+                            gpui::accesskit::Action::Decrement if !action_steps.is_empty() => {
+                                action_steps
+                                    .iter()
+                                    .copied()
+                                    .rev()
+                                    .find(|value| *value < current)
+                                    .unwrap_or(current)
+                            }
+                            gpui::accesskit::Action::Increment => {
+                                current
+                                    + if step == 0.0 {
+                                        (max - min) / 100.0
+                                    } else {
+                                        step
+                                    }
+                            }
+                            gpui::accesskit::Action::Decrement => {
+                                current
+                                    - if step == 0.0 {
+                                        (max - min) / 100.0
+                                    } else {
+                                        step
+                                    }
+                            }
+                            _ => return,
+                        };
+                        update(value, window, cx);
+                    });
+                }
+            }
             thumb_el = match &self.thumb {
                 Some(render) => thumb_el.child(render(index, thumbs[index])),
                 None if !small => {

@@ -1,0 +1,79 @@
+--- a/src/platform/test/window.rs
++++ b/src/platform/test/window.rs
+@@ -59,6 +59,8 @@
+     appearance: WindowAppearance,
+     external_drag_files: Vec<(PathBuf, bool)>,
+     start_external_drag_result: bool,
++    a11y_callbacks: Option<crate::A11yCallbacks>,
++    a11y_tree: Option<accesskit::TreeUpdate>,
+ }
+
+ #[derive(Clone)]
+@@ -83,6 +85,20 @@
+ }
+
+ impl TestWindow {
++    pub fn activate_test_a11y(&self) {
++        let state = self.0.lock();
++        (state.a11y_callbacks.as_ref().unwrap().activation)();
++    }
++
++    pub fn test_a11y_tree(&self) -> Option<accesskit::TreeUpdate> {
++        self.0.lock().a11y_tree.clone()
++    }
++
++    pub fn send_test_a11y_action(&self, request: accesskit::ActionRequest) {
++        let state = self.0.lock();
++        (state.a11y_callbacks.as_ref().unwrap().action)(request);
++    }
++
+     pub(crate) fn new(
+         handle: AnyWindowHandle,
+         params: WindowParams,
+@@ -135,6 +151,8 @@
+             appearance: WindowAppearance::Light,
+             external_drag_files: Vec::new(),
+             start_external_drag_result: false,
++            a11y_callbacks: None,
++            a11y_tree: None,
+         })))
+     }
+     pub fn simulate_close(&self) {
+@@ -315,6 +333,14 @@
+ }
+
+ impl PlatformWindow for TestWindow {
++    fn a11y_init(&self, callbacks: crate::A11yCallbacks) {
++        self.0.lock().a11y_callbacks = Some(callbacks);
++    }
++
++    fn a11y_tree_update(&self, update: accesskit::TreeUpdate) {
++        self.0.lock().a11y_tree = Some(update);
++    }
++
+     fn visual_viewport_bounds(&self) -> Bounds<Pixels> {
+         let state = self.0.lock();
+         state
+--- a/src/app/test_context.rs
++++ b/src/app/test_context.rs
+@@ -874,6 +874,20 @@
+ }
+
+ impl VisualTestContext {
++    pub fn activate_test_a11y(&mut self) {
++        self.cx.test_window(self.window).activate_test_a11y();
++        self.run_until_parked();
++    }
++
++    pub fn test_a11y_tree(&self) -> Option<accesskit::TreeUpdate> {
++        self.cx.test_window(self.window).test_a11y_tree()
++    }
++
++    pub fn send_test_a11y_action(&mut self, request: accesskit::ActionRequest) {
++        self.cx.test_window(self.window).send_test_a11y_action(request);
++        self.run_until_parked();
++    }
++
+     /// Provides a `Window` and `App` for the duration of the closure.
+     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+         self.cx

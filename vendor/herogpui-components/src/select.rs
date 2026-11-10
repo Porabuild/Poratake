@@ -1888,6 +1888,33 @@ impl Select {
             ..
         } = *frame;
         if !self.is_disabled && (self.on_open_change.is_some() || open_own.is_some()) {
+            for (action, next_open) in [
+                (gpui::accesskit::Action::Expand, true),
+                (gpui::accesskit::Action::Collapse, false),
+            ] {
+                let own = open_own.clone();
+                let on_open_change = self.on_open_change.clone();
+                let open_focus = open_focus.clone();
+                field = field.on_a11y_action(action, move |_, window, cx| {
+                    if next_open == is_open {
+                        return;
+                    }
+                    if next_open {
+                        open_focus.update(cx, |focus, _| {
+                            *focus = Some(crate::list_core::OpenFocus::First);
+                        });
+                    }
+                    if let Some(held) = &own {
+                        held.update(cx, |value, cx| {
+                            *value = next_open;
+                            cx.notify();
+                        });
+                    }
+                    if let Some(callback) = &on_open_change {
+                        callback(&next_open, window, cx);
+                    }
+                });
+            }
             let on_open_change = self.on_open_change.clone();
             let own = open_own.clone();
             let open = is_open;

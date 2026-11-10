@@ -227,6 +227,9 @@ jobs:
       - name: Format, Clippy, and test Windows native
         run: bun run test:daemon-win
 
+      - name: Test GPUI accessibility actions
+        run: bun scripts/parity/gpui-accessibility-test.mjs
+
       - name: Visual regressions
         run: bun run test:visual
 
