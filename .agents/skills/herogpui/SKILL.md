@@ -3,9 +3,9 @@ name: herogpui
 description: 'HeroGPUI — native Rust/GPUI port of HeroUI v3.2.7. Use when building GPUI UIs with HeroGPUI: ThemeProvider, ThemeBuilder::components, named recipes, Buttons, forms, overlays, or reading crate docs. Keywords: HeroGPUI, herogpui, GPUI, HeroUI, ThemeBuilder, recipe.'
 metadata:
   author: herogpui
-  source: https://github.com/Porabuild/HeroGPUI/blob/12ce9ad5104319e05ddc10daecbfab6c8ded1393/skills/herogpui/SKILL.md
-  version: '0.15.0'
-  source_commit: 12ce9ad5104319e05ddc10daecbfab6c8ded1393
+  source: https://github.com/Porabuild/HeroGPUI/blob/09ec52be169bf25a6351a14088e34e22fe89fe9f/skills/herogpui/SKILL.md
+  version: '0.15.1'
+  source_commit: 09ec52be169bf25a6351a14088e34e22fe89fe9f
 ---
 
 # HeroGPUI Development Guide
@@ -18,7 +18,7 @@ This skill is for HeroGPUI only. Do not apply HeroUI v2 APIs, do not invent a CS
 
 ## Poratake's pinned references
 
-Use the existing exact Git revision in `src/main/Cargo.toml`; the registry installation example below is for new consumers. The bundled references match that pin and [upstream.json](upstream.json) records their source revision and checksums.
+Use the existing exact registry version in `src/main/Cargo.toml`. The bundled references match that release; [upstream.json](upstream.json) records its tag, source revision and file checksums.
 
 - Start with [the local LLM component reference](references/llms.txt). Search for the relevant component or API instead of reading the whole reference.
 - When modifying HeroGPUI itself, use its [workflow](references/agents/workflow.md), [component implementation](references/agents/components.md), [parity audits](references/agents/parity.md), and [gallery verification](references/agents/gallery.md) guides. Their paths and commands refer to the HeroGPUI checkout; Poratake's own repository instructions govern work here.
@@ -50,7 +50,7 @@ Do not invent Poratake-specific or app-specific field names in the library. App 
 ## Installation
 
 ```toml
-herogpui = "0.15.0"
+herogpui = "0.15.1"
 ```
 
 ```rust
@@ -174,9 +174,9 @@ Slider::new("vol", 0.5).recipe("pill");
 Input::new(&state).recipe("search");
 ```
 
-### Source patch APIs
+### APIs added in 0.15.1
 
-The workspace includes additive APIs beyond the crates.io 0.15.0 release. Use an exact tested Git `rev` when depending on these APIs; do not assume the published release contains them.
+These APIs are included in HeroGPUI 0.15.1. Existing 0.15.0 code remains compatible.
 
 - `Select::item_content(|key, selected, window, cx| ..)` replaces visible option content while preserving collection labels and typeahead. `panel_gap(px)` and `panel_min_width(px)` also resolve through SelectStyle recipes.
 - `ColorSwatchPicker::sx` customizes the group layout. Keyboard columns follow the rendered allocation.

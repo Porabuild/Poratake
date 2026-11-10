@@ -28,7 +28,7 @@ The previous major version used different names, and they do not exist here:
 
 ```toml
 [dependencies]
-herogpui = "0.12"
+herogpui = "0.15.1"
 ```
 
 One dependency, and only one, published on crates.io (`cargo add herogpui`). `herogpui` is a facade over the GPUI crate
@@ -539,7 +539,7 @@ TextField::new(name.clone()).label("Name").is_required(true)
 Callbacks: `Fn(&ClickEvent/&str/f32/usize/bool/Option<Date>, &mut Window, &mut App)`.
 Fields cloned into closures must be `Arc`.
 
-Public surface (0.12): the component builders and their payload types live at
+Public surface: the component builders and their payload types live at
 the crate root; `anim` (motion tokens and wrappers) is a module path, not
 re-exported at the root; `extend` holds the helpers supported for custom
 widgets (the radius scale, `FIELD_*` metrics, `cursor_interactive`,
@@ -771,7 +771,7 @@ Modal, Drawer, and AlertDialog cover the window even inside clipped or positione
   - Escape closes it unless `is_keyboard_dismiss_disabled`. The overlay takes a focus handle and claims focus while nothing inside holds it; keys bubble from the focused descendant, so a text field inside keeps working. Drawer and AlertDialog behave the same way (AlertDialog defaults keyboard dismissal *off*, as v3 does).
 Pressable Button, ToggleButton and CloseButton roots expose the `Button` keyboard context. An open Popover exposes `Popover`; application shortcut predicates can exclude these contexts when native control activation should own the key.
 
-- **Popover** — `Popover::new(trigger).is_open().placement(Placement).offset(px).should_flip(bool).padding(px).radius(px).panel_width(px).aria_label(label).title().show_close_button().on_open_change(&bool)`; `panel_width` replaces the 260px resting width and its entry/exit geometry; `aria_label` names a panel without adding a visible heading. Modal `panel_width` overrides its width preset and `padding` overrides its 24px inset, with viewport containment preserved. These are repository extensions; defaults remain unchanged. Panel text defaults to 14px with a 20px line height independently of host leading; `.child(PopoverArrow::new())` composes v3's `Popover.Arrow` part — the built-in 12px curve, or a custom child element at the resolved position but without the rotation (upstream rotates it through its `data-slot` placement CSS; The pinned GPUI transforms only `svg()` elements at construction). `radius` is the same per-component repository extension as `Button::radius`, and the panel's entry zoom interpolates the override, so the animation never parts company with the painted shape.
+- **Popover** — `Popover::new(trigger).is_open().placement(Placement).offset(px).should_flip(bool).padding(px).radius(px).panel_width(px).aria_label(label).title().show_close_button().on_open_change(&bool)`; `panel_width` replaces the 260px resting width and its entry/exit geometry, capped at the viewport width; `aria_label` names a panel without adding a visible heading. Modal `panel_width` overrides its width preset and `padding` overrides its 24px inset, with viewport containment preserved. These are repository extensions; defaults remain unchanged. Panel text defaults to 14px with a 20px line height independently of host leading; `.child(PopoverArrow::new())` composes v3's `Popover.Arrow` part — the built-in 12px curve, or a custom child element at the resolved position but without the rotation (upstream rotates it through its `data-slot` placement CSS; The pinned GPUI transforms only `svg()` elements at construction). `radius` is the same per-component repository extension as `Button::radius`, and the panel's entry zoom interpolates the override, so the animation never parts company with the painted shape.
   - `should_flip` routes through gpui's `anchored().snap_to_window()`, which slides the panel back inside the viewport rather than mirroring it to the opposite side.
 - **Sheet** — `Sheet::new(id)` is a modal edge overlay; `trigger(Button)` opens its uncontrolled state, `default_open(bool)` seeds it, and `is_open(bool)` with `on_open_change` makes it controlled. `placement(DrawerPlacement::{Bottom,Top,Left,Right})`, `is_detached(bool)`, `backdrop(Backdrop)`, `snap_points([160., 320.])`, `title`, `aria_label`, `role(a11y::Role::{Dialog,AlertDialog})`, `sx` (refines the panel).
   - `snap_points` numbers are pixels; `SheetSnapPoint::Fraction(0.5)` is a percentage of the full panel. Full expansion is implicit, a trailing pixel `1` or fraction `1.0` is ignored, and arbitrary CSS lengths are not parsed.
