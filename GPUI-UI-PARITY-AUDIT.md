@@ -108,7 +108,7 @@ assertions, then failed all 16 exact image comparisons against the local GPU's
 images. Many differences were one or two channel levels; some UI edges and video
 preview pixels differed more. Renderer-specific reviewed baselines and the fixed
 video input address the differing capture environments without weakening the
-pixel check. The hosted profile must still be recorded, reviewed and rerun.
+pixel check. Subsequent hosted capture and comparison status are recorded below.
 
 The next [hosted Windows run](https://github.com/Porabuild/Poratake/actions/runs/42786386596/job/129728542684)
 at `2cfb70e` passed 957 native tests with one skip and all 16 cases' geometry and
@@ -136,9 +136,13 @@ change set. The other 1,588 images stayed byte-identical. Those reviewed capture
 now establish `hardware-microsoft-basic-render-driver` with driver
 `10.0.26100.33648`. Artifact `13758275750` has SHA-256
 `3caeda627db64c2dc92184f09f61042cf6ed24ff2ea78e71f0db188d1467eebf`.
-The 176 new tray/tooltip/Edit-hover states still require fresh hosted capture
-and review before that profile is complete. Normal runs continue to reject an
-incomplete state list; exact comparison has not been relaxed.
+The next [hosted run](https://github.com/Porabuild/Poratake/actions/runs/42806652330/job/129797393662)
+at `abc940f` passed 961 native tests with one skip and all 16 cases’ geometry,
+workflow and atlas checks. It rejected the incomplete state list as intended.
+Its 176 new tray/tooltip/Edit-hover images were reviewed, and all 1,928 earlier
+hosted images remained byte-identical. The full 2,104-image profile is now
+present; a normal hosted comparison remains required. The artifact SHA-256 is
+`53a763a3afcd985d4cba1c731526a88896a6f10ca5b480bc86e9793048e1e42a`.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -172,8 +176,26 @@ double-clicking that preview opened its saved image in the editor. The older
 development editor remained open. A separate fixture preview showed the complete
 Close tooltip inside the native card.
 
+A native attachment captured darkened pixels because the editor was still
+animating out when the frozen frame was acquired. A distinct red/yellow editor
+fixture reproduced its translucent image over the underlying desktop. Windows
+now disables that window transition and flushes the compositor after hiding.
+With a separate blue/gray fixture underneath, the fixed 200×120 captured layer
+matched all 24,000 reference pixels exactly. Its full composition was visible,
+and the saved 1240×360 PNG retained the original 640×360 pixels exactly; the
+enlarged attachment differed from bilinear reference by at most one channel
+level. The isolated test windows were closed and the older editor remained open.
+The real native handoff is not yet automated in the hosted harness; the headless
+fixture does not test Windows compositor transitions. Evidence is in
+`.scratch-parity/native-handoff-green-9dfaa280082844d9bba4b43f417955c0/`.
+
 The tray sizing regression reproduced a 632px viewport around a 564px painted
 menu. Measured child height now sizes the window; all four simulated scales fit.
+A native test using a synthetic tray rectangle and the original shortcut labels
+placed the 564px menu 8px above the taskbar work area. The older development
+instance still uses its earlier binary; it was kept open at the user’s request.
+Geometry tests also check that changing the measured height preserves the
+taskbar anchor and that top/side placement stays inside the work area.
 A tooltip regression reproduced a 94x32px label above and left of the preview.
 Preview controls now use inward HeroGPUI tooltip placements; Edit has no tooltip.
 The tooltip-presence guard also rejects a build with tooltips disabled. The
@@ -185,14 +207,15 @@ The expanded local matrix recorded all 16 cases and 2,104 images. All 176 new
 images were reviewed, and the existing 1,928 local images stayed byte-identical.
 A fresh normal matrix passed all 16 cases and 2,104 exact images with baseline
 updates disabled.
-The native gate then passed 961 tests with one skip; typecheck, lint, formatting
-and parity-feature Clippy also passed. Tooltip usage across the GPUI source uses
-HeroGPUI components and their shared helpers; the tray icon retains its OS tooltip.
-Adding camera/zoom export coverage passed the native gate with 960 tests and one
+The native gate passed 963 tests with one skip after the tray anchor tests and
+compositor fix; typecheck, lint, formatting and parity-feature Clippy also passed.
+Tooltip usage across the GPUI source uses HeroGPUI components and their shared
+helpers; the tray icon retains its OS tooltip.
+The earlier camera/zoom export expansion passed the native gate with 960 tests and one
 skip, plus typecheck, lint, formatting and parity-feature Clippy. The seven decoded
 samples verify camera visibility and source-frame changes across a cut; an
 independent checker comparison requires the manual zoom to affect the image.
-The latest completed 16-case comparison passed all 1,928 images, including the
+The preceding capture-preview expansion passed all 1,928 images, including the
 permission isolation, icon-only contrast and capture-preview checks. The 64 added
 preview images were reviewed; the preceding 1,864 images stayed byte-identical.
 Moving these 1,928 images into the local NVIDIA renderer profile preserved every
@@ -344,16 +367,17 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | -------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                       |
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                       |
-| P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Extend complete native display/OCR/QR/scroll workflows, real stitching, clipboard, save, pin and attach; compare output with Electron.                                                                                                                |
+| P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                            |
+| P1       | Native attachment compositor coverage                    | The frozen handoff fix passed a real pixel-exact native capture and save. Add automated native Windows coverage for hide/show transitions and verify freezing off, cancellation and repeated attachments.                                                                                                                                                                                       |
 | P2       | QR photo robustness                                      | The reproduced full-window failure is fixed. The native decoder matches 26/40 grayscale original/framed QR corpus cases, up from 23/40, preserving every previous success. Fourteen stress cases remain unmatched; diagnose their detector/decoder failures before changing behavior. Linux loader regression passes in hosted CI; interactive app clipboard delivery still needs verification. |
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                         |
 | P1       | Extended video interactions and export matrix            | Loaded panels are baselined; preview/export checks include one manual zoom and camera on-periods across a cut. Add timeline/control interactions, remaining zoom/camera cases, cursor, keyboard, subtitles and audio; extend combined cuts, trims and speed cases. This is representative coverage.                                                                                             |
 | P2       | Pre-recording preference parity                          | GPUI toggle actions change the pending take but leave stored enable flags unchanged; Electron regular pre-recording controls persist them and all-in-one uses session choices. Verify both entry paths and align their persistence rules.                                                                                                                                                       |
 | P1       | Accessibility action delivery                            | Native Select expands by pointer and list selection works, but the exposed Expand action did not open it. Slider SetValue did not change padding/corners. Reproduce in a minimal HeroGPUI/GPUI case and fix the owning action bridge.                                                                                                                                                           |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                     |
-| P2       | Review hosted Windows visual results                     | Geometry and workflows passed in the first hosted run; exact shared images differed. Record GPU metadata, review the hosted renderer's own exact baselines, and require a second run to compare them without updates.                                                                                                                                                                           |
+| P2       | Review hosted Windows visual results                     | The reviewed dd6b68e and abc940f artifacts supply all 2,104 hosted images. Require a normal CI run to compare the complete profile without updates.                                                                                                                                                                                                                                             |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                        |
-| P2       | Other app surfaces                                       | Settings, history, onboarding and tray need refreshed runtime comparison and their own image baselines. Pin and capture-preview representative layout/lifecycle states now have automated coverage; full native interaction, preview docking and hover controls remain outstanding.                                                                                                             |
+| P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                          |
 
 Keep known platform differences explicit: preview/zoom use a baked blur because
 GPUI has no live backdrop filter; the capture eyedropper remains an app overlay;

@@ -15,11 +15,16 @@ pub fn show(window: &Window) {
 
 #[cfg(all(windows, not(test)))]
 fn platform_set_visible(window: &Window, visible: bool) {
+    use windows::Win32::Graphics::Dwm::DwmFlush;
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
 
     if let Some(hwnd) = crate::windows::window_hwnd(window) {
+        crate::system::window_composition::disable_transitions(hwnd);
         unsafe {
             let _ = ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
+            if !visible {
+                let _ = DwmFlush();
+            }
         }
     }
 }

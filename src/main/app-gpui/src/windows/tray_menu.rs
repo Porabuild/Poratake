@@ -6,8 +6,8 @@ use gpui::AnyWindowHandle;
 #[cfg(windows)]
 use gpui::Global;
 use gpui::{
-    prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Render, Subscription,
-    WeakEntity, Window, WindowHandle,
+    prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Point, Render, Size,
+    Subscription, WeakEntity, Window, WindowHandle,
 };
 use herogpui::gpui;
 
@@ -510,28 +510,38 @@ fn menu_geometry(tray_rect: Option<TrayRect>, height: f32, cx: &mut App) -> Menu
             scale_factor: display.scale_factor,
         };
     };
-    let min_x = f32::from(display.work_area.left()) + SCREEN_GAP;
-    let max_x = f32::from(display.work_area.right()) - window_width - SCREEN_GAP;
-    let x = (rect.x + rect.width / 2.0 - window_width / 2.0).clamp(min_x, max_x);
-    let space_above = rect.y - f32::from(display.work_area.top());
-    let y = if space_above >= window_height + SCREEN_GAP {
-        rect.y - window_height - SCREEN_GAP
-    } else {
-        rect.y + rect.height + SCREEN_GAP
-    }
-    .clamp(
-        f32::from(display.work_area.top()) + SCREEN_GAP,
-        f32::from(display.work_area.bottom()) - window_height - SCREEN_GAP,
-    );
     MenuGeometry {
         bounds: Bounds {
-            origin: gpui::point(px(x), px(y)),
+            origin: tray_menu_origin(display.work_area, rect, window_size),
             size: window_size,
         },
         display_id: Some(display.id),
         #[cfg(windows)]
         scale_factor: display.scale_factor,
     }
+}
+
+fn tray_menu_origin(
+    work_area: Bounds<Pixels>,
+    rect: TrayRect,
+    window_size: Size<Pixels>,
+) -> Point<Pixels> {
+    let window_width = f32::from(window_size.width);
+    let window_height = f32::from(window_size.height);
+    let min_x = f32::from(work_area.left()) + SCREEN_GAP;
+    let max_x = f32::from(work_area.right()) - window_width - SCREEN_GAP;
+    let x = (rect.x + rect.width / 2.0 - window_width / 2.0).clamp(min_x, max_x);
+    let space_above = rect.y - f32::from(work_area.top());
+    let y = if space_above >= window_height + SCREEN_GAP {
+        rect.y - window_height - SCREEN_GAP
+    } else {
+        rect.y + rect.height + SCREEN_GAP
+    }
+    .clamp(
+        f32::from(work_area.top()) + SCREEN_GAP,
+        f32::from(work_area.bottom()) - window_height - SCREEN_GAP,
+    );
+    gpui::point(px(x), px(y))
 }
 
 #[cfg(windows)]
@@ -709,6 +719,45 @@ mod tests {
             MenuEntry::Item(crate::ui::menu::MenuItem::new("Two")),
         ];
         assert_eq!(estimated_menu_height(&entries), 73.0);
+    }
+
+    #[test]
+    fn measured_height_keeps_the_tray_menu_anchored_to_the_taskbar() {
+        let work_area = Bounds {
+            origin: gpui::point(px(0.), px(0.)),
+            size: size(px(3440.), px(1392.)),
+        };
+        let tray = TrayRect {
+            x: 3000.,
+            y: 1404.,
+            width: 24.,
+            height: 24.,
+        };
+        let estimated = tray_menu_origin(work_area, tray, size(px(MENU_WIDTH), px(632.)));
+        let measured = tray_menu_origin(work_area, tray, size(px(MENU_WIDTH), px(564.)));
+        assert_eq!(estimated.x, px(2860.));
+        assert_eq!(measured.x, estimated.x);
+        assert_eq!(estimated.y, px(752.));
+        assert_eq!(measured.y, px(820.));
+        assert_eq!(estimated.y + px(632.), work_area.bottom() - px(SCREEN_GAP));
+        assert_eq!(measured.y + px(564.), work_area.bottom() - px(SCREEN_GAP));
+    }
+
+    #[test]
+    fn tray_menu_stays_within_the_work_area_at_top_and_side_edges() {
+        let work_area = Bounds {
+            origin: gpui::point(px(-1920.), px(48.)),
+            size: size(px(1920.), px(1032.)),
+        };
+        let tray = TrayRect {
+            x: -1910.,
+            y: 8.,
+            width: 24.,
+            height: 24.,
+        };
+        let origin = tray_menu_origin(work_area, tray, size(px(MENU_WIDTH), px(564.)));
+        assert_eq!(origin.x, work_area.left() + px(SCREEN_GAP));
+        assert_eq!(origin.y, work_area.top() + px(SCREEN_GAP));
     }
 
     #[cfg(windows)]
