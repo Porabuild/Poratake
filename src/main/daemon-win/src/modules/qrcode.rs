@@ -197,6 +197,23 @@ mod tests {
     }
 
     #[test]
+    fn detects_qr_when_the_finder_ring_blends_into_the_background() {
+        let payload = detect_qr_code(&fixture_path("qr-small-block.png"))
+            .expect("decode photographed QR code");
+        assert_eq!(
+            payload,
+            r"MEBKM:URL:http\://en.wikipedia.org/wiki/Main_Page;;"
+        );
+    }
+
+    #[test]
+    fn detects_framed_qr_with_uneven_lighting() {
+        let payload = detect_qr_code(&fixture_path("qr-large-block.png"))
+            .expect("decode photographed QR code");
+        assert_eq!(payload, "http://google.com/gwt/n?u=bluenile.com");
+    }
+
+    #[test]
     fn returns_empty_payload_when_no_code_present() {
         let white = vec![255u8; 64 * 64];
         let payload = detect_payload_from_greyscale(&white, 64, 64);

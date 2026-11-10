@@ -103,19 +103,26 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
         return String::new();
     }
 
-    for pass in 0..3 {
+    for pass in 0..5 {
         let mut image = match pass {
             0 => rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| {
                 pixels[y * width + x]
             }),
-            1 if width >= 40 && height >= 40 => {
-                let thresholds = local_thresholds(pixels, width, height);
-                let columns = width.div_ceil(8);
+            1 | 3 | 4 => {
+                let block = match pass {
+                    1 => 8,
+                    3 => 4,
+                    _ => 16,
+                };
+                if width < block * 5 || height < block * 5 {
+                    continue;
+                }
+                let thresholds = local_thresholds(pixels, width, height, block);
+                let columns = width.div_ceil(block);
                 rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
-                    pixels[y * width + x] <= thresholds[(y / 8) * columns + x / 8]
+                    pixels[y * width + x] <= thresholds[(y / block) * columns + x / block]
                 })
             }
-            1 => continue,
             _ => {
                 let mut histogram = [0u64; 256];
                 for &pixel in &pixels[..width * height] {
@@ -184,26 +191,26 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
  * limitations under the License.
  */
 #[cfg(feature = "qrcode-decode")]
-fn local_thresholds(pixels: &[u8], width: usize, height: usize) -> Vec<u8> {
-    let columns = width.div_ceil(8);
-    let rows = height.div_ceil(8);
+fn local_thresholds(pixels: &[u8], width: usize, height: usize, block: usize) -> Vec<u8> {
+    let columns = width.div_ceil(block);
+    let rows = height.div_ceil(block);
     let mut black_points = vec![0u8; columns * rows];
     for block_y in 0..rows {
-        let top = (block_y * 8).min(height - 8);
+        let top = (block_y * block).min(height - block);
         for block_x in 0..columns {
-            let left = (block_x * 8).min(width - 8);
-            let mut sum = 0u16;
+            let left = (block_x * block).min(width - block);
+            let mut sum = 0u32;
             let mut minimum = 255u8;
             let mut maximum = 0u8;
-            for y in top..top + 8 {
-                for x in left..left + 8 {
+            for y in top..top + block {
+                for x in left..left + block {
                     let pixel = pixels[y * width + x];
-                    sum += u16::from(pixel);
+                    sum += u32::from(pixel);
                     minimum = minimum.min(pixel);
                     maximum = maximum.max(pixel);
                 }
             }
-            let mut value = (sum / 64) as u8;
+            let mut value = (sum / (block * block) as u32) as u8;
             if maximum - minimum <= 24 {
                 value = minimum / 2;
                 if block_y > 0 && block_x > 0 {
@@ -319,7 +326,18 @@ mod tests {
     #[test]
     #[cfg(feature = "qrcode-decode")]
     fn returns_no_payload_for_uniform_images_at_block_boundaries() {
-        for (width, height) in [(1, 1), (39, 65), (40, 40), (41, 47)] {
+        for (width, height) in [
+            (1, 1),
+            (19, 21),
+            (20, 20),
+            (21, 25),
+            (39, 65),
+            (40, 40),
+            (41, 47),
+            (79, 81),
+            (80, 80),
+            (81, 87),
+        ] {
             for value in [0, 127, 255] {
                 assert_eq!(
                     detect_payload_from_greyscale(&vec![value; width * height], width, height),

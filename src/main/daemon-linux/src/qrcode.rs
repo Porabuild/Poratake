@@ -86,6 +86,26 @@ mod tests {
     }
 
     #[test]
+    fn detects_qr_when_the_finder_ring_blends_into_the_background() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../daemon-win/tests/fixtures/qr-small-block.png");
+        assert_eq!(
+            detect_qr_code(&path).expect("decode photographed QR code"),
+            r"MEBKM:URL:http\://en.wikipedia.org/wiki/Main_Page;;"
+        );
+    }
+
+    #[test]
+    fn detects_framed_qr_with_uneven_lighting() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../daemon-win/tests/fixtures/qr-large-block.png");
+        assert_eq!(
+            detect_qr_code(&path).expect("decode photographed QR code"),
+            "http://google.com/gwt/n?u=bluenile.com"
+        );
+    }
+
+    #[test]
     fn rejects_oversized_dimensions_before_decoding_pixels() {
         let path = std::env::temp_dir().join(format!(
             "poratake-qrcode-oversized-{}.png",
