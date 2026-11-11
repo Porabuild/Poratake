@@ -451,6 +451,7 @@ fn with_frozen_screen(
     cx: &mut gpui::App,
     release_first: Option<u64>,
     freeze: bool,
+    failure_title: &'static str,
     open: impl FnOnce(&mut gpui::App, bool, u64) -> bool + 'static,
 ) {
     let service = crate::state::state(cx);
@@ -480,7 +481,7 @@ fn with_frozen_screen(
                             .update(cx, |coordinator, cx| coordinator.cancel_editor_attach(cx));
                         crate::windows::toast::Toast::show(
                             cx,
-                            "Capture Failed",
+                            failure_title,
                             "Could not release the frozen screen",
                         );
                         return;
@@ -547,7 +548,7 @@ fn with_frozen_screen(
                 coordinator.update(cx, |coordinator, cx| coordinator.cancel_editor_attach(cx));
                 crate::windows::toast::Toast::show(
                     cx,
-                    "Capture Failed",
+                    failure_title,
                     "Could not release the frozen screen",
                 );
             });
@@ -629,6 +630,11 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
         cx,
         release_first,
         freeze,
+        if intent == intent::CaptureIntent::Recording {
+            "Recording failed"
+        } else {
+            "Capture Failed"
+        },
         move |cx, deferred_show, generation| {
             let opened = each_display(cx, |service, id, bounds, focus, cx| {
                 overlay::AreaOverlay::open(
@@ -674,6 +680,11 @@ pub fn start_all_in_one(cx: &mut gpui::App) {
         cx,
         release_first,
         true,
+        if choices.mode == all_in_one::Mode::Record {
+            "Recording failed"
+        } else {
+            "Capture Failed"
+        },
         move |cx, deferred_show, generation| {
             each_display(cx, |service, id, bounds, focus, cx| {
                 overlay::AreaOverlay::open_all_in_one(
@@ -750,6 +761,7 @@ pub fn start_screen_recording(cx: &mut gpui::App) {
             cx,
             release_first,
             false,
+            "Recording failed",
             move |cx, deferred_show, generation| {
                 let service = crate::state::state(cx);
                 let target_count = targets.len();
@@ -784,7 +796,18 @@ pub fn start_screen_recording(cx: &mut gpui::App) {
         return;
     }
 
-    open_screen_recording_bar(&targets[0], cx);
+    let target = targets[0].clone();
+    let release_first = overlay::replace_all(cx);
+    with_frozen_screen(
+        cx,
+        release_first,
+        false,
+        "Recording failed",
+        move |cx, _, _| {
+            open_screen_recording_bar(&target, cx);
+            true
+        },
+    );
 }
 
 fn open_screen_recording_bar(target: &ScreenTarget, cx: &mut gpui::App) {
@@ -812,6 +835,11 @@ fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
         cx,
         release_first,
         intent == intent::CaptureIntent::Screenshot,
+        if intent == intent::CaptureIntent::Recording {
+            "Recording failed"
+        } else {
+            "Capture Failed"
+        },
         move |cx, deferred_show, generation| {
             let mut pending = Vec::new();
             each_display(cx, |service, id, bounds, focus, cx| {
@@ -1042,6 +1070,7 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
             cx,
             release_first,
             true,
+            "Capture Failed",
             move |cx, deferred_show, generation| {
                 let service = crate::state::state(cx);
                 let target_count = targets.len();
@@ -1593,7 +1622,7 @@ mod tests {
                 .freeze
                 .release_fails_for_test
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            super::with_frozen_screen(cx, None, true, |_, _, _| false);
+            super::with_frozen_screen(cx, None, true, "Capture Failed", |_, _, _| false);
             service
         });
         cx.run_until_parked();
@@ -1603,6 +1632,179 @@ mod tests {
             .release_fails_for_test
             .store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(service.release_screen(1));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn screen_recording_replaces_an_existing_selector(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = false;
+            settings.recording.camera.enabled = false;
+        });
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            super::start_area_selection(super::intent::CaptureIntent::Screenshot, cx);
+            assert!(super::overlay::parity_is_active(cx));
+            super::start_screen_recording(cx);
+            assert!(!super::overlay::parity_is_active(cx));
+            assert!(crate::windows::registry::is_open(
+                crate::windows::registry::WindowKind::RecordingControl,
+                cx
+            ));
+            crate::windows::registry::close(
+                crate::windows::registry::WindowKind::RecordingControl,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn screen_recording_waits_for_pending_freeze_and_respects_replacement(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::windows::registry::{self, WindowKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
+            settings.recording.camera.enabled = false;
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config.clone());
+            super::overlay::init_bindings(cx);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .defer_open_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+                .freeze
+                .freeze_succeeds_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+        });
+        for replace in [false, true] {
+            let generation = queue_pending_freeze(cx, &service);
+            cx.update(|cx| {
+                super::start_screen_recording(cx);
+                assert!(!registry::is_open(WindowKind::RecordingControl, cx));
+                if replace {
+                    super::start_area_selection(super::intent::CaptureIntent::Ocr, cx);
+                }
+            });
+            finish_queued_freeze(cx, &service, generation);
+            cx.run_until_parked();
+            cx.update(|cx| {
+                assert_eq!(
+                    registry::is_open(WindowKind::RecordingControl, cx),
+                    !replace
+                );
+                assert_eq!(super::overlay::parity_is_active(cx), replace);
+                registry::close(WindowKind::RecordingControl, cx);
+                super::overlay::close_all(cx);
+            });
+            cx.run_until_parked();
+            assert!(notifications.borrow().is_empty());
+        }
+        config.update(|settings| settings.screenshot.freeze_screen = false);
+        cx.update(|cx| {
+            super::start_screen_capture(cx);
+            super::start_screen_recording(cx);
+            assert!(registry::is_open(WindowKind::RecordingControl, cx));
+        });
+        cx.run_until_parked();
+        assert!(notifications.borrow().is_empty());
+        cx.update(|cx| registry::close(WindowKind::RecordingControl, cx));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn screen_recording_retries_a_failed_freeze_release(cx: &mut gpui::TestAppContext) {
+        use crate::windows::registry::{self, WindowKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| settings.recording.camera.enabled = false);
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            crate::state::state(cx)
+        });
+        let generation = service.begin_freeze();
+        service.finish_freeze(generation, Ok(())).unwrap();
+        service
+            .freeze
+            .release_fails_for_test
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        cx.update(|cx| {
+            super::overlay::set_pending_freeze(generation, cx);
+            super::start_screen_recording(cx);
+        });
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        assert_eq!(*notifications.borrow(), ["Recording failed"]);
+        service
+            .freeze
+            .release_fails_for_test
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        cx.update(super::start_screen_recording);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(registry::is_open(WindowKind::RecordingControl, cx));
+            registry::close(WindowKind::RecordingControl, cx);
+        });
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn all_in_one_release_failure_matches_the_restored_mode(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.all_in_one.remember_choices = true;
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config.clone());
+            super::overlay::init_bindings(cx);
+            crate::state::state(cx)
+        });
+        for (mode, title) in [
+            ("screenshot", "Capture Failed"),
+            ("record", "Recording failed"),
+        ] {
+            config.update(|settings| settings.all_in_one.last_mode = mode.into());
+            let generation = service.begin_freeze();
+            service.finish_freeze(generation, Ok(())).unwrap();
+            service
+                .freeze
+                .release_fails_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            cx.update(|cx| {
+                super::overlay::set_pending_freeze(generation, cx);
+                super::start_all_in_one(cx);
+            });
+            cx.run_until_parked();
+            assert!(!cx.update(super::overlay::parity_is_active));
+            assert_eq!(*notifications.borrow(), [title]);
+            notifications.borrow_mut().clear();
+            service
+                .freeze
+                .release_fails_for_test
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            cx.update(super::overlay::close_all);
+            cx.run_until_parked();
+        }
     }
 
     #[herogpui::test]
@@ -1670,12 +1872,18 @@ mod tests {
         let observed = opened.clone();
 
         cx.update(|cx| {
-            super::with_frozen_screen(cx, None, true, move |_, deferred_show, generation| {
-                assert!(deferred_show);
-                assert_eq!(generation, 1);
-                observed.store(true, Ordering::SeqCst);
-                true
-            });
+            super::with_frozen_screen(
+                cx,
+                None,
+                true,
+                "Capture Failed",
+                move |_, deferred_show, generation| {
+                    assert!(deferred_show);
+                    assert_eq!(generation, 1);
+                    observed.store(true, Ordering::SeqCst);
+                    true
+                },
+            );
         });
 
         assert!(opened.load(Ordering::SeqCst));

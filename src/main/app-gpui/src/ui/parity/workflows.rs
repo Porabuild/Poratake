@@ -515,6 +515,32 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
     assert!(release < capture);
     assert_eq!(calls[capture]["params"]["cached"], false);
     cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| config.recording.camera.enabled = false);
+        crate::capture::start_area_capture(cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.update(crate::capture::overlay::parity_is_active));
+    let before = super::daemon_fixture::calls(output).len();
+    cx.update(|cx| {
+        use crate::windows::registry::{self, WindowKind};
+
+        crate::capture::start_screen_recording(cx);
+        assert!(!crate::capture::overlay::parity_is_active(cx));
+        assert!(!registry::is_open(WindowKind::RecordingControl, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        use crate::windows::registry::{self, WindowKind};
+
+        assert!(registry::is_open(WindowKind::RecordingControl, cx));
+        registry::close(WindowKind::RecordingControl, cx);
+    });
+    assert!(super::daemon_fixture::calls(output)[before..]
+        .iter()
+        .any(|call| call["module"] == "freeze-screen" && call["method"] == "release"));
+    cx.update(|cx| {
         crate::state::state(cx).config.update(|config| {
             config.screenshot.show_preview = true;
             config.screenshot.capture_to_clipboard = false;
