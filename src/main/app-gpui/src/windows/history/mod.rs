@@ -93,9 +93,15 @@ impl HistoryWindow {
         registry::toggle(RegistryKind::History, cx, |cx| {
             let store = crate::state::state(cx).config;
             let (bounds, display_id) = popover_placement(tray_rect, cx);
+            let window_bounds = display_id
+                .and_then(|id| cx.find_display(id))
+                .map(|display| {
+                    crate::system::work_area::local_window_bounds(bounds, display.as_ref())
+                })
+                .unwrap_or(bounds);
             cx.open_window(
                 super::popup_window_options(
-                    bounds,
+                    window_bounds,
                     super::PopupWindowConfig {
                         show: !cfg!(windows),
                         display_id,

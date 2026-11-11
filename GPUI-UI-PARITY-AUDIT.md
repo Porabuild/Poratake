@@ -559,6 +559,11 @@ Bugs fixed in this pass:
   the framed editor and export paths: the original 1600×1000 Polish capture is
   1600×1056 at 200%, and Polish copy matches editor export. The title bar and
   translucent image patch are checked in the preview at 125% and 200%.
+- History could open partly outside a display when its tray icon was near an
+  edge. GPUI now clamps its position to the work area when it fits and converts
+  macOS secondary-display bounds as the tray menu does. Geometry tests cover
+  both edges and undersized work areas. Electron's horizontal placement remains
+  unclamped; physical multi-monitor behavior is not verified.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
 - A competing capture or second attachment could replace the active attachment
