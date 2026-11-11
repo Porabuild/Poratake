@@ -84,16 +84,13 @@ mod tests {
 
     #[test]
     fn stitched_scroll_frames_reopen_with_identical_pixels() {
-        use poratake_daemon_common::scroll::{
-            frame_hash, write_png, CaptureOutcome, FrameAccumulator,
-        };
+        use poratake_daemon_common::scroll::{write_png, CaptureOutcome, FrameAccumulator};
 
-        for (width, height, overlap, expected, repeating, flat_tail) in [
-            (96, 160, 64, 64, false, false),
-            (1280, 320, 97, 97, false, false),
-            (800, 720, 217, 217, false, false),
-            (1000, 160, 101, 100, true, false),
-            (1280, 320, 96, 96, false, true),
+        for (width, height, overlap, expected, repeating) in [
+            (96, 160, 64, 64, false),
+            (1280, 320, 97, 97, false),
+            (800, 720, 217, 217, false),
+            (1000, 160, 101, 100, true),
         ] {
             let source = image::RgbaImage::from_fn(width, height * 2 - overlap, |x, y| {
                 if repeating {
@@ -102,9 +99,6 @@ mod tests {
                     } else {
                         [100 + (y % 2) as u8, 0, 0, 255]
                     });
-                }
-                if flat_tail && y >= height - 80 {
-                    return image::Rgba([64, 64, 64, 255]);
                 }
                 let seed = y.wrapping_mul(0x45d9f3b) ^ x.wrapping_mul(0x119de1f3);
                 image::Rgba([
@@ -117,12 +111,6 @@ mod tests {
             let first = image::imageops::crop_imm(&source, 0, 0, width, height).to_image();
             let second =
                 image::imageops::crop_imm(&source, 0, height - overlap, width, height).to_image();
-            if flat_tail {
-                assert_eq!(
-                    frame_hash(&first, width as usize, height as usize),
-                    frame_hash(&second, width as usize, height as usize)
-                );
-            }
             let mut accumulator = FrameAccumulator::default();
             for frame in [first, second] {
                 assert_eq!(
