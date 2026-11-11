@@ -13,7 +13,7 @@ use crate::ui::colors::{black, transparent, white};
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuBuilder, MenuEntry, MenuItem};
 use crate::video::project::RecordingFeatures;
-use crate::windows::history::model::format_relative_time;
+use crate::windows::history::model::{format_relative_time, GRID_COLUMNS};
 use crate::windows::history::HistoryWindow;
 use herogpui::components::{Button, TooltipPlacement, Variant};
 
@@ -173,6 +173,12 @@ pub fn grid_card(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) -
     let index = view.index;
     let id = view.item.id.clone();
     let show_actions = view.hovered || view.selected;
+    let actions_selector = format!("history-grid-actions-{id}");
+    let tooltip_placement = if index.is_multiple_of(GRID_COLUMNS) {
+        TooltipPlacement::TopStart
+    } else {
+        TooltipPlacement::TopEnd
+    };
 
     let height = width * 9.0 / 16.0;
     let mut media = div()
@@ -264,36 +270,40 @@ pub fn grid_card(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) -
                 .child(format_relative_time(view.item.timestamp, view.now_ms)),
         )
         .when(show_actions, |el| {
-            el.child(
-                div()
-                    .absolute()
-                    .top(px(4.0))
-                    .right(px(4.0))
-                    .flex()
-                    .gap(px(4.0))
-                    .child(overlay_action(
-                        view.element_id("history-reveal"),
-                        "folder-open",
-                        "Show in folder",
-                        false,
-                        TooltipPlacement::Top,
-                        move |this, _window, cx| {
-                            this.reveal_index(index, cx);
-                        },
-                        cx,
-                    ))
-                    .child(overlay_action(
-                        view.element_id("history-delete"),
-                        "trash-2",
-                        "Delete",
-                        true,
-                        TooltipPlacement::Top,
-                        move |this, _window, cx| {
-                            this.delete_index(index, cx);
-                        },
-                        cx,
-                    )),
-            )
+            let actions = div()
+                .debug_selector(move || actions_selector.clone())
+                .absolute()
+                .top(px(4.0))
+                .right(px(4.0))
+                .flex()
+                .gap(px(4.0))
+                .child(overlay_action(
+                    view.element_id("history-reveal"),
+                    "folder-open",
+                    "Show in folder",
+                    false,
+                    tooltip_placement,
+                    move |this, _window, cx| {
+                        this.reveal_index(index, cx);
+                    },
+                    cx,
+                ))
+                .child(overlay_action(
+                    view.element_id("history-delete"),
+                    "trash-2",
+                    "Delete",
+                    true,
+                    tooltip_placement,
+                    move |this, _window, cx| {
+                        this.delete_index(index, cx);
+                    },
+                    cx,
+                ));
+            #[cfg(feature = "parity")]
+            let actions = actions.on_children_prepainted(|bounds, _, _| {
+                crate::ui::parity::record("history-grid-actions", bounds);
+            });
+            el.child(actions)
         });
 
     with_item_menu(view, card, cx)

@@ -726,6 +726,68 @@ mod tests {
         assert!(third.origin.y >= scroller.origin.y);
         assert!(third.origin.y + third.size.height <= scroller.origin.y + scroller.size.height);
 
+        for mode in [
+            crate::theme::presets::ThemeMode::Light,
+            crate::theme::presets::ThemeMode::Dark,
+        ] {
+            visual.update(|_, cx| crate::theme::vars::update_theme(cx, mode, "default"));
+            for scale in [1.0, 1.25, 2.0] {
+                visual.update(|window, _| window.set_scale_factor(scale));
+                for width in [200.0, 240.0, 400.0] {
+                    visual.simulate_resize(size(px(width), px(364.0)));
+                    for (index, id) in [(2, "third"), (1, "second")] {
+                        visual.update(|_, cx| {
+                            history.update(cx, |history, cx| {
+                                history.selected_index = index;
+                                history.scroll.scroll_to_item(index);
+                                cx.notify();
+                            });
+                        });
+                        let actions = visual.expect(&format!("history-grid-actions-{id}"));
+                        for offset in [12.0, 40.0] {
+                            let action =
+                                gpui::point(actions.origin.x + px(offset), actions.center().y);
+                            visual.simulate_mouse_move(action, None, gpui::Modifiers::none());
+                            visual
+                                .executor()
+                                .advance_clock(std::time::Duration::from_millis(800));
+                            visual.settle();
+                            visual.update(|window, _| {
+                                let scale = window.scale_factor();
+                                let tips: Vec<_> = window
+                                    .painted_quads()
+                                    .into_iter()
+                                    .filter(|quad| {
+                                        let bounds = quad.bounds;
+                                        (31.0..=35.0).contains(&(bounds.size.height.0 / scale))
+                                            && bounds.size.width.0 / scale > 30.0
+                                            && bounds.bottom().0 <= f32::from(action.y) * scale
+                                            && bounds.bottom().0
+                                                >= (f32::from(action.y) - 30.0) * scale
+                                    })
+                                    .collect();
+                                assert_eq!(tips.len(), 1, "width {width}, item {id}: {tips:?}");
+                                let tip = tips[0];
+                                let bounds = tip.bounds;
+                                let mask = tip.content_mask.bounds;
+                                assert!(
+                                    bounds.left().0 >= 0.0
+                                        && bounds.right().0 <= width * scale
+                                        && bounds.top().0 >= 0.0
+                                        && bounds.bottom().0 <= 364.0 * scale
+                                        && mask.left().0 <= bounds.left().0
+                                        && mask.right().0 >= bounds.right().0
+                                        && mask.top().0 <= bounds.top().0
+                                        && mask.bottom().0 >= bounds.bottom().0,
+                                    "width {width}, item {id}: tooltip {bounds:?}, mask {mask:?}"
+                                );
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         visual.simulate_resize(size(px(200.0), px(364.0)));
         visual.click("history-filter-video");
         assert_eq!(

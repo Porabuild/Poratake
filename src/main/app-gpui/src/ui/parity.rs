@@ -346,6 +346,28 @@ fn capture_history(
         output,
         &format!("history-{history_width}-grid-selected"),
     );
+    capture_history_tooltips(
+        cx,
+        handle,
+        output,
+        history_width,
+        scale,
+        "history-grid-actions",
+        "grid-left",
+    );
+    key(cx, handle, "right");
+    assert_eq!(cx.update(|cx| history.read(cx).parity_state().2), 3);
+    capture_history_tooltips(
+        cx,
+        handle,
+        output,
+        history_width,
+        scale,
+        "history-grid-actions",
+        "grid-right",
+    );
+    key(cx, handle, "left");
+    assert_eq!(cx.update(|cx| history.read(cx).parity_state().2), 2);
     click_measured(cx, handle, "history-actions", 1);
     assert_eq!(
         cx.update(|cx| history.read(cx).parity_state().3),
@@ -362,8 +384,49 @@ fn capture_history(
         output,
         &format!("history-{history_width}-list-selected"),
     );
+    capture_history_tooltips(
+        cx,
+        handle,
+        output,
+        history_width,
+        scale,
+        "history-row-actions",
+        "list",
+    );
+    let windows_before = cx.update(|cx| cx.windows());
+    click_measured(cx, handle, "history-row-actions", 1);
+    let deleted = std::path::Path::new(&items[2].original_path);
+    assert!(!deleted.exists());
+    assert!(!crate::thumbnails::thumbnail_path(deleted).exists());
+    assert_eq!(
+        crate::history_store::load_history()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["visual-0", "visual-1", "visual-3"]
+    );
+    let state = cx.update(|cx| history.read(cx).parity_state());
+    assert!(state.1 && state.2 == 2 && state.3 == HistoryLayout::List);
+    assert_eq!(cx.update(|cx| cx.windows()), windows_before);
+    println!(
+        "history {history_width}px grid, list, tooltips and isolated deletion passed at {scale}x"
+    );
+    cx.update_window(handle, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn capture_history_tooltips(
+    cx: &mut HeadlessAppContext,
+    handle: AnyWindowHandle,
+    output: &Path,
+    history_width: f32,
+    scale: f32,
+    group: &str,
+    state: &str,
+) {
     for (index, name) in [(0, "reveal"), (1, "delete")] {
-        let action = measured("history-row-actions", index).center();
+        let action = measured(group, index).center();
         hover(cx, handle, f32::from(action.x), f32::from(action.y));
         cx.update_window(handle, |_, window, _| {
             let tips: Vec<_> = window
@@ -402,30 +465,9 @@ fn capture_history(
             cx,
             handle,
             output,
-            &format!("history-{history_width}-list-tooltip-{name}"),
+            &format!("history-{history_width}-{state}-tooltip-{name}"),
         );
     }
-    let windows_before = cx.update(|cx| cx.windows());
-    click_measured(cx, handle, "history-row-actions", 1);
-    let deleted = std::path::Path::new(&items[2].original_path);
-    assert!(!deleted.exists());
-    assert!(!crate::thumbnails::thumbnail_path(deleted).exists());
-    assert_eq!(
-        crate::history_store::load_history()
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>(),
-        ["visual-0", "visual-1", "visual-3"]
-    );
-    let state = cx.update(|cx| history.read(cx).parity_state());
-    assert!(state.1 && state.2 == 2 && state.3 == HistoryLayout::List);
-    assert_eq!(cx.update(|cx| cx.windows()), windows_before);
-    println!(
-        "history {history_width}px grid, list, tooltips and isolated deletion passed at {scale}x"
-    );
-    cx.update_window(handle, |_, window, _| window.remove_window())
-        .unwrap();
-    cx.run_until_parked();
 }
 
 fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {

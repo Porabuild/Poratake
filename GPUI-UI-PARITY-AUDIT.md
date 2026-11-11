@@ -49,9 +49,9 @@ or physical-monitor DPI verification.
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
 738 logical pixels high. Each case captures 142 states; the two 1280px, 100% cases
 also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states.
-The eight 950px cases each add ten narrow-history states, for 2,408 images per
-complete renderer profile. The 80 new NVIDIA history images were reviewed; the
-local matrix passed all 16 cases and 2,408 images. The hosted profile still
+The eight 950px cases each add 18 narrow-history states, for 2,472 images per
+complete renderer profile. The 144 new NVIDIA history images were reviewed; the
+local matrix passed all 16 cases and 2,472 images. The hosted profile still
 needs its corresponding images reviewed and added.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
@@ -572,10 +572,11 @@ Bugs fixed in this pass:
   displays, 200–400px window widths, both themes, simulated 100/125/200% scaling,
   grid and list selection, and wrapped header and filter controls. Narrow list
   actions now sit over the thumbnail so labels remain readable, with feature
-  icons wrapping as needed. The local visual fixture checks complete reveal and
-  delete tooltips, and deletes an isolated item without opening an editor. Its
-  80 NVIDIA images were reviewed; the hosted profile and physical monitors remain
-  unverified. Electron's horizontal placement remains unclamped.
+  icons wrapping as needed. Grid tooltips align inward according to their column.
+  The local visual fixture checks complete reveal and delete tooltips in grid
+  and list states, and deletes an isolated item without opening an editor. Its
+  144 NVIDIA images were reviewed; the hosted profile and physical monitors
+  remain unverified. Electron's horizontal placement remains unclamped.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
 - A competing capture or second attachment could replace the active attachment
@@ -667,7 +668,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                          |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Representative coverage only.                                                                                                                                                                                                    |
 | P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                      |
-| P2       | History visual and native verification                   | Review and add the hosted narrow-history images; verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 200px; smaller work areas, other item states and grid tooltips are not verified.                                                                                                                                                                           |
+| P2       | History visual and native verification                   | Review and add the hosted narrow-history images; verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 200px. Below 148px, the two-column grid cards are too narrow for both actions; smaller layouts and other item states need verification.                                                                                                                    |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                           |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                        |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                           |

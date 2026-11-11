@@ -127,10 +127,11 @@ restoration with history disabled plus standalone close without an editor.
 A native Windows Alt+F4 test closed the pin window and restored its annotated
 editor; native close delivery on other platforms remains unverified.
 The built-in 1280px, 100% cases add 28 workflow images each. The 950px cases add
-ten history images each: default and selected grid, selected list, and both
-list-action tooltips at 200px and 240px. The fixture checks thumbnail pixels,
-keyboard selection, tooltip bounds and clipping masks, and deletes a scratch
-item without opening an editor. A complete renderer profile has 2,408 images.
+18 history images each: default and selected grid, selected list, and both
+action tooltips in each grid column and the list at 200px and 240px. The fixture
+checks thumbnail pixels, keyboard selection, tooltip bounds and clipping masks,
+and deletes a scratch item without opening an editor. A complete renderer profile
+has 2,472 images.
 Each renderer's set must be reviewed before acceptance.
 
 Capture, timer and scroll completion first open a bottom-right preview without
