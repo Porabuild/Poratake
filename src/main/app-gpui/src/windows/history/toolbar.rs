@@ -13,7 +13,12 @@ const TAB_HEIGHT: f32 = 20.0;
 const TAB_PAD_X: f32 = 6.0;
 const HEADER_ACTION_PAD_X: f32 = 8.0;
 
-pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow>) -> AnyElement {
+pub fn header(
+    has_items: bool,
+    compact: bool,
+    theme: &ThemeVars,
+    cx: &mut Context<HistoryWindow>,
+) -> AnyElement {
     let mut actions = div()
         .debug_selector(|| "history-header-actions".to_string())
         .flex()
@@ -52,7 +57,11 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
         .flex_wrap()
         .items_center()
         .justify_between()
-        .px(px(chrome::HISTORY_HEADER_PX))
+        .px(px(if compact {
+            4.0
+        } else {
+            chrome::HISTORY_HEADER_PX
+        }))
         .py(px(chrome::HISTORY_HEADER_PY))
         .border_b_1()
         .border_color(theme.border)

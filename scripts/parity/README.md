@@ -15,8 +15,9 @@ scaling remains a separate native check.
 The picker fixture scans every pixel across the lower viewport for undimmed or
 double-dimmed gaps. The recording handoff's unit test checks every painted pixel
 around centered and edge selections at 100/125/150/175/200% simulated scale. History
-grid tests sweep physical window widths at 100/125/150/175/200% and check that
-both columns stay in bounds after resize.
+grid tests sweep 140–400 logical pixels at 100/125/150/175/200% and check that
+cards stay in bounds after resize. A visible keyboard selection stays in view
+when the layout or DPI changes; an item scrolled out of view stays there.
 
 The all-in-one color picker captures its center, four display corners and a
 400×300 narrow window. It checks the sampled loupe pixel and the card's bounds;
@@ -155,11 +156,12 @@ restoration with history disabled plus standalone close without an editor.
 A native Windows Alt+F4 test closed the pin window and restored its annotated
 editor; native close delivery on other platforms remains unverified.
 The built-in 1280px, 100% cases add 28 workflow images each. The 950px cases add
-18 history images each: default and selected grid, selected list, and both
-action tooltips in each grid column and the list at 200px and 240px. The fixture
-checks thumbnail pixels, keyboard selection, tooltip bounds and clipping masks,
-and deletes a scratch item without opening an editor. A complete renderer profile
-has 2,808 images.
+27 history images each: default and selected grid, selected list, and both
+action tooltips at 140px, 200px and 240px. The fixture checks thumbnail pixels,
+keyboard selection, all four sides of the narrow selection ring, tooltip bounds
+and clipping masks, and deletes a scratch item without opening an editor. A
+complete renderer profile has 2,880 images; the new hosted history states still
+need recording and review.
 Each renderer's set must be reviewed before acceptance.
 
 Capture, timer and scroll completion first open a bottom-right preview without

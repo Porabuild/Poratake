@@ -322,8 +322,14 @@ fn capture_history(
     let first = first.expect("first history item must be rendered");
     let second = second.expect("second history item must be rendered");
     assert!(fourth.is_some(), "all four history items must be rendered");
-    assert_eq!(first.top(), second.top());
-    assert!(first.right() < second.left() && second.right() <= px(history_width));
+    let single_column = first.top() != second.top();
+    assert_eq!(single_column, history_width == 140.);
+    if single_column {
+        assert!(second.top() >= first.bottom());
+    } else {
+        assert!(first.right() < second.left());
+    }
+    assert!(second.right() <= px(history_width));
     let image = cx.capture_screenshot(handle).unwrap();
     let x = ((f32::from(first.left()) + f32::from(first.size.width) / 2.) * scale).round() as u32;
     let y =
@@ -338,8 +344,58 @@ fn capture_history(
     );
     capture(cx, handle, output, &format!("history-{history_width}-grid"));
     key(cx, handle, "down");
+    if single_column {
+        assert_eq!(cx.update(|cx| history.read(cx).parity_state().2), 1);
+        key(cx, handle, "down");
+    }
     let state = cx.update(|cx| history.read(cx).parity_state());
     assert!(state.1 && state.2 == 2 && state.3 == HistoryLayout::Grid);
+    if single_column {
+        let selected = measured("history-selected-grid-card", 0);
+        let (focus, background) = cx.update(|cx| {
+            let theme = crate::theme::vars::active_theme(cx);
+            (
+                gpui::Rgba::from(theme.primary),
+                gpui::Rgba::from(theme.background),
+            )
+        });
+        let image = cx.capture_screenshot(handle).unwrap();
+        let distance = |pixel: &image::Rgba<u8>, color: gpui::Rgba| {
+            pixel.0[..3]
+                .iter()
+                .zip([color.r, color.g, color.b])
+                .map(|(actual, expected)| (f32::from(*actual) - expected * 255.).abs())
+                .sum::<f32>()
+        };
+        for (side, x, y) in [
+            ("left", selected.left() - px(2.), selected.center().y),
+            ("right", selected.right() + px(2.), selected.center().y),
+            ("top", selected.center().x, selected.top() - px(2.)),
+            ("bottom", selected.center().x, selected.bottom() + px(2.)),
+        ] {
+            let (x, y) = (f32::from(x) * scale, f32::from(y) * scale);
+            assert!(
+                x >= 1.
+                    && y >= 1.
+                    && x + 1. < image.width() as f32
+                    && y + 1. < image.height() as f32,
+                "history selection ring leaves the window at {side}: {selected:?}"
+            );
+            let mut visible = 0;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let pixel = image.get_pixel(
+                        (x.floor() as i32 + dx) as u32,
+                        (y.floor() as i32 + dy) as u32,
+                    );
+                    if distance(pixel, focus) < distance(pixel, background) {
+                        visible += 1;
+                    }
+                }
+            }
+            assert!(visible >= 3, "history selection clips its {side} ring: {visible} focus pixels, bounds {selected:?}, scale {scale}");
+        }
+    }
     capture(
         cx,
         handle,
@@ -353,7 +409,11 @@ fn capture_history(
         history_width,
         scale,
         "history-grid-actions",
-        "grid-left",
+        if single_column {
+            "grid-third"
+        } else {
+            "grid-left"
+        },
     );
     key(cx, handle, "right");
     assert_eq!(cx.update(|cx| history.read(cx).parity_state().2), 3);
@@ -364,7 +424,11 @@ fn capture_history(
         history_width,
         scale,
         "history-grid-actions",
-        "grid-right",
+        if single_column {
+            "grid-fourth"
+        } else {
+            "grid-right"
+        },
     );
     key(cx, handle, "left");
     assert_eq!(cx.update(|cx| history.read(cx).parity_state().2), 2);
@@ -860,7 +924,7 @@ pub fn capture_editor_interaction_states() {
     #[cfg(windows)]
     capture_tray_menu(&mut cx, &output, scale);
     if source.is_none() && width == 950. {
-        for history_width in [200., 240.] {
+        for history_width in [140., 200., 240.] {
             capture_history(&mut cx, &output, &scratch, scale, history_width);
         }
     }

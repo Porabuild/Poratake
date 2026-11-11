@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `090954e` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `a9d025f` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -49,12 +49,16 @@ or physical-monitor DPI verification.
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
 738 logical pixels high. Each case captures 163 states; the two 1280px, 100% cases
 also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states.
-The eight 950px cases each add 18 narrow-history states, for 2,808 images per
-complete renderer profile. The 48 selected-OCR tooltip images and 32 target-menu
+The eight 950px cases each add 27 narrow-history states, for 2,880 images per
+complete renderer profile. The 72 new 140px NVIDIA history images were reviewed;
+the previous 1,448 images in the 950px cases were pixel-identical. The complete
+local NVIDIA gate passed all 16 cases and 2,880 exact images. The hosted variants
+still need recording and review. The 48 selected-OCR tooltip images and 32 target-menu
 images were reviewed for NVIDIA; all 2,728 earlier images were pixel-identical.
 An exact rerun after the target-menu interaction fixes passed all 16 cases and
 2,808 images. The corresponding 80 hosted images were reviewed, and all 2,728
-earlier hosted images were pixel-identical. The 96 earlier NVIDIA all-in-one tooltip images were
+earlier hosted images were pixel-identical. [Hosted CI at `a9d025f`](https://github.com/Porabuild/Poratake/actions/runs/42980916944)
+passed all required jobs, including the 2,808-image Windows visual gate. The 96 earlier NVIDIA all-in-one tooltip images were
 reviewed; all 2,632 existing images were unchanged. The corresponding 96 hosted
 images were also reviewed, and all 2,632 previous hosted images were pixel-identical. The local
 exact-baseline matrix at `80a5700` passed all 16 cases and 2,632 images. After
@@ -688,12 +692,18 @@ Bugs fixed in this pass:
   window-deactivation test clears state if a key release is lost.
 - A history grid at simulated 175% and 456 physical pixels wrapped its second
   card onto a new row. The cards now fit the snapped available width. The unit
-  test sweeps every physical width corresponding to 200–400 logical pixels at
+  test sweeps every physical width corresponding to 140–400 logical pixels at
   100%, 125%, 150%, 175% and 200%, and verifies the scale after each resize.
+- At 140px the two-column history cards clipped their actions, and the list
+  clipped its labels. The grid now uses one column with room for the selection
+  ring; the list stacks its thumbnail and details. Keyboard navigation follows
+  the displayed grid, and a visible selection stays in view across resize,
+  scale and layout changes without pulling back a selection the user scrolled
+  away from. The visual fixture checks all four sides of the selection ring.
 - History could open partly outside a display when its tray icon was near an
   edge. GPUI now fits the popover to the work area and converts macOS
   secondary-display bounds as the tray menu does. Geometry tests cover offset
-  displays, 200–400px window widths, both themes, simulated 100/125/150/175/200% scaling,
+  displays, 140–400px window widths, both themes, simulated 100/125/150/175/200% scaling,
   grid and list selection, and wrapped header and filter controls. Narrow list
   actions now sit over the thumbnail so labels remain readable, with feature
   icons wrapping as needed. Grid tooltips align inward according to their column.
@@ -793,7 +803,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                          |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Representative coverage only.                                                                                                                                                                                                    |
 | P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                      |
-| P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 200px. Below 148px, the two-column grid cards are too narrow for both actions; smaller layouts and other item states need verification.                                                                                                                                                                     |
+| P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 140px; smaller layouts and other item states need verification.                                                                                                                                                                                                                                             |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                           |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                        |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                           |

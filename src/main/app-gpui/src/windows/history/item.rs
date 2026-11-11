@@ -13,7 +13,7 @@ use crate::ui::colors::{black, transparent, white};
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuBuilder, MenuEntry, MenuItem};
 use crate::video::project::RecordingFeatures;
-use crate::windows::history::model::{format_relative_time, GRID_COLUMNS};
+use crate::windows::history::model::format_relative_time;
 use crate::windows::history::HistoryWindow;
 use herogpui::components::{Button, TooltipPlacement, Variant};
 
@@ -168,13 +168,20 @@ fn overlay_action(
         .into_any_element()
 }
 
-pub fn grid_card(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) -> AnyElement {
+pub fn grid_card(
+    view: &ItemView,
+    width: f32,
+    columns: usize,
+    cx: &mut Context<HistoryWindow>,
+) -> AnyElement {
     let theme = view.theme;
     let index = view.index;
     let id = view.item.id.clone();
     let show_actions = view.hovered || view.selected;
     let actions_selector = format!("history-grid-actions-{id}");
-    let tooltip_placement = if index.is_multiple_of(GRID_COLUMNS) {
+    let tooltip_placement = if columns == 1 {
+        TooltipPlacement::Top
+    } else if index.is_multiple_of(columns) {
         TooltipPlacement::TopStart
     } else {
         TooltipPlacement::TopEnd
@@ -274,7 +281,7 @@ pub fn grid_card(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) -
                 .debug_selector(move || actions_selector.clone())
                 .absolute()
                 .top(px(4.0))
-                .right(px(4.0))
+                .right(px(if columns == 1 { 8.0 } else { 4.0 }))
                 .flex()
                 .gap(px(4.0))
                 .child(overlay_action(
@@ -320,13 +327,14 @@ pub fn list_row(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) ->
     let actions_selector = format!("history-row-actions-{id}");
     let features_selector = format!("history-row-features-{id}");
     let compact = width < LIST_COMPACT_WIDTH;
-    let thumb_width = if compact {
-        (width
-            - chrome::HISTORY_CONTENT_PAD * 2.0
-            - LIST_ROW_PADDING * 2.0
-            - LIST_ROW_GAP
-            - LIST_META_MIN_WIDTH)
-            .clamp(0.0, LIST_THUMB_WIDTH)
+    let content_width =
+        (width - chrome::HISTORY_CONTENT_PAD * 2.0 - LIST_ROW_PADDING * 2.0).max(0.0);
+    let min_thumb = chrome::HISTORY_ITEM_ACTION_SIZE * 2.0 + 8.0;
+    let stacked = compact && content_width < min_thumb + LIST_ROW_GAP + LIST_META_MIN_WIDTH;
+    let thumb_width = if stacked {
+        content_width.min(LIST_THUMB_WIDTH)
+    } else if compact {
+        (content_width - LIST_ROW_GAP - LIST_META_MIN_WIDTH).clamp(0.0, LIST_THUMB_WIDTH)
     } else {
         LIST_THUMB_WIDTH
     };
@@ -431,8 +439,8 @@ pub fn list_row(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) ->
             el.shadow(selection_shadow(theme.primary))
         })
         .flex()
-        .flex_row()
-        .items_center()
+        .when(stacked, |el| el.flex_col().items_start())
+        .when(!stacked, |el| el.flex_row().items_center())
         .gap(px(LIST_ROW_GAP))
         .p(px(LIST_ROW_PADDING))
         .rounded(px(chrome::RADIUS_LG))
@@ -453,6 +461,7 @@ pub fn list_row(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) ->
                 .flex_col()
                 .flex_1()
                 .min_w_0()
+                .when(stacked, |el| el.w_full())
                 .gap(px(2.0))
                 .child(
                     div()
