@@ -371,16 +371,18 @@ mod tests {
 
         let (width, height) = (1000, 160);
         for (footer, edge_x, second_edge) in [
-            (0, 1, false),
-            (0, 100, false),
-            (0, 500, false),
-            (0, 100, true),
-            (0, 500, true),
-            (16, 1, false),
-            (16, 100, false),
-            (16, 500, false),
-            (16, 100, true),
-            (16, 500, true),
+            (0, 1, None),
+            (0, 100, None),
+            (0, 500, None),
+            (0, 100, Some(102)),
+            (0, 500, Some(502)),
+            (0, 100, Some(500)),
+            (16, 1, None),
+            (16, 100, None),
+            (16, 500, None),
+            (16, 100, Some(102)),
+            (16, 500, Some(502)),
+            (16, 100, Some(500)),
         ] {
             let frame = |shift: u32, frame_height: u32| {
                 image::RgbaImage::from_fn(width, frame_height, |x, y| {
@@ -388,7 +390,7 @@ mod tests {
                         return image::Rgba([51, 60, 70, 255]);
                     }
                     let row = y + shift;
-                    image::Rgba(if x == edge_x || (second_edge && x == edge_x + 2) {
+                    image::Rgba(if x == edge_x || second_edge == Some(x) {
                         [row as u8, (row >> 8) as u8, row.wrapping_mul(17) as u8, 255]
                     } else {
                         [((row % 8) * 31) as u8, 0, 0, 255]

@@ -180,7 +180,7 @@ impl FrameAccumulator {
                     strip_width,
                     strip_height,
                 ) == 0
-                    || overlap_matches_outside_narrow_band(
+                    || overlap_matches_except_two_columns(
                         &previous.pixels,
                         &pixels,
                         width,
@@ -494,7 +494,7 @@ pub fn find_overlap(
             && expected >= min_overlap
             && expected < height
             && ((best_overlap == expected && best_score == 0)
-                || overlap_matches_outside_narrow_band(
+                || overlap_matches_except_two_columns(
                     &previous.pixels,
                     current_pixels,
                     width,
@@ -512,7 +512,7 @@ pub fn find_overlap(
     acceptable.then_some(best_overlap)
 }
 
-fn overlap_matches_outside_narrow_band(
+fn overlap_matches_except_two_columns(
     previous: &[u8],
     current: &[u8],
     width: usize,
@@ -523,8 +523,11 @@ fn overlap_matches_outside_narrow_band(
     let strip_width = width.min(800);
     let start_x = (width - strip_width) / 2;
     let sampled_columns = strip_width.div_ceil(2);
-    let mut different_columns = None;
-    for offset in [0, (overlap - strip_height) / 2, overlap - strip_height] {
+    let mut different_columns: [Option<(usize, u8)>; 2] = [None, None];
+    for (region, offset) in [0, (overlap - strip_height) / 2, overlap - strip_height]
+        .into_iter()
+        .enumerate()
+    {
         for y in (0..strip_height).step_by(2) {
             for x in (0..strip_width).step_by(2) {
                 let previous_offset =
@@ -534,17 +537,38 @@ fn overlap_matches_outside_narrow_band(
                     != current[current_offset..current_offset + 3]
                 {
                     let column = x / 2;
-                    let (first, last) = different_columns.unwrap_or((column, column));
-                    let (first, last) = (first.min(column), last.max(column));
-                    if last - first > 1 || (last - first + 1) * 2 > sampled_columns {
-                        return false;
+                    let index = match different_columns
+                        .iter()
+                        .position(|entry| entry.is_some_and(|(existing, _)| existing == column))
+                    {
+                        Some(index) => index,
+                        None => {
+                            let Some(index) = different_columns.iter().position(Option::is_none)
+                            else {
+                                return false;
+                            };
+                            if (index + 1) * 2 > sampled_columns {
+                                return false;
+                            }
+                            index
+                        }
+                    };
+                    if let Some((_, regions)) = different_columns[index].as_mut() {
+                        *regions |= 1 << region;
+                    } else {
+                        different_columns[index] = Some((column, 1 << region));
                     }
-                    different_columns = Some((first, last));
                 }
             }
         }
     }
-    true
+    if overlap < strip_height * 2 || different_columns.iter().all(Option::is_none) {
+        return true;
+    }
+    different_columns
+        .iter()
+        .flatten()
+        .all(|(_, regions)| regions & 0b101 == 0b101)
 }
 
 fn exact_overlap(
@@ -948,7 +972,7 @@ mod tests {
         let make_frame = |main_start: usize,
                           edge_start: usize,
                           edge_x: usize,
-                          second_edge: bool,
+                          second_edge: Option<usize>,
                           footer: usize| {
             let mut pixels = Vec::with_capacity(width * height * 4);
             for y in 0..height {
@@ -956,7 +980,7 @@ mod tests {
                     let edge = edge_start + y;
                     let pixel = if y >= height - footer {
                         [51, 60, 70, 255]
-                    } else if x == edge_x || (second_edge && x == edge_x + 2) {
+                    } else if x == edge_x || second_edge == Some(x) {
                         [
                             edge as u8,
                             (edge >> 8) as u8,
@@ -979,14 +1003,15 @@ mod tests {
         };
         for footer in [0, 16] {
             for (edge_x, second_edge) in [
-                (0, false),
-                (1, false),
-                (100, false),
-                (101, false),
-                (500, false),
-                (501, false),
-                (100, true),
-                (500, true),
+                (0, None),
+                (1, None),
+                (100, None),
+                (101, None),
+                (500, None),
+                (501, None),
+                (100, Some(102)),
+                (500, Some(502)),
+                (100, Some(500)),
             ] {
                 let previous = make_frame(0, 0, edge_x, second_edge, footer);
                 let translated = make_frame(104, 104, edge_x, second_edge, footer);
@@ -1026,6 +1051,119 @@ mod tests {
                 assert_eq!(frames.frames()[0].pixels, previous.pixels);
                 assert_eq!(frames.frames()[0].trim_bottom, 0);
             }
+        }
+    }
+
+    #[test]
+    fn repeated_content_can_hide_two_separated_edges_between_samples() {
+        let (width, height) = (1000, 160);
+        let make_frame = |main_start: usize, edge_start: usize, footer: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                for x in 0..width {
+                    let row = edge_start + y;
+                    let pixel = if y >= height - footer {
+                        [51, 60, 70, 255]
+                    } else if x == 100 || x == 500 {
+                        [row as u8, (row >> 8) as u8, 0, 255]
+                    } else {
+                        [(((main_start + y) % 9) * 28) as u8, 0, 0, 255]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            pixels
+        };
+        for footer in [0, 16] {
+            let previous = make_frame(0, 0, footer);
+            let translated = make_frame(105, 105, footer);
+            assert_eq!(translated, make_frame(96, 105, footer));
+            let mut frames = FrameAccumulator::default();
+            assert_eq!(
+                frames.submit(previous.clone(), width, height, 64),
+                CaptureOutcome::Added
+            );
+            assert_eq!(
+                frames.submit(translated, width, height, 64),
+                CaptureOutcome::NoOverlap
+            );
+            assert_eq!(frames.frames().len(), 1);
+            assert_eq!(frames.frames()[0].pixels, previous);
+        }
+    }
+
+    #[test]
+    fn short_expected_overlap_can_hide_two_moving_edges() {
+        let (width, height) = (1000, 160);
+        let make_frame = |main_start: usize, edge_start: usize, footer: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                for x in 0..width {
+                    let row = edge_start + y;
+                    let pixel = if y >= height - footer {
+                        [51, 60, 70, 255]
+                    } else if x == 100 || x == 500 {
+                        [row as u8, (row >> 8) as u8, 0, 255]
+                    } else {
+                        [(((main_start + y) % 7) * 36) as u8, 0, 0, 255]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            pixels
+        };
+        for footer in [0, 16] {
+            let previous = make_frame(0, 0, footer);
+            let main_shift = height - footer - 15;
+            let edge_shift = height - footer - 8;
+            let translated = make_frame(edge_shift, edge_shift, footer);
+            assert_eq!(translated, make_frame(main_shift, edge_shift, footer));
+            let mut frames = FrameAccumulator::default();
+            assert_eq!(
+                frames.submit(previous.clone(), width, height, footer + 15),
+                CaptureOutcome::Added
+            );
+            assert_eq!(
+                frames.submit(translated, width, height, footer + 15),
+                CaptureOutcome::NoOverlap
+            );
+            assert_eq!(frames.frames().len(), 1);
+            assert_eq!(frames.frames()[0].pixels, previous);
+        }
+    }
+
+    #[test]
+    fn isolated_changes_in_separate_regions_do_not_look_like_moving_columns() {
+        let (width, height) = (1000, 160);
+        let make_frame = |main_start: usize, marker_start: usize, footer: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                for x in 0..width {
+                    let row = marker_start + y;
+                    let pixel = if y >= height - footer {
+                        [51, 60, 70, 255]
+                    } else if (x == 100 && row == 105) || (x == 500 && row == 133) {
+                        [253, 252, 251, 255]
+                    } else {
+                        [(((main_start + y) % 9) * 28) as u8, 0, 0, 255]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            pixels
+        };
+        for footer in [0, 16] {
+            let translated = make_frame(105, 105, footer);
+            assert_eq!(translated, make_frame(96, 105, footer));
+            let mut frames = FrameAccumulator::default();
+            assert_eq!(
+                frames.submit(make_frame(0, 0, footer), width, height, 64),
+                CaptureOutcome::Added
+            );
+            assert_eq!(
+                frames.submit(translated, width, height, 64),
+                CaptureOutcome::Added
+            );
         }
     }
 
