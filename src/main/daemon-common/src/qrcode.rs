@@ -432,16 +432,36 @@ fn local_thresholds(pixels: &[u8], width: usize, height: usize, block: usize) ->
             black_points[block_y * columns + block_x] = value;
         }
     }
+    smooth_black_points(&black_points, columns, rows)
+}
+
+#[cfg(feature = "qrcode-decode")]
+fn smooth_black_points(black_points: &[u8], columns: usize, rows: usize) -> Vec<u8> {
     let mut thresholds = vec![0; columns * rows];
+    let mut column_sums = vec![0u16; columns];
+    for y in 0..5 {
+        for x in 0..columns {
+            column_sums[x] += u16::from(black_points[y * columns + x]);
+        }
+    }
+    let mut previous_y = 2;
     for block_y in 0..rows {
         let center_y = block_y.clamp(2, rows - 3);
+        if center_y > previous_y {
+            for x in 0..columns {
+                column_sums[x] -= u16::from(black_points[(center_y - 3) * columns + x]);
+                column_sums[x] += u16::from(black_points[(center_y + 2) * columns + x]);
+            }
+            previous_y = center_y;
+        }
+        let mut sum: u16 = column_sums[..5].iter().sum();
+        let mut previous_x = 2;
         for block_x in 0..columns {
             let center_x = block_x.clamp(2, columns - 3);
-            let mut sum = 0u16;
-            for y in center_y - 2..=center_y + 2 {
-                for x in center_x - 2..=center_x + 2 {
-                    sum += u16::from(black_points[y * columns + x]);
-                }
+            if center_x > previous_x {
+                sum -= column_sums[center_x - 3];
+                sum += column_sums[center_x + 2];
+                previous_x = center_x;
             }
             thresholds[block_y * columns + block_x] = (sum / 25) as u8;
         }
@@ -527,6 +547,48 @@ mod tests {
         let pixels = vec![0u8; 4];
         assert_eq!(detect_payload_from_greyscale(&pixels, 0, 0), "");
         assert_eq!(detect_payload_from_greyscale(&pixels, 10, 10), "");
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn black_point_smoothing_matches_each_clamped_five_by_five_average() {
+        for columns in 5..=17 {
+            for rows in 5..=17 {
+                for pattern in 0..3 {
+                    let points: Vec<_> = (0..columns * rows)
+                        .map(|index| match pattern {
+                            0 => 255,
+                            1 => (((index * 71) ^ ((index / columns) * 43)) % 256) as u8,
+                            _ => {
+                                if (index % columns + index / columns) % 2 == 0 {
+                                    0
+                                } else {
+                                    255
+                                }
+                            }
+                        })
+                        .collect();
+                    let expected: Vec<_> = (0..rows)
+                        .flat_map(|y| {
+                            let points = &points;
+                            (0..columns).map(move |x| {
+                                let center_x = x.clamp(2, columns - 3);
+                                let center_y = y.clamp(2, rows - 3);
+                                let sum: u16 = points
+                                    .chunks_exact(columns)
+                                    .skip(center_y - 2)
+                                    .take(5)
+                                    .flat_map(|row| &row[center_x - 2..=center_x + 2])
+                                    .map(|&value| u16::from(value))
+                                    .sum();
+                                (sum / 25) as u8
+                            })
+                        })
+                        .collect();
+                    assert_eq!(smooth_black_points(&points, columns, rows), expected);
+                }
+            }
+        }
     }
 
     #[test]
