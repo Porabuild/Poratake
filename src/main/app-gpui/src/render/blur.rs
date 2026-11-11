@@ -39,6 +39,66 @@ pub fn blur(pixmap: &mut Pixmap, sigma: f32) {
     pixmap.data_mut().copy_from_slice(&data);
 }
 
+pub fn blur_alpha(pixmap: &mut Pixmap, sigma: f32) {
+    let radius = box_radius(sigma);
+    if radius == 0 {
+        return;
+    }
+    let width = pixmap.width() as usize;
+    let height = pixmap.height() as usize;
+    let mut data: Vec<u8> = pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|pixel| pixel[3])
+        .collect();
+    let mut scratch = vec![0u8; data.len()];
+    let mut sums = vec![0u32; width];
+    let window = (radius * 2 + 1) as u32;
+    for _ in 0..3 {
+        for y in 0..height {
+            let row = y * width;
+            let mut sum = u32::from(data[row]) * radius as u32;
+            for x in 0..=radius.min(width - 1) {
+                sum += u32::from(data[row + x]);
+            }
+            for x in 0..width {
+                scratch[row + x] = (sum / window) as u8;
+                sum = sum.saturating_sub(u32::from(data[row + x.saturating_sub(radius)]))
+                    + u32::from(data[row + (x + radius + 1).min(width - 1)]);
+            }
+        }
+        for x in 0..width {
+            sums[x] = u32::from(scratch[x]) * radius as u32;
+        }
+        for y in 0..=radius.min(height - 1) {
+            for x in 0..width {
+                sums[x] += u32::from(scratch[y * width + x]);
+            }
+        }
+        for y in 0..height {
+            let row = y * width;
+            let leaving = y.saturating_sub(radius) * width;
+            let entering = (y + radius + 1).min(height - 1) * width;
+            for x in 0..width {
+                data[row + x] = (sums[x] / window) as u8;
+                sums[x] = sums[x].saturating_sub(u32::from(scratch[leaving + x]))
+                    + u32::from(scratch[entering + x]);
+            }
+        }
+    }
+    for (pixel, alpha) in pixmap
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(data)
+    {
+        pixel[3] = alpha;
+    }
+}
+
 fn box_blur_horizontal(
     source: &[u8],
     target: &mut [u8],
@@ -118,6 +178,40 @@ mod tests {
         let before = pixmap.data().to_vec();
         blur(&mut pixmap, 0.0);
         assert_eq!(pixmap.data(), &before[..]);
+    }
+
+    #[test]
+    fn alpha_blur_matches_the_full_color_blur() {
+        for width in [1, 2, 7, 31] {
+            for height in [1, 3, 10, 33] {
+                for sigma in [0.0, 0.5, 2.0, 7.0, 20.0] {
+                    let mut original = Pixmap::new(width, height).unwrap();
+                    for (index, pixel) in original
+                        .data_mut()
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .enumerate()
+                    {
+                        let alpha = (index.wrapping_mul(77).wrapping_add(31) % 256) as u8;
+                        pixel.copy_from_slice(&[alpha / 2, alpha / 3, alpha / 4, alpha]);
+                    }
+                    let mut full = original.clone();
+                    let mut alpha = original;
+                    blur(&mut full, sigma);
+                    blur_alpha(&mut alpha, sigma);
+                    assert!(
+                        full.data()
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .zip(alpha.data().as_chunks::<4>().0.iter())
+                            .all(|(full, alpha)| full[3] == alpha[3]),
+                        "{width}x{height}, sigma {sigma}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

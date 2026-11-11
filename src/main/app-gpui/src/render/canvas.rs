@@ -429,7 +429,7 @@ impl Canvas {
         draw(&mut offscreen);
 
         let mut mask = offscreen.into_pixmap();
-        blur::blur(&mut mask, sigma);
+        blur::blur_alpha(&mut mask, sigma);
         tint(&mut mask, shadow.color);
 
         let paint = PixmapPaint {
