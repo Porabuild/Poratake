@@ -27,6 +27,27 @@ pub enum ScrollSessionSignal {
 }
 
 impl ScrollSessionSignal {
+    pub fn send(
+        self,
+        control: &smol::channel::Sender<Self>,
+        progress: &smol::channel::Sender<Self>,
+    ) {
+        let is_progress = match &self {
+            #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
+            Self::Frame { .. } | Self::AutoScrolling(_) | Self::CursorOutside(_) => true,
+            _ => false,
+        };
+        let sender = if is_progress { progress } else { control };
+        let _ = sender.try_send(self);
+    }
+
+    pub async fn receive(
+        control: &smol::channel::Receiver<Self>,
+        progress: &smol::channel::Receiver<Self>,
+    ) -> Option<Self> {
+        smol::future::or(control.recv(), progress.recv()).await.ok()
+    }
+
     pub fn from_daemon_event(event: &str, payload: &serde_json::Value) -> Option<Self> {
         #[cfg(target_os = "macos")]
         use poratake_daemon_common::contract::{
@@ -128,6 +149,65 @@ pub fn cancel(daemon: &DaemonHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_terminal_events_survive_a_full_progress_queue() {
+        use poratake_daemon_common::contract::{
+            SCROLL_CAPTURE_CANCELLED_EVENT, SCROLL_CAPTURE_DONE_EVENT, SYSTEM_EXIT_EVENT,
+        };
+
+        for event in [
+            SCROLL_CAPTURE_DONE_EVENT,
+            SCROLL_CAPTURE_CANCELLED_EVENT,
+            SYSTEM_EXIT_EVENT,
+        ] {
+            for from_daemon in [false, true] {
+                let (control, control_rx) = smol::channel::unbounded();
+                let (progress, progress_rx) = smol::channel::bounded(16);
+                for index in 0..32 {
+                    let signal = match index % 3 {
+                        0 => ScrollSessionSignal::Frame {
+                            preview: Some(index.to_string()),
+                        },
+                        1 => ScrollSessionSignal::AutoScrolling(true),
+                        _ => ScrollSessionSignal::CursorOutside(true),
+                    };
+                    signal.send(&control, &progress);
+                }
+                for _ in 0..20 {
+                    ScrollSessionSignal::Stopped("stopped").send(&control, &progress);
+                }
+                let terminal =
+                    ScrollSessionSignal::from_daemon_event(event, &serde_json::Value::Null)
+                        .unwrap();
+                if from_daemon {
+                    terminal.send(&control, &progress);
+                } else {
+                    control.try_send(terminal).unwrap();
+                }
+
+                assert_eq!(progress_rx.len(), 16);
+                for _ in 0..20 {
+                    assert!(matches!(
+                        smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
+                        Some(ScrollSessionSignal::Stopped("stopped"))
+                    ));
+                }
+                let received =
+                    smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx));
+                if event == SCROLL_CAPTURE_DONE_EVENT {
+                    assert!(matches!(received, Some(ScrollSessionSignal::Finish)));
+                } else {
+                    assert!(matches!(received, Some(ScrollSessionSignal::Cancel)));
+                }
+                assert_eq!(progress_rx.len(), 16);
+                assert!(matches!(
+                    smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
+                    Some(ScrollSessionSignal::Frame { preview: Some(value) }) if value == "0"
+                ));
+            }
+        }
+    }
 
     #[test]
     fn interruption_events_distinguish_errors_from_normal_stops() {

@@ -170,7 +170,18 @@ pub fn run() {
                 }
                 if matches!(
                     fixture["scroll"].as_str(),
-                    Some("early-cancel" | "cancel-held")
+                    Some("burst-finish" | "burst-cancel")
+                ) {
+                    for _ in 0..20 {
+                        protocol::send_event(
+                            poratake_daemon_common::contract::SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
+                            Some(json!({ "reason": "capture-error", "frameCount": 2 })),
+                        );
+                    }
+                }
+                if matches!(
+                    fixture["scroll"].as_str(),
+                    Some("early-cancel" | "cancel-held" | "burst-cancel")
                 ) {
                     scrolling = false;
                     protocol::send_event(

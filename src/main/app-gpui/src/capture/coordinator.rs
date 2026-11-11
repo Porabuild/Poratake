@@ -346,13 +346,14 @@ impl Coordinator {
             native_controls: Some(!cfg!(target_os = "macos")),
             boundary_only: cfg!(target_os = "macos").then_some(true),
         };
-        let (tx, rx) = smol::channel::bounded::<crate::capture::scroll::ScrollSessionSignal>(16);
+        let (tx, rx) = smol::channel::unbounded::<crate::capture::scroll::ScrollSessionSignal>();
+        let (progress_tx, progress_rx) = smol::channel::bounded(16);
         let daemon = service.daemon.clone();
         let event_tx = tx.clone();
         let subscription = daemon.subscribe(std::sync::Arc::new(move |event: &str, payload| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
             if let Some(signal) = Signal::from_daemon_event(event, payload) {
-                let _ = event_tx.try_send(signal);
+                signal.send(&event_tx, &progress_tx);
             }
         }));
         if !crate::capture::scroll::start(&service.daemon, &request) {
@@ -377,7 +378,10 @@ impl Coordinator {
         cx.spawn(async move |_entity, cx| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
             let finished = loop {
-                match rx.recv().await.unwrap_or(Signal::Cancel) {
+                match Signal::receive(&rx, &progress_rx)
+                    .await
+                    .unwrap_or(Signal::Cancel)
+                {
                     Signal::Finish => break true,
                     Signal::Cancel => break false,
                     Signal::Stopped(message) => {

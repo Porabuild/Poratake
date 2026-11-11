@@ -65,6 +65,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         "retry",
         "collision",
         "interrupted",
+        "burst-finish",
+        "burst-cancel",
     ] {
         if name == "finish-long-held"
             && std::env::var("PORATAKE_PARITY_THEME").as_deref() != Ok("dark")
@@ -165,6 +167,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 | "retry"
                 | "collision"
                 | "interrupted"
+                | "burst-finish"
         );
         if saved {
             if name == "collision" {
@@ -176,7 +179,11 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 cx,
                 if matches!(
                     name,
-                    "finish-held" | "finish-long-held" | "collision" | "interrupted"
+                    "finish-held"
+                        | "finish-long-held"
+                        | "collision"
+                        | "interrupted"
+                        | "burst-finish"
                 ) {
                     scratch
                 } else {
@@ -208,7 +215,16 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             "finish-failed" | "empty" => Some("The scroll capture produced no image"),
             _ => None,
         };
-        let expected = if name == "interrupted" {
+        let expected = if matches!(name, "burst-finish" | "burst-cancel") {
+            vec![
+                (
+                    "Scroll Capture Stopped".to_string(),
+                    "A frame could not be captured. You can save the captured portion.".to_string(),
+                    false,
+                );
+                20
+            ]
+        } else if name == "interrupted" {
             [
                 "The latest frame could not be aligned. You can save the captured portion.",
                 "A frame could not be captured. You can save the captured portion.",
@@ -248,11 +264,15 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                         | "retry"
                         | "collision"
                         | "interrupted"
+                        | "burst-finish"
                 )),
             ),
             (
                 "cancel",
-                usize::from(matches!(name, "early-cancel" | "cancel-held")),
+                usize::from(matches!(
+                    name,
+                    "early-cancel" | "cancel-held" | "burst-cancel"
+                )),
             ),
         ] {
             assert_eq!(

@@ -639,6 +639,11 @@ Bugs fixed in this pass:
 - Scroll capture subscribed after the start RPC, losing early completion or
   cancellation events and leaving the session active. Subscription now precedes
   start; both early events and a successful retry are exercised.
+- A full GPUI scroll progress queue could discard Done or Cancel. Terminal and
+  interruption signals now use a separate queue while preview updates stay
+  bounded. A GPU-free test fills the progress queue, sends 20 warnings, and
+  verifies both terminal actions. Two burst-event workflow fixtures still need
+  a hosted visual run.
 - Scroll capture cleared its active state before finish or cancellation completed,
   allowing a second session to start while the daemon was still processing the
   first. Held-response fixtures now verify the state through both RPCs.
