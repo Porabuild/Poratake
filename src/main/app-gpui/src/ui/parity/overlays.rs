@@ -67,6 +67,82 @@ impl Render for Scene {
     }
 }
 
+fn capture_all_in_one_tooltips(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    output: &Path,
+    name: &str,
+) {
+    let (viewport, scale) = cx
+        .update_window(window, |_, window, _| {
+            (window.viewport_size(), window.scale_factor())
+        })
+        .unwrap();
+    let ocr = crate::system::capabilities::is_supported(crate::system::capabilities::Feature::Ocr);
+    let color = crate::system::capabilities::is_supported(
+        crate::system::capabilities::Feature::ColorPicker,
+    );
+    let mut actions = Vec::new();
+    if ocr {
+        actions.push((3, "ocr"));
+    }
+    if color {
+        actions.push((3 + usize::from(ocr), "color"));
+    }
+    actions.push((4 + usize::from(ocr) + usize::from(color), "close"));
+    for (index, label) in actions {
+        let controls =
+            super::GEOMETRY.with_borrow(|geometry| geometry["all-in-one-controls"].clone());
+        assert_eq!(controls.len(), 5 + usize::from(ocr) + usize::from(color));
+        let action = controls[index];
+        hover(
+            cx,
+            window,
+            f32::from(action.center().x),
+            f32::from(action.center().y),
+        );
+        cx.advance_clock(std::time::Duration::from_millis(600));
+        settle(cx, window);
+        capture(cx, window, output, &format!("{name}-{label}"));
+        cx.update_window(window, |_, window, _| {
+            let tips: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    let bounds = quad.bounds;
+                    (31. ..=35.).contains(&(bounds.size.height.0 / scale))
+                        && bounds.size.width.0 / scale > 36.
+                        && bounds.left().0 <= f32::from(action.center().x) * scale
+                        && bounds.right().0 >= f32::from(action.center().x) * scale
+                })
+                .collect();
+            assert_eq!(
+                tips.len(),
+                1,
+                "{name}/{label}: expected one tooltip: {tips:?}"
+            );
+            let tip = tips[0];
+            let bounds = tip.bounds;
+            let mask = tip.content_mask.bounds;
+            assert!(
+                bounds.left().0 >= 0.
+                    && bounds.right().0 <= f32::from(viewport.width) * scale
+                    && bounds.top().0 >= f32::from(action.bottom()) * scale - 0.5
+                    && bounds.bottom().0 <= f32::from(viewport.height) * scale
+                    && mask.left().0 <= bounds.left().0
+                    && mask.right().0 >= bounds.right().0
+                    && mask.top().0 <= bounds.top().0
+                    && mask.bottom().0 >= bounds.bottom().0,
+                "{name}/{label}: tooltip must fit below its control: {bounds:?}, mask {mask:?}"
+            );
+        })
+        .unwrap();
+        hover(cx, window, 140., 180.);
+        cx.advance_clock(std::time::Duration::from_millis(600));
+        settle(cx, window);
+    }
+}
+
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale: f32) {
     let mut cases = vec![
         (
@@ -197,6 +273,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale:
         settle(cx, window);
         hover(cx, window, 140., 180.);
         capture(cx, window, output, &format!("overlay-{name}-default"));
+        if name == "all-in-one-screenshot-area" {
+            capture_all_in_one_tooltips(cx, window, output, "overlay-all-in-one-tooltip");
+        }
         if target == Target::Area {
             event(
                 cx,
@@ -289,6 +368,40 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale:
             .unwrap();
         cx.run_until_parked();
     }
+
+    let narrow = cx
+        .open_window(size(px(400.), px(300.)), |window, cx| {
+            window.set_scale_factor(scale);
+            let overlay = cx.new(|cx| {
+                AreaOverlay::with_focus(
+                    Bounds::new(point(px(0.), px(0.)), size(px(400.), px(300.))),
+                    scale,
+                    crate::state::state(cx),
+                    CaptureIntent::Screenshot,
+                    cx.focus_handle(),
+                )
+                .with_all_in_one(Choices {
+                    mode: Mode::Screenshot,
+                    target: Target::Area,
+                })
+            });
+            cx.new(|_| Scene {
+                overlay,
+                window_hovered: false,
+            })
+        })
+        .unwrap();
+    let narrow_window = narrow.into();
+    settle(cx, narrow_window);
+    capture_all_in_one_tooltips(
+        cx,
+        narrow_window,
+        output,
+        "overlay-all-in-one-narrow-tooltip",
+    );
+    cx.update_window(narrow_window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
 
     let color_scene = cx
         .open_window(size(px(width), px(738.)), |window, cx| {

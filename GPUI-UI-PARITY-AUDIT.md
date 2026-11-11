@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `80a5700` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `090954e` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -47,11 +47,14 @@ input and frame scheduling use GPUI's headless harness. This is not installed-ap
 or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
-738 logical pixels high. Each case captures 152 states; the two 1280px, 100% cases
+738 logical pixels high. Each case captures 158 states; the two 1280px, 100% cases
 also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states.
-The eight 950px cases each add 18 narrow-history states, for 2,632 images per
-complete renderer profile. The local exact-baseline matrix at `80a5700` passed
-all 16 cases and 2,632 images. After the color-capture failure fix, the two
+The eight 950px cases each add 18 narrow-history states, for 2,728 images per
+complete renderer profile. The 96 new NVIDIA all-in-one tooltip images were
+reviewed; all 2,632 existing images were unchanged. A normal rerun passed all
+16 cases and 2,728 images; the new states need hosted-renderer review. The local
+exact-baseline matrix at `80a5700` passed all 16 cases and 2,632 images. After
+the color-capture failure fix, the two
 1280px/100% workflow cases passed again in light and dark themes. The 96 new
 NVIDIA color-picker images were reviewed; all 2,536 existing images were
 unchanged. The new states need hosted-renderer
@@ -74,7 +77,7 @@ for that surface. Recording controls use their measured content width.
 | Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                                           |
 | Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                                    |
 | Color picker        | Center, four display corners and 400×300 narrow window; exact sampled loupe pixels and pointer clearance                                    | Physical pointer transitions and native clipboard delivery remain unverified                              |
-| All-in-one          | Screenshot/record area, window and display pickers, plus OCR area; frontmost and clipped window highlights, screen hover and pointer leave  | Window ownership is simulated; physical pointer transitions remain unverified                             |
+| All-in-one          | Screenshot/record area, window and display pickers; OCR area, window highlights, pointer leave and normal/narrow tooltips                   | Window ownership is simulated; physical pointer transitions remain unverified                             |
 | Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks              |
 | Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                                     |
 | Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                  | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                              |
@@ -129,6 +132,10 @@ current, first and last options, independently of baselines, and preserves each
 as `submenu-text-focus-*.png`. The original virtual viewport failed with zero
 focus pixels on the selected option's left edge. The shared Select fix passed
 that probe while preserving its 24px rows and 64×276px light-theme panel.
+All-in-one Capture text, Pick color and Close tooltips must fit below their
+controls, within the viewport and their clipping masks, in both normal and
+400×300 overlays. The original top placement started 5px above the display.
+An additional 175% geometry probe passed in both themes; it has no image baseline.
 Capture-preview icon tooltips are checked inside all four corners. Polish preset
 names wrap inside the card, with very long names visually ellipsized while the
 full tooltip name remains available to accessibility tools. The fixture checks
@@ -236,6 +243,11 @@ also passed all required jobs and the 2,152-image hosted comparison. The next
 hosted run captured 80 new tooltip images; they were reviewed and added, while
 the previous 2,152 images remained byte-identical. Its Linux X11 test failed on
 daemon exit once and passed on retry; the cause of the first exit is unverified.
+The [run at `090954e`](https://github.com/Porabuild/Poratake/actions/runs/42968353563)
+also failed its scaled GTK X11 test after the print-dialog workflow completed,
+while waiting for daemon exit. Its exit status was not reported; the test now
+prints it if the failure recurs. An isolated GTK print-dialog probe exited cleanly
+300 times, but did not exercise the daemon and did not establish the cause.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
@@ -639,6 +651,9 @@ Bugs fixed in this pass:
   It now exits through the normal picker shutdown path. The isolated daemon
   fixture writes a partial file and fails the request; the test verifies the
   stopped-state notification, restored overlay pixels, error message and cleanup.
+- All-in-one toolbar tooltips opened above the top edge and clipped their labels.
+  They now open below their controls, matching Electron. Normal and 400×300
+  overlays check all three tooltip bounds and clipping masks at each matrix scale.
 - A history grid at simulated 175% and 456 physical pixels wrapped its second
   card onto a new row. The cards now fit the snapped available width. The unit
   test sweeps every physical width corresponding to 200–400 logical pixels at

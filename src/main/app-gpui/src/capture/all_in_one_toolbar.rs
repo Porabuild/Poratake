@@ -64,6 +64,11 @@ pub fn render(
             this.set_all_in_one_mode(Mode::parse(key), cx);
         }));
 
+    let surface = toolbar::surface(theme);
+    #[cfg(feature = "parity")]
+    let surface = surface.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("all-in-one-controls", bounds);
+    });
     let bar = div()
         .absolute()
         .top(px(chrome::overlay_toolbar_top()))
@@ -72,7 +77,7 @@ pub fn render(
         .flex()
         .justify_center()
         .child(
-            toolbar::surface(theme)
+            surface
                 .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
                     cx.stop_propagation();
                 })
@@ -157,8 +162,9 @@ fn toolbar_button(
     on_click: impl Fn(&mut AreaOverlay, &mut Window, &mut Context<AreaOverlay>) + 'static,
     cx: &mut Context<AreaOverlay>,
 ) -> AnyElement {
-    toolbar::tooltip_button(
+    toolbar::tooltip_button_at(
         toolbar::selected_icon(id, icon, selected, theme, tooltip),
+        herogpui::components::TooltipPlacement::Bottom,
         tooltip,
         cx,
         on_click,
