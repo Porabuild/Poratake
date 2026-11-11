@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `bca1fa84` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `bbf5e4e9` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -1074,7 +1074,7 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                                                |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                          |
 | P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. Sparse text and stationary animation are tested. Some simultaneous size/color changes stop early. Verify real surfaces, weak overlaps and fixed headers; macOS has a separate, unfixed stitcher.                                                                                                                                                                                                                                    |
-| P1       | Scroll stitching with repeated content                   | A synthetic 1000×160 pair with period-8 center rows and distinct side content selects the expected 64px overlap when the actual overlap is 56px, shortening the stitch by eight rows. The exact-match correction leaves this ambiguous sampled tie unchanged. Verify full-width evidence, repeated patterns, animations, short overlaps and real pages before changing this choice.                                                                                                                                                                                 |
+| P1       | Scroll stitching with repeated content                   | Windows/Linux now stop and retain prior frames when an exact expected strip conflicts with a different alignment supported by full-row evidence, including the tested fixed-footer and duplicate-hash cases. A moving edge inside the sampled strip can still bias the match and append an ambiguous frame. Verify broader patterns, animations and real pages; macOS uses a separate stitcher.                                                                                                                                                                     |
 | P1       | Unresponsive scroll stitch                               | Finish now waits for the daemon response or exit, so a daemon that stays alive without responding also leaves cancellation pending. Add a daemon-owned stop-and-join operation and verify a stalled stitch can be canceled without affecting other daemon work or losing completed output.                                                                                                                                                                                                                                                                          |
 | P1       | macOS scroll preview with variable overlap               | The preview uses the expected scroll step while final stitching measures each overlap. Compare previews and saved pixels when actual movement differs, without blocking the capture UI; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                             |
 | P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                             |
@@ -1110,8 +1110,15 @@ duplicate check and stitcher.
 In a synthetic two-frame scroll, period-8 main content shifted by 96px with an
 independently moving edge produces the same pixels as a complete 104px shift.
 Both have a unique 56px full-row match, although the first main-content overlap is
-64px. A regression records that ambiguity; resolving the wrong-overlap case needs
-evidence beyond those two frames.
+64px. When the expected sampled strip matches exactly and conflicts with a
+different alignment supported by full-row evidence, Windows and Linux now stop
+and retain the previous frames. Tests
+cover both sampled and unsampled edge pixels, with and without a fixed footer.
+The 1,236-case footer matrix still had no incorrect accepted output and 291 early
+stops. A synthetic 4K exact-overlap probe had median times of 3.42 ms before and
+4.63 ms after over 30 samples on this machine. If the moving edge influences the
+sampled strip, the same ambiguity can still be accepted; resolving it needs more
+evidence than these two frames provide.
 
 Windows and Linux daemons report overlap, capture and input errors when automatic
 scrolling stops. GPUI and Electron now notify the user while retaining the previous
