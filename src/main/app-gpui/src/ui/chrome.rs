@@ -413,22 +413,20 @@ pub fn history_popover_origin(
     screen_width: f32,
     screen_height: f32,
 ) -> (f32, f32) {
+    let popover_width = HISTORY_POPOVER_WIDTH.min(screen_width);
+    let popover_height = HISTORY_POPOVER_HEIGHT.min(screen_height);
     let Some((tray_x, tray_y, tray_width, tray_height)) = tray else {
         return (
-            ((screen_width - HISTORY_POPOVER_WIDTH) / 2.0)
-                .round()
-                .max(0.0),
-            ((screen_height - HISTORY_POPOVER_HEIGHT) / 2.0)
-                .round()
-                .max(0.0),
+            ((screen_width - popover_width) / 2.0).round().max(0.0),
+            ((screen_height - popover_height) / 2.0).round().max(0.0),
         );
     };
-    let max_x = (screen_width - HISTORY_POPOVER_WIDTH - HISTORY_POPOVER_GAP).max(0.0);
-    let x = (tray_x + tray_width / 2.0 - HISTORY_POPOVER_WIDTH / 2.0)
+    let max_x = (screen_width - popover_width - HISTORY_POPOVER_GAP).max(0.0);
+    let x = (tray_x + tray_width / 2.0 - popover_width / 2.0)
         .round()
         .clamp(HISTORY_POPOVER_GAP.min(max_x), max_x);
     let y = tray_y + tray_height + HISTORY_POPOVER_GAP;
-    let max_y = screen_height - HISTORY_POPOVER_HEIGHT - HISTORY_POPOVER_GAP;
+    let max_y = screen_height - popover_height - HISTORY_POPOVER_GAP;
     (x, y.clamp(0.0, max_y.max(0.0)))
 }
 

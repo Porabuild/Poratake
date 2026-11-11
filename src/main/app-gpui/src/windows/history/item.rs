@@ -17,14 +17,6 @@ use crate::windows::history::model::format_relative_time;
 use crate::windows::history::HistoryWindow;
 use herogpui::components::{Button, Variant};
 
-const POPOVER_WIDTH: f32 = 400.0;
-const CONTENT_PADDING: f32 = 12.0;
-const GRID_GAP: f32 = 12.0;
-/// `grid grid-cols-2 gap-3` inside `p-3`. The keyboard-selection ring is
-/// `ring-2 ring-offset-1`, i.e. a box shadow, so it takes no layout room and
-/// the columns are exactly half the padded width.
-pub const GRID_CARD_WIDTH: f32 = (POPOVER_WIDTH - CONTENT_PADDING * 2.0 - GRID_GAP) / 2.0;
-const GRID_THUMB_HEIGHT: f32 = GRID_CARD_WIDTH * 9.0 / 16.0;
 const LIST_THUMB_WIDTH: f32 = 80.0;
 const LIST_THUMB_HEIGHT: f32 = 48.0;
 /// `h-4 w-4` in the grid card, `h-3 w-3` in the list row.
@@ -169,18 +161,19 @@ fn overlay_action(
         .into_any_element()
 }
 
-pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement {
+pub fn grid_card(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) -> AnyElement {
     let theme = view.theme;
     let index = view.index;
     let id = view.item.id.clone();
     let show_actions = view.hovered || view.selected;
 
+    let height = width * 9.0 / 16.0;
     let mut media = div()
         .relative()
-        .w(px(GRID_CARD_WIDTH))
-        .h(px(GRID_THUMB_HEIGHT))
+        .w(px(width))
+        .h(px(height))
         .overflow_hidden()
-        .child(view.thumbnail_element(GRID_CARD_WIDTH, GRID_THUMB_HEIGHT));
+        .child(view.thumbnail_element(width, height));
 
     if view.is_video() {
         media = media.child(
@@ -231,11 +224,15 @@ pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement
 
     let card = div()
         .id(view.element_id("history-card"))
+        .debug_selector({
+            let id = id.clone();
+            move || format!("history-card-{id}")
+        })
         .relative()
         .when(view.selected, |el| {
             el.shadow(selection_shadow(theme.primary))
         })
-        .w(px(GRID_CARD_WIDTH))
+        .w(px(width))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -352,6 +349,10 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
 
     let mut row = div()
         .id(view.element_id("history-row"))
+        .debug_selector({
+            let id = id.clone();
+            move || format!("history-row-{id}")
+        })
         .when(view.selected, |el| {
             el.shadow(selection_shadow(theme.primary))
         })

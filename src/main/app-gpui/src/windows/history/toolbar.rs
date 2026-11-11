@@ -15,6 +15,7 @@ const HEADER_ACTION_PAD_X: f32 = 8.0;
 
 pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow>) -> AnyElement {
     let mut actions = div()
+        .debug_selector(|| "history-header-actions".to_string())
         .flex()
         .items_center()
         .gap(px(4.0))
@@ -48,6 +49,7 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
 
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
         .px(px(chrome::HISTORY_HEADER_PX))
@@ -56,6 +58,7 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
         .border_color(theme.border)
         .child(
             div()
+                .debug_selector(|| "history-title".to_string())
                 .text_size(px(chrome::HISTORY_TITLE_SIZE))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(theme.foreground)
@@ -72,7 +75,13 @@ pub fn toolbar(
     theme: &ThemeVars,
     cx: &mut Context<HistoryWindow>,
 ) -> AnyElement {
-    let mut filters = div().flex().items_center().gap(px(2.0));
+    let mut filters = div()
+        .debug_selector(|| "history-filters".to_string())
+        .flex()
+        .flex_wrap()
+        .max_w_full()
+        .items_center()
+        .gap(px(2.0));
 
     for option in HistoryFilter::ALL {
         let foreground = theme.foreground;
@@ -102,13 +111,18 @@ pub fn toolbar(
                 )
             });
         }
-        filters = filters.child(button);
+        filters = filters.child(
+            div()
+                .debug_selector(move || format!("history-filter-{}", option.as_str()))
+                .child(button),
+        );
     }
 
     let sort_tooltip = order.tooltip();
     let layout_tooltip = layout.toggle_tooltip();
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
         .gap(px(chrome::TITLE_BAR_GAP))
@@ -117,6 +131,7 @@ pub fn toolbar(
         .child(filters)
         .child(
             div()
+                .debug_selector(|| "history-toolbar-actions".to_string())
                 .flex()
                 .items_center()
                 .gap(px(2.0))
