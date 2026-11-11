@@ -6,7 +6,9 @@ use anyhow::Context as _;
 use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
 use poratake_daemon_common::contract::{ScrollCaptureStartRequest, ScrollSpeed};
+use std::sync::Arc;
 
+use crate::capture::desktop_icons::CaptureHide;
 use crate::capture::intent::CaptureIntent;
 use crate::capture::{
     prepare_screenshot, publish_screenshot, uuid_simple, CachedCaptureReservation, CaptureService,
@@ -39,11 +41,12 @@ impl Coordinator {
         &mut self,
         capture: DisplayCapture,
         intent: CaptureIntent,
+        hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
         let freeze = self.service.config.get().screenshot.freeze_screen;
         let reservation = freeze.then(|| self.service.reserve_cached_capture());
-        self.capture_area_reserved(capture, intent, reservation, None, cx);
+        self.capture_area_reserved(capture, intent, reservation, None, hide, cx);
     }
 
     pub(crate) fn capture_area_reserved(
@@ -52,19 +55,20 @@ impl Coordinator {
         intent: CaptureIntent,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
+        hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
         if intent == CaptureIntent::EditorAttach {
-            return self.attach_area(capture, reservation, release_after, cx);
+            return self.attach_area(capture, reservation, release_after, hide, cx);
         }
         if !intent.saves_to_library() {
-            return self.analyze_area(capture, intent, reservation, release_after, cx);
+            return self.analyze_area(capture, intent, reservation, release_after, hide, cx);
         }
         if intent == CaptureIntent::Timer {
-            return self.run_countdown(capture, cx);
+            return self.run_countdown(capture, hide, cx);
         }
         if intent == CaptureIntent::ScrollCapture {
-            return self.run_scroll_capture(capture, cx);
+            return self.run_scroll_capture(capture, hide, cx);
         }
         let service = self.service.clone();
         let path = service.generate_screenshot_path();
@@ -87,9 +91,13 @@ impl Coordinator {
             result
         });
 
-        cx.spawn(async move |_entity, cx| match task.await {
-            Ok(path) => finalize_capture(path, false, cx).await,
-            Err(error) => show_capture_error(cx, "Capture Failed", &error.to_string()),
+        cx.spawn(async move |_entity, cx| {
+            let result = task.await;
+            drop(hide);
+            match result {
+                Ok(path) => finalize_capture(path, false, cx).await,
+                Err(error) => show_capture_error(cx, "Capture Failed", &error.to_string()),
+            }
         })
         .detach();
     }
@@ -100,7 +108,6 @@ impl Coordinator {
 async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui::AsyncApp) {
     let (history_enabled, max_items, play_sound, screenshot) = cx.update(|cx| {
         let service = &cx.global::<crate::state::AppState>().service;
-        crate::capture::desktop_icons::restore_after_capture(&service.daemon);
         let config = service.config.get();
         (
             config.history.enabled,
@@ -160,12 +167,7 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
 
 fn show_capture_error(cx: &mut gpui::AsyncApp, title: &'static str, body: &str) {
     let body = body.to_string();
-    cx.update(|cx| {
-        crate::capture::desktop_icons::restore_after_capture(
-            &cx.global::<crate::state::AppState>().service.daemon,
-        );
-        crate::windows::toast::Toast::show(cx, title, body)
-    });
+    cx.update(|cx| crate::windows::toast::Toast::show(cx, title, body));
 }
 
 fn restore_editor_window(window: AnyWindowHandle, cx: &mut gpui::App) {
@@ -203,7 +205,6 @@ impl Coordinator {
         let Some(pending) = self.pending_attach.take() else {
             return;
         };
-        crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
         restore_editor_window(pending.window, cx);
     }
 
@@ -212,6 +213,7 @@ impl Coordinator {
         capture: DisplayCapture,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
+        hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
         let Some(pending) = self.pending_attach.take() else {
@@ -219,7 +221,6 @@ impl Coordinator {
             if let Some(generation) = release_after {
                 crate::capture::overlay::release_frozen_screen(generation, cx);
             }
-            crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
             return;
         };
         let service = self.service.clone();
@@ -239,10 +240,8 @@ impl Coordinator {
             let captured = match task.await {
                 Ok(path) => path,
                 Err(error) => {
+                    drop(hide);
                     cx.update(|cx| {
-                        crate::capture::desktop_icons::restore_after_capture(
-                            &cx.global::<crate::state::AppState>().service.daemon,
-                        );
                         restore_editor_window(pending.window, cx);
                         crate::windows::toast::Toast::show(cx, "Capture Failed", error.to_string());
                     });
@@ -262,10 +261,8 @@ impl Coordinator {
                 }
             });
             let Some((bytes, (width, height))) = attached.await else {
+                drop(hide);
                 cx.update(|cx| {
-                    crate::capture::desktop_icons::restore_after_capture(
-                        &cx.global::<crate::state::AppState>().service.daemon,
-                    );
                     restore_editor_window(pending.window, cx);
                     crate::windows::toast::Toast::show(
                         cx,
@@ -280,10 +277,8 @@ impl Coordinator {
                 "data:image/png;base64,{}",
                 base64::engine::general_purpose::STANDARD.encode(bytes)
             );
+            drop(hide);
             cx.update(|cx| {
-                crate::capture::desktop_icons::restore_after_capture(
-                    &cx.global::<crate::state::AppState>().service.daemon,
-                );
                 restore_editor_window(pending.window, cx);
                 let _ = pending.editor.update(cx, |editor, cx| {
                     editor.push_image_layer(image_url, width, height, pending.edge, cx);
@@ -334,7 +329,12 @@ impl Coordinator {
     /// daemon draws only the click-through area frame while the GPUI preview
     /// panel and control bar report progress; elsewhere the daemon owns the
     /// whole control panel and the app only finalizes the stitched image.
-    fn run_scroll_capture(&mut self, capture: DisplayCapture, cx: &mut Context<Self>) {
+    fn run_scroll_capture(
+        &mut self,
+        capture: DisplayCapture,
+        hide: Option<Arc<CaptureHide>>,
+        cx: &mut Context<Self>,
+    ) {
         let service = self.service.clone();
         let config = service.config.get().scroll_capture;
         #[cfg(target_os = "macos")]
@@ -357,7 +357,7 @@ impl Coordinator {
             }
         }));
         if !crate::capture::scroll::start(&service.daemon, &request) {
-            crate::capture::desktop_icons::restore_after_capture(&service.daemon);
+            drop(hide);
             crate::windows::toast::Toast::show(
                 cx,
                 "Scroll Capture Failed",
@@ -401,7 +401,7 @@ impl Coordinator {
             drop(subscription);
             if !finished {
                 crate::capture::scroll::cancel(&service.daemon);
-                crate::capture::desktop_icons::restore_after_capture(&service.daemon);
+                drop(hide);
                 #[cfg(target_os = "macos")]
                 cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
                 return;
@@ -433,6 +433,7 @@ impl Coordinator {
                         .with_context(|| format!("Capture data is available at {}", temporary.display()))
                 })
                 .await;
+            drop(hide);
             match stitched {
                 Ok(path) => finalize_capture(path, true, cx).await,
                 Err(error) => show_capture_error(cx, "Scroll Capture Failed", &error.to_string()),
@@ -443,9 +444,13 @@ impl Coordinator {
 
     /// Shows the daemon countdown above the selection, then captures it from
     /// live pixels when the countdown finishes (`timer-capture.ts` captures
-    fn run_countdown(&mut self, capture: DisplayCapture, cx: &mut Context<Self>) {
+    fn run_countdown(
+        &mut self,
+        capture: DisplayCapture,
+        hide: Option<Arc<CaptureHide>>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = crate::capture::timer::begin() else {
-            crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
             return;
         };
         let daemon = self.service.daemon.clone();
@@ -474,7 +479,7 @@ impl Coordinator {
             drop(subscription);
             drop(session);
             crate::capture::overlay::close_all(cx);
-            crate::capture::desktop_icons::restore_after_capture(&self.service.daemon);
+            drop(hide);
             crate::windows::toast::Toast::show(
                 cx,
                 "Timer Capture Failed",
@@ -501,11 +506,6 @@ impl Coordinator {
                 .detach();
             cx.update(crate::capture::overlay::close_all);
             if !completed {
-                cx.update(|cx| {
-                    crate::capture::desktop_icons::restore_after_capture(
-                        &cx.global::<crate::state::AppState>().service.daemon,
-                    );
-                });
                 return;
             }
             cx.update(|cx| {
@@ -516,6 +516,7 @@ impl Coordinator {
                             CaptureIntent::Screenshot,
                             None,
                             None,
+                            hide,
                             cx,
                         );
                     });
@@ -531,6 +532,7 @@ impl Coordinator {
         intent: CaptureIntent,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
+        hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
         let service = self.service.clone();
@@ -551,6 +553,7 @@ impl Coordinator {
             let captured = match task.await {
                 Ok(path) => path,
                 Err(error) => {
+                    drop(hide);
                     eprintln!("[capture] analysis capture failed: {error}");
                     let title = match intent {
                         CaptureIntent::Ocr => "OCR Failed",
@@ -567,7 +570,7 @@ impl Coordinator {
             let Some(daemon) = daemon else {
                 return;
             };
-            crate::capture::desktop_icons::restore_after_capture(&daemon);
+            drop(hide);
 
             let analysis = cx.background_executor().spawn({
                 let captured = captured.clone();

@@ -44,6 +44,7 @@ pub struct OverlayLaunch {
 #[derive(Default)]
 struct OverlaySession {
     handles: Vec<TrackedOverlay>,
+    capture_hide: Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>>,
     #[cfg(windows)]
     pooled: Vec<PooledOverlay>,
     outlined_window_id: Option<i64>,
@@ -71,7 +72,43 @@ fn session(cx: &mut App) -> &mut OverlaySession {
     cx.default_global::<OverlaySession>()
 }
 
-#[cfg(feature = "parity")]
+pub(crate) fn set_capture_hide(
+    hide: Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>>,
+    cx: &mut App,
+) {
+    session(cx).capture_hide = hide;
+}
+
+fn take_capture_hide(
+    cx: &mut App,
+) -> Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>> {
+    session(cx).capture_hide.take()
+}
+
+pub(crate) fn capture_hide(
+    cx: &mut App,
+) -> Option<std::sync::Weak<crate::capture::desktop_icons::CaptureHide>> {
+    session(cx)
+        .capture_hide
+        .as_ref()
+        .map(std::sync::Arc::downgrade)
+}
+
+pub(crate) fn release_capture_hide(
+    expected: Option<std::sync::Weak<crate::capture::desktop_icons::CaptureHide>>,
+    cx: &mut App,
+) {
+    let Some(expected) = expected else { return };
+    if session(cx)
+        .capture_hide
+        .as_ref()
+        .is_some_and(|current| expected.ptr_eq(&std::sync::Arc::downgrade(current)))
+    {
+        session(cx).capture_hide.take();
+    }
+}
+
+#[cfg(any(all(test, windows), feature = "parity"))]
 pub(crate) fn parity_is_active(cx: &mut App) -> bool {
     !session(cx).handles.is_empty()
 }
@@ -217,6 +254,7 @@ pub fn replace_all(cx: &mut App) -> Option<u64> {
 
 fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
     let handles = std::mem::take(&mut session(cx).handles);
+    take_capture_hide(cx);
     let generation = handles.iter().map(|tracked| tracked.generation).max();
     if deferred {
         App::defer(cx, move |cx| dispose_overlays(handles, cx));
@@ -1480,12 +1518,14 @@ impl AreaOverlay {
             return;
         }
 
-        if hides_icons_at_confirm(intent) {
+        let hide = if hides_icons_at_confirm(intent) {
             crate::capture::desktop_icons::hide_for_capture(
                 &self.service.daemon,
                 &self.service.config,
-            );
-        }
+            )
+        } else {
+            take_capture_hide(cx)
+        };
 
         let coordinator = crate::state::coordinator(cx);
         let display_origin = (
@@ -1529,6 +1569,7 @@ impl AreaOverlay {
                     intent,
                     reservation,
                     release_after,
+                    hide,
                     cx,
                 );
             });
@@ -1931,9 +1972,6 @@ impl AreaOverlay {
                     this.stop_color_picker(cx);
                     return;
                 }
-                crate::capture::desktop_icons::restore_after_capture(
-                    &crate::state::state(cx).daemon,
-                );
                 if this.intent == crate::capture::intent::CaptureIntent::Recording {
                     crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
                 }
@@ -2217,12 +2255,14 @@ impl AreaOverlay {
             cx.notify();
             return;
         }
-        if hides_icons_at_confirm(intent) {
+        let hide = if hides_icons_at_confirm(intent) {
             crate::capture::desktop_icons::hide_for_capture(
                 &self.service.daemon,
                 &self.service.config,
-            );
-        }
+            )
+        } else {
+            take_capture_hide(cx)
+        };
         let coordinator = crate::state::coordinator(cx);
         let retained = retains_overlay_after_selection(intent);
         let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
@@ -2242,7 +2282,14 @@ impl AreaOverlay {
         };
         cx.defer(move |cx| {
             coordinator.update(cx, |coordinator, cx| {
-                coordinator.capture_area_reserved(capture, intent, reservation, release_after, cx);
+                coordinator.capture_area_reserved(
+                    capture,
+                    intent,
+                    reservation,
+                    release_after,
+                    hide,
+                    cx,
+                );
             });
         });
     }

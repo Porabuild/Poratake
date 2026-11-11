@@ -411,6 +411,7 @@ fn with_frozen_screen(
     open: impl FnOnce(&mut gpui::App, bool, u64) -> bool + 'static,
 ) {
     let service = crate::state::state(cx);
+    let capture_hide = overlay::capture_hide(cx);
     if !freeze
         || !crate::system::capabilities::is_supported(
             crate::system::capabilities::Feature::FreezeScreen,
@@ -423,7 +424,9 @@ fn with_frozen_screen(
                 .spawn(async move { releasing.release_screen(generation) })
                 .detach();
         }
-        let _ = open(cx, false, 0);
+        if !open(cx, false, 0) {
+            overlay::release_capture_hide(capture_hide, cx);
+        }
         return;
     }
 
@@ -459,24 +462,13 @@ fn with_frozen_screen(
         #[cfg(not(windows))]
         let opened = cx.update(|cx| open(cx, deferred_show, generation));
         if !opened {
+            cx.update(|cx| overlay::release_capture_hide(capture_hide, cx));
             cx.background_executor()
-                .spawn(async move {
-                    desktop_icons::restore_after_capture(&freezing.daemon);
-                    freezing.release_screen(generation)
-                })
+                .spawn(async move { freezing.release_screen(generation) })
                 .detach();
         }
     })
     .detach();
-}
-
-/// A new overlay abandons whatever flow was open, so a capture hide it left
-fn restart_capture_hide(intent: Option<intent::CaptureIntent>, cx: &mut gpui::App) {
-    let service = crate::state::state(cx);
-    desktop_icons::restore_after_capture(&service.daemon);
-    if intent.is_some_and(hides_icons_before_selection) {
-        desktop_icons::hide_for_capture(&service.daemon, &service.config);
-    }
 }
 
 fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
@@ -505,7 +497,11 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
         return;
     }
     let release_first = overlay::replace_all(cx);
-    restart_capture_hide(Some(intent), cx);
+    if hides_icons_before_selection(intent) {
+        let service = crate::state::state(cx);
+        let hide = desktop_icons::hide_for_capture(&service.daemon, &service.config);
+        overlay::set_capture_hide(hide, cx);
+    }
     let freeze = intent.allows_freeze();
     with_frozen_screen(
         cx,
@@ -552,7 +548,6 @@ pub fn start_all_in_one(cx: &mut gpui::App) {
     }
     let choices = all_in_one::restore(&crate::state::state(cx).config);
     let release_first = overlay::replace_all(cx);
-    restart_capture_hide(None, cx);
     with_frozen_screen(
         cx,
         release_first,
@@ -691,7 +686,6 @@ fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
     }
     let service = crate::state::state(cx);
     let release_first = overlay::replace_all(cx);
-    restart_capture_hide(None, cx);
     with_frozen_screen(
         cx,
         release_first,
@@ -840,11 +834,11 @@ fn screen_targets(cx: &mut gpui::App) -> Result<Vec<ScreenTarget>> {
 
 fn capture_screen_target(target: ScreenTarget, cx: &mut gpui::App) {
     let service = crate::state::state(cx);
-    desktop_icons::hide_for_capture(&service.daemon, &service.config);
+    let hide = desktop_icons::hide_for_capture(&service.daemon, &service.config);
     let capture = overlay::display_capture(target.bounds, target.scale, target.capture_display_id);
     let coordinator = crate::state::coordinator(cx);
     coordinator.update(cx, |coordinator, cx| {
-        coordinator.capture_area_for(capture, intent::CaptureIntent::Screenshot, cx);
+        coordinator.capture_area_for(capture, intent::CaptureIntent::Screenshot, hide, cx);
     });
 }
 
@@ -860,7 +854,7 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
     if close_overlays {
         let _ = overlay::replace_all(cx);
     }
-    desktop_icons::hide_for_capture(&service.daemon, &service.config);
+    let hide = desktop_icons::hide_for_capture(&service.daemon, &service.config);
     cx.defer(move |cx| {
         coordinator.update(cx, |coordinator, cx| {
             coordinator.capture_area_reserved(
@@ -868,6 +862,7 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
                 intent::CaptureIntent::Screenshot,
                 reservation,
                 None,
+                hide,
                 cx,
             );
         });
@@ -901,7 +896,8 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
         }
     };
 
-    restart_capture_hide(None, cx);
+    let previous_hide = overlay::capture_hide(cx);
+    overlay::release_capture_hide(previous_hide, cx);
 
     if targets.len() > 1
         && crate::system::capabilities::is_supported(

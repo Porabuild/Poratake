@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `e6454be4` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `8b764bc0` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -72,7 +72,9 @@ described below.
 The zoom follow-up changed 148 NVIDIA images; their differences were reviewed
 within the screenshot canvas or its one-pixel lower edge. The other 2,732 images
 were unchanged, and all eight affected cases passed exact comparison after the
-reviewed updates. The hosted renderer still needs its own comparison.
+reviewed updates. The [hosted run at `e6454be4`](https://github.com/Porabuild/Poratake/actions/runs/43088770389)
+reported 148 changed images across eight cases. Its evidence upload failed after
+the artifact API returned HTML instead of JSON, so those images remain unreviewed.
 An exact rerun after the target-menu interaction fixes passed all 16 cases and
 2,808 images. The corresponding 80 hosted images were reviewed, and all 2,728
 earlier hosted images were pixel-identical. [Hosted CI at `a9d025f`](https://github.com/Porabuild/Poratake/actions/runs/42980916944)
@@ -639,6 +641,11 @@ Bugs fixed in this pass:
 - Scroll capture subscribed after the start RPC, losing early completion or
   cancellation events and leaving the session active. Subscription now precedes
   start; both early events and a successful retry are exercised.
+- A new selection could release another active capture's desktop-icon hide.
+  Capture flows now retain their own hide through selection, handoff and cleanup.
+  An isolated Windows GPUI test covers replacement, cancellation, disabled
+  hiding and failed timer/scroll handoffs without changing the real desktop.
+  Native overlapping-capture behavior still needs verification.
 - A full GPUI scroll progress queue could discard Done or Cancel. Terminal and
   interruption signals now use a separate queue while preview updates stay
   bounded. A GPU-free test fills the progress queue, sends 20 warnings, and
