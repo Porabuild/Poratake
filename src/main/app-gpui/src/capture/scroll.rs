@@ -26,6 +26,61 @@ pub enum ScrollSessionSignal {
     CursorOutside(bool),
 }
 
+impl ScrollSessionSignal {
+    pub fn from_daemon_event(event: &str, payload: &serde_json::Value) -> Option<Self> {
+        #[cfg(target_os = "macos")]
+        use poratake_daemon_common::contract::{
+            SCROLL_CAPTURE_AUTO_SCROLL_EVENT, SCROLL_CAPTURE_CURSOR_EVENT,
+            SCROLL_CAPTURE_FRAME_PREVIEW_EVENT,
+        };
+        use poratake_daemon_common::contract::{
+            SCROLL_CAPTURE_CANCELLED_EVENT, SCROLL_CAPTURE_DONE_EVENT,
+            SCROLL_CAPTURE_SCROLL_ENDED_EVENT, SYSTEM_EXIT_EVENT,
+        };
+
+        match event {
+            SCROLL_CAPTURE_DONE_EVENT => Some(Self::Finish),
+            SCROLL_CAPTURE_CANCELLED_EVENT | SYSTEM_EXIT_EVENT => Some(Self::Cancel),
+            SCROLL_CAPTURE_SCROLL_ENDED_EVENT => {
+                match payload.get("reason").and_then(serde_json::Value::as_str) {
+                    Some("no-overlap") => Some(Self::Stopped(
+                        "The latest frame could not be aligned. You can save the captured portion.",
+                    )),
+                    Some("capture-error") => Some(Self::Stopped(
+                        "A frame could not be captured. You can save the captured portion.",
+                    )),
+                    Some("input-error") => Some(Self::Stopped(
+                        "Scrolling could not be continued. You can save the captured portion.",
+                    )),
+                    _ => None,
+                }
+            }
+            #[cfg(target_os = "macos")]
+            SCROLL_CAPTURE_FRAME_PREVIEW_EVENT => Some(Self::Frame {
+                preview: payload
+                    .get("preview")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            }),
+            #[cfg(target_os = "macos")]
+            SCROLL_CAPTURE_AUTO_SCROLL_EVENT => Some(Self::AutoScrolling(
+                payload
+                    .get("scrolling")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            )),
+            #[cfg(target_os = "macos")]
+            SCROLL_CAPTURE_CURSOR_EVENT => Some(Self::CursorOutside(
+                payload
+                    .get("outside")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            )),
+            _ => None,
+        }
+    }
+}
+
 pub fn is_active() -> bool {
     ACTIVE.load(Ordering::SeqCst)
 }
@@ -73,6 +128,96 @@ pub fn cancel(daemon: &DaemonHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interruption_events_distinguish_errors_from_normal_stops() {
+        use poratake_daemon_common::contract::{
+            SCROLL_CAPTURE_CANCELLED_EVENT, SCROLL_CAPTURE_DONE_EVENT,
+            SCROLL_CAPTURE_SCROLL_ENDED_EVENT, SYSTEM_EXIT_EVENT,
+        };
+
+        for (reason, expected) in [
+            (
+                "no-overlap",
+                "The latest frame could not be aligned. You can save the captured portion.",
+            ),
+            (
+                "capture-error",
+                "A frame could not be captured. You can save the captured portion.",
+            ),
+            (
+                "input-error",
+                "Scrolling could not be continued. You can save the captured portion.",
+            ),
+        ] {
+            let event = ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
+                &serde_json::json!({ "reason": reason, "frameCount": 2 }),
+            );
+            assert!(
+                matches!(event, Some(ScrollSessionSignal::Stopped(message)) if message == expected)
+            );
+        }
+        for reason in ["duplicate", "max-height", "unknown"] {
+            assert!(ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
+                &serde_json::json!({ "reason": reason }),
+            )
+            .is_none());
+        }
+        assert!(ScrollSessionSignal::from_daemon_event(
+            SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
+            &serde_json::Value::Null,
+        )
+        .is_none());
+        assert!(matches!(
+            ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_DONE_EVENT,
+                &serde_json::Value::Null
+            ),
+            Some(ScrollSessionSignal::Finish)
+        ));
+        for event in [SCROLL_CAPTURE_CANCELLED_EVENT, SYSTEM_EXIT_EVENT] {
+            assert!(matches!(
+                ScrollSessionSignal::from_daemon_event(event, &serde_json::Value::Null),
+                Some(ScrollSessionSignal::Cancel)
+            ));
+        }
+        assert!(
+            ScrollSessionSignal::from_daemon_event("unknown", &serde_json::Value::Null).is_none()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_progress_events_keep_their_payloads() {
+        use poratake_daemon_common::contract::{
+            SCROLL_CAPTURE_AUTO_SCROLL_EVENT, SCROLL_CAPTURE_CURSOR_EVENT,
+            SCROLL_CAPTURE_FRAME_PREVIEW_EVENT,
+        };
+
+        assert!(matches!(
+            ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_FRAME_PREVIEW_EVENT,
+                &serde_json::json!({ "preview": "image" }),
+            ),
+            Some(ScrollSessionSignal::Frame { preview: Some(preview) }) if preview == "image"
+        ));
+        assert!(matches!(
+            ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_AUTO_SCROLL_EVENT,
+                &serde_json::json!({ "scrolling": true }),
+            ),
+            Some(ScrollSessionSignal::AutoScrolling(true))
+        ));
+        assert!(matches!(
+            ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_CURSOR_EVENT,
+                &serde_json::json!({ "outside": true }),
+            ),
+            Some(ScrollSessionSignal::CursorOutside(true))
+        ));
+    }
 
     #[test]
     fn tracks_a_single_active_session() {

@@ -5,15 +5,7 @@
 use anyhow::Context as _;
 use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
-use poratake_daemon_common::contract::{
-    ScrollCaptureStartRequest, ScrollSpeed, SCROLL_CAPTURE_CANCELLED_EVENT,
-    SCROLL_CAPTURE_DONE_EVENT, SCROLL_CAPTURE_SCROLL_ENDED_EVENT, SYSTEM_EXIT_EVENT,
-};
-#[cfg(target_os = "macos")]
-use poratake_daemon_common::contract::{
-    SCROLL_CAPTURE_AUTO_SCROLL_EVENT, SCROLL_CAPTURE_CURSOR_EVENT,
-    SCROLL_CAPTURE_FRAME_PREVIEW_EVENT,
-};
+use poratake_daemon_common::contract::{ScrollCaptureStartRequest, ScrollSpeed};
 
 use crate::capture::intent::CaptureIntent;
 use crate::capture::{
@@ -359,48 +351,7 @@ impl Coordinator {
         let event_tx = tx.clone();
         let subscription = daemon.subscribe(std::sync::Arc::new(move |event: &str, payload| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
-            let signal = match event {
-                SCROLL_CAPTURE_DONE_EVENT => Some(Signal::Finish),
-                SCROLL_CAPTURE_CANCELLED_EVENT | SYSTEM_EXIT_EVENT => Some(Signal::Cancel),
-                SCROLL_CAPTURE_SCROLL_ENDED_EVENT => match payload
-                    .get("reason")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    Some("no-overlap") => Some(Signal::Stopped(
-                        "The latest frame could not be aligned. You can save the captured portion.",
-                    )),
-                    Some("capture-error") => Some(Signal::Stopped(
-                        "A frame could not be captured. You can save the captured portion.",
-                    )),
-                    Some("input-error") => Some(Signal::Stopped(
-                        "Scrolling could not be continued. You can save the captured portion.",
-                    )),
-                    _ => None,
-                },
-                #[cfg(target_os = "macos")]
-                SCROLL_CAPTURE_FRAME_PREVIEW_EVENT => Some(Signal::Frame {
-                    preview: payload
-                        .get("preview")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string),
-                }),
-                #[cfg(target_os = "macos")]
-                SCROLL_CAPTURE_AUTO_SCROLL_EVENT => Some(Signal::AutoScrolling(
-                    payload
-                        .get("scrolling")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                )),
-                #[cfg(target_os = "macos")]
-                SCROLL_CAPTURE_CURSOR_EVENT => Some(Signal::CursorOutside(
-                    payload
-                        .get("outside")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                )),
-                _ => None,
-            };
-            if let Some(signal) = signal {
+            if let Some(signal) = Signal::from_daemon_event(event, payload) {
                 let _ = event_tx.try_send(signal);
             }
         }));

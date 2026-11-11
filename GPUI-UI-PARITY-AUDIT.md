@@ -1066,8 +1066,9 @@ Windows and Linux daemons report overlap, capture and input errors when automati
 scrolling stops. GPUI and Electron now notify the user while retaining the previous
 frames for saving; normal end-of-content and height-limit stops remain quiet.
 Electron event tests cover both native and overlay-based paths and save the capture
-after interruption. A GPUI workflow fixture checks the same sequence; its hosted
-run and native notification presentation still need verification.
+after interruption. A GPU-free GPUI unit test checks the event mapping. A GPUI
+workflow fixture checks the same sequence; its hosted run and native notification
+presentation still need verification.
 
 Keep known platform differences explicit: preview/zoom use a baked blur because
 GPUI has no live backdrop filter; the capture eyedropper remains an app overlay;
