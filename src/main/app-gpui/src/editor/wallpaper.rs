@@ -108,6 +108,14 @@ impl WallpaperSettings {
             || crate::render::window_frame::theme(&self.window_frame.style).is_some()
     }
 
+    pub fn supports_frame_edge_preview(&self, has_layers: bool) -> bool {
+        crate::render::window_frame::theme(&self.window_frame.style).is_some()
+            && !has_layers
+            && !self.balance
+            && self.inset <= 0.0
+            && self.corners <= 0.0
+    }
+
     /// Selecting a gradient with no padding yet opens the frame up, matching
     /// `setGradient` in `useWallpaperState.ts`.
     pub fn set_gradient(&mut self, gradient: Option<GradientOption>) {

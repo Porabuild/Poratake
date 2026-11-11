@@ -10,6 +10,15 @@ use crate::editor::wallpaper::WallpaperSettings;
 use crate::render::canvas::{rounded_rect_path, Canvas, Shadow};
 use crate::render::{annotations as annotation_renderer, color, gradient};
 
+#[derive(Clone)]
+pub struct FrameEdgeImage {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub image: std::sync::Arc<gpui::RenderImage>,
+}
+
 /// Renders the base image plus every annotation into a fresh RGBA buffer at
 /// natural size, on its wallpaper backdrop when one is set.
 #[allow(dead_code)]
@@ -355,12 +364,34 @@ pub fn render_backdrop(
     inset_color: Option<String>,
     layers: &[crate::editor::layers::ImageLayer],
     frame_scale: f64,
-) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    stage_background: [u8; 3],
+) -> Option<(std::sync::Arc<gpui::RenderImage>, Vec<FrameEdgeImage>)> {
     let mut canvas = Canvas::new(width.max(1), height.max(1))?;
     if !wallpaper.has_background() {
         canvas.fill_all(Color::from_rgba8(24, 24, 27, 255));
     }
     paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
+    let edge_preview = wallpaper.supports_frame_edge_preview(!layers.is_empty());
+    if edge_preview && wallpaper.has_background() {
+        let mut builder = tiny_skia::PathBuilder::new();
+        builder.push_rect(tiny_skia::Rect::from_xywh(
+            0.0,
+            0.0,
+            width as f32,
+            height as f32,
+        )?);
+        canvas.fill_path_blended(
+            &builder.finish()?,
+            Color::from_rgba8(
+                stage_background[0],
+                stage_background[1],
+                stage_background[2],
+                255,
+            ),
+            FillRule::Winding,
+            tiny_skia::BlendMode::DestinationOver,
+        );
+    }
 
     // Attached images are static, so they belong to the backdrop; only the
     // primary capture and its annotations stay live.
@@ -417,6 +448,7 @@ pub fn render_backdrop(
 
     // The frame's chrome belongs to the backdrop; the live canvas draws the
     // image and its annotations inside it.
+    let mut frame_edges = Vec::new();
     if crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some() {
         let (_, (offset_x, offset_y, _, _)) =
             crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
@@ -430,7 +462,45 @@ pub fn render_backdrop(
             image_shadow_at_scale(wallpaper.shadow, frame_scale),
             frame_scale,
             None,
+            !edge_preview,
         );
+        if edge_preview {
+            if let Some(edges) = crate::render::window_frame::preview_edges(
+                canvas.pixmap(),
+                offset_x.round(),
+                offset_y.round(),
+                image_width,
+                image_height,
+                &wallpaper.window_frame.style,
+                frame_scale,
+            ) {
+                for edge in edges {
+                    let mut buffer = to_rgba(&edge.pixels);
+                    for pixel in buffer.as_chunks_mut::<4>().0 {
+                        pixel.swap(0, 2);
+                    }
+                    frame_edges.push(FrameEdgeImage {
+                        x: edge.x,
+                        y: edge.y,
+                        width: edge.pixels.width(),
+                        height: edge.pixels.height(),
+                        image: std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                            image::Frame::new(buffer)
+                        ])),
+                    });
+                }
+            } else {
+                crate::render::window_frame::render_outline(
+                    &mut canvas,
+                    offset_x.round(),
+                    offset_y.round(),
+                    image_width,
+                    image_height,
+                    &wallpaper.window_frame.style,
+                    frame_scale,
+                );
+            }
+        }
     }
 
     let mut buffer = to_rgba(canvas.pixmap());
@@ -438,9 +508,12 @@ pub fn render_backdrop(
     for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    Some(std::sync::Arc::new(gpui::RenderImage::new(
-        smallvec::smallvec![image::Frame::new(buffer)],
-    )))
+    Some((
+        std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(buffer)
+        ])),
+        frame_edges,
+    ))
 }
 
 /// Converts an `image` RGBA buffer into a premultiplied pixmap.

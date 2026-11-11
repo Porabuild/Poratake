@@ -49,6 +49,7 @@ pub struct CanvasSnapshot {
     /// uses. A gradient could be drawn with GPUI, but a background image with
     /// blur and grain could not, and preview and export have to agree.
     pub backdrop: Option<std::sync::Arc<gpui::RenderImage>>,
+    pub frame_edges: Vec<crate::editor::export::FrameEdgeImage>,
     /// The annotation the select tool has picked, outlined on the canvas.
     pub selected: Vec<String>,
     /// The text annotation being re-edited, hidden while its draft shows.
@@ -98,6 +99,7 @@ impl RenderOnce for EditorCanvas {
 
         let wallpaper = snap.wallpaper.clone();
         let frame_scale = snap.frame_scale;
+        let has_frame_edges = !snap.frame_edges.is_empty();
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
         let transparent_backdrop = wallpaper.is_active()
@@ -126,13 +128,14 @@ impl RenderOnce for EditorCanvas {
 
         drop(snap);
 
+        let mut decorations = div().absolute().inset_0();
         for outline in selection_outlines(&self.snapshot.borrow(), &theme) {
-            frame = frame.child(outline);
+            decorations = decorations.child(outline);
         }
 
         if let Some((x, y, width, height)) = self.snapshot.borrow().marquee {
             let zoom = self.snapshot.borrow().zoom;
-            frame = frame.child(
+            decorations = decorations.child(
                 div()
                     .absolute()
                     .left(px(x as f32 * zoom))
@@ -147,7 +150,12 @@ impl RenderOnce for EditorCanvas {
 
         if let Some((x, y, width, height)) = self.snapshot.borrow().crop {
             let zoom = self.snapshot.borrow().zoom;
-            frame = frame.child(crop_overlay(x, y, width, height, zoom, &theme));
+            decorations = decorations.child(crop_overlay(x, y, width, height, zoom, &theme));
+        }
+
+        let mut decorations = Some(decorations);
+        if !has_frame_edges {
+            frame = frame.child(decorations.take().unwrap());
         }
 
         // Annotation overlay paints every committed annotation plus the draft.
@@ -168,20 +176,8 @@ impl RenderOnce for EditorCanvas {
                         &snapshot,
                         primary.opacity(HALO_OPACITY),
                     );
-                    if let [selected] = snapshot.selected.as_slice() {
-                        if let Some(annotation) = snapshot
-                            .annotations
-                            .iter()
-                            .find(|annotation| annotation.id() == selected)
-                        {
-                            draw_selection_handles(
-                                window,
-                                annotation,
-                                snapshot.zoom,
-                                primary,
-                                primary_fg,
-                            );
-                        }
+                    if !has_frame_edges {
+                        paint_selection_handles(window, &snapshot, primary, primary_fg);
                     }
                     set_paint_origin(gpui::point(px(0.0), px(0.0)));
                 },
@@ -254,24 +250,67 @@ impl RenderOnce for EditorCanvas {
             let crop = self.snapshot.borrow().balance_crop;
             let (crop_left, crop_top, crop_right, crop_bottom) =
                 crop.unwrap_or((0.0, 0.0, 0.0, 0.0));
-            backdrop
-                .child(
+            backdrop = backdrop.child(
+                div()
+                    .absolute()
+                    .left(px(offset_x as f32 * zoom))
+                    .top(px((offset_y + title_bar) as f32 * zoom))
+                    .w(px((image_width as f32 - crop_left - crop_right) * zoom))
+                    .h(px((image_height as f32 - crop_top - crop_bottom) * zoom))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(-crop_left * zoom))
+                            .top(px(-crop_top * zoom))
+                            .child(frame),
+                    ),
+            );
+            for edge in self.snapshot.borrow().frame_edges.iter() {
+                backdrop = backdrop.child(
+                    img(edge.image.clone())
+                        .absolute()
+                        .left(px(edge.x as f32 * zoom))
+                        .top(px(edge.y as f32 * zoom))
+                        .w(px(edge.width as f32 * zoom))
+                        .h(px(edge.height as f32 * zoom)),
+                );
+            }
+            let mut stage = div()
+                .relative()
+                .w(px(canvas_width as f32 * zoom))
+                .h(px(canvas_height as f32 * zoom))
+                .child(backdrop);
+            if let Some(decorations) = decorations {
+                let handle_snapshot = self.snapshot.clone();
+                stage = stage.child(
                     div()
                         .absolute()
-                        .left(px(offset_x as f32 * zoom))
-                        .top(px((offset_y + title_bar) as f32 * zoom))
-                        .w(px((image_width as f32 - crop_left - crop_right) * zoom))
-                        .h(px((image_height as f32 - crop_top - crop_bottom) * zoom))
-                        .overflow_hidden()
+                        .left(px((offset_x as f32 - crop_left) * zoom))
+                        .top(px((offset_y as f32 + title_bar as f32 - crop_top) * zoom))
+                        .w(content_width)
+                        .h(content_height)
+                        .child(decorations)
                         .child(
-                            div()
-                                .absolute()
-                                .left(px(-crop_left * zoom))
-                                .top(px(-crop_top * zoom))
-                                .child(frame),
+                            canvas(
+                                |_, _, _| (),
+                                move |bounds, (), window, _cx| {
+                                    set_paint_origin(bounds.origin);
+                                    paint_selection_handles(
+                                        window,
+                                        &handle_snapshot.borrow(),
+                                        primary,
+                                        primary_fg,
+                                    );
+                                    set_paint_origin(gpui::point(px(0.0), px(0.0)));
+                                },
+                            )
+                            .absolute()
+                            .inset_0(),
                         ),
-                )
-                .into_any_element()
+                );
+            }
+            stage.into_any_element()
         } else {
             frame.into_any_element()
         };
@@ -297,6 +336,25 @@ impl RenderOnce for EditorCanvas {
                     .child(stage_child),
             )
     }
+}
+
+fn paint_selection_handles(
+    window: &mut gpui::Window,
+    snapshot: &CanvasSnapshot,
+    primary: Hsla,
+    primary_fg: Hsla,
+) {
+    let [selected] = snapshot.selected.as_slice() else {
+        return;
+    };
+    let Some(annotation) = snapshot
+        .annotations
+        .iter()
+        .find(|annotation| annotation.id() == selected)
+    else {
+        return;
+    };
+    draw_selection_handles(window, annotation, snapshot.zoom, primary, primary_fg);
 }
 
 fn paint_annotations(

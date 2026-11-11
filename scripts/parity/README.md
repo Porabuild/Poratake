@@ -99,12 +99,16 @@ must differ visibly from hover within that button's measured bounds.
 
 The built-in fixture additionally checks annotation save/history reopen/flattened
 PNG reopen at 1280px and 100% scale, comparing the preview with saved pixels.
-It also compares a translucent patch in each window-frame style against the saved
-PNG at simulated 125% and 200%, with and without a frame shadow. A no-background
-case checks saved alpha against the preview over the editor's display background.
-With zero padding, the frame title bar and translucent content are also compared
-at both scales; Polish copy is checked against editor export separately.
-Rounded corners, insets, balance and attached layers are not part of those checks.
+At simulated 125% and 200%, it compares every pixel of a 640×360 single-image
+framed region with the PNG for all four frame styles, with and without shadow.
+Translucent custom backgrounds with blur are checked after light/dark theme
+changes, within two channel levels at the edges and three in the interior. It
+also checks frame-only backgrounds, annotations at rounded frame corners, and
+pointer interaction and visible handles for selection and crop.
+On Windows, repeated frame changes verify that replaced edge images leave the
+GPU atlas. Polish copy is checked against editor export separately. Wallpaper
+corners, insets, balance, attached layers and arbitrary zoom are not covered by
+these framed comparisons.
 Custom `PORATAKE_PARITY_IMAGE` inputs skip that fixed-size workflow. Overlays use
 a synthetic desktop with ordered overlapping windows, negative display origins
 and correctly scaled physical bounds. Window/display picker states cover hover,

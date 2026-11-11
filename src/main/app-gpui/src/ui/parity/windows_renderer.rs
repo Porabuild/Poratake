@@ -1,11 +1,12 @@
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use gpui::{
-    div, img, point, prelude::*, px, size, Bounds, Context, DevicePixels, Empty, GpuSpecs,
-    Platform, PlatformAtlas, PlatformHeadlessRenderer, PlatformWindow, Render, Scene, Size, Window,
-    WindowHandle, WindowId, WindowKind, WindowParams,
+    div, img, point, prelude::*, px, size, AtlasKey, AtlasTile, Bounds, Context, DevicePixels,
+    Empty, GpuSpecs, Platform, PlatformAtlas, PlatformHeadlessRenderer, PlatformWindow, Render,
+    Scene, Size, Window, WindowHandle, WindowId, WindowKind, WindowParams,
 };
 use herogpui::gpui;
 use raw_window_handle::RawWindowHandle;
@@ -77,11 +78,47 @@ pub(super) fn create(
         )?;
         BASELINE_PROFILE.set(profile).unwrap();
     }
-    Ok(Some(Box::new(Renderer { window })))
+    #[allow(clippy::arc_with_non_send_sync)]
+    let atlas = Arc::new(TrackingAtlas {
+        inner: window.sprite_atlas(),
+        keys: parking_lot::Mutex::new(HashSet::new()),
+    });
+    Ok(Some(Box::new(Renderer { window, atlas })))
 }
 
 struct Renderer {
     window: Box<dyn PlatformWindow>,
+    atlas: Arc<TrackingAtlas>,
+}
+
+struct TrackingAtlas {
+    inner: Arc<dyn PlatformAtlas>,
+    keys: parking_lot::Mutex<HashSet<AtlasKey>>,
+}
+
+impl PlatformAtlas for TrackingAtlas {
+    fn get_or_insert_with<'a>(
+        &self,
+        key: AtlasKey,
+        build: &mut dyn FnMut() -> anyhow::Result<
+            Option<(Size<DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
+        >,
+    ) -> anyhow::Result<Option<AtlasTile>> {
+        let tile = self.inner.get_or_insert_with(key.clone(), build)?;
+        if tile.is_some() {
+            self.keys.lock().insert(key);
+        }
+        Ok(tile)
+    }
+
+    fn remove(&self, key: &AtlasKey) {
+        self.inner.remove(key);
+        self.keys.lock().remove(key);
+    }
+
+    fn contains(&self, key: &AtlasKey) -> bool {
+        self.keys.lock().contains(key)
+    }
 }
 
 impl Renderer {
@@ -125,7 +162,7 @@ impl PlatformHeadlessRenderer for Renderer {
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        self.window.sprite_atlas()
+        self.atlas.clone()
     }
 }
 

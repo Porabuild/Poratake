@@ -419,12 +419,15 @@ pub struct EditorWindow {
     /// The rasterized wallpaper backdrop and the settings it was made for,
     /// so it is only re-rendered when the wallpaper actually changes.
     backdrop: Option<Arc<gpui::RenderImage>>,
+    frame_edges: Vec<crate::editor::export::FrameEdgeImage>,
+    retired_frame_edges: Vec<Arc<gpui::RenderImage>>,
     backdrop_key: Option<(
         crate::editor::wallpaper::WallpaperSettings,
         u32,
         u32,
         Vec<crate::editor::layers::ImageLayer>,
         f64,
+        Option<[u8; 3]>,
     )>,
     backdrop_generation: u64,
     backdrop_task: Option<gpui::Task<()>>,
@@ -495,6 +498,8 @@ impl EditorWindow {
             marquee: None,
             annotation_clipboard: Vec::new(),
             backdrop: None,
+            frame_edges: Vec::new(),
+            retired_frame_edges: Vec::new(),
             backdrop_key: None,
             backdrop_generation: 0,
             backdrop_task: None,
@@ -568,6 +573,7 @@ impl EditorWindow {
                 wallpaper: crate::editor::wallpaper::WallpaperSettings::default(),
                 frame_scale: 1.0,
                 backdrop: None,
+                frame_edges: Vec::new(),
                 selected: Vec::new(),
                 editing_text: None,
                 marquee: None,
@@ -688,6 +694,11 @@ impl EditorWindow {
         });
     }
 
+    fn retire_frame_edges(&mut self) {
+        self.retired_frame_edges
+            .extend(self.frame_edges.drain(..).map(|edge| edge.image));
+    }
+
     /// Renders the wallpaper backdrop when the settings or the image size have
     /// changed since the last one.
     fn refresh_backdrop(&mut self, cx: &mut Context<Self>) {
@@ -700,6 +711,7 @@ impl EditorWindow {
                 self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
             }
             self.backdrop = None;
+            self.retire_frame_edges();
             self.backdrop_key = None;
             self.backdrop_task = None;
             return;
@@ -722,20 +734,35 @@ impl EditorWindow {
             width.round().max(1.0) as u32,
             height.round().max(1.0) as u32,
         );
+        let background = gpui::Rgba::from(active_theme(cx).background);
+        let stage_background = [background.r, background.g, background.b]
+            .map(|channel| (channel * 255.0).round() as u8);
         let key = (
             wallpaper.clone(),
             size.0,
             size.1,
             self.layers.clone(),
             self.native_scale,
+            (wallpaper.has_background()
+                && wallpaper.supports_frame_edge_preview(!self.layers.is_empty()))
+            .then_some(stage_background),
         );
         if self.backdrop_key.as_ref() == Some(&key) {
             return;
         }
         if self.backdrop_key.as_ref().is_some_and(|previous| {
-            previous.1 != key.1 || previous.2 != key.2 || previous.4 != key.4
+            previous.1 != key.1
+                || previous.2 != key.2
+                || previous.4 != key.4
+                || previous.5 != key.5
+                || previous.0.window_frame.style != key.0.window_frame.style
+                || previous.0.balance != key.0.balance
+                || previous.0.inset != key.0.inset
+                || previous.0.corners != key.0.corners
+                || previous.3 != key.3
         }) {
             self.backdrop = None;
+            self.retire_frame_edges();
         }
         self.backdrop_key = Some(key);
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
@@ -770,6 +797,7 @@ impl EditorWindow {
                 inset_color.clone(),
                 &layers,
                 frame_scale,
+                stage_background,
             );
             (rendered, inset_color)
         });
@@ -779,7 +807,12 @@ impl EditorWindow {
                 if editor.backdrop_generation != generation {
                     return;
                 }
-                editor.backdrop = rendered;
+                let (backdrop, frame_edges) = rendered
+                    .map(|(backdrop, edges)| (Some(backdrop), edges))
+                    .unwrap_or_default();
+                editor.backdrop = backdrop;
+                editor.retire_frame_edges();
+                editor.frame_edges = frame_edges;
                 editor.inset_color = inset_color;
                 editor.backdrop_task = None;
                 cx.notify();
@@ -796,6 +829,7 @@ impl EditorWindow {
             snap.wallpaper = wallpaper.clone();
             snap.frame_scale = self.native_scale;
             snap.backdrop = self.backdrop.clone();
+            snap.frame_edges = self.frame_edges.clone();
             snap.selected = self.selected_annotations.clone();
             snap.editing_text = self.text_editor.as_ref().map(|(id, _)| id.clone());
             snap.marquee = self.marquee.map(|(start, current)| {
@@ -2320,6 +2354,9 @@ impl Render for EditorWindow {
         );
         self.fit_to_window(window);
         self.refresh_backdrop(cx);
+        for image in self.retired_frame_edges.drain(..) {
+            let _ = window.drop_image(image);
+        }
         self.sync_snapshot();
         self.refresh_zoom_backdrop(cx);
 
