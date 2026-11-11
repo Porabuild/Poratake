@@ -1113,7 +1113,8 @@ Both have a unique 56px full-row match, although the first main-content overlap 
 64px. When the expected sampled strip matches exactly and conflicts with a
 different alignment supported by full-row evidence, Windows and Linux now stop
 and retain the previous frames. Tests cover both sampled and unsampled edge
-pixels, with and without a fixed footer; the retained PNG reopens pixel-identical.
+pixels, with and without a fixed footer; the retained PNG reopens pixel-identical
+after one or two accepted frames.
 The 1,236-case footer matrix still had no incorrect accepted output and 291 early
 stops. A synthetic 4K exact-overlap probe had median times of 3.42 ms before and
 4.63 ms after over 30 samples on this machine. If the moving edge influences the

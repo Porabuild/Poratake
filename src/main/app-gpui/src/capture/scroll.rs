@@ -371,9 +371,9 @@ mod tests {
 
         let (width, height) = (1000, 160);
         for footer in [0, 16] {
-            let frame = |shift: u32| {
-                image::RgbaImage::from_fn(width, height, |x, y| {
-                    if y >= height - footer {
+            let frame = |shift: u32, frame_height: u32| {
+                image::RgbaImage::from_fn(width, frame_height, |x, y| {
+                    if y >= frame_height - footer {
                         return image::Rgba([51, 60, 70, 255]);
                     }
                     let row = y + shift;
@@ -384,25 +384,45 @@ mod tests {
                     })
                 })
             };
-            let first = frame(0);
-            let mut accumulator = FrameAccumulator::default();
-            assert_eq!(
-                accumulator.submit(
-                    first.clone().into_raw(),
-                    width as usize,
-                    height as usize,
-                    64
-                ),
-                CaptureOutcome::Added
-            );
-            assert_eq!(
-                accumulator.submit(frame(104).into_raw(), width as usize, height as usize, 64),
-                CaptureOutcome::NoOverlap
-            );
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("scroll-ambiguous.png");
-            write_png(&path, &accumulator.take_frames()).unwrap();
-            assert_eq!(image::open(path).unwrap().to_rgba8(), first);
+            for prior_shift in [0, 32] {
+                let mut accumulator = FrameAccumulator::default();
+                assert_eq!(
+                    accumulator.submit(
+                        frame(0, height).into_raw(),
+                        width as usize,
+                        height as usize,
+                        64
+                    ),
+                    CaptureOutcome::Added
+                );
+                if prior_shift > 0 {
+                    assert_eq!(
+                        accumulator.submit(
+                            frame(prior_shift, height).into_raw(),
+                            width as usize,
+                            height as usize,
+                            (height - prior_shift) as usize,
+                        ),
+                        CaptureOutcome::Added
+                    );
+                }
+                assert_eq!(
+                    accumulator.submit(
+                        frame(prior_shift + 104, height).into_raw(),
+                        width as usize,
+                        height as usize,
+                        64,
+                    ),
+                    CaptureOutcome::NoOverlap
+                );
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("scroll-ambiguous.png");
+                write_png(&path, &accumulator.take_frames()).unwrap();
+                assert_eq!(
+                    image::open(path).unwrap().to_rgba8(),
+                    frame(0, height + prior_shift)
+                );
+            }
         }
     }
 
