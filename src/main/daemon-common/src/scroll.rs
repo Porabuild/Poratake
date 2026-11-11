@@ -87,7 +87,11 @@ impl FrameAccumulator {
         expected_overlap: usize,
     ) -> CaptureOutcome {
         let hash = frame_hash(&pixels, width, height);
-        if self.last_frame_hash == Some(hash) {
+        if self.last_frame_hash == Some(hash)
+            && self.frames.last().is_some_and(|previous| {
+                previous.width == width && previous.height == height && previous.pixels == pixels
+            })
+        {
             self.duplicate_frame_count += 1;
             return if self.duplicate_frame_count >= MAX_DUPLICATE_FRAMES {
                 CaptureOutcome::Ended
@@ -734,6 +738,44 @@ mod tests {
         assert_eq!(
             find_overlap(&previous, &current.pixels, width, height, overlap),
             Some(overlap)
+        );
+    }
+
+    #[test]
+    fn fixed_footer_does_not_end_capture_when_content_changes() {
+        let (width, height, overlap) = (1280, 320, 96);
+        let mut previous = frame(0, width, height);
+        let mut current = frame(height - overlap, width, height);
+        for pixels in [&mut previous.pixels, &mut current.pixels] {
+            for row in pixels.chunks_exact_mut(width * 4).skip(height - 80) {
+                row.fill(64);
+            }
+        }
+        assert_eq!(
+            frame_hash(&previous.pixels, width, height),
+            frame_hash(&current.pixels, width, height)
+        );
+
+        let mut capture = FrameAccumulator::default();
+        assert_eq!(
+            capture.submit(previous.pixels, width, height, overlap),
+            CaptureOutcome::Added
+        );
+        assert_eq!(
+            capture.submit(current.pixels.clone(), width, height, overlap),
+            CaptureOutcome::Added
+        );
+        assert_eq!(capture.frames().len(), 2);
+        assert_eq!(capture.frames()[1].overlap, overlap);
+        for _ in 1..MAX_DUPLICATE_FRAMES {
+            assert_eq!(
+                capture.submit(current.pixels.clone(), width, height, overlap),
+                CaptureOutcome::Repeated
+            );
+        }
+        assert_eq!(
+            capture.submit(current.pixels, width, height, overlap),
+            CaptureOutcome::Ended
         );
     }
 
