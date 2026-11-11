@@ -886,6 +886,11 @@ impl AreaOverlay {
         self.picking_color && self.color_frame_generation == generation
     }
 
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_picking_color(&self) -> bool {
+        self.picking_color
+    }
+
     pub fn with_all_in_one(mut self, choices: crate::capture::all_in_one::Choices) -> Self {
         use crate::capture::all_in_one::{Mode, Target};
 
@@ -1263,8 +1268,7 @@ impl AreaOverlay {
                         return;
                     }
                     let Some(frame) = frame else {
-                        this.picking_color = false;
-                        sync_color_picker(false, cx);
+                        this.stop_color_picker(cx);
                         crate::windows::toast::Toast::show(
                             cx,
                             "Pick failed",

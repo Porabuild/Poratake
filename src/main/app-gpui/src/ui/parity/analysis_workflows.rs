@@ -1,3 +1,6 @@
+use gpui::AppContext;
+use herogpui::gpui;
+
 use crate::capture::intent::CaptureIntent;
 use crate::system::clipboard::ClipboardService;
 
@@ -148,4 +151,99 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     println!(
         "OCR/QR capture, clipboard, temporary-file cleanup, errors, cancellation and retry passed"
     );
+    color_picker_failure(cx, output);
+}
+
+fn color_picker_failure(cx: &mut HeadlessAppContext, output: &Path) {
+    let bounds = gpui::Bounds::new(
+        super::point(super::px(0.), super::px(0.)),
+        super::size(super::px(400.), super::px(300.)),
+    );
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live",
+            "rect": {"x": 0, "y": 0, "width": 400, "height": 300},
+            "windowId": null,
+            "outcome": "capture-failed",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    take_notifications();
+    let before_calls = calls(output).len();
+    let service = cx.update(|cx| {
+        let service = crate::state::state(cx);
+        service
+            .config
+            .update(|config| config.screenshot.freeze_screen = false);
+        service
+    });
+    let overlay = cx
+        .open_window(bounds.size, |window, cx| {
+            window.set_scale_factor(1.);
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            cx.new(|_| {
+                crate::capture::overlay::AreaOverlay::with_focus(
+                    bounds,
+                    1.,
+                    service,
+                    CaptureIntent::Screenshot,
+                    focus,
+                )
+                .with_all_in_one(crate::capture::all_in_one::Choices::default())
+            })
+        })
+        .unwrap();
+    let window = overlay.into();
+    super::settle(cx, window);
+    let before = cx.capture_screenshot(window).unwrap();
+    let entity = overlay.update(cx, |_, _, cx| cx.entity()).unwrap();
+    let states = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = states.clone();
+    let _subscription = cx.update(|cx| {
+        cx.observe(&entity, move |entity, cx| {
+            observed
+                .borrow_mut()
+                .push(entity.read(cx).parity_picking_color());
+        })
+    });
+    overlay
+        .update(cx, |overlay, window, cx| {
+            overlay.start_color_picker(window, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        *states.borrow(),
+        vec![true],
+        "entering the color picker requests a redraw"
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        take_notifications(),
+        vec![(
+            "Pick failed".into(),
+            "Could not read the display pixels".into(),
+            false
+        )]
+    );
+    assert_eq!(
+        states.borrow().last(),
+        Some(&false),
+        "a failed color capture must request a redraw after exiting"
+    );
+    assert!(cx.update(|cx| cx.windows().contains(&window)));
+    let captures: Vec<_> = calls(output)
+        .into_iter()
+        .skip(before_calls)
+        .filter(|call| call["module"] == "screenshot" && call["method"] == "capture-area")
+        .collect();
+    assert_eq!(captures.len(), 1);
+    assert!(!Path::new(captures[0]["params"]["path"].as_str().unwrap()).exists());
+    super::frame(cx, window);
+    assert_eq!(cx.capture_screenshot(window).unwrap(), before);
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
 }

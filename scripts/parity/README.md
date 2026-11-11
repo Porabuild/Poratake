@@ -23,6 +23,8 @@ The all-in-one color picker captures its center, four display corners and a
 the narrow case also checks that the card does not cover the sampled point.
 Unit tests exercise five simulated scales, click-to-copy through the actual
 overlay and a 200×180 case where preserving the cursor gap requires clipping.
+The capture-failure workflow also checks the stopped-state redraw, restored
+overlay, error notification and removal of the partial frame.
 
 Each Windows case first renders adjacent red/white image atlas tiles at fractional
 bounds. Interior and edge samples must retain the red source color independently

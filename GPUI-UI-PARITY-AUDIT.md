@@ -50,9 +50,11 @@ The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, a
 738 logical pixels high. Each case captures 152 states; the two 1280px, 100% cases
 also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states.
 The eight 950px cases each add 18 narrow-history states, for 2,632 images per
-complete renderer profile. The local exact-baseline matrix passed all 16 cases
-and 2,632 images. The 96 new NVIDIA color-picker images were reviewed; all 2,536
-existing images were unchanged. The new states need hosted-renderer
+complete renderer profile. The local exact-baseline matrix at `80a5700` passed
+all 16 cases and 2,632 images. After the color-capture failure fix, the two
+1280px/100% workflow cases passed again in light and dark themes. The 96 new
+NVIDIA color-picker images were reviewed; all 2,536 existing images were
+unchanged. The new states need hosted-renderer
 review. The 144 new NVIDIA history images were reviewed. The earlier matrix's 64 corner
 states and 160 revised selection images were reviewed; the remaining 2,312 existing
 images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
@@ -633,6 +635,10 @@ Bugs fixed in this pass:
   Tests cover pointer clearance at five simulated scales and click-to-copy from
   a four-color frame. If a 200×180 window cannot fit both the full card and
   its cursor gap, the card takes the least-clipped placement with the gap.
+- A failed color-frame capture left the all-in-one overlay without a redraw.
+  It now exits through the normal picker shutdown path. The isolated daemon
+  fixture writes a partial file and fails the request; the test verifies the
+  stopped-state notification, restored overlay pixels, error message and cleanup.
 - A history grid at simulated 175% and 456 physical pixels wrapped its second
   card onto a new row. The cards now fit the snapped available width. The unit
   test sweeps every physical width corresponding to 200–400 logical pixels at
