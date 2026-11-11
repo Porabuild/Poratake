@@ -847,7 +847,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                               |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                               |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                         |
-| P1       | Scroll stitching with fixed footers                      | A synthetic 1280×320 capture with an 80px fixed footer reports changed scrolling content as repeated. With a 40px footer, two frames are accepted but the reopened PNG repeats the footer: 51,200 of 573,440 pixels differ from the expected image. Fix detection and composition together, and verify sparse content, moving animations and real scrolling surfaces.                                                              |
+| P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. Sparse text and stationary animation are tested. Some simultaneous size/color changes stop early. Verify real surfaces, weak overlaps and fixed headers; macOS has a separate, unfixed stitcher.                                                                                                   |
 | P1       | Scroll stitching with repeated content                   | A synthetic 1000×160 pair with period-8 center rows and distinct side content selects the expected 64px overlap when the actual overlap is 56px, shortening the stitch by eight rows. The exact-match correction leaves this ambiguous sampled tie unchanged. Verify full-width evidence, repeated patterns, animations, short overlaps and real pages before changing this choice.                                                |
 | P1       | Unresponsive scroll stitch                               | Finish now waits for the daemon response or exit, so a daemon that stays alive without responding also leaves cancellation pending. Add a daemon-owned stop-and-join operation and verify a stalled stitch can be canceled without affecting other daemon work or losing completed output.                                                                                                                                         |
 | P1       | macOS scroll preview with variable overlap               | The preview uses the expected scroll step while final stitching measures each overlap. Compare previews and saved pixels when actual movement differs, without blocking the capture UI; verify real scrolling surfaces.                                                                                                                                                                                                            |
@@ -873,9 +873,13 @@ before claiming that the overlay is absent from capture output.
 
 A full-frame comparison alone was rejected as a replacement for the sampled
 duplicate hash: a blinking pixel on a stationary page was accepted as scrolling.
-A stationary-versus-shifted comparison also stopped on a textured stationary
-page and missed movement beneath a fixed header. Duplicate detection and footer
-composition need to be tested together before changing this behavior.
+The Windows/Linux footer path requires an exact overlap and either movement across
+a majority of matching rows or a row appearing at its translated position and
+disappearing from its old one. After detecting a footer, it can also accept one
+changed pixel on the last overlapping row. In 1,236 generated cases, all accepted
+frames produced the expected rows and 291 cases stopped early. Ambiguous or
+animated content can still require different evidence. macOS uses a separate
+duplicate check and stitcher.
 
 In a synthetic two-frame scroll, period-8 main content shifted by 96px with an
 independently moving edge produces the same pixels as a complete 104px shift.
