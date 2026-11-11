@@ -7,7 +7,7 @@ use tiny_skia::{Color, FillRule, Pixmap};
 
 use crate::editor::annotations::Annotation;
 use crate::editor::wallpaper::WallpaperSettings;
-use crate::render::canvas::{rounded_rect_path, Canvas, Shadow, MAX_SHADOW_SURFACE_SIZE};
+use crate::render::canvas::{paint_rounded_shadow, rounded_rect_path, Canvas, Shadow};
 use crate::render::{annotations as annotation_renderer, color, gradient};
 
 #[derive(Clone)]
@@ -257,7 +257,24 @@ fn compose_wallpaper(image: &Pixmap, wallpaper: &WallpaperSettings, frame_scale:
             None => None,
         };
         if let Some(fill) = fill {
-            canvas.fill_path(&path, fill, FillRule::Winding);
+            match image_shadow(wallpaper.shadow) {
+                Some(shadow) => {
+                    canvas.set_shadow(None);
+                    if paint_rounded_shadow(
+                        &mut canvas,
+                        (frame_x, frame_y, frame_width, frame_height),
+                        radius,
+                        shadow,
+                        fill,
+                    )
+                    .is_none()
+                    {
+                        canvas.set_shadow(Some(shadow));
+                        canvas.fill_path(&path, fill, FillRule::Winding);
+                    }
+                }
+                None => canvas.fill_path(&path, fill, FillRule::Winding),
+            }
         }
         canvas.set_shadow(None);
         canvas.clip_path(&path, FillRule::Winding);
@@ -352,83 +369,6 @@ fn paint_background_source(
     canvas.fill_all(single);
 }
 
-fn paint_preview_shadow(
-    canvas: &mut Canvas,
-    rect: (u32, u32, u32, u32),
-    radius: f32,
-    shadow: Shadow,
-) -> Option<()> {
-    let (x, y, width, height) = rect;
-    let path = rounded_rect_path(x as f32, y as f32, width as f32, height as f32, radius)?;
-    let spread =
-        crate::render::blur::box_radius(crate::render::blur::sigma_for_shadow_blur(shadow.blur))
-            as u32
-            * 3
-            + 2;
-    if width + spread * 2 > MAX_SHADOW_SURFACE_SIZE || height + spread * 2 > MAX_SHADOW_SURFACE_SIZE
-    {
-        canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
-        return Some(());
-    }
-    let outer = spread + shadow.offset_x.abs().max(shadow.offset_y.abs()).ceil() as u32 + 2;
-    let inner = radius.ceil().max(0.0) as u32 + outer;
-    let patch_width = width.min(inner * 2 + 1) + outer * 2;
-    let patch_height = height.min(inner * 2 + 1) + outer * 2;
-    let target_width = width + outer * 2;
-    let target_height = height + outer * 2;
-    if u64::from(patch_width) * u64::from(patch_height) * 2
-        >= u64::from(target_width) * u64::from(target_height)
-    {
-        canvas.save();
-        canvas.set_shadow(Some(shadow));
-        canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
-        canvas.restore();
-        return Some(());
-    }
-
-    let mut patch = Canvas::new(patch_width, patch_height)?;
-    let patch_path = rounded_rect_path(
-        outer as f32,
-        outer as f32,
-        (patch_width - outer * 2) as f32,
-        (patch_height - outer * 2) as f32,
-        radius,
-    )?;
-    patch.set_shadow(Some(shadow));
-    patch.fill_path(&patch_path, Color::TRANSPARENT, FillRule::Winding);
-    let patch = patch.into_pixmap();
-    let cap_x = (outer + inner).min(patch_width / 2);
-    let cap_y = (outer + inner).min(patch_height / 2);
-    let source_x = [0, cap_x, patch_width - cap_x, patch_width];
-    let source_y = [0, cap_y, patch_height - cap_y, patch_height];
-    let target_x = [0, cap_x, target_width - cap_x, target_width];
-    let target_y = [0, cap_y, target_height - cap_y, target_height];
-    for row in 0..3 {
-        for column in 0..3 {
-            let tile_width = source_x[column + 1] - source_x[column];
-            let tile_height = source_y[row + 1] - source_y[row];
-            if tile_width == 0 || tile_height == 0 {
-                continue;
-            }
-            let tile = patch.clone_rect(tiny_skia::IntRect::from_xywh(
-                source_x[column] as i32,
-                source_y[row] as i32,
-                tile_width,
-                tile_height,
-            )?)?;
-            canvas.draw_pixmap_nearest(
-                tile.as_ref(),
-                x as f32 - outer as f32 + target_x[column] as f32,
-                y as f32 - outer as f32 + target_y[row] as f32,
-                (target_x[column + 1] - target_x[column]) as f32,
-                (target_y[row + 1] - target_y[row]) as f32,
-            );
-        }
-    }
-    canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
-    Some(())
-}
-
 /// Renders just the wallpaper backdrop at `width` x `height`, for the editor
 /// preview to show behind the image.
 #[allow(clippy::too_many_arguments)]
@@ -474,16 +414,17 @@ pub fn render_backdrop(
         if let Some(shadow) = image_shadow(wallpaper.shadow) {
             let (_, (offset_x, offset_y, _, _)) =
                 crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
-            paint_preview_shadow(
+            paint_rounded_shadow(
                 &mut canvas,
                 (
-                    offset_x.round() as u32,
-                    offset_y.round() as u32,
-                    image_width.round() as u32,
-                    image_height.round() as u32,
+                    offset_x.round() as f32,
+                    offset_y.round() as f32,
+                    image_width as f32,
+                    image_height as f32,
                 ),
                 wallpaper.corners.max(0.0) as f32,
                 shadow,
+                Color::WHITE,
             )?;
         }
     }
@@ -531,12 +472,28 @@ pub fn render_backdrop(
             wallpaper.corners.max(0.0) as f32,
         ) {
             canvas.save();
-            canvas.set_shadow(image_shadow(wallpaper.shadow));
-            canvas.fill_path(
-                &path,
-                color::parse_or(&color_value, Color::from_rgba8(255, 255, 255, 255)),
-                FillRule::Winding,
-            );
+            let fill = color::parse_or(&color_value, Color::from_rgba8(255, 255, 255, 255));
+            if let Some(shadow) = image_shadow(wallpaper.shadow) {
+                if paint_rounded_shadow(
+                    &mut canvas,
+                    (
+                        offset_x.round() as f32 - inset,
+                        offset_y.round() as f32 - inset,
+                        image_width as f32 + inset * 2.0,
+                        image_height as f32 + inset * 2.0,
+                    ),
+                    wallpaper.corners.max(0.0) as f32,
+                    shadow,
+                    fill,
+                )
+                .is_none()
+                {
+                    canvas.set_shadow(Some(shadow));
+                    canvas.fill_path(&path, fill, FillRule::Winding);
+                }
+            } else {
+                canvas.fill_path(&path, fill, FillRule::Winding);
+            }
             canvas.restore();
         }
     }
@@ -727,9 +684,6 @@ mod tests {
             (640, 360, 24.0, 50.0, 40),
             (1170, 452, 279.0, 100.0, 13),
             (15_534, 10, 0.0, 300.0, 13),
-            (15_535, 10, 0.0, 300.0, 13),
-            (17_000, 10, 0.0, 300.0, 13),
-            (10, 17_000, 0.0, 300.0, 13),
         ]
         .into_iter()
         .chain(cases)
@@ -750,11 +704,12 @@ mod tests {
             .unwrap();
             expected.set_shadow(Some(shadow));
             expected.fill_path(&path, Color::WHITE, FillRule::Winding);
-            paint_preview_shadow(
+            paint_rounded_shadow(
                 &mut actual,
-                (padding, padding, width, height),
+                (padding as f32, padding as f32, width as f32, height as f32),
                 radius,
                 shadow,
+                Color::WHITE,
             )
             .unwrap();
             assert!(
@@ -766,6 +721,308 @@ mod tests {
                     .all(|(expected, actual)| expected.abs_diff(*actual) <= 2),
                 "{width}x{height}, radius {radius}, shadow {strength}, padding {padding}"
             );
+        }
+    }
+
+    #[test]
+    fn large_screenshot_shadows_survive_export_and_png_reopen() {
+        for (horizontal, radius) in [(true, 0.0), (false, 0.0), (true, 24.0), (false, 24.0)] {
+            let settings = WallpaperSettings {
+                padding: 40.0,
+                corners: radius,
+                shadow: 50.0,
+                ..WallpaperSettings::default()
+            };
+            let (width, height) = if horizontal {
+                (17_000, 100)
+            } else {
+                (100, 17_000)
+            };
+            let (reference_width, reference_height) = if horizontal {
+                (1_200, 100)
+            } else {
+                (100, 1_200)
+            };
+            let make_image = |width, height| {
+                image::DynamicImage::ImageRgba8(RgbaImage::from_fn(width, height, |x, y| {
+                    image::Rgba([
+                        200,
+                        30,
+                        60,
+                        if (x / 20 + y / 20) % 3 == 0 { 128 } else { 255 },
+                    ])
+                }))
+            };
+            let mut reference = Canvas::new(reference_width + 80, reference_height + 80).unwrap();
+            let path = rounded_rect_path(
+                40.0,
+                40.0,
+                reference_width as f32,
+                reference_height as f32,
+                radius as f32,
+            )
+            .unwrap();
+            reference.set_shadow(image_shadow(settings.shadow));
+            reference.fill_path(&path, Color::WHITE, FillRule::Winding);
+            let reference = to_rgba(reference.pixmap());
+            let base = make_image(width, height);
+            let output = compose(Some(&base), width, height, &[], &settings, 1.0);
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(output.clone())
+                .write_to(&mut png, image::ImageFormat::Png)
+                .unwrap();
+            let reopened = image::load_from_memory(png.get_ref()).unwrap().to_rgba8();
+            assert_eq!(reopened, output);
+            let (preview, edges) = render_backdrop(
+                &settings,
+                output.width(),
+                output.height(),
+                f64::from(width),
+                f64::from(height),
+                None,
+                &[],
+                1.0,
+                [24, 24, 27],
+            )
+            .unwrap();
+            assert!(!edges.is_empty());
+            let mut preview = preview.as_bytes(0).unwrap().to_vec();
+            for pixel in preview.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let mut preview =
+                RgbaImage::from_raw(output.width(), output.height(), preview).unwrap();
+            image::imageops::overlay(&mut preview, &base.to_rgba8(), 40, 40);
+            for edge in edges {
+                let mut pixels = edge.image.as_bytes(0).unwrap().to_vec();
+                for pixel in pixels.as_chunks_mut::<4>().0 {
+                    pixel.swap(0, 2);
+                }
+                let edge_pixels = RgbaImage::from_raw(edge.width, edge.height, pixels).unwrap();
+                image::imageops::overlay(&mut preview, &edge_pixels, edge.x.into(), edge.y.into());
+            }
+            let mut expected = RgbaImage::from_pixel(
+                output.width(),
+                output.height(),
+                image::Rgba([24, 24, 27, 255]),
+            );
+            image::imageops::overlay(&mut expected, &reopened, 0, 0);
+            for y in 0..output.height() {
+                for x in 0..output.width() {
+                    let near_left = (40..40 + radius as u32 + 2).contains(&x);
+                    let near_right = (40 + width - radius as u32 - 2..40 + width).contains(&x);
+                    let near_top = (40..40 + radius as u32 + 2).contains(&y);
+                    let near_bottom = (40 + height - radius as u32 - 2..40 + height).contains(&y);
+                    let tolerance =
+                        if radius > 0.0 && (near_left || near_right) && (near_top || near_bottom) {
+                            3
+                        } else {
+                            2
+                        };
+                    assert!(
+                        preview
+                            .get_pixel(x, y)
+                            .0
+                            .iter()
+                            .zip(expected.get_pixel(x, y).0)
+                            .all(|(actual, expected)| actual.abs_diff(expected) <= tolerance),
+                        "preview differs at {x},{y}, horizontal {horizontal}, radius {radius}: {:?} vs {:?}",
+                        preview.get_pixel(x, y).0,
+                        expected.get_pixel(x, y).0
+                    );
+                }
+            }
+            let center = if horizontal {
+                (output.width() / 2, 35)
+            } else {
+                (35, output.height() / 2)
+            };
+            assert!(output.get_pixel(center.0, center.1).0[3] > 0);
+            for cross in 0..40 {
+                let (actual, expected) = if horizontal {
+                    ((output.width() / 2, cross), (reference.width() / 2, cross))
+                } else {
+                    (
+                        (cross, output.height() / 2),
+                        (cross, reference.height() / 2),
+                    )
+                };
+                assert!(
+                    output
+                        .get_pixel(actual.0, actual.1)
+                        .0
+                        .iter()
+                        .zip(reference.get_pixel(expected.0, expected.1).0)
+                        .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                    "middle shadow differs, horizontal {horizontal}, radius {radius}, {cross}"
+                );
+            }
+            for cross in 0..180 {
+                for distance in 0..200 {
+                    let points = if horizontal {
+                        [
+                            ((distance, cross), (distance, cross)),
+                            (
+                                (output.width() - 1 - distance, cross),
+                                (reference.width() - 1 - distance, cross),
+                            ),
+                        ]
+                    } else {
+                        [
+                            ((cross, distance), (cross, distance)),
+                            (
+                                (cross, output.height() - 1 - distance),
+                                (cross, reference.height() - 1 - distance),
+                            ),
+                        ]
+                    };
+                    for (actual, expected) in points {
+                        if (40..40 + width).contains(&actual.0)
+                            && (40..40 + height).contains(&actual.1)
+                        {
+                            continue;
+                        }
+                        assert!(
+                            output
+                                .get_pixel(actual.0, actual.1)
+                                .0
+                                .iter()
+                                .zip(reference.get_pixel(expected.0, expected.1).0)
+                                .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                            "horizontal {horizontal}, {actual:?}, {expected:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_inset_and_framed_shadows_match_smaller_exports() {
+        for (style, inset, horizontal) in [
+            ("none", 6.0, true),
+            ("none", 6.0, false),
+            ("windows-dark", 0.0, true),
+            ("windows-dark", 0.0, false),
+            ("macos-light", 0.0, true),
+            ("macos-light", 0.0, false),
+        ] {
+            let mut settings = WallpaperSettings {
+                padding: 40.0,
+                shadow: 50.0,
+                inset,
+                ..WallpaperSettings::default()
+            };
+            settings.window_frame.style = style.into();
+            let (width, height) = if horizontal {
+                (17_000, 100)
+            } else {
+                (100, 17_000)
+            };
+            let (reference_width, reference_height) = if horizontal {
+                (1_200, 100)
+            } else {
+                (100, 1_200)
+            };
+            let make_image = |width, height| {
+                image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                    width,
+                    height,
+                    image::Rgba([200, 30, 60, 255]),
+                ))
+            };
+            let source = make_image(width, height);
+            let output = compose(Some(&source), width, height, &[], &settings, 1.0);
+            let title_height = crate::render::window_frame::title_bar_height(style, 1.0) as u32;
+            let mut reference =
+                Canvas::new(reference_width + 80, reference_height + title_height + 80).unwrap();
+            let radius = if style == "none" {
+                0.0
+            } else {
+                crate::render::window_frame::corner_radius(style) as f32
+            };
+            let path = rounded_rect_path(
+                40.0 - inset as f32,
+                40.0 - inset as f32,
+                reference_width as f32 + inset as f32 * 2.0,
+                (reference_height + title_height) as f32 + inset as f32 * 2.0,
+                radius,
+            )
+            .unwrap();
+            reference.set_shadow(image_shadow(settings.shadow));
+            reference.fill_path(&path, Color::WHITE, FillRule::Winding);
+            let reference = to_rgba(reference.pixmap());
+            let shadow_y = if inset > 0.0 { 29 } else { 35 };
+            assert!(reference.get_pixel(reference.width() / 2, shadow_y).0[3] > 0);
+            assert!(
+                output.get_pixel(output.width() / 2, shadow_y).0[3] > 0,
+                "missing shadow for {style}, inset {inset}, horizontal {horizontal}"
+            );
+            for y in 0..shadow_y + 1 {
+                assert!(
+                    output
+                        .get_pixel(output.width() / 2, y)
+                        .0
+                        .iter()
+                        .zip(reference.get_pixel(reference.width() / 2, y).0)
+                        .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                    "shadow differs for {style}, inset {inset}, horizontal {horizontal}, y {y}"
+                );
+            }
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(output.clone())
+                .write_to(&mut png, image::ImageFormat::Png)
+                .unwrap();
+            assert_eq!(
+                image::load_from_memory(png.get_ref()).unwrap().to_rgba8(),
+                output
+            );
+            let inset_color = if inset > 0.0 {
+                let pixels = from_rgba(&source.to_rgba8()).unwrap();
+                crate::render::color_detection::dominant_inset_color(
+                    pixels.as_ref(),
+                    crate::render::color_detection::ContentBounds::default(),
+                )
+            } else {
+                None
+            };
+            assert_eq!(inset_color.is_some(), inset > 0.0);
+            let (preview, _) = render_backdrop(
+                &settings,
+                output.width(),
+                output.height(),
+                f64::from(width),
+                f64::from(height),
+                inset_color,
+                &[],
+                1.0,
+                [24, 24, 27],
+            )
+            .unwrap();
+            let preview = preview.as_bytes(0).unwrap();
+            let mut expected = RgbaImage::from_pixel(
+                output.width(),
+                output.height(),
+                image::Rgba([24, 24, 27, 255]),
+            );
+            image::imageops::overlay(&mut expected, &output, 0, 0);
+            for y in 0..shadow_y + 1 {
+                let x = output.width() / 2;
+                let offset = ((y * output.width() + x) * 4) as usize;
+                let actual = [
+                    preview[offset + 2],
+                    preview[offset + 1],
+                    preview[offset],
+                    preview[offset + 3],
+                ];
+                assert!(
+                    actual
+                        .iter()
+                        .zip(expected.get_pixel(x, y).0)
+                        .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                    "preview shadow differs for {style}, inset {inset}, horizontal {horizontal}, y {y}"
+                );
+            }
         }
     }
 

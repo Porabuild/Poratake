@@ -4,7 +4,7 @@
 
 use tiny_skia::{Color, FillRule, LineCap, PixmapRef, Rect, Stroke};
 
-use crate::render::canvas::{circle_path, rounded_rect_path, Canvas, Shadow};
+use crate::render::canvas::{circle_path, paint_rounded_shadow, rounded_rect_path, Canvas, Shadow};
 use crate::render::color;
 
 pub const TITLE_BAR_HEIGHT: f64 = 28.0;
@@ -144,13 +144,20 @@ pub fn render_chrome(
     canvas.save();
     // The shadow needs something opaque to cast from, which is the frame's own
     // content colour.
-    canvas.set_shadow(shadow);
-    if shadow.is_some() {
-        canvas.fill_path(
-            &outline,
-            color::parse_or(theme.content, Color::from_rgba8(255, 255, 255, 255)),
-            FillRule::Winding,
-        );
+    if let Some(shadow) = shadow {
+        let fill = color::parse_or(theme.content, Color::from_rgba8(255, 255, 255, 255));
+        if paint_rounded_shadow(
+            canvas,
+            (x as f32, y as f32, frame_width as f32, frame_height as f32),
+            radius as f32,
+            shadow,
+            fill,
+        )
+        .is_none()
+        {
+            canvas.set_shadow(Some(shadow));
+            canvas.fill_path(&outline, fill, FillRule::Winding);
+        }
     }
     canvas.set_shadow(None);
     canvas.clip_path(&outline, FillRule::Winding);

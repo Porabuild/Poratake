@@ -113,6 +113,9 @@ a corner annotation, and crop and selection handles. Translucent custom
 backgrounds can differ by up to three color levels. Polish copy is checked against editor export
 separately. Insets, balance, attached layers, arbitrary zoom and combinations
 of frames with wallpaper corners remain outside these comparisons.
+Separate CPU checks save and reopen 17,000px-wide and -tall captures with
+plain, inset and framed shadows and compare their preview shadows with the PNG.
+Actual GPUI GPU rendering at those dimensions remains unverified.
 Custom `PORATAKE_PARITY_IMAGE` inputs skip that fixed-size workflow. Overlays use
 a synthetic desktop with ordered overlapping windows, negative display origins
 and correctly scaled physical bounds. Window/display picker states cover hover,

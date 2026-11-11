@@ -560,6 +560,93 @@ pub fn rounded_rect_path(x: f32, y: f32, width: f32, height: f32, radius: f32) -
     builder.finish()
 }
 
+pub fn paint_rounded_shadow(
+    canvas: &mut Canvas,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    shadow: Shadow,
+    fill: Color,
+) -> Option<()> {
+    let (x, y, width, height) = rect;
+    let path = rounded_rect_path(x, y, width, height, radius)?;
+    let spread = blur::box_radius(blur::sigma_for_shadow_blur(shadow.blur)) as u32 * 3 + 2;
+    let full_shadow_fits = (path.bounds().width() + spread as f32 * 2.0).ceil()
+        <= MAX_SHADOW_SURFACE_SIZE as f32
+        && (path.bounds().height() + spread as f32 * 2.0).ceil() <= MAX_SHADOW_SURFACE_SIZE as f32;
+    let outer = spread + shadow.offset_x.abs().max(shadow.offset_y.abs()).ceil() as u32 + 2;
+    let inner = radius.min(width / 2.0).min(height / 2.0).max(0.0).ceil() as u32 + outer;
+    let max_content = (inner * 2 + 1) as f32;
+    let content_width = width.min(max_content + width.fract());
+    let content_height = height.min(max_content + height.fract());
+    let fraction_x = x - x.floor();
+    let fraction_y = y - y.floor();
+    let patch_width = (fraction_x + content_width).ceil() as u32 + outer * 2;
+    let patch_height = (fraction_y + content_height).ceil() as u32 + outer * 2;
+    let target_width = (fraction_x + width).ceil() as u32 + outer * 2;
+    let target_height = (fraction_y + height).ceil() as u32 + outer * 2;
+    if canvas.transform() != Transform::identity()
+        || canvas.shadow_scale != 1.0
+        || (full_shadow_fits
+            && u64::from(patch_width) * u64::from(patch_height) * 2
+                >= u64::from(target_width) * u64::from(target_height))
+    {
+        canvas.save();
+        canvas.set_shadow(Some(shadow));
+        canvas.fill_path(&path, fill, FillRule::Winding);
+        canvas.restore();
+        return Some(());
+    }
+
+    let mut patch = Canvas::new(patch_width, patch_height)?;
+    let patch_path = rounded_rect_path(
+        outer as f32 + fraction_x,
+        outer as f32 + fraction_y,
+        content_width,
+        content_height,
+        radius,
+    )?;
+    patch.set_shadow(Some(shadow));
+    patch.fill_path(&patch_path, Color::TRANSPARENT, FillRule::Winding);
+    let patch = patch.into_pixmap();
+    let cap_x = (outer + inner).min(patch_width / 2);
+    let cap_y = (outer + inner).min(patch_height / 2);
+    let source_x = [0, cap_x, patch_width - cap_x, patch_width];
+    let source_y = [0, cap_y, patch_height - cap_y, patch_height];
+    let target_x = [0, cap_x, target_width - cap_x, target_width];
+    let target_y = [0, cap_y, target_height - cap_y, target_height];
+    let mut tiles = Vec::with_capacity(9);
+    for row in 0..3 {
+        for column in 0..3 {
+            let tile_width = source_x[column + 1] - source_x[column];
+            let tile_height = source_y[row + 1] - source_y[row];
+            if tile_width == 0 || tile_height == 0 {
+                continue;
+            }
+            let tile = patch.clone_rect(tiny_skia::IntRect::from_xywh(
+                source_x[column] as i32,
+                source_y[row] as i32,
+                tile_width,
+                tile_height,
+            )?)?;
+            tiles.push((tile, column, row));
+        }
+    }
+    canvas.save();
+    canvas.set_shadow(None);
+    for (tile, column, row) in tiles {
+        canvas.draw_pixmap_nearest(
+            tile.as_ref(),
+            x.floor() - outer as f32 + target_x[column] as f32,
+            y.floor() - outer as f32 + target_y[row] as f32,
+            (target_x[column + 1] - target_x[column]) as f32,
+            (target_y[row + 1] - target_y[row]) as f32,
+        );
+    }
+    canvas.fill_path(&path, fill, FillRule::Winding);
+    canvas.restore();
+    Some(())
+}
+
 pub struct PreviewEdge {
     pub x: u32,
     pub y: u32,
@@ -708,6 +795,61 @@ pub fn circle_path(x: f32, y: f32, radius: f32) -> Option<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiled_rounded_shadows_match_fractional_full_rasterization() {
+        for (x, y, width, height, radius) in [
+            (40.25, 39.75, 700.75, 100.25, 23.5),
+            (-5.25, 30.5, 720.5, 130.75, 16.5),
+            (20.5, -3.75, 130.25, 700.75, 70.0),
+            (12.75, 9.25, 770.5, 160.5, 0.0),
+        ] {
+            for background in [Color::TRANSPARENT, Color::from_rgba8(36, 104, 172, 255)] {
+                let shadow = crate::editor::export::image_shadow(50.0).unwrap();
+                let fill = Color::from_rgba8(18, 32, 46, 255);
+                let mut expected = Canvas::new(800, 800).unwrap();
+                let mut actual = Canvas::new(800, 800).unwrap();
+                expected.fill_all(background);
+                actual.fill_all(background);
+                let path = rounded_rect_path(x, y, width, height, radius).unwrap();
+                expected.set_shadow(Some(shadow));
+                expected.fill_path(&path, fill, FillRule::Winding);
+                paint_rounded_shadow(&mut actual, (x, y, width, height), radius, shadow, fill)
+                    .unwrap();
+                assert!(
+                    expected
+                        .pixmap()
+                        .data()
+                        .iter()
+                        .zip(actual.pixmap().data())
+                        .all(|(expected, actual)| expected.abs_diff(*actual) <= 2),
+                    "{x},{y} {width}x{height}, radius {radius}, background {background:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transformed_rounded_shadows_use_the_full_rasterizer() {
+        for (transformed, shadow_scale) in [(true, 1.0), (false, 1.5), (true, 1.5)] {
+            let shadow = crate::editor::export::image_shadow(50.0).unwrap();
+            let mut expected = Canvas::new(800, 400).unwrap();
+            let mut actual = Canvas::new(800, 400).unwrap();
+            for canvas in [&mut expected, &mut actual] {
+                if transformed {
+                    canvas.translate(6.0, 4.0);
+                    canvas.scale(1.1, 1.2);
+                }
+                canvas.set_shadow_scale(shadow_scale);
+            }
+            let rect = (40.0, 40.0, 600.0, 200.0);
+            let path = rounded_rect_path(rect.0, rect.1, rect.2, rect.3, 24.0).unwrap();
+            expected.set_shadow(Some(shadow));
+            expected.fill_path(&path, Color::WHITE, FillRule::Winding);
+            paint_rounded_shadow(&mut actual, rect, 24.0, shadow, Color::WHITE).unwrap();
+            assert_eq!(actual.pixmap().data(), expected.pixmap().data());
+        }
+    }
 
     #[test]
     fn preview_edges_match_rounded_image_clipping() {
