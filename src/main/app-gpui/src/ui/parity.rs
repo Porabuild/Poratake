@@ -934,6 +934,9 @@ pub fn capture_editor_interaction_states() {
                     );
                 }
             }
+            for with_background in [false, true] {
+                workflows::balanced_attachment_edges(&mut cx, &scratch, scale, with_background);
+            }
         }
         workflows::balance_restoration(&mut cx, &scratch, 1., 20., false, 8.);
     }

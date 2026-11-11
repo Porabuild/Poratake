@@ -1274,6 +1274,163 @@ pub(super) fn balance_restoration(
     cx.run_until_parked();
 }
 
+pub(super) fn balanced_attachment_edges(
+    cx: &mut HeadlessAppContext,
+    scratch: &Path,
+    scale: f32,
+    with_background: bool,
+) {
+    use crate::editor::layers::Edge;
+
+    for (edge, primary_x, primary_y, width, height, redact) in [
+        (Edge::Left, 120, 0, 260, 120, (15., 80., 30., 20.)),
+        (Edge::Top, 0, 140, 140, 260, (80., 5., 20., 30.)),
+        (Edge::Bottom, 0, 0, 140, 260, (80., 125., 20., 30.)),
+    ] {
+        let name = format!("balance-edge-{scale}-{with_background}-{edge:?}");
+        let source = scratch.join(format!("{name}.png"));
+        image::RgbaImage::from_fn(200, 160, |x, y| {
+            if (100..120).contains(&x) && (85..105).contains(&y) {
+                image::Rgba([64, 112, 192, 128])
+            } else if (40..160).contains(&x) && (30..130).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else if (5..195).contains(&x) && (5..155).contains(&y) {
+                image::Rgba([230, 230, 230, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        })
+        .save(&source)
+        .unwrap();
+        let attached = scratch.join(format!("{name}-attachment.png"));
+        image::RgbaImage::from_pixel(100, 100, image::Rgba([240, 80, 64, 255]))
+            .save(&attached)
+            .unwrap();
+        let padding_setting = if with_background { 20. } else { 0. };
+        crate::history_store::add_item(
+            HistoryItem {
+                id: name.clone(),
+                timestamp: 0,
+                original_path: source.to_string_lossy().into_owned(),
+                r#type: HistoryItemType::Screenshot,
+                editor_state: Some(serde_json::json!({"wallpaper": {
+                    "padding": padding_setting,
+                    "balance": true,
+                    "gradient": with_background.then(|| serde_json::json!({
+                        "id": "balance-background",
+                        "colors": ["#2468ac"],
+                        "angle": 0
+                    }))
+                }})),
+                duration: None,
+            },
+            100,
+            true,
+        );
+        let padding = (padding_setting as f32 * scale).round() as u32;
+        let mut previous = None;
+        for reopened in [false, true] {
+            let editor = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            if !reopened {
+                editor
+                    .update(cx, |editor, _, cx| {
+                        editor.push_image_layer(
+                            attached.to_string_lossy().into_owned(),
+                            100.,
+                            100.,
+                            edge,
+                            cx,
+                        );
+                        editor
+                            .history
+                            .push(vec![crate::editor::annotations::Annotation::Redact {
+                                id: "balance-edge-redaction".into(),
+                                x: redact.0,
+                                y: redact.1,
+                                width: redact.2,
+                                height: redact.3,
+                                style: "pixelate".into(),
+                                intensity: 5.,
+                            }]);
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, editor.into());
+            }
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = 1. / scale;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            let (bounds, png, matte) = cx.update(|cx| {
+                let editor = editor.read(cx).unwrap();
+                assert_eq!(
+                    editor.snapshot.borrow().balance_crop,
+                    Some((30., 20., 30., 20.))
+                );
+                let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+                (
+                    editor.bounds.borrow().unwrap(),
+                    editor.export_png().unwrap(),
+                    image::Rgba([
+                        (theme.r * 255.).round() as u8,
+                        (theme.g * 255.).round() as u8,
+                        (theme.b * 255.).round() as u8,
+                        255,
+                    ]),
+                )
+            });
+            if let Some(previous) = &previous {
+                assert_eq!(&png, previous, "{name} must reopen with the same output");
+            } else {
+                previous = Some(png.clone());
+            }
+            let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+            assert_eq!(
+                saved.dimensions(),
+                (width + padding * 2, height + padding * 2),
+                "{name} must use the balanced primary dimensions"
+            );
+            let (sample_x, sample_y) = match edge {
+                Edge::Left | Edge::Top => (padding + 30, padding + 30),
+                Edge::Bottom => (padding + 30, padding + 150),
+                _ => unreachable!(),
+            };
+            assert_eq!(saved.get_pixel(sample_x, sample_y).0, [240, 80, 64, 255]);
+            let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+            image::imageops::overlay(&mut composited, &saved, 0, 0);
+            let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+            let left = ((f32::from(bounds.left()) * scale).round() as i32 + 30
+                - padding as i32
+                - primary_x) as u32;
+            let top = ((f32::from(bounds.top()) * scale).round() as i32 + 20
+                - padding as i32
+                - primary_y) as u32;
+            for y in 0..saved.height() {
+                for x in 0..saved.width() {
+                    let actual = screenshot.get_pixel(left + x, top + y).0;
+                    let expected = composited.get_pixel(x, y).0;
+                    assert!(
+                        actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                        "{name}, reopened {reopened}, at {x},{y}: {actual:?} vs {expected:?}"
+                    );
+                }
+            }
+            cx.update_window(editor.into(), |_, window, _| window.remove_window())
+                .unwrap();
+            cx.run_until_parked();
+        }
+    }
+}
+
 pub(super) fn large_attachment_preview(cx: &mut HeadlessAppContext, scratch: &Path) {
     let blue = image::Rgba([64, 112, 192, 255]);
     let red = image::Rgba([240, 80, 64, 255]);

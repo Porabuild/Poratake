@@ -10,8 +10,13 @@ use gpui::{
 };
 use herogpui::gpui;
 use raw_window_handle::RawWindowHandle;
+use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SIZE};
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, EnumThreadWindows, PeekMessageW, PostQuitMessage, SendMessageW,
+    TranslateMessage, MSG, PM_REMOVE, WM_QUIT, WM_SIZE,
+};
 
 static BASELINE_PROFILE: OnceLock<String> = OnceLock::new();
 
@@ -83,12 +88,32 @@ pub(super) fn create(
         inner: window.sprite_atlas(),
         keys: parking_lot::Mutex::new(HashSet::new()),
     });
-    Ok(Some(Box::new(Renderer { window, atlas })))
+    Ok(Some(Box::new(Renderer {
+        window: Some(window),
+        atlas,
+    })))
 }
 
 struct Renderer {
-    window: Box<dyn PlatformWindow>,
+    window: Option<Box<dyn PlatformWindow>>,
     atlas: Arc<TrackingAtlas>,
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        drop(self.window.take());
+        let mut message = MSG::default();
+        unsafe {
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                if message.message == WM_QUIT {
+                    PostQuitMessage(message.wParam.0 as i32);
+                    break;
+                }
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
 }
 
 struct TrackingAtlas {
@@ -125,6 +150,8 @@ impl Renderer {
     fn resize(&mut self, target: Size<DevicePixels>) -> anyhow::Result<()> {
         let handle = self
             .window
+            .as_ref()
+            .unwrap()
             .window_handle()
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let RawWindowHandle::Win32(handle) = handle.as_raw() else {
@@ -152,12 +179,12 @@ impl PlatformHeadlessRenderer for Renderer {
         target: Size<DevicePixels>,
     ) -> anyhow::Result<image::RgbaImage> {
         self.resize(target)?;
-        self.window.render_to_image(scene)
+        self.window.as_ref().unwrap().render_to_image(scene)
     }
 
     fn render_scene(&mut self, scene: &Scene, target: Size<DevicePixels>) -> anyhow::Result<()> {
         self.resize(target)?;
-        self.window.draw(scene);
+        self.window.as_ref().unwrap().draw(scene);
         Ok(())
     }
 
@@ -171,6 +198,7 @@ pub(super) fn verify_image_sampling(
     output: &std::path::Path,
     scale: f32,
 ) {
+    let window_count = thread_window_count();
     let images = [[64, 80, 240, 255], [255, 255, 255, 255]].map(|color| {
         Arc::new(gpui::RenderImage::new(smallvec::smallvec![
             image::Frame::new(image::RgbaImage::from_pixel(16, 16, image::Rgba(color)))
@@ -183,6 +211,7 @@ pub(super) fn verify_image_sampling(
         })
         .unwrap();
     let probe = probe.into();
+    assert_eq!(thread_window_count(), window_count + 1);
     super::settle(cx, probe);
     let bounds = super::measured("atlas-images", 0);
     for (actual, expected) in [
@@ -218,7 +247,28 @@ pub(super) fn verify_image_sampling(
     cx.update_window(probe, |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
+    assert_eq!(
+        thread_window_count(),
+        window_count,
+        "the hidden renderer window must be destroyed after its test window closes"
+    );
     println!("scaled image sampling stayed inside its atlas tile");
+}
+
+fn thread_window_count() -> usize {
+    unsafe extern "system" fn count_window(_: HWND, count: LPARAM) -> BOOL {
+        unsafe { *(count.0 as *mut usize) += 1 };
+        BOOL(1)
+    }
+    let mut count = 0;
+    unsafe {
+        let _ = EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(count_window),
+            LPARAM(&mut count as *mut usize as isize),
+        );
+    }
+    count
 }
 
 struct ImageSamplingProbe {

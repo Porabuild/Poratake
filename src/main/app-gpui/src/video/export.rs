@@ -1153,7 +1153,15 @@ mod tests {
                 1 => [64, 160, 64, 255],
                 _ => [48, 80, 192, 255],
             };
-            encoder.write_frame(color.repeat(320 * 180)).unwrap();
+            let mut frame = color.repeat(320 * 180);
+            for y in 60..80 {
+                for x in 160..190 {
+                    let shade = if x % 2 == 0 { 16 } else { 240 };
+                    let pixel = (y * 320 + x) * 4;
+                    frame[pixel..pixel + 4].copy_from_slice(&[shade, shade, shade, 255]);
+                }
+            }
+            encoder.write_frame(frame).unwrap();
         }
         encoder.finish().unwrap();
         let mut state = VideoEditorState {
@@ -1186,20 +1194,34 @@ mod tests {
             end_time: 2.,
             canvas_width: 320.,
             canvas_height: 180.,
-            annotations: vec![Annotation::Rectangle {
-                id: "shape".into(),
-                x: 24.,
-                y: 24.,
-                width: 72.,
-                height: 48.,
-                stroke: "#ffffff".into(),
-                stroke_width: 3.,
-                fill: Some("#e04040".into()),
-            }],
+            annotations: vec![
+                Annotation::Rectangle {
+                    id: "shape".into(),
+                    x: 24.,
+                    y: 24.,
+                    width: 72.,
+                    height: 48.,
+                    stroke: "#ffffff".into(),
+                    stroke_width: 3.,
+                    fill: Some("#e04040".into()),
+                },
+                Annotation::Redact {
+                    id: "pixelate".into(),
+                    x: 160.,
+                    y: 60.,
+                    width: 30.,
+                    height: 20.,
+                    style: "pixelate".into(),
+                    intensity: 5.,
+                },
+            ],
         });
         model::save_state(&recording, &state);
         assert_eq!(model::load_state(&recording), state);
         let mut preview = preview::Source::open(&recording, model::load_state(&recording)).unwrap();
+        let mut unredacted_state = state.clone();
+        unredacted_state.drawing_segments[0].annotations.pop();
+        let mut unredacted = preview::Source::open(&recording, unredacted_state).unwrap();
         let output = directory.path().join("edited.mp4");
         let mut progress = 0.;
         run(
@@ -1220,6 +1242,7 @@ mod tests {
         for time in [0., 0.25, 0.5, 1.25] {
             let expected = preview.compose(time, None).unwrap();
             let expected = to_bgra(&expected);
+            let original = to_bgra(&unredacted.compose(time, None).unwrap());
             let actual = exported.frame_at(time).unwrap();
             assert_eq!(actual.bgra.len(), expected.len());
             let error: u64 = actual
@@ -1251,6 +1274,26 @@ mod tests {
             assert!(
                 drawing_error as f64 / (24. * 40. * 3.) < 3.,
                 "the exported drawing differs from preview at {time}s"
+            );
+            let mut redaction_change = 0_u64;
+            let mut redaction_error = 0_u64;
+            for y in 72..92 {
+                for x in 172..202 {
+                    let pixel = (y * info.width as usize + x) * 4;
+                    for channel in 0..3 {
+                        redaction_change += u64::from(
+                            expected[pixel + channel].abs_diff(original[pixel + channel]),
+                        );
+                        redaction_error += u64::from(
+                            actual.bgra[pixel + channel].abs_diff(expected[pixel + channel]),
+                        );
+                    }
+                }
+            }
+            assert!(redaction_change as f64 / (20. * 30. * 3.) > 8.);
+            assert!(
+                redaction_error as f64 / (20. * 30. * 3.) < 8.,
+                "the exported redaction differs from preview at {time}s"
             );
         }
     }

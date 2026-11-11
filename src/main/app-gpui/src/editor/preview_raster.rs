@@ -738,6 +738,64 @@ mod tests {
     }
 
     #[test]
+    fn offset_pixelation_matches_export_at_block_boundaries() {
+        let source = image::RgbaImage::from_fn(260, 120, |x, y| {
+            if x < 120 {
+                image::Rgba([240, 80, 64, 255])
+            } else if (130..250).contains(&x) && (10..110).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else {
+                image::Rgba([230, 230, 230, 255])
+            }
+        });
+        let base = crate::editor::export::from_rgba(&source).unwrap();
+        let bgra = to_bgra(&base);
+        let surface = Surface {
+            image_id: None,
+            width: 260,
+            height: 120,
+            offset_x: 90.,
+            offset_y: -20.,
+            pixels: Some(&bgra),
+            matte: None,
+        };
+        let annotation = Annotation::Redact {
+            id: "left".into(),
+            x: 15.,
+            y: 80.,
+            width: 30.,
+            height: 20.,
+            style: "pixelate".into(),
+            intensity: 5.,
+        };
+        let patch = patch(&annotation, &[], &surface, 1.).unwrap();
+        let mut expected = Canvas::new(260, 120).unwrap();
+        expected.draw_pixmap(base.as_ref(), 0., 0., 260., 120.);
+        expected.translate(90., -20.);
+        renderer::draw(&mut expected, &annotation);
+        let expected = expected.into_pixmap();
+        let mut actual = base.clone();
+        actual.draw_pixmap(
+            (patch.x + surface.offset_x) as i32,
+            (patch.y + surface.offset_y) as i32,
+            patch.pixmap.as_ref(),
+            &PixmapPaint {
+                opacity: 1.,
+                blend_mode: BlendMode::Source,
+                quality: FilterQuality::Nearest,
+            },
+            Transform::identity(),
+            None,
+        );
+        for (index, (actual, expected)) in actual.data().iter().zip(expected.data()).enumerate() {
+            assert!(
+                actual.abs_diff(*expected) <= 1,
+                "channel {index}: {actual} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn translucent_redaction_uses_the_export_alpha_before_the_matte() {
         let mut base = base_pixmap(100, 80);
         for y in 0..80 {

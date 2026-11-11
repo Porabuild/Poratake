@@ -592,7 +592,7 @@ fn pixelate_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64,
     let Some(region) = clamp_region(canvas, x, y, width, height) else {
         return;
     };
-    let Some(source) = canvas.read_region(
+    let Some(mut source) = canvas.read_region(
         region.device_x,
         region.device_y,
         region.device_width,
@@ -608,12 +608,30 @@ fn pixelate_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64,
     let Some(small) = downsample(&source, small_width, small_height) else {
         return;
     };
+    let source_width = source.width() as u64;
+    let source_height = source.height() as u64;
+    let columns: Vec<usize> = (0..source_width)
+        .map(|x| ((((x * 2 + 1) * u64::from(small_width)) - 1) / (source_width * 2)) as usize)
+        .collect();
+    let small_pixels = small.data();
+    for (y, row) in source
+        .data_mut()
+        .chunks_exact_mut(source_width as usize * 4)
+        .enumerate()
+    {
+        let sample_y =
+            ((((y as u64 * 2 + 1) * u64::from(small_height)) - 1) / (source_height * 2)) as usize;
+        for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let sample = (sample_y * small_width as usize + columns[x]) * 4;
+            pixel.copy_from_slice(&small_pixels[sample..sample + 4]);
+        }
+    }
 
     canvas.save();
     canvas.set_shadow(None);
     canvas.set_global_alpha(1.0);
     canvas.draw_pixmap_nearest(
-        small.as_ref(),
+        source.as_ref(),
         region.x,
         region.y,
         region.width,
@@ -953,6 +971,42 @@ mod tests {
             },
         );
         assert_eq!(covered(&canvas), 32 * 32);
+    }
+
+    #[test]
+    fn pixelation_uses_the_same_nearest_boundaries_at_each_position() {
+        let mut source = Pixmap::new(30, 1).unwrap();
+        for (x, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let red = match x {
+                0..=7 => 10,
+                8..=14 => 20,
+                15..=22 => 30,
+                _ => 40,
+            };
+            *pixel = [red, 0, 0, 255];
+        }
+        let mut canvas = Canvas::new(160, 1).unwrap();
+        for x in [1., 105.] {
+            canvas.draw_pixmap(source.as_ref(), x, 0., 30., 1.);
+            pixelate_region(&mut canvas, f64::from(x), 0., 30., 1., 8.);
+        }
+        for x in [1, 105] {
+            for i in 0..30 {
+                let expected = match i {
+                    0..=7 => 10,
+                    8..=14 => 18,
+                    15..=22 => 30,
+                    _ => 38,
+                };
+                assert_eq!(canvas.pixmap().data()[(x + i) * 4], expected, "{x}+{i}");
+            }
+        }
     }
 
     #[test]

@@ -39,6 +39,9 @@ the image-baseline matrix uses the four scales listed above.
 Each Windows case first renders adjacent red/white image atlas tiles at fractional
 bounds. Interior and edge samples must retain the red source color independently
 of image baselines; `image-atlas-sampling.png` preserves the GPU evidence.
+It also verifies that closing the headless test window destroys its hidden native
+renderer window. The harness drains the Windows foreground queue on renderer
+teardown so GPUI can complete its asynchronous window cleanup.
 The vendored GPUI 0.3.11 Windows backend clamps sampling to tile texel centers.
 Without that shader fix, the local probe sampled neighboring white pixels.
 
@@ -119,10 +122,11 @@ against editor export separately. Balanced single captures are checked at 100%,
 125% and 200%, with zero or 20px padding, solid or transparent backgrounds,
 translucent pixels, annotations, crop, undo and history reopen. A 100% inset case
 checks the expected source-edge color and backdrop replacement after an equal-size
-crop. A right attachment without frames, inset, corners or shadows is checked at
-all three scales, both padding and background variants, including an edge-crossing
-pixelated redaction, clipping and the reopened preview. Other balanced attachments, frames, corners, shadows, arbitrary
-zoom and inset combinations remain outside these comparisons. In the unframed layered path, annotations and black, pixelated and
+crop. Attachments on all four edges without frames, inset, corners or shadows are
+checked at all three scales with padding and background variants, including an
+edge-crossing pixelated redaction and the reopened preview. The right attachment
+also checks clipping outside the canvas. Balanced frames, corners, shadows,
+arbitrary zoom and inset combinations remain outside these comparisons. In the unframed layered path, annotations and black, pixelated and
 blurred redactions crossing into attachments are compared with saved pixels at
 125% and 200%; overlapping and clipped redactions, crop, undo and atlas
 retirement are also checked. Direct Electron pixel comparison and framed or
