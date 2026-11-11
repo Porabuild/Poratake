@@ -114,7 +114,7 @@ impl WallpaperSettings {
             && !self.balance
             && self.inset <= 0.0
             && ((framed && self.corners <= 0.0)
-                || (!framed && self.corners > 0.0 && self.shadow <= 0.0))
+                || (!framed && (self.corners > 0.0 || self.shadow > 0.0)))
     }
 
     /// Selecting a gradient with no padding yet opens the frame up, matching

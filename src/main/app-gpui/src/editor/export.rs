@@ -7,7 +7,7 @@ use tiny_skia::{Color, FillRule, Pixmap};
 
 use crate::editor::annotations::Annotation;
 use crate::editor::wallpaper::WallpaperSettings;
-use crate::render::canvas::{rounded_rect_path, Canvas, Shadow};
+use crate::render::canvas::{rounded_rect_path, Canvas, Shadow, MAX_SHADOW_SURFACE_SIZE};
 use crate::render::{annotations as annotation_renderer, color, gradient};
 
 #[derive(Clone)]
@@ -352,6 +352,83 @@ fn paint_background_source(
     canvas.fill_all(single);
 }
 
+fn paint_preview_shadow(
+    canvas: &mut Canvas,
+    rect: (u32, u32, u32, u32),
+    radius: f32,
+    shadow: Shadow,
+) -> Option<()> {
+    let (x, y, width, height) = rect;
+    let path = rounded_rect_path(x as f32, y as f32, width as f32, height as f32, radius)?;
+    let spread =
+        crate::render::blur::box_radius(crate::render::blur::sigma_for_shadow_blur(shadow.blur))
+            as u32
+            * 3
+            + 2;
+    if width + spread * 2 > MAX_SHADOW_SURFACE_SIZE || height + spread * 2 > MAX_SHADOW_SURFACE_SIZE
+    {
+        canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
+        return Some(());
+    }
+    let outer = spread + shadow.offset_x.abs().max(shadow.offset_y.abs()).ceil() as u32 + 2;
+    let inner = radius.ceil().max(0.0) as u32 + outer;
+    let patch_width = width.min(inner * 2 + 1) + outer * 2;
+    let patch_height = height.min(inner * 2 + 1) + outer * 2;
+    let target_width = width + outer * 2;
+    let target_height = height + outer * 2;
+    if u64::from(patch_width) * u64::from(patch_height) * 2
+        >= u64::from(target_width) * u64::from(target_height)
+    {
+        canvas.save();
+        canvas.set_shadow(Some(shadow));
+        canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
+        canvas.restore();
+        return Some(());
+    }
+
+    let mut patch = Canvas::new(patch_width, patch_height)?;
+    let patch_path = rounded_rect_path(
+        outer as f32,
+        outer as f32,
+        (patch_width - outer * 2) as f32,
+        (patch_height - outer * 2) as f32,
+        radius,
+    )?;
+    patch.set_shadow(Some(shadow));
+    patch.fill_path(&patch_path, Color::TRANSPARENT, FillRule::Winding);
+    let patch = patch.into_pixmap();
+    let cap_x = (outer + inner).min(patch_width / 2);
+    let cap_y = (outer + inner).min(patch_height / 2);
+    let source_x = [0, cap_x, patch_width - cap_x, patch_width];
+    let source_y = [0, cap_y, patch_height - cap_y, patch_height];
+    let target_x = [0, cap_x, target_width - cap_x, target_width];
+    let target_y = [0, cap_y, target_height - cap_y, target_height];
+    for row in 0..3 {
+        for column in 0..3 {
+            let tile_width = source_x[column + 1] - source_x[column];
+            let tile_height = source_y[row + 1] - source_y[row];
+            if tile_width == 0 || tile_height == 0 {
+                continue;
+            }
+            let tile = patch.clone_rect(tiny_skia::IntRect::from_xywh(
+                source_x[column] as i32,
+                source_y[row] as i32,
+                tile_width,
+                tile_height,
+            )?)?;
+            canvas.draw_pixmap_nearest(
+                tile.as_ref(),
+                x as f32 - outer as f32 + target_x[column] as f32,
+                y as f32 - outer as f32 + target_y[row] as f32,
+                (target_x[column + 1] - target_x[column]) as f32,
+                (target_y[row + 1] - target_y[row]) as f32,
+            );
+        }
+    }
+    canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
+    Some(())
+}
+
 /// Renders just the wallpaper backdrop at `width` x `height`, for the editor
 /// preview to show behind the image.
 #[allow(clippy::too_many_arguments)]
@@ -391,6 +468,24 @@ pub fn render_backdrop(
             FillRule::Winding,
             tiny_skia::BlendMode::DestinationOver,
         );
+    }
+
+    if edge_preview && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none() {
+        if let Some(shadow) = image_shadow(wallpaper.shadow) {
+            let (_, (offset_x, offset_y, _, _)) =
+                crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
+            paint_preview_shadow(
+                &mut canvas,
+                (
+                    offset_x.round() as u32,
+                    offset_y.round() as u32,
+                    image_width.round() as u32,
+                    image_height.round() as u32,
+                ),
+                wallpaper.corners.max(0.0) as f32,
+                shadow,
+            )?;
+        }
     }
 
     // Attached images are static, so they belong to the backdrop; only the
@@ -616,6 +711,63 @@ pub fn redact_region(
 mod tests {
     use super::*;
     use crate::editor::wallpaper::preset;
+
+    #[test]
+    fn tiled_preview_shadow_matches_the_full_rasterizer() {
+        let cases = (0..40u32).map(|index| {
+            (
+                1 + (index * 103) % 900,
+                1 + (index * 137) % 600,
+                ((index * 47) % 401) as f32,
+                [1.0, 10.0, 50.0, 100.0, 200.0, 300.0][index as usize % 6],
+                (index * 11) % 60,
+            )
+        });
+        for (width, height, radius, strength, padding) in [
+            (640, 360, 24.0, 50.0, 40),
+            (1170, 452, 279.0, 100.0, 13),
+            (15_534, 10, 0.0, 300.0, 13),
+            (15_535, 10, 0.0, 300.0, 13),
+            (17_000, 10, 0.0, 300.0, 13),
+            (10, 17_000, 0.0, 300.0, 13),
+        ]
+        .into_iter()
+        .chain(cases)
+        {
+            let shadow = image_shadow(strength).unwrap();
+            let mut expected = Canvas::new(width + padding * 2, height + padding * 2).unwrap();
+            let mut actual = Canvas::new(width + padding * 2, height + padding * 2).unwrap();
+            let background = Color::from_rgba8(36, 104, 172, 255);
+            expected.fill_all(background);
+            actual.fill_all(background);
+            let path = rounded_rect_path(
+                padding as f32,
+                padding as f32,
+                width as f32,
+                height as f32,
+                radius,
+            )
+            .unwrap();
+            expected.set_shadow(Some(shadow));
+            expected.fill_path(&path, Color::WHITE, FillRule::Winding);
+            paint_preview_shadow(
+                &mut actual,
+                (padding, padding, width, height),
+                radius,
+                shadow,
+            )
+            .unwrap();
+            assert!(
+                expected
+                    .pixmap()
+                    .data()
+                    .iter()
+                    .zip(actual.pixmap().data())
+                    .all(|(expected, actual)| expected.abs_diff(*actual) <= 2),
+                "{width}x{height}, radius {radius}, shadow {strength}, padding {padding}"
+            );
+        }
+    }
 
     #[test]
     fn round_trips_rgba_through_a_pixmap() {

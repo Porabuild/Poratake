@@ -107,7 +107,7 @@ impl RenderOnce for EditorCanvas {
             && !wallpaper.balance
             && wallpaper.inset <= 0.0
             && (wallpaper.corners <= 0.0 || has_preview_edges)
-            && (window_frame || wallpaper.shadow <= 0.0);
+            && (window_frame || wallpaper.shadow <= 0.0 || has_preview_edges);
         let mut frame = div()
             .relative()
             .w(content_width)

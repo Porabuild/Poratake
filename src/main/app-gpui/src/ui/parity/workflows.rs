@@ -1187,13 +1187,16 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             "wallpaper preview/export at {scale}x, transparent: {transparent}, blurred: {blurred}"
         );
     }
-    for (scale, transparent, radius) in [
-        (1.25_f32, false, 1.),
-        (1.25, false, 24.),
-        (1.25, true, 24.),
-        (2., false, 200.),
-        (2., false, 24.),
-        (2., true, 24.),
+    for (scale, transparent, radius, shadow) in [
+        (1.25_f32, false, 1., 0.),
+        (1.25, false, 24., 0.),
+        (1.25, true, 24., 0.),
+        (2., false, 200., 0.),
+        (2., false, 24., 0.),
+        (1.25, false, 24., 50.),
+        (1.25, true, 0., 50.),
+        (2., false, 0., 150.),
+        (2., true, 24., 50.),
     ] {
         editor
             .update(cx, |editor, _, cx| {
@@ -1207,7 +1210,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 editor.wallpaper.padding = 20.;
                 editor.wallpaper.corners = radius;
                 editor.wallpaper.background_blur = 0.;
-                editor.wallpaper.shadow = 0.;
+                editor.wallpaper.shadow = shadow;
                 cx.notify();
             })
             .unwrap();
@@ -1243,30 +1246,33 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             );
             image::imageops::overlay(&mut expected, &saved, 0, 0);
         }
-        let mismatched = (0..360)
-            .flat_map(|y| (0..640).map(move |x| (x, y)))
+        let mismatched = (0..expected.height())
+            .flat_map(|y| (0..expected.width()).map(move |x| (x, y)))
             .filter(|&(x, y)| {
                 screenshot
-                    .get_pixel(left + x, top + y)
+                    .get_pixel(left - padding + x, top - padding + y)
                     .0
                     .iter()
-                    .zip(expected.get_pixel(padding + x, padding + y).0)
+                    .zip(expected.get_pixel(x, y).0)
                     .any(|(actual, expected)| actual.abs_diff(expected) > 2)
             })
             .count();
         if mismatched > 0 {
-            image::imageops::crop_imm(&screenshot, left, top, 640, 360)
-                .to_image()
-                .save(scratch.join("rounded-preview.png"))
-                .unwrap();
-            image::imageops::crop_imm(&expected, padding, padding, 640, 360)
-                .to_image()
-                .save(scratch.join("rounded-export.png"))
-                .unwrap();
+            image::imageops::crop_imm(
+                &screenshot,
+                left - padding,
+                top - padding,
+                expected.width(),
+                expected.height(),
+            )
+            .to_image()
+            .save(scratch.join("rounded-preview.png"))
+            .unwrap();
+            expected.save(scratch.join("rounded-export.png")).unwrap();
         }
         assert_eq!(
             mismatched, 0,
-            "rounded preview differs from saved pixels at {scale}x, transparent {transparent}, radius {radius}"
+            "rounded preview differs from saved pixels at {scale}x, transparent {transparent}, radius {radius}, shadow {shadow}"
         );
     }
     editor
@@ -1821,6 +1827,8 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             (1.25, "macos-light", 0., 30.),
             (2., "windows-dark", 50., 30.),
             (1.25, "none", 0., 0.),
+            (1.25, "none", 50., 0.),
+            (2., "none", 50., 30.),
             (2., "none", 0., 30.),
         ] {
             editor
@@ -1902,6 +1910,23 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 mismatched, 0,
                 "transparent custom framed wallpaper differs at {scale}x, {style}, shadow {shadow}, blur {blur}, {mode:?}"
             );
+            if style == "none" && shadow > 0. {
+                let mismatched = (0..expected.height())
+                    .flat_map(|y| (0..expected.width()).map(move |x| (x, y)))
+                    .filter(|&(x, y)| {
+                        screenshot
+                            .get_pixel(left - padding + x, top - padding + y)
+                            .0
+                            .iter()
+                            .zip(expected.get_pixel(x, y).0)
+                            .any(|(actual, expected)| actual.abs_diff(expected) > 3)
+                    })
+                    .count();
+                assert_eq!(
+                    mismatched, 0,
+                    "transparent custom shadow differs at {scale}x, blur {blur}, {mode:?}"
+                );
+            }
         }
     }
     cx.update(|cx| crate::theme::vars::update_theme(cx, original_mode, "default"));

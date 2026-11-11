@@ -14,6 +14,8 @@ use tiny_skia::{
 
 use crate::render::blur;
 
+pub const MAX_SHADOW_SURFACE_SIZE: u32 = 16_384;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
     pub color: Color,
@@ -418,7 +420,11 @@ impl Canvas {
         let top = (bounds.top() - pad).floor();
         let width = (bounds.width() + pad * 2.0).ceil() as u32;
         let height = (bounds.height() + pad * 2.0).ceil() as u32;
-        if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+        if width == 0
+            || height == 0
+            || width > MAX_SHADOW_SURFACE_SIZE
+            || height > MAX_SHADOW_SURFACE_SIZE
+        {
             return;
         }
 
