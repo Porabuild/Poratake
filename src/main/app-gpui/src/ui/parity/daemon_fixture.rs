@@ -154,6 +154,20 @@ pub fn run() {
                     continue;
                 }
                 scrolling = true;
+                if fixture["scroll"] == "interrupted" {
+                    for reason in [
+                        "duplicate",
+                        "max-height",
+                        "no-overlap",
+                        "capture-error",
+                        "input-error",
+                    ] {
+                        protocol::send_event(
+                            poratake_daemon_common::contract::SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
+                            Some(json!({ "reason": reason, "frameCount": 2 })),
+                        );
+                    }
+                }
                 if matches!(
                     fixture["scroll"].as_str(),
                     Some("early-cancel" | "cancel-held")

@@ -7,7 +7,7 @@ use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
 use poratake_daemon_common::contract::{
     ScrollCaptureStartRequest, ScrollSpeed, SCROLL_CAPTURE_CANCELLED_EVENT,
-    SCROLL_CAPTURE_DONE_EVENT, SYSTEM_EXIT_EVENT,
+    SCROLL_CAPTURE_DONE_EVENT, SCROLL_CAPTURE_SCROLL_ENDED_EVENT, SYSTEM_EXIT_EVENT,
 };
 #[cfg(target_os = "macos")]
 use poratake_daemon_common::contract::{
@@ -357,28 +357,43 @@ impl Coordinator {
         let (tx, rx) = smol::channel::bounded::<crate::capture::scroll::ScrollSessionSignal>(16);
         let daemon = service.daemon.clone();
         let event_tx = tx.clone();
-        let subscription = daemon.subscribe(std::sync::Arc::new(move |event: &str, _payload| {
+        let subscription = daemon.subscribe(std::sync::Arc::new(move |event: &str, payload| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
             let signal = match event {
                 SCROLL_CAPTURE_DONE_EVENT => Some(Signal::Finish),
                 SCROLL_CAPTURE_CANCELLED_EVENT | SYSTEM_EXIT_EVENT => Some(Signal::Cancel),
+                SCROLL_CAPTURE_SCROLL_ENDED_EVENT => match payload
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("no-overlap") => Some(Signal::Stopped(
+                        "The latest frame could not be aligned. You can save the captured portion.",
+                    )),
+                    Some("capture-error") => Some(Signal::Stopped(
+                        "A frame could not be captured. You can save the captured portion.",
+                    )),
+                    Some("input-error") => Some(Signal::Stopped(
+                        "Scrolling could not be continued. You can save the captured portion.",
+                    )),
+                    _ => None,
+                },
                 #[cfg(target_os = "macos")]
                 SCROLL_CAPTURE_FRAME_PREVIEW_EVENT => Some(Signal::Frame {
-                    preview: _payload
+                    preview: payload
                         .get("preview")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
                 }),
                 #[cfg(target_os = "macos")]
                 SCROLL_CAPTURE_AUTO_SCROLL_EVENT => Some(Signal::AutoScrolling(
-                    _payload
+                    payload
                         .get("scrolling")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false),
                 )),
                 #[cfg(target_os = "macos")]
                 SCROLL_CAPTURE_CURSOR_EVENT => Some(Signal::CursorOutside(
-                    _payload
+                    payload
                         .get("outside")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false),
@@ -410,19 +425,22 @@ impl Coordinator {
         let output = service.generate_screenshot_path();
         cx.spawn(async move |_entity, cx| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
-            #[cfg(not(target_os = "macos"))]
-            let finished = matches!(rx.recv().await, Ok(Signal::Finish));
-            #[cfg(target_os = "macos")]
             let finished = loop {
                 match rx.recv().await.unwrap_or(Signal::Cancel) {
                     Signal::Finish => break true,
                     Signal::Cancel => break false,
+                    Signal::Stopped(message) => {
+                        cx.update(|cx| crate::windows::toast::Toast::show(cx, "Scroll Capture Stopped", message));
+                    }
+                    #[cfg(target_os = "macos")]
                     progress => {
                         let ui = ui.clone();
                         cx.update(|cx| {
                             crate::windows::scroll_capture::apply_progress(&ui, progress, cx);
                         });
                     }
+                    #[cfg(all(not(target_os = "macos"), any(test, all(windows, feature = "parity"))))]
+                    _ => {}
                 }
             };
             drop(subscription);

@@ -307,6 +307,29 @@ async function runScrollCapture(): Promise<void> {
         return;
       }
 
+      if (eventType === 'scroll-ended' && !resolved && !finishInFlight) {
+        autoScrolling = false;
+        pushState();
+        const reason = (data as { reason?: unknown } | null)?.reason;
+        let message: string | undefined;
+        switch (reason) {
+          case 'no-overlap':
+            message =
+              'The latest frame could not be aligned. You can save the captured portion.';
+            break;
+          case 'capture-error':
+            message =
+              'A frame could not be captured. You can save the captured portion.';
+            break;
+          case 'input-error':
+            message =
+              'Scrolling could not be continued. You can save the captured portion.';
+            break;
+        }
+        if (message) showNotification('Scroll Capture Stopped', message);
+        return;
+      }
+
       if (!overlayActive) return;
 
       const payload = (data ?? {}) as Record<string, unknown>;

@@ -1062,6 +1062,13 @@ Both have a unique 56px full-row match, although the first main-content overlap 
 64px. A regression records that ambiguity; resolving the wrong-overlap case needs
 evidence beyond those two frames.
 
+Windows and Linux daemons report overlap, capture and input errors when automatic
+scrolling stops. GPUI and Electron now notify the user while retaining the previous
+frames for saving; normal end-of-content and height-limit stops remain quiet.
+Electron event tests cover both native and overlay-based paths and save the capture
+after interruption. A GPUI workflow fixture checks the same sequence; its hosted
+run and native notification presentation still need verification.
+
 Keep known platform differences explicit: preview/zoom use a baked blur because
 GPUI has no live backdrop filter; the capture eyedropper remains an app overlay;
 macOS traffic-light space and Windows custom captions are platform-specific.

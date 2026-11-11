@@ -267,7 +267,9 @@ pub fn apply_progress(ui: &Entity<ScrollCaptureUi>, signal: ScrollSessionSignal,
                 cx.notify();
             });
         }
-        ScrollSessionSignal::Finish | ScrollSessionSignal::Cancel => {}
+        ScrollSessionSignal::Finish
+        | ScrollSessionSignal::Cancel
+        | ScrollSessionSignal::Stopped(_) => {}
     }
 }
 

@@ -569,6 +569,135 @@ describe('scroll-capture', () => {
       }
     });
 
+    it.each(['win32', 'darwin'])(
+      'reports an interrupted scroll without discarding the capture on %s',
+      async platform => {
+        const originalPlatform = process.platform;
+        Object.defineProperty(process, 'platform', { value: platform });
+        try {
+          const daemonModule = await import('@/main/daemon');
+          const areaSelector = await import('@/main/capture/area-selector');
+          let daemonHandler:
+            | ((event: string, data?: unknown) => void)
+            | undefined;
+          let select: ((selection: unknown) => Promise<void>) | undefined;
+          vi.mocked(daemonModule.daemon.onEvent).mockImplementation(
+            (handler => {
+              daemonHandler = handler as typeof daemonHandler;
+            }) as never
+          );
+          vi.mocked(areaSelector.startAreaSelection).mockImplementation(
+            (opts => {
+              select = (opts as { onSelected: typeof select }).onSelected;
+              return new Promise<null>(() => {});
+            }) as never
+          );
+          mockSelectAreaWithOverlay.mockResolvedValue({
+            display: { id: 7, scaleFactor: 1 },
+            rect: { x: 10, y: 20, width: 200, height: 100 },
+          });
+          mockGetConfig.mockReturnValue({
+            screenshot: { hideDesktopIcons: false, showPreview: true },
+            scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
+          });
+          mockExistsSync.mockReturnValue(true);
+          let finish: (result: unknown) => void = () => {};
+          mockDaemonCall.mockImplementation((_module, method) =>
+            method === 'finish'
+              ? new Promise(resolve => {
+                  finish = resolve;
+                })
+              : Promise.resolve({})
+          );
+          const { startScrollCapture } =
+            await import('@/main/capture/scroll-capture');
+          const capture = startScrollCapture();
+          if (platform !== 'win32') {
+            await select?.({
+              status: 'selected',
+              x: 10,
+              y: 20,
+              width: 200,
+              height: 100,
+            });
+          }
+          await vi.waitFor(() =>
+            expect(mockDaemonCall).toHaveBeenCalledWith(
+              'scroll-capture',
+              'start',
+              expect.anything()
+            )
+          );
+
+          if (platform !== 'win32') {
+            daemonHandler?.('scroll-capture:auto-scroll', { scrolling: true });
+          }
+          expect(
+            mockUpdateScrollCaptureState.mock.lastCall?.[0]?.isAutoScrolling
+          ).toBe(platform === 'win32' ? undefined : true);
+          for (const reason of ['duplicate', 'max-height']) {
+            daemonHandler?.('scroll-capture:scroll-ended', { reason });
+          }
+          expect(
+            mockUpdateScrollCaptureState.mock.lastCall?.[0]?.isAutoScrolling
+          ).toBe(platform === 'win32' ? undefined : false);
+          expect(mockShowNotification).not.toHaveBeenCalled();
+          for (const reason of ['no-overlap', 'capture-error', 'input-error']) {
+            daemonHandler?.('scroll-capture:scroll-ended', {
+              reason,
+              frameCount: 2,
+            });
+          }
+          expect(mockShowNotification.mock.calls).toEqual([
+            [
+              'Scroll Capture Stopped',
+              'The latest frame could not be aligned. You can save the captured portion.',
+            ],
+            [
+              'Scroll Capture Stopped',
+              'A frame could not be captured. You can save the captured portion.',
+            ],
+            [
+              'Scroll Capture Stopped',
+              'Scrolling could not be continued. You can save the captured portion.',
+            ],
+          ]);
+          expect(mockDaemonCall).not.toHaveBeenCalledWith(
+            'scroll-capture',
+            'cancel'
+          );
+          expect(mockDaemonCall).not.toHaveBeenCalledWith(
+            'scroll-capture',
+            'finish',
+            expect.anything(),
+            null
+          );
+
+          daemonHandler?.('scroll-capture:done');
+          await vi.waitFor(() =>
+            expect(mockDaemonCall).toHaveBeenCalledWith(
+              'scroll-capture',
+              'finish',
+              expect.anything(),
+              null
+            )
+          );
+          daemonHandler?.('scroll-capture:scroll-ended', {
+            reason: 'no-overlap',
+          });
+          expect(mockShowNotification).toHaveBeenCalledTimes(3);
+          finish({ success: true });
+          await capture;
+          expect(mockPublishScreenshot).toHaveBeenCalled();
+          expect(mockShowCapturePreview).toHaveBeenCalled();
+        } finally {
+          Object.defineProperty(process, 'platform', {
+            value: originalPlatform,
+          });
+        }
+      }
+    );
+
     it('handles scroll-capture:cancelled event', async () => {
       const daemonModule = await import('@/main/daemon');
       const areaSelector = await import('@/main/capture/area-selector');

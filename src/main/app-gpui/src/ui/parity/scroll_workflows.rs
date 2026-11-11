@@ -64,6 +64,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         "cancel-held",
         "retry",
         "collision",
+        "interrupted",
     ] {
         if name == "finish-long-held"
             && std::env::var("PORATAKE_PARITY_THEME").as_deref() != Ok("dark")
@@ -158,7 +159,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         );
         let saved = matches!(
             name,
-            "early-finish" | "finish-held" | "finish-long-held" | "retry" | "collision"
+            "early-finish"
+                | "finish-held"
+                | "finish-long-held"
+                | "retry"
+                | "collision"
+                | "interrupted"
         );
         if saved {
             if name == "collision" {
@@ -168,7 +174,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             }
             verify_saved_capture(
                 cx,
-                if matches!(name, "finish-held" | "finish-long-held" | "collision") {
+                if matches!(
+                    name,
+                    "finish-held" | "finish-long-held" | "collision" | "interrupted"
+                ) {
                     scratch
                 } else {
                     output
@@ -199,12 +208,27 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             "finish-failed" | "empty" => Some("The scroll capture produced no image"),
             _ => None,
         };
-        assert_eq!(
-            notifications,
+        let expected = if name == "interrupted" {
+            [
+                "The latest frame could not be aligned. You can save the captured portion.",
+                "A frame could not be captured. You can save the captured portion.",
+                "Scrolling could not be continued. You can save the captured portion.",
+            ]
+            .into_iter()
+            .map(|body| {
+                (
+                    "Scroll Capture Stopped".to_string(),
+                    body.to_string(),
+                    false,
+                )
+            })
+            .collect::<Vec<_>>()
+        } else {
             body.map(|body| ("Scroll Capture Failed".to_string(), body.to_string(), false))
                 .into_iter()
                 .collect::<Vec<_>>()
-        );
+        };
+        assert_eq!(notifications, expected);
         let calls: Vec<_> = calls(output).into_iter().skip(before).collect();
         assert!(!calls
             .iter()
@@ -223,6 +247,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                         | "finish-long-held"
                         | "retry"
                         | "collision"
+                        | "interrupted"
                 )),
             ),
             (

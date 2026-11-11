@@ -15,6 +15,7 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 pub enum ScrollSessionSignal {
     Finish,
     Cancel,
+    Stopped(&'static str),
     #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     Frame {
         preview: Option<String>,
