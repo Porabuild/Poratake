@@ -469,11 +469,17 @@ impl Render for HistoryWindow {
         let theme = active_theme(cx);
         let has_items = !self.items.is_empty();
         let visible = self.visible();
-        let card_width = ((f32::from(window.viewport_size().width)
-            - crate::ui::chrome::HISTORY_CONTENT_PAD * 2.0
-            - crate::ui::chrome::HISTORY_GRID_GAP)
-            / 2.0)
-            .max(0.0);
+        let scale = window.scale_factor();
+        let available_width = window.pixel_snap(window.viewport_size().width)
+            - window.pixel_snap(px(crate::ui::chrome::HISTORY_CONTENT_PAD)) * 2.0
+            - window.pixel_snap(px(crate::ui::chrome::HISTORY_GRID_GAP));
+        let physical_card_width = ((f32::from(available_width) * scale).round() / 2.0).floor();
+        let card_width = (physical_card_width / scale).max(0.0);
+        let card_width = if window.pixel_snap(px(card_width)) * 2.0 > available_width {
+            (physical_card_width - 1.0).max(0.0) / scale
+        } else {
+            card_width
+        };
         let hovered_id = if window.is_window_hovered() {
             self.hovered_id.as_deref()
         } else {
@@ -671,12 +677,12 @@ mod tests {
             crate::theme::presets::ThemeMode::Dark,
         ] {
             visual.update(|_, cx| crate::theme::vars::update_theme(cx, mode, "default"));
-            for scale in [1.0, 1.25, 2.0] {
-                visual.update(|window, _| window.set_scale_factor(scale));
-                assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                visual.simulate_scale_factor_change(scale);
                 for width in [200.0, 220.0, 240.0, 250.0, 300.0, 320.0, 400.0] {
                     visual.simulate_resize(size(px(width), px(364.0)));
                     let first = visual.expect("history-card-first");
+                    assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
                     let second = visual.expect("history-card-second");
                     let third = visual.expect("history-card-third");
                     let filters = visual.expect("history-filters");
@@ -684,7 +690,10 @@ mod tests {
                     let scroller = visual.expect("history-scroll");
                     let title = visual.expect("history-title");
                     let header_actions = visual.expect("history-header-actions");
-                    assert_eq!(first.origin.y, second.origin.y);
+                    assert_eq!(
+                        first.origin.y, second.origin.y,
+                        "scale {scale}, width {width}, first {first:?}, second {second:?}, scroller {scroller:?}"
+                    );
                     assert!(first.origin.x + first.size.width < second.origin.x);
                     assert!(second.origin.x + second.size.width <= px(width));
                     assert!(third.origin.y > first.origin.y);
@@ -716,6 +725,23 @@ mod tests {
                 }
             }
         }
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            visual.simulate_scale_factor_change(scale);
+            for physical_width in (200.0 * scale) as u32..=(400.0 * scale) as u32 {
+                let width = physical_width as f32 / scale;
+                visual.simulate_resize(size(px(width), px(364.0)));
+                let first = visual.expect("history-card-first");
+                let second = visual.expect("history-card-second");
+                let scroller = visual.expect("history-scroll");
+                assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
+                assert_eq!(
+                    first.top(), second.top(),
+                    "scale {scale}, physical width {physical_width}, first {first:?}, second {second:?}"
+                );
+                assert!(first.right() < second.left());
+                assert!(second.right() <= scroller.right());
+            }
+        }
         visual.press("down");
         assert_eq!(
             history.read_with(visual, |history, _| history.selected_index),
@@ -731,8 +757,8 @@ mod tests {
             crate::theme::presets::ThemeMode::Dark,
         ] {
             visual.update(|_, cx| crate::theme::vars::update_theme(cx, mode, "default"));
-            for scale in [1.0, 1.25, 2.0] {
-                visual.update(|window, _| window.set_scale_factor(scale));
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                visual.simulate_scale_factor_change(scale);
                 for width in [200.0, 240.0, 400.0] {
                     visual.simulate_resize(size(px(width), px(364.0)));
                     for (index, id) in [(2, "third"), (1, "second")] {
@@ -753,7 +779,7 @@ mod tests {
                                 .advance_clock(std::time::Duration::from_millis(800));
                             visual.settle();
                             visual.update(|window, _| {
-                                let scale = window.scale_factor();
+                                assert_eq!(window.scale_factor(), scale);
                                 let tips: Vec<_> = window
                                     .painted_quads()
                                     .into_iter()
@@ -826,13 +852,15 @@ mod tests {
             crate::theme::presets::ThemeMode::Dark,
         ] {
             visual.update(|_, cx| crate::theme::vars::update_theme(cx, mode, "default"));
-            for scale in [1.0, 1.25, 2.0] {
-                visual.update(|window, _| window.set_scale_factor(scale));
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                visual.simulate_scale_factor_change(scale);
                 visual.simulate_resize(size(px(400.0), px(364.0)));
                 let full_label = visual.expect("history-row-label-second");
+                assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
                 for width in [200.0, 240.0, 280.0, 300.0, 319.0, 320.0] {
                     visual.simulate_resize(size(px(width), px(364.0)));
                     let narrow_label = visual.expect("history-row-label-second");
+                    assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
                     assert!(
                         narrow_label.size.width >= full_label.size.width,
                         "width {width}, scale {scale}: narrow label {narrow_label:?} versus full {full_label:?}"

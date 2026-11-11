@@ -242,7 +242,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale:
                 hover(cx, window, x, y);
                 let name = format!("overlay-{name}-{state}");
                 capture(cx, window, output, &name);
-                assert_picker_pixels(output, &name, width, scale, expected);
+                assert_picker_pixels(cx, window, output, &name, width, scale, expected);
             }
         } else {
             for (state, hovered) in [("hover", true), ("leave", false)] {
@@ -257,6 +257,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale:
                 let name = format!("overlay-{name}-{state}");
                 capture(cx, window, output, &name);
                 assert_picker_pixels(
+                    cx,
+                    window,
                     output,
                     &name,
                     width,
@@ -509,6 +511,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale:
 }
 
 fn assert_picker_pixels(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
     output: &Path,
     name: &str,
     width: f32,
@@ -518,6 +522,44 @@ fn assert_picker_pixels(
     let image = image::open(output.join(format!("gpui-{name}.png")))
         .unwrap()
         .to_rgba8();
+    let (physical_width, scan_y, edges) = cx
+        .update_window(window, |_, window, _| {
+            let physical = |value| (f32::from(window.pixel_snap(px(value))) * scale).round() as i32;
+            (
+                physical(width) as u32,
+                physical(700.) as u32,
+                expected.map(|[left, top, width, height]| {
+                    [
+                        physical(left),
+                        physical(top),
+                        physical(left + width),
+                        physical(top + height),
+                    ]
+                }),
+            )
+        })
+        .unwrap();
+    for x in 0..physical_width {
+        let highlighted = edges.is_some_and(|[left, top, right, bottom]| {
+            x as i32 >= left
+                && (scan_y as i32) >= top
+                && (x as i32) < right
+                && (scan_y as i32) < bottom
+        });
+        let expected = if highlighted {
+            [220, 230, 242, 255]
+        } else {
+            [110, 115, 121, 255]
+        };
+        let actual = image.get_pixel(x, scan_y).0;
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 1),
+            "{name}: scrim gap at physical ({x}, {scan_y}): {actual:?}, expected {expected:?}"
+        );
+    }
     for x in [
         20.,
         80.,

@@ -1553,18 +1553,20 @@ fn crosshair_guides(pointer: Point<Pixels>, accent: gpui::Hsla) -> gpui::AnyElem
 fn scrim_around(
     origin: Point<Pixels>,
     hole: gpui::Size<Pixels>,
-    viewport: gpui::Size<Pixels>,
+    window: &Window,
     dim: gpui::Hsla,
 ) -> Vec<gpui::AnyElement> {
-    let right = origin.x + hole.width;
-    let bottom = origin.y + hole.height;
+    let left = window.pixel_snap(origin.x);
+    let top = window.pixel_snap(origin.y);
+    let right = window.pixel_snap(origin.x + hole.width);
+    let bottom = window.pixel_snap(origin.y + hole.height);
     vec![
         div()
             .absolute()
             .left_0()
             .right_0()
             .top_0()
-            .h(origin.y.max(px(0.0)))
+            .h(top.max(px(0.0)))
             .bg(dim)
             .into_any_element(),
         div()
@@ -1572,23 +1574,23 @@ fn scrim_around(
             .left_0()
             .right_0()
             .top(bottom)
-            .h((viewport.height - bottom).max(px(0.0)))
+            .bottom_0()
             .bg(dim)
             .into_any_element(),
         div()
             .absolute()
             .left_0()
-            .top(origin.y)
-            .w(origin.x.max(px(0.0)))
-            .h(hole.height)
+            .top(top)
+            .w(left.max(px(0.0)))
+            .h((bottom - top).max(px(0.0)))
             .bg(dim)
             .into_any_element(),
         div()
             .absolute()
             .left(right)
-            .top(origin.y)
-            .w((viewport.width - right).max(px(0.0)))
-            .h(hole.height)
+            .right_0()
+            .top(top)
+            .h((bottom - top).max(px(0.0)))
             .bg(dim)
             .into_any_element(),
     ]
@@ -1820,7 +1822,7 @@ impl AreaOverlay {
                     root.children(scrim_around(
                         point(left, top),
                         size(right - left, bottom - top),
-                        viewport,
+                        window,
                         dim,
                     ))
                 }
@@ -1874,7 +1876,6 @@ impl AreaOverlay {
             // `SelectionScrim` takes the hovered target as its rect while
             // picking, so the candidate window shows through undimmed. The DOM
             // overlay draws neither a frame nor a name label in this mode.
-            let viewport = window.viewport_size();
             let mut picking = root;
             let hovered_frame = if window_hovered {
                 self.hovered_frame()
@@ -1882,9 +1883,7 @@ impl AreaOverlay {
                 None
             };
             picking = match hovered_frame {
-                Some((origin, frame)) => {
-                    picking.children(scrim_around(origin, frame, viewport, dim))
-                }
+                Some((origin, frame)) => picking.children(scrim_around(origin, frame, window, dim)),
                 None => picking.child(div().absolute().inset_0().bg(dim)),
             };
             if let Some(toolbar) = toolbar {
@@ -2518,8 +2517,8 @@ mod tests {
                 cx.focus_handle(),
             )
         });
-        for scale in [1., 1.25, 2.] {
-            visual.update(|window, _| window.set_scale_factor(scale));
+        for scale in [1., 1.25, 1.5, 1.75, 2.] {
+            visual.simulate_scale_factor_change(scale);
             visual.simulate_resize(size(px(400.), px(300.)));
             for (width, height) in [(12., 12.), (20., 20.), (123., 40.)] {
                 for y in [0., 100., 300. - height] {
@@ -2558,7 +2557,7 @@ mod tests {
                             assert!((f32::from(label.center().x) - 200.).abs() <= 1.);
                         }
                         visual.update(|window, _| {
-                            let scale = window.scale_factor();
+                            assert_eq!(window.scale_factor(), scale);
                             let quads: Vec<_> = window
                                 .painted_quads()
                                 .into_iter()
@@ -2643,6 +2642,91 @@ mod tests {
                 handle: super::selection::Handle::Right,
             })
         ));
+    }
+
+    #[herogpui::test]
+    fn recording_handoff_scrim_covers_the_display_without_seams(cx: &mut TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (overlay, visual) = herogpui::test::open_window(cx, |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(400.), px(300.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Recording,
+                cx.focus_handle(),
+            )
+        });
+        for scale in [1., 1.25, 1.5, 1.75, 2.] {
+            visual.simulate_scale_factor_change(scale);
+            visual.simulate_resize(size(px(400.), px(300.)));
+            let viewport_width = (400. * scale) as u32;
+            let viewport_height = (300. * scale) as u32;
+            for (x, y, width, height) in [
+                (53, 79, 173, 151),
+                (0, 0, 119, 91),
+                (viewport_width - 121, viewport_height - 101, 121, 101),
+            ] {
+                let rect = super::selection::Rect {
+                    x: x as f32 / scale,
+                    y: y as f32 / scale,
+                    width: width as f32 / scale,
+                    height: height as f32 / scale,
+                };
+                visual.update(|_, cx| {
+                    overlay.update(cx, |overlay, cx| {
+                        overlay.scale = scale;
+                        overlay.rect = Some(rect);
+                        overlay.handed_off = true;
+                        cx.notify();
+                    });
+                });
+                visual.settle();
+                visual.update(|window, _| {
+                    assert_eq!(window.scale_factor(), scale);
+                    let edges = [
+                        (rect.x - 1.).max(0.),
+                        (rect.y - 1.).max(0.),
+                        (rect.x + rect.width + 1.).min(400.),
+                        (rect.y + rect.height + 1.).min(300.),
+                    ]
+                    .map(|value| (f32::from(window.pixel_snap(px(value))) * scale).round() as u32);
+                    let quads = window.painted_quads();
+                    for y in 0..viewport_height {
+                        for x in 0..viewport_width {
+                            let point_x = x as f32 + 0.5;
+                            let point_y = y as f32 + 0.5;
+                            let count = quads
+                                .iter()
+                                .filter(|quad| {
+                                    let bounds = quad.bounds;
+                                    let mask = quad.content_mask.bounds;
+                                    [bounds, mask].iter().all(|bounds| {
+                                        point_x >= bounds.left().0
+                                            && point_x < bounds.right().0
+                                            && point_y >= bounds.top().0
+                                            && point_y < bounds.bottom().0
+                                    })
+                                })
+                                .count();
+                            let inside = x >= edges[0]
+                                && y >= edges[1]
+                                && x < edges[2]
+                                && y < edges[3];
+                            assert_eq!(
+                                count,
+                                usize::from(!inside),
+                                "scale {scale}, selection {rect:?}, pixel ({x}, {y}), edges {edges:?}, quads {quads:?}"
+                            );
+                        }
+                    }
+                });
+            }
+        }
     }
 
     #[test]

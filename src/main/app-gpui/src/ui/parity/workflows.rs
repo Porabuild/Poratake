@@ -1277,7 +1277,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         .unwrap();
     cx.run_until_parked();
     println!(
-        "scaled wallpaper preview and saved pixels match at 1.25x and 2x, including transparency, blur and framed translucent pixels"
+        "unframed wallpaper preview matches saved pixels at 1.25x and 2x; sampled framed translucent pixels match at both scales"
     );
 }
 

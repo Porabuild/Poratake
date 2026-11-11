@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `6e0d9de` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `4482af6` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -53,9 +53,11 @@ The eight 950px cases each add 18 narrow-history states, for 2,536 images per
 complete renderer profile. The 144 new NVIDIA history images were reviewed; the
 local exact-baseline matrix passed all 16 cases and 2,536 images. Its 64 corner
 states and 160 revised selection images were reviewed; the remaining 2,312 existing
-images were unchanged. The Windows native gate passed 1,016 tests with two skipped.
-All 144 hosted history images were also reviewed. The revised selection states
-require separate hosted-renderer review.
+images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
+24 were reviewed and the other 2,512 images were unchanged. The final exact
+matrix passed all 16 cases. The Windows native gate passed 1,017 tests with two skipped.
+All 144 hosted history images were also reviewed. The revised selection and
+history states require separate hosted-renderer review.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -89,7 +91,7 @@ capture physical monitor pixels. Temporarily disabling edge snapping made its
 Four additional small selections at the display corners check the size label's
 painted bounds and clipping mask. Bottom-edge labels must also clear the selection.
 Unit coverage checks left, center and right positions, pointer routing through
-the label, resizing from the outside outline and simulated 100%, 125% and 200%
+the label, resizing from the outside outline and simulated 100%, 125%, 150%, 175% and 200%
 scaling. Pixel checks scan the dimmed scrim at the corners and across
 fractional-position selections at every matrix scale, rejecting both undimmed
 gaps and double-dimmed overlaps while
@@ -101,6 +103,10 @@ undimmed candidate and 50% scrim, including targets crossing left, right and bot
 and restoration of dimming on leave. The headless platform always reports a
 non-hovered window, so the fixture supplies window ownership to the shared
 production surface; production rendering still reads the native hover state.
+An additional picker scan checks every pixel across the lower viewport. The
+recording handoff test checks every physical pixel of its painted scrim and clip
+at 100%, 125%, 150%, 175% and 200%, with centered and edge selections. It requires one
+dim layer outside the selection and none inside.
 The microphone icon must provide enough pixels with at least 3:1 contrast
 against the toolbar. Its actual canvas bounds are measured independently of the
 dropdown chevron and checked against the containing button. The former
@@ -600,10 +606,17 @@ Bugs fixed in this pass:
 - The GPUI frame's drop shadow darkened the whole selected region by 35%.
   A separately painted outside border preserves the outline without changing
   selected pixels; its position and width snap to the frame at fractional DPI.
+- The recording handoff and window-picker scrims could leave the last display
+  column or row undimmed at fractional scale. Their shared edges now snap to
+  device pixels and their outer strips anchor to the viewport.
+- A history grid at simulated 175% and 456 physical pixels wrapped its second
+  card onto a new row. The cards now fit the snapped available width. The unit
+  test sweeps every physical width corresponding to 200–400 logical pixels at
+  100%, 125%, 150%, 175% and 200%, and verifies the scale after each resize.
 - History could open partly outside a display when its tray icon was near an
   edge. GPUI now fits the popover to the work area and converts macOS
   secondary-display bounds as the tray menu does. Geometry tests cover offset
-  displays, 200–400px window widths, both themes, simulated 100/125/200% scaling,
+  displays, 200–400px window widths, both themes, simulated 100/125/150/175/200% scaling,
   grid and list selection, and wrapped header and filter controls. Narrow list
   actions now sit over the thumbnail so labels remain readable, with feature
   icons wrapping as needed. Grid tooltips align inward according to their column.

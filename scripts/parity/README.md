@@ -12,6 +12,12 @@ pixel comparisons fail independently. The Windows CI job uploads captured and
 diff PNGs plus `renderer.json`, which records the GPU and driver. Physical monitor
 scaling remains a separate native check.
 
+The picker fixture scans every pixel across the lower viewport for undimmed or
+double-dimmed gaps. The recording handoff's unit test checks every painted pixel
+around centered and edge selections at 100/125/150/175/200% simulated scale. History
+grid tests sweep physical window widths at 100/125/150/175/200% and check that
+both columns stay in bounds after resize.
+
 Each Windows case first renders adjacent red/white image atlas tiles at fractional
 bounds. Interior and edge samples must retain the red source color independently
 of image baselines; `image-atlas-sampling.png` preserves the GPU evidence.
