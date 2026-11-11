@@ -534,6 +534,7 @@ fn with_frozen_screen(
                 } else {
                     Err(anyhow::anyhow!("Could not release the frozen screen"))
                 };
+                let released = released && (result.is_ok() || freezer.release_screen_started());
                 (freezer.finish_freeze(generation, result), released)
             })
             .await;
@@ -1596,6 +1597,52 @@ mod tests {
                 [super::intent::CaptureIntent::Ocr]
             );
             assert!(service.reserve_cached_capture().wait_for_freeze());
+            cx.update(super::overlay::close_all);
+            cx.run_until_parked();
+        }
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn failed_freeze_is_released_before_live_fallback(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            crate::state::state(cx)
+        });
+        for deferred in [false, true] {
+            service
+                .freeze
+                .defer_open_for_test
+                .store(deferred, std::sync::atomic::Ordering::SeqCst);
+            service
+                .freeze
+                .release_fails_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            cx.update(|cx| {
+                super::start_area_selection(super::intent::CaptureIntent::Screenshot, cx)
+            });
+            cx.run_until_parked();
+            assert!(!cx.update(super::overlay::parity_is_active));
+            assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+            notifications.borrow_mut().clear();
+            service
+                .freeze
+                .release_fails_for_test
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            cx.update(|cx| {
+                super::start_area_selection(super::intent::CaptureIntent::Screenshot, cx)
+            });
+            cx.run_until_parked();
+            assert!(cx.update(super::overlay::parity_is_active));
+            assert!(!service.reserve_cached_capture().wait_for_freeze());
             cx.update(super::overlay::close_all);
             cx.run_until_parked();
         }

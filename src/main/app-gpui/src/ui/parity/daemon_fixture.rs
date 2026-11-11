@@ -65,7 +65,7 @@ pub fn run() {
             ("freeze-screen", "freeze") => {
                 match capture_fixture(&output)["freeze"].as_str().unwrap() {
                     "freeze-failed" => {
-                        frozen = false;
+                        frozen = true;
                         protocol::respond_error(
                             &request.id,
                             "CAPTURE_FAILED",
@@ -245,6 +245,9 @@ pub fn run() {
                         );
                         image::Rgba([64, 112, 192, 255])
                     } else {
+                        if fixture["freeze"] == "freeze-failed" {
+                            assert!(!frozen, "a failed freeze must be released before capture");
+                        }
                         image::Rgba([240, 80, 64, 255])
                     };
                 let path = Path::new(params["path"].as_str().unwrap());

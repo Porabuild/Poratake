@@ -22,22 +22,42 @@ impl FreezeEpoch {
     }
 }
 
-fn replace_current<T>(
+fn begin_current<T>(current: &FreezeEpoch, state: &Mutex<Option<T>>) -> u64 {
+    let _state = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    current.advance()
+}
+
+fn replace_current<T, U, E>(
     current: &FreezeEpoch,
     epoch: u64,
     state: &Mutex<Option<T>>,
-    value: T,
-    install: impl FnOnce(),
-) -> Result<Option<T>, T> {
+    create: impl FnOnce() -> Result<(T, U), E>,
+    install: impl FnOnce(U),
+) -> Result<bool, E> {
     let mut state = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !current.is_current(epoch) {
-        return Err(value);
+        return Ok(false);
     }
+    let (value, payload) = create()?;
     let previous = state.replace(value);
-    install();
-    Ok(previous)
+    install(payload);
+    drop(previous);
+    Ok(true)
+}
+
+fn release_current<T>(current: &FreezeEpoch, state: &Mutex<Option<T>>, clear: impl FnOnce()) {
+    let mut state = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    current.advance();
+    let released = state.take();
+    clear();
+    drop(released);
+    drop(state);
 }
 
 pub struct FreezeScreenModule {
@@ -62,7 +82,7 @@ impl FreezeScreenModule {
         let frozen = self.frozen.clone();
         let current = self.current.clone();
         let overlay = self.overlay.clone();
-        let epoch = current.advance();
+        let epoch = begin_current(&current, &overlay);
         let id = request.id.clone();
         match std::thread::Builder::new()
             .name("linux-freeze-capture".into())
@@ -86,23 +106,24 @@ impl FreezeScreenModule {
                     send_response(Response::success(&id, Some(json!({ "frozen": false }))));
                     return;
                 }
-                let presented = match crate::capture::present_frozen_frames(backend, &frames) {
-                    Ok(presented) => presented,
-                    Err(error) => {
-                        send_response(Response::error(&id, "UI_ERROR", &error.to_string()));
-                        return;
-                    }
-                };
-                match replace_current(&current, epoch, &overlay, presented, || {
-                    frozen.replace(frames)
-                }) {
-                    Ok(previous) => {
-                        drop(previous);
+                match replace_current(
+                    &current,
+                    epoch,
+                    &overlay,
+                    || {
+                        crate::capture::present_frozen_frames(backend, &frames)
+                            .map(|presented| (presented, frames))
+                    },
+                    |frames| frozen.replace(frames),
+                ) {
+                    Ok(true) => {
                         send_response(Response::success(&id, Some(json!({ "frozen": true }))));
                     }
-                    Err(stale) => {
-                        drop(stale);
+                    Ok(false) => {
                         send_response(Response::success(&id, Some(json!({ "frozen": false }))));
+                    }
+                    Err(error) => {
+                        send_response(Response::error(&id, "UI_ERROR", &error.to_string()));
                     }
                 }
             }) {
@@ -112,16 +133,7 @@ impl FreezeScreenModule {
     }
 
     fn release(&self) -> Reply {
-        self.current.advance();
-        let overlay = self
-            .overlay
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut overlay = overlay;
-        let released = overlay.take();
-        self.frozen.clear();
-        drop(overlay);
-        drop(released);
+        release_current(&self.current, &self.overlay, || self.frozen.clear());
         Reply::Now(Ok(Some(json!({ "frozen": false }))))
     }
 
@@ -180,16 +192,20 @@ mod tests {
     #[test]
     fn stale_freezes_cannot_replace_released_state() {
         let current = FreezeEpoch::default();
-        let freeze = current.advance();
-        current.advance();
         let state = Mutex::new(Some(1));
+        let freeze = begin_current(&current, &state);
+        begin_current(&current, &state);
         let installed = AtomicU64::new(0);
 
         assert_eq!(
-            replace_current(&current, freeze, &state, 2, || {
-                installed.store(1, Ordering::SeqCst)
-            }),
-            Err(2)
+            replace_current(
+                &current,
+                freeze,
+                &state,
+                || Ok::<_, ()>((2, ())),
+                |()| { installed.store(1, Ordering::SeqCst) }
+            ),
+            Ok(false)
         );
         assert_eq!(installed.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -198,5 +214,113 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn release_and_presentation_use_the_same_lock() {
+        let current = FreezeEpoch::default();
+        let state = Mutex::new(None);
+        let epoch = begin_current(&current, &state);
+        assert_eq!(
+            replace_current(
+                &current,
+                epoch,
+                &state,
+                || {
+                    assert!(matches!(
+                        state.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ));
+                    Ok::<_, ()>((2, ()))
+                },
+                |()| {},
+            ),
+            Ok(true)
+        );
+        assert_eq!(*state.lock().unwrap(), Some(2));
+        release_current(&current, &state, || {
+            assert!(matches!(
+                state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+        });
+        assert!(!current.is_current(epoch));
+        assert_eq!(*state.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn newer_freeze_invalidates_capture_in_progress() {
+        let current = FreezeEpoch::default();
+        let state = Arc::new(Mutex::new(Some(1)));
+        let epoch = begin_current(&current, &state);
+        let installed = Arc::new(AtomicU64::new(0));
+        let (capturing_tx, capturing_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let worker_epoch = current.clone();
+        let worker_state = state.clone();
+        let worker_installed = installed.clone();
+        let worker = std::thread::spawn(move || {
+            capturing_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+            replace_current(
+                &worker_epoch,
+                epoch,
+                &worker_state,
+                || Ok::<_, ()>((2, ())),
+                |()| worker_installed.store(1, Ordering::SeqCst),
+            )
+        });
+        capturing_rx.recv().unwrap();
+        begin_current(&current, &state);
+        resume_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), Ok(false));
+        assert_eq!(installed.load(Ordering::SeqCst), 0);
+        assert_eq!(*state.lock().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn replaced_freeze_window_closes_under_the_lock() {
+        struct Overlay {
+            state: Option<std::sync::Weak<Mutex<Option<Overlay>>>>,
+            closed_under_lock: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Drop for Overlay {
+            fn drop(&mut self) {
+                if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
+                    self.closed_under_lock.store(
+                        matches!(state.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+                        Ordering::SeqCst,
+                    );
+                }
+            }
+        }
+
+        let current = FreezeEpoch::default();
+        let state = Arc::new(Mutex::new(None));
+        let closed_under_lock = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *state.lock().unwrap() = Some(Overlay {
+            state: Some(Arc::downgrade(&state)),
+            closed_under_lock: closed_under_lock.clone(),
+        });
+        let epoch = begin_current(&current, &state);
+        assert_eq!(
+            replace_current(
+                &current,
+                epoch,
+                &state,
+                || {
+                    Ok::<_, ()>((
+                        Overlay {
+                            state: None,
+                            closed_under_lock: closed_under_lock.clone(),
+                        },
+                        (),
+                    ))
+                },
+                |()| {},
+            ),
+            Ok(true)
+        );
+        assert!(closed_under_lock.load(Ordering::SeqCst));
     }
 }

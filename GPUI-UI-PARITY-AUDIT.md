@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `bbf5e4e9` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `cec39e5c` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -671,6 +671,19 @@ Bugs fixed in this pass:
   Isolated GPUI tests force the delayed-open path, simulate successful freezes
   and release failures, and cover rapid replacements and cancellation. Native
   macOS and Linux handoffs remain unverified.
+- A failed or timed-out freeze could continue in the daemon after the app opened
+  a live selector. The app now releases the failed freeze before falling back;
+  if cleanup fails, it closes the selector and retains the generation for retry.
+  An isolated GPUI test exercises failed cleanup and live fallback. A daemon
+  fixture simulates a partially installed failed freeze, but its hosted run and
+  a real delayed timeout remain unverified.
+- On Linux, release could complete while an X11 freeze window was still being
+  presented or a replaced window was still closing. Generation changes,
+  presentation and release now share a lock, and partial presentation failures
+  explicitly destroy and synchronize their created windows. Deterministic lock
+  tests cover the ordering. Xvfb keeps the client connection open and confirms
+  a mapped window is removed after a later frame fails; an isolated probe of the
+  previous cleanup fails that check. A real desktop handoff remains unverified.
 - Starting a screen recording on one display could leave a previous selector
   open or let it appear after the recording bar. The recording request now
   replaces the selector and waits for its freeze to release. Isolated GPUI
@@ -678,7 +691,7 @@ Bugs fixed in this pass:
   a superseded screen capture and a failed release followed by retry. Native
   recording handoffs remain unverified. A daemon-fixture workflow checks that
   the bar is initially closed, then checks the release RPC and the settled bar;
-  it is prepared for the next hosted renderer run.
+  it passed in the hosted run at `bbf5e4e9`.
 - Releasing a selector while its freeze was starting could deadlock the freeze
   worker. Release now waits outside the operation lock and rechecks later
   reservations. Thread-coordinated tests cover the deadlock and a reservation

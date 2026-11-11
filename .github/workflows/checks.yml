@@ -188,7 +188,9 @@ jobs:
         run: cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui
 
       - name: Test Linux X11 window capture
-        run: xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored
+        run: |
+          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux capture::tests::failed_freeze_presentation_closes_created_windows -- --ignored --exact
+          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored
 
       - name: Test Linux X11 capture with scaled GTK
         run: xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored

@@ -201,7 +201,7 @@ pub fn capture_display_frames(backend: Backend) -> Result<Vec<FrozenFrame>> {
 }
 
 pub struct X11FreezeOverlay {
-    connection: xcb::Connection,
+    connection: Arc<xcb::Connection>,
     windows: Vec<x::Window>,
 }
 
@@ -222,15 +222,27 @@ pub fn present_frozen_frames(backend: Backend, frames: &[FrozenFrame]) -> Result
         return Err(anyhow!("freeze screen is only available in X11 sessions"));
     }
     let (connection, screen_number) = x11_connection()?;
-    let windows = {
-        let screen = x11_screen(&connection, screen_number)?;
+    present_frozen_frames_on(Arc::new(connection), screen_number, frames)
+}
+
+fn present_frozen_frames_on(
+    connection: Arc<xcb::Connection>,
+    screen_number: usize,
+    frames: &[FrozenFrame],
+) -> Result<X11FreezeOverlay> {
+    let mut overlay = X11FreezeOverlay {
+        connection,
+        windows: Vec::with_capacity(frames.len()),
+    };
+    let connection = &overlay.connection;
+    {
+        let screen = x11_screen(connection, screen_number)?;
         let format = x11_pixel_format(
-            &connection,
+            connection,
             screen,
             screen.root_depth(),
             screen.root_visual(),
         )?;
-        let mut windows = Vec::with_capacity(frames.len());
         for frame in frames {
             let width = u16::try_from(frame.width).context("freeze frame was too wide for X11")?;
             let height =
@@ -316,20 +328,16 @@ pub fn present_frozen_frames(backend: Backend, frames: &[FrozenFrame]) -> Result
             });
             connection.send_request(&x::MapWindow { window });
             connection.send_request(&x::FreePixmap { pixmap });
-            windows.push(window);
+            overlay.windows.push(window);
         }
-        windows
-    };
+    }
     connection
         .flush()
         .context("could not show X11 freeze windows")?;
     connection
         .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
         .context("could not synchronize X11 freeze windows")?;
-    Ok(X11FreezeOverlay {
-        connection,
-        windows,
-    })
+    Ok(overlay)
 }
 
 #[cfg(feature = "wayland")]
@@ -1108,6 +1116,59 @@ fn crop_frozen_frame(frame: &FrozenFrame, rect: CaptureRect) -> Option<RgbaImage
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires an X11 display"]
+    fn failed_freeze_presentation_closes_created_windows() {
+        let (connection, screen_number) = x11_connection().expect("connect to X11");
+        let connection = Arc::new(connection);
+        let root = x11_screen(&connection, screen_number)
+            .expect("X11 screen")
+            .root();
+        connection
+            .check_request(connection.send_request_checked(&x::ChangeWindowAttributes {
+                window: root,
+                value_list: &[x::Cw::EventMask(x::EventMask::SUBSTRUCTURE_NOTIFY)],
+            }))
+            .expect("observe X11 windows");
+        let frames = [
+            FrozenFrame {
+                width: 2,
+                height: 2,
+                pixels: SharedPixels(Arc::new(vec![255; 16])),
+                origin: DisplayOrigin { x: 0, y: 0 },
+            },
+            FrozenFrame {
+                width: 2,
+                height: 2,
+                pixels: SharedPixels(Arc::new(Vec::new())),
+                origin: DisplayOrigin { x: 2, y: 0 },
+            },
+        ];
+        let error = match present_frozen_frames_on(connection.clone(), screen_number, &frames) {
+            Ok(_) => panic!("the second frame must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("RGBA frame contained 0 bytes"));
+        let tree = connection
+            .wait_for_reply(connection.send_request(&x::QueryTree { window: root }))
+            .expect("query X11 windows");
+        let mut mapped = Vec::new();
+        let mut destroyed = Vec::new();
+        while let Some(event) = connection.poll_for_event().expect("read X11 event") {
+            match event {
+                xcb::Event::X(x::Event::MapNotify(event)) => mapped.push(event.window()),
+                xcb::Event::X(x::Event::DestroyNotify(event)) => destroyed.push(event.window()),
+                _ => {}
+            }
+        }
+        assert!(!mapped.is_empty());
+        assert!(
+            mapped
+                .iter()
+                .all(|window| { destroyed.contains(window) && !tree.children().contains(window) })
+        );
+    }
 
     fn rect(x: i32, y: i32, width: i32, height: i32) -> CaptureRect {
         CaptureRect {
