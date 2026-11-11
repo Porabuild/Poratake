@@ -620,6 +620,44 @@ mod tests {
     }
 
     #[test]
+    fn repeated_content_can_hide_independent_edge_motion() {
+        let (width, height) = (1000, 160);
+        let make_frame = |main_start: usize, edge_start: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                for x in 0..width {
+                    let edge = edge_start + y;
+                    let pixel = if x == 0 {
+                        [
+                            edge as u8,
+                            (edge >> 8) as u8,
+                            edge.wrapping_mul(17) as u8,
+                            255,
+                        ]
+                    } else {
+                        [(((main_start + y) % 8) * 31) as u8, 0, 0, 255]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            CapturedFrame {
+                width,
+                height,
+                pixels,
+                overlap: 0,
+            }
+        };
+        let previous = make_frame(0, 0);
+        let translated = make_frame(104, 104);
+        let independently_moving_edge = make_frame(96, 104);
+        assert_eq!(translated.pixels, independently_moving_edge.pixels);
+        assert_eq!(
+            unique_exact_overlap(&previous.pixels, &translated.pixels, width, 8),
+            Some(56)
+        );
+    }
+
+    #[test]
     fn exact_overlap_requires_a_unique_full_row_match() {
         let previous = [1, 2, 3, 4, 5]
             .into_iter()

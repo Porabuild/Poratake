@@ -628,6 +628,12 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                           |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                             |
 
+In a synthetic two-frame scroll, period-8 main content shifted by 96px with an
+independently moving edge produces the same pixels as a complete 104px shift.
+Both have a unique 56px full-row match, although the first main-content overlap is
+64px. A regression records that ambiguity; resolving the wrong-overlap case needs
+evidence beyond those two frames.
+
 Keep known platform differences explicit: preview/zoom use a baked blur because
 GPUI has no live backdrop filter; the capture eyedropper remains an app overlay;
 macOS traffic-light space and Windows custom captions are platform-specific.
