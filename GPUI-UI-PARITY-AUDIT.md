@@ -48,7 +48,8 @@ or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
 738 logical pixels high. Each case captures 142 states; the two 1280px, 100% cases
-also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states, for 2,328 baseline images in a complete renderer profile. The 96 new menu images are reviewed locally; the hosted renderer profile still needs them.
+also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states,
+for 2,328 baseline images per renderer. Both profiles include reviewed menu images.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -286,7 +287,13 @@ controls beneath it. The menu now fits three complete rows and hides those contr
 while open. Pixel checks reproduced both defects at 100% before the fixes; the
 outside-click test also checks clipboard preservation and restored controls. All
 16 local matrix cases passed, and the 96 revised menu images were reviewed; the
-other 2,232 images remained byte-identical. Hosted menu baselines still need review.
+other 2,232 images remained byte-identical. The [hosted run](https://github.com/Porabuild/Poratake/actions/runs/42935006992)
+reached the state-list check in all 16 cases. Its 96 new menu images were reviewed,
+and its 2,232 existing images were byte-identical. Artifact `13819691455` has
+SHA-256 `9514eb08c98dbb5471a375a8cc2d86473d7c736e505252098e3d74780113503b`.
+That run's Linux and macOS Clippy jobs rejected unused test-handle assignments;
+those assignments were subsequently corrected. Check the current PR for their
+platform verification and the hosted exact-image comparison.
 The display-change test checks preview repositioning in a headless window, and
 synthetic geometry covers negative origins and mixed scaling. Physical monitor
 changes and destination-DPI movement remain unverified.
