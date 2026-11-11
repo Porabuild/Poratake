@@ -832,6 +832,229 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
     }
 }
 
+pub(super) fn large_attachment_preview(cx: &mut HeadlessAppContext, scratch: &Path) {
+    let blue = image::Rgba([64, 112, 192, 255]);
+    let red = image::Rgba([240, 80, 64, 255]);
+    let translucent = image::Rgba([40, 190, 80, 128]);
+    for vertical in [false, true] {
+        let source = scratch.join(format!("large-primary-{vertical}.png"));
+        let attached = scratch.join(format!("large-attached-{vertical}.png"));
+        let (width, height) = if vertical { (160, 9600) } else { (9600, 160) };
+        image::RgbaImage::from_pixel(width, height, blue)
+            .save(&source)
+            .unwrap();
+        image::RgbaImage::from_fn(width, height, |x, y| {
+            let position = if vertical { y } else { x };
+            if position < 100 {
+                blue
+            } else if (6700..6900).contains(&position) {
+                translucent
+            } else {
+                red
+            }
+        })
+        .save(&attached)
+        .unwrap();
+        let editor = cx
+            .open_window(size(px(1280.), px(738.)), |window, cx| {
+                window.set_scale_factor(1.);
+                cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+            })
+            .unwrap();
+        let window = editor.into();
+        settle(cx, window);
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.push_image_layer(
+                    attached.to_string_lossy().into_owned(),
+                    f64::from(width),
+                    f64::from(height),
+                    if vertical {
+                        crate::editor::layers::Edge::Bottom
+                    } else {
+                        crate::editor::layers::Edge::Right
+                    },
+                    cx,
+                );
+                let (x, y, width, height) = if vertical {
+                    (80., 9200., 80., 800.)
+                } else {
+                    (9200., 80., 800., 80.)
+                };
+                editor
+                    .history
+                    .push(vec![crate::editor::annotations::Annotation::Rectangle {
+                        id: "large-join".into(),
+                        x,
+                        y,
+                        width,
+                        height,
+                        stroke: "#ff00ff".into(),
+                        stroke_width: 1.,
+                        fill: Some("#ff00ff".into()),
+                    }]);
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, window);
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 0.035;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, window);
+        let (bounds, png) = cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            (
+                editor.bounds.borrow().unwrap(),
+                editor.export_png().unwrap(),
+            )
+        });
+        let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(
+            saved.dimensions(),
+            if vertical { (160, 19200) } else { (19200, 160) }
+        );
+        let coordinate = |along, across| {
+            if vertical {
+                (across, along)
+            } else {
+                (along, across)
+            }
+        };
+        let matte = cx.update(|cx| {
+            let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+            image::Rgba([
+                (theme.r * 255.).round() as u8,
+                (theme.g * 255.).round() as u8,
+                (theme.b * 255.).round() as u8,
+                255,
+            ])
+        });
+        let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+        image::imageops::overlay(&mut composited, &saved, 0, 0);
+        let screenshot = cx.capture_screenshot(window).unwrap();
+        #[cfg(windows)]
+        let tiles = cx.update(|cx| {
+            editor
+                .read(cx)
+                .unwrap()
+                .snapshot
+                .borrow()
+                .preview_edges
+                .iter()
+                .map(|tile| tile.image.clone())
+                .collect::<Vec<_>>()
+        });
+        #[cfg(windows)]
+        cx.update_window(window, |_, window, _| {
+            assert_eq!(tiles.len(), 3);
+            assert!(tiles
+                .iter()
+                .all(|image| window.has_image_atlas_entry(image)));
+        })
+        .unwrap();
+        for (along, across, expected) in [
+            (4100, 40, blue.0),
+            (8190, 40, blue.0),
+            (8210, 40, blue.0),
+            (12300, 40, red.0),
+            (16380, 40, translucent.0),
+            (16400, 40, translucent.0),
+            (17500, 40, red.0),
+            (9400, 120, [255, 0, 255, 255]),
+            (9800, 120, [255, 0, 255, 255]),
+        ] {
+            let (x, y) = coordinate(along, across);
+            assert!(saved
+                .get_pixel(x, y)
+                .0
+                .iter()
+                .zip(expected)
+                .all(|(a, e)| a.abs_diff(e) <= 2));
+            let display = composited.get_pixel(x, y).0;
+            let x = (f32::from(bounds.left()) + x as f32 * 0.035).round() as u32;
+            let y = (f32::from(bounds.top()) + y as f32 * 0.035).round() as u32;
+            let actual = screenshot.get_pixel(x, y).0;
+            assert!(
+                actual.iter().zip(display).all(|(a, e)| a.abs_diff(e) <= 2),
+                "large attachment preview differs at {x},{y}: {actual:?} vs {display:?}"
+            );
+        }
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 0.25;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, window);
+        for (scroll, join) in [(-1500., 8192.), (-2200., 16384.)] {
+            event(
+                cx,
+                window,
+                PlatformInput::Scroll(gpui::ScrollEvent {
+                    position: point(px(600.), px(400.)),
+                    delta: gpui::ScrollDelta::Pixels(if vertical {
+                        point(px(0.), px(scroll))
+                    } else {
+                        point(px(scroll), px(0.))
+                    }),
+                    ..Default::default()
+                }),
+            );
+            settle(cx, window);
+            let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+            let seam = (f32::from(if vertical {
+                bounds.top()
+            } else {
+                bounds.left()
+            }) + join * 0.25)
+                .round() as i32;
+            let across = (f32::from(if vertical {
+                bounds.left()
+            } else {
+                bounds.top()
+            }) + 40. * 0.25)
+                .round() as u32;
+            assert!(
+                (4..if vertical { 734 } else { 1276 }).contains(&seam),
+                "the {join} tile join must be visible for vertical {vertical}: {seam}, {bounds:?}"
+            );
+            let screenshot = cx.capture_screenshot(window).unwrap();
+            let (source_x, source_y) = coordinate(join as u32, 40);
+            let color = composited.get_pixel(source_x, source_y).0;
+            for delta in -3..=3 {
+                let (x, y) = coordinate((seam + delta) as u32, across);
+                let actual = screenshot.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(color).all(|(a, e)| a.abs_diff(e) <= 2),
+                    "large tile seam differs at {delta}: {actual:?}"
+                );
+            }
+        }
+        #[cfg(windows)]
+        {
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.wallpaper.corners = 1.;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, window);
+            cx.update_window(window, |_, window, _| {
+                assert!(tiles
+                    .iter()
+                    .all(|image| !window.has_image_atlas_entry(image)));
+            })
+            .unwrap();
+        }
+        cx.update_window(window, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+    }
+}
+
 pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     let source = scratch.join("workflow-capture.png");
     std::fs::copy(scratch.join("capture.png"), &source).unwrap();
@@ -1060,6 +1283,15 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             .is_some_and(|backdrop| { std::sync::Arc::ptr_eq(backdrop, &previous) }));
     });
     cx.update(|cx| crate::theme::vars::update_theme(cx, original_mode, "default"));
+    let stage_matte = cx.update(|cx| {
+        let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+        image::Rgba([
+            (theme.r * 255.).round() as u8,
+            (theme.g * 255.).round() as u8,
+            (theme.b * 255.).round() as u8,
+            255,
+        ])
+    });
     super::frame(cx, window);
     editor
         .update(cx, |editor, _, cx| {
@@ -1162,11 +1394,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         let mut expected = saved.clone();
         if transparent {
             assert_eq!(saved.get_pixel(0, 0).0[3], 0);
-            expected = image::RgbaImage::from_pixel(
-                saved.width(),
-                saved.height(),
-                image::Rgba([24, 24, 27, 255]),
-            );
+            expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), stage_matte);
             image::imageops::overlay(&mut expected, &saved, 0, 0);
         }
         let screenshot = cx.capture_screenshot(window).unwrap();
@@ -1199,16 +1427,20 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             "wallpaper preview/export at {scale}x, transparent: {transparent}, blurred: {blurred}"
         );
     }
-    for (scale, transparent, radius, shadow) in [
-        (1.25_f32, false, 1., 0.),
-        (1.25, false, 24., 0.),
-        (1.25, true, 24., 0.),
-        (2., false, 200., 0.),
-        (2., false, 24., 0.),
-        (1.25, false, 24., 50.),
-        (1.25, true, 0., 50.),
-        (2., false, 0., 150.),
-        (2., true, 24., 50.),
+    for (scale, transparent, radius, shadow, padding_setting) in [
+        (1.25_f32, true, 24., 0., 0.),
+        (2., true, 24., 0., 0.),
+        (1.25, true, 0., 50., 0.),
+        (2., true, 24., 50., 0.),
+        (1.25, false, 1., 0., 20.),
+        (1.25, false, 24., 0., 20.),
+        (1.25, true, 24., 0., 20.),
+        (2., false, 200., 0., 20.),
+        (2., false, 24., 0., 20.),
+        (1.25, false, 24., 50., 20.),
+        (1.25, true, 0., 50., 20.),
+        (2., false, 0., 150., 20.),
+        (2., true, 24., 50., 20.),
     ] {
         editor
             .update(cx, |editor, _, cx| {
@@ -1219,7 +1451,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                         angle: 0.,
                     }
                 }));
-                editor.wallpaper.padding = 20.;
+                editor.wallpaper.padding = padding_setting;
                 editor.wallpaper.corners = radius;
                 editor.wallpaper.background_blur = 0.;
                 editor.wallpaper.shadow = shadow;
@@ -1236,6 +1468,57 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             })
             .unwrap();
         settle(cx, window);
+        if padding_setting == 0. && radius == 24. && shadow == 0. && scale == 1.25 {
+            let previous = cx.update(|cx| {
+                editor
+                    .read(cx)
+                    .unwrap()
+                    .snapshot
+                    .borrow()
+                    .backdrop
+                    .clone()
+                    .unwrap()
+            });
+            cx.update(|cx| crate::theme::vars::update_theme(cx, other_mode, "default"));
+            settle(cx, window);
+            let (bounds, new_backdrop, other_matte) = cx.update(|cx| {
+                let editor = editor.read(cx).unwrap();
+                let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+                (
+                    editor.bounds.borrow().unwrap(),
+                    editor.snapshot.borrow().backdrop.clone().unwrap(),
+                    [
+                        (theme.r * 255.).round() as u8,
+                        (theme.g * 255.).round() as u8,
+                        (theme.b * 255.).round() as u8,
+                    ],
+                )
+            });
+            assert_ne!(
+                previous.id, new_backdrop.id,
+                "theme change must replace the transparent backdrop"
+            );
+            let screenshot = cx.capture_screenshot(window).unwrap();
+            let x = (f32::from(bounds.left()) * scale).round() as u32;
+            let y = (f32::from(bounds.top()) * scale).round() as u32;
+            assert!(
+                screenshot.get_pixel(x, y).0[..3]
+                    .iter()
+                    .zip(other_matte)
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                "transparent corner must use the new theme background"
+            );
+            #[cfg(windows)]
+            cx.update_window(window, |_, window, _| {
+                assert!(
+                    !window.has_image_atlas_entry(&previous),
+                    "the old theme backdrop must leave the GPU atlas"
+                );
+            })
+            .unwrap();
+            cx.update(|cx| crate::theme::vars::update_theme(cx, original_mode, "default"));
+            settle(cx, window);
+        }
         let (bounds, saved) = cx.update(|cx| {
             let editor = editor.read(cx).unwrap();
             (
@@ -1248,14 +1531,10 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         let screenshot = cx.capture_screenshot(window).unwrap();
         let left = (f32::from(bounds.left()) * scale).round() as u32;
         let top = (f32::from(bounds.top()) * scale).round() as u32;
-        let padding = (20. * scale).round() as u32;
+        let padding = (padding_setting as f32 * scale).round() as u32;
         let mut expected = saved.clone();
         if transparent {
-            expected = image::RgbaImage::from_pixel(
-                saved.width(),
-                saved.height(),
-                image::Rgba([24, 24, 27, 255]),
-            );
+            expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), stage_matte);
             image::imageops::overlay(&mut expected, &saved, 0, 0);
         }
         let mismatched = (0..expected.height())
@@ -1284,7 +1563,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         }
         assert_eq!(
             mismatched, 0,
-            "rounded preview differs from saved pixels at {scale}x, transparent {transparent}, radius {radius}, shadow {shadow}"
+            "rounded preview differs from saved pixels at {scale}x, transparent {transparent}, radius {radius}, shadow {shadow}, padding {padding_setting}"
         );
     }
     editor
@@ -1315,11 +1594,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 .to_rgba8(),
         )
     });
-    let mut expected = image::RgbaImage::from_pixel(
-        saved.width(),
-        saved.height(),
-        image::Rgba([24, 24, 27, 255]),
-    );
+    let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), stage_matte);
     image::imageops::overlay(&mut expected, &saved, 0, 0);
     let screenshot = cx.capture_screenshot(window).unwrap();
     let left = (f32::from(bounds.left()) * 2.).round() as u32;
@@ -1975,11 +2250,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
     let screenshot = cx.capture_screenshot(window).unwrap();
     let left = (f32::from(bounds.left()) * 1.25).round() as u32;
     let top = (f32::from(bounds.top()) * 1.25).round() as u32;
-    let mut expected = image::RgbaImage::from_pixel(
-        saved.width(),
-        saved.height(),
-        image::Rgba([24, 24, 27, 255]),
-    );
+    let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), stage_matte);
     image::imageops::overlay(&mut expected, &saved, 0, 0);
     for y in 0..360 {
         for x in 0..640 {
@@ -2000,7 +2271,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             assert_eq!(pixel[3], 128);
             for (actual, (foreground, background)) in screenshot.get_pixel(left + x, top + y).0[..3]
                 .iter()
-                .zip(pixel[..3].iter().zip([24_u8, 24, 27]))
+                .zip(pixel[..3].iter().zip(stage_matte.0[..3].iter().copied()))
             {
                 let blended = (u16::from(*foreground) * 128 + u16::from(background) * 127) / 255;
                 assert!(actual.abs_diff(blended as u8) <= 2);
@@ -2045,11 +2316,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             screenshot.get_pixel(left + 320, top - title + 10),
             saved.get_pixel(320, 10)
         );
-        let mut expected = image::RgbaImage::from_pixel(
-            saved.width(),
-            saved.height(),
-            image::Rgba([24, 24, 27, 255]),
-        );
+        let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), stage_matte);
         image::imageops::overlay(&mut expected, &saved, 0, 0);
         for y in 0..360 {
             for x in 0..640 {
@@ -2071,7 +2338,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 for (actual, (foreground, background)) in screenshot.get_pixel(left + x, top + y).0
                     [..3]
                     .iter()
-                    .zip(pixel[..3].iter().zip([24_u8, 24, 27]))
+                    .zip(pixel[..3].iter().zip(stage_matte.0[..3].iter().copied()))
                 {
                     let blended =
                         (u16::from(*foreground) * 128 + u16::from(background) * 127) / 255;
@@ -2095,6 +2362,10 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         .unwrap();
     }
     for (name, scale, shadow, corners, spacing, background, aspect) in [
+        ("plain125", 1.25_f32, 0., 0., 0., "none", "auto"),
+        ("plain200", 2., 0., 0., 0., "none", "auto"),
+        ("zero125", 1.25_f32, 50., 24., 0., "none", "auto"),
+        ("zero200", 2., 50., 24., 0., "none", "auto"),
         ("right", 1.25_f32, 50., 24., 10., "solid", "auto"),
         ("left", 2., 50., 24., 0., "solid", "auto"),
         ("top", 1.25, 0., 24., 0., "none", "auto"),
@@ -2104,7 +2375,9 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         ("stacked", 1.25, 50., 24., 0., "alpha", "auto"),
     ] {
         let edges = match name {
-            "right" | "wide" | "tall" => vec![crate::editor::layers::Edge::Right],
+            "plain125" | "plain200" | "zero125" | "zero200" | "right" | "wide" | "tall" => {
+                vec![crate::editor::layers::Edge::Right]
+            }
             "left" => vec![crate::editor::layers::Edge::Left],
             "top" => vec![crate::editor::layers::Edge::Top],
             "bottom" => vec![crate::editor::layers::Edge::Bottom],
@@ -2159,7 +2432,12 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                         }));
                 }
                 editor.wallpaper.window_frame.style = "none".into();
-                editor.wallpaper.padding = 20.;
+                editor.wallpaper.padding = if name.starts_with("zero") || name.starts_with("plain")
+                {
+                    0.
+                } else {
+                    20.
+                };
                 editor.wallpaper.spacing = spacing;
                 editor.wallpaper.corners = corners;
                 editor.wallpaper.shadow = shadow;
@@ -2218,17 +2496,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 group.height,
                 f64::from(scale),
             );
-            let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
-            let matte = if background == "none" {
-                image::Rgba([24, 24, 27, 255])
-            } else {
-                image::Rgba([
-                    (theme.r * 255.).round() as u8,
-                    (theme.g * 255.).round() as u8,
-                    (theme.b * 255.).round() as u8,
-                    255,
-                ])
-            };
+            let matte = stage_matte;
             let rectangles = std::iter::once(group.primary)
                 .chain(group.layers.iter().map(|(_, rect)| *rect))
                 .map(|rect| {
@@ -2318,6 +2586,101 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             overlap_rounding <= 16,
             "{name} has {overlap_rounding} four-level overlap differences"
         );
+        if name.starts_with("plain") {
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.history.push(vec![
+                        crate::editor::annotations::Annotation::Rectangle {
+                            id: "plain-edge".into(),
+                            x: 620.,
+                            y: 140.,
+                            width: 30.,
+                            height: 30.,
+                            stroke: "#ff00ff".into(),
+                            stroke_width: 1.,
+                            fill: Some("#ff00ff".into()),
+                        },
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "plain-black".into(),
+                            x: 625.,
+                            y: 200.,
+                            width: 30.,
+                            height: 30.,
+                            style: "black".into(),
+                            intensity: 5.,
+                        },
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "plain-pixelate".into(),
+                            x: 623.,
+                            y: 240.,
+                            width: 30.,
+                            height: 30.,
+                            style: "pixelate".into(),
+                            intensity: 10.,
+                        },
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "plain-blur".into(),
+                            x: 625.,
+                            y: 280.,
+                            width: 30.,
+                            height: 30.,
+                            style: "blur".into(),
+                            intensity: 2.,
+                        },
+                    ]);
+                    editor.tool = crate::ui::colors::Tool::Select;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, window);
+            let annotated = cx.update(|cx| {
+                image::load_from_memory(&editor.read(cx).unwrap().export_png().unwrap())
+                    .unwrap()
+                    .to_rgba8()
+            });
+            assert_eq!(
+                annotated.get_pixel(offset_x + 645, offset_y + 150).0,
+                [255, 0, 255, 255]
+            );
+            assert_eq!(
+                annotated.get_pixel(offset_x + 645, offset_y + 215).0,
+                [0, 0, 0, 255]
+            );
+            let mut expected =
+                image::RgbaImage::from_pixel(annotated.width(), annotated.height(), matte);
+            image::imageops::overlay(&mut expected, &annotated, 0, 0);
+            let screenshot = cx.capture_screenshot(window).unwrap();
+            for (start_x, start_y, width, height) in [
+                (620, 140, 30, 30),
+                (625, 200, 30, 30),
+                (623, 240, 30, 30),
+                (625, 280, 30, 30),
+            ] {
+                for y in start_y..start_y + height {
+                    for x in start_x..start_x + width {
+                        let actual = screenshot
+                            .get_pixel(left + offset_x + x, top + offset_y + y)
+                            .0;
+                        let expected_pixel = expected.get_pixel(offset_x + x, offset_y + y).0;
+                        assert!(
+                            actual.iter()
+                                .zip(expected_pixel)
+                                .all(|(actual, expected)| actual.abs_diff(expected) <= 4),
+                            "{name} annotation differs at {x},{y}: {actual:?} vs {expected_pixel:?}"
+                        );
+                    }
+                }
+            }
+            for start_y in [200, 240, 280] {
+                assert!(
+                    (start_y..start_y + 30).any(|y| (625..655).any(|x| {
+                        annotated.get_pixel(offset_x + x, offset_y + y)
+                            != saved.get_pixel(offset_x + x, offset_y + y)
+                    })),
+                    "{name} redaction at y={start_y} must change the saved image"
+                );
+            }
+        }
     }
     let unannotated = cx.update(|cx| {
         image::load_from_memory(&editor.read(cx).unwrap().export_png().unwrap())

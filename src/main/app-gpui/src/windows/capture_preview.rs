@@ -2584,6 +2584,27 @@ mod tests {
         assert_eq!(saved.get_pixel(320, 20).0, [32, 32, 32, 255]);
         assert_eq!(saved.get_pixel(320, 200).0, [240, 80, 64, 255]);
         assert_eq!(copied, saved);
+
+        zero_padding.window_frame = Some(crate::config::schema::WindowFrameSettings {
+            style: "none".into(),
+        });
+        zero_padding.corners = 12.;
+        config.update(|settings| settings.wallpaper.presets[0] = zero_padding.clone());
+        let (saved, copied) = cx.update(|window, cx| {
+            editor.update(cx, |editor, _| {
+                crate::editor::wallpaper::apply_preset(&mut editor.wallpaper, &zero_padding);
+            });
+            let saved = editor.read(cx).export_png().unwrap();
+            assert!(polish_and_copy(&path, window.scale_factor(), cx));
+            let copied = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+            (saved, copied.bytes)
+        });
+        let saved = image::load_from_memory(&saved).unwrap().to_rgba8();
+        let copied = image::load_from_memory(&copied).unwrap().to_rgba8();
+        assert_eq!(saved.dimensions(), (640, 360));
+        assert_eq!(saved.get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(saved.get_pixel(320, 200).0, [240, 80, 64, 255]);
+        assert_eq!(copied, saved);
     }
 
     #[herogpui::test]

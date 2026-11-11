@@ -920,6 +920,7 @@ pub fn capture_editor_interaction_states() {
         pin_workflows::editor_roundtrip(&mut cx, &output, &scratch);
         workflows::screenshot(&mut cx, &output, &scratch);
         workflows::scaled_wallpaper_preview(&mut cx, &scratch);
+        workflows::large_attachment_preview(&mut cx, &scratch);
     }
     #[cfg(windows)]
     if source.is_none() {

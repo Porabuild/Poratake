@@ -122,9 +122,18 @@ blurred redactions crossing into attachments are compared with saved pixels at
 125% and 200%; overlapping and clipped redactions, crop, undo and atlas
 retirement are also checked. A direct Electron pixel comparison and framed,
 inset or balanced layered annotations remain outside this check.
+Corner and shadow effects with zero padding are also compared without a
+background for single images and unframed attachments. A same-window theme
+change checks the transparent matte and replacement of the old backdrop. Plain
+attached captures are checked for visible seams on both sides; annotations and
+redactions crossing a translucent attachment are compared against the PNG with
+the theme matte applied. The Windows GPU fixture also checks 19,200×160 and
+160×19,200 attached compositions, translucent tile joins, the last tile,
+annotations, scrolling at 25% zoom and tile eviction. A unit test reconstructs
+a two-dimensional tile grid; large two-dimensional GPU surfaces remain untested.
 Separate CPU checks save and reopen 17,000px-wide and -tall captures with
 plain, inset and framed shadows and compare their preview shadows with the PNG.
-Actual GPUI GPU rendering at those dimensions remains unverified.
+GPUI GPU rendering of those plain, inset and framed shadows remains unverified.
 Custom `PORATAKE_PARITY_IMAGE` inputs skip that fixed-size workflow. Overlays use
 a synthetic desktop with ordered overlapping windows, negative display origins
 and correctly scaled physical bounds. Window/display picker states cover hover,

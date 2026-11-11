@@ -16,6 +16,7 @@ use crate::render::annotations as renderer;
 use crate::render::canvas::Canvas;
 
 const MAX_PATCH_PIXELS: f64 = 8_388_608.0;
+const MAX_PATCH_DIMENSION: f64 = 16_384.0;
 const CACHE_TTL_FRAMES: u64 = 4;
 
 pub struct Surface<'a> {
@@ -25,6 +26,7 @@ pub struct Surface<'a> {
     pub offset_x: f64,
     pub offset_y: f64,
     pub pixels: Option<&'a [u8]>,
+    pub matte: Option<[u8; 3]>,
 }
 
 pub struct Patch {
@@ -190,7 +192,18 @@ pub fn patch(
         return None;
     }
 
-    let scale = fit_scale(right - left, bottom - top, scale);
+    let target = (
+        target.0.max(left),
+        target.1.max(top),
+        target.2.min(right),
+        target.3.min(bottom),
+    );
+    if target.2 <= target.0 || target.3 <= target.1 {
+        return None;
+    }
+    let scale = fit_scale(right - left, bottom - top, scale)
+        .min((MAX_PATCH_DIMENSION - 1.0) / (target.2 - target.0))
+        .min((MAX_PATCH_DIMENSION - 1.0) / (target.3 - target.1));
     let device_x = (left * scale).floor();
     let device_y = (top * scale).floor();
     let width = ((right * scale).ceil() - device_x).max(1.0) as u32;
@@ -208,14 +221,10 @@ pub fn patch(
     }
     renderer::draw(&mut canvas, annotation);
 
-    let target_left = (target.0.max(left) * scale).floor().max(device_x);
-    let target_top = (target.1.max(top) * scale).floor().max(device_y);
-    let target_right = (target.2.min(right) * scale)
-        .ceil()
-        .min(device_x + f64::from(width));
-    let target_bottom = (target.3.min(bottom) * scale)
-        .ceil()
-        .min(device_y + f64::from(height));
+    let target_left = (target.0 * scale).floor().max(device_x);
+    let target_top = (target.1 * scale).floor().max(device_y);
+    let target_right = (target.2 * scale).ceil().min(device_x + f64::from(width));
+    let target_bottom = (target.3 * scale).ceil().min(device_y + f64::from(height));
     let target_width = (target_right - target_left) as u32;
     let target_height = (target_bottom - target_top) as u32;
     let rect = tiny_skia::IntRect::from_xywh(
@@ -224,8 +233,20 @@ pub fn patch(
         target_width,
         target_height,
     )?;
+    let mut pixmap = canvas.into_pixmap().clone_rect(rect)?;
+    if let Some([red, green, blue]) = surface.matte {
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color_rgba8(red, green, blue, 255);
+        paint.blend_mode = tiny_skia::BlendMode::DestinationOver;
+        pixmap.fill_rect(
+            tiny_skia::Rect::from_xywh(0., 0., target_width as f32, target_height as f32)?,
+            &paint,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
     Some(Patch {
-        pixmap: canvas.into_pixmap().clone_rect(rect)?,
+        pixmap,
         x: target_left / scale,
         y: target_top / scale,
         width: f64::from(target_width) / scale,
@@ -395,6 +416,7 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u64(surface.offset_x.to_bits());
     hasher.write_u64(surface.offset_y.to_bits());
     hasher.write_u8(u8::from(surface.pixels.is_some()));
+    surface.matte.hash(&mut hasher);
     surface.image_id.hash(&mut hasher);
     Some(hasher.finish())
 }
@@ -483,6 +505,7 @@ mod tests {
             offset_x: 0.0,
             offset_y: 0.0,
             pixels: Some(&bgra),
+            matte: None,
         };
         let paint = PixmapPaint {
             opacity: 1.0,
@@ -608,6 +631,7 @@ mod tests {
             offset_x: 0.0,
             offset_y: 0.0,
             pixels: first.as_bytes(0),
+            matte: None,
         };
         let second_surface = Surface {
             image_id: Some(second.id),
@@ -675,6 +699,7 @@ mod tests {
             offset_x: 48.,
             offset_y: 20.,
             pixels: Some(&bgra),
+            matte: None,
         };
         let paint = PixmapPaint {
             opacity: 1.0,
@@ -710,6 +735,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn translucent_redaction_uses_the_export_alpha_before_the_matte() {
+        let mut base = base_pixmap(100, 80);
+        for y in 0..80 {
+            for x in 50..100 {
+                let index = (y * 100 + x) * 4;
+                base.data_mut()[index..index + 4].copy_from_slice(&[20, 95, 40, 128]);
+            }
+        }
+        let source = render_image(&base);
+        let annotation = Annotation::Redact {
+            id: "translucent-blur".into(),
+            x: 40.,
+            y: 20.,
+            width: 30.,
+            height: 30.,
+            style: "blur".into(),
+            intensity: 2.,
+        };
+        let surface = Surface {
+            image_id: Some(source.id),
+            width: 100,
+            height: 80,
+            offset_x: 0.,
+            offset_y: 0.,
+            pixels: source.as_bytes(0),
+            matte: Some([240, 240, 240]),
+        };
+        let mut exported = Canvas::from_pixmap(base);
+        renderer::draw(&mut exported, &annotation);
+        let mut exported = exported.into_pixmap();
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color_rgba8(240, 240, 240, 255);
+        paint.blend_mode = BlendMode::DestinationOver;
+        exported.fill_rect(
+            tiny_skia::Rect::from_xywh(0., 0., 100., 80.).unwrap(),
+            &paint,
+            Transform::identity(),
+            None,
+        );
+        let actual = patch(&annotation, &[], &surface, 1.).unwrap();
+        for y in 0..30 {
+            for x in 0..30 {
+                let expected = exported.pixel(x + 40, y + 20).unwrap();
+                let actual = actual.pixmap.pixel(x, y).unwrap();
+                assert!(actual.red().abs_diff(expected.red()) <= 1);
+                assert!(actual.green().abs_diff(expected.green()) <= 1);
+                assert!(actual.blue().abs_diff(expected.blue()) <= 1);
+                assert_eq!(actual.alpha(), 255);
+            }
+        }
+        let keys = begin_frame(&[&annotation]);
+        let light = image(&keys, 0, &annotation, &[], &surface, 1.).unwrap();
+        let dark_surface = Surface {
+            matte: Some([24, 24, 27]),
+            ..surface
+        };
+        let dark = image(&keys, 0, &annotation, &[], &dark_surface, 1.).unwrap();
+        assert_ne!(light.image.id, dark.image.id);
     }
 
     #[test]
@@ -816,5 +902,62 @@ mod tests {
         let scale = fit_scale(8000.0, 8000.0, 4.0);
         assert!(8000.0 * scale * 8000.0 * scale <= MAX_PATCH_PIXELS + 1.0);
         assert_eq!(fit_scale(100.0, 100.0, 2.0), 2.0);
+    }
+
+    #[test]
+    fn long_patch_dimensions_fit_the_gpu_without_shrinking_small_targets() {
+        for (width, height) in [(20000., 8.), (8., 20000.)] {
+            let surface = Surface {
+                image_id: None,
+                width: width as u32,
+                height: height as u32,
+                offset_x: 0.,
+                offset_y: 0.,
+                pixels: None,
+                matte: None,
+            };
+            let annotation = Annotation::Rectangle {
+                id: "long".into(),
+                x: 0.25,
+                y: 0.25,
+                width: width - 1.,
+                height: height - 1.,
+                stroke: "#ff00ff".into(),
+                stroke_width: 1.,
+                fill: None,
+            };
+            let image = patch(&annotation, &[], &surface, 1.).unwrap().pixmap;
+            assert!(image.width() <= 16384 && image.height() <= 16384);
+            assert!(image.width().max(image.height()) > 16000);
+        }
+        let surface = Surface {
+            image_id: None,
+            width: 20000,
+            height: 20,
+            offset_x: 0.,
+            offset_y: 0.,
+            pixels: None,
+            matte: None,
+        };
+        let preceding = Annotation::Redact {
+            id: "long-redaction".into(),
+            x: 0.,
+            y: 0.,
+            width: 20000.,
+            height: 20.,
+            style: "black".into(),
+            intensity: 1.,
+        };
+        let current = Annotation::Redact {
+            id: "small-redaction".into(),
+            x: 10.,
+            y: 4.,
+            width: 10.,
+            height: 10.,
+            style: "black".into(),
+            intensity: 1.,
+        };
+        let image = patch(&current, &[&preceding], &surface, 1.).unwrap().pixmap;
+        assert_eq!((image.width(), image.height()), (10, 10));
     }
 }

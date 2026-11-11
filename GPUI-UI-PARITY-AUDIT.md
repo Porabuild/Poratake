@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `a9d025f` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `ec0d1ce0` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -73,7 +73,7 @@ previous hosted images were unchanged. The 144 new NVIDIA history images were re
 states and 160 revised selection images were reviewed; the remaining 2,312 existing
 images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
 24 were reviewed and the other 2,512 images were unchanged. The final exact
-matrix passed all 16 cases. The latest local Windows native gate passed 1,033 tests with two skipped.
+matrix passed all 16 cases. The latest local Windows native gate passed 1,065 tests with two skipped.
 All 144 hosted history images, 64 selection-corner images, 160 revised selection
 images and 24 DPI-adjusted history images were also reviewed. The other 2,512
 hosted images were unchanged.
@@ -751,6 +751,31 @@ Bugs fixed in this pass:
   the framed editor and export paths: the original 1600×1000 Polish capture is
   1600×1056 at 200%, and Polish copy matches editor export. The title bar and
   translucent image patch are checked in the preview at 125% and 200%.
+- Corner- and shadow-only settings without padding or a background were also
+  ignored. Without balance or inset, they now activate for single captures and
+  attached images. Light/dark previews match saved pixels at simulated 125% and
+  200%; Polish copy matches the editor for zero-padding corners. Transparent
+  previews now use the active theme background, and a same-window theme change
+  replaces and retires the old backdrop. Balance and inset still need coordinated
+  preview/export geometry before those effect-only combinations can be enabled.
+- Plain attached captures could show a one-pixel seam at their join. Unframed
+  attachments without balance or inset now share a single preview composition,
+  with annotations above the images. The workflow checks joins on both sides;
+  preview and export comparisons cover transparent attachments and black,
+  pixelated and blurred redactions at simulated 125% and 200%. Redactions sample
+  the image's transparency before the preview applies the theme background. Ten
+  NVIDIA attachment baselines were reviewed; the other 372 images in those two
+  workflow runs were unchanged.
+- An attachment composition wider or taller than the Windows 16,384px texture
+  limit could leave the preview blank. The display now uses bounded, overlapping
+  source tiles with opaque theme-matted pixels; the original transparent pixels
+  remain available for annotations and redactions. NVIDIA GPU checks cover
+  19,200×160 and 160×19,200 compositions in both themes, including translucent
+  joins, the final tile, annotations, 25% zoom scrolling and texture eviction.
+  A small 2D reconstruction test checks tile intersections without allocating a
+  large surface. Long annotation patches also respect the texture
+  limit; very large two-dimensional GPU compositions and memory use remain to
+  be measured.
 - A small selection at a display edge could place its size label outside the
   overlay; near the bottom, the label could also cover the selection. The label
   now snaps inside the viewport and moves above small bottom-edge selections.
@@ -892,8 +917,8 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                                                                          |
 | P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions and restarts, and cross-shell IDs on macOS/Linux.                                                                                                                      |
 | P1       | Complex framed screenshot preview versus export          | Single-image frames now match the PNG at simulated 125% and 200%, including corner annotations and translucent backgrounds. Verify wallpaper corners, inset, balance, attached layers, arbitrary zoom and physical DPI transitions.                                                                                                                                                                                                                                                |
-| P1       | Complex rounded screenshot preview versus export         | Single captures without a frame, inset, balance or attachments now match the PNG with and without shadows at simulated 125% and 200%, including transparent pixels and a corner annotation. Verify complex compositions, zero padding, arbitrary zoom and physical DPI transitions.                                                                                                                                                                                                |
-| P1       | Zero-padding wallpaper effects                           | Frame-only settings now activate at zero padding; editor output, Polish copy and the title-bar preview are checked. Corner- and shadow-only settings still do not activate without a background or padding. Attached layers and balance need coordinated preview/export handling before widening that gate.                                                                                                                                                                        |
+| P1       | Complex rounded screenshot preview versus export         | Single captures without a frame, inset, balance or attachments now match the PNG with and without shadows at simulated 125% and 200%, including transparent pixels and a corner annotation. Verify complex compositions, zero padding with balance or inset, arbitrary zoom and physical DPI transitions.                                                                                                                                                                          |
+| P1       | Zero-padding wallpaper effects                           | Frame-only and corner/shadow-only settings without balance or inset now activate at zero padding; single and attached previews and Polish copy are checked. Balance and inset still need coordinated preview/export geometry before effect-only combinations can be enabled.                                                                                                                                                                                                       |
 | P1       | Wallpaper shadows and complex image compositions         | Single-image shadows without a window frame, inset, balance or attachments now match saved output in the tested cases. Complex combinations still need preview/output checks. At 4K a 400px radius with the strongest shadow took 196–200 ms to prepare locally; measure interactive behavior, GPU upload, memory and slower hardware. At 17,000px, plain, inset and framed outputs retain shadows in CPU checks; real GPUI GPU previews and other combinations remain unverified. |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                               |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                               |

@@ -313,6 +313,31 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             assert!(left >= px(0.) && right <= viewport.width && top >= px(crate::ui::chrome::TITLE_BAR_HEIGHT) && bottom <= viewport.height,
                 "attach-{name}: the expanded composition must fit the editor viewport; ({left:?}, {top:?})..({right:?}, {bottom:?}), {viewport:?}");
             hover(cx, window, 20., 700.);
+            if matches!(name, "left" | "retry") {
+                let scale = cx
+                    .update_window(window, |_, window, _| window.scale_factor())
+                    .unwrap();
+                let seam = if edge == Edge::Left {
+                    primary.left()
+                } else {
+                    primary.right()
+                };
+                let y = if edge == Edge::Left { 20. } else { 60. };
+                let x = (f32::from(seam) * scale).round() as i32;
+                let y = ((f32::from(primary.top()) + y * zoom) * scale).round() as u32;
+                let screenshot = cx.capture_screenshot(window).unwrap();
+                for dx in -2..=2 {
+                    assert!(
+                        screenshot
+                            .get_pixel((x + dx) as u32, y)
+                            .0
+                            .iter()
+                            .zip([64_u8, 112, 192, 255])
+                            .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                        "attach-{name}: a seam appeared at {dx}"
+                    );
+                }
+            }
             capture(cx, window, output, &format!("workflow-attach-{name}"));
         } else {
             assert_eq!(actual, original);

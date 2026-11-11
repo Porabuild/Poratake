@@ -105,6 +105,7 @@ impl WallpaperSettings {
         self.gradient.is_some()
             || self.background_image.is_some()
             || self.padding > 0.0
+            || (!self.balance && self.inset <= 0.0 && (self.corners > 0.0 || self.shadow > 0.0))
             || crate::render::window_frame::theme(&self.window_frame.style).is_some()
     }
 
@@ -113,9 +114,7 @@ impl WallpaperSettings {
         !self.balance
             && self.inset <= 0.0
             && ((framed && !has_layers && self.corners <= 0.0)
-                || (!framed
-                    && ((has_layers && self.is_active())
-                        || (!has_layers && (self.corners > 0.0 || self.shadow > 0.0)))))
+                || (!framed && (has_layers || self.corners > 0.0 || self.shadow > 0.0)))
     }
 
     /// Selecting a gradient with no padding yet opens the frame up, matching
@@ -379,6 +378,22 @@ pub fn layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_padding_effects_do_not_activate_unsupported_balance_or_inset() {
+        let mut settings = WallpaperSettings {
+            corners: 20.0,
+            ..WallpaperSettings::default()
+        };
+        assert!(settings.is_active());
+        settings.balance = true;
+        assert!(!settings.is_active());
+        settings.balance = false;
+        settings.inset = 10.0;
+        assert!(!settings.is_active());
+        settings.padding = 1.0;
+        assert!(settings.is_active());
+    }
 
     #[test]
     fn a_preset_name_is_trimmed_and_an_empty_one_is_rejected() {

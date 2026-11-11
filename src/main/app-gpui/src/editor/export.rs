@@ -16,6 +16,8 @@ pub struct PreviewEdgeImage {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+    pub inset_x: u32,
+    pub inset_y: u32,
     pub image: std::sync::Arc<gpui::RenderImage>,
 }
 
@@ -66,7 +68,6 @@ pub fn compose_with_layers(
         }
     }
     let layered_wallpaper = if !layers.is_empty()
-        && wallpaper.is_active()
         && !wallpaper.balance
         && wallpaper.inset <= 0.0
         && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
@@ -487,8 +488,58 @@ fn preview_edge_image(edge: crate::render::canvas::PreviewEdge) -> PreviewEdgeIm
         y: edge.y,
         width: edge.pixels.width(),
         height: edge.pixels.height(),
+        inset_x: 0,
+        inset_y: 0,
         image: render_image(&edge.pixels),
     }
+}
+
+fn composite_tiles(
+    composite: &Pixmap,
+    stage_background: [u8; 3],
+    side: u32,
+) -> Option<Vec<PreviewEdgeImage>> {
+    let mut tiles = Vec::new();
+    for y in (0..composite.height()).step_by(side as usize) {
+        for x in (0..composite.width()).step_by(side as usize) {
+            let right = (x + side).min(composite.width());
+            let bottom = (y + side).min(composite.height());
+            let source_x = x.saturating_sub(1);
+            let source_y = y.saturating_sub(1);
+            let source_right = (right + 1).min(composite.width());
+            let source_bottom = (bottom + 1).min(composite.height());
+            let mut pixels = composite.clone_rect(tiny_skia::IntRect::from_xywh(
+                source_x as i32,
+                source_y as i32,
+                source_right - source_x,
+                source_bottom - source_y,
+            )?)?;
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8(
+                stage_background[0],
+                stage_background[1],
+                stage_background[2],
+                255,
+            );
+            paint.blend_mode = tiny_skia::BlendMode::DestinationOver;
+            pixels.fill_rect(
+                tiny_skia::Rect::from_xywh(0., 0., pixels.width() as f32, pixels.height() as f32)?,
+                &paint,
+                tiny_skia::Transform::identity(),
+                None,
+            );
+            tiles.push(PreviewEdgeImage {
+                x,
+                y,
+                width: right - x,
+                height: bottom - y,
+                inset_x: x - source_x,
+                inset_y: y - source_y,
+                image: render_image(&pixels),
+            });
+        }
+    }
+    Some(tiles)
 }
 
 /// Renders just the wallpaper backdrop at `width` x `height`, for the editor
@@ -512,36 +563,22 @@ pub fn render_backdrop(
 )> {
     if wallpaper.supports_edge_preview(!layers.is_empty()) && !layers.is_empty() {
         let primary = from_rgba(&base?.to_rgba8())?;
-        let mut canvas = Canvas::from_pixmap(compose_layered_wallpaper(
-            &primary,
-            wallpaper,
-            layers,
-            &[],
-            frame_scale,
-        )?);
-        let background = if wallpaper.has_background() {
-            stage_background
+        let composite = compose_layered_wallpaper(&primary, wallpaper, layers, &[], frame_scale)?;
+        let tiles = if composite.width() > 16384 || composite.height() > 16384 {
+            composite_tiles(&composite, stage_background, 8192)?
         } else {
-            [24, 24, 27]
+            Vec::new()
         };
-        let mut path = tiny_skia::PathBuilder::new();
-        path.push_rect(tiny_skia::Rect::from_xywh(
-            0.0,
-            0.0,
-            canvas.width() as f32,
-            canvas.height() as f32,
-        )?);
-        canvas.fill_path_blended(
-            &path.finish()?,
-            Color::from_rgba8(background[0], background[1], background[2], 255),
-            FillRule::Winding,
-            tiny_skia::BlendMode::DestinationOver,
-        );
-        return Some((render_image(canvas.pixmap()), Vec::new(), true));
+        return Some((render_image(&composite), tiles, true));
     }
     let mut canvas = Canvas::new(width.max(1), height.max(1))?;
     if !wallpaper.has_background() {
-        canvas.fill_all(Color::from_rgba8(24, 24, 27, 255));
+        canvas.fill_all(Color::from_rgba8(
+            stage_background[0],
+            stage_background[1],
+            stage_background[2],
+            255,
+        ));
     }
     paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
     let edge_preview = wallpaper.supports_edge_preview(!layers.is_empty());
@@ -1347,25 +1384,152 @@ mod tests {
             stroke_width: 1.0,
             fill: Some("#ff00ff".into()),
         }];
+        let layer = ImageLayer {
+            id: "right".into(),
+            image_url: attached.to_string_lossy().to_string(),
+            natural_width: 60.0,
+            natural_height: 60.0,
+            edge: Edge::Right,
+        };
         let output = compose_with_layers(
             Some(&base),
             60,
             60,
             &annotations,
             &settings,
-            &[ImageLayer {
-                id: "right".into(),
-                image_url: attached.to_string_lossy().to_string(),
-                natural_width: 60.0,
-                natural_height: 60.0,
-                edge: Edge::Right,
-            }],
+            std::slice::from_ref(&layer),
+            1.0,
+        );
+        let plain = compose_with_layers(
+            Some(&base),
+            60,
+            60,
+            &annotations,
+            &WallpaperSettings::default(),
+            std::slice::from_ref(&layer),
             1.0,
         );
         let _ = std::fs::remove_file(&attached);
         assert_eq!(output.get_pixel(78, 50).0, [255, 0, 255, 255]);
         assert_eq!(output.get_pixel(85, 50).0, [255, 0, 255, 255]);
         assert_eq!(output.get_pixel(95, 50).0, [0, 0, 255, 255]);
+        assert_eq!(plain.get_pixel(58, 30).0, [255, 0, 255, 255]);
+        assert_eq!(plain.get_pixel(65, 30).0, [255, 0, 255, 255]);
+        assert_eq!(plain.get_pixel(75, 30).0, [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn composite_tiles_reconstruct_a_two_dimensional_translucent_image() {
+        let source = RgbaImage::from_fn(19, 19, |x, y| {
+            image::Rgba([
+                (x * 11) as u8,
+                (y * 11) as u8,
+                96,
+                if (x + y) % 2 == 0 { 128 } else { 255 },
+            ])
+        });
+        let composite = from_rgba(&source).unwrap();
+        let tiles = composite_tiles(&composite, [240, 240, 240], 8).unwrap();
+        assert_eq!(tiles.len(), 9);
+        assert_eq!(
+            (
+                tiles[4].x,
+                tiles[4].y,
+                tiles[4].width,
+                tiles[4].height,
+                tiles[4].inset_x,
+                tiles[4].inset_y
+            ),
+            (8, 8, 8, 8, 1, 1)
+        );
+        let mut expected = composite.clone();
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color_rgba8(240, 240, 240, 255);
+        paint.blend_mode = tiny_skia::BlendMode::DestinationOver;
+        expected.fill_rect(
+            tiny_skia::Rect::from_xywh(0., 0., 19., 19.).unwrap(),
+            &paint,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        let expected = to_rgba(&expected);
+        let mut assembled = RgbaImage::new(19, 19);
+        for tile in tiles {
+            let bytes = tile.image.as_bytes(0).unwrap();
+            let stride = u32::from(tile.image.size(0).width) as usize * 4;
+            for y in 0..tile.height {
+                for x in 0..tile.width {
+                    let index =
+                        (y + tile.inset_y) as usize * stride + (x + tile.inset_x) as usize * 4;
+                    assembled.put_pixel(
+                        tile.x + x,
+                        tile.y + y,
+                        image::Rgba([
+                            bytes[index + 2],
+                            bytes[index + 1],
+                            bytes[index],
+                            bytes[index + 3],
+                        ]),
+                    );
+                }
+            }
+        }
+        assert_eq!(assembled, expected);
+    }
+
+    #[test]
+    fn zero_padding_keeps_corner_and_shadow_effects() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            60,
+            60,
+            image::Rgba([255, 0, 0, 255]),
+        ));
+        let settings = WallpaperSettings {
+            corners: 20.0,
+            ..WallpaperSettings::default()
+        };
+        let rounded = compose(Some(&base), 60, 60, &[], &settings, 1.0);
+        assert_eq!(rounded.dimensions(), (60, 60));
+        assert_eq!(rounded.get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(rounded.get_pixel(30, 30).0, [255, 0, 0, 255]);
+
+        let attached = crate::util::test_paths::unique_temp("poratake-zero-padding-layer.png");
+        RgbaImage::from_pixel(60, 60, image::Rgba([0, 0, 255, 255]))
+            .save(&attached)
+            .unwrap();
+        let layered = compose_with_layers(
+            Some(&base),
+            60,
+            60,
+            &[],
+            &settings,
+            &[crate::editor::layers::ImageLayer {
+                id: "right".into(),
+                image_url: attached.to_string_lossy().into_owned(),
+                natural_width: 60.0,
+                natural_height: 60.0,
+                edge: crate::editor::layers::Edge::Right,
+            }],
+            1.0,
+        );
+        let _ = std::fs::remove_file(&attached);
+        assert_eq!(layered.dimensions(), (120, 60));
+        assert_eq!(layered.get_pixel(59, 0).0, [0, 0, 0, 0]);
+        assert_eq!(layered.get_pixel(60, 0).0, [0, 0, 0, 0]);
+        assert_eq!(layered.get_pixel(90, 30).0, [0, 0, 255, 255]);
+
+        let transparent = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            60,
+            60,
+            image::Rgba([0, 0, 0, 0]),
+        ));
+        let settings = WallpaperSettings {
+            shadow: 50.0,
+            ..WallpaperSettings::default()
+        };
+        let shadowed = compose(Some(&transparent), 60, 60, &[], &settings, 1.0);
+        assert_eq!(shadowed.dimensions(), (60, 60));
+        assert_eq!(shadowed.get_pixel(30, 30).0, [255, 255, 255, 255]);
     }
 
     #[test]

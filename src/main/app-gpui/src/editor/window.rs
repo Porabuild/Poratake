@@ -754,8 +754,8 @@ impl EditorWindow {
             size.1,
             self.layers.clone(),
             self.native_scale,
-            (wallpaper.has_background()
-                && wallpaper.supports_edge_preview(!self.layers.is_empty()))
+            (!wallpaper.has_background()
+                || wallpaper.supports_edge_preview(!self.layers.is_empty()))
             .then_some(stage_background),
             (!self.layers.is_empty() && wallpaper.supports_edge_preview(true))
                 .then(|| self.image.as_ref().map(|image| image.id))

@@ -105,7 +105,7 @@ impl RenderOnce for EditorCanvas {
         let overlay_above = has_preview_edges || layered_composite;
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
-        let transparent_backdrop = wallpaper.is_active()
+        let transparent_backdrop = wallpaper.is_active_with_layers(!snap.layers.is_empty())
             && (snap.layers.is_empty() || overlay_above)
             && !wallpaper.balance
             && wallpaper.inset <= 0.0
@@ -115,7 +115,9 @@ impl RenderOnce for EditorCanvas {
             .relative()
             .w(content_width)
             .h(content_height)
-            .when(!wallpaper.is_active(), |el| el.shadow_md())
+            .when(!wallpaper.is_active() && !layered_composite, |el| {
+                el.shadow_md()
+            })
             .when(wallpaper.corners > 0.0 && !overlay_above, |el| {
                 el.rounded(px(wallpaper.corners as f32 * snap.zoom))
                     .overflow_hidden()
@@ -167,6 +169,9 @@ impl RenderOnce for EditorCanvas {
         let overlay_snapshot = self.snapshot.clone();
         let recorder = self.bounds_cell.clone();
         let (primary, primary_fg) = (theme.primary, theme.primary_foreground);
+        let background = gpui::Rgba::from(theme.background);
+        let stage_background = [background.r, background.g, background.b]
+            .map(|channel| (channel * 255.).round() as u8);
         frame = frame.child(
             canvas(
                 move |bounds, _window, _cx| {
@@ -181,6 +186,7 @@ impl RenderOnce for EditorCanvas {
                             bounds.origin,
                             &snapshot,
                             primary.opacity(HALO_OPACITY),
+                            stage_background,
                         );
                     }
                     if !overlay_above {
@@ -236,9 +242,11 @@ impl RenderOnce for EditorCanvas {
                 .w(px(canvas_width as f32 * zoom))
                 .h(px(canvas_height as f32 * zoom))
                 .shadow_md()
+                .when(layered_composite, |el| el.bg(theme.background))
                 .overflow_hidden();
             let rendered = self.snapshot.borrow().backdrop.clone();
             backdrop = match rendered {
+                Some(_) if layered_composite && has_preview_edges => backdrop,
                 Some(image) => backdrop.child(
                     img(image)
                         .absolute()
@@ -274,14 +282,35 @@ impl RenderOnce for EditorCanvas {
                     ),
             );
             for edge in self.snapshot.borrow().preview_edges.iter() {
-                backdrop = backdrop.child(
-                    img(edge.image.clone())
-                        .absolute()
-                        .left(px(edge.x as f32 * zoom))
-                        .top(px(edge.y as f32 * zoom))
-                        .w(px(edge.width as f32 * zoom))
-                        .h(px(edge.height as f32 * zoom)),
-                );
+                if layered_composite {
+                    let size = edge.image.size(0);
+                    backdrop = backdrop.child(
+                        div()
+                            .absolute()
+                            .left(px(edge.x as f32 * zoom))
+                            .top(px(edge.y as f32 * zoom))
+                            .w(px(edge.width as f32 * zoom))
+                            .h(px(edge.height as f32 * zoom))
+                            .overflow_hidden()
+                            .child(
+                                img(edge.image.clone())
+                                    .absolute()
+                                    .left(px(-(edge.inset_x as f32) * zoom))
+                                    .top(px(-(edge.inset_y as f32) * zoom))
+                                    .w(px(u32::from(size.width) as f32 * zoom))
+                                    .h(px(u32::from(size.height) as f32 * zoom)),
+                            ),
+                    );
+                } else {
+                    backdrop = backdrop.child(
+                        img(edge.image.clone())
+                            .absolute()
+                            .left(px(edge.x as f32 * zoom))
+                            .top(px(edge.y as f32 * zoom))
+                            .w(px(edge.width as f32 * zoom))
+                            .h(px(edge.height as f32 * zoom)),
+                    );
+                }
             }
             let mut stage = div()
                 .relative()
@@ -309,6 +338,7 @@ impl RenderOnce for EditorCanvas {
                                             bounds.origin,
                                             &handle_snapshot.borrow(),
                                             primary.opacity(HALO_OPACITY),
+                                            stage_background,
                                         );
                                     }
                                     paint_selection_handles(
@@ -377,6 +407,7 @@ fn paint_annotations(
     origin: gpui::Point<Pixels>,
     snapshot: &CanvasSnapshot,
     halo: Hsla,
+    stage_background: [u8; 3],
 ) {
     let zoom = snapshot.zoom;
     let haloed = match snapshot.selected.as_slice() {
@@ -421,6 +452,7 @@ fn paint_annotations(
         offset_x,
         offset_y,
         pixels: surface_image.and_then(|image| image.as_bytes(0)),
+        matte: snapshot.backdrop_composite.then_some(stage_background),
     };
     let scale = f64::from(zoom) * f64::from(window.scale_factor());
 
