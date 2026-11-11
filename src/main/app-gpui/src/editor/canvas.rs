@@ -585,6 +585,7 @@ fn paint_annotations(
                         patch.y,
                         patch.width,
                         patch.height,
+                        None,
                     );
                     continue;
                 }
@@ -594,7 +595,13 @@ fn paint_annotations(
             || (snapshot.backdrop_composite && matches!(annotation, Annotation::Redact { .. }))
             || committed_pixelation
         {
-            let surface = if committed_pixelation && !snapshot.backdrop_composite {
+            let clear_plain_pixelation = committed_pixelation
+                && !snapshot
+                    .wallpaper
+                    .is_active_with_layers(!snapshot.layers.is_empty());
+            let surface = if clear_plain_pixelation {
+                &surface
+            } else if committed_pixelation && !snapshot.backdrop_composite {
                 &redaction_surface
             } else {
                 &surface
@@ -611,6 +618,7 @@ fn paint_annotations(
                     patch.y,
                     patch.width,
                     patch.height,
+                    clear_plain_pixelation.then_some(stage_surface),
                 );
             }
             continue;
@@ -629,6 +637,7 @@ fn paint_patch(
     y: f64,
     width: f64,
     height: f64,
+    background: Option<[u8; 3]>,
 ) {
     let region = gpui::Bounds {
         origin: gpui::point(
@@ -637,6 +646,10 @@ fn paint_patch(
         ),
         size: gpui::size(px(width as f32 * zoom), px(height as f32 * zoom)),
     };
+    if let Some([red, green, blue]) = background {
+        let color = (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue);
+        window.paint_quad(gpui::fill(region, gpui::rgb(color)));
+    }
     let _ = window.paint_image(region, region, gpui::Corners::default(), image, 0, false);
 }
 

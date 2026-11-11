@@ -1695,10 +1695,10 @@ pub(super) fn restored_pixelation(
         fill: Some("#00ff00".into()),
     };
     let mut annotations = Vec::new();
-    if scale == 1. && !transparent && !clipped {
-        annotations.push(shape.clone());
+    if scale == 1. && !clipped {
+        annotations.push(shape);
     }
-    annotations.push(annotation.clone());
+    annotations.push(annotation);
     crate::history_store::add_item(
         HistoryItem {
             id: format!("restored-pixelation-{scale}-{transparent}-{clipped}"),
@@ -1809,15 +1809,6 @@ pub(super) fn restored_pixelation(
         cx.run_until_parked();
     }
     if scale == 1. && !clipped {
-        if transparent {
-            editor
-                .update(cx, |editor, _, cx| {
-                    editor.history.push(vec![shape, annotation]);
-                    cx.notify();
-                })
-                .unwrap();
-            settle(cx, editor.into());
-        }
         cx.update(|cx| {
             let editor = editor.read(cx).unwrap();
             assert!(!editor
