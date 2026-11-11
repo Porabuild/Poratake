@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `5cadb661` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `bca1fa84` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -78,7 +78,9 @@ after the artifact API returned HTML instead of JSON. The [run at `8b764bc0`](ht
 preserved all 16 renderer profiles and the 148 changed Basic Render Driver
 images; the other 2,732 images matched exactly. The changed pixels were checked
 against the fixture image bounds and representative controls were inspected in
-both themes. The reviewed images are now baselines; a hosted rerun is pending.
+both themes. [Hosted CI at `2d50016b`](https://github.com/Porabuild/Poratake/actions/runs/43107376955)
+passed all required jobs and all 16 visual cases with 2,880 exact baselines. Its
+evidence includes 16 renderer profiles and 3,373 PNGs, with no diff images.
 An exact rerun after the target-menu interaction fixes passed all 16 cases and
 2,808 images. The corresponding 80 hosted images were reviewed, and all 2,728
 earlier hosted images were pixel-identical. [Hosted CI at `a9d025f`](https://github.com/Porabuild/Poratake/actions/runs/42980916944)
@@ -660,7 +662,8 @@ Bugs fixed in this pass:
   open and use its frozen pixels. It now closes the selector and releases its
   freeze before capturing live pixels; a newer selector invalidates a pending
   screen request. Mock-platform tests cover live and frozen replacement. A
-  saved-output and clipboard fixture is running on the hosted renderer.
+  daemon-fixture workflow verified release before an uncached capture, saved
+  pixels and clipboard pixels in the hosted run at `2d50016b`.
 - On macOS and Linux a replaced selector could open after its freeze completed,
   or a live capture could start before that freeze was released. Pending freezes
   now retain ownership across replacements and cancellation; a failed release
