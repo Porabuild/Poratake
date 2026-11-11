@@ -241,6 +241,7 @@ jobs:
         run: bun scripts/parity/gpui-accessibility-test.mjs
 
       - name: Test Windows clipboard image formats
+        id: clipboard_formats
         run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests
 
       - name: Visual regressions
@@ -255,6 +256,12 @@ jobs:
             ${{ runner.temp }}/poratake-visual-*/**/*.png
             ${{ runner.temp }}/poratake-visual-*/**/renderer.json
           if-no-files-found: ignore
+
+      - name: Test native Windows clipboard roundtrip
+        if: ${{ !cancelled() && steps.clipboard_formats.outcome == 'success' }}
+        env:
+          PORATAKE_ISOLATED_CLIPBOARD_TEST: '1'
+        run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests::native_clipboard_round_trips_text_png_and_dib -- --ignored
 
       - name: Tests
         run: bun run test:run

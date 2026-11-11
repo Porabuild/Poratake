@@ -422,6 +422,112 @@ impl Drop for LockedGlobal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::{
+        System::DataExchange::IsClipboardFormatAvailable,
+        UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WINDOW_STYLE},
+    };
+
+    #[test]
+    #[ignore = "requires an isolated Windows clipboard"]
+    fn native_clipboard_round_trips_text_png_and_dib() {
+        assert_eq!(
+            std::env::var("PORATAKE_ISOLATED_CLIPBOARD_TEST")
+                .as_deref()
+                .ok(),
+            Some("1"),
+            "this test replaces clipboard contents and needs an isolated session"
+        );
+        let text =
+            ClipboardItem::new_string(format!("Poratake clipboard test {}", std::process::id()));
+        write_to_clipboard(text.clone());
+        assert_eq!(read_from_clipboard(), Some(text));
+
+        let expected = image::RgbaImage::from_fn(3, 2, |x, y| {
+            image::Rgba([x as u8 * 80, y as u8 * 90, 180, 64 + x as u8 * 80])
+        });
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(expected.clone())
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(
+            ImageFormat::Png,
+            png.clone(),
+        )));
+
+        let dib = {
+            let _guard = ClipboardGuard::open().expect("open clipboard after writing image");
+            assert!(unsafe { IsClipboardFormatAvailable(*CLIPBOARD_PNG_FORMAT) }.is_ok());
+            assert!(unsafe { IsClipboardFormatAvailable(CF_DIB.0 as u32) }.is_ok());
+            let stored_png = get_clipboard_data(*CLIPBOARD_PNG_FORMAT).unwrap();
+            assert!(stored_png.as_bytes().starts_with(&png));
+            get_clipboard_data(CF_DIB.0 as u32)
+                .unwrap()
+                .as_bytes()
+                .to_vec()
+        };
+        let decoded = convert_dib_to_bmp(&dib).unwrap();
+        assert_eq!(
+            image::load_from_memory_with_format(&decoded, image::ImageFormat::Bmp)
+                .unwrap()
+                .to_rgba8(),
+            expected
+        );
+
+        let owner = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                windows::core::w!("STATIC"),
+                windows::core::w!(""),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create clipboard owner");
+        for (format, bytes, expected_format, decoder) in [
+            (
+                *CLIPBOARD_PNG_FORMAT,
+                png.as_slice(),
+                ImageFormat::Png,
+                image::ImageFormat::Png,
+            ),
+            (
+                CF_DIB.0 as u32,
+                dib.as_slice(),
+                ImageFormat::Bmp,
+                image::ImageFormat::Bmp,
+            ),
+        ] {
+            unsafe {
+                OpenClipboard(Some(owner)).expect("open clipboard for image source");
+                EmptyClipboard().expect("clear clipboard for image source");
+            }
+            set_clipboard_bytes(bytes, format).expect("write single-format image source");
+            unsafe { CloseClipboard().expect("close image source") };
+            let image = read_from_clipboard()
+                .expect("read single-format clipboard")
+                .into_entries()
+                .find_map(|entry| match entry {
+                    ClipboardEntry::Image(image) => Some(image),
+                    _ => None,
+                })
+                .expect("clipboard contains an image");
+            assert_eq!(image.format, expected_format);
+            assert_eq!(
+                image::load_from_memory_with_format(image.bytes(), decoder)
+                    .unwrap()
+                    .to_rgba8(),
+                expected
+            );
+        }
+        unsafe { DestroyWindow(owner).expect("destroy clipboard owner") };
+    }
 
     #[test]
     fn reads_a_bitmap_with_embedded_color_masks() {
