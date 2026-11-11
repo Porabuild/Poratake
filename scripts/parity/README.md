@@ -110,9 +110,16 @@ GPU atlas. Single-image previews without a window frame, inset, balance or
 attachments are also compared at both scales, with and without corners or
 shadows. The entire padded canvas is checked, including transparent backgrounds,
 a corner annotation, and crop and selection handles. Translucent custom
-backgrounds can differ by up to three color levels. Polish copy is checked against editor export
-separately. Insets, balance, attached layers, arbitrary zoom and combinations
-of frames with wallpaper corners remain outside these comparisons.
+backgrounds can differ by up to three color levels. Unframed attachments without
+inset or balance are checked on all four edges and in a five-layer composition,
+including corners, shadows, transparent images, aspect ratios, save/reopen and
+atlas eviction. Overlapping translucent shadows differ by four color levels in
+at most 16 pixels; all other pixels use the limits above. Polish copy is checked
+against editor export separately. Insets, balance, framed attachments, arbitrary
+zoom and combinations of frames with wallpaper corners remain outside these
+comparisons. Electron draws annotations above attachments and their shadows,
+while GPUI currently draws them below; that cross-shell ordering remains to be
+fixed.
 Separate CPU checks save and reopen 17,000px-wide and -tall captures with
 plain, inset and framed shadows and compare their preview shadows with the PNG.
 Actual GPUI GPU rendering at those dimensions remains unverified.

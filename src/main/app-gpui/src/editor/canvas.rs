@@ -103,7 +103,7 @@ impl RenderOnce for EditorCanvas {
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
         let transparent_backdrop = wallpaper.is_active()
-            && snap.layers.is_empty()
+            && (snap.layers.is_empty() || has_preview_edges)
             && !wallpaper.balance
             && wallpaper.inset <= 0.0
             && (wallpaper.corners <= 0.0 || has_preview_edges)

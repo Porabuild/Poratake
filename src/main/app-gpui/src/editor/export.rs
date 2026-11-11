@@ -69,6 +69,20 @@ pub fn compose_with_layers(
 
     let mut annotated = canvas.into_pixmap();
 
+    let layered_wallpaper = if !layers.is_empty()
+        && wallpaper.is_active()
+        && !wallpaper.balance
+        && wallpaper.inset <= 0.0
+        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
+    {
+        compose_layered_wallpaper(&annotated, wallpaper, layers, frame_scale)
+    } else {
+        None
+    };
+    if let Some(composed) = layered_wallpaper {
+        return to_rgba(&composed);
+    }
+
     // Attached images sit around the annotated capture, before the wallpaper
     // frames the whole group.
     if !layers.is_empty() {
@@ -135,6 +149,86 @@ fn compose_layers(
         );
     }
 
+    Some(canvas.into_pixmap())
+}
+
+fn draw_unframed_image(
+    canvas: &mut Canvas,
+    image: tiny_skia::PixmapRef<'_>,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    shadow: Option<Shadow>,
+) {
+    let (x, y, width, height) = rect;
+    let Some(path) = rounded_rect_path(x, y, width, height, radius) else {
+        return;
+    };
+    canvas.save();
+    if shadow.is_some_and(|shadow| {
+        paint_rounded_shadow(canvas, rect, radius, shadow, Color::WHITE).is_none()
+    }) {
+        canvas.set_shadow(shadow);
+        canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
+        canvas.set_shadow(None);
+    }
+    canvas.clip_path(&path, FillRule::Winding);
+    canvas.draw_pixmap(image, x, y, width, height);
+    canvas.restore();
+}
+
+fn compose_layered_wallpaper(
+    primary: &Pixmap,
+    wallpaper: &WallpaperSettings,
+    layers: &[crate::editor::layers::ImageLayer],
+    frame_scale: f64,
+) -> Option<Pixmap> {
+    let layout = crate::editor::layers::compute(
+        f64::from(primary.width()),
+        f64::from(primary.height()),
+        layers,
+        wallpaper.spacing.max(0.0),
+    );
+    let ((width, height), (offset_x, offset_y, _, _)) =
+        crate::editor::wallpaper::layout(wallpaper, layout.width, layout.height, frame_scale);
+    let (width, height) = (
+        width.round().max(1.0) as u32,
+        height.round().max(1.0) as u32,
+    );
+    let mut canvas = Canvas::new(width, height)?;
+    paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
+    let radius = wallpaper.corners.max(0.0) as f32;
+    let shadow = image_shadow(wallpaper.shadow);
+    let rect = |rect: crate::editor::layers::LayerRect| {
+        (
+            (offset_x.round() + rect.x) as f32,
+            (offset_y.round() + rect.y) as f32,
+            rect.width as f32,
+            rect.height as f32,
+        )
+    };
+    draw_unframed_image(
+        &mut canvas,
+        primary.as_ref(),
+        rect(layout.primary),
+        radius,
+        shadow,
+    );
+    for (id, layer_rect) in layout.layers {
+        let Some(source) = layers
+            .iter()
+            .find(|layer| layer.id == id)
+            .and_then(|layer| gradient::load_image(&layer.image_url))
+        else {
+            continue;
+        };
+        draw_unframed_image(
+            &mut canvas,
+            source.as_ref(),
+            rect(layer_rect),
+            radius,
+            shadow,
+        );
+    }
     Some(canvas.into_pixmap())
 }
 
@@ -227,6 +321,17 @@ fn compose_wallpaper(image: &Pixmap, wallpaper: &WallpaperSettings, frame_scale:
             &wallpaper.window_frame.style,
             image_shadow_at_scale(wallpaper.shadow, frame_scale),
             frame_scale,
+        );
+        return canvas.into_pixmap();
+    }
+
+    if inset_color.is_none() {
+        draw_unframed_image(
+            &mut canvas,
+            image.as_ref(),
+            (offset_x, offset_y, image_width as f32, image_height as f32),
+            radius,
+            image_shadow(wallpaper.shadow),
         );
         return canvas.into_pixmap();
     }
@@ -369,6 +474,112 @@ fn paint_background_source(
     canvas.fill_all(single);
 }
 
+fn render_image(pixmap: &Pixmap) -> std::sync::Arc<gpui::RenderImage> {
+    let mut buffer = to_rgba(pixmap);
+    for pixel in buffer.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+        image::Frame::new(buffer)
+    ]))
+}
+
+fn preview_edge_image(edge: crate::render::canvas::PreviewEdge) -> PreviewEdgeImage {
+    PreviewEdgeImage {
+        x: edge.x,
+        y: edge.y,
+        width: edge.pixels.width(),
+        height: edge.pixels.height(),
+        image: render_image(&edge.pixels),
+    }
+}
+
+fn render_layered_backdrop(
+    mut canvas: Canvas,
+    wallpaper: &WallpaperSettings,
+    image_width: f64,
+    image_height: f64,
+    layers: &[crate::editor::layers::ImageLayer],
+    frame_scale: f64,
+) -> Option<(std::sync::Arc<gpui::RenderImage>, Vec<PreviewEdgeImage>)> {
+    let layout = crate::editor::layers::compute(
+        image_width,
+        image_height,
+        layers,
+        wallpaper.spacing.max(0.0),
+    );
+    let (_, (offset_x, offset_y, _, _)) =
+        crate::editor::wallpaper::layout(wallpaper, layout.width, layout.height, frame_scale);
+    let rect = |rect: crate::editor::layers::LayerRect| {
+        (
+            (offset_x.round() + rect.x) as f32,
+            (offset_y.round() + rect.y) as f32,
+            rect.width as f32,
+            rect.height as f32,
+        )
+    };
+    let primary = rect(layout.primary);
+    let radius = wallpaper.corners.max(0.0) as f32;
+    let shadow = image_shadow(wallpaper.shadow);
+    if let Some(shadow) = shadow {
+        paint_rounded_shadow(&mut canvas, primary, radius, shadow, Color::WHITE)?;
+    }
+    let mut edges = crate::render::canvas::preview_clip_edges(
+        canvas.pixmap(),
+        f64::from(primary.0),
+        f64::from(primary.1),
+        f64::from(primary.2),
+        f64::from(primary.3),
+        0.0,
+        f64::from(radius),
+        None,
+    )?;
+    let extent = shadow.map_or(0.0, |shadow| {
+        (crate::render::blur::box_radius(crate::render::blur::sigma_for_shadow_blur(shadow.blur))
+            * 3
+            + 2) as f32
+            + shadow.offset_x.abs().max(shadow.offset_y.abs()).ceil()
+            + 2.0
+    });
+    for (id, layer_rect) in layout.layers {
+        let Some(source) = layers
+            .iter()
+            .find(|layer| layer.id == id)
+            .and_then(|layer| gradient::load_image(&layer.image_url))
+        else {
+            continue;
+        };
+        let (x, y, width, height) = rect(layer_rect);
+        let left = (x.floor() - extent).max(0.0) as u32;
+        let top = (y.floor() - extent).max(0.0) as u32;
+        let right = (x + width + extent).ceil().min(canvas.width() as f32) as u32;
+        let bottom = (y + height + extent).ceil().min(canvas.height() as f32) as u32;
+        let Some(tile_width) = right.checked_sub(left).filter(|width| *width > 0) else {
+            continue;
+        };
+        let Some(tile_height) = bottom.checked_sub(top).filter(|height| *height > 0) else {
+            continue;
+        };
+        let mut tile = Canvas::new(tile_width, tile_height)?;
+        draw_unframed_image(
+            &mut tile,
+            source.as_ref(),
+            (x - left as f32, y - top as f32, width, height),
+            radius,
+            shadow,
+        );
+        edges.push(crate::render::canvas::PreviewEdge {
+            x: left,
+            y: top,
+            pixels: tile.into_pixmap(),
+        });
+    }
+    Some((
+        render_image(canvas.pixmap()),
+        edges.into_iter().map(preview_edge_image).collect(),
+    ))
+}
+
 /// Renders just the wallpaper backdrop at `width` x `height`, for the editor
 /// preview to show behind the image.
 #[allow(clippy::too_many_arguments)]
@@ -407,6 +618,20 @@ pub fn render_backdrop(
             ),
             FillRule::Winding,
             tiny_skia::BlendMode::DestinationOver,
+        );
+    }
+
+    if edge_preview
+        && !layers.is_empty()
+        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
+    {
+        return render_layered_backdrop(
+            canvas,
+            wallpaper,
+            image_width,
+            image_height,
+            layers,
+            frame_scale,
         );
     }
 
@@ -552,33 +777,13 @@ pub fn render_backdrop(
             None,
         );
     }
-    let mut preview_edges = Vec::new();
-    for edge in edge_tiles.into_iter().flatten() {
-        let mut buffer = to_rgba(&edge.pixels);
-        for pixel in buffer.as_chunks_mut::<4>().0 {
-            pixel.swap(0, 2);
-        }
-        preview_edges.push(PreviewEdgeImage {
-            x: edge.x,
-            y: edge.y,
-            width: edge.pixels.width(),
-            height: edge.pixels.height(),
-            image: std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-                image::Frame::new(buffer)
-            ])),
-        });
-    }
-
-    let mut buffer = to_rgba(canvas.pixmap());
-    // GPUI composites in BGRA.
-    for pixel in buffer.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
-    }
     Some((
-        std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-            image::Frame::new(buffer)
-        ])),
-        preview_edges,
+        render_image(canvas.pixmap()),
+        edge_tiles
+            .into_iter()
+            .flatten()
+            .map(preview_edge_image)
+            .collect(),
     ))
 }
 
@@ -1124,6 +1329,54 @@ mod tests {
         assert_eq!(composed.get_pixel(50, 50).0, [255, 0, 0, 255]);
         assert_eq!(composed.get_pixel(150, 50).0, [0, 0, 255, 255]);
         let _ = std::fs::remove_file(&attached);
+    }
+
+    #[test]
+    fn attached_images_each_keep_their_own_rounded_corners() {
+        use crate::editor::layers::{Edge, ImageLayer};
+        use crate::editor::wallpaper::GradientOption;
+
+        let attached = crate::util::test_paths::unique_temp("poratake-rounded-layer.png");
+        RgbaImage::from_pixel(60, 60, image::Rgba([0, 0, 255, 255]))
+            .save(&attached)
+            .unwrap();
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            60,
+            60,
+            image::Rgba([255, 0, 0, 255]),
+        ));
+        let settings = WallpaperSettings {
+            gradient: Some(GradientOption {
+                id: "solid".into(),
+                colors: vec!["#2468ac".into()],
+                angle: 0.0,
+            }),
+            padding: 10.0,
+            spacing: 20.0,
+            corners: 20.0,
+            ..WallpaperSettings::default()
+        };
+        let output = compose_with_layers(
+            Some(&base),
+            60,
+            60,
+            &[],
+            &settings,
+            &[ImageLayer {
+                id: "right".into(),
+                image_url: attached.to_string_lossy().to_string(),
+                natural_width: 60.0,
+                natural_height: 60.0,
+                edge: Edge::Right,
+            }],
+            1.0,
+        );
+        let _ = std::fs::remove_file(&attached);
+        assert_eq!(output.dimensions(), (160, 80));
+        assert_eq!(output.get_pixel(40, 40).0, [255, 0, 0, 255]);
+        assert_eq!(output.get_pixel(120, 40).0, [0, 0, 255, 255]);
+        assert_eq!(output.get_pixel(69, 10).0, [36, 104, 172, 255]);
+        assert_eq!(output.get_pixel(90, 10).0, [36, 104, 172, 255]);
     }
 
     #[test]

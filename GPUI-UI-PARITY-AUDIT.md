@@ -725,6 +725,21 @@ Bugs fixed in this pass:
   inset and framed 17,000px-wide and -tall captures retain shadows in saved and
   reopened PNGs. CPU preview shadow checks match the saved output; GPUI GPU
   rendering at those dimensions remains unverified.
+- Unframed attachments without inset or balance were rounded and shadowed as one
+  group, unlike Electron's per-image rendering. Their images now receive their
+  own corners and shadows in both preview and PNG. Light/dark GPU fixtures at
+  simulated 125% and 200% compare all four attachment edges, a five-layer stack,
+  two aspect ratios, transparent content, annotation pixels and history reopen.
+  They also verify replaced tiles leave the GPU atlas. Solid or transparent
+  backgrounds match within two channel levels and a translucent background
+  within three, except at most 16 overlapping-shadow pixels within four levels.
+  Electron paints annotations above attachments; GPUI still paints them with the
+  primary image, so attached content or shadows can obscure them. A local 4K
+  moderate-shadow probe took 211–219 ms with one attachment and 515–528 ms with
+  five, retaining 45.59 MiB and 118.35 MiB of image textures respectively,
+  before GPU upload.
+  Physical DPI, interactive performance and framed/inset/balanced combinations
+  remain unverified.
 - A frame-only preset with no background or padding was ignored. It now activates
   the framed editor and export paths: the original 1600×1000 Polish capture is
   1600×1056 at 200%, and Polish copy matches editor export. The title bar and
@@ -858,6 +873,13 @@ Bugs fixed in this pass:
 
 Entries distinguish observed defects from missing evidence. An unverified path
 is not a demonstrated product defect; reproduce before changing its behavior.
+
+An observed annotation-order defect remains in unframed layered wallpaper:
+attached images and their shadows can cover GPUI annotations, while Electron
+paints annotations after the attachments. Fix preview and export together,
+including redactions and annotations that cross image edges. The 4K attachment
+preparation cost reported above also needs interactive and slower-hardware
+measurement.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
