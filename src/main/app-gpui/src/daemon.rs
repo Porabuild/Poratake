@@ -791,7 +791,7 @@ impl ScrollCaptureClient<'_> {
             .map(|_| ())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test))]
     pub fn start_auto_scroll(&self) -> Result<()> {
         self.daemon.ensure_running()?;
         self.daemon
@@ -803,7 +803,7 @@ impl ScrollCaptureClient<'_> {
             .map(|_| ())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test))]
     pub fn stop_auto_scroll(&self) -> Result<()> {
         self.daemon.ensure_running()?;
         self.daemon

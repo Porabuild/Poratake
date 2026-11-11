@@ -5,7 +5,7 @@ pub mod onboarding;
 pub mod pin;
 pub mod recording_control;
 pub mod registry;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub mod scroll_capture;
 pub mod scrollbars;
 pub mod settings;

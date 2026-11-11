@@ -31,7 +31,11 @@ function ScrollCapturePreview({
       ? state.previewWidth / state.previewHeight
       : null;
   const previewHeight = previewAspectRatio
-    ? Math.min(PREVIEW_WIDTH / previewAspectRatio, PREVIEW_MAX_HEIGHT)
+    ? Math.min(
+        PREVIEW_WIDTH / previewAspectRatio,
+        PREVIEW_MAX_HEIGHT,
+        params.displayBounds.height
+      )
     : 0;
   const spaceRight = params.displayBounds.width - (area.x + area.width);
   const previewLeft =
@@ -77,7 +81,10 @@ function ScrollCapturePreview({
           className="absolute overflow-hidden rounded-lg bg-black/40 shadow-2xl"
           style={{
             left: previewLeft,
-            top: area.y,
+            top: Math.max(
+              0,
+              Math.min(area.y, params.displayBounds.height - previewHeight)
+            ),
             width: PREVIEW_WIDTH,
             height: previewHeight,
           }}

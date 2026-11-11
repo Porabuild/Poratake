@@ -625,7 +625,12 @@ Bugs fixed in this pass:
   a negative display origin at 1× and 2×. Native multi-display behavior remains
   unverified. Narrow selections at either display edge also placed the GPUI and
   Electron control bars offscreen; both now clamp the horizontal position, with
-  Electron tests covering primary and negative-origin displays.
+  Electron tests covering primary and negative-origin displays. The macOS GPUI
+  preview now uses the same native click-through setting as its prompt, matching
+  Electron's overlay; native pointer delivery remains unverified. Both shells
+  keep the growing preview within the display. Electron renderer tests cover
+  offset and short displays, and a headless GPUI session verifies the fallback
+  window and painted-image positions as frames arrive.
 - The coarse scroll overlap search rejected a true 97px overlap and selected
   716px for a true 217px overlap in patterned fixtures. When the sampled
   result is rejected or farther from the expected scroll, a unique exact
@@ -815,6 +820,13 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                        |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                           |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                             |
+
+macOS scroll-overlay capture exclusion remains unverified. The preview can overlap
+the selected area when there is no room beside it, and the daemon captures
+on-screen windows. The daemon's native boundary and control windows use
+`NSWindowSharingNone`, a legacy value that [Apple does not recommend relying on to omit captured content](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none).
+Verify saved pixels against a real selected area, including a full-width area,
+before claiming that the overlay is absent from capture output.
 
 A full-frame comparison alone was rejected as a replacement for the sampled
 duplicate hash: a blinking pixel on a stationary page was accepted as scrolling.
