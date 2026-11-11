@@ -167,6 +167,11 @@ impl DaemonHandle {
         }
     }
 
+    #[cfg(all(test, windows))]
+    pub(crate) fn emit_for_test(&self, event: &str) {
+        self.inner.dispatch_event(event, &Value::Null);
+    }
+
     fn insert_event_handler(&self, handler: EventHandler) -> u64 {
         let id = self
             .inner

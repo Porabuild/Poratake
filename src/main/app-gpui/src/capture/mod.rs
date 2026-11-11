@@ -863,6 +863,7 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
                 reservation,
                 None,
                 hide,
+                None,
                 cx,
             );
         });

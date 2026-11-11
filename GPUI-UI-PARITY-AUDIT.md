@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `8b764bc0` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `3f0e3774` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -646,6 +646,12 @@ Bugs fixed in this pass:
   An isolated Windows GPUI test covers replacement, cancellation, disabled
   hiding and failed timer/scroll handoffs without changing the real desktop.
   Native overlapping-capture behavior still needs verification.
+- A timer could close a newer selector and capture its old area after the
+  selector was replaced. Replacement now cancels its countdown; isolated GPUI
+  tests cover replacement, queued completion or cancellation events and a held
+  hide operation. A normal completion still attempts capture through the fake
+  daemon. Native overlapping countdown and selection behavior still needs
+  verification.
 - A full GPUI scroll progress queue could discard Done or Cancel. Terminal and
   interruption signals now use a separate queue while preview updates stay
   bounded. A GPU-free test fills the progress queue, sends 20 warnings, and

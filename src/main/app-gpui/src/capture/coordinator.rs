@@ -46,7 +46,7 @@ impl Coordinator {
     ) {
         let freeze = self.service.config.get().screenshot.freeze_screen;
         let reservation = freeze.then(|| self.service.reserve_cached_capture());
-        self.capture_area_reserved(capture, intent, reservation, None, hide, cx);
+        self.capture_area_reserved(capture, intent, reservation, None, hide, None, cx);
     }
 
     pub(crate) fn capture_area_reserved(
@@ -56,6 +56,7 @@ impl Coordinator {
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
+        owner: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         if intent == CaptureIntent::EditorAttach {
@@ -65,7 +66,7 @@ impl Coordinator {
             return self.analyze_area(capture, intent, reservation, release_after, hide, cx);
         }
         if intent == CaptureIntent::Timer {
-            return self.run_countdown(capture, hide, cx);
+            return self.run_countdown(capture, hide, owner.expect("timer selection owner"), cx);
         }
         if intent == CaptureIntent::ScrollCapture {
             return self.run_scroll_capture(capture, hide, cx);
@@ -448,13 +449,24 @@ impl Coordinator {
         &mut self,
         capture: DisplayCapture,
         hide: Option<Arc<CaptureHide>>,
+        owner: u64,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = crate::capture::timer::begin() else {
+            if crate::capture::overlay::close_timer(owner, cx) {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Timer Capture Failed",
+                    "Another timer capture is still finishing",
+                );
+            }
             return;
         };
         let daemon = self.service.daemon.clone();
         let (tx, rx) = smol::channel::bounded::<bool>(1);
+        if !crate::capture::overlay::watch_timer(owner, tx.clone(), cx) {
+            return;
+        }
         let subscription =
             daemon.subscribe(std::sync::Arc::new(move |event, _payload| match event {
                 poratake_daemon_common::contract::TIMER_CONTROL_COMPLETED_EVENT => {
@@ -478,7 +490,7 @@ impl Coordinator {
         ) {
             drop(subscription);
             drop(session);
-            crate::capture::overlay::close_all(cx);
+            crate::capture::overlay::close_timer(owner, cx);
             drop(hide);
             crate::windows::toast::Toast::show(
                 cx,
@@ -500,12 +512,12 @@ impl Coordinator {
             })
             .await;
             drop(subscription);
-            drop(session);
             cx.background_executor()
                 .spawn(async move { crate::capture::timer::hide(&daemon) })
-                .detach();
-            cx.update(crate::capture::overlay::close_all);
-            if !completed {
+                .await;
+            drop(session);
+            let owned = cx.update(|cx| crate::capture::overlay::close_timer(owner, cx));
+            if !completed || !owned {
                 return;
             }
             cx.update(|cx| {
@@ -517,6 +529,7 @@ impl Coordinator {
                             None,
                             None,
                             hide,
+                            None,
                             cx,
                         );
                     });
@@ -606,3 +619,135 @@ impl Coordinator {
 pub struct CoordinatorHandle(pub Entity<Coordinator>);
 
 impl gpui::Global for CoordinatorHandle {}
+
+#[cfg(all(test, windows))]
+mod tests {
+    fn start_timer(cx: &gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::capture::start_area_selection(crate::capture::intent::CaptureIntent::Timer, cx);
+        });
+        cx.run_until_parked();
+        let window = cx
+            .update(crate::capture::overlay::parity_active_overlay)
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window, cx);
+        visual.simulate_mouse_down(
+            gpui::point(gpui::px(100.), gpui::px(100.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        visual.simulate_mouse_move(
+            gpui::point(gpui::px(300.), gpui::px(250.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        visual.simulate_mouse_up(
+            gpui::point(gpui::px(300.), gpui::px(250.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.run_until_parked();
+        assert!(crate::capture::timer::is_active());
+    }
+
+    #[test]
+    fn an_old_timer_does_not_close_a_new_selection() {
+        if std::env::var_os("PORATAKE_TEST_TIMER_CONTROL").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "capture::coordinator::tests::an_old_timer_does_not_close_a_new_selection",
+                    "--nocapture",
+                ])
+                .env("PORATAKE_TEST_TIMER_CONTROL", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let cx = gpui::TestAppContext::single();
+        let dir = tempfile::tempdir().unwrap();
+        let screenshots = dir.path().join("screenshots");
+        std::fs::create_dir(&screenshots).unwrap();
+        let config = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = false;
+            settings.storage.screenshots_path = screenshots.to_string_lossy().into_owned();
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            crate::capture::overlay::init_bindings(cx);
+        });
+        for event in [
+            None,
+            Some(poratake_daemon_common::contract::TIMER_CONTROL_COMPLETED_EVENT),
+            Some(poratake_daemon_common::contract::TIMER_CONTROL_CANCEL_EVENT),
+        ] {
+            start_timer(&cx);
+            let observer = event.is_none().then(|| {
+                let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+                let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+                crate::capture::timer::gate_hide_for_test(entered_tx, release_rx);
+                std::thread::spawn(move || {
+                    entered_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    let active = crate::capture::timer::is_active();
+                    let blocked = crate::capture::timer::begin().is_none();
+                    release_tx.send(()).unwrap();
+                    (active, blocked)
+                })
+            });
+            cx.update(|cx| {
+                if let Some(event) = event {
+                    crate::state::state(cx).daemon.emit_for_test(event);
+                }
+                crate::capture::start_area_selection(
+                    crate::capture::intent::CaptureIntent::Screenshot,
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            if let Some(observer) = observer {
+                assert_eq!(observer.join().unwrap(), (true, true));
+                cx.run_until_parked();
+            }
+            assert!(!crate::capture::timer::is_active());
+            assert!(cx.update(crate::capture::overlay::parity_is_active));
+            cx.background_executor
+                .advance_clock(std::time::Duration::from_secs(10));
+            cx.run_until_parked();
+            assert!(cx.update(crate::capture::overlay::parity_is_active));
+            assert!(notifications.borrow().is_empty());
+            assert_eq!(std::fs::read_dir(&screenshots).unwrap().count(), 0);
+            cx.update(crate::capture::overlay::close_all);
+            cx.run_until_parked();
+        }
+        start_timer(&cx);
+        cx.update(|cx| {
+            crate::state::state(cx)
+                .daemon
+                .emit_for_test(poratake_daemon_common::contract::TIMER_CONTROL_COMPLETED_EVENT);
+        });
+        cx.run_until_parked();
+        assert!(!crate::capture::timer::is_active());
+        assert!(!cx.update(crate::capture::overlay::parity_is_active));
+        assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+        notifications.borrow_mut().clear();
+        let previous = crate::capture::timer::begin().unwrap();
+        start_timer(&cx);
+        assert!(!cx.update(crate::capture::overlay::parity_is_active));
+        assert_eq!(*notifications.borrow(), ["Timer Capture Failed"]);
+        drop(previous);
+    }
+}

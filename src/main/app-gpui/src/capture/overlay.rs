@@ -45,6 +45,8 @@ pub struct OverlayLaunch {
 struct OverlaySession {
     handles: Vec<TrackedOverlay>,
     capture_hide: Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>>,
+    revision: u64,
+    timer_cancel: Option<smol::channel::Sender<bool>>,
     #[cfg(windows)]
     pooled: Vec<PooledOverlay>,
     outlined_window_id: Option<i64>,
@@ -70,6 +72,31 @@ impl Global for OverlaySession {}
 
 fn session(cx: &mut App) -> &mut OverlaySession {
     cx.default_global::<OverlaySession>()
+}
+
+pub(crate) fn revision(cx: &mut App) -> u64 {
+    session(cx).revision
+}
+
+pub(crate) fn watch_timer(
+    revision: u64,
+    cancel: smol::channel::Sender<bool>,
+    cx: &mut App,
+) -> bool {
+    if session(cx).revision != revision {
+        return false;
+    }
+    session(cx).timer_cancel = Some(cancel);
+    true
+}
+
+pub(crate) fn close_timer(revision: u64, cx: &mut App) -> bool {
+    if session(cx).revision != revision {
+        return false;
+    }
+    session(cx).timer_cancel = None;
+    close_all(cx);
+    true
 }
 
 pub(crate) fn set_capture_hide(
@@ -113,7 +140,7 @@ pub(crate) fn parity_is_active(cx: &mut App) -> bool {
     !session(cx).handles.is_empty()
 }
 
-#[cfg(feature = "parity")]
+#[cfg(any(all(test, windows), feature = "parity"))]
 pub(crate) fn parity_active_overlay(cx: &mut App) -> Option<AnyWindowHandle> {
     session(cx).handles.first().map(|overlay| overlay.handle)
 }
@@ -253,6 +280,10 @@ pub fn replace_all(cx: &mut App) -> Option<u64> {
 }
 
 fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
+    session(cx).revision = session(cx).revision.wrapping_add(1);
+    if let Some(cancel) = session(cx).timer_cancel.take() {
+        let _ = cancel.try_send(false);
+    }
     let handles = std::mem::take(&mut session(cx).handles);
     take_capture_hide(cx);
     let generation = handles.iter().map(|tracked| tracked.generation).max();
@@ -1527,6 +1558,7 @@ impl AreaOverlay {
             take_capture_hide(cx)
         };
 
+        let owner = (intent == crate::capture::intent::CaptureIntent::Timer).then(|| revision(cx));
         let coordinator = crate::state::coordinator(cx);
         let display_origin = (
             (f32::from(self.display_bounds.left()) * coordinate_scale).round() as i32,
@@ -1570,6 +1602,7 @@ impl AreaOverlay {
                     reservation,
                     release_after,
                     hide,
+                    owner,
                     cx,
                 );
             });
@@ -2263,6 +2296,7 @@ impl AreaOverlay {
         } else {
             take_capture_hide(cx)
         };
+        let owner = (intent == crate::capture::intent::CaptureIntent::Timer).then(|| revision(cx));
         let coordinator = crate::state::coordinator(cx);
         let retained = retains_overlay_after_selection(intent);
         let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
@@ -2288,6 +2322,7 @@ impl AreaOverlay {
                     reservation,
                     release_after,
                     hide,
+                    owner,
                     cx,
                 );
             });
