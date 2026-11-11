@@ -366,6 +366,47 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_scroll_saves_the_untouched_capture() {
+        use poratake_daemon_common::scroll::{write_png, CaptureOutcome, FrameAccumulator};
+
+        let (width, height) = (1000, 160);
+        for footer in [0, 16] {
+            let frame = |shift: u32| {
+                image::RgbaImage::from_fn(width, height, |x, y| {
+                    if y >= height - footer {
+                        return image::Rgba([51, 60, 70, 255]);
+                    }
+                    let row = y + shift;
+                    image::Rgba(if x == 1 {
+                        [row as u8, (row >> 8) as u8, row.wrapping_mul(17) as u8, 255]
+                    } else {
+                        [((row % 8) * 31) as u8, 0, 0, 255]
+                    })
+                })
+            };
+            let first = frame(0);
+            let mut accumulator = FrameAccumulator::default();
+            assert_eq!(
+                accumulator.submit(
+                    first.clone().into_raw(),
+                    width as usize,
+                    height as usize,
+                    64
+                ),
+                CaptureOutcome::Added
+            );
+            assert_eq!(
+                accumulator.submit(frame(104).into_raw(), width as usize, height as usize, 64),
+                CaptureOutcome::NoOverlap
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("scroll-ambiguous.png");
+            write_png(&path, &accumulator.take_frames()).unwrap();
+            assert_eq!(image::open(path).unwrap().to_rgba8(), first);
+        }
+    }
+
+    #[test]
     fn stitched_scroll_frames_keep_one_fixed_footer() {
         use poratake_daemon_common::scroll::{write_png, CaptureOutcome, FrameAccumulator};
 
