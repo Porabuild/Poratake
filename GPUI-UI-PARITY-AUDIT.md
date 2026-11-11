@@ -814,6 +814,9 @@ Bugs fixed in this pass:
   flattened PNG by up to 11 channel levels in the sampled blur interior.
   The blur kernel also differs from Electron: on an opaque black/white edge with
   radius 8, a sampled red channel was 27 in GPUI and 2 in Electron's canvas.
+  The shared blur now repeats both source edges when the kernel exceeds an image
+  dimension. CPU tests cover color and alpha on narrow buffers and a 2×2
+  screenshot redaction; native editor interaction remains unverified.
 - Plain attached captures could show a one-pixel seam at their join. Unframed
   attachments without balance or inset now share a single preview composition,
   with annotations above the images. The workflow checks joins on both sides;

@@ -1103,6 +1103,27 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_blur_preserves_a_tiny_solid_capture() {
+        let mut canvas = Canvas::new(2, 2).unwrap();
+        canvas.fill_all(Color::from_rgba8(160, 80, 40, 255));
+        let before = canvas.pixmap().data().to_vec();
+        draw_screenshot(
+            &mut canvas,
+            &Annotation::Redact {
+                id: "blur".into(),
+                x: 0.,
+                y: 0.,
+                width: 2.,
+                height: 2.,
+                style: "blur".into(),
+                intensity: 10.,
+            },
+            2.,
+        );
+        assert_eq!(canvas.pixmap().data(), &before);
+    }
+
+    #[test]
     fn pixelation_uses_the_same_nearest_boundaries_at_each_position() {
         let mut source = Pixmap::new(30, 1).unwrap();
         for (x, pixel) in source

@@ -63,6 +63,7 @@ pub fn blur_alpha(pixmap: &mut Pixmap, sigma: f32) {
             for x in 0..=radius.min(width - 1) {
                 sum += u32::from(data[row + x]);
             }
+            sum += u32::from(data[row + width - 1]) * radius.saturating_sub(width - 1) as u32;
             for x in 0..width {
                 scratch[row + x] = (sum / window) as u8;
                 sum = sum.saturating_sub(u32::from(data[row + x.saturating_sub(radius)]))
@@ -76,6 +77,10 @@ pub fn blur_alpha(pixmap: &mut Pixmap, sigma: f32) {
             for x in 0..width {
                 sums[x] += u32::from(scratch[y * width + x]);
             }
+        }
+        for x in 0..width {
+            sums[x] += u32::from(scratch[(height - 1) * width + x])
+                * radius.saturating_sub(height - 1) as u32;
         }
         for y in 0..height {
             let row = y * width;
@@ -118,6 +123,9 @@ fn box_blur_horizontal(
         for _ in 0..radius {
             accumulate(&mut sums, source, row);
         }
+        for _ in 0..radius.saturating_sub(width - 1) {
+            accumulate(&mut sums, source, row + (width - 1) * 4);
+        }
         for x in 0..width {
             for channel in 0..4 {
                 target[row + x * 4 + channel] = (sums[channel] / window) as u8;
@@ -141,6 +149,9 @@ fn box_blur_vertical(source: &[u8], target: &mut [u8], width: usize, height: usi
         }
         for _ in 0..radius {
             accumulate(&mut sums, source, column);
+        }
+        for _ in 0..radius.saturating_sub(height - 1) {
+            accumulate(&mut sums, source, column + (height - 1) * stride);
         }
         for y in 0..height {
             for channel in 0..4 {
@@ -178,6 +189,31 @@ mod tests {
         let before = pixmap.data().to_vec();
         blur(&mut pixmap, 0.0);
         assert_eq!(pixmap.data(), &before[..]);
+    }
+
+    #[test]
+    fn a_uniform_image_stays_uniform_when_blur_exceeds_its_dimensions() {
+        for (width, height) in [(1, 1), (2, 3), (3, 1), (1, 30), (30, 1)] {
+            let mut image = Pixmap::new(width, height).unwrap();
+            image.fill(Color::from_rgba8(160, 80, 40, 255));
+            let before = image.data().to_vec();
+            blur(&mut image, 20.0);
+            assert_eq!(image.data(), &before, "{width}x{height}");
+            blur_alpha(&mut image, 20.0);
+            assert_eq!(image.data(), &before, "alpha {width}x{height}");
+        }
+    }
+
+    #[test]
+    fn small_images_repeat_both_edges_during_blur() {
+        for (width, height) in [(2, 1), (1, 2)] {
+            let mut image = Pixmap::new(width, height).unwrap();
+            image
+                .data_mut()
+                .copy_from_slice(&[0, 0, 0, 255, 255, 255, 255, 255]);
+            blur(&mut image, 1.0);
+            assert_eq!(image.data(), &[126, 126, 126, 255, 128, 128, 128, 255]);
+        }
     }
 
     #[test]
