@@ -789,7 +789,8 @@ fn daemon_lists_and_captures_an_x11_window() {
     );
     assert_eq!(read(&mut reader)["success"], true);
     drop(stdin);
-    assert!(child.wait().expect("wait for daemon").success());
+    let status = child.wait().expect("wait for daemon");
+    assert!(status.success(), "daemon exited after quit with {status}");
     connection.send_request(&x::FreeGc { gc: wallpaper_gc });
     connection.send_request(&x::FreePixmap { pixmap: wallpaper });
     for path in [
