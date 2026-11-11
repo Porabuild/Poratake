@@ -88,6 +88,11 @@ clipping at display edges and pointer leave. Pixel assertions check highlighted
 and dimmed regions independently of baselines. GPUI's headless windows always
 report non-hovered, so the fixture supplies ownership to the shared production
 surface; physical pointer ownership still needs native verification.
+Four small selections at the display corners also check the painted size-label
+bounds and clipping mask. At the bottom edge, the label must clear the selection.
+Pixel scans check the surrounding dim layer and fractional-position selections
+for undimmed seams or double-dimmed overlaps; selected pixels must remain undimmed.
+Samples on all four sides also check the dim, selected interior and outside outline.
 
 The 1280px, 100% built-in cases also run production window, area and all-in-one
 display capture startup and save/history/editor output for live, frozen, failed
@@ -131,7 +136,7 @@ The built-in 1280px, 100% cases add 28 workflow images each. The 950px cases add
 action tooltips in each grid column and the list at 200px and 240px. The fixture
 checks thumbnail pixels, keyboard selection, tooltip bounds and clipping masks,
 and deletes a scratch item without opening an editor. A complete renderer profile
-has 2,472 images.
+has 2,536 images.
 Each renderer's set must be reviewed before acceptance.
 
 Capture, timer and scroll completion first open a bottom-right preview without

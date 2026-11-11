@@ -269,6 +269,243 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale:
             .unwrap();
         cx.run_until_parked();
     }
+
+    for (edge, start_x, end_x, start_y, end_y) in [
+        ("top-left", 1., 21., 1., 21.),
+        ("top-right", width - 21., width - 1., 1., 21.),
+        ("bottom-left", 1., 21., 717., 737.),
+        ("bottom-right", width - 21., width - 1., 717., 737.),
+    ] {
+        let scene = cx
+            .open_window(size(px(width), px(738.)), |window, cx| {
+                window.set_scale_factor(scale);
+                let overlay = cx.new(|cx| {
+                    AreaOverlay::with_focus(
+                        Bounds::new(point(px(-width), px(-100.)), size(px(width), px(738.))),
+                        scale,
+                        crate::state::state(cx),
+                        CaptureIntent::Screenshot,
+                        cx.focus_handle(),
+                    )
+                });
+                cx.new(|_| Scene {
+                    overlay,
+                    window_hovered: false,
+                })
+            })
+            .unwrap();
+        let window = scene.into();
+        settle(cx, window);
+        event(
+            cx,
+            window,
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: point(px(start_x), px(start_y)),
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: Modifiers::none(),
+                first_mouse: false,
+            }),
+        );
+        event(
+            cx,
+            window,
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: point(px(end_x), px(end_y)),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::none(),
+            }),
+        );
+        settle(cx, window);
+        cx.update_window(window, |_, window, _| {
+            let labels: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    let bounds = quad.bounds;
+                    (start_y - 40.).max(0.) <= bounds.top().0 / scale
+                        && bounds.top().0 / scale <= (end_y + 36.).min(738.)
+                        && (22. ..=34.).contains(&(bounds.size.height.0 / scale))
+                        && (40. ..=130.).contains(&(bounds.size.width.0 / scale))
+                })
+                .collect();
+            assert_eq!(labels.len(), 1, "{edge}: {labels:?}");
+            let label = labels[0];
+            let bounds = label.bounds;
+            let mask = label.content_mask.bounds;
+            assert!(
+                bounds.left().0 >= 0.
+                    && bounds.right().0 <= width * scale
+                    && bounds.top().0 >= 0.
+                    && bounds.bottom().0 <= 738. * scale
+                    && mask.left().0 <= bounds.left().0
+                    && mask.right().0 >= bounds.right().0
+                    && mask.top().0 <= bounds.top().0
+                    && mask.bottom().0 >= bounds.bottom().0,
+                "{edge}: label {bounds:?}, mask {mask:?}"
+            );
+            if edge.starts_with("bottom") {
+                assert!(
+                    bounds.bottom().0 <= (start_y - 6.) * scale,
+                    "{edge}: label overlaps selection {bounds:?}"
+                );
+            }
+        })
+        .unwrap();
+        capture(
+            cx,
+            window,
+            output,
+            &format!("overlay-screenshot-label-{edge}"),
+        );
+        let screenshot =
+            image::open(output.join(format!("gpui-overlay-screenshot-label-{edge}.png")))
+                .unwrap()
+                .to_rgba8();
+        let span = (32. * scale).ceil() as u32;
+        let (physical_width, physical_height) = cx
+            .update_window(window, |_, window, _| {
+                let viewport = window.viewport_size();
+                (
+                    (f32::from(window.pixel_snap(viewport.width)) * scale).round() as u32,
+                    (f32::from(window.pixel_snap(viewport.height)) * scale).round() as u32,
+                )
+            })
+            .unwrap();
+        let x_start = if edge.ends_with("left") {
+            0
+        } else {
+            physical_width - span
+        };
+        let y_start = if edge.starts_with("top") {
+            0
+        } else {
+            physical_height - span
+        };
+        for x in x_start..x_start + span {
+            assert_eq!(
+                screenshot.get_pixel(x, (369. * scale).round() as u32).0,
+                [110, 115, 121, 255],
+                "{edge}: vertical scrim seam at {x}"
+            );
+        }
+        for y in y_start..y_start + span {
+            assert_eq!(
+                screenshot
+                    .get_pixel((width / 2. * scale).round() as u32, y)
+                    .0,
+                [110, 115, 121, 255],
+                "{edge}: horizontal scrim seam at {y}"
+            );
+        }
+        if edge == "top-left" {
+            for (start, end) in [(100.25, 220.75), (300.5, 425.25), (600.75, 720.25)] {
+                event(
+                    cx,
+                    window,
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        position: point(px(start), px(200.)),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: Modifiers::none(),
+                        first_mouse: false,
+                    }),
+                );
+                event(
+                    cx,
+                    window,
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: point(px(end), px(320.)),
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Modifiers::none(),
+                    }),
+                );
+                settle(cx, window);
+                let selected = cx
+                    .update_window(window, |_, window, _| {
+                        window.painted_quads().iter().any(|quad| {
+                            [
+                                (quad.bounds.origin.x.0 / scale, start),
+                                (quad.bounds.origin.y.0 / scale, 200.),
+                                (quad.bounds.size.width.0 / scale, end - start),
+                                (quad.bounds.size.height.0 / scale, 120.),
+                            ]
+                            .iter()
+                            .all(|(actual, expected)| (actual - expected).abs() <= 1. / scale)
+                        })
+                    })
+                    .unwrap();
+                assert!(selected, "selection {start}..{end} was not painted");
+                let screenshot = cx.capture_screenshot(window).unwrap();
+                let center = (start + end) / 2.;
+                let source = if center < 440. {
+                    [64, 112, 192, 255]
+                } else {
+                    [220, 230, 242, 255]
+                };
+                let dimmed = [source[0] / 2, source[1] / 2, source[2] / 2, 255];
+                let quarter = start + (end - start) / 4.;
+                for (x, y, expected) in [
+                    (center, 260., source),
+                    (quarter, 204., source),
+                    (quarter, 316., source),
+                    (start + 4., 230., source),
+                    (end - 4., 230., source),
+                    (quarter, 196., dimmed),
+                    (quarter, 324., dimmed),
+                    (start - 4., 230., dimmed),
+                    (end + 4., 230., dimmed),
+                ] {
+                    assert_eq!(
+                        screenshot
+                            .get_pixel((x * scale).round() as u32, (y * scale).round() as u32)
+                            .0,
+                        expected,
+                        "selection {start}..{end}: wrong pixel at ({x}, {y})"
+                    );
+                }
+                let [left, top, right, bottom] = cx
+                    .update_window(window, |_, window, _| {
+                        let left = window.pixel_snap(px(start));
+                        let top = window.pixel_snap(px(200.));
+                        let right = left + window.pixel_snap(px(end - start));
+                        let bottom = top + window.pixel_snap(px(120.));
+                        [left, top, right, bottom]
+                            .map(|value| (f32::from(value) * scale).round() as u32)
+                    })
+                    .unwrap();
+                let (quarter_x, side_y) = (
+                    (quarter * scale).round() as u32,
+                    (230. * scale).round() as u32,
+                );
+                for (x, y) in [
+                    (left - 1, side_y),
+                    (right, side_y),
+                    (quarter_x, top - 1),
+                    (quarter_x, bottom),
+                ] {
+                    let pixel = screenshot.get_pixel(x, y).0;
+                    assert!(
+                        pixel[..3]
+                            .iter()
+                            .zip(dimmed)
+                            .all(|(actual, base)| *actual < base),
+                        "selection {start}..{end}: missing outline at ({x}, {y}): {pixel:?}"
+                    );
+                }
+                for x in 0..physical_width {
+                    assert_eq!(
+                        screenshot.get_pixel(x, (10. * scale).round() as u32).0,
+                        [110, 115, 121, 255],
+                        "selection {start}..{end}: scrim seam at {x}"
+                    );
+                }
+            }
+        }
+        cx.update_window(window, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+    }
 }
 
 fn assert_picker_pixels(

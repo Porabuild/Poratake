@@ -1926,39 +1926,51 @@ impl AreaOverlay {
                         .then(|| prompt(self.intent.prompt(), self.all_in_one.is_some())),
                 ),
             Some((origin, bounds_size)) => {
-                let left_w = origin.x;
-                let right_x = origin.x + bounds_size.width;
-                let right_w = px(f32::from(window.viewport_size().width) - f32::from(right_x));
-                let bottom_y = origin.y + bounds_size.height;
-                let bottom_h = px(f32::from(window.viewport_size().height) - f32::from(bottom_y));
+                let left_w = window.pixel_snap(origin.x);
+                let top_h = window.pixel_snap(origin.y);
+                let selection_width = window.pixel_snap(bounds_size.width);
+                let selection_height = window.pixel_snap(bounds_size.height);
+                let outline_width = window.pixel_snap(px(1.0));
+                let right_x = left_w + selection_width;
+                let bottom_y = top_h + selection_height;
 
                 root.child(div().absolute().left_0().top_0().w(left_w).h_full().bg(dim))
                     .child(
                         div()
                             .absolute()
+                            .left(right_x)
                             .right_0()
                             .top_0()
-                            .w(right_w.max(px(0.0)))
                             .h_full()
                             .bg(dim),
                     )
                     .child(
                         div()
                             .absolute()
-                            .left(origin.x)
+                            .left(left_w)
                             .top_0()
-                            .w(bounds_size.width)
-                            .h(origin.y)
+                            .w(selection_width)
+                            .h(top_h)
                             .bg(dim),
                     )
                     .child(
                         div()
                             .absolute()
-                            .left(origin.x)
+                            .left(left_w)
                             .top(bottom_y)
-                            .w(bounds_size.width)
-                            .h(bottom_h.max(px(0.0)))
+                            .bottom_0()
+                            .w(selection_width)
                             .bg(dim),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(left_w - outline_width)
+                            .top(top_h - outline_width)
+                            .w(selection_width + outline_width * 2.0)
+                            .h(selection_height + outline_width * 2.0)
+                            .border_1()
+                            .border_color(crate::ui::colors::black(0.35)),
                     )
                     .child({
                         let mut frame = div()
@@ -1968,16 +1980,7 @@ impl AreaOverlay {
                             .w(bounds_size.width)
                             .h(bounds_size.height)
                             .border_1()
-                            .border_color(accent)
-                            // `shadow-[0_0_0_1px_rgba(0,0,0,0.35)]` keeps the
-                            // accent frame legible over light content.
-                            .shadow(vec![gpui::BoxShadow {
-                                color: crate::ui::colors::black(0.35),
-                                offset: point(px(0.0), px(0.0)),
-                                blur_radius: px(0.0),
-                                spread_radius: px(1.0),
-                                inset: false,
-                            }]);
+                            .border_color(accent);
                         for (handle_x, handle_y, handle_w, handle_h) in
                             crate::ui::chrome::overlay_handle_rects(
                                 f32::from(bounds_size.width),
@@ -2008,16 +2011,24 @@ impl AreaOverlay {
                         let viewport_h = f32::from(window.viewport_size().height);
                         let top = f32::from(origin.y);
                         let height = f32::from(bounds_size.height);
-                        let label_y = crate::ui::chrome::overlay_label_top(top, height, viewport_h);
-                        div()
-                            .absolute()
-                            .left(origin.x)
-                            .w(bounds_size.width)
-                            .top(px(label_y))
-                            .flex()
-                            .justify_center()
+                        let above = height < crate::ui::chrome::OVERLAY_LABEL_CLEARANCE
+                            && top >= crate::ui::chrome::OVERLAY_LABEL_CLEARANCE
+                            && !crate::ui::chrome::overlay_label_below(top, height, viewport_h);
+                        let (anchor, label_y) = if above {
+                            (gpui::Anchor::BottomCenter, top - 8.)
+                        } else {
+                            (
+                                gpui::Anchor::TopCenter,
+                                crate::ui::chrome::overlay_label_top(top, height, viewport_h),
+                            )
+                        };
+                        gpui::anchored()
+                            .anchor(anchor)
+                            .position(point(origin.x + bounds_size.width / 2., px(label_y)))
+                            .snap_to_window_with_margin(px(1.))
                             .child(
                                 div()
+                                    .debug_selector(|| "overlay-size-label".to_string())
                                     .rounded(px(crate::ui::chrome::OVERLAY_LABEL_RADIUS))
                                     .bg(crate::ui::colors::black(0.75))
                                     .px(px(crate::ui::chrome::OVERLAY_LABEL_PX))
@@ -2488,6 +2499,150 @@ mod tests {
                 height: 500.0,
             })
         );
+    }
+
+    #[herogpui::test]
+    fn selection_size_label_stays_inside_display_edges(cx: &mut TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (overlay, visual) = herogpui::test::open_window(cx, |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(400.), px(300.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        for scale in [1., 1.25, 2.] {
+            visual.update(|window, _| window.set_scale_factor(scale));
+            visual.simulate_resize(size(px(400.), px(300.)));
+            for (width, height) in [(12., 12.), (20., 20.), (123., 40.)] {
+                for y in [0., 100., 300. - height] {
+                    let mut label_width = None;
+                    for x in [0., (400. - width) / 2., 400. - width] {
+                        visual.update(|_, cx| {
+                            overlay.update(cx, |overlay, cx| {
+                                overlay.rect = Some(super::selection::Rect {
+                                    x,
+                                    y,
+                                    width,
+                                    height,
+                                });
+                                cx.notify();
+                            });
+                        });
+                        let label = visual.expect("overlay-size-label");
+                        assert!(
+                            label.left() >= px(0.)
+                                && label.right() <= px(400.)
+                                && label.top() >= px(0.)
+                                && label.bottom() <= px(300.),
+                            "scale {scale}, selection ({x}, {y}, {width}, {height}): label {label:?}"
+                        );
+                        if y == 300. - height && height < 36. {
+                            assert!(
+                                label.bottom() <= px(y - 7.),
+                                "scale {scale}, selection ({x}, {y}, {width}, {height}): label overlaps selection {label:?}"
+                            );
+                        }
+                        if let Some(previous) = label_width {
+                            assert_eq!(label.size.width, previous);
+                        }
+                        label_width = Some(label.size.width);
+                        if x == (400. - width) / 2. {
+                            assert!((f32::from(label.center().x) - 200.).abs() <= 1.);
+                        }
+                        visual.update(|window, _| {
+                            let scale = window.scale_factor();
+                            let quads: Vec<_> = window
+                                .painted_quads()
+                                .into_iter()
+                                .filter(|quad| {
+                                    [
+                                        (quad.bounds.left().0 / scale, f32::from(label.left())),
+                                        (quad.bounds.top().0 / scale, f32::from(label.top())),
+                                        (
+                                            quad.bounds.size.width.0 / scale,
+                                            f32::from(label.size.width),
+                                        ),
+                                        (
+                                            quad.bounds.size.height.0 / scale,
+                                            f32::from(label.size.height),
+                                        ),
+                                    ]
+                                    .iter()
+                                    .all(
+                                        |(actual, expected)| {
+                                            (actual - expected).abs() <= 1. / scale + 0.001
+                                        },
+                                    )
+                                })
+                                .collect();
+                            assert_eq!(quads.len(), 1, "label {label:?}: {quads:?}");
+                            let quad = quads[0];
+                            let bounds = quad.bounds;
+                            let mask = quad.content_mask.bounds;
+                            assert!(
+                                mask.left().0 <= bounds.left().0
+                                    && mask.right().0 >= bounds.right().0
+                                    && mask.top().0 <= bounds.top().0
+                                    && mask.bottom().0 >= bounds.bottom().0,
+                                "label {bounds:?}, mask {mask:?}"
+                            );
+                        });
+                    }
+                }
+            }
+        }
+        visual.update(|_, cx| {
+            overlay.update(cx, |overlay, cx| {
+                overlay.rect = Some(super::selection::Rect {
+                    x: 0.,
+                    y: 0.,
+                    width: 20.,
+                    height: 20.,
+                });
+                cx.notify();
+            });
+        });
+        let label = visual.expect("overlay-size-label");
+        visual.simulate_mouse_down(
+            label.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert!(matches!(
+            overlay.read_with(visual, |overlay, _| overlay.interaction),
+            Some(super::Interaction::Creating { .. })
+        ));
+        visual.update(|_, cx| {
+            overlay.update(cx, |overlay, cx| {
+                overlay.rect = Some(super::selection::Rect {
+                    x: 100.,
+                    y: 100.,
+                    width: 123.,
+                    height: 40.,
+                });
+                overlay.interaction = None;
+                cx.notify();
+            });
+        });
+        visual.simulate_mouse_down(
+            gpui::point(px(224.), px(120.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert!(matches!(
+            overlay.read_with(visual, |overlay, _| overlay.interaction),
+            Some(super::Interaction::Resizing {
+                handle: super::selection::Handle::Right,
+            })
+        ));
     }
 
     #[test]
