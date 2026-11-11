@@ -205,22 +205,24 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             );
             click(cx, hovered, 184., f32::from(single.top()) + 92.);
             hover(cx, hovered, 0., 0.);
-            cx.update_window(hovered, |_, window, _| {
-                let panel = window
-                    .painted_quads()
-                    .into_iter()
-                    .find(|quad| {
-                        (quad.bounds.size.width.0 / scale - 184.).abs() < 0.5
-                            && (quad.bounds.size.height.0 / scale - 124.).abs() < 0.5
-                    })
-                    .expect("four-display menu must remain open inside the preview");
-                let bounds = panel.bounds;
-                assert!(bounds.left().0 >= f32::from(single.left()) * scale);
-                assert!(bounds.right().0 <= f32::from(single.right()) * scale);
-                assert!(bounds.top().0 >= f32::from(single.top()) * scale);
-                assert!(bounds.bottom().0 <= f32::from(single.bottom()) * scale);
-            })
-            .unwrap();
+            let panel = cx
+                .update_window(hovered, |_, window, _| {
+                    let panel = window
+                        .painted_quads()
+                        .into_iter()
+                        .find(|quad| {
+                            (quad.bounds.size.width.0 / scale - 184.).abs() < 0.5
+                                && (quad.bounds.size.height.0 / scale - 120.).abs() < 0.5
+                        })
+                        .expect("four-display menu must remain open inside the preview");
+                    let bounds = panel.bounds;
+                    assert!(bounds.left().0 >= f32::from(single.left()) * scale);
+                    assert!(bounds.right().0 <= f32::from(single.right()) * scale);
+                    assert!(bounds.top().0 >= f32::from(single.top()) * scale);
+                    assert!(bounds.bottom().0 <= f32::from(single.bottom()) * scale);
+                    bounds
+                })
+                .unwrap();
             if corner.ends_with("right") {
                 capture(
                     cx,
@@ -275,6 +277,41 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                         .map(|(actual, expected)| (f32::from(*actual) - expected * 255.).abs())
                         .sum::<f32>()
                 };
+                if name == "last" {
+                    let mut fragments = 0;
+                    for y in
+                        panel.top().0.floor() as u32..(panel.top().0 + 4. * scale).ceil() as u32
+                    {
+                        let reference = image.get_pixel((panel.right().0 - 14. * scale) as u32, y);
+                        for x in (panel.left().0 + 16. * scale).ceil() as u32
+                            ..(panel.right().0 - 30. * scale).floor() as u32
+                        {
+                            let pixel = image.get_pixel(x, y);
+                            let difference: u32 = pixel.0[..3]
+                                .iter()
+                                .zip(reference.0[..3].iter())
+                                .map(|(actual, expected)| actual.abs_diff(*expected) as u32)
+                                .sum();
+                            fragments += usize::from(difference > 80);
+                        }
+                    }
+                    assert_eq!(fragments, 0, "{corner}: clipped text at the top of the scrolled display menu, scale={scale}");
+                    for y in panel.bottom().0.ceil() as u32
+                        ..((f32::from(single.bottom()) - 8.) * scale).floor() as u32
+                    {
+                        let background =
+                            image.get_pixel((f32::from(single.center().x) * scale) as u32, y);
+                        for x in [single.left() + px(20.), single.right() - px(20.)] {
+                            let pixel = image.get_pixel((f32::from(x) * scale) as u32, y);
+                            let difference: u32 = pixel.0[..3]
+                                .iter()
+                                .zip(background.0[..3].iter())
+                                .map(|(actual, expected)| actual.abs_diff(*expected) as u32)
+                                .sum();
+                            assert!(difference < 80, "{corner}: preview controls remain visible beneath the display menu, scale={scale}");
+                        }
+                    }
+                }
                 for (side, x, y) in [
                     (
                         "left",
