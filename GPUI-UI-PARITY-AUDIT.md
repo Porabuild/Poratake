@@ -448,7 +448,7 @@ passes 984 tests with one skip after the audio, attachment, QR and monitor fixes
 The normal local visual matrix also passed all 16 cases and 2,136 exact images
 after the audio, attachment and monitor fixes, without updating baselines.
 Tooltip usage across the GPUI source uses HeroGPUI components and their shared
-helpers; the tray icon retains its OS tooltip.
+helpers. The tray icon and macOS scroll controls use native tooltips.
 The earlier camera/zoom export expansion passed the native gate with 960 tests and one
 skip, plus typecheck, lint, formatting and parity-feature Clippy. The seven decoded
 samples verify camera visibility and source-frame changes across a cut; an
@@ -631,6 +631,11 @@ Bugs fixed in this pass:
   keep the growing preview within the display. Electron renderer tests cover
   offset and short displays, and a headless GPUI session verifies the fallback
   window and painted-image positions as frames arrive.
+- The macOS scroll-control tooltips painted above their 52px window and were
+  clipped. They now use the native view tooltip, matching Electron's native
+  tooltip behavior without enlarging the window. A headless test exercises all
+  three controls, checks their hover labels and verifies Start/Stop requests and
+  Done/Cancel signals. Native tooltip appearance and timing remain unverified.
 - The coarse scroll overlap search rejected a true 97px overlap and selected
   716px for a true 217px overlap in patterned fixtures. When the sampled
   result is rejected or farther from the expected scroll, a unique exact

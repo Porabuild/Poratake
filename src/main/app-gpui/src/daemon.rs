@@ -753,6 +753,28 @@ pub struct ScrollCaptureClient<'a> {
     daemon: &'a DaemonHandle,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_AUTO_SCROLL_CALLS: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<Vec<ScrollCaptureMethod>>>> = std::cell::RefCell::default();
+}
+
+#[cfg(test)]
+pub(crate) fn capture_auto_scroll_for_test(
+) -> std::rc::Rc<std::cell::RefCell<Vec<ScrollCaptureMethod>>> {
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    TEST_AUTO_SCROLL_CALLS.with_borrow_mut(|capture| *capture = std::rc::Rc::downgrade(&calls));
+    calls
+}
+
+#[cfg(test)]
+fn record_auto_scroll_for_test(method: ScrollCaptureMethod) -> bool {
+    let Some(calls) = TEST_AUTO_SCROLL_CALLS.with_borrow(|capture| capture.upgrade()) else {
+        return false;
+    };
+    calls.borrow_mut().push(method);
+    true
+}
+
 impl ScrollCaptureClient<'_> {
     pub fn start(&self, request: &ScrollCaptureStartRequest) -> Result<()> {
         self.daemon.ensure_running()?;
@@ -793,6 +815,10 @@ impl ScrollCaptureClient<'_> {
 
     #[cfg(any(target_os = "macos", test))]
     pub fn start_auto_scroll(&self) -> Result<()> {
+        #[cfg(test)]
+        if record_auto_scroll_for_test(ScrollCaptureMethod::StartAutoScroll) {
+            return Ok(());
+        }
         self.daemon.ensure_running()?;
         self.daemon
             .call(
@@ -805,6 +831,10 @@ impl ScrollCaptureClient<'_> {
 
     #[cfg(any(target_os = "macos", test))]
     pub fn stop_auto_scroll(&self) -> Result<()> {
+        #[cfg(test)]
+        if record_auto_scroll_for_test(ScrollCaptureMethod::StopAutoScroll) {
+            return Ok(());
+        }
         self.daemon.ensure_running()?;
         self.daemon
             .call(

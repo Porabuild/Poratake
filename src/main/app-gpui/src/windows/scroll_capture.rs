@@ -6,6 +6,7 @@ use gpui::{
     div, img, prelude::*, px, size, AnyElement, App, Bounds, Context, Entity, Render, SharedString,
     Styled, Subscription, Window,
 };
+use herogpui::components::Button;
 use herogpui::gpui;
 
 use crate::capture::overlay::ScreenRect;
@@ -160,6 +161,7 @@ impl ScrollCaptureSession {
                     let _subscription = observe_ui(cx, &view_entity);
                     ScrollControlBar {
                         ui: view_entity,
+                        hovered_tooltip: None,
                         _subscription,
                     }
                 })
@@ -316,10 +318,39 @@ impl Render for ScrollAreaPrompt {
 
 struct ScrollControlBar {
     ui: Entity<ScrollCaptureUi>,
+    hovered_tooltip: Option<(&'static str, SharedString)>,
     _subscription: Subscription,
 }
 
 impl ScrollControlBar {
+    fn native_tooltip_button(
+        id: &'static str,
+        button: Button,
+        tooltip: SharedString,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id((gpui::ElementId::from("scroll-native-tooltip"), id))
+            .on_hover(cx.listener(move |this, hovered: &bool, window, _| {
+                if *hovered {
+                    set_native_tooltip(window, Some(tooltip.as_ref()));
+                    this.hovered_tooltip = Some((id, tooltip.clone()));
+                } else if this
+                    .hovered_tooltip
+                    .as_ref()
+                    .is_some_and(|(hovered, _)| *hovered == id)
+                {
+                    set_native_tooltip(window, None);
+                    this.hovered_tooltip = None;
+                }
+            }))
+            .child(button.on_press(cx.listener(move |this, _, window, cx| {
+                on_click(this, window, cx);
+            })))
+            .into_any_element()
+    }
+
     fn button(
         id: &'static str,
         icon: &'static str,
@@ -328,11 +359,12 @@ impl ScrollControlBar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tooltip: SharedString = tooltip.into();
-        toolbar::tooltip_button(
+        Self::native_tooltip_button(
+            id,
             toolbar::icon(id, icon, tooltip.clone()),
             tooltip,
-            cx,
             on_click,
+            cx,
         )
     }
 
@@ -344,11 +376,12 @@ impl ScrollControlBar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tooltip: SharedString = tooltip.into();
-        toolbar::tooltip_button(
+        Self::native_tooltip_button(
+            id,
             toolbar::button(id, tooltip.clone()).child(glyph),
             tooltip,
-            cx,
             on_click,
+            cx,
         )
     }
 }
@@ -365,6 +398,13 @@ impl Render for ScrollControlBar {
         } else {
             "Start auto-scroll".into()
         };
+        let refresh_tooltip = self.hovered_tooltip.as_ref().is_some_and(|(id, tooltip)| {
+            *id == "scroll-toggle-auto-scroll" && *tooltip != toggle_tooltip
+        });
+        if refresh_tooltip {
+            self.hovered_tooltip = Some(("scroll-toggle-auto-scroll", toggle_tooltip.clone()));
+            set_native_tooltip(window, Some(toggle_tooltip.as_ref()));
+        }
         let glyph_color = crate::ui::colors::white(0.85);
         let toggle_glyph = if auto_scrolling {
             toolbar::filled_glyph(glyph_color, false)
@@ -409,6 +449,44 @@ impl Render for ScrollControlBar {
         crate::ui::window_root::focus_root(content, window, cx)
     }
 }
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn set_native_tooltip(window: &Window, tooltip: Option<&str>) {
+    use cocoa::base::nil;
+    use cocoa::foundation::NSString;
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Some(handle) = HasWindowHandle::window_handle(window).ok() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        let view = appkit.ns_view.as_ptr() as cocoa::base::id;
+        let value = tooltip
+            .map(|tooltip| NSString::alloc(nil).init_str(tooltip))
+            .unwrap_or(nil);
+        let _: () = msg_send![view, setToolTip: value];
+        if value != nil {
+            let _: () = msg_send![value, release];
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_NATIVE_TOOLTIP: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_native_tooltip(_window: &Window, tooltip: Option<&str>) {
+    TEST_NATIVE_TOOLTIP.with_borrow_mut(|value| *value = tooltip.map(str::to_owned));
+}
+
+#[cfg(all(not(target_os = "macos"), not(test)))]
+fn set_native_tooltip(_window: &Window, _tooltip: Option<&str>) {}
 
 fn session_bounds(
     area: ScreenRect,
@@ -741,6 +819,94 @@ mod tests {
                     || handle.downcast::<ScrollControlBar>().is_some()
             }));
         });
+    }
+
+    #[herogpui::test]
+    fn control_tooltips_follow_hover_and_auto_scroll_state(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let (signal, events) = smol::channel::bounded(4);
+        TEST_NATIVE_TOOLTIP.with_borrow_mut(|value| *value = None);
+        let auto_scroll_calls = crate::daemon::capture_auto_scroll_for_test();
+        let ui = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            let daemon = crate::state::state(cx).daemon;
+            ScrollCaptureSession::open(
+                cx,
+                daemon,
+                ScreenRect {
+                    x: 100,
+                    y: 100,
+                    width: 200,
+                    height: 200,
+                },
+                signal,
+            )
+        });
+        let control = cx.read(|cx| {
+            cx.windows()
+                .into_iter()
+                .find_map(|handle| handle.downcast::<ScrollControlBar>())
+                .unwrap()
+        });
+        let mut visual = gpui::VisualTestContext::from_window(control.into(), cx);
+        visual.simulate_mouse_move(
+            gpui::point(px(50.0), px(26.0)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        let tooltip = |cx: &mut gpui::TestAppContext| {
+            control
+                .update(cx, |control, _, _| control.hovered_tooltip.clone())
+                .unwrap()
+        };
+        assert_eq!(
+            tooltip(cx).map(|(_, text)| text),
+            Some("Start auto-scroll".into())
+        );
+        assert_eq!(
+            TEST_NATIVE_TOOLTIP.with_borrow(Clone::clone),
+            Some("Start auto-scroll".into())
+        );
+        visual.click_at(gpui::point(px(50.0), px(26.0)));
+        cx.update(|cx| {
+            apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
+        });
+        visual.settle();
+        assert_eq!(
+            tooltip(cx).map(|(_, text)| text),
+            Some("Stop auto-scroll".into())
+        );
+        assert_eq!(
+            TEST_NATIVE_TOOLTIP.with_borrow(Clone::clone),
+            Some("Stop auto-scroll".into())
+        );
+        visual.click_at(gpui::point(px(50.0), px(26.0)));
+        assert_eq!(
+            *auto_scroll_calls.borrow(),
+            [
+                poratake_daemon_common::contract::ScrollCaptureMethod::StartAutoScroll,
+                poratake_daemon_common::contract::ScrollCaptureMethod::StopAutoScroll,
+            ]
+        );
+        for (x, expected) in [(84.0, "Done (Enter)"), (118.0, "Cancel (Esc)")] {
+            visual.simulate_mouse_move(gpui::point(px(x), px(26.0)), None, gpui::Modifiers::none());
+            assert_eq!(tooltip(cx).map(|(_, text)| text), Some(expected.into()));
+            assert_eq!(
+                TEST_NATIVE_TOOLTIP.with_borrow(Clone::clone),
+                Some(expected.into())
+            );
+        }
+        visual.click_at(gpui::point(px(84.0), px(26.0)));
+        assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Finish)));
+        visual.click_at(gpui::point(px(118.0), px(26.0)));
+        assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Cancel)));
+        visual.simulate_mouse_move(gpui::point(px(0.0), px(0.0)), None, gpui::Modifiers::none());
+        assert!(tooltip(cx).is_none());
+        assert!(TEST_NATIVE_TOOLTIP.with_borrow(|value| value.is_none()));
     }
 
     #[test]
