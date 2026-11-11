@@ -56,8 +56,9 @@ states and 160 revised selection images were reviewed; the remaining 2,312 exist
 images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
 24 were reviewed and the other 2,512 images were unchanged. The final exact
 matrix passed all 16 cases. The Windows native gate passed 1,017 tests with two skipped.
-All 144 hosted history images were also reviewed. The revised selection and
-history states require separate hosted-renderer review.
+All 144 hosted history images, 64 selection-corner images and 160 revised
+selection images were also reviewed. The DPI follow-up's history changes require
+separate hosted-renderer review.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -330,6 +331,12 @@ passed the same geometry checks and eight 1280px cases; the eight 950px state
 lists lacked the 64 new images. All 2,408 existing hosted images were pixel-identical,
 and the 64 new images were reviewed. Artifact `13827306848` has SHA-256
 `d9cbd127c06a8e3ea96f4c020fdadbc77d6760b8f32f49ece77acbd48214c90c`.
+The [selection run](https://github.com/Porabuild/Poratake/actions/runs/42960670267)
+passed the geometry and workflow checks but failed the 16 state-list comparisons
+because 64 new corner images were absent. Those images and the 160 changed
+selection images were reviewed; the other 2,312 existing images were unchanged.
+Artifact `13829827867` has SHA-256
+`e8ed36fccbec9406e86d1411a6964032d79f9a86785d28c09aad9c2bd1e5598e`.
 Check the current PR for subsequent changes.
 The display-change test checks preview repositioning in a headless window, and
 synthetic geometry covers negative origins and mixed scaling. Physical monitor
