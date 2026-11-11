@@ -170,7 +170,7 @@ impl FrameAccumulator {
             if expected >= strip_height
                 && expected < content_end
                 && expected != overlap
-                && compare_overlap_strip(
+                && (compare_overlap_strip(
                     &previous.pixels,
                     &pixels,
                     width,
@@ -180,6 +180,14 @@ impl FrameAccumulator {
                     strip_width,
                     strip_height,
                 ) == 0
+                    || overlap_matches_outside_narrow_band(
+                        &previous.pixels,
+                        &pixels,
+                        width,
+                        content_end,
+                        expected,
+                        strip_height,
+                    ))
             {
                 return CaptureOutcome::NoOverlap;
             }
@@ -471,27 +479,72 @@ pub fn find_overlap(
     let acceptable = best_score <= sampled_channels as u64 * MAX_OVERLAP_CHANNEL_DIFFERENCE;
     if acceptable && best_overlap == expected {
         let row_bytes = width * 4;
-        if best_score == 0
-            && previous.pixels[(height - best_overlap) * row_bytes..]
-                != current_pixels[..best_overlap * row_bytes]
-            && let Some((exact, alternative)) =
-                exact_overlap(&previous.pixels, current_pixels, width, min_overlap)
-            && exact != best_overlap
-            && alternative < min_overlap
+        if previous.pixels[(height - best_overlap) * row_bytes..]
+            == current_pixels[..best_overlap * row_bytes]
         {
-            return None;
+            return Some(best_overlap);
         }
-        return Some(best_overlap);
     }
 
     if let Some((exact, alternative)) =
         exact_overlap(&previous.pixels, current_pixels, width, min_overlap)
         && alternative < min_overlap
-        && (!acceptable || exact.abs_diff(expected) <= best_overlap.abs_diff(expected))
     {
-        return Some(exact);
+        if exact != expected
+            && expected >= min_overlap
+            && expected < height
+            && ((best_overlap == expected && best_score == 0)
+                || overlap_matches_outside_narrow_band(
+                    &previous.pixels,
+                    current_pixels,
+                    width,
+                    height,
+                    expected,
+                    strip_height,
+                ))
+        {
+            return None;
+        }
+        if !acceptable || exact.abs_diff(expected) <= best_overlap.abs_diff(expected) {
+            return Some(exact);
+        }
     }
     acceptable.then_some(best_overlap)
+}
+
+fn overlap_matches_outside_narrow_band(
+    previous: &[u8],
+    current: &[u8],
+    width: usize,
+    previous_end: usize,
+    overlap: usize,
+    strip_height: usize,
+) -> bool {
+    let strip_width = width.min(800);
+    let start_x = (width - strip_width) / 2;
+    let sampled_columns = strip_width.div_ceil(2);
+    let mut different_columns = None;
+    for offset in [0, (overlap - strip_height) / 2, overlap - strip_height] {
+        for y in (0..strip_height).step_by(2) {
+            for x in (0..strip_width).step_by(2) {
+                let previous_offset =
+                    ((previous_end - overlap + offset + y) * width + start_x + x) * 4;
+                let current_offset = ((offset + y) * width + start_x + x) * 4;
+                if previous[previous_offset..previous_offset + 3]
+                    != current[current_offset..current_offset + 3]
+                {
+                    let column = x / 2;
+                    let (first, last) = different_columns.unwrap_or((column, column));
+                    let (first, last) = (first.min(column), last.max(column));
+                    if last - first > 1 || (last - first + 1) * 2 > sampled_columns {
+                        return false;
+                    }
+                    different_columns = Some((first, last));
+                }
+            }
+        }
+    }
+    true
 }
 
 fn exact_overlap(
@@ -892,14 +945,18 @@ mod tests {
     #[test]
     fn repeated_content_can_hide_independent_edge_motion() {
         let (width, height) = (1000, 160);
-        let make_frame = |main_start: usize, edge_start: usize, edge_x: usize, footer: usize| {
+        let make_frame = |main_start: usize,
+                          edge_start: usize,
+                          edge_x: usize,
+                          second_edge: bool,
+                          footer: usize| {
             let mut pixels = Vec::with_capacity(width * height * 4);
             for y in 0..height {
                 for x in 0..width {
                     let edge = edge_start + y;
                     let pixel = if y >= height - footer {
                         [51, 60, 70, 255]
-                    } else if x == edge_x {
+                    } else if x == edge_x || (second_edge && x == edge_x + 2) {
                         [
                             edge as u8,
                             (edge >> 8) as u8,
@@ -921,15 +978,24 @@ mod tests {
             }
         };
         for footer in [0, 16] {
-            for edge_x in [0, 1] {
-                let previous = make_frame(0, 0, edge_x, footer);
-                let translated = make_frame(104, 104, edge_x, footer);
-                let independently_moving_edge = make_frame(96, 104, edge_x, footer);
+            for (edge_x, second_edge) in [
+                (0, false),
+                (1, false),
+                (100, false),
+                (101, false),
+                (500, false),
+                (501, false),
+                (100, true),
+                (500, true),
+            ] {
+                let previous = make_frame(0, 0, edge_x, second_edge, footer);
+                let translated = make_frame(104, 104, edge_x, second_edge, footer);
+                let independently_moving_edge = make_frame(96, 104, edge_x, second_edge, footer);
                 assert_eq!(translated.pixels, independently_moving_edge.pixels);
                 assert_eq!(
                     frame_hash(&previous.pixels, width, height)
                         == frame_hash(&translated.pixels, width, height),
-                    edge_x == 1
+                    edge_x % 10 != 0
                 );
                 assert_eq!(
                     unique_exact_overlap(
@@ -960,6 +1026,48 @@ mod tests {
                 assert_eq!(frames.frames()[0].pixels, previous.pixels);
                 assert_eq!(frames.frames()[0].trim_bottom, 0);
             }
+        }
+    }
+
+    #[test]
+    fn exact_overlap_survives_a_locally_repeated_strip() {
+        let (width, height, step) = (1000, 160, 104);
+        let make_frame = |start: usize, footer: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                for x in 0..width {
+                    let row = start + y;
+                    let pixel = if y >= height - footer {
+                        [51, 60, 70, 255]
+                    } else if x != 500 && (96..112).contains(&row) {
+                        [((row % 8) * 31) as u8, 0, 0, 255]
+                    } else {
+                        let seed = (row as u32).wrapping_mul(0x45d9f3b)
+                            ^ (x as u32).wrapping_mul(0x119de1f3);
+                        [
+                            seed as u8,
+                            seed.rotate_left(9) as u8,
+                            seed.rotate_left(17) as u8,
+                            255,
+                        ]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            pixels
+        };
+        for footer in [0, 16] {
+            let mut frames = FrameAccumulator::default();
+            assert_eq!(
+                frames.submit(make_frame(0, footer), width, height, 64),
+                CaptureOutcome::Added
+            );
+            assert_eq!(
+                frames.submit(make_frame(step, footer), width, height, 64),
+                CaptureOutcome::Added
+            );
+            assert_eq!(frames.frames()[0].trim_bottom, footer);
+            assert_eq!(frames.frames()[1].overlap, height - step - footer);
         }
     }
 

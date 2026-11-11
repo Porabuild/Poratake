@@ -370,14 +370,25 @@ mod tests {
         use poratake_daemon_common::scroll::{write_png, CaptureOutcome, FrameAccumulator};
 
         let (width, height) = (1000, 160);
-        for footer in [0, 16] {
+        for (footer, edge_x, second_edge) in [
+            (0, 1, false),
+            (0, 100, false),
+            (0, 500, false),
+            (0, 100, true),
+            (0, 500, true),
+            (16, 1, false),
+            (16, 100, false),
+            (16, 500, false),
+            (16, 100, true),
+            (16, 500, true),
+        ] {
             let frame = |shift: u32, frame_height: u32| {
                 image::RgbaImage::from_fn(width, frame_height, |x, y| {
                     if y >= frame_height - footer {
                         return image::Rgba([51, 60, 70, 255]);
                     }
                     let row = y + shift;
-                    image::Rgba(if x == 1 {
+                    image::Rgba(if x == edge_x || (second_edge && x == edge_x + 2) {
                         [row as u8, (row >> 8) as u8, row.wrapping_mul(17) as u8, 255]
                     } else {
                         [((row % 8) * 31) as u8, 0, 0, 255]
