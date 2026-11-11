@@ -117,9 +117,11 @@ atlas eviction. Overlapping translucent shadows differ by four color levels in
 at most 16 pixels; all other pixels use the limits above. Polish copy is checked
 against editor export separately. Insets, balance, framed attachments, arbitrary
 zoom and combinations of frames with wallpaper corners remain outside these
-comparisons. Electron draws annotations above attachments and their shadows,
-while GPUI currently draws them below; that cross-shell ordering remains to be
-fixed.
+comparisons. In the unframed layered path, annotations and black, pixelated and
+blurred redactions crossing into attachments are compared with saved pixels at
+125% and 200%; overlapping and clipped redactions, crop, undo and atlas
+retirement are also checked. A direct Electron pixel comparison and framed,
+inset or balanced layered annotations remain outside this check.
 Separate CPU checks save and reopen 17,000px-wide and -tall captures with
 plain, inset and framed shadows and compare their preview shadows with the PNG.
 Actual GPUI GPU rendering at those dimensions remains unverified.

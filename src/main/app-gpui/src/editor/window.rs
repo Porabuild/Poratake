@@ -419,6 +419,7 @@ pub struct EditorWindow {
     /// The rasterized wallpaper backdrop and the settings it was made for,
     /// so it is only re-rendered when the wallpaper actually changes.
     backdrop: Option<Arc<gpui::RenderImage>>,
+    backdrop_composite: bool,
     preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
     retired_preview_edges: Vec<Arc<gpui::RenderImage>>,
     backdrop_key: Option<(
@@ -428,6 +429,7 @@ pub struct EditorWindow {
         Vec<crate::editor::layers::ImageLayer>,
         f64,
         Option<[u8; 3]>,
+        Option<gpui::ImageId>,
     )>,
     backdrop_generation: u64,
     backdrop_task: Option<gpui::Task<()>>,
@@ -498,6 +500,7 @@ impl EditorWindow {
             marquee: None,
             annotation_clipboard: Vec::new(),
             backdrop: None,
+            backdrop_composite: false,
             preview_edges: Vec::new(),
             retired_preview_edges: Vec::new(),
             backdrop_key: None,
@@ -573,6 +576,7 @@ impl EditorWindow {
                 wallpaper: crate::editor::wallpaper::WallpaperSettings::default(),
                 frame_scale: 1.0,
                 backdrop: None,
+                backdrop_composite: false,
                 preview_edges: Vec::new(),
                 selected: Vec::new(),
                 editing_text: None,
@@ -699,6 +703,14 @@ impl EditorWindow {
             .extend(self.preview_edges.drain(..).map(|edge| edge.image));
     }
 
+    fn retire_backdrop(&mut self) {
+        if let Some(backdrop) = self.backdrop.take() {
+            self.retired_preview_edges.push(backdrop);
+        }
+        self.backdrop_composite = false;
+        self.retire_preview_edges();
+    }
+
     /// Renders the wallpaper backdrop when the settings or the image size have
     /// changed since the last one.
     fn refresh_backdrop(&mut self, cx: &mut Context<Self>) {
@@ -710,8 +722,7 @@ impl EditorWindow {
             {
                 self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
             }
-            self.backdrop = None;
-            self.retire_preview_edges();
+            self.retire_backdrop();
             self.backdrop_key = None;
             self.backdrop_task = None;
             return;
@@ -746,6 +757,9 @@ impl EditorWindow {
             (wallpaper.has_background()
                 && wallpaper.supports_edge_preview(!self.layers.is_empty()))
             .then_some(stage_background),
+            (!self.layers.is_empty() && wallpaper.supports_edge_preview(true))
+                .then(|| self.image.as_ref().map(|image| image.id))
+                .flatten(),
         );
         if self.backdrop_key.as_ref() == Some(&key) {
             return;
@@ -760,9 +774,9 @@ impl EditorWindow {
                 || previous.0.inset != key.0.inset
                 || previous.0.corners != key.0.corners
                 || previous.3 != key.3
+                || previous.6 != key.6
         }) {
-            self.backdrop = None;
-            self.retire_preview_edges();
+            self.retire_backdrop();
         }
         self.backdrop_key = Some(key);
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
@@ -796,6 +810,7 @@ impl EditorWindow {
                 image_height,
                 inset_color.clone(),
                 &layers,
+                base_image.as_deref(),
                 frame_scale,
                 stage_background,
             );
@@ -807,11 +822,12 @@ impl EditorWindow {
                 if editor.backdrop_generation != generation {
                     return;
                 }
-                let (backdrop, preview_edges) = rendered
-                    .map(|(backdrop, edges)| (Some(backdrop), edges))
+                let (backdrop, preview_edges, composite) = rendered
+                    .map(|(backdrop, edges, composite)| (Some(backdrop), edges, composite))
                     .unwrap_or_default();
+                editor.retire_backdrop();
                 editor.backdrop = backdrop;
-                editor.retire_preview_edges();
+                editor.backdrop_composite = composite;
                 editor.preview_edges = preview_edges;
                 editor.inset_color = inset_color;
                 editor.backdrop_task = None;
@@ -829,6 +845,7 @@ impl EditorWindow {
             snap.wallpaper = wallpaper.clone();
             snap.frame_scale = self.native_scale;
             snap.backdrop = self.backdrop.clone();
+            snap.backdrop_composite = self.backdrop_composite;
             snap.preview_edges = self.preview_edges.clone();
             snap.selected = self.selected_annotations.clone();
             snap.editing_text = self.text_editor.as_ref().map(|(id, _)| id.clone());

@@ -22,6 +22,8 @@ pub struct Surface<'a> {
     pub image_id: Option<gpui::ImageId>,
     pub width: u32,
     pub height: u32,
+    pub offset_x: f64,
+    pub offset_y: f64,
     pub pixels: Option<&'a [u8]>,
 }
 
@@ -120,7 +122,16 @@ fn raster_bounds(annotation: &Annotation) -> Option<(f64, f64, f64, f64)> {
                 font_size / 2.0 + 4.0,
             ))
         }
-        _ => None,
+        Annotation::Redact {
+            style, intensity, ..
+        } => {
+            let padding = if style == "blur" {
+                crate::editor::annotations::redact_intensity(*intensity).1 * 2.0 + 2.0
+            } else {
+                1.0
+            };
+            Some(padded(annotation.bounds(), padding))
+        }
     }
 }
 
@@ -141,11 +152,40 @@ pub fn patch(
     if scale <= 0.0 {
         return None;
     }
-    let (left, top, right, bottom) = raster_bounds(annotation)?;
-    let left = left.max(0.0);
-    let top = top.max(0.0);
-    let right = right.min(f64::from(surface.width));
-    let bottom = bottom.min(f64::from(surface.height));
+    let bounds = raster_bounds(annotation)?;
+    let target = if matches!(annotation, Annotation::Redact { .. }) {
+        annotation.bounds()
+    } else {
+        bounds
+    };
+    let mut sample = bounds;
+    loop {
+        let previous = sample;
+        for earlier in beneath {
+            if !matches!(earlier, Annotation::Redact { .. }) {
+                continue;
+            }
+            let Some(other) = raster_bounds(earlier) else {
+                continue;
+            };
+            if sample.0 < other.2 && sample.2 > other.0 && sample.1 < other.3 && sample.3 > other.1
+            {
+                sample = (
+                    sample.0.min(other.0),
+                    sample.1.min(other.1),
+                    sample.2.max(other.2),
+                    sample.3.max(other.3),
+                );
+            }
+        }
+        if sample == previous {
+            break;
+        }
+    }
+    let left = sample.0.max(-surface.offset_x);
+    let top = sample.1.max(-surface.offset_y);
+    let right = sample.2.min(f64::from(surface.width) - surface.offset_x);
+    let bottom = sample.3.min(f64::from(surface.height) - surface.offset_y);
     if right <= left || bottom <= top {
         return None;
     }
@@ -168,12 +208,28 @@ pub fn patch(
     }
     renderer::draw(&mut canvas, annotation);
 
+    let target_left = (target.0.max(left) * scale).floor().max(device_x);
+    let target_top = (target.1.max(top) * scale).floor().max(device_y);
+    let target_right = (target.2.min(right) * scale)
+        .ceil()
+        .min(device_x + f64::from(width));
+    let target_bottom = (target.3.min(bottom) * scale)
+        .ceil()
+        .min(device_y + f64::from(height));
+    let target_width = (target_right - target_left) as u32;
+    let target_height = (target_bottom - target_top) as u32;
+    let rect = tiny_skia::IntRect::from_xywh(
+        (target_left - device_x) as i32,
+        (target_top - device_y) as i32,
+        target_width,
+        target_height,
+    )?;
     Some(Patch {
-        pixmap: canvas.into_pixmap(),
-        x: device_x / scale,
-        y: device_y / scale,
-        width: f64::from(width) / scale,
-        height: f64::from(height) / scale,
+        pixmap: canvas.into_pixmap().clone_rect(rect)?,
+        x: target_left / scale,
+        y: target_top / scale,
+        width: f64::from(target_width) / scale,
+        height: f64::from(target_height) / scale,
     })
 }
 
@@ -186,10 +242,10 @@ fn draw_backdrop(
     right: f64,
     bottom: f64,
 ) {
-    let x0 = (left as u32).saturating_sub(1);
-    let y0 = (top as u32).saturating_sub(1);
-    let x1 = (right.ceil() as u32 + 1).min(surface.width);
-    let y1 = (bottom.ceil() as u32 + 1).min(surface.height);
+    let x0 = ((left + surface.offset_x) as u32).saturating_sub(1);
+    let y0 = ((top + surface.offset_y) as u32).saturating_sub(1);
+    let x1 = ((right + surface.offset_x).ceil() as u32 + 1).min(surface.width);
+    let y1 = ((bottom + surface.offset_y).ceil() as u32 + 1).min(surface.height);
     if x1 <= x0 || y1 <= y0 {
         return;
     }
@@ -218,8 +274,8 @@ fn draw_backdrop(
     }
     canvas.draw_pixmap(
         crop.as_ref(),
-        x0 as f32,
-        y0 as f32,
+        (f64::from(x0) - surface.offset_x) as f32,
+        (f64::from(y0) - surface.offset_y) as f32,
         crop_width as f32,
         crop_height as f32,
     );
@@ -336,6 +392,8 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u64(scale.to_bits());
     hasher.write_u32(surface.width);
     hasher.write_u32(surface.height);
+    hasher.write_u64(surface.offset_x.to_bits());
+    hasher.write_u64(surface.offset_y.to_bits());
     hasher.write_u8(u8::from(surface.pixels.is_some()));
     surface.image_id.hash(&mut hasher);
     Some(hasher.finish())
@@ -422,6 +480,8 @@ mod tests {
             image_id: None,
             width: base.width(),
             height: base.height(),
+            offset_x: 0.0,
+            offset_y: 0.0,
             pixels: Some(&bgra),
         };
         let paint = PixmapPaint {
@@ -545,6 +605,8 @@ mod tests {
             image_id: Some(first.id),
             width: 180,
             height: 140,
+            offset_x: 0.0,
+            offset_y: 0.0,
             pixels: first.as_bytes(0),
         };
         let second_surface = Surface {
@@ -561,6 +623,93 @@ mod tests {
             first_patch.image.as_bytes(0),
             second_patch.image.as_bytes(0)
         );
+    }
+
+    #[test]
+    fn offset_layered_surface_previews_annotations_and_redactions() {
+        let base = base_pixmap(180, 140);
+        let annotations = vec![
+            Annotation::Rectangle {
+                id: "edge".into(),
+                x: -10.,
+                y: 20.,
+                width: 55.,
+                height: 35.,
+                stroke: "#ff00ff".into(),
+                stroke_width: 2.,
+                fill: Some("#ff00ff".into()),
+            },
+            Annotation::Redact {
+                id: "pixelate".into(),
+                x: 25.,
+                y: 25.,
+                width: 35.,
+                height: 30.,
+                style: "pixelate".into(),
+                intensity: 8.,
+            },
+            Annotation::Redact {
+                id: "blur".into(),
+                x: 75.,
+                y: 50.,
+                width: 32.,
+                height: 28.,
+                style: "blur".into(),
+                intensity: 2.,
+            },
+            Annotation::Redact {
+                id: "clipped".into(),
+                x: -56.,
+                y: -24.,
+                width: 35.,
+                height: 35.,
+                style: "pixelate".into(),
+                intensity: 5.,
+            },
+        ];
+        let bgra = to_bgra(&base);
+        let surface = Surface {
+            image_id: None,
+            width: base.width(),
+            height: base.height(),
+            offset_x: 48.,
+            offset_y: 20.,
+            pixels: Some(&bgra),
+        };
+        let paint = PixmapPaint {
+            opacity: 1.0,
+            blend_mode: BlendMode::Source,
+            quality: FilterQuality::Nearest,
+        };
+        let refs: Vec<&Annotation> = annotations.iter().collect();
+        for scale in [1., 1.25, 2.] {
+            let mut exported = Canvas::new((180. * scale) as u32, (140. * scale) as u32).unwrap();
+            exported.scale(scale as f32, scale as f32);
+            exported.draw_pixmap(base.as_ref(), 0., 0., 180., 140.);
+            let mut preview = exported.pixmap().clone();
+            exported.translate(surface.offset_x as f32, surface.offset_y as f32);
+            renderer::draw_all(&mut exported, &annotations);
+            let exported = exported.into_pixmap();
+            for (index, annotation) in annotations.iter().enumerate() {
+                let patch = patch(annotation, &refs[..index], &surface, scale).unwrap();
+                preview.draw_pixmap(
+                    ((patch.x + surface.offset_x) * scale).round() as i32,
+                    ((patch.y + surface.offset_y) * scale).round() as i32,
+                    patch.pixmap.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    None,
+                );
+            }
+            for (index, (actual, expected)) in
+                preview.data().iter().zip(exported.data()).enumerate()
+            {
+                assert!(
+                    actual.abs_diff(*expected) <= 1,
+                    "channel {index} at {scale}x differs: {actual} vs {expected}"
+                );
+            }
+        }
     }
 
     #[test]

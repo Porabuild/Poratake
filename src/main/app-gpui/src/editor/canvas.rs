@@ -49,6 +49,7 @@ pub struct CanvasSnapshot {
     /// uses. A gradient could be drawn with GPUI, but a background image with
     /// blur and grain could not, and preview and export have to agree.
     pub backdrop: Option<std::sync::Arc<gpui::RenderImage>>,
+    pub backdrop_composite: bool,
     pub preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
     /// The annotation the select tool has picked, outlined on the canvas.
     pub selected: Vec<String>,
@@ -100,20 +101,22 @@ impl RenderOnce for EditorCanvas {
         let wallpaper = snap.wallpaper.clone();
         let frame_scale = snap.frame_scale;
         let has_preview_edges = !snap.preview_edges.is_empty();
+        let layered_composite = snap.backdrop_composite;
+        let overlay_above = has_preview_edges || layered_composite;
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
         let transparent_backdrop = wallpaper.is_active()
-            && (snap.layers.is_empty() || has_preview_edges)
+            && (snap.layers.is_empty() || overlay_above)
             && !wallpaper.balance
             && wallpaper.inset <= 0.0
-            && (wallpaper.corners <= 0.0 || has_preview_edges)
-            && (window_frame || wallpaper.shadow <= 0.0 || has_preview_edges);
+            && (wallpaper.corners <= 0.0 || overlay_above)
+            && (window_frame || wallpaper.shadow <= 0.0 || overlay_above);
         let mut frame = div()
             .relative()
             .w(content_width)
             .h(content_height)
             .when(!wallpaper.is_active(), |el| el.shadow_md())
-            .when(wallpaper.corners > 0.0 && !has_preview_edges, |el| {
+            .when(wallpaper.corners > 0.0 && !overlay_above, |el| {
                 el.rounded(px(wallpaper.corners as f32 * snap.zoom))
                     .overflow_hidden()
             })
@@ -122,8 +125,10 @@ impl RenderOnce for EditorCanvas {
             })
             .when(!transparent_backdrop, |el| el.bg(theme.surface));
 
-        if let Some(image) = snap.image.clone() {
-            frame = frame.child(img(image).w(content_width).h(content_height));
+        if !layered_composite {
+            if let Some(image) = snap.image.clone() {
+                frame = frame.child(img(image).w(content_width).h(content_height));
+            }
         }
 
         drop(snap);
@@ -154,7 +159,7 @@ impl RenderOnce for EditorCanvas {
         }
 
         let mut decorations = Some(decorations);
-        if !has_preview_edges {
+        if !overlay_above {
             frame = frame.child(decorations.take().unwrap());
         }
 
@@ -170,13 +175,15 @@ impl RenderOnce for EditorCanvas {
                 move |bounds, (), window, _cx| {
                     set_paint_origin(bounds.origin);
                     let snapshot = overlay_snapshot.borrow();
-                    paint_annotations(
-                        window,
-                        bounds.origin,
-                        &snapshot,
-                        primary.opacity(HALO_OPACITY),
-                    );
-                    if !has_preview_edges {
+                    if !layered_composite {
+                        paint_annotations(
+                            window,
+                            bounds.origin,
+                            &snapshot,
+                            primary.opacity(HALO_OPACITY),
+                        );
+                    }
+                    if !overlay_above {
                         paint_selection_handles(window, &snapshot, primary, primary_fg);
                     }
                     set_paint_origin(gpui::point(px(0.0), px(0.0)));
@@ -296,6 +303,14 @@ impl RenderOnce for EditorCanvas {
                                 |_, _, _| (),
                                 move |bounds, (), window, _cx| {
                                     set_paint_origin(bounds.origin);
+                                    if layered_composite {
+                                        paint_annotations(
+                                            window,
+                                            bounds.origin,
+                                            &handle_snapshot.borrow(),
+                                            primary.opacity(HALO_OPACITY),
+                                        );
+                                    }
                                     paint_selection_handles(
                                         window,
                                         &handle_snapshot.borrow(),
@@ -374,11 +389,38 @@ fn paint_annotations(
         .chain(snapshot.draft.iter())
         .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()))
         .collect();
+    let (surface_image, offset_x, offset_y) = if snapshot.backdrop_composite {
+        let layout = crate::editor::layers::compute(
+            f64::from(snapshot.image_width),
+            f64::from(snapshot.image_height),
+            &snapshot.layers,
+            snapshot.spacing.max(0.0),
+        );
+        let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
+            &snapshot.wallpaper,
+            layout.width,
+            layout.height,
+            snapshot.frame_scale,
+        );
+        (
+            snapshot.backdrop.as_ref(),
+            x.round() + layout.primary.x,
+            y.round() + layout.primary.y,
+        )
+    } else {
+        (snapshot.image.as_ref(), 0.0, 0.0)
+    };
     let surface = preview_raster::Surface {
-        image_id: snapshot.image.as_ref().map(|image| image.id),
-        width: snapshot.image_width.max(0.0) as u32,
-        height: snapshot.image_height.max(0.0) as u32,
-        pixels: snapshot.image.as_ref().and_then(|image| image.as_bytes(0)),
+        image_id: surface_image.map(|image| image.id),
+        width: surface_image.map_or(snapshot.image_width.max(0.0) as u32, |image| {
+            image.size(0).width.into()
+        }),
+        height: surface_image.map_or(snapshot.image_height.max(0.0) as u32, |image| {
+            image.size(0).height.into()
+        }),
+        offset_x,
+        offset_y,
+        pixels: surface_image.and_then(|image| image.as_bytes(0)),
     };
     let scale = f64::from(zoom) * f64::from(window.scale_factor());
 
@@ -387,21 +429,25 @@ fn paint_annotations(
         if haloed == Some(annotation.id()) {
             draw_selection_halo(window, annotation, zoom, halo);
         }
-        if let Annotation::Redact {
-            id,
-            x,
-            y,
-            width,
-            height,
-            ..
-        } = annotation
-        {
-            if let Some(patch) = snapshot.redact_patches.get(id) {
-                paint_patch(window, origin, zoom, patch.clone(), *x, *y, *width, *height);
-                continue;
+        if !snapshot.backdrop_composite {
+            if let Annotation::Redact {
+                id,
+                x,
+                y,
+                width,
+                height,
+                ..
+            } = annotation
+            {
+                if let Some(patch) = snapshot.redact_patches.get(id) {
+                    paint_patch(window, origin, zoom, patch.clone(), *x, *y, *width, *height);
+                    continue;
+                }
             }
         }
-        if preview_raster::is_rasterized(annotation) {
+        if preview_raster::is_rasterized(annotation)
+            || (snapshot.backdrop_composite && matches!(annotation, Annotation::Redact { .. }))
+        {
             if let Some(patch) =
                 preview_raster::image(&keys, index, annotation, &visible[..index], &surface, scale)
             {

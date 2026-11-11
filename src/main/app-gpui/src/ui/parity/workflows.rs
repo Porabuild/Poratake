@@ -2117,25 +2117,24 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             ],
         };
         #[cfg(windows)]
-        let old_edges = cx.update(|cx| {
-            editor
-                .read(cx)
-                .unwrap()
-                .snapshot
-                .borrow()
+        let old_images = cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            let snapshot = editor.snapshot.borrow();
+            snapshot
                 .preview_edges
                 .iter()
                 .map(|edge| edge.image.clone())
+                .chain(snapshot.backdrop.iter().cloned())
                 .collect::<Vec<_>>()
         });
         #[cfg(windows)]
-        if !old_edges.is_empty() {
+        if !old_images.is_empty() {
             cx.update_window(window, |_, window, _| {
                 assert!(
-                    old_edges
+                    old_images
                         .iter()
                         .any(|image| window.has_image_atlas_entry(image)),
-                    "the previous layered edges must have been painted"
+                    "the previous layered images must have been painted"
                 );
             })
             .unwrap();
@@ -2196,10 +2195,10 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         settle(cx, window);
         #[cfg(windows)]
         cx.update_window(window, |_, window, _| {
-            for image in &old_edges {
+            for image in &old_images {
                 assert!(
                     !window.has_image_atlas_entry(image),
-                    "replaced layered edges must leave the GPU atlas"
+                    "replaced layered images must leave the GPU atlas"
                 );
             }
         })
@@ -2320,6 +2319,11 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             "{name} has {overlap_rounding} four-level overlap differences"
         );
     }
+    let unannotated = cx.update(|cx| {
+        image::load_from_memory(&editor.read(cx).unwrap().export_png().unwrap())
+            .unwrap()
+            .to_rgba8()
+    });
     editor
         .update(cx, |editor, _, cx| {
             editor.history.push(vec![
@@ -2342,6 +2346,33 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                     stroke: "#ff00ff".into(),
                     stroke_width: 1.,
                     fill: Some("#ff00ff".into()),
+                },
+                crate::editor::annotations::Annotation::Redact {
+                    id: "layered-black".into(),
+                    x: 625.,
+                    y: 200.,
+                    width: 30.,
+                    height: 30.,
+                    style: "black".into(),
+                    intensity: 5.,
+                },
+                crate::editor::annotations::Annotation::Redact {
+                    id: "layered-pixelate".into(),
+                    x: 625.,
+                    y: 240.,
+                    width: 30.,
+                    height: 30.,
+                    style: "pixelate".into(),
+                    intensity: 10.,
+                },
+                crate::editor::annotations::Annotation::Redact {
+                    id: "layered-blur".into(),
+                    x: 625.,
+                    y: 280.,
+                    width: 30.,
+                    height: 30.,
+                    style: "blur".into(),
+                    intensity: 2.,
                 },
             ]);
             editor.tool = crate::ui::colors::Tool::Select;
@@ -2373,12 +2404,39 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         )
     });
     let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+    assert_eq!(
+        saved.get_pixel(offset_x + 630, offset_y + 150).0,
+        [255, 0, 255, 255]
+    );
+    assert_eq!(
+        saved.get_pixel(offset_x + 645, offset_y + 150).0,
+        [255, 0, 255, 255]
+    );
+    assert_eq!(
+        saved.get_pixel(offset_x + 645, offset_y + 215).0,
+        [0, 0, 0, 255]
+    );
+    for start_y in [200, 240, 280] {
+        assert!(
+            (start_y..start_y + 30).any(|y| (625..655).any(|x| {
+                saved.get_pixel(offset_x + x, offset_y + y)
+                    != unannotated.get_pixel(offset_x + x, offset_y + y)
+            })),
+            "redaction at y={start_y} must change the saved image"
+        );
+    }
     let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
     image::imageops::overlay(&mut expected, &saved, 0, 0);
     let screenshot = cx.capture_screenshot(window).unwrap();
     let left = (f32::from(bounds.left()) * 1.25).round() as u32;
     let top = (f32::from(bounds.top()) * 1.25).round() as u32;
-    for (start_x, start_y, width, height) in [(0, 0, 40, 30), (620, 140, 30, 30)] {
+    for (start_x, start_y, width, height) in [
+        (0, 0, 40, 30),
+        (620, 140, 35, 30),
+        (625, 200, 30, 30),
+        (625, 240, 30, 30),
+        (625, 280, 30, 30),
+    ] {
         for y in start_y..start_y + height {
             for x in start_x..start_x + width {
                 assert!(
@@ -2393,6 +2451,86 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             }
         }
     }
+    cx.update_window(window, |_, window, _| window.set_scale_factor(2.))
+        .unwrap();
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 0.5;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, window);
+    let (bounds_2x, saved_2x, offset_x_2x, offset_y_2x, matte_2x) = cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        let wallpaper = editor.wallpaper.for_scale(2.);
+        let group = crate::editor::layers::compute(
+            640.,
+            360.,
+            &editor.snapshot.borrow().layers,
+            wallpaper.spacing,
+        );
+        let (_, (x, y, _, _)) =
+            crate::editor::wallpaper::layout(&wallpaper, group.width, group.height, 2.);
+        let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+        (
+            editor.bounds.borrow().unwrap(),
+            image::load_from_memory(&editor.export_png().unwrap())
+                .unwrap()
+                .to_rgba8(),
+            (x.round() + group.primary.x).round() as u32,
+            (y.round() + group.primary.y).round() as u32,
+            image::Rgba([
+                (theme.r * 255.).round() as u8,
+                (theme.g * 255.).round() as u8,
+                (theme.b * 255.).round() as u8,
+                255,
+            ]),
+        )
+    });
+    assert_eq!(
+        saved_2x.get_pixel(offset_x_2x + 645, offset_y_2x + 150).0,
+        [255, 0, 255, 255]
+    );
+    assert_eq!(
+        saved_2x.get_pixel(offset_x_2x + 645, offset_y_2x + 215).0,
+        [0, 0, 0, 255]
+    );
+    let mut expected_2x =
+        image::RgbaImage::from_pixel(saved_2x.width(), saved_2x.height(), matte_2x);
+    image::imageops::overlay(&mut expected_2x, &saved_2x, 0, 0);
+    let screenshot_2x = cx.capture_screenshot(window).unwrap();
+    let left_2x = (f32::from(bounds_2x.left()) * 2.).round() as u32;
+    let top_2x = (f32::from(bounds_2x.top()) * 2.).round() as u32;
+    for (start_x, start_y, width, height) in [
+        (0, 0, 40, 30),
+        (620, 140, 35, 30),
+        (625, 200, 30, 30),
+        (625, 240, 30, 30),
+        (625, 280, 30, 30),
+    ] {
+        for y in start_y..start_y + height {
+            for x in start_x..start_x + width {
+                assert!(
+                    screenshot_2x
+                        .get_pixel(left_2x + x, top_2x + y)
+                        .0
+                        .iter()
+                        .zip(expected_2x.get_pixel(offset_x_2x + x, offset_y_2x + y).0)
+                        .all(|(actual, expected)| actual.abs_diff(expected) <= 4),
+                    "layered 2x annotation differs at {x},{y}"
+                );
+            }
+        }
+    }
+    cx.update_window(window, |_, window, _| window.set_scale_factor(1.25))
+        .unwrap();
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 0.8;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, window);
     super::click(
         cx,
         window,
@@ -2435,6 +2573,137 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         assert_eq!(reopened.snapshot.borrow().layers, layers);
         assert_eq!(reopened.history.current(), annotations);
         assert_eq!(reopened.export_png().unwrap(), png);
+    });
+    reopened
+        .update(cx, |editor, _, cx| {
+            editor.tool = crate::ui::colors::Tool::Crop;
+            editor.zoom = 0.8;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, reopened.into());
+    let (crop_bounds, old_backdrop) = cx.update(|cx| {
+        let editor = reopened.read(cx).unwrap();
+        (
+            editor.bounds.borrow().unwrap(),
+            editor.snapshot.borrow().backdrop.clone().unwrap(),
+        )
+    });
+    let start = crop_bounds.origin + point(px(8.), px(8.));
+    let end = crop_bounds.origin + point(px(208.), px(128.));
+    event(
+        cx,
+        reopened.into(),
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    event(
+        cx,
+        reopened.into(),
+        PlatformInput::MouseUp(MouseUpEvent {
+            position: end,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+        }),
+    );
+    settle(cx, reopened.into());
+    let (expected_width, expected_height) = cx.update(|cx| {
+        let editor = reopened.read(cx).unwrap();
+        let (_, _, width, height) = editor.snapshot.borrow().crop.unwrap();
+        (width.abs() as u32, height.abs() as u32)
+    });
+    assert!((249..=250).contains(&expected_width) && (149..=150).contains(&expected_height));
+    reopened
+        .update(cx, |editor, _, cx| editor.apply_crop(cx))
+        .unwrap();
+    settle(cx, reopened.into());
+    reopened
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 0.8;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, reopened.into());
+    let (cropped_bounds, cropped_png, cropped_offset_x, cropped_offset_y) = cx.update(|cx| {
+        let editor = reopened.read(cx).unwrap();
+        assert_eq!(
+            (editor.image_width as u32, editor.image_height as u32),
+            (expected_width, expected_height)
+        );
+        assert!(editor.snapshot.borrow().backdrop_composite);
+        assert_ne!(
+            editor.snapshot.borrow().backdrop.as_ref().unwrap().id,
+            old_backdrop.id
+        );
+        let snapshot = editor.snapshot.borrow();
+        let wallpaper = &snapshot.wallpaper;
+        let group = crate::editor::layers::compute(
+            f64::from(expected_width),
+            f64::from(expected_height),
+            &snapshot.layers,
+            wallpaper.spacing,
+        );
+        let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
+            wallpaper,
+            group.width,
+            group.height,
+            snapshot.frame_scale,
+        );
+        (
+            editor.bounds.borrow().unwrap(),
+            image::load_from_memory(&editor.export_png().unwrap())
+                .unwrap()
+                .to_rgba8(),
+            (x.round() + group.primary.x).round() as u32,
+            (y.round() + group.primary.y).round() as u32,
+        )
+    });
+    #[cfg(windows)]
+    cx.update_window(reopened.into(), |_, window, _| {
+        assert!(
+            !window.has_image_atlas_entry(&old_backdrop),
+            "the pre-crop composite must leave the GPU atlas"
+        );
+    })
+    .unwrap();
+    let mut cropped_expected =
+        image::RgbaImage::from_pixel(cropped_png.width(), cropped_png.height(), matte);
+    image::imageops::overlay(&mut cropped_expected, &cropped_png, 0, 0);
+    let cropped_screenshot = cx.capture_screenshot(reopened.into()).unwrap();
+    let cropped_left = (f32::from(cropped_bounds.left()) * 1.25).round() as u32;
+    let cropped_top = (f32::from(cropped_bounds.top()) * 1.25).round() as u32;
+    for y in 0..expected_height {
+        for x in 0..expected_width {
+            assert!(
+                cropped_screenshot
+                    .get_pixel(cropped_left + x, cropped_top + y)
+                    .0
+                    .iter()
+                    .zip(
+                        cropped_expected
+                            .get_pixel(cropped_offset_x + x, cropped_offset_y + y)
+                            .0
+                    )
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 4),
+                "cropped layered preview differs at {x},{y}"
+            );
+        }
+    }
+    cx.update_window(reopened.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(crate::editor::actions::Undo), cx);
+    })
+    .unwrap();
+    settle(cx, reopened.into());
+    cx.update(|cx| {
+        let editor = reopened.read(cx).unwrap();
+        assert_eq!((editor.image_width, editor.image_height), (640., 360.));
+        assert_eq!(editor.export_png().unwrap(), png);
     });
     cx.update_window(reopened.into(), |_, window, _| window.remove_window())
         .unwrap();

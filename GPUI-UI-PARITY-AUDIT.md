@@ -733,13 +733,20 @@ Bugs fixed in this pass:
   They also verify replaced tiles leave the GPU atlas. Solid or transparent
   backgrounds match within two channel levels and a translucent background
   within three, except at most 16 overlapping-shadow pixels within four levels.
-  Electron paints annotations above attachments; GPUI still paints them with the
-  primary image, so attached content or shadows can obscure them. A local 4K
-  moderate-shadow probe took 211–219 ms with one attachment and 515–528 ms with
-  five, retaining 45.59 MiB and 118.35 MiB of image textures respectively,
-  before GPU upload.
+  A local 4K moderate-shadow probe now takes 248–266 ms with one attachment and
+  501–516 ms with five, retaining 38.69 MiB and 76.41 MiB of backdrop textures
+  respectively, before GPU upload. The previous tiled preview retained 45.59 MiB
+  and 118.35 MiB in the same probe.
   Physical DPI, interactive performance and framed/inset/balanced combinations
   remain unverified.
+- GPUI drew annotations into the primary image before attached images and their
+  shadows, so a bright mark could be obscured at an edge. In the tested
+  unframed, non-inset, non-balanced path, preview and export now draw annotations
+  after the attachments, as Electron's rendering order does. Black, pixelated
+  and blurred redactions crossing an edge are checked in both themes at
+  simulated 125% and 200%, along with overlapping and clipped redactions,
+  history reopen, crop, undo and texture retirement. Direct cross-shell pixel
+  comparison and other wallpaper combinations remain unverified.
 - A frame-only preset with no background or padding was ignored. It now activates
   the framed editor and export paths: the original 1600×1000 Polish capture is
   1600×1056 at 200%, and Polish copy matches editor export. The title bar and
@@ -874,12 +881,10 @@ Bugs fixed in this pass:
 Entries distinguish observed defects from missing evidence. An unverified path
 is not a demonstrated product defect; reproduce before changing its behavior.
 
-An observed annotation-order defect remains in unframed layered wallpaper:
-attached images and their shadows can cover GPUI annotations, while Electron
-paints annotations after the attachments. Fix preview and export together,
-including redactions and annotations that cross image edges. The 4K attachment
-preparation cost reported above also needs interactive and slower-hardware
-measurement.
+Unframed layered annotations now render after attachments in the tested path.
+Verify annotation and redaction ordering with frames, inset and balance, and
+compare directly with Electron. The 4K attachment preparation cost reported
+above also needs interactive and slower-hardware measurement.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
