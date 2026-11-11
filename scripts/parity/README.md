@@ -131,6 +131,14 @@ blurred redactions crossing into attachments are compared with saved pixels at
 125% and 200%; overlapping and clipped redactions, crop, undo and atlas
 retirement are also checked. Direct Electron pixel comparison and framed or
 inset layered annotations remain outside these checks.
+Screenshot pixelation uses fixed-size block averages checked against an Electron
+canvas for alpha, clipping and scale. Restored plain previews are compared with
+saved pixels at simulated 100%, 125% and 200%, including translucent and
+clipped regions, 50% and 150% zoom, wallpaper toggles and a same-window DPI
+change. A shape beneath pixelation is checked with and without gradient
+wallpaper at 100% for opaque and translucent images. At 150%, a translucent
+image with an earlier shape still differs at an edge; complex compositions and
+physical DPI remain outside these checks.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain

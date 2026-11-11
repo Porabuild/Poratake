@@ -12,9 +12,30 @@ use crate::render::canvas::{circle_path, rounded_rect_path, Canvas};
 use crate::render::freehand::{self, Vec2};
 use crate::render::{blur, color, text};
 
-pub fn draw_all(canvas: &mut Canvas, annotations: &[Annotation]) {
+pub fn draw_all_screenshot(canvas: &mut Canvas, annotations: &[Annotation], native_scale: f64) {
     for annotation in annotations {
-        draw(canvas, annotation);
+        draw_screenshot(canvas, annotation, native_scale);
+    }
+}
+
+pub fn draw_screenshot(canvas: &mut Canvas, annotation: &Annotation, native_scale: f64) {
+    match annotation {
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            style,
+            intensity,
+            ..
+        } if style == "pixelate" => {
+            let (x, y, width, height) = normalize_rect(*x, *y, *width, *height);
+            let block = (redact_intensity(*intensity).0 * native_scale)
+                .round()
+                .max(1.0);
+            pixelate_screenshot(canvas, x, y, width, height, block);
+        }
+        _ => draw(canvas, annotation),
     }
 }
 
@@ -638,6 +659,74 @@ fn pixelate_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64,
         region.height,
     );
     canvas.restore();
+}
+
+fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64, block: f64) {
+    let Some(region) = clamp_region(canvas, x, y, width, height) else {
+        return;
+    };
+    let Some(mut source) = canvas.read_region(
+        region.device_x,
+        region.device_y,
+        region.device_width,
+        region.device_height,
+    ) else {
+        return;
+    };
+    let width = region.device_width as usize;
+    let height = region.device_height as usize;
+    let block_width = ((block as f32 * region.scale_x).round() as usize).max(1);
+    let block_height = ((block as f32 * region.scale_y).round() as usize).max(1);
+    let pixels = source.data_mut();
+    for top in (0..height).step_by(block_height) {
+        for left in (0..width).step_by(block_width) {
+            let bottom = (top + block_height).min(height);
+            let right = (left + block_width).min(width);
+            let count = ((bottom - top) * (right - left)) as u64;
+            let mut sums = [0_u64; 4];
+            for y in top..bottom {
+                for x in left..right {
+                    let offset = (y * width + x) * 4;
+                    let alpha = u64::from(pixels[offset + 3]);
+                    match alpha {
+                        0 => {}
+                        255 => {
+                            for channel in 0..3 {
+                                sums[channel] += u64::from(pixels[offset + channel]);
+                            }
+                        }
+                        _ => {
+                            for channel in 0..3 {
+                                sums[channel] +=
+                                    (u64::from(pixels[offset + channel]) * 255 + alpha / 2) / alpha;
+                            }
+                        }
+                    }
+                    sums[3] += alpha;
+                }
+            }
+            let alpha = (sums[3] + count / 2) / count;
+            let color = [
+                ((((sums[0] + count / 2) / count) * alpha + 127) / 255) as u8,
+                ((((sums[1] + count / 2) / count) * alpha + 127) / 255) as u8,
+                ((((sums[2] + count / 2) / count) * alpha + 127) / 255) as u8,
+                alpha as u8,
+            ];
+            for y in top..bottom {
+                for x in left..right {
+                    let offset = (y * width + x) * 4;
+                    pixels[offset..offset + 4].copy_from_slice(&color);
+                }
+            }
+        }
+    }
+    let target_width = canvas.width() as usize;
+    let target = canvas.pixmap_mut().data_mut();
+    for y in 0..height {
+        let from = y * width * 4;
+        let to = ((region.device_y as usize + y) * target_width + region.device_x as usize) * 4;
+        target[to..to + width * 4].copy_from_slice(&pixels[from..from + width * 4]);
+    }
 }
 
 fn blur_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64, radius: f64) {

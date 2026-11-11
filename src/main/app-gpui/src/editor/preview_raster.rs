@@ -19,14 +19,17 @@ const MAX_PATCH_PIXELS: f64 = 8_388_608.0;
 const MAX_PATCH_DIMENSION: f64 = 16_384.0;
 const CACHE_TTL_FRAMES: u64 = 4;
 
+#[derive(Clone, Copy)]
 pub struct Surface<'a> {
     pub image_id: Option<gpui::ImageId>,
     pub width: u32,
     pub height: u32,
     pub offset_x: f64,
     pub offset_y: f64,
+    pub native_scale: f64,
     pub pixels: Option<&'a [u8]>,
     pub matte: Option<[u8; 3]>,
+    pub matte_image: Option<(&'a RenderImage, f64, f64)>,
 }
 
 pub struct Patch {
@@ -214,12 +217,40 @@ pub fn patch(
     canvas.scale(scale as f32, scale as f32);
 
     if let Some(pixels) = surface.pixels {
-        draw_backdrop(&mut canvas, surface, pixels, left, top, right, bottom);
+        draw_backdrop(
+            &mut canvas,
+            surface,
+            pixels,
+            (left, top, right, bottom),
+            tiny_skia::BlendMode::SourceOver,
+        );
         for earlier in beneath {
-            renderer::draw(&mut canvas, earlier);
+            renderer::draw_screenshot(&mut canvas, earlier, surface.native_scale);
         }
     }
-    renderer::draw(&mut canvas, annotation);
+    renderer::draw_screenshot(&mut canvas, annotation, surface.native_scale);
+    if let Some((image, offset_x, offset_y)) = surface.matte_image {
+        if let Some(pixels) = image.as_bytes(0) {
+            let background = Surface {
+                image_id: Some(image.id),
+                width: image.size(0).width.into(),
+                height: image.size(0).height.into(),
+                offset_x,
+                offset_y,
+                native_scale: surface.native_scale,
+                pixels: Some(pixels),
+                matte: None,
+                matte_image: None,
+            };
+            draw_backdrop(
+                &mut canvas,
+                &background,
+                pixels,
+                (left, top, right, bottom),
+                tiny_skia::BlendMode::DestinationOver,
+            );
+        }
+    }
 
     let target_left = (target.0 * scale).floor().max(device_x);
     let target_top = (target.1 * scale).floor().max(device_y);
@@ -258,11 +289,10 @@ fn draw_backdrop(
     canvas: &mut Canvas,
     surface: &Surface,
     pixels: &[u8],
-    left: f64,
-    top: f64,
-    right: f64,
-    bottom: f64,
+    bounds: (f64, f64, f64, f64),
+    blend: tiny_skia::BlendMode,
 ) {
+    let (left, top, right, bottom) = bounds;
     let x0 = ((left + surface.offset_x) as u32).saturating_sub(1);
     let y0 = ((top + surface.offset_y) as u32).saturating_sub(1);
     let x1 = ((right + surface.offset_x).ceil() as u32 + 1).min(surface.width);
@@ -293,12 +323,13 @@ fn draw_backdrop(
             target[pixel + 3] = alpha as u8;
         }
     }
-    canvas.draw_pixmap(
+    canvas.draw_pixmap_blended(
         crop.as_ref(),
         (f64::from(x0) - surface.offset_x) as f32,
         (f64::from(y0) - surface.offset_y) as f32,
         crop_width as f32,
         crop_height as f32,
+        blend,
     );
 }
 
@@ -359,6 +390,11 @@ pub fn image(
     surface: &Surface,
     scale: f64,
 ) -> Option<PatchImage> {
+    let scale = if matches!(annotation, Annotation::Redact { style, .. } if style == "pixelate") {
+        1.0
+    } else {
+        scale
+    };
     let key = fingerprint(keys, index, surface, scale)?;
     let frame = FRAME.with(|frame| frame.get());
     let cached = CACHE.with(|cache| {
@@ -415,9 +451,15 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u32(surface.height);
     hasher.write_u64(surface.offset_x.to_bits());
     hasher.write_u64(surface.offset_y.to_bits());
+    hasher.write_u64(surface.native_scale.to_bits());
     hasher.write_u8(u8::from(surface.pixels.is_some()));
     surface.matte.hash(&mut hasher);
     surface.image_id.hash(&mut hasher);
+    if let Some((image, x, y)) = surface.matte_image {
+        image.id.hash(&mut hasher);
+        hasher.write_u64(x.to_bits());
+        hasher.write_u64(y.to_bits());
+    }
     Some(hasher.finish())
 }
 
@@ -504,8 +546,10 @@ mod tests {
             height: base.height(),
             offset_x: 0.0,
             offset_y: 0.0,
+            native_scale: 1.,
             pixels: Some(&bgra),
             matte: None,
+            matte_image: None,
         };
         let paint = PixmapPaint {
             opacity: 1.0,
@@ -630,8 +674,10 @@ mod tests {
             height: 140,
             offset_x: 0.0,
             offset_y: 0.0,
+            native_scale: 1.,
             pixels: first.as_bytes(0),
             matte: None,
+            matte_image: None,
         };
         let second_surface = Surface {
             image_id: Some(second.id),
@@ -698,8 +744,10 @@ mod tests {
             height: base.height(),
             offset_x: 48.,
             offset_y: 20.,
+            native_scale: 1.,
             pixels: Some(&bgra),
             matte: None,
+            matte_image: None,
         };
         let paint = PixmapPaint {
             opacity: 1.0,
@@ -713,7 +761,7 @@ mod tests {
             exported.draw_pixmap(base.as_ref(), 0., 0., 180., 140.);
             let mut preview = exported.pixmap().clone();
             exported.translate(surface.offset_x as f32, surface.offset_y as f32);
-            renderer::draw_all(&mut exported, &annotations);
+            renderer::draw_all_screenshot(&mut exported, &annotations, surface.native_scale);
             let exported = exported.into_pixmap();
             for (index, annotation) in annotations.iter().enumerate() {
                 let patch = patch(annotation, &refs[..index], &surface, scale).unwrap();
@@ -756,8 +804,10 @@ mod tests {
             height: 120,
             offset_x: 90.,
             offset_y: -20.,
+            native_scale: 1.,
             pixels: Some(&bgra),
             matte: None,
+            matte_image: None,
         };
         let annotation = Annotation::Redact {
             id: "left".into(),
@@ -772,7 +822,7 @@ mod tests {
         let mut expected = Canvas::new(260, 120).unwrap();
         expected.draw_pixmap(base.as_ref(), 0., 0., 260., 120.);
         expected.translate(90., -20.);
-        renderer::draw(&mut expected, &annotation);
+        renderer::draw_screenshot(&mut expected, &annotation, surface.native_scale);
         let expected = expected.into_pixmap();
         let mut actual = base.clone();
         actual.draw_pixmap(
@@ -820,11 +870,13 @@ mod tests {
             height: 80,
             offset_x: 0.,
             offset_y: 0.,
+            native_scale: 1.,
             pixels: source.as_bytes(0),
             matte: Some([240, 240, 240]),
+            matte_image: None,
         };
         let mut exported = Canvas::from_pixmap(base);
-        renderer::draw(&mut exported, &annotation);
+        renderer::draw_screenshot(&mut exported, &annotation, surface.native_scale);
         let mut exported = exported.into_pixmap();
         let mut paint = tiny_skia::Paint::default();
         paint.set_color_rgba8(240, 240, 240, 255);
@@ -971,8 +1023,10 @@ mod tests {
                 height: height as u32,
                 offset_x: 0.,
                 offset_y: 0.,
+                native_scale: 1.,
                 pixels: None,
                 matte: None,
+                matte_image: None,
             };
             let annotation = Annotation::Rectangle {
                 id: "long".into(),
@@ -994,8 +1048,10 @@ mod tests {
             height: 20,
             offset_x: 0.,
             offset_y: 0.,
+            native_scale: 1.,
             pixels: None,
             matte: None,
+            matte_image: None,
         };
         let preceding = Annotation::Redact {
             id: "long-redaction".into(),

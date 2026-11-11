@@ -1654,6 +1654,290 @@ pub(super) fn large_attachment_preview(cx: &mut HeadlessAppContext, scratch: &Pa
     }
 }
 
+pub(super) fn restored_pixelation(
+    cx: &mut HeadlessAppContext,
+    scratch: &Path,
+    scale: f32,
+    transparent: bool,
+    clipped: bool,
+) {
+    let source = scratch.join(format!(
+        "restored-pixelation-{scale}-{transparent}-{clipped}.png"
+    ));
+    image::RgbaImage::from_fn(200, 120, |x, y| {
+        let red = if x % 16 < 8 { 24 } else { 224 };
+        image::Rgba([
+            red,
+            (y % 32 * 6) as u8,
+            80,
+            if transparent { 128 } else { 255 },
+        ])
+    })
+    .save(&source)
+    .unwrap();
+    let annotation = crate::editor::annotations::Annotation::Redact {
+        id: "restored-pixelation".into(),
+        x: if clipped { -8. } else { 40. },
+        y: 30.,
+        width: 80.,
+        height: 40.,
+        style: "pixelate".into(),
+        intensity: 5.,
+    };
+    let shape = crate::editor::annotations::Annotation::Rectangle {
+        id: "before-pixelation".into(),
+        x: 64.,
+        y: 40.,
+        width: 32.,
+        height: 20.,
+        stroke: "#00ff00".into(),
+        stroke_width: 1.,
+        fill: Some("#00ff00".into()),
+    };
+    let mut annotations = Vec::new();
+    if scale == 1. && !transparent && !clipped {
+        annotations.push(shape.clone());
+    }
+    annotations.push(annotation.clone());
+    crate::history_store::add_item(
+        HistoryItem {
+            id: format!("restored-pixelation-{scale}-{transparent}-{clipped}"),
+            timestamp: 0,
+            original_path: source.to_string_lossy().into_owned(),
+            r#type: HistoryItemType::Screenshot,
+            editor_state: Some(serde_json::json!({"annotations": annotations})),
+            duration: None,
+        },
+        100,
+        true,
+    );
+    let editor = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 1. / scale;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    let (bounds, png, matte) = cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).surface);
+        (
+            editor.bounds.borrow().unwrap(),
+            editor.export_png().unwrap(),
+            image::Rgba([
+                (theme.r * 255.).round() as u8,
+                (theme.g * 255.).round() as u8,
+                (theme.b * 255.).round() as u8,
+                255,
+            ]),
+        )
+    });
+    let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+    let original = image::open(&source).unwrap().to_rgba8();
+    let left_edge = if clipped { 0 } else { 40 };
+    let right_edge = if clipped { 72 } else { 120 };
+    assert_ne!(
+        saved.get_pixel(left_edge + 3, 32),
+        original.get_pixel(left_edge + 3, 32)
+    );
+    let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+    image::imageops::overlay(&mut composited, &saved, 0, 0);
+    let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+    let left = (f32::from(bounds.left()) * scale).round() as u32;
+    let top = (f32::from(bounds.top()) * scale).round() as u32;
+    for y in 30..70 {
+        for x in left_edge..right_edge {
+            let actual = screenshot.get_pixel(left + x, top + y).0;
+            let expected = composited.get_pixel(x, y).0;
+            assert!(
+                actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                "restored pixelation {scale}x, transparent={transparent}, clipped={clipped} at {x},{y}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+    if scale == 1. && !clipped {
+        let flattened_path = scratch.join(format!("restored-pixelation-flat-{transparent}.png"));
+        std::fs::write(&flattened_path, &png).unwrap();
+        let flattened = cx
+            .open_window(size(px(1280.), px(738.)), |window, cx| {
+                window.set_scale_factor(scale);
+                cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
+            })
+            .unwrap();
+        for zoom in [0.5, 1.5] {
+            for window in [editor, flattened] {
+                window
+                    .update(cx, |editor, _, cx| {
+                        editor.zoom = zoom;
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, window.into());
+            }
+            let (preview_bounds, flattened_bounds) = cx.update(|cx| {
+                (
+                    editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                    flattened.read(cx).unwrap().bounds.borrow().unwrap(),
+                )
+            });
+            let preview = cx.capture_screenshot(editor.into()).unwrap();
+            let flattened_image = cx.capture_screenshot(flattened.into()).unwrap();
+            let left = f32::from(preview_bounds.left()).round() as u32;
+            let top = f32::from(preview_bounds.top()).round() as u32;
+            let flat_left = f32::from(flattened_bounds.left()).round() as u32;
+            let flat_top = f32::from(flattened_bounds.top()).round() as u32;
+            for y in ((31. * zoom).ceil() as u32)..((69. * zoom).floor() as u32) {
+                for x in ((41. * zoom).ceil() as u32)..((119. * zoom).floor() as u32) {
+                    let actual = preview.get_pixel(left + x, top + y).0;
+                    let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
+                    assert!(
+                        actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                        "pixelation at zoom={zoom}, transparent={transparent}, {x},{y}: {actual:?} vs {expected:?}"
+                    );
+                }
+            }
+        }
+        cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+    }
+    if scale == 1. && !clipped {
+        if transparent {
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.history.push(vec![shape, annotation]);
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+        }
+        cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            assert!(!editor
+                .snapshot
+                .borrow()
+                .redact_patches
+                .contains_key("restored-pixelation"));
+        });
+        for gradient in [false, true] {
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.wallpaper.padding = 20.;
+                    editor.wallpaper.set_gradient(
+                        gradient
+                            .then(|| crate::editor::wallpaper::preset("slate"))
+                            .flatten(),
+                    );
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = 1.;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            let (bounds, png, background) = cx.update(|cx| {
+                let editor = editor.read(cx).unwrap();
+                assert!(!editor
+                    .snapshot
+                    .borrow()
+                    .redact_patches
+                    .contains_key("restored-pixelation"));
+                let background = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+                (
+                    editor.bounds.borrow().unwrap(),
+                    editor.export_png().unwrap(),
+                    image::Rgba([
+                        (background.r * 255.).round() as u8,
+                        (background.g * 255.).round() as u8,
+                        (background.b * 255.).round() as u8,
+                        255,
+                    ]),
+                )
+            });
+            let wallpaper = image::load_from_memory(&png).unwrap().to_rgba8();
+            let mut composited =
+                image::RgbaImage::from_pixel(wallpaper.width(), wallpaper.height(), background);
+            image::imageops::overlay(&mut composited, &wallpaper, 0, 0);
+            let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+            let left = f32::from(bounds.left()).round() as u32;
+            let top = f32::from(bounds.top()).round() as u32;
+            for y in 30..70 {
+                for x in 40..120 {
+                    let actual = screenshot.get_pixel(left + x, top + y).0;
+                    let expected = composited.get_pixel(x + 20, y + 20).0;
+                    assert!(
+                        actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                        "pixelation with wallpaper gradient={gradient}, transparent={transparent} at {x},{y}: {actual:?} vs {expected:?}"
+                    );
+                }
+            }
+        }
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.wallpaper.set_gradient(None);
+                editor.wallpaper.padding = 0.;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+        cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            assert!(!editor
+                .snapshot
+                .borrow()
+                .redact_patches
+                .contains_key("restored-pixelation"));
+        });
+        cx.update_window(editor.into(), |_, window, _| window.set_scale_factor(2.))
+            .unwrap();
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 0.5;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+        let (bounds, png) = cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            (
+                editor.bounds.borrow().unwrap(),
+                editor.export_png().unwrap(),
+            )
+        });
+        let changed = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_ne!(saved, changed, "DPI changes must resize pixelation blocks");
+        let mut composited = image::RgbaImage::from_pixel(changed.width(), changed.height(), matte);
+        image::imageops::overlay(&mut composited, &changed, 0, 0);
+        let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+        let left = (f32::from(bounds.left()) * 2.).round() as u32;
+        let top = (f32::from(bounds.top()) * 2.).round() as u32;
+        for y in 30..70 {
+            for x in 40..120 {
+                let actual = screenshot.get_pixel(left + x, top + y).0;
+                let expected = composited.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                    "pixelation after DPI change at {x},{y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+    cx.update_window(editor.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
 pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     let source = scratch.join("workflow-capture.png");
     std::fs::copy(scratch.join("capture.png"), &source).unwrap();

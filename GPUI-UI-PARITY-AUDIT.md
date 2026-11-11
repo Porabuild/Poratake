@@ -776,16 +776,25 @@ Bugs fixed in this pass:
   background variants, including a pixelated redaction crossing each join and
   the reopened preview. Annotations outside the right-attachment canvas are
   clipped. Complex balanced combinations remain unverified.
-- Pixelated redactions could shift a block boundary by one pixel between the
-  saved composition and the local preview patch when their canvas origins
-  differed. The expansion now uses a position-independent nearest-sample mapping;
-  its exact-boundary choice matches an isolated Electron canvas probe. The
-  left-edge fixture reproduced the original mismatch; left/top/bottom fixtures
-  compare every preview pixel to the saved output. In a local opaque 4K
-  pixelation probe, six samples took 51–55 ms before and 53–54 ms after the fix,
-  excluding GPU upload; slower hardware remains unmeasured. A recorded striped
-  patch also verifies that pixelation visibly changes the video preview and
-  matches decoded MP4 pixels across a cut and speed edits.
+- Pixelated video redactions could shift a block boundary by one pixel between
+  the saved composition and the local preview patch when their canvas origins
+  differed. Their nearest-sample expansion now uses a position-independent
+  mapping, with its boundary choice checked against an Electron canvas. A
+  recorded striped patch verifies that pixelation visibly changes the video
+  preview and matches decoded MP4 pixels across a cut and speed edits.
+- Screenshot pixelation now averages fixed-size blocks like Electron instead of
+  using the video renderer's downsampling. Electron canvas samples cover alpha,
+  clipping and scale. Light/dark GPU checks compare saved and restored plain
+  previews at simulated 100%, 125% and 200%, including translucent and clipped
+  regions, 50% and 150% zoom, wallpaper toggles and a same-window DPI change.
+  At 100%, an earlier shape under the redaction is checked with and without a
+  gradient wallpaper for opaque and translucent images, and on an opaque plain
+  capture. At 150%, a translucent image with an earlier shape still differed
+  from a flattened PNG by eight green levels at one redaction edge. Six NVIDIA
+  baseline changes were reviewed. A local opaque 4K block operation
+  took 29–31 ms in six samples, excluding GPU upload; a redundant retained
+  plain-image cache that took 128–137 ms and 31.6 MiB per redaction was removed.
+  Complex compositions, physical DPI and slower hardware remain unverified.
 - Plain attached captures could show a one-pixel seam at their join. Unframed
   attachments without balance or inset now share a single preview composition,
   with annotations above the images. The workflow checks joins on both sides;
@@ -951,7 +960,7 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Complex rounded screenshot preview versus export         | Single captures without a frame, inset, balance or attachments now match the PNG with and without shadows at simulated 125% and 200%, including transparent pixels and a corner annotation. Verify complex compositions, zero padding with balance or inset, arbitrary zoom and physical DPI transitions.                                                                                                                                                                          |
 | P1       | Zero-padding wallpaper effects                           | Frame-only and corner/shadow-only settings without balance or inset now activate at zero padding; single and attached previews and Polish copy are checked. Balance alone is checked for single captures and all four attachment edges. Balance with corners, shadow or inset and inset alone still need coordinated preview/export verification.                                                                                                                                  |
 | P1       | Wallpaper shadows and complex image compositions         | Single-image shadows without a window frame, inset, balance or attachments now match saved output in the tested cases. Complex combinations still need preview/output checks. At 4K a 400px radius with the strongest shadow took 196–200 ms to prepare locally; measure interactive behavior, GPU upload, memory and slower hardware. At 17,000px, plain, inset and framed outputs retain shadows in CPU checks; real GPUI GPU previews and other combinations remain unverified. |
-| P1       | Screenshot pixelation parity                             | Electron averages fixed-size blocks, whereas GPUI currently downsamples the entire redaction before expanding it. For a 30×1 fixture at block size eight, Electron produces red values 10, 21, 31, 40 across the blocks; the GPUI path produces 10, 18, 30, 38. Align the screenshot editor without changing the separate video renderer, and verify transparency, clipping and preview/export output.                                                                             |
+| P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples; restored previews and simple wallpaper toggles are checked against saved pixels. At 150% zoom, a translucent image with an earlier shape differed by eight green levels at a redaction edge versus a flattened PNG. Fix that mismatch; verify frames, inset, balance, attached layers, physical DPI and large patches.                                                                                                       |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                               |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                               |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                         |

@@ -395,7 +395,7 @@ pub struct EditorWindow {
     sheet_closing: bool,
     sheet_close_task: Option<gpui::Task<()>>,
     pub cloud_upload: crate::cloud::UploadState,
-    redact_patches: std::collections::HashMap<String, Arc<gpui::RenderImage>>,
+    redact_patches: std::collections::HashMap<String, crate::editor::canvas::RedactPatch>,
     pub snapshot: SnapshotCell,
     pub bounds: Rc<RefCell<Option<gpui::Bounds<Pixels>>>>,
     /// Images attached to the capture's edges.
@@ -614,6 +614,7 @@ impl EditorWindow {
         if editor.layers.is_empty() || editor.wallpaper.supports_edge_preview(true) {
             editor.refresh_balance_crop();
         }
+        editor.refresh_raster_patches();
         editor.sync_snapshot();
         editor
     }
@@ -638,14 +639,24 @@ impl EditorWindow {
                 else {
                     continue;
                 };
-                let key = format!("{id}:{x}:{y}:{width}:{height}:{style}:{intensity}");
+                if style == "pixelate" {
+                    continue;
+                }
+                let key = format!(
+                    "{id}:{x}:{y}:{width}:{height}:{style}:{intensity}:{}",
+                    self.native_scale
+                );
                 if let Some(existing) = self.redact_patches.get(&key) {
                     live.insert(key, existing.clone());
                     continue;
                 }
-                if let Some(patch) =
-                    render_redact_patch(&base, *x, *y, *width, *height, style, *intensity)
-                {
+                if let Some(patch) = render_redact_patch(
+                    &base,
+                    (*x, *y, *width, *height),
+                    style,
+                    *intensity,
+                    self.native_scale,
+                ) {
                     live.insert(key, patch);
                 }
             }
@@ -653,7 +664,9 @@ impl EditorWindow {
         }
     }
 
-    fn redact_patches_by_id(&self) -> std::collections::HashMap<String, Arc<gpui::RenderImage>> {
+    fn redact_patches_by_id(
+        &self,
+    ) -> std::collections::HashMap<String, crate::editor::canvas::RedactPatch> {
         self.history
             .current()
             .iter()
@@ -670,7 +683,10 @@ impl EditorWindow {
                 else {
                     return None;
                 };
-                let key = format!("{id}:{x}:{y}:{width}:{height}:{style}:{intensity}");
+                let key = format!(
+                    "{id}:{x}:{y}:{width}:{height}:{style}:{intensity}:{}",
+                    self.native_scale
+                );
                 self.redact_patches
                     .get(&key)
                     .map(|patch| (id.clone(), patch.clone()))
@@ -2022,33 +2038,52 @@ impl EditorWindow {
 
 fn render_redact_patch(
     base: &image::DynamicImage,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+    rect: (f64, f64, f64, f64),
     style: &str,
     intensity: f64,
-) -> Option<Arc<gpui::RenderImage>> {
-    let x0 = x.max(0.0).round() as u32;
-    let y0 = y.max(0.0).round() as u32;
-    let w = width.round().max(1.0) as u32;
-    let h = height.round().max(1.0) as u32;
+    native_scale: f64,
+) -> Option<crate::editor::canvas::RedactPatch> {
+    let (x, y, width, height) = rect;
+    let (x, y, width, height) = crate::editor::annotations::normalize_rect(x, y, width, height);
+    let left = x.floor();
+    let top = y.floor();
+    let x0 = left.max(0.0) as u32;
+    let y0 = top.max(0.0) as u32;
     if x0 >= base.width() || y0 >= base.height() {
         return None;
     }
-    let w = w.min(base.width() - x0);
-    let h = h.min(base.height() - y0);
+    let w = (width.ceil() - (f64::from(x0) - left))
+        .max(0.0)
+        .min(f64::from(base.width() - x0)) as u32;
+    let h = (height.ceil() - (f64::from(y0) - top))
+        .max(0.0)
+        .min(f64::from(base.height() - y0)) as u32;
+    if w == 0 || h == 0 {
+        return None;
+    }
 
     let mut patch = image::imageops::crop_imm(&base.to_rgba8(), x0, y0, w, h).to_image();
-    crate::editor::export::redact_region(&mut patch, 0, 0, w as i64, h as i64, style, intensity);
+    crate::editor::export::redact_region(
+        &mut patch,
+        (0, 0, w as i64, h as i64),
+        style,
+        intensity,
+        native_scale,
+    );
 
     // GPUI composites in BGRA.
     for pixel in patch.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-        image::Frame::new(patch)
-    ])))
+    Some(crate::editor::canvas::RedactPatch {
+        image: Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(patch)
+        ])),
+        x: f64::from(x0),
+        y: f64::from(y0),
+        width: f64::from(w),
+        height: f64::from(h),
+    })
 }
 
 /// Port of the rectangle and circle branches of `useDrawingTools`: a
@@ -2397,11 +2432,15 @@ impl Render for EditorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
         let theme = active_theme(cx);
-        self.native_scale = crate::editor::wallpaper::native_scale(
+        let native_scale = crate::editor::wallpaper::native_scale(
             f64::from(self.image_width),
             f64::from(self.image_height),
             f64::from(window.scale_factor()),
         );
+        if self.native_scale != native_scale {
+            self.native_scale = native_scale;
+            self.refresh_raster_patches();
+        }
         self.fit_to_window(window);
         self.refresh_backdrop(cx);
         for image in self.retired_preview_edges.drain(..) {

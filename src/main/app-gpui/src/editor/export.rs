@@ -95,7 +95,7 @@ pub fn compose_with_layers(
         return to_rgba(&composed);
     }
 
-    annotation_renderer::draw_all(&mut canvas, annotations);
+    annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     let mut annotated = canvas.into_pixmap();
 
     // Attached images sit around the annotated capture, before the wallpaper
@@ -255,7 +255,7 @@ fn compose_layered_wallpaper(
         primary_rect.0 - crop_offset.0,
         primary_rect.1 - crop_offset.1,
     );
-    annotation_renderer::draw_all(&mut canvas, annotations);
+    annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     Some(canvas.into_pixmap())
 }
 
@@ -854,18 +854,17 @@ pub fn encode_png(canvas: &RgbaImage) -> anyhow::Result<Vec<u8>> {
 /// pixels are the ones the export writes.
 pub fn redact_region(
     canvas: &mut RgbaImage,
-    x: i64,
-    y: i64,
-    width: i64,
-    height: i64,
+    rect: (i64, i64, i64, i64),
     style: &str,
     intensity: f64,
+    native_scale: f64,
 ) {
+    let (x, y, width, height) = rect;
     let Some(pixmap) = from_rgba(canvas) else {
         return;
     };
     let mut surface = Canvas::from_pixmap(pixmap);
-    annotation_renderer::draw(
+    annotation_renderer::draw_screenshot(
         &mut surface,
         &Annotation::Redact {
             id: String::new(),
@@ -876,6 +875,7 @@ pub fn redact_region(
             style: style.to_string(),
             intensity,
         },
+        native_scale,
     );
     *canvas = to_rgba(surface.pixmap());
 }
@@ -1646,9 +1646,120 @@ mod tests {
     #[test]
     fn a_blackout_redaction_paints_the_whole_region() {
         let mut canvas = RgbaImage::from_pixel(8, 8, image::Rgba([255, 255, 255, 255]));
-        redact_region(&mut canvas, 2, 2, 4, 4, "blackout", 5.0);
+        redact_region(&mut canvas, (2, 2, 4, 4), "blackout", 5.0, 1.0);
         assert_eq!(canvas.get_pixel(3, 3).0, [0, 0, 0, 255]);
         assert_eq!(canvas.get_pixel(0, 0).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn screenshot_pixelation_averages_fixed_size_blocks() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(30, 1, |x, _| {
+            let red = match x {
+                0..=7 => 10,
+                8..=14 => 20,
+                15..=22 => 30,
+                _ => 40,
+            };
+            image::Rgba([red, 0, 0, 255])
+        }));
+        let annotation = Annotation::Redact {
+            id: "pixelate".into(),
+            x: 0.,
+            y: 0.,
+            width: 30.,
+            height: 1.,
+            style: "pixelate".into(),
+            intensity: 5.,
+        };
+        let actual = compose(
+            Some(&base),
+            30,
+            1,
+            &[annotation],
+            &WallpaperSettings::default(),
+            1.,
+        );
+        for x in 0..30 {
+            let expected = match x {
+                0..=7 => 10,
+                8..=15 => 21,
+                16..=23 => 31,
+                _ => 40,
+            };
+            assert_eq!(actual.get_pixel(x, 0).0, [expected, 0, 0, 255], "x={x}");
+        }
+    }
+
+    #[test]
+    fn screenshot_pixelation_matches_electron_with_alpha_clipping_and_scale() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(30, 2, |x, y| {
+            let red = match x {
+                0..=7 => 10,
+                8..=14 => 20,
+                15..=22 => 30,
+                _ => 40,
+            };
+            image::Rgba([
+                red,
+                if y == 0 { 100 } else { 200 },
+                60,
+                if x % 3 == 0 { 128 } else { 255 },
+            ])
+        }));
+        for (start, scale, samples) in [
+            (
+                0.,
+                1.,
+                vec![
+                    (0, [10, 150, 60, 207]),
+                    (8, [21, 150, 60, 207]),
+                    (16, [31, 150, 59, 223]),
+                    (24, [40, 150, 60, 213]),
+                ],
+            ),
+            (
+                -3.,
+                1.,
+                vec![
+                    (0, [10, 150, 60, 207]),
+                    (8, [21, 150, 60, 207]),
+                    (16, [31, 150, 59, 223]),
+                    (24, [40, 150, 60, 213]),
+                    (27, [40, 100, 60, 128]),
+                    (29, [40, 100, 60, 255]),
+                ],
+            ),
+            (
+                0.,
+                2.,
+                vec![(0, [16, 150, 60, 207]), (16, [35, 150, 61, 219])],
+            ),
+        ] {
+            let annotation = Annotation::Redact {
+                id: "pixelate".into(),
+                x: start,
+                y: 0.,
+                width: 30.,
+                height: 2.,
+                style: "pixelate".into(),
+                intensity: 5.,
+            };
+            let actual = compose(
+                Some(&base),
+                30,
+                2,
+                &[annotation],
+                &WallpaperSettings::default(),
+                scale,
+            );
+            for (x, expected) in samples {
+                let pixel = actual.get_pixel(x, 0).0;
+                assert!(
+                    pixel.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                    "x={x}, start={start}, scale={scale}: {pixel:?} vs {expected:?}"
+                );
+            }
+        }
     }
 
     #[test]

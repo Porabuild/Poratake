@@ -24,11 +24,20 @@ use crate::ui::colors::Tool;
 /// and read at render time through the shared cell.
 pub type SnapshotCell = Rc<RefCell<CanvasSnapshot>>;
 
+#[derive(Clone)]
+pub struct RedactPatch {
+    pub image: std::sync::Arc<gpui::RenderImage>,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 pub struct CanvasSnapshot {
     pub image: Option<std::sync::Arc<gpui::RenderImage>>,
     /// Redacted pixels for committed redactions, rendered from the same code
     /// the export uses so the preview shows exactly what is written out.
-    pub redact_patches: std::collections::HashMap<String, std::sync::Arc<gpui::RenderImage>>,
+    pub redact_patches: std::collections::HashMap<String, RedactPatch>,
     pub image_width: f32,
     pub image_height: f32,
     pub zoom: f32,
@@ -178,6 +187,15 @@ impl RenderOnce for EditorCanvas {
         let background = gpui::Rgba::from(theme.background);
         let stage_background = [background.r, background.g, background.b]
             .map(|channel| (channel * 255.).round() as u8);
+        let surface = gpui::Rgba::from(
+            if transparent_backdrop && self.snapshot.borrow().backdrop.is_none() {
+                theme.surface_secondary
+            } else {
+                theme.surface
+            },
+        );
+        let stage_surface =
+            [surface.r, surface.g, surface.b].map(|channel| (channel * 255.).round() as u8);
         frame = frame.child(
             canvas(
                 move |bounds, _window, _cx| {
@@ -193,6 +211,8 @@ impl RenderOnce for EditorCanvas {
                             &snapshot,
                             primary.opacity(HALO_OPACITY),
                             stage_background,
+                            stage_surface,
+                            transparent_backdrop,
                         );
                     }
                     if !overlay_above {
@@ -368,6 +388,8 @@ impl RenderOnce for EditorCanvas {
                                                 &handle_snapshot.borrow(),
                                                 primary.opacity(HALO_OPACITY),
                                                 stage_background,
+                                                stage_surface,
+                                                transparent_backdrop,
                                             );
                                         });
                                     }
@@ -438,6 +460,8 @@ fn paint_annotations(
     snapshot: &CanvasSnapshot,
     halo: Hsla,
     stage_background: [u8; 3],
+    stage_surface: [u8; 3],
+    transparent_backdrop: bool,
 ) {
     let zoom = snapshot.zoom;
     let haloed = match snapshot.selected.as_slice() {
@@ -488,8 +512,53 @@ fn paint_annotations(
         }),
         offset_x,
         offset_y,
+        native_scale: snapshot.frame_scale,
         pixels: surface_image.and_then(|image| image.as_bytes(0)),
         matte: snapshot.backdrop_composite.then_some(stage_background),
+        matte_image: None,
+    };
+    let matte_image = if transparent_backdrop && !snapshot.backdrop_composite {
+        let (width, height) = crate::editor::wallpaper::balanced_size(
+            f64::from(snapshot.image_width),
+            f64::from(snapshot.image_height),
+            snapshot.balance_crop,
+            !snapshot.layers.is_empty() && !snapshot.wallpaper.supports_edge_preview(true),
+        );
+        let group = crate::editor::layers::compute(
+            width,
+            height,
+            &snapshot.layers,
+            snapshot.spacing.max(0.0),
+        );
+        let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
+            &snapshot.wallpaper,
+            group.width,
+            group.height,
+            snapshot.frame_scale,
+        );
+        let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
+        let title_bar = crate::render::window_frame::title_bar_height(
+            &snapshot.wallpaper.window_frame.style,
+            snapshot.frame_scale,
+        );
+        snapshot.backdrop.as_deref().map(|image| {
+            (
+                image,
+                x + group.primary.x - f64::from(crop_left),
+                y + group.primary.y + title_bar - f64::from(crop_top),
+            )
+        })
+    } else {
+        None
+    };
+    let redaction_surface = preview_raster::Surface {
+        matte: Some(if matte_image.is_some() {
+            stage_background
+        } else {
+            stage_surface
+        }),
+        matte_image,
+        ..surface
     };
     let scale = f64::from(zoom) * f64::from(window.scale_factor());
 
@@ -498,27 +567,40 @@ fn paint_annotations(
         if haloed == Some(annotation.id()) {
             draw_selection_halo(window, annotation, zoom, halo);
         }
-        if !snapshot.backdrop_composite {
-            if let Annotation::Redact {
-                id,
-                x,
-                y,
-                width,
-                height,
-                ..
-            } = annotation
-            {
+        let committed_pixelation = matches!(
+            annotation,
+            Annotation::Redact { style, .. }
+                if style == "pixelate"
+                    && !snapshot.draft.as_ref().is_some_and(|draft| std::ptr::eq(draft, *annotation))
+        );
+        if !snapshot.backdrop_composite && !committed_pixelation {
+            if let Annotation::Redact { id, .. } = annotation {
                 if let Some(patch) = snapshot.redact_patches.get(id) {
-                    paint_patch(window, origin, zoom, patch.clone(), *x, *y, *width, *height);
+                    paint_patch(
+                        window,
+                        origin,
+                        zoom,
+                        patch.image.clone(),
+                        patch.x,
+                        patch.y,
+                        patch.width,
+                        patch.height,
+                    );
                     continue;
                 }
             }
         }
         if preview_raster::is_rasterized(annotation)
             || (snapshot.backdrop_composite && matches!(annotation, Annotation::Redact { .. }))
+            || committed_pixelation
         {
+            let surface = if committed_pixelation && !snapshot.backdrop_composite {
+                &redaction_surface
+            } else {
+                &surface
+            };
             if let Some(patch) =
-                preview_raster::image(&keys, index, annotation, &visible[..index], &surface, scale)
+                preview_raster::image(&keys, index, annotation, &visible[..index], surface, scale)
             {
                 paint_patch(
                     window,

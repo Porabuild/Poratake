@@ -76,6 +76,10 @@ impl Canvas {
         &self.pixmap
     }
 
+    pub fn pixmap_mut(&mut self) -> &mut Pixmap {
+        &mut self.pixmap
+    }
+
     pub fn into_pixmap(self) -> Pixmap {
         self.pixmap
     }
