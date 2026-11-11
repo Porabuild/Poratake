@@ -57,8 +57,8 @@ exact-baseline matrix at `80a5700` passed all 16 cases and 2,632 images. After
 the color-capture failure fix, the two
 1280px/100% workflow cases passed again in light and dark themes. The 96 new
 NVIDIA color-picker images were reviewed; all 2,536 existing images were
-unchanged. The new states need hosted-renderer
-review. The 144 new NVIDIA history images were reviewed. The earlier matrix's 64 corner
+unchanged. The 96 hosted color-picker images were also reviewed, and the 2,536
+previous hosted images were unchanged. The 144 new NVIDIA history images were reviewed. The earlier matrix's 64 corner
 states and 160 revised selection images were reviewed; the remaining 2,312 existing
 images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
 24 were reviewed and the other 2,512 images were unchanged. The final exact
@@ -248,6 +248,10 @@ also failed its scaled GTK X11 test after the print-dialog workflow completed,
 while waiting for daemon exit. Its exit status was not reported; the test now
 prints it if the failure recurs. An isolated GTK print-dialog probe exited cleanly
 300 times, but did not exercise the daemon and did not establish the cause.
+Windows passed its native tests and all visual geometry and workflow checks,
+then rejected the 96 new color-picker images absent from its baseline. All 96
+were reviewed; the other 2,536 images were unchanged. Artifact `13834135629` has
+SHA-256 `5d8e382bbbc961eb0f2a6d463db48d7ff5e77f496e1c7d6f4afe188f9ebd1a21`.
 
 The final local comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
