@@ -115,6 +115,14 @@ struct FreezeState {
     operation: Mutex<()>,
     #[cfg(test)]
     release_waiting: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+    #[cfg(all(test, windows))]
+    defer_open_for_test: std::sync::atomic::AtomicBool,
+    #[cfg(all(test, windows))]
+    scheduled_for_test: std::sync::atomic::AtomicU64,
+    #[cfg(all(test, windows))]
+    release_fails_for_test: std::sync::atomic::AtomicBool,
+    #[cfg(all(test, windows))]
+    freeze_succeeds_for_test: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -232,6 +240,14 @@ impl CaptureService {
     }
 
     fn freeze_screen_started(&self) -> Result<()> {
+        #[cfg(all(test, windows))]
+        if self
+            .freeze
+            .freeze_succeeds_for_test
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
         self.daemon.freeze_screen().freeze()
     }
 
@@ -312,6 +328,14 @@ impl CaptureService {
     }
 
     fn release_screen_started(&self) -> bool {
+        #[cfg(all(test, windows))]
+        if self
+            .freeze
+            .release_fails_for_test
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
         if !self.daemon.is_running() {
             return true;
         }
@@ -431,17 +455,44 @@ fn with_frozen_screen(
 ) {
     let service = crate::state::state(cx);
     let capture_hide = overlay::capture_hide(cx);
+    let owner = overlay::revision(cx);
     if !freeze
         || !crate::system::capabilities::is_supported(
             crate::system::capabilities::Feature::FreezeScreen,
         )
         || !service.config.get().screenshot.freeze_screen
     {
-        if let Some(generation) = release_first {
-            let releasing = service.clone();
-            cx.background_executor()
-                .spawn(async move { releasing.release_screen(generation) })
-                .detach();
+        if let Some(generation) = release_first.filter(|generation| *generation != 0) {
+            overlay::set_pending_freeze(generation, cx);
+            cx.spawn(async move |cx| {
+                let released = cx
+                    .background_executor()
+                    .spawn(async move { service.release_screen(generation) })
+                    .await;
+                cx.update(|cx| {
+                    if overlay::revision(cx) != owner {
+                        return;
+                    }
+                    if !released {
+                        overlay::release_capture_hide(capture_hide, cx);
+                        let coordinator = crate::state::coordinator(cx);
+                        coordinator
+                            .update(cx, |coordinator, cx| coordinator.cancel_editor_attach(cx));
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Capture Failed",
+                            "Could not release the frozen screen",
+                        );
+                        return;
+                    }
+                    overlay::clear_pending_freeze(generation, owner, cx);
+                    if !open(cx, false, 0) {
+                        overlay::release_capture_hide(capture_hide, cx);
+                    }
+                });
+            })
+            .detach();
+            return;
         }
         if !open(cx, false, 0) {
             overlay::release_capture_hide(capture_hide, cx);
@@ -450,41 +501,93 @@ fn with_frozen_screen(
     }
 
     let deferred_show = cfg!(windows);
+    #[cfg(all(test, windows))]
+    let deferred_show = deferred_show
+        && !service
+            .freeze
+            .defer_open_for_test
+            .load(std::sync::atomic::Ordering::SeqCst);
     let generation = service.begin_freeze();
-    #[cfg(windows)]
-    let opened = open(cx, deferred_show, generation);
+    overlay::set_pending_freeze(generation, cx);
+    let mut open = Some(open);
+    let opened_early = deferred_show.then(|| open.take().unwrap()(cx, true, generation));
     let freezing = service.clone();
     cx.spawn(async move |cx| {
         let freezer = freezing.clone();
-        let frozen = cx
+        #[cfg(all(test, windows))]
+        freezer
+            .freeze
+            .scheduled_for_test
+            .store(generation, std::sync::atomic::Ordering::SeqCst);
+        let (frozen, released) = cx
             .background_executor()
             .spawn(async move {
                 freezer.wait_for_freeze_turn(generation);
                 let _operation = freezer.freeze.operation.lock();
-                if release_first.is_some() {
-                    freezer.release_screen_started();
-                }
-                let result = freezer.freeze_screen_started();
-                freezer.finish_freeze(generation, result)
+                let released = release_first
+                    .filter(|generation| *generation != 0)
+                    .is_none()
+                    || freezer.release_screen_started();
+                let result = if released {
+                    freezer.freeze_screen_started()
+                } else {
+                    Err(anyhow::anyhow!("Could not release the frozen screen"))
+                };
+                (freezer.finish_freeze(generation, result), released)
             })
             .await;
+        if !released {
+            cx.update(|cx| {
+                if overlay::revision(cx) != owner {
+                    return;
+                }
+                let pending = overlay::replace_all(cx).unwrap_or(generation);
+                overlay::set_pending_freeze(pending, cx);
+                let coordinator = crate::state::coordinator(cx);
+                coordinator.update(cx, |coordinator, cx| coordinator.cancel_editor_attach(cx));
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Capture Failed",
+                    "Could not release the frozen screen",
+                );
+            });
+            return;
+        }
         if let Err(error) = frozen {
             // A failed freeze must not cost the user the capture; the overlay
             // opens over the live screen instead.
             eprintln!("[freeze] {error}");
         }
-        #[cfg(windows)]
-        let opened = {
-            cx.update(|cx| overlay::raise_all(generation, cx));
-            opened
+        let opened = if let Some(open) = open {
+            cx.update(|cx| {
+                if overlay::revision(cx) != owner {
+                    return false;
+                }
+                let opened = open(cx, false, generation);
+                if opened {
+                    overlay::clear_pending_freeze(generation, owner, cx);
+                }
+                opened
+            })
+        } else {
+            #[cfg(windows)]
+            cx.update(|cx| {
+                if opened_early == Some(true) {
+                    overlay::clear_pending_freeze(generation, owner, cx);
+                }
+                overlay::raise_all(generation, cx);
+            });
+            opened_early.unwrap()
         };
-        #[cfg(not(windows))]
-        let opened = cx.update(|cx| open(cx, deferred_show, generation));
         if !opened {
             cx.update(|cx| overlay::release_capture_hide(capture_hide, cx));
-            cx.background_executor()
+            let released = cx
+                .background_executor()
                 .spawn(async move { freezing.release_screen(generation) })
-                .detach();
+                .await;
+            if released {
+                cx.update(|cx| overlay::clear_pending_freeze(generation, owner, cx));
+            }
         }
     })
     .detach();
@@ -879,7 +982,10 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
     let capture = overlay::display_capture(target.bounds, target.scale, target.capture_display_id);
     let coordinator = crate::state::coordinator(cx);
     if close_overlays {
-        let _ = overlay::replace_all(cx);
+        if let Some(generation) = overlay::replace_all(cx).filter(|generation| *generation != 0) {
+            overlay::set_pending_freeze(generation, cx);
+            overlay::release_frozen_screen(generation, cx);
+        }
     }
     let hide = desktop_icons::hide_for_capture(&service.daemon, &service.config);
     cx.defer(move |cx| {
@@ -979,6 +1085,7 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
         return;
     };
     let service = crate::state::state(cx);
+    overlay::set_pending_freeze(generation, cx);
     cx.spawn(async move |cx| {
         let released = cx
             .background_executor()
@@ -996,6 +1103,7 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
                 );
                 return;
             }
+            overlay::clear_pending_freeze(generation, owner, cx);
             capture_screen_target(target, cx);
         });
     })
@@ -1010,6 +1118,29 @@ mod tests {
     use super::CaptureService;
     use crate::config::store::ConfigStore;
     use crate::daemon::DaemonHandle;
+
+    #[cfg(windows)]
+    fn queue_pending_freeze(cx: &mut gpui::TestAppContext, service: &CaptureService) -> u64 {
+        cx.update(|cx| super::start_area_selection(super::intent::CaptureIntent::Screenshot, cx));
+        let generation = service.freeze.state.lock().next_generation;
+        while service
+            .freeze
+            .scheduled_for_test
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < generation
+        {
+            assert!(cx.dispatcher.tick(false));
+        }
+        assert!(!cx.update(super::overlay::parity_is_active));
+        generation
+    }
+
+    #[cfg(windows)]
+    fn finish_queued_freeze(cx: &gpui::TestAppContext, service: &CaptureService, generation: u64) {
+        while service.freeze.state.lock().completed_generation < generation {
+            assert!(cx.dispatcher.tick(true));
+        }
+    }
 
     #[test]
     fn concurrent_captures_keep_existing_files_and_each_others_pixels() {
@@ -1156,6 +1287,322 @@ mod tests {
             cx.update(super::overlay::close_all);
             cx.run_until_parked();
         }
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn pending_freeze_does_not_reopen_a_superseded_selector(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
+            settings.storage.screenshots_path = dir.path().to_string_lossy().into_owned();
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .defer_open_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+                .freeze
+                .freeze_succeeds_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+        });
+        let generation = queue_pending_freeze(cx, &service);
+        cx.update(super::start_screen_capture);
+        finish_queued_freeze(cx, &service, generation);
+        cx.run_until_parked();
+        assert!(!cx.update(super::overlay::parity_is_active));
+        assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn replacement_selectors_wait_for_a_pending_freeze(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .defer_open_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+        });
+        for replacement in [
+            super::intent::CaptureIntent::ScrollCapture,
+            super::intent::CaptureIntent::Ocr,
+        ] {
+            let generation = queue_pending_freeze(cx, &service);
+            cx.update(|cx| {
+                super::start_area_selection(replacement, cx);
+                assert!(!super::overlay::parity_is_active(cx));
+            });
+            finish_queued_freeze(cx, &service, generation);
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(super::overlay::active_intents_for_test),
+                [replacement]
+            );
+            cx.update(super::overlay::close_all);
+            cx.run_until_parked();
+        }
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn pending_freeze_ownership_transfers_across_multiple_replacements(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .defer_open_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+                .freeze
+                .freeze_succeeds_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+        });
+        for screen in [false, true] {
+            let generation = queue_pending_freeze(cx, &service);
+            cx.update(|cx| {
+                if screen {
+                    super::start_screen_capture(cx);
+                } else {
+                    super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
+                }
+                super::start_area_selection(super::intent::CaptureIntent::Ocr, cx);
+                assert!(!super::overlay::parity_is_active(cx));
+            });
+            finish_queued_freeze(cx, &service, generation);
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(super::overlay::active_intents_for_test),
+                [super::intent::CaptureIntent::Ocr]
+            );
+            assert!(service.reserve_cached_capture().wait_for_freeze());
+            assert!(notifications.borrow().is_empty());
+            cx.update(super::overlay::close_all);
+            cx.run_until_parked();
+        }
+        let generation = queue_pending_freeze(cx, &service);
+        cx.update(super::overlay::close_all);
+        finish_queued_freeze(cx, &service, generation);
+        cx.run_until_parked();
+        assert!(!cx.update(super::overlay::parity_is_active));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn failed_freeze_release_is_retried_by_the_next_capture(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = false;
+            settings.storage.screenshots_path = dir.path().to_string_lossy().into_owned();
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            crate::state::state(cx)
+        });
+        for screen in [false, true] {
+            let generation = service.begin_freeze();
+            service.finish_freeze(generation, Ok(())).unwrap();
+            service
+                .freeze
+                .release_fails_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            cx.update(|cx| {
+                super::overlay::set_pending_freeze(generation, cx);
+                if screen {
+                    super::start_screen_capture(cx);
+                } else {
+                    super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
+                }
+            });
+            cx.run_until_parked();
+            assert!(!cx.update(super::overlay::parity_is_active));
+            assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+            notifications.borrow_mut().clear();
+            cx.update(|cx| {
+                assert_eq!(super::overlay::replace_all(cx), Some(generation));
+                super::overlay::set_pending_freeze(generation, cx);
+            });
+            service
+                .freeze
+                .release_fails_for_test
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            cx.update(|cx| {
+                if screen {
+                    super::start_screen_capture(cx);
+                } else {
+                    super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
+                }
+            });
+            cx.run_until_parked();
+            if screen {
+                assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+                notifications.borrow_mut().clear();
+                assert_eq!(cx.update(super::overlay::replace_all), None);
+            } else {
+                assert_eq!(
+                    cx.update(super::overlay::active_intents_for_test),
+                    [super::intent::CaptureIntent::ScrollCapture]
+                );
+                cx.update(super::overlay::close_all);
+                cx.run_until_parked();
+            }
+        }
+        let generation = service.begin_freeze();
+        service.finish_freeze(generation, Ok(())).unwrap();
+        service
+            .freeze
+            .release_fails_for_test
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        cx.update(|cx| {
+            super::overlay::set_pending_freeze(generation, cx);
+            super::overlay::close_all(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(super::overlay::replace_all(cx), Some(generation));
+            super::overlay::set_pending_freeze(generation, cx);
+        });
+        service
+            .freeze
+            .release_fails_for_test
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        cx.update(|cx| {
+            super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(super::overlay::active_intents_for_test),
+            [super::intent::CaptureIntent::ScrollCapture]
+        );
+        cx.update(super::overlay::close_all);
+        cx.run_until_parked();
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn failed_release_blocks_a_replacement_freeze_until_retry(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .freeze_succeeds_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+        });
+        for deferred in [false, true] {
+            service
+                .freeze
+                .defer_open_for_test
+                .store(deferred, std::sync::atomic::Ordering::SeqCst);
+            let original = service.begin_freeze();
+            service.finish_freeze(original, Ok(())).unwrap();
+            service
+                .freeze
+                .release_fails_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            cx.update(|cx| {
+                super::overlay::set_pending_freeze(original, cx);
+                super::start_area_selection(super::intent::CaptureIntent::Ocr, cx);
+                assert_eq!(super::overlay::parity_is_active(cx), !deferred);
+            });
+            cx.run_until_parked();
+            assert!(!cx.update(super::overlay::parity_is_active));
+            assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+            notifications.borrow_mut().clear();
+            assert_eq!(service.freeze.state.lock().frozen_generation, None);
+            cx.update(|cx| {
+                assert_eq!(super::overlay::replace_all(cx), Some(original + 1));
+                super::overlay::set_pending_freeze(original + 1, cx);
+            });
+            service
+                .freeze
+                .release_fails_for_test
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            cx.update(|cx| super::start_area_selection(super::intent::CaptureIntent::Ocr, cx));
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(super::overlay::active_intents_for_test),
+                [super::intent::CaptureIntent::Ocr]
+            );
+            assert!(service.reserve_cached_capture().wait_for_freeze());
+            cx.update(super::overlay::close_all);
+            cx.run_until_parked();
+        }
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn failed_release_after_overlay_open_failure_remains_pending(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| settings.screenshot.freeze_screen = true);
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .defer_open_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+                .freeze
+                .freeze_succeeds_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+                .freeze
+                .release_fails_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            super::with_frozen_screen(cx, None, true, |_, _, _| false);
+            service
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.update(super::overlay::replace_all), Some(1));
+        service
+            .freeze
+            .release_fails_for_test
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(service.release_screen(1));
     }
 
     #[herogpui::test]

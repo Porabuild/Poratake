@@ -46,6 +46,7 @@ struct OverlaySession {
     handles: Vec<TrackedOverlay>,
     capture_hide: Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>>,
     revision: u64,
+    pending_freeze: Option<u64>,
     timer_cancel: Option<smol::channel::Sender<bool>>,
     #[cfg(windows)]
     pooled: Vec<PooledOverlay>,
@@ -76,6 +77,16 @@ fn session(cx: &mut App) -> &mut OverlaySession {
 
 pub(crate) fn revision(cx: &mut App) -> u64 {
     session(cx).revision
+}
+
+pub(crate) fn set_pending_freeze(generation: u64, cx: &mut App) {
+    session(cx).pending_freeze = Some(generation);
+}
+
+pub(crate) fn clear_pending_freeze(generation: u64, owner: u64, cx: &mut App) {
+    if session(cx).revision == owner && session(cx).pending_freeze == Some(generation) {
+        session(cx).pending_freeze = None;
+    }
 }
 
 pub(crate) fn watch_timer(
@@ -145,8 +156,27 @@ pub(crate) fn parity_active_overlay(cx: &mut App) -> Option<AnyWindowHandle> {
     session(cx).handles.first().map(|overlay| overlay.handle)
 }
 
+#[cfg(all(test, windows))]
+pub(crate) fn active_intents_for_test(cx: &mut App) -> Vec<crate::capture::intent::CaptureIntent> {
+    session(cx)
+        .handles
+        .clone()
+        .into_iter()
+        .filter_map(|tracked| {
+            tracked
+                .handle
+                .downcast::<AreaOverlay>()?
+                .update(cx, |overlay, _, _| overlay.intent)
+                .ok()
+        })
+        .collect()
+}
+
 pub fn close_all(cx: &mut App) {
     if let Some(generation) = remove_all(cx, true) {
+        if generation != 0 {
+            set_pending_freeze(generation, cx);
+        }
         release_frozen_screen(generation, cx);
     }
 }
@@ -286,7 +316,12 @@ fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
     }
     let handles = std::mem::take(&mut session(cx).handles);
     take_capture_hide(cx);
-    let generation = handles.iter().map(|tracked| tracked.generation).max();
+    let pending = session(cx).pending_freeze.take();
+    let generation = handles
+        .iter()
+        .map(|tracked| tracked.generation)
+        .chain(pending)
+        .max();
     if deferred {
         App::defer(cx, move |cx| dispose_overlays(handles, cx));
     } else {
@@ -346,14 +381,28 @@ pub fn raise_all(generation: u64, cx: &mut App) {
 /// Drops the daemon's frozen snapshot. Cheap and idempotent when the screen was
 /// never frozen, which is why the callers do not track whether it was.
 pub(crate) fn release_frozen_screen(generation: u64, cx: &mut App) {
+    if generation == 0 {
+        return;
+    }
     let service = crate::state::state(cx);
-    cx.background_executor()
-        .spawn(async move { service.release_screen(generation) })
-        .detach();
+    let owner = revision(cx);
+    cx.spawn(async move |cx| {
+        let released = cx
+            .background_executor()
+            .spawn(async move { service.release_screen(generation) })
+            .await;
+        if released {
+            cx.update(|cx| clear_pending_freeze(generation, owner, cx));
+        }
+    })
+    .detach();
 }
 
 pub(crate) fn dismiss(window: &mut Window, cx: &mut App) {
     if let Some(generation) = conceal_for_capture(window, cx) {
+        if generation != 0 {
+            set_pending_freeze(generation, cx);
+        }
         release_frozen_screen(generation, cx);
     }
 }
