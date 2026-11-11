@@ -1094,11 +1094,136 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             "wallpaper preview/export at {scale}x, transparent: {transparent}, blurred: {blurred}"
         );
     }
+    for (scale, style, content) in [
+        (1.25_f32, "windows-dark", [18_u8, 18, 18]),
+        (2., "windows-dark", [18, 18, 18]),
+        (1.25, "windows-light", [255, 255, 255]),
+        (2., "windows-light", [255, 255, 255]),
+        (1.25, "macos-dark", [28, 28, 30]),
+        (2., "macos-dark", [28, 28, 30]),
+        (1.25, "macos-light", [255, 255, 255]),
+        (2., "macos-light", [255, 255, 255]),
+    ] {
+        for shadow in [0., 50.] {
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor
+                        .wallpaper
+                        .set_gradient(Some(crate::editor::wallpaper::GradientOption {
+                            id: "visual-solid".into(),
+                            colors: vec!["#2468ac".into()],
+                            angle: 0.,
+                        }));
+                    editor.wallpaper.padding = 20.;
+                    editor.wallpaper.background_blur = 0.;
+                    editor.wallpaper.window_frame.style = style.into();
+                    editor.wallpaper.shadow = shadow;
+                    cx.notify();
+                })
+                .unwrap();
+            cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+                .unwrap();
+            settle(cx, window);
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = 1. / scale;
+                    cx.notify();
+                })
+                .unwrap();
+            cx.advance_clock(std::time::Duration::from_millis(32));
+            settle(cx, window);
+            let (bounds, saved) = cx.update(|cx| {
+                let editor = editor.read(cx).unwrap();
+                (
+                    editor.bounds.borrow().unwrap(),
+                    image::load_from_memory(&editor.export_png().unwrap())
+                        .unwrap()
+                        .to_rgba8(),
+                )
+            });
+            let padding = (20. * scale).round() as u32;
+            let title = (28. * scale).round() as u32;
+            let screenshot = cx.capture_screenshot(window).unwrap();
+            let left = (f32::from(bounds.left()) * scale).round() as u32;
+            let top = (f32::from(bounds.top()) * scale).round() as u32;
+            let expected = saved.get_pixel(padding + 250, padding + title + 130);
+            let background = if shadow > 0. { content } else { [36, 104, 172] };
+            for (actual, (foreground, background)) in expected.0[..3]
+                .iter()
+                .zip([240_u8, 80, 64].into_iter().zip(background))
+            {
+                let blended = (u16::from(foreground) * 128 + u16::from(background) * 127) / 255;
+                assert!(actual.abs_diff(blended as u8) <= 2);
+            }
+            let significant = (120..180)
+                .flat_map(|y| (240..320).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    screenshot
+                        .get_pixel(left + x, top + y)
+                        .0
+                        .iter()
+                        .zip(saved.get_pixel(padding + x, padding + title + y).0)
+                        .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+                })
+                .count();
+            assert_eq!(
+                significant, 0,
+                "transparent framed preview at {scale}x, {style}, shadow {shadow}: preview {:?}, saved {:?}",
+                screenshot.get_pixel(left + 250, top + 130),
+                saved.get_pixel(padding + 250, padding + title + 130)
+            );
+        }
+    }
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.wallpaper.set_gradient(None);
+            editor.wallpaper.padding = 20.;
+            editor.wallpaper.shadow = 0.;
+            editor.wallpaper.window_frame.style = "macos-light".into();
+            cx.notify();
+        })
+        .unwrap();
+    cx.update_window(window, |_, window, _| window.set_scale_factor(1.25))
+        .unwrap();
+    settle(cx, window);
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 1. / 1.25;
+            cx.notify();
+        })
+        .unwrap();
+    cx.advance_clock(std::time::Duration::from_millis(32));
+    settle(cx, window);
+    let (bounds, saved) = cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        (
+            editor.bounds.borrow().unwrap(),
+            image::load_from_memory(&editor.export_png().unwrap())
+                .unwrap()
+                .to_rgba8(),
+        )
+    });
+    let screenshot = cx.capture_screenshot(window).unwrap();
+    let left = (f32::from(bounds.left()) * 1.25).round() as u32;
+    let top = (f32::from(bounds.top()) * 1.25).round() as u32;
+    for y in 120..180 {
+        for x in 240..320 {
+            let pixel = saved.get_pixel(25 + x, 25 + 35 + y).0;
+            assert_eq!(pixel[3], 128);
+            for (actual, (foreground, background)) in screenshot.get_pixel(left + x, top + y).0[..3]
+                .iter()
+                .zip(pixel[..3].iter().zip([24_u8, 24, 27]))
+            {
+                let blended = (u16::from(*foreground) * 128 + u16::from(background) * 127) / 255;
+                assert!(actual.abs_diff(blended as u8) <= 2);
+            }
+        }
+    }
     cx.update_window(window, |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
     println!(
-        "scaled wallpaper preview and saved pixels match at 1.25x and 2x, including transparency and blur"
+        "scaled wallpaper preview and saved pixels match at 1.25x and 2x, including transparency, blur and framed translucent pixels"
     );
 }
 

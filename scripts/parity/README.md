@@ -75,6 +75,10 @@ must differ visibly from hover within that button's measured bounds.
 
 The built-in fixture additionally checks annotation save/history reopen/flattened
 PNG reopen at 1280px and 100% scale, comparing the preview with saved pixels.
+It also compares a translucent patch in each window-frame style against the saved
+PNG at simulated 125% and 200%, with and without a frame shadow. A no-background
+case checks saved alpha against the preview over the editor's display background.
+Rounded corners, insets, balance and attached layers are not part of those checks.
 Custom `PORATAKE_PARITY_IMAGE` inputs skip that fixed-size workflow. Overlays use
 a synthetic desktop with ordered overlapping windows, negative display origins
 and correctly scaled physical bounds. Window/display picker states cover hover,

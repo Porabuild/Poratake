@@ -292,8 +292,9 @@ reached the state-list check in all 16 cases. Its 96 new menu images were review
 and its 2,232 existing images were byte-identical. Artifact `13819691455` has
 SHA-256 `9514eb08c98dbb5471a375a8cc2d86473d7c736e505252098e3d74780113503b`.
 That run's Linux and macOS Clippy jobs rejected unused test-handle assignments;
-those assignments were subsequently corrected. Check the current PR for their
-platform verification and the hosted exact-image comparison.
+those assignments were subsequently corrected. The [later hosted run](https://github.com/Porabuild/Poratake/actions/runs/42938607663)
+passed Linux, macOS and Windows, including all 16 cases and 2,328 exact images.
+Check the current PR for verification of subsequent changes.
 The display-change test checks preview repositioning in a headless window, and
 synthetic geometry covers negative origins and mixed scaling. Physical monitor
 changes and destination-DPI movement remain unverified.
@@ -546,7 +547,14 @@ Bugs fixed in this pass:
 - The padded, unframed single-image preview painted an opaque surface beneath
   partially transparent pixels. It now reveals the wallpaper backdrop in the
   tested case without corners, shadow, inset, balance or attached layers.
-  Other composition modes remain in the backlog below.
+- A framed single-image preview also blended translucent pixels against the
+  editor surface, and its extra GPUI shadow darkened them. The frame compositor
+  now follows Electron: wallpaper shows through without a shadow, and the frame
+  content color backs the image when a shadow is present. A 4,800-pixel patch
+  matches the saved PNG within two channel levels for all four frame styles,
+  with and without shadow, at simulated 125% and 200%. A no-background case
+  checks saved alpha against the preview over the editor's display background.
+  Corners, inset, balance and attached layers remain outside these checks.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
 - A competing capture or second attachment could replace the active attachment

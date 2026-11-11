@@ -98,13 +98,14 @@ impl RenderOnce for EditorCanvas {
 
         let wallpaper = snap.wallpaper.clone();
         let frame_scale = snap.frame_scale;
+        let window_frame =
+            crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
         let transparent_backdrop = wallpaper.is_active()
             && snap.layers.is_empty()
             && !wallpaper.balance
             && wallpaper.inset <= 0.0
-            && wallpaper.shadow <= 0.0
             && wallpaper.corners <= 0.0
-            && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none();
+            && (window_frame || wallpaper.shadow <= 0.0);
         let mut frame = div()
             .relative()
             .w(content_width)
@@ -114,7 +115,9 @@ impl RenderOnce for EditorCanvas {
                 el.rounded(px(wallpaper.corners as f32 * snap.zoom))
                     .overflow_hidden()
             })
-            .when(wallpaper.shadow > 0.0, |el| el.shadow_2xl())
+            .when(wallpaper.shadow > 0.0 && !transparent_backdrop, |el| {
+                el.shadow_2xl()
+            })
             .when(!transparent_backdrop, |el| el.bg(theme.surface));
 
         if let Some(image) = snap.image.clone() {

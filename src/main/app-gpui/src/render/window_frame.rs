@@ -143,11 +143,13 @@ pub fn render_chrome(
     // The shadow needs something opaque to cast from, which is the frame's own
     // content colour.
     canvas.set_shadow(shadow);
-    canvas.fill_path(
-        &outline,
-        color::parse_or(theme.content, Color::from_rgba8(255, 255, 255, 255)),
-        FillRule::Winding,
-    );
+    if shadow.is_some() {
+        canvas.fill_path(
+            &outline,
+            color::parse_or(theme.content, Color::from_rgba8(255, 255, 255, 255)),
+            FillRule::Winding,
+        );
+    }
     canvas.set_shadow(None);
     canvas.clip_path(&outline, FillRule::Winding);
 
@@ -327,6 +329,58 @@ mod tests {
         // The title bar is the theme's grey, the content below it is the image.
         assert_ne!(pixel(100, 20), [255, 0, 0]);
         assert_eq!(pixel(100, 60), [255, 0, 0]);
+    }
+
+    #[test]
+    fn translucent_content_uses_the_backdrop_without_a_shadow() {
+        let mut image = Pixmap::new(60, 60).expect("image");
+        image.fill(Color::from_rgba8(240, 80, 64, 128));
+        let shadow = Shadow {
+            color: Color::from_rgba8(0, 0, 0, 128),
+            blur: 4.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        for (shadow, background) in [(None, [36_u8, 104, 172]), (Some(shadow), [255, 255, 255])] {
+            let mut canvas = Canvas::new(100, 120).expect("canvas");
+            canvas.fill_all(Color::from_rgba8(36, 104, 172, 255));
+            render(
+                &mut canvas,
+                image.as_ref(),
+                10.0,
+                10.0,
+                60.0,
+                60.0,
+                "windows-light",
+                shadow,
+                1.0,
+            );
+            let index = ((68 * canvas.width() + 40) * 4) as usize;
+            let pixel = &canvas.pixmap().data()[index..index + 4];
+            for (actual, (foreground, background)) in pixel[..3]
+                .iter()
+                .zip([240_u8, 80, 64].into_iter().zip(background))
+            {
+                let expected = (u16::from(foreground) * 128 + u16::from(background) * 127) / 255;
+                assert!(actual.abs_diff(expected as u8) <= 2, "{pixel:?}");
+            }
+            assert_eq!(pixel[3], 255);
+        }
+
+        let mut canvas = Canvas::new(100, 120).expect("canvas");
+        render(
+            &mut canvas,
+            image.as_ref(),
+            10.0,
+            10.0,
+            60.0,
+            60.0,
+            "windows-light",
+            None,
+            1.0,
+        );
+        let index = ((68 * canvas.width() + 40) * 4) as usize;
+        assert_eq!(canvas.pixmap().data()[index + 3], 128);
     }
 
     #[test]
