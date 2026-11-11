@@ -1219,6 +1219,60 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             }
         }
     }
+    for scale in [1.25_f32, 2.] {
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.wallpaper.padding = 0.;
+                editor.wallpaper.window_frame.style = "windows-dark".into();
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+            .unwrap();
+        settle(cx, window);
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 1. / scale;
+                cx.notify();
+            })
+            .unwrap();
+        cx.advance_clock(std::time::Duration::from_millis(32));
+        settle(cx, window);
+        let (bounds, saved) = cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            (
+                editor.bounds.borrow().unwrap(),
+                image::load_from_memory(&editor.export_png().unwrap())
+                    .unwrap()
+                    .to_rgba8(),
+            )
+        });
+        let title = (28. * scale).round() as u32;
+        assert_eq!(saved.dimensions(), (640, 360 + title));
+        let screenshot = cx.capture_screenshot(window).unwrap();
+        let left = (f32::from(bounds.left()) * scale).round() as u32;
+        let top = (f32::from(bounds.top()) * scale).round() as u32;
+        assert_eq!(saved.get_pixel(320, 10).0, [32, 32, 32, 255]);
+        assert_eq!(
+            screenshot.get_pixel(left + 320, top - title + 10),
+            saved.get_pixel(320, 10)
+        );
+        for y in 120..180 {
+            for x in 240..320 {
+                let pixel = saved.get_pixel(x, title + y).0;
+                assert_eq!(pixel[3], 128);
+                for (actual, (foreground, background)) in screenshot.get_pixel(left + x, top + y).0
+                    [..3]
+                    .iter()
+                    .zip(pixel[..3].iter().zip([24_u8, 24, 27]))
+                {
+                    let blended =
+                        (u16::from(*foreground) * 128 + u16::from(background) * 127) / 255;
+                    assert!(actual.abs_diff(blended as u8) <= 2);
+                }
+            }
+        }
+    }
     cx.update_window(window, |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();

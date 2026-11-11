@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-10 for Poratake 0.9.6, based on `72f0f59` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `6e0d9de` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -555,6 +555,10 @@ Bugs fixed in this pass:
   with and without shadow, at simulated 125% and 200%. A no-background case
   checks saved alpha against the preview over the editor's display background.
   Corners, inset, balance and attached layers remain outside these checks.
+- A frame-only preset with no background or padding was ignored. It now activates
+  the framed editor and export paths: the original 1600×1000 Polish capture is
+  1600×1056 at 200%, and Polish copy matches editor export. The title bar and
+  translucent image patch are checked in the preview at 125% and 200%.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
 - A competing capture or second attachment could replace the active attachment
@@ -634,7 +638,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions and restarts, and cross-shell IDs on macOS/Linux.                                                                      |
 | P1       | Framed screenshot preview versus export                  | At simulated 125%, a 640×360 patterned capture with a Windows frame, blur and shadow differs from its saved PNG at 1,400 pixels along the side and bottom border. The image covers the frame border in the preview. Fix the layer order and rounded corners, then compare preview and export for both frame styles, annotations and multiple scales.                                                                               |
 | P1       | Rounded screenshot preview versus export                 | The parent overflow clip is rectangular, so the live image and annotation overlay are not clipped together to wallpaper corners. The preview also paints an opaque surface beneath transparent image pixels in this mode. Compare rounded preview and PNG with annotations, attached layers and balance at multiple scales.                                                                                                        |
-| P1       | Zero-padding wallpaper effects                           | With no background or padding, a 1600×1000 Polish capture with a window frame remains 1600×1000 at 200%; Electron produces 1600×1056. The activation gate also skips corner and shadow effects. Source comparison shows attached layers and balance need coordinated preview/export handling before this gate can safely be widened.                                                                                               |
+| P1       | Zero-padding wallpaper effects                           | Frame-only settings now activate at zero padding; editor output, Polish copy and the title-bar preview are checked. Corner- and shadow-only settings still do not activate without a background or padding. Attached layers and balance need coordinated preview/export handling before widening that gate.                                                                                                                        |
 | P1       | Wallpaper shadows and complex image compositions         | The screenshot preview uses a GPUI box shadow while export uses the rasterized image shadow and its white underlay; inset, balance, attached layers and annotations also need preview/output checks. An exact 4K preview-shadow prototype took 387–401 ms versus 55–56 ms without the shadow on this machine and allocated several image-sized buffers. Find a matching approach with measured interactive performance and memory. |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                               |
 | P1       | Scroll stitching with fixed footers                      | A synthetic 1280×320 capture with an 80px fixed footer reports changed scrolling content as repeated. With a 40px footer, two frames are accepted but the reopened PNG repeats the footer: 51,200 of 573,440 pixels differ from the expected image. Fix detection and composition together, and verify sparse content, moving animations and real scrolling surfaces.                                                              |

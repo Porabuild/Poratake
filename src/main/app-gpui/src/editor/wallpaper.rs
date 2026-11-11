@@ -102,7 +102,10 @@ impl WallpaperSettings {
     }
 
     pub fn is_active(&self) -> bool {
-        self.gradient.is_some() || self.background_image.is_some() || self.padding > 0.0
+        self.gradient.is_some()
+            || self.background_image.is_some()
+            || self.padding > 0.0
+            || crate::render::window_frame::theme(&self.window_frame.style).is_some()
     }
 
     /// Selecting a gradient with no padding yet opens the frame up, matching

@@ -2506,6 +2506,22 @@ mod tests {
             .unwrap();
         assert_eq!(framed.dimensions(), (1800, 1256));
         assert_eq!(framed.get_pixel(900, 600).0, [240, 80, 64, 255]);
+        config.update(|settings| {
+            settings.wallpaper.presets[0].padding = 0.;
+            settings.wallpaper.presets[0].corners = 0.;
+        });
+        let framed_without_padding = preview
+            .update(cx, |_, window, cx| {
+                assert!(polish_and_copy(&path, window.scale_factor(), cx));
+                let copied = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+                image::load_from_memory(&copied.bytes).unwrap().to_rgba8()
+            })
+            .unwrap();
+        assert_eq!(framed_without_padding.dimensions(), (1600, 1056));
+        assert_eq!(
+            framed_without_padding.get_pixel(800, 600).0,
+            [240, 80, 64, 255]
+        );
     }
 
     #[herogpui::test]
@@ -2529,7 +2545,7 @@ mod tests {
             settings.wallpaper.presets = vec![preset.clone()];
             settings.wallpaper.default_preset_id = Some("scaled".into());
         });
-        cx.update(|cx| crate::state::set_test_state(cx, config));
+        cx.update(|cx| crate::state::set_test_state(cx, config.clone()));
         let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
             window.set_scale_factor(2.);
             let mut editor =
@@ -2547,6 +2563,26 @@ mod tests {
         let saved = image::load_from_memory(&saved).unwrap().to_rgba8();
         let copied = image::load_from_memory(&copied).unwrap().to_rgba8();
         assert_eq!(saved.dimensions(), (720, 496));
+        assert_eq!(copied, saved);
+
+        let mut zero_padding = preset.clone();
+        zero_padding.padding = 0.;
+        zero_padding.corners = 0.;
+        config.update(|settings| settings.wallpaper.presets[0] = zero_padding.clone());
+        let (saved, copied) = cx.update(|window, cx| {
+            editor.update(cx, |editor, _| {
+                crate::editor::wallpaper::apply_preset(&mut editor.wallpaper, &zero_padding);
+            });
+            let saved = editor.read(cx).export_png().unwrap();
+            assert!(polish_and_copy(&path, window.scale_factor(), cx));
+            let copied = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+            (saved, copied.bytes)
+        });
+        let saved = image::load_from_memory(&saved).unwrap().to_rgba8();
+        let copied = image::load_from_memory(&copied).unwrap().to_rgba8();
+        assert_eq!(saved.dimensions(), (640, 416));
+        assert_eq!(saved.get_pixel(320, 20).0, [32, 32, 32, 255]);
+        assert_eq!(saved.get_pixel(320, 200).0, [240, 80, 64, 255]);
         assert_eq!(copied, saved);
     }
 
