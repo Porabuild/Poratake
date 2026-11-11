@@ -51,8 +51,9 @@ The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, a
 also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states.
 The eight 950px cases each add 18 narrow-history states, for 2,472 images per
 complete renderer profile. The 144 new NVIDIA history images were reviewed; the
-local matrix passed all 16 cases and 2,472 images. The hosted profile still
-needs its corresponding images reviewed and added.
+local matrix passed all 16 cases and 2,472 images. The first 80 hosted history
+images were reviewed; the 64 grid-tooltip images remain to be captured and
+reviewed.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -300,8 +301,14 @@ passed Linux, macOS and Windows, including all 16 cases and 2,328 exact images.
 The [framed-transparency run](https://github.com/Porabuild/Poratake/actions/runs/42941558246)
 also passed all required jobs and all 16 visual cases, including the new pixel
 checks on the hosted renderer. The [history and frame-only run](https://github.com/Porabuild/Poratake/actions/runs/42945831848)
-passed all required jobs, 1,015 native tests and all 16 visual cases. Check the
-current PR for subsequent changes.
+passed all required jobs, 1,015 native tests and all 16 visual cases. The
+[later hosted history run](https://github.com/Porabuild/Poratake/actions/runs/42948956984)
+passed its history geometry and deletion checks but failed the eight 950px
+state-list comparisons because their new images had not yet been added. Its
+2,328 existing images remained pixel-identical, and the 80 new images were
+reviewed. Artifact `13826065362` has SHA-256
+`5a4f1960ff24a1920489f6568c8f81170a27b2b81806ec7fd8ff1219ee8c54fd`.
+Check the current PR for subsequent changes.
 The display-change test checks preview repositioning in a headless window, and
 synthetic geometry covers negative origins and mixed scaling. Physical monitor
 changes and destination-DPI movement remain unverified.
@@ -575,8 +582,9 @@ Bugs fixed in this pass:
   icons wrapping as needed. Grid tooltips align inward according to their column.
   The local visual fixture checks complete reveal and delete tooltips in grid
   and list states, and deletes an isolated item without opening an editor. Its
-  144 NVIDIA images were reviewed; the hosted profile and physical monitors
-  remain unverified. Electron's horizontal placement remains unclamped.
+  144 NVIDIA and 80 hosted history images were reviewed; hosted grid-tooltip
+  images and physical monitors remain unverified. Electron's horizontal
+  placement remains unclamped.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
 - A competing capture or second attachment could replace the active attachment
@@ -668,11 +676,17 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                          |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Representative coverage only.                                                                                                                                                                                                    |
 | P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                      |
-| P2       | History visual and native verification                   | Review and add the hosted narrow-history images; verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 200px. Below 148px, the two-column grid cards are too narrow for both actions; smaller layouts and other item states need verification.                                                                                                                    |
+| P2       | History visual and native verification                   | Capture and review the hosted grid-tooltip images; verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 200px. Below 148px, the two-column grid cards are too narrow for both actions; smaller layouts and other item states need verification.                                                                                                                  |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                           |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                        |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                           |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                             |
+
+A full-frame comparison alone was rejected as a replacement for the sampled
+duplicate hash: a blinking pixel on a stationary page was accepted as scrolling.
+A stationary-versus-shifted comparison also stopped on a textured stationary
+page and missed movement beneath a fixed header. Duplicate detection and footer
+composition need to be tested together before changing this behavior.
 
 In a synthetic two-frame scroll, period-8 main content shifted by 96px with an
 independently moving edge produces the same pixels as a complete 104px shift.
