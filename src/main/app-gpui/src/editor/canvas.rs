@@ -49,7 +49,7 @@ pub struct CanvasSnapshot {
     /// uses. A gradient could be drawn with GPUI, but a background image with
     /// blur and grain could not, and preview and export have to agree.
     pub backdrop: Option<std::sync::Arc<gpui::RenderImage>>,
-    pub frame_edges: Vec<crate::editor::export::FrameEdgeImage>,
+    pub preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
     /// The annotation the select tool has picked, outlined on the canvas.
     pub selected: Vec<String>,
     /// The text annotation being re-edited, hidden while its draft shows.
@@ -99,21 +99,21 @@ impl RenderOnce for EditorCanvas {
 
         let wallpaper = snap.wallpaper.clone();
         let frame_scale = snap.frame_scale;
-        let has_frame_edges = !snap.frame_edges.is_empty();
+        let has_preview_edges = !snap.preview_edges.is_empty();
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
         let transparent_backdrop = wallpaper.is_active()
             && snap.layers.is_empty()
             && !wallpaper.balance
             && wallpaper.inset <= 0.0
-            && wallpaper.corners <= 0.0
+            && (wallpaper.corners <= 0.0 || has_preview_edges)
             && (window_frame || wallpaper.shadow <= 0.0);
         let mut frame = div()
             .relative()
             .w(content_width)
             .h(content_height)
             .when(!wallpaper.is_active(), |el| el.shadow_md())
-            .when(wallpaper.corners > 0.0, |el| {
+            .when(wallpaper.corners > 0.0 && !has_preview_edges, |el| {
                 el.rounded(px(wallpaper.corners as f32 * snap.zoom))
                     .overflow_hidden()
             })
@@ -154,7 +154,7 @@ impl RenderOnce for EditorCanvas {
         }
 
         let mut decorations = Some(decorations);
-        if !has_frame_edges {
+        if !has_preview_edges {
             frame = frame.child(decorations.take().unwrap());
         }
 
@@ -176,7 +176,7 @@ impl RenderOnce for EditorCanvas {
                         &snapshot,
                         primary.opacity(HALO_OPACITY),
                     );
-                    if !has_frame_edges {
+                    if !has_preview_edges {
                         paint_selection_handles(window, &snapshot, primary, primary_fg);
                     }
                     set_paint_origin(gpui::point(px(0.0), px(0.0)));
@@ -266,7 +266,7 @@ impl RenderOnce for EditorCanvas {
                             .child(frame),
                     ),
             );
-            for edge in self.snapshot.borrow().frame_edges.iter() {
+            for edge in self.snapshot.borrow().preview_edges.iter() {
                 backdrop = backdrop.child(
                     img(edge.image.clone())
                         .absolute()

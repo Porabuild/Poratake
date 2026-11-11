@@ -1187,6 +1187,255 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             "wallpaper preview/export at {scale}x, transparent: {transparent}, blurred: {blurred}"
         );
     }
+    for (scale, transparent, radius) in [
+        (1.25_f32, false, 1.),
+        (1.25, false, 24.),
+        (1.25, true, 24.),
+        (2., false, 200.),
+        (2., false, 24.),
+        (2., true, 24.),
+    ] {
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.wallpaper.set_gradient((!transparent).then(|| {
+                    crate::editor::wallpaper::GradientOption {
+                        id: "visual-solid".into(),
+                        colors: vec!["#2468ac".into()],
+                        angle: 0.,
+                    }
+                }));
+                editor.wallpaper.padding = 20.;
+                editor.wallpaper.corners = radius;
+                editor.wallpaper.background_blur = 0.;
+                editor.wallpaper.shadow = 0.;
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+            .unwrap();
+        settle(cx, window);
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 1. / scale;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, window);
+        let (bounds, saved) = cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            (
+                editor.bounds.borrow().unwrap(),
+                image::load_from_memory(&editor.export_png().unwrap())
+                    .unwrap()
+                    .to_rgba8(),
+            )
+        });
+        let screenshot = cx.capture_screenshot(window).unwrap();
+        let left = (f32::from(bounds.left()) * scale).round() as u32;
+        let top = (f32::from(bounds.top()) * scale).round() as u32;
+        let padding = (20. * scale).round() as u32;
+        let mut expected = saved.clone();
+        if transparent {
+            expected = image::RgbaImage::from_pixel(
+                saved.width(),
+                saved.height(),
+                image::Rgba([24, 24, 27, 255]),
+            );
+            image::imageops::overlay(&mut expected, &saved, 0, 0);
+        }
+        let mismatched = (0..360)
+            .flat_map(|y| (0..640).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                screenshot
+                    .get_pixel(left + x, top + y)
+                    .0
+                    .iter()
+                    .zip(expected.get_pixel(padding + x, padding + y).0)
+                    .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+            })
+            .count();
+        if mismatched > 0 {
+            image::imageops::crop_imm(&screenshot, left, top, 640, 360)
+                .to_image()
+                .save(scratch.join("rounded-preview.png"))
+                .unwrap();
+            image::imageops::crop_imm(&expected, padding, padding, 640, 360)
+                .to_image()
+                .save(scratch.join("rounded-export.png"))
+                .unwrap();
+        }
+        assert_eq!(
+            mismatched, 0,
+            "rounded preview differs from saved pixels at {scale}x, transparent {transparent}, radius {radius}"
+        );
+    }
+    editor
+        .update(cx, |editor, _, cx| {
+            editor
+                .history
+                .push(vec![crate::editor::annotations::Annotation::Rectangle {
+                    id: "rounded-edge".into(),
+                    x: 0.,
+                    y: 330.,
+                    width: 40.,
+                    height: 30.,
+                    stroke: "#00ff00".into(),
+                    stroke_width: 1.,
+                    fill: Some("#00ff00".into()),
+                }]);
+            editor.tool = crate::ui::colors::Tool::Select;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, window);
+    let (bounds, saved) = cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        (
+            editor.bounds.borrow().unwrap(),
+            image::load_from_memory(&editor.export_png().unwrap())
+                .unwrap()
+                .to_rgba8(),
+        )
+    });
+    let mut expected = image::RgbaImage::from_pixel(
+        saved.width(),
+        saved.height(),
+        image::Rgba([24, 24, 27, 255]),
+    );
+    image::imageops::overlay(&mut expected, &saved, 0, 0);
+    let screenshot = cx.capture_screenshot(window).unwrap();
+    let left = (f32::from(bounds.left()) * 2.).round() as u32;
+    let top = (f32::from(bounds.top()) * 2.).round() as u32;
+    for y in 348..360 {
+        for x in 0..12 {
+            assert!(
+                screenshot
+                    .get_pixel(left + x, top + y)
+                    .0
+                    .iter()
+                    .zip(expected.get_pixel(40 + x, 40 + y).0)
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                "rounded annotation differs at {x},{y}"
+            );
+        }
+    }
+    super::click(
+        cx,
+        window,
+        f32::from(bounds.left()) + 10.,
+        f32::from(bounds.top()) + 172.5,
+    );
+    settle(cx, window);
+    cx.update(|cx| {
+        assert_eq!(
+            editor.read(cx).unwrap().snapshot.borrow().selected,
+            ["rounded-edge"]
+        );
+    });
+    let selected = cx.capture_screenshot(window).unwrap();
+    let foreground =
+        cx.update(|cx| gpui::Rgba::from(crate::theme::vars::active_theme(cx).primary_foreground));
+    for (x, y) in [(-2, -6), (2, -6), (-2, 2), (2, 2)] {
+        assert!(
+            selected
+                .get_pixel((left as i32 + x) as u32, (top as i32 + 360 + y) as u32)
+                .0[..3]
+                .iter()
+                .zip([foreground.r, foreground.g, foreground.b])
+                .all(|(actual, expected)| (f32::from(*actual) - expected * 255.).abs() <= 2.),
+            "the rounded selection handle must remain visible at {x},{y}"
+        );
+    }
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.history.push(Vec::new());
+            editor.tool = crate::ui::colors::Tool::Crop;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, window);
+    let start = bounds.origin + point(px(50.), px(50.));
+    let end = bounds.origin + point(px(150.), px(110.));
+    event(
+        cx,
+        window,
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    event(
+        cx,
+        window,
+        PlatformInput::MouseUp(MouseUpEvent {
+            position: end,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+        }),
+    );
+    settle(cx, window);
+    let cropped = cx.capture_screenshot(window).unwrap();
+    for (actual, original) in cropped.get_pixel(left, top).0[..3]
+        .iter()
+        .zip(screenshot.get_pixel(left, top).0[..3].iter())
+    {
+        assert!(
+            actual.abs_diff(*original / 2) <= 1,
+            "crop must dim the rounded cutout"
+        );
+    }
+    editor
+        .update(cx, |editor, _, cx| editor.cancel_crop(cx))
+        .unwrap();
+    let start = bounds.origin + point(px(0.5), px(0.5));
+    let end = bounds.origin + point(px(35.), px(25.));
+    event(
+        cx,
+        window,
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    event(
+        cx,
+        window,
+        PlatformInput::MouseUp(MouseUpEvent {
+            position: end,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+        }),
+    );
+    settle(cx, window);
+    cx.update(|cx| {
+        assert_eq!(
+            editor.read(cx).unwrap().snapshot.borrow().crop,
+            Some((1., 1., 69., 49.))
+        );
+    });
+    let cropped = cx.capture_screenshot(window).unwrap();
+    for (x, y) in [(-2, -2), (2, -2), (-2, 2), (2, 2)] {
+        assert!(
+            cropped
+                .get_pixel((left as i32 + x) as u32, (top as i32 + y) as u32)
+                .0[..3]
+                .iter()
+                .zip([foreground.r, foreground.g, foreground.b])
+                .all(|(actual, expected)| (f32::from(*actual) - expected * 255.).abs() <= 2.),
+            "the rounded crop handle must remain visible at {x},{y}"
+        );
+    }
+    editor
+        .update(cx, |editor, _, cx| editor.cancel_crop(cx))
+        .unwrap();
     for (scale, style, content) in [
         (1.25_f32, "windows-dark", [18_u8, 18, 18]),
         (2., "windows-dark", [18, 18, 18]),
@@ -1205,7 +1454,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                     .unwrap()
                     .snapshot
                     .borrow()
-                    .frame_edges
+                    .preview_edges
                     .iter()
                     .map(|edge| edge.image.clone())
                     .collect::<Vec<_>>()
@@ -1232,6 +1481,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                             angle: 0.,
                         }));
                     editor.wallpaper.padding = 20.;
+                    editor.wallpaper.corners = 0.;
                     editor.wallpaper.background_blur = 0.;
                     editor.wallpaper.window_frame.style = style.into();
                     editor.wallpaper.shadow = shadow;
@@ -1570,10 +1820,13 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             (2., "macos-light", 50., 0.),
             (1.25, "macos-light", 0., 30.),
             (2., "windows-dark", 50., 30.),
+            (1.25, "none", 0., 0.),
+            (2., "none", 0., 30.),
         ] {
             editor
                 .update(cx, |editor, _, cx| {
                     editor.wallpaper.window_frame.style = style.into();
+                    editor.wallpaper.corners = if style == "none" { 24. } else { 0. };
                     editor.wallpaper.shadow = shadow;
                     editor.wallpaper.background_blur = blur;
                     cx.notify();
@@ -1612,7 +1865,11 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             let left = (f32::from(bounds.left()) * scale).round() as u32;
             let top = (f32::from(bounds.top()) * scale).round() as u32;
             let padding = (20. * scale).round() as u32;
-            let title = (28. * scale).round() as u32;
+            let title = if style == "none" {
+                0
+            } else {
+                (28. * scale).round() as u32
+            };
             let mismatched = (0..360)
                 .flat_map(|y| (0..640).map(move |x| (x, y)))
                 .filter(|&(x, y)| {
@@ -1623,7 +1880,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                         .zip(expected.get_pixel(padding + x, padding + title + y).0)
                         .any(|(actual, expected)| {
                             actual.abs_diff(expected)
-                                > if !(20..620).contains(&x) || y >= 340 {
+                                > if style != "none" && (!(20..620).contains(&x) || y >= 340) {
                                     2
                                 } else {
                                     3
@@ -1653,6 +1910,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             editor.wallpaper.set_gradient(None);
             editor.wallpaper.padding = 20.;
             editor.wallpaper.shadow = 0.;
+            editor.wallpaper.corners = 0.;
             editor.wallpaper.window_frame.style = "macos-light".into();
             cx.notify();
         })
@@ -1789,7 +2047,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         .unwrap();
     cx.run_until_parked();
     println!(
-        "wallpaper and framed previews match saved pixels at 1.25x and 2x, including transparent content and framed annotations"
+        "wallpaper, rounded and framed previews match saved pixels at 1.25x and 2x, including transparent content and edge annotations"
     );
 }
 

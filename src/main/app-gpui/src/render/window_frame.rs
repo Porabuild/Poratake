@@ -237,12 +237,6 @@ pub fn render_outline(
     stroke_outline(canvas, &outline, theme, scale);
 }
 
-pub struct PreviewEdge {
-    pub x: u32,
-    pub y: u32,
-    pub pixels: tiny_skia::Pixmap,
-}
-
 pub fn preview_edges(
     backdrop: &tiny_skia::Pixmap,
     x: f64,
@@ -251,111 +245,21 @@ pub fn preview_edges(
     content_height: f64,
     style: &str,
     scale: f64,
-) -> Option<Vec<PreviewEdge>> {
+) -> Option<Vec<crate::render::canvas::PreviewEdge>> {
     let theme = theme(style)?;
-    let bar_height = title_bar_height(style, scale);
-    let radius = corner_radius(style) * scale;
-    let stroke = scale / 2.0;
-    let left = (x - stroke).floor().max(0.0) as u32;
-    let top = (y - stroke).floor().max(0.0) as u32;
-    let right = (x + content_width + stroke)
-        .ceil()
-        .min(backdrop.width() as f64) as u32;
-    let bottom = (y + bar_height + content_height + stroke)
-        .ceil()
-        .min(backdrop.height() as f64) as u32;
-    let width = right.checked_sub(left)?;
-    let height = bottom.checked_sub(top)?;
-    let edge = (radius + scale + 2.0).ceil().max(1.0) as u32;
-    let top_height = edge.min(height);
-    let bottom_height = edge.min(height - top_height);
-    let middle_height = height - top_height - bottom_height;
-    let left_width = edge.min(width);
-    let right_width = edge.min(width - left_width);
-    let tiles = [
-        (left, top, width, top_height),
-        (left, bottom - bottom_height, width, bottom_height),
-        (left, top + top_height, left_width, middle_height),
-        (
-            right - right_width,
-            top + top_height,
-            right_width,
-            middle_height,
-        ),
-    ];
-    let outline = rounded_rect_path(
-        x as f32,
-        y as f32,
-        content_width as f32,
-        (content_height + bar_height) as f32,
-        radius as f32,
-    )?;
-    let mut clip = tiny_skia::Mask::new(backdrop.width(), backdrop.height())?;
-    clip.fill_path(
-        &outline,
-        FillRule::Winding,
-        true,
-        tiny_skia::Transform::identity(),
-    );
-    let mut border = Canvas::new(backdrop.width(), backdrop.height())?;
-    border.stroke_path(
-        &outline,
-        Color::from_rgba8(255, 255, 255, 255),
-        &Stroke {
-            width: scale as f32,
-            ..Stroke::default()
-        },
-    );
-    let frame_color = color::parse_or(theme.frame_border, Color::TRANSPARENT).to_color_u8();
-    let frame_color = [frame_color.red(), frame_color.green(), frame_color.blue()];
-    let mut edges = Vec::new();
-    for (tile_x, tile_y, tile_width, tile_height) in tiles {
-        if tile_width == 0 || tile_height == 0 {
-            continue;
-        }
-        let mut overlay = tiny_skia::Pixmap::new(tile_width, tile_height)?;
-        for row in 0..tile_height as usize {
-            for column in 0..tile_width as usize {
-                let source = ((tile_y as usize + row) * backdrop.width() as usize
-                    + tile_x as usize
-                    + column)
-                    * 4;
-                let target = (row * tile_width as usize + column) * 4;
-                if backdrop.data()[source + 3] != 255 {
-                    return None;
-                }
-                let pixel_x = tile_x as usize + column;
-                let pixel_y = tile_y as usize + row;
-                let in_content = (pixel_x as f64) >= x
-                    && (pixel_x as f64) < x + content_width
-                    && (pixel_y as f64) >= y + bar_height
-                    && (pixel_y as f64) < y + bar_height + content_height;
-                let clip_alpha = if in_content {
-                    u32::from(clip.data()[source / 4])
-                } else {
-                    0
-                };
-                let border_alpha = u32::from(border.pixmap().data()[source + 3]);
-                let background_alpha = ((255 - border_alpha) * (255 - clip_alpha) + 127) / 255;
-                let alpha = (border_alpha + background_alpha).min(255) as u8;
-                let mut pixel = [0, 0, 0, alpha];
-                for channel in 0..3 {
-                    pixel[channel] = ((u32::from(frame_color[channel]) * border_alpha
-                        + u32::from(backdrop.data()[source + channel]) * background_alpha
-                        + 127)
-                        / 255)
-                        .min(u32::from(alpha)) as u8;
-                }
-                overlay.data_mut()[target..target + 4].copy_from_slice(&pixel);
-            }
-        }
-        edges.push(PreviewEdge {
-            x: tile_x,
-            y: tile_y,
-            pixels: overlay,
-        });
-    }
-    Some(edges)
+    crate::render::canvas::preview_clip_edges(
+        backdrop,
+        x,
+        y,
+        content_width,
+        content_height,
+        title_bar_height(style, scale),
+        corner_radius(style) * scale,
+        Some((
+            scale,
+            color::parse_or(theme.frame_border, Color::TRANSPARENT),
+        )),
+    )
 }
 
 fn draw_traffic_lights(canvas: &mut Canvas, x: f64, y: f64, scale: f64) {

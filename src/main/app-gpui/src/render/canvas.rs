@@ -554,6 +554,142 @@ pub fn rounded_rect_path(x: f32, y: f32, width: f32, height: f32, radius: f32) -
     builder.finish()
 }
 
+pub struct PreviewEdge {
+    pub x: u32,
+    pub y: u32,
+    pub pixels: Pixmap,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn preview_clip_edges(
+    backdrop: &Pixmap,
+    x: f64,
+    y: f64,
+    content_width: f64,
+    content_height: f64,
+    title_height: f64,
+    radius: f64,
+    border_style: Option<(f64, Color)>,
+) -> Option<Vec<PreviewEdge>> {
+    let stroke_width = border_style.map_or(0.0, |(width, _)| width);
+    let stroke = stroke_width / 2.0;
+    let left = (x - stroke).floor().max(0.0) as u32;
+    let top = (y - stroke).floor().max(0.0) as u32;
+    let right = (x + content_width + stroke)
+        .ceil()
+        .min(backdrop.width() as f64) as u32;
+    let bottom = (y + title_height + content_height + stroke)
+        .ceil()
+        .min(backdrop.height() as f64) as u32;
+    let width = right.checked_sub(left)?;
+    let height = bottom.checked_sub(top)?;
+    let edge = (radius + stroke_width + 2.0).ceil().max(1.0) as u32;
+    let top_height = edge.min(height);
+    let bottom_height = edge.min(height - top_height);
+    let middle_height = height - top_height - bottom_height;
+    let left_width = edge.min(width);
+    let right_width = edge.min(width - left_width);
+    let tiles = if border_style.is_some() {
+        [
+            (left, top, width, top_height),
+            (left, bottom - bottom_height, width, bottom_height),
+            (left, top + top_height, left_width, middle_height),
+            (
+                right - right_width,
+                top + top_height,
+                right_width,
+                middle_height,
+            ),
+        ]
+    } else {
+        [
+            (left, top, left_width, top_height),
+            (right - right_width, top, right_width, top_height),
+            (left, bottom - bottom_height, left_width, bottom_height),
+            (
+                right - right_width,
+                bottom - bottom_height,
+                right_width,
+                bottom_height,
+            ),
+        ]
+    };
+    let path = rounded_rect_path(
+        x as f32,
+        y as f32,
+        content_width as f32,
+        (content_height + title_height) as f32,
+        radius as f32,
+    )?;
+    let mut clip = Mask::new(backdrop.width(), backdrop.height())?;
+    clip.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    let (border, border_color) = if let Some((stroke_width, color)) = border_style {
+        let mut border = Canvas::new(backdrop.width(), backdrop.height())?;
+        border.stroke_path(
+            &path,
+            Color::from_rgba8(255, 255, 255, 255),
+            &Stroke {
+                width: stroke_width as f32,
+                ..Stroke::default()
+            },
+        );
+        let color = color.to_color_u8();
+        (Some(border), [color.red(), color.green(), color.blue()])
+    } else {
+        (None, [0, 0, 0])
+    };
+    let mut edges = Vec::new();
+    for (tile_x, tile_y, tile_width, tile_height) in tiles {
+        if tile_width == 0 || tile_height == 0 {
+            continue;
+        }
+        let mut overlay = Pixmap::new(tile_width, tile_height)?;
+        for row in 0..tile_height as usize {
+            for column in 0..tile_width as usize {
+                let source = ((tile_y as usize + row) * backdrop.width() as usize
+                    + tile_x as usize
+                    + column)
+                    * 4;
+                let target = (row * tile_width as usize + column) * 4;
+                if backdrop.data()[source + 3] != 255 {
+                    return None;
+                }
+                let pixel_x = tile_x as usize + column;
+                let pixel_y = tile_y as usize + row;
+                let in_content = (pixel_x as f64) >= x
+                    && (pixel_x as f64) < x + content_width
+                    && (pixel_y as f64) >= y + title_height
+                    && (pixel_y as f64) < y + title_height + content_height;
+                let clip_alpha = if in_content {
+                    u32::from(clip.data()[source / 4])
+                } else {
+                    0
+                };
+                let border_alpha = border
+                    .as_ref()
+                    .map_or(0, |border| u32::from(border.pixmap().data()[source + 3]));
+                let background_alpha = ((255 - border_alpha) * (255 - clip_alpha) + 127) / 255;
+                let alpha = (border_alpha + background_alpha).min(255) as u8;
+                let mut pixel = [0, 0, 0, alpha];
+                for channel in 0..3 {
+                    pixel[channel] = ((u32::from(border_color[channel]) * border_alpha
+                        + u32::from(backdrop.data()[source + channel]) * background_alpha
+                        + 127)
+                        / 255)
+                        .min(u32::from(alpha)) as u8;
+                }
+                overlay.data_mut()[target..target + 4].copy_from_slice(&pixel);
+            }
+        }
+        edges.push(PreviewEdge {
+            x: tile_x,
+            y: tile_y,
+            pixels: overlay,
+        });
+    }
+    Some(edges)
+}
+
 pub fn circle_path(x: f32, y: f32, radius: f32) -> Option<Path> {
     if radius <= 0.0 {
         return None;
@@ -566,6 +702,60 @@ pub fn circle_path(x: f32, y: f32, radius: f32) -> Option<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_edges_match_rounded_image_clipping() {
+        for (width, height, radius) in [(64, 40, 18.0), (10, 10, 20.0), (1, 1, 5.0)] {
+            let source = image::RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([
+                    (x * 3) as u8,
+                    (y * 5) as u8,
+                    160,
+                    if (x + y) % 3 == 0 { 128 } else { 255 },
+                ])
+            });
+            let image = crate::editor::export::from_rgba(&source).unwrap();
+            let mut expected = Canvas::new(96, 80).unwrap();
+            expected.fill_all(Color::from_rgba8(36, 104, 172, 255));
+            expected.clip_path(
+                &rounded_rect_path(15.0, 10.0, width as f32, height as f32, radius).unwrap(),
+                FillRule::Winding,
+            );
+            expected.draw_pixmap(image.as_ref(), 15.0, 10.0, width as f32, height as f32);
+            let mut actual = Canvas::new(96, 80).unwrap();
+            actual.fill_all(Color::from_rgba8(36, 104, 172, 255));
+            let edges = preview_clip_edges(
+                actual.pixmap(),
+                15.0,
+                10.0,
+                f64::from(width),
+                f64::from(height),
+                0.0,
+                f64::from(radius),
+                None,
+            )
+            .unwrap();
+            actual.draw_pixmap(image.as_ref(), 15.0, 10.0, width as f32, height as f32);
+            for edge in edges {
+                actual.draw_pixmap(
+                    edge.pixels.as_ref(),
+                    edge.x as f32,
+                    edge.y as f32,
+                    edge.pixels.width() as f32,
+                    edge.pixels.height() as f32,
+                );
+            }
+            assert!(
+                actual
+                    .pixmap()
+                    .data()
+                    .iter()
+                    .zip(expected.pixmap().data())
+                    .all(|(actual, expected)| actual.abs_diff(*expected) <= 2),
+                "{width}x{height}, radius {radius}"
+            );
+        }
+    }
 
     fn alpha_at(canvas: &Canvas, x: u32, y: u32) -> u8 {
         let index = ((y * canvas.width() + x) * 4 + 3) as usize;

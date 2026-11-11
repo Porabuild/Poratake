@@ -106,9 +106,12 @@ changes, within two channel levels at the edges and three in the interior. It
 also checks frame-only backgrounds, annotations at rounded frame corners, and
 pointer interaction and visible handles for selection and crop.
 On Windows, repeated frame changes verify that replaced edge images leave the
-GPU atlas. Polish copy is checked against editor export separately. Wallpaper
-corners, insets, balance, attached layers and arbitrary zoom are not covered by
-these framed comparisons.
+GPU atlas. Single-image rounded previews without a window frame, shadow, inset,
+balance or attachments are also compared at both scales, including transparent
+backgrounds, a corner annotation, and crop and selection handles. Translucent custom backgrounds can differ
+by up to three color levels. Polish copy is checked against editor export
+separately. Insets, balance, attached layers, arbitrary zoom and combinations
+of frames with wallpaper corners remain outside these comparisons.
 Custom `PORATAKE_PARITY_IMAGE` inputs skip that fixed-size workflow. Overlays use
 a synthetic desktop with ordered overlapping windows, negative display origins
 and correctly scaled physical bounds. Window/display picker states cover hover,

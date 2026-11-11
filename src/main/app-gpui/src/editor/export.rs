@@ -11,7 +11,7 @@ use crate::render::canvas::{rounded_rect_path, Canvas, Shadow};
 use crate::render::{annotations as annotation_renderer, color, gradient};
 
 #[derive(Clone)]
-pub struct FrameEdgeImage {
+pub struct PreviewEdgeImage {
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -365,13 +365,13 @@ pub fn render_backdrop(
     layers: &[crate::editor::layers::ImageLayer],
     frame_scale: f64,
     stage_background: [u8; 3],
-) -> Option<(std::sync::Arc<gpui::RenderImage>, Vec<FrameEdgeImage>)> {
+) -> Option<(std::sync::Arc<gpui::RenderImage>, Vec<PreviewEdgeImage>)> {
     let mut canvas = Canvas::new(width.max(1), height.max(1))?;
     if !wallpaper.has_background() {
         canvas.fill_all(Color::from_rgba8(24, 24, 27, 255));
     }
     paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
-    let edge_preview = wallpaper.supports_frame_edge_preview(!layers.is_empty());
+    let edge_preview = wallpaper.supports_edge_preview(!layers.is_empty());
     if edge_preview && wallpaper.has_background() {
         let mut builder = tiny_skia::PathBuilder::new();
         builder.push_rect(tiny_skia::Rect::from_xywh(
@@ -448,7 +448,7 @@ pub fn render_backdrop(
 
     // The frame's chrome belongs to the backdrop; the live canvas draws the
     // image and its annotations inside it.
-    let mut frame_edges = Vec::new();
+    let mut edge_tiles = None;
     if crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some() {
         let (_, (offset_x, offset_y, _, _)) =
             crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
@@ -465,7 +465,7 @@ pub fn render_backdrop(
             !edge_preview,
         );
         if edge_preview {
-            if let Some(edges) = crate::render::window_frame::preview_edges(
+            edge_tiles = crate::render::window_frame::preview_edges(
                 canvas.pixmap(),
                 offset_x.round(),
                 offset_y.round(),
@@ -473,23 +473,8 @@ pub fn render_backdrop(
                 image_height,
                 &wallpaper.window_frame.style,
                 frame_scale,
-            ) {
-                for edge in edges {
-                    let mut buffer = to_rgba(&edge.pixels);
-                    for pixel in buffer.as_chunks_mut::<4>().0 {
-                        pixel.swap(0, 2);
-                    }
-                    frame_edges.push(FrameEdgeImage {
-                        x: edge.x,
-                        y: edge.y,
-                        width: edge.pixels.width(),
-                        height: edge.pixels.height(),
-                        image: std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-                            image::Frame::new(buffer)
-                        ])),
-                    });
-                }
-            } else {
+            );
+            if edge_tiles.is_none() {
                 crate::render::window_frame::render_outline(
                     &mut canvas,
                     offset_x.round(),
@@ -501,6 +486,35 @@ pub fn render_backdrop(
                 );
             }
         }
+    } else if edge_preview {
+        let (_, (offset_x, offset_y, _, _)) =
+            crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
+        edge_tiles = crate::render::canvas::preview_clip_edges(
+            canvas.pixmap(),
+            offset_x.round(),
+            offset_y.round(),
+            image_width,
+            image_height,
+            0.0,
+            wallpaper.corners,
+            None,
+        );
+    }
+    let mut preview_edges = Vec::new();
+    for edge in edge_tiles.into_iter().flatten() {
+        let mut buffer = to_rgba(&edge.pixels);
+        for pixel in buffer.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        preview_edges.push(PreviewEdgeImage {
+            x: edge.x,
+            y: edge.y,
+            width: edge.pixels.width(),
+            height: edge.pixels.height(),
+            image: std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                image::Frame::new(buffer)
+            ])),
+        });
     }
 
     let mut buffer = to_rgba(canvas.pixmap());
@@ -512,7 +526,7 @@ pub fn render_backdrop(
         std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
             image::Frame::new(buffer)
         ])),
-        frame_edges,
+        preview_edges,
     ))
 }
 
