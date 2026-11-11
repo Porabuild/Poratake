@@ -18,7 +18,7 @@ class ScrollCaptureModule: NSObject, Module {
     private var isCursorOutside = false
     private var autoScrollSpeed: ScrollSpeed = .medium
     private var maxHeight: Int = 20000
-    private var lastFrameHash: Int = 0
+    private var lastFrameHash: Int? = nil
     private var duplicateFrameCount: Int = 0
     private var currentScrollStep: Int = 0
     private var scrollDeltaPerStep: Int32 = 0
@@ -105,7 +105,7 @@ class ScrollCaptureModule: NSObject, Module {
         capturedFrames.removeAll()
         previewImage = nil
         isCapturing = true
-        lastFrameHash = 0
+        lastFrameHash = nil
         duplicateFrameCount = 0
 
         let topLeftY = mainScreenHeight - cocoaY - CGFloat(height)
@@ -372,9 +372,13 @@ class ScrollCaptureModule: NSObject, Module {
             return nil
         }
 
+        return appendCapturedFrame(cgImage)
+    }
+
+    private func appendCapturedFrame(_ cgImage: CGImage) -> Int? {
         let frameHash = computeFrameHash(cgImage)
 
-        if frameHash == lastFrameHash {
+        if let lastFrameHash = lastFrameHash, frameHash == lastFrameHash {
             duplicateFrameCount += 1
             if duplicateFrameCount >= maxDuplicateFrames {
                 return nil
@@ -909,7 +913,7 @@ class ScrollCaptureModule: NSObject, Module {
         capturedFrames.removeAll()
         isCapturing = false
         isCursorOutside = false
-        lastFrameHash = 0
+        lastFrameHash = nil
         duplicateFrameCount = 0
         currentScrollStep = 0
         scrollDeltaPerStep = 0
@@ -1045,6 +1049,21 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     #if SCROLL_CAPTURE_TEST
+    func testRepeatedFrame(_ image: CGImage) -> (Int, [Int?], Int, Int?, Bool) {
+        let params = [
+            "x": AnyCodable(0), "y": AnyCodable(0),
+            "width": AnyCodable(image.width), "height": AnyCodable(image.height)
+        ]
+        handleStart(params: params, requestId: "zero-hash-test")
+        let hash = computeFrameHash(image)
+        let results = (0..<4).map { _ in appendCapturedFrame(image) }
+        let count = capturedFrames.count
+        handleStart(params: params, requestId: "zero-hash-restart-test")
+        let restarted = appendCapturedFrame(image)
+        cleanup()
+        return (hash, results, count, restarted, lastFrameHash == nil)
+    }
+
     func testPreviewAndSave(frames: [CGImage], step: Int, outputPath: String) -> (CGImage, CGImage, String, [Int]) {
         let first = frames[0]
         captureArea = NSRect(x: 0, y: 0, width: first.width, height: first.height)

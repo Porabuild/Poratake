@@ -49,6 +49,23 @@ struct ScrollCapturePreviewTest {
         let width = 80
         let height = 160
         let step = 112
+        let black = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        black.setFillColor(NSColor.black.cgColor)
+        black.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let (hash, results, count, restarted, cleared) = ScrollCaptureModule().testRepeatedFrame(black.makeImage()!)
+        precondition(hash == 0)
+        precondition(results.count == 4 && results[0] == 0 && results[1] == 0 && results[2] == 0 && results[3] == nil)
+        precondition(count == 1, "The first frame must be captured even when its hash is zero")
+        precondition(restarted == 0, "A new session must not reuse the previous frame hash")
+        precondition(cleared, "Cleanup must clear the previous frame hash")
         let allFrames = [0, step, step * 2].map { frame(start: $0, width: width, height: height) }
         for count in [1, 2, 3] {
             let output = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -68,6 +85,6 @@ struct ScrollCapturePreviewTest {
             let emitted = CGImageSourceCreateImageAtIndex(source, 0, nil)!
             precondition(pixels(emitted) == pixels(saved), "Emitted preview differs from the saved scroll capture")
         }
-        print("macOS scroll previews match saved pixels for one, two and three frames")
+        print("macOS scroll captures retain zero-hash first frames and previews match saved pixels for one, two and three frames")
     }
 }

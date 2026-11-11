@@ -649,6 +649,10 @@ Bugs fixed in this pass:
   saved stitch appends its last rows. It now uses the trailing rows. A macOS CI
   fixture compares one, two and three preview frames with saved PNG pixels when
   measured overlap matches the expected scroll step; that run is pending.
+- A macOS scroll capture could discard its first frame when its sampled hash was
+  zero. The duplicate detector now starts without a previous hash. The macOS CI
+  fixture exercises a black zero-hash frame and subsequent duplicates; that run
+  is pending.
 - The coarse scroll overlap search rejected a true 97px overlap and selected
   716px for a true 217px overlap in patterned fixtures. When the sampled
   result is rejected or farther from the expected scroll, a unique exact
