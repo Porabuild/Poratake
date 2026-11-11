@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `4482af6` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `d302ee4` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -47,18 +47,23 @@ input and frame scheduling use GPUI's headless harness. This is not installed-ap
 or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
-738 logical pixels high. Each case captures 146 states; the two 1280px, 100% cases
+738 logical pixels high. Each case captures 152 states; the two 1280px, 100% cases
 also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states.
-The eight 950px cases each add 18 narrow-history states, for 2,536 images per
-complete renderer profile. The 144 new NVIDIA history images were reviewed; the
-local exact-baseline matrix passed all 16 cases and 2,536 images. Its 64 corner
+The eight 950px cases each add 18 narrow-history states, for 2,632 images per
+complete renderer profile. The local exact-baseline matrix passed all 16 cases
+and 2,632 images. The 96 new NVIDIA color-picker images were reviewed; all 2,536
+existing images were unchanged. The new states need hosted-renderer
+review. The 144 new NVIDIA history images were reviewed. The earlier matrix's 64 corner
 states and 160 revised selection images were reviewed; the remaining 2,312 existing
 images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
 24 were reviewed and the other 2,512 images were unchanged. The final exact
-matrix passed all 16 cases. The Windows native gate passed 1,017 tests with two skipped.
+matrix passed all 16 cases. The Windows native gate passed 1,019 tests with two skipped.
 All 144 hosted history images, 64 selection-corner images and 160 revised
 selection images were also reviewed. The DPI follow-up's history changes require
 separate hosted-renderer review.
+At 950 logical pixels and 125%, the synthetic picker backdrop spans 1187.5
+physical pixels, leaving a pale final screenshot column. The real color-picker
+overlay is transparent; this fixture artifact does not verify physical displays.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -66,6 +71,7 @@ for that surface. Recording controls use their measured content width.
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                                           |
 | Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                                    |
+| Color picker        | Center, four display corners and 400×300 narrow window; exact sampled loupe pixels and pointer clearance                                    | Physical pointer transitions and native clipboard delivery remain unverified                              |
 | All-in-one          | Screenshot/record area, window and display pickers, plus OCR area; frontmost and clipped window highlights, screen hover and pointer leave  | Window ownership is simulated; physical pointer transitions remain unverified                             |
 | Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks              |
 | Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                                     |
@@ -616,6 +622,12 @@ Bugs fixed in this pass:
 - The recording handoff and window-picker scrims could leave the last display
   column or row undimmed at fractional scale. Their shared edges now snap to
   device pixels and their outer strips anchor to the viewport.
+- The color picker's hardcoded card height clipped it near a display edge, and
+  its marker shadow darkened the sampled pixel by 40%. Placement now uses the
+  measured card and a separately painted outline preserves the source color.
+  Tests cover pointer clearance at five simulated scales and click-to-copy from
+  a four-color frame. If a 200×180 window cannot fit both the full card and
+  its cursor gap, the card takes the least-clipped placement with the gap.
 - A history grid at simulated 175% and 456 physical pixels wrapped its second
   card onto a new row. The cards now fit the snapped available width. The unit
   test sweeps every physical width corresponding to 200–400 logical pixels at

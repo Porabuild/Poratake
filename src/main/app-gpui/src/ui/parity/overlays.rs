@@ -17,6 +17,24 @@ struct Scene {
     window_hovered: bool,
 }
 
+struct ColorScene {
+    frame: image::RgbaImage,
+    pointer: gpui::Point<gpui::Pixels>,
+}
+
+impl Render for ColorScene {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().relative().size_full().bg(gpui::rgb(0x4070c0)).child(
+            crate::capture::color_picker::render(
+                &self.frame,
+                self.pointer,
+                window,
+                &crate::theme::vars::active_theme(cx),
+            ),
+        )
+    }
+}
+
 impl Render for Scene {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let overlay = self.overlay.update(cx, |overlay, cx| {
@@ -271,6 +289,104 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale:
             .unwrap();
         cx.run_until_parked();
     }
+
+    let color_scene = cx
+        .open_window(size(px(width), px(738.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|_| ColorScene {
+                frame: image::RgbaImage::from_fn(800, 600, |x, y| {
+                    image::Rgba(match (x >= 400, y >= 300) {
+                        (false, false) => [240, 80, 64, 255],
+                        (true, false) => [64, 112, 192, 255],
+                        (false, true) => [48, 160, 104, 255],
+                        (true, true) => [184, 96, 192, 255],
+                    })
+                }),
+                pointer: point(px(0.), px(0.)),
+            })
+        })
+        .unwrap();
+    let color_window = color_scene.into();
+    for (name, x, y, expected) in [
+        ("center", width / 2., 369., [184_u8, 96, 192]),
+        ("top-left", 1., 1., [240, 80, 64]),
+        ("top-right", width - 1., 1., [64, 112, 192]),
+        ("bottom-left", 1., 737., [48, 160, 104]),
+        ("bottom-right", width - 1., 737., [184, 96, 192]),
+    ] {
+        color_scene
+            .update(cx, |scene, _, cx| {
+                scene.pointer = point(px(x), px(y));
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, color_window);
+        let card = super::measured("color-picker-card", 0);
+        let loupe = super::measured("color-picker-loupe", 0);
+        assert!(
+            card.left() >= px(0.)
+                && card.top() >= px(0.)
+                && card.right() <= px(width)
+                && card.bottom() <= px(738.),
+            "color picker {name} is clipped: {card:?}"
+        );
+        let image = cx.capture_screenshot(color_window).unwrap();
+        let x = (f32::from(loupe.left() + px(52.5)) * scale).round() as u32;
+        let y = (f32::from(loupe.top() + px(52.5)) * scale).round() as u32;
+        let pixel = image.get_pixel(x, y).0;
+        assert!(
+            pixel[..3]
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 1),
+            "color picker {name} darkened the sampled pixel: {pixel:?}"
+        );
+        capture(
+            cx,
+            color_window,
+            output,
+            &format!("overlay-color-picker-{name}"),
+        );
+    }
+    cx.update_window(color_window, |_, window, _| {
+        window.resize(size(px(400.), px(300.)))
+    })
+    .unwrap();
+    color_scene
+        .update(cx, |scene, _, cx| {
+            scene.pointer = point(px(190.), px(120.));
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, color_window);
+    let card = super::measured("color-picker-card", 0);
+    let loupe = super::measured("color-picker-loupe", 0);
+    assert!(
+        card.left() >= px(0.)
+            && card.top() >= px(0.)
+            && card.right() <= px(400.)
+            && card.bottom() <= px(300.)
+            && (px(190.) < card.left()
+                || px(190.) > card.right()
+                || px(120.) < card.top()
+                || px(120.) > card.bottom()),
+        "narrow color picker clips or covers its sample: {card:?}"
+    );
+    let image = cx.capture_screenshot(color_window).unwrap();
+    let x = (f32::from(loupe.left() + px(52.5)) * scale).round() as u32;
+    let y = (f32::from(loupe.top() + px(52.5)) * scale).round() as u32;
+    let pixel = image.get_pixel(x, y).0;
+    assert!(
+        pixel[..3]
+            .iter()
+            .zip([240_u8, 80, 64])
+            .all(|(actual, expected)| actual.abs_diff(expected) <= 1),
+        "narrow color picker darkened the sampled pixel: {pixel:?}"
+    );
+    capture(cx, color_window, output, "overlay-color-picker-narrow");
+    cx.update_window(color_window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
 
     for (edge, start_x, end_x, start_y, end_y) in [
         ("top-left", 1., 21., 1., 21.),

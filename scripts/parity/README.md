@@ -18,6 +18,12 @@ around centered and edge selections at 100/125/150/175/200% simulated scale. His
 grid tests sweep physical window widths at 100/125/150/175/200% and check that
 both columns stay in bounds after resize.
 
+The all-in-one color picker captures its center, four display corners and a
+400×300 narrow window. It checks the sampled loupe pixel and the card's bounds;
+the narrow case also checks that the card does not cover the sampled point.
+Unit tests exercise five simulated scales, click-to-copy through the actual
+overlay and a 200×180 case where preserving the cursor gap requires clipping.
+
 Each Windows case first renders adjacent red/white image atlas tiles at fractional
 bounds. Interior and edge samples must retain the red source color independently
 of image baselines; `image-atlas-sampling.png` preserves the GPU evidence.
@@ -142,7 +148,7 @@ The built-in 1280px, 100% cases add 28 workflow images each. The 950px cases add
 action tooltips in each grid column and the list at 200px and 240px. The fixture
 checks thumbnail pixels, keyboard selection, tooltip bounds and clipping masks,
 and deletes a scratch item without opening an editor. A complete renderer profile
-has 2,536 images.
+has 2,632 images.
 Each renderer's set must be reviewed before acceptance.
 
 Capture, timer and scroll completion first open a bottom-right preview without

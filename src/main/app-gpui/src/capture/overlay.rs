@@ -1862,12 +1862,7 @@ impl AreaOverlay {
         if self.picking_color {
             return root.children(self.pointer.and_then(|pointer| {
                 self.color_frame.as_ref().map(|frame| {
-                    crate::capture::color_picker::render(
-                        frame,
-                        pointer,
-                        window.viewport_size(),
-                        &theme,
-                    )
+                    crate::capture::color_picker::render(frame, pointer, window, &theme)
                 })
             }));
         }
@@ -3436,6 +3431,53 @@ mod tests {
         cx.run_until_parked();
 
         assert!(first.update(cx, |_, _, _| ()).is_err());
+    }
+
+    #[herogpui::test]
+    fn color_picker_card_click_copies_the_display_pixel(cx: &mut TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (overlay, visual) = herogpui::test::open_window(cx, |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(400.), px(300.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        visual.simulate_resize(size(px(400.), px(300.)));
+        visual.update(|_, cx| {
+            overlay.update(cx, |overlay, cx| {
+                overlay.picking_color = true;
+                overlay.pointer = Some(gpui::point(px(100.), px(100.)));
+                overlay.color_frame =
+                    Some(Arc::new(image::RgbaImage::from_fn(800, 600, |x, y| {
+                        image::Rgba(match (x >= 400, y >= 300) {
+                            (false, false) => [240, 80, 64, 255],
+                            (true, false) => [64, 112, 192, 255],
+                            (false, true) => [48, 160, 104, 255],
+                            (true, true) => [184, 96, 192, 255],
+                        })
+                    })));
+                cx.notify();
+            });
+        });
+        let card = visual.expect("color-picker-card");
+        assert!(card.center().x > px(200.) && card.center().y > px(150.));
+        visual.simulate_mouse_down(
+            card.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(
+            cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("#b860c0".to_string())
+        );
     }
 
     #[herogpui::test]
