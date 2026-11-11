@@ -115,13 +115,18 @@ inset or balance are checked on all four edges and in a five-layer composition,
 including corners, shadows, transparent images, aspect ratios, save/reopen and
 atlas eviction. Overlapping translucent shadows differ by four color levels in
 at most 16 pixels; all other pixels use the limits above. Polish copy is checked
-against editor export separately. Insets, balance, framed attachments, arbitrary
-zoom and combinations of frames with wallpaper corners remain outside these
-comparisons. In the unframed layered path, annotations and black, pixelated and
+against editor export separately. Balanced single captures are checked at 100%,
+125% and 200%, with zero or 20px padding, solid or transparent backgrounds,
+translucent pixels, annotations, crop, undo and history reopen. A 100% inset case
+checks the expected source-edge color and backdrop replacement after an equal-size
+crop. A right attachment without frames, inset, corners or shadows is checked at
+all three scales, both padding and background variants, including an edge-crossing
+pixelated redaction, clipping and the reopened preview. Other balanced attachments, frames, corners, shadows, arbitrary
+zoom and inset combinations remain outside these comparisons. In the unframed layered path, annotations and black, pixelated and
 blurred redactions crossing into attachments are compared with saved pixels at
 125% and 200%; overlapping and clipped redactions, crop, undo and atlas
-retirement are also checked. A direct Electron pixel comparison and framed,
-inset or balanced layered annotations remain outside this check.
+retirement are also checked. Direct Electron pixel comparison and framed or
+inset layered annotations remain outside these checks.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain

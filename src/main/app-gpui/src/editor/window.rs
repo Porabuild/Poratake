@@ -611,6 +611,9 @@ impl EditorWindow {
                 f32::from(size.height),
             );
         }));
+        if editor.layers.is_empty() || editor.wallpaper.supports_edge_preview(true) {
+            editor.refresh_balance_crop();
+        }
         editor.sync_snapshot();
         editor
     }
@@ -679,7 +682,9 @@ impl EditorWindow {
     /// toggled or a different image is loaded.
     fn refresh_balance_crop(&mut self) {
         if !self.wallpaper.balance {
-            self.balance_crop = None;
+            if self.balance_crop.take().is_some() {
+                self.inset_color = None;
+            }
             return;
         }
         if self.balance_crop.is_some() {
@@ -688,7 +693,7 @@ impl EditorWindow {
         let Some(base) = self.base_image.as_ref() else {
             return;
         };
-        self.balance_crop = crate::editor::export::balance_bounds(&base.to_rgba8()).map(|bounds| {
+        let crop = crate::editor::export::balance_bounds(&base.to_rgba8()).map(|bounds| {
             (
                 bounds.left as f32,
                 bounds.top as f32,
@@ -696,6 +701,10 @@ impl EditorWindow {
                 bounds.bottom as f32,
             )
         });
+        if self.balance_crop != crop {
+            self.inset_color = None;
+        }
+        self.balance_crop = crop;
     }
 
     fn retire_preview_edges(&mut self) {
@@ -729,9 +738,15 @@ impl EditorWindow {
         }
         // The frame surrounds the whole group, so the layout is computed from
         // the attached layers' bounds rather than the capture alone.
+        let (image_width, image_height) = crate::editor::wallpaper::balanced_size(
+            f64::from(self.image_width),
+            f64::from(self.image_height),
+            self.balance_crop,
+            !self.layers.is_empty() && !wallpaper.supports_edge_preview(true),
+        );
         let group = crate::editor::layers::compute(
-            self.image_width as f64,
-            self.image_height as f64,
+            image_width,
+            image_height,
             &self.layers,
             wallpaper.spacing.max(0.0),
         );
@@ -757,9 +772,10 @@ impl EditorWindow {
             (!wallpaper.has_background()
                 || wallpaper.supports_edge_preview(!self.layers.is_empty()))
             .then_some(stage_background),
-            (!self.layers.is_empty() && wallpaper.supports_edge_preview(true))
-                .then(|| self.image.as_ref().map(|image| image.id))
-                .flatten(),
+            (wallpaper.inset > 0.0
+                || (!self.layers.is_empty() && wallpaper.supports_edge_preview(true)))
+            .then(|| self.image.as_ref().map(|image| image.id))
+            .flatten(),
         );
         if self.backdrop_key.as_ref() == Some(&key) {
             return;
@@ -782,10 +798,19 @@ impl EditorWindow {
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         let generation = self.backdrop_generation;
         let frame_scale = self.native_scale;
-        let image_width = self.image_width as f64;
-        let image_height = self.image_height as f64;
         let layers = self.layers.clone();
         let inset_color = self.inset_color.clone();
+        let balance_crop = self
+            .balance_crop
+            .map(
+                |(left, top, right, bottom)| crate::render::color_detection::ContentBounds {
+                    left: left as u32,
+                    top: top as u32,
+                    right: right as u32,
+                    bottom: bottom as u32,
+                },
+            )
+            .unwrap_or_default();
         let base_image = self.base_image.clone();
         let background = cx.background_executor().clone();
         let task = cx.background_executor().spawn(async move {
@@ -796,7 +821,7 @@ impl EditorWindow {
                     let pixmap = crate::editor::export::from_rgba(&base)?;
                     crate::render::color_detection::dominant_inset_color(
                         pixmap.as_ref(),
-                        crate::render::color_detection::ContentBounds::default(),
+                        balance_crop,
                     )
                 })
             } else {
@@ -1734,6 +1759,8 @@ impl EditorWindow {
             self.image = Some(render_image_from_base(&base));
             self.base_image = Some(Arc::new(base));
             self.inset_color = None;
+            self.balance_crop = None;
+            self.refresh_balance_crop();
         }
 
         let mut annotations = self.history.current().to_vec();
@@ -2226,9 +2253,15 @@ impl EditorWindow {
     /// `canvasWidth`/`canvasHeight` that `useContentDimensions` reports.
     fn content_size(&self) -> (f32, f32) {
         let wallpaper = self.wallpaper.for_scale(self.native_scale);
+        let (image_width, image_height) = crate::editor::wallpaper::balanced_size(
+            f64::from(self.image_width),
+            f64::from(self.image_height),
+            self.balance_crop,
+            !self.layers.is_empty() && !wallpaper.supports_edge_preview(true),
+        );
         let group = crate::editor::layers::compute(
-            self.image_width as f64,
-            self.image_height as f64,
+            image_width,
+            image_height,
             &self.layers,
             wallpaper.spacing.max(0.0),
         );
@@ -3545,6 +3578,8 @@ impl EditorWindow {
             self.image = Some(render_image_from_base(&pre.base_image));
             self.base_image = Some(pre.base_image);
             self.inset_color = None;
+            self.balance_crop = None;
+            self.refresh_balance_crop();
             self.history.push(pre.annotations);
             self.refresh_raster_patches();
             self.sync_snapshot();

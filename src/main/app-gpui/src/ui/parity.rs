@@ -921,6 +921,21 @@ pub fn capture_editor_interaction_states() {
         workflows::screenshot(&mut cx, &output, &scratch);
         workflows::scaled_wallpaper_preview(&mut cx, &scratch);
         workflows::large_attachment_preview(&mut cx, &scratch);
+        for scale in [1., 1.25, 2.] {
+            for padding in [0., 20.] {
+                for with_background in [false, true] {
+                    workflows::balance_restoration(
+                        &mut cx,
+                        &scratch,
+                        scale,
+                        padding,
+                        with_background,
+                        0.,
+                    );
+                }
+            }
+        }
+        workflows::balance_restoration(&mut cx, &scratch, 1., 20., false, 8.);
     }
     #[cfg(windows)]
     if source.is_none() {

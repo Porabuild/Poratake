@@ -105,19 +105,25 @@ impl RenderOnce for EditorCanvas {
         let overlay_above = has_preview_edges || layered_composite;
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
+        let balanced_unframed = wallpaper.balance
+            && !window_frame
+            && snap.layers.is_empty()
+            && wallpaper.corners <= 0.0
+            && wallpaper.shadow <= 0.0;
         let transparent_backdrop = wallpaper.is_active_with_layers(!snap.layers.is_empty())
             && (snap.layers.is_empty() || overlay_above)
-            && !wallpaper.balance
-            && wallpaper.inset <= 0.0
+            && (!wallpaper.balance || balanced_unframed || layered_composite)
+            && (wallpaper.inset <= 0.0 || balanced_unframed)
             && (wallpaper.corners <= 0.0 || overlay_above)
             && (window_frame || wallpaper.shadow <= 0.0 || overlay_above);
         let mut frame = div()
             .relative()
             .w(content_width)
             .h(content_height)
-            .when(!wallpaper.is_active() && !layered_composite, |el| {
-                el.shadow_md()
-            })
+            .when(
+                !wallpaper.is_active(!snap.layers.is_empty()) && !layered_composite,
+                |el| el.shadow_md(),
+            )
             .when(wallpaper.corners > 0.0 && !overlay_above, |el| {
                 el.rounded(px(wallpaper.corners as f32 * snap.zoom))
                     .overflow_hidden()
@@ -206,7 +212,13 @@ impl RenderOnce for EditorCanvas {
 
         let layers = self.snapshot.borrow().layers.clone();
         let spacing = self.snapshot.borrow().spacing.max(0.0);
-        let group = crate::editor::layers::compute(image_width, image_height, &layers, spacing);
+        let (layout_width, layout_height) = crate::editor::wallpaper::balanced_size(
+            image_width,
+            image_height,
+            self.snapshot.borrow().balance_crop,
+            !layers.is_empty() && !wallpaper.supports_edge_preview(true),
+        );
+        let group = crate::editor::layers::compute(layout_width, layout_height, &layers, spacing);
         let framed = wallpaper.is_active_with_layers(!layers.is_empty());
 
         let (stage_width, stage_height) = if framed {
@@ -333,13 +345,31 @@ impl RenderOnce for EditorCanvas {
                                 move |bounds, (), window, _cx| {
                                     set_paint_origin(bounds.origin);
                                     if layered_composite {
-                                        paint_annotations(
-                                            window,
-                                            bounds.origin,
-                                            &handle_snapshot.borrow(),
-                                            primary.opacity(HALO_OPACITY),
-                                            stage_background,
-                                        );
+                                        let mask = gpui::ContentMask {
+                                            bounds: gpui::Bounds {
+                                                origin: gpui::point(
+                                                    bounds.origin.x
+                                                        - px((offset_x as f32 - crop_left) * zoom),
+                                                    bounds.origin.y
+                                                        - px((offset_y as f32 + title_bar as f32
+                                                            - crop_top)
+                                                            * zoom),
+                                                ),
+                                                size: gpui::size(
+                                                    px(canvas_width as f32 * zoom),
+                                                    px(canvas_height as f32 * zoom),
+                                                ),
+                                            },
+                                        };
+                                        window.with_content_mask(Some(mask), |window| {
+                                            paint_annotations(
+                                                window,
+                                                bounds.origin,
+                                                &handle_snapshot.borrow(),
+                                                primary.opacity(HALO_OPACITY),
+                                                stage_background,
+                                            );
+                                        });
                                     }
                                     paint_selection_handles(
                                         window,
@@ -421,9 +451,15 @@ fn paint_annotations(
         .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()))
         .collect();
     let (surface_image, offset_x, offset_y) = if snapshot.backdrop_composite {
-        let layout = crate::editor::layers::compute(
+        let (width, height) = crate::editor::wallpaper::balanced_size(
             f64::from(snapshot.image_width),
             f64::from(snapshot.image_height),
+            snapshot.balance_crop,
+            false,
+        );
+        let layout = crate::editor::layers::compute(
+            width,
+            height,
             &snapshot.layers,
             snapshot.spacing.max(0.0),
         );
@@ -433,10 +469,11 @@ fn paint_annotations(
             layout.height,
             snapshot.frame_scale,
         );
+        let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
         (
             snapshot.backdrop.as_ref(),
-            x.round() + layout.primary.x,
-            y.round() + layout.primary.y,
+            x.round() + layout.primary.x - f64::from(crop_left),
+            y.round() + layout.primary.y - f64::from(crop_top),
         )
     } else {
         (snapshot.image.as_ref(), 0.0, 0.0)

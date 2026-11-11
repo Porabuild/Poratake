@@ -67,12 +67,27 @@ pub fn compose_with_layers(
             canvas.draw_pixmap(pixmap.as_ref(), 0.0, 0.0, width as f32, height as f32);
         }
     }
-    let layered_wallpaper = if !layers.is_empty()
-        && !wallpaper.balance
-        && wallpaper.inset <= 0.0
-        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
-    {
-        compose_layered_wallpaper(canvas.pixmap(), wallpaper, layers, annotations, frame_scale)
+    let original_balance = wallpaper
+        .balance
+        .then(|| balance_bounds_pixmap(canvas.pixmap()))
+        .flatten();
+    let original_inset_color = layers.is_empty().then(|| {
+        (wallpaper.inset > 0.0)
+            .then(|| {
+                crate::render::color_detection::dominant_inset_color(
+                    canvas.pixmap().as_ref(),
+                    original_balance.unwrap_or_default(),
+                )
+            })
+            .flatten()
+    });
+    let layered_wallpaper = if !layers.is_empty() && wallpaper.supports_edge_preview(true) {
+        let cropped = original_balance.and_then(|bounds| balance_crop(canvas.pixmap(), bounds));
+        let primary = cropped.as_ref().unwrap_or(canvas.pixmap());
+        let offset = original_balance
+            .map(|bounds| (bounds.left as f32, bounds.top as f32))
+            .unwrap_or_default();
+        compose_layered_wallpaper(primary, wallpaper, layers, annotations, frame_scale, offset)
     } else {
         None
     };
@@ -91,18 +106,28 @@ pub fn compose_with_layers(
         }
     }
 
-    if !wallpaper.is_active() {
+    if !wallpaper.is_active(!layers.is_empty()) {
         return to_rgba(&annotated);
     }
 
     // `balance` trims the uniform border away before the image is placed, so
     // the content sits centred inside the wallpaper rather than the artwork.
     if wallpaper.balance {
-        if let Some(cropped) = balance_crop(&annotated) {
+        let bounds = if layers.is_empty() {
+            original_balance
+        } else {
+            balance_bounds_pixmap(&annotated)
+        };
+        if let Some(cropped) = bounds.and_then(|bounds| balance_crop(&annotated, bounds)) {
             annotated = cropped;
         }
     }
-    to_rgba(&compose_wallpaper(&annotated, wallpaper, frame_scale))
+    to_rgba(&compose_wallpaper(
+        &annotated,
+        wallpaper,
+        frame_scale,
+        original_inset_color,
+    ))
 }
 
 /// Lays the primary image and its attached layers out on one surface.
@@ -182,6 +207,7 @@ fn compose_layered_wallpaper(
     layers: &[crate::editor::layers::ImageLayer],
     annotations: &[Annotation],
     frame_scale: f64,
+    crop_offset: (f32, f32),
 ) -> Option<Pixmap> {
     let layout = crate::editor::layers::compute(
         f64::from(primary.width()),
@@ -225,7 +251,10 @@ fn compose_layered_wallpaper(
             shadow,
         );
     }
-    canvas.translate(primary_rect.0, primary_rect.1);
+    canvas.translate(
+        primary_rect.0 - crop_offset.0,
+        primary_rect.1 - crop_offset.1,
+    );
     annotation_renderer::draw_all(&mut canvas, annotations);
     Some(canvas.into_pixmap())
 }
@@ -235,9 +264,13 @@ fn compose_layered_wallpaper(
 pub fn balance_bounds(
     image: &image::RgbaImage,
 ) -> Option<crate::render::color_detection::ContentBounds> {
+    let pixmap = from_rgba(image)?;
+    balance_bounds_pixmap(&pixmap)
+}
+
+fn balance_bounds_pixmap(pixmap: &Pixmap) -> Option<crate::render::color_detection::ContentBounds> {
     use crate::render::color_detection;
 
-    let pixmap = from_rgba(image)?;
     let edge = color_detection::dominant_edge_color(pixmap.as_ref())?;
     let bounds = color_detection::content_bounds(pixmap.as_ref(), &edge)?;
     (bounds != color_detection::ContentBounds::default()).then_some(bounds)
@@ -245,15 +278,10 @@ pub fn balance_bounds(
 
 /// Crops the uniform margin the balance option removes, or `None` when there
 /// is nothing to trim.
-fn balance_crop(image: &Pixmap) -> Option<Pixmap> {
-    use crate::render::color_detection;
-
-    let edge = color_detection::dominant_edge_color(image.as_ref())?;
-    let bounds = color_detection::content_bounds(image.as_ref(), &edge)?;
-    if bounds == color_detection::ContentBounds::default() {
-        return None;
-    }
-
+fn balance_crop(
+    image: &Pixmap,
+    bounds: crate::render::color_detection::ContentBounds,
+) -> Option<Pixmap> {
     let width = image.width().checked_sub(bounds.left + bounds.right)?;
     let height = image.height().checked_sub(bounds.top + bounds.bottom)?;
     if width == 0 || height == 0 {
@@ -273,7 +301,12 @@ fn balance_crop(image: &Pixmap) -> Option<Pixmap> {
 }
 
 /// Draws the annotated image onto the wallpaper backdrop at export size.
-fn compose_wallpaper(image: &Pixmap, wallpaper: &WallpaperSettings, frame_scale: f64) -> Pixmap {
+fn compose_wallpaper(
+    image: &Pixmap,
+    wallpaper: &WallpaperSettings,
+    frame_scale: f64,
+    original_inset_color: Option<Option<String>>,
+) -> Pixmap {
     let (image_width, image_height) = (image.width() as f64, image.height() as f64);
     let ((canvas_width, canvas_height), (offset_x, offset_y, _, _)) =
         crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
@@ -300,10 +333,12 @@ fn compose_wallpaper(image: &Pixmap, wallpaper: &WallpaperSettings, frame_scale:
     let inset = wallpaper.inset.max(0.0) as f32;
     let inset_color = (inset > 0.0)
         .then(|| {
-            crate::render::color_detection::dominant_inset_color(
-                image.as_ref(),
-                crate::render::color_detection::ContentBounds::default(),
-            )
+            original_inset_color.unwrap_or_else(|| {
+                crate::render::color_detection::dominant_inset_color(
+                    image.as_ref(),
+                    crate::render::color_detection::ContentBounds::default(),
+                )
+            })
         })
         .flatten();
 
@@ -563,7 +598,14 @@ pub fn render_backdrop(
 )> {
     if wallpaper.supports_edge_preview(!layers.is_empty()) && !layers.is_empty() {
         let primary = from_rgba(&base?.to_rgba8())?;
-        let composite = compose_layered_wallpaper(&primary, wallpaper, layers, &[], frame_scale)?;
+        let cropped = wallpaper
+            .balance
+            .then(|| balance_bounds_pixmap(&primary))
+            .flatten()
+            .and_then(|bounds| balance_crop(&primary, bounds));
+        let primary = cropped.as_ref().unwrap_or(&primary);
+        let composite =
+            compose_layered_wallpaper(primary, wallpaper, layers, &[], frame_scale, (0.0, 0.0))?;
         let tiles = if composite.width() > 16384 || composite.height() > 16384 {
             composite_tiles(&composite, stage_background, 8192)?
         } else {
@@ -1548,6 +1590,38 @@ mod tests {
         // The band sits just outside the image and takes its border colour.
         let band = composed.get_pixel(20 - 3, 50).0;
         assert_eq!(&band[..3], &[10, 200, 10]);
+    }
+
+    #[test]
+    fn balanced_inset_uses_the_source_border_even_with_annotations() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(200, 160, |x, y| {
+            if (40..160).contains(&x) && (30..130).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else if (5..195).contains(&x) && (5..155).contains(&y) {
+                image::Rgba([230, 230, 230, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        let settings = WallpaperSettings {
+            balance: true,
+            padding: 20.0,
+            inset: 8.0,
+            ..WallpaperSettings::default()
+        };
+        let annotation = Annotation::Rectangle {
+            id: "border".into(),
+            x: 30.0,
+            y: 20.0,
+            width: 140.0,
+            height: 120.0,
+            stroke: "#ff00ff".into(),
+            stroke_width: 3.0,
+            fill: None,
+        };
+        let composed = compose(Some(&base), 200, 160, &[annotation], &settings, 1.0);
+        assert_eq!(composed.dimensions(), (180, 160));
+        assert_eq!(composed.get_pixel(15, 80).0, [230, 230, 230, 255]);
     }
 
     #[test]

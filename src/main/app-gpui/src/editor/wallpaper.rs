@@ -98,19 +98,27 @@ impl WallpaperSettings {
     /// A capture with attached layers is framed as one group, so the wallpaper
     /// is active even without a background or padding.
     pub fn is_active_with_layers(&self, has_layers: bool) -> bool {
-        self.is_active() || has_layers
+        self.is_active(has_layers) || has_layers
     }
 
-    pub fn is_active(&self) -> bool {
+    pub fn is_active(&self, has_layers: bool) -> bool {
         self.gradient.is_some()
             || self.background_image.is_some()
             || self.padding > 0.0
             || (!self.balance && self.inset <= 0.0 && (self.corners > 0.0 || self.shadow > 0.0))
+            || (!has_layers
+                && self.balance
+                && self.inset <= 0.0
+                && self.corners <= 0.0
+                && self.shadow <= 0.0)
             || crate::render::window_frame::theme(&self.window_frame.style).is_some()
     }
 
     pub fn supports_edge_preview(&self, has_layers: bool) -> bool {
         let framed = crate::render::window_frame::theme(&self.window_frame.style).is_some();
+        if has_layers && self.balance {
+            return !framed && self.inset <= 0.0 && self.corners <= 0.0 && self.shadow <= 0.0;
+        }
         !self.balance
             && self.inset <= 0.0
             && ((framed && !has_layers && self.corners <= 0.0)
@@ -336,6 +344,21 @@ pub fn parse_aspect_ratio(value: &str) -> Option<(f64, f64)> {
     (width > 0.0 && height > 0.0).then_some((width, height))
 }
 
+pub fn balanced_size(
+    width: f64,
+    height: f64,
+    crop: Option<(f32, f32, f32, f32)>,
+    has_layers: bool,
+) -> (f64, f64) {
+    if let (false, Some((left, top, right, bottom))) = (has_layers, crop) {
+        return (
+            width - f64::from(left + right),
+            height - f64::from(top + bottom),
+        );
+    }
+    (width, height)
+}
+
 /// The canvas size and the inner image rect for a wallpaper composition. A
 /// window frame adds its title bar above the image, so the frame is part of the
 /// content the padding surrounds.
@@ -385,14 +408,20 @@ mod tests {
             corners: 20.0,
             ..WallpaperSettings::default()
         };
-        assert!(settings.is_active());
+        assert!(settings.is_active(false));
         settings.balance = true;
-        assert!(!settings.is_active());
+        assert!(!settings.is_active(false));
         settings.balance = false;
         settings.inset = 10.0;
-        assert!(!settings.is_active());
+        assert!(!settings.is_active(false));
         settings.padding = 1.0;
-        assert!(settings.is_active());
+        assert!(settings.is_active(false));
+        settings = WallpaperSettings {
+            balance: true,
+            ..WallpaperSettings::default()
+        };
+        assert!(settings.is_active(false));
+        assert!(!settings.is_active(true));
     }
 
     #[test]

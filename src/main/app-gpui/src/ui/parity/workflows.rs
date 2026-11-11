@@ -832,6 +832,448 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
     }
 }
 
+pub(super) fn balance_restoration(
+    cx: &mut HeadlessAppContext,
+    scratch: &Path,
+    scale: f32,
+    padding_setting: f64,
+    with_background: bool,
+    inset: f64,
+) {
+    let source = scratch.join(format!(
+        "balance-restoration-{scale}-{padding_setting}-{with_background}-{inset}.png"
+    ));
+    let image = image::RgbaImage::from_fn(200, 160, |x, y| {
+        if (100..120).contains(&x) && (85..105).contains(&y) {
+            image::Rgba([64, 112, 192, 128])
+        } else if (40..160).contains(&x) && (30..130).contains(&y) {
+            image::Rgba([64, 112, 192, 255])
+        } else if (5..195).contains(&x) && (5..155).contains(&y) {
+            image::Rgba([230, 230, 230, 255])
+        } else {
+            image::Rgba([255, 255, 255, 255])
+        }
+    });
+    image.save(&source).unwrap();
+    let expected = crate::render::color_detection::ContentBounds {
+        left: 30,
+        top: 20,
+        right: 30,
+        bottom: 20,
+    };
+    assert_eq!(
+        crate::editor::export::balance_bounds(&image),
+        Some(expected)
+    );
+    crate::history_store::add_item(
+        HistoryItem {
+            id: format!("balance-restoration-{scale}-{padding_setting}-{with_background}-{inset}"),
+            timestamp: 0,
+            original_path: source.to_string_lossy().into_owned(),
+            r#type: HistoryItemType::Screenshot,
+            editor_state: Some(serde_json::json!({"wallpaper": {
+                "padding": padding_setting,
+                "balance": true,
+                "inset": inset,
+                "gradient": with_background.then(|| serde_json::json!({
+                    "id": "balance-background",
+                    "colors": ["#2468ac"],
+                    "angle": 0
+                }))
+            }})),
+            duration: None,
+        },
+        100,
+        true,
+    );
+    let editor = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        assert_eq!(
+            editor.snapshot.borrow().balance_crop,
+            Some((
+                expected.left as f32,
+                expected.top as f32,
+                expected.right as f32,
+                expected.bottom as f32,
+            )),
+            "reopening a balanced screenshot must restore its crop"
+        );
+    });
+    let window = editor.into();
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.history.push(vec![
+                crate::editor::annotations::Annotation::Rectangle {
+                    id: "balance-border-annotation".into(),
+                    x: 0.,
+                    y: 50.,
+                    width: 12.,
+                    height: 30.,
+                    stroke: "#ff00ff".into(),
+                    stroke_width: 1.,
+                    fill: Some("#ff00ff".into()),
+                },
+                crate::editor::annotations::Annotation::Rectangle {
+                    id: "balance-content-annotation".into(),
+                    x: 60.,
+                    y: 60.,
+                    width: 20.,
+                    height: 20.,
+                    stroke: "#ff00ff".into(),
+                    stroke_width: 1.,
+                    fill: Some("#ff00ff".into()),
+                },
+            ]);
+            editor.tool = crate::ui::colors::Tool::Select;
+            editor.zoom = 1. / scale;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, window);
+    let (bounds, png, backdrop, matte) = cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+        (
+            editor.bounds.borrow().unwrap(),
+            editor.export_png().unwrap(),
+            editor.snapshot.borrow().backdrop.clone().unwrap(),
+            image::Rgba([
+                (theme.r * 255.).round() as u8,
+                (theme.g * 255.).round() as u8,
+                (theme.b * 255.).round() as u8,
+                255,
+            ]),
+        )
+    });
+    let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+    let padding = (padding_setting as f32 * scale).round() as u32;
+    let dimensions = (
+        200 - expected.left - expected.right + padding * 2,
+        160 - expected.top - expected.bottom + padding * 2,
+    );
+    assert_eq!(
+        saved.dimensions(),
+        dimensions,
+        "annotations must not alter the balance crop"
+    );
+    if inset > 0. {
+        assert_eq!(
+            saved.get_pixel(padding - 4, saved.height() / 2).0,
+            [230, 230, 230, 255],
+            "the inset must use the balanced source edge"
+        );
+    }
+    assert_eq!(
+        (
+            u32::from(backdrop.size(0).width),
+            u32::from(backdrop.size(0).height)
+        ),
+        dimensions,
+        "balanced preview and export must have matching canvas dimensions"
+    );
+    let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+    image::imageops::overlay(&mut composited, &saved, 0, 0);
+    let screenshot = cx.capture_screenshot(window).unwrap();
+    let left = (f32::from(bounds.left()) * scale).round() as u32 + expected.left - padding;
+    let top = (f32::from(bounds.top()) * scale).round() as u32 + expected.top - padding;
+    for y in 0..saved.height() {
+        for x in 0..saved.width() {
+            let actual = screenshot.get_pixel(left + x, top + y).0;
+            let expected = composited.get_pixel(x, y).0;
+            assert!(
+                actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                "balanced preview differs at {x},{y}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+    if inset > 0. {
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.tool = crate::ui::colors::Tool::Crop;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, window);
+        let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+        for input in [
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: bounds.origin + point(px(20. / scale), px(10. / scale)),
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: Modifiers::none(),
+                first_mouse: false,
+            }),
+            PlatformInput::MouseUp(MouseUpEvent {
+                position: bounds.origin + point(px(180. / scale), px(150. / scale)),
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: Modifiers::none(),
+            }),
+        ] {
+            event(cx, window, input);
+        }
+        editor
+            .update(cx, |editor, _, cx| editor.apply_crop(cx))
+            .unwrap();
+        settle(cx, window);
+        cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            let refreshed = editor.snapshot.borrow().backdrop.clone().unwrap();
+            assert_eq!(
+                (
+                    u32::from(refreshed.size(0).width),
+                    u32::from(refreshed.size(0).height)
+                ),
+                dimensions
+            );
+            assert_ne!(
+                refreshed.id, backdrop.id,
+                "a new image must refresh the inset backdrop"
+            );
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::editor::actions::Undo), cx);
+        })
+        .unwrap();
+        settle(cx, window);
+        cx.update(|cx| assert_eq!(editor.read(cx).unwrap().export_png().unwrap(), png));
+    }
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.tool = crate::ui::colors::Tool::Crop;
+            editor.zoom = 1. / scale;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, window);
+    let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+    let start = bounds.origin + point(px(40. / scale), px(30. / scale));
+    let end = bounds.origin + point(px(160. / scale), px(130. / scale));
+    event(
+        cx,
+        window,
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    event(
+        cx,
+        window,
+        PlatformInput::MouseUp(MouseUpEvent {
+            position: end,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+        }),
+    );
+    editor
+        .update(cx, |editor, _, cx| editor.apply_crop(cx))
+        .unwrap();
+    settle(cx, window);
+    cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        let snapshot = editor.snapshot.borrow();
+        assert_eq!((snapshot.image_width, snapshot.image_height), (120., 100.));
+        assert_eq!(
+            snapshot.balance_crop, None,
+            "cropping must discard the old balance margins"
+        );
+        assert_eq!(
+            editor.base_image.as_ref().unwrap().to_rgba8(),
+            image::imageops::crop_imm(&image, 40, 30, 120, 100).to_image(),
+            "the crop must preserve the selected source pixels"
+        );
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(crate::editor::actions::Undo), cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        let snapshot = editor.snapshot.borrow();
+        assert_eq!((snapshot.image_width, snapshot.image_height), (200., 160.));
+        assert_eq!(
+            snapshot.balance_crop,
+            Some((
+                expected.left as f32,
+                expected.top as f32,
+                expected.right as f32,
+                expected.bottom as f32
+            )),
+            "undo must restore the balance margins"
+        );
+        assert_eq!(editor.export_png().unwrap(), png);
+    });
+    cx.update_window(editor.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    let reopened = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, reopened.into());
+    cx.update(|cx| {
+        let editor = reopened.read(cx).unwrap();
+        assert_eq!(
+            editor.snapshot.borrow().balance_crop,
+            Some((
+                expected.left as f32,
+                expected.top as f32,
+                expected.right as f32,
+                expected.bottom as f32
+            ))
+        );
+        assert_eq!(editor.export_png().unwrap(), png);
+    });
+    if inset == 0. {
+        let attached = scratch.join("balance-attachment.png");
+        image::RgbaImage::from_pixel(100, 100, image::Rgba([240, 80, 64, 255]))
+            .save(&attached)
+            .unwrap();
+        reopened
+            .update(cx, |editor, _, cx| {
+                editor.push_image_layer(
+                    attached.to_string_lossy().into_owned(),
+                    100.,
+                    100.,
+                    crate::editor::layers::Edge::Right,
+                    cx,
+                );
+                let mut annotations = editor.history.current().to_vec();
+                annotations.push(crate::editor::annotations::Annotation::Redact {
+                    id: "balance-attachment-redaction".into(),
+                    x: 155.,
+                    y: 80.,
+                    width: 30.,
+                    height: 20.,
+                    style: "pixelate".into(),
+                    intensity: 5.,
+                });
+                editor.history.push(annotations);
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, reopened.into());
+        reopened
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 1. / scale;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, reopened.into());
+        let (bounds, png, matte) = cx.update(|cx| {
+            let editor = reopened.read(cx).unwrap();
+            let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+            (
+                editor.bounds.borrow().unwrap(),
+                editor.export_png().unwrap(),
+                image::Rgba([
+                    (theme.r * 255.).round() as u8,
+                    (theme.g * 255.).round() as u8,
+                    (theme.b * 255.).round() as u8,
+                    255,
+                ]),
+            )
+        });
+        let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+        let cropped_width = 200 - expected.left - expected.right;
+        let cropped_height = 160 - expected.top - expected.bottom;
+        assert_eq!(
+            saved.dimensions(),
+            (
+                cropped_width + cropped_height + padding * 2,
+                cropped_height + padding * 2
+            ),
+            "attachments must be laid out against the balanced primary image"
+        );
+        let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+        image::imageops::overlay(&mut composited, &saved, 0, 0);
+        let screenshot = cx.capture_screenshot(reopened.into()).unwrap();
+        let left = (f32::from(bounds.left()) * scale).round() as u32 + expected.left - padding;
+        let top = (f32::from(bounds.top()) * scale).round() as u32 + expected.top - padding;
+        assert_eq!(
+            screenshot.get_pixel(left - 24, top + 40).0,
+            matte.0,
+            "annotations outside the balanced canvas must be clipped"
+        );
+        for y in 0..saved.height() {
+            for x in 0..saved.width() {
+                let actual = screenshot.get_pixel(left + x, top + y).0;
+                let expected = composited.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                    "balanced attachment differs at {x},{y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+        cx.update_window(reopened.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        let layered = cx
+            .open_window(size(px(1280.), px(738.)), |window, cx| {
+                window.set_scale_factor(scale);
+                cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+            })
+            .unwrap();
+        settle(cx, layered.into());
+        cx.update(|cx| {
+            let editor = layered.read(cx).unwrap();
+            assert_eq!(editor.export_png().unwrap(), png);
+            assert_eq!(
+                editor.snapshot.borrow().balance_crop,
+                Some((
+                    expected.left as f32,
+                    expected.top as f32,
+                    expected.right as f32,
+                    expected.bottom as f32
+                ))
+            );
+        });
+        layered
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 1. / scale;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, layered.into());
+        let bounds = cx.update(|cx| layered.read(cx).unwrap().bounds.borrow().unwrap());
+        let screenshot = cx.capture_screenshot(layered.into()).unwrap();
+        let left = (f32::from(bounds.left()) * scale).round() as u32 + expected.left - padding;
+        let top = (f32::from(bounds.top()) * scale).round() as u32 + expected.top - padding;
+        for y in 0..saved.height() {
+            for x in 0..saved.width() {
+                let actual = screenshot.get_pixel(left + x, top + y).0;
+                let expected = composited.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                    "reopened balanced attachment differs at {x},{y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+        cx.update_window(layered.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        return;
+    }
+    cx.update_window(reopened.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
 pub(super) fn large_attachment_preview(cx: &mut HeadlessAppContext, scratch: &Path) {
     let blue = image::Rgba([64, 112, 192, 255]);
     let red = image::Rgba([240, 80, 64, 255]);
