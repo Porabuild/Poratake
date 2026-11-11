@@ -120,6 +120,27 @@ pub fn toolbar(
 
     let sort_tooltip = order.tooltip();
     let layout_tooltip = layout.toggle_tooltip();
+    let actions = div()
+        .debug_selector(|| "history-toolbar-actions".to_string())
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .child(toolbar::tooltip_button(
+            icon_button::chip_icon("history-sort", "arrow-up-down", sort_tooltip),
+            sort_tooltip,
+            cx,
+            |this, _window, cx| this.toggle_sort_order(cx),
+        ))
+        .child(toolbar::tooltip_button(
+            icon_button::chip_icon("history-layout", layout.toggle_icon(), layout_tooltip),
+            layout_tooltip,
+            cx,
+            |this, _window, cx| this.toggle_layout(cx),
+        ));
+    #[cfg(feature = "parity")]
+    let actions = actions.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("history-actions", bounds);
+    });
     div()
         .flex()
         .flex_wrap()
@@ -129,25 +150,7 @@ pub fn toolbar(
         .px(px(chrome::HISTORY_TOOLBAR_PX))
         .py(px(chrome::HISTORY_TOOLBAR_PY))
         .child(filters)
-        .child(
-            div()
-                .debug_selector(|| "history-toolbar-actions".to_string())
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .child(toolbar::tooltip_button(
-                    icon_button::chip_icon("history-sort", "arrow-up-down", sort_tooltip),
-                    sort_tooltip,
-                    cx,
-                    |this, _window, cx| this.toggle_sort_order(cx),
-                ))
-                .child(toolbar::tooltip_button(
-                    icon_button::chip_icon("history-layout", layout.toggle_icon(), layout_tooltip),
-                    layout_tooltip,
-                    cx,
-                    |this, _window, cx| this.toggle_layout(cx),
-                )),
-        )
+        .child(actions)
         .into_any_element()
 }
 

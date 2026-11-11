@@ -89,6 +89,28 @@ impl HistoryWindow {
         view
     }
 
+    #[cfg(feature = "parity")]
+    pub(crate) fn focus_for_parity(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus_handle, cx);
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_state(&self) -> (bool, bool, usize, HistoryLayout) {
+        (
+            self.items
+                .iter()
+                .all(|item| self.media.contains_key(&item.id)),
+            self.keyboard_navigation,
+            self.selected_index,
+            self.layout,
+        )
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_item_bounds(&self, index: usize) -> Option<Bounds<Pixels>> {
+        self.scroll.bounds_for_item(index)
+    }
+
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
         registry::toggle(RegistryKind::History, cx, |cx| {
             let store = crate::state::state(cx).config;
@@ -505,7 +527,9 @@ impl Render for HistoryWindow {
                 };
                 scroller = scroller.child(match self.layout {
                     HistoryLayout::Grid => item::grid_card(&view, card_width, cx),
-                    HistoryLayout::List => item::list_row(&view, cx),
+                    HistoryLayout::List => {
+                        item::list_row(&view, f32::from(window.viewport_size().width), cx)
+                    }
                 });
             }
         }
@@ -735,10 +759,77 @@ mod tests {
             history.read_with(visual, |history, _| history.selected_index),
             1
         );
+        for mode in [
+            crate::theme::presets::ThemeMode::Light,
+            crate::theme::presets::ThemeMode::Dark,
+        ] {
+            visual.update(|_, cx| crate::theme::vars::update_theme(cx, mode, "default"));
+            for scale in [1.0, 1.25, 2.0] {
+                visual.update(|window, _| window.set_scale_factor(scale));
+                visual.simulate_resize(size(px(400.0), px(364.0)));
+                let full_label = visual.expect("history-row-label-second");
+                for width in [200.0, 240.0, 280.0, 300.0, 319.0, 320.0] {
+                    visual.simulate_resize(size(px(width), px(364.0)));
+                    let narrow_label = visual.expect("history-row-label-second");
+                    assert!(
+                        narrow_label.size.width >= full_label.size.width,
+                        "width {width}, scale {scale}: narrow label {narrow_label:?} versus full {full_label:?}"
+                    );
+                    if width < 320.0 {
+                        let thumb = visual.expect("history-row-thumb-second");
+                        let actions = visual.expect("history-row-actions-second");
+                        assert!(actions.origin.x >= thumb.origin.x);
+                        assert!(actions.origin.y >= thumb.origin.y);
+                        assert!(
+                            actions.origin.x + actions.size.width
+                                <= thumb.origin.x + thumb.size.width
+                        );
+                        assert!(
+                            actions.origin.y + actions.size.height
+                                <= thumb.origin.y + thumb.size.height
+                        );
+                    }
+                }
+            }
+        }
+        visual.simulate_resize(size(px(200.0), px(364.0)));
         let selected = visual.expect("history-row-second");
         let scroller = visual.expect("history-scroll");
         assert!(selected.origin.x >= scroller.origin.x);
         assert!(selected.origin.x + selected.size.width <= scroller.origin.x + scroller.size.width);
+        assert!(selected.origin.y >= scroller.origin.y);
+        assert!(
+            selected.origin.y + selected.size.height <= scroller.origin.y + scroller.size.height
+        );
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.items[1].r#type = HistoryItemType::Video;
+                history.media.insert(
+                    "second".into(),
+                    ItemMedia {
+                        thumbnail: None,
+                        features: RecordingFeatures {
+                            has_mic: true,
+                            has_system_audio: true,
+                            has_camera: true,
+                            has_cursor: true,
+                        },
+                    },
+                );
+                cx.notify();
+            });
+        });
+        let selected = visual.expect("history-row-second");
+        let features = visual.expect("history-row-features-second");
+        let scroller = visual.expect("history-scroll");
+        assert!(
+            features.origin.x + features.size.width
+                <= selected.origin.x + selected.size.width - px(8.0)
+        );
+        assert!(
+            features.origin.y + features.size.height
+                <= selected.origin.y + selected.size.height - px(8.0)
+        );
         assert!(selected.origin.y >= scroller.origin.y);
         assert!(
             selected.origin.y + selected.size.height <= scroller.origin.y + scroller.size.height

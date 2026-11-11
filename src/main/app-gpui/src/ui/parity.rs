@@ -250,6 +250,184 @@ fn capture_tray_menu(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
     cx.run_until_parked();
 }
 
+fn capture_history(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    scratch: &Path,
+    scale: f32,
+    history_width: f32,
+) {
+    use crate::history_store::{HistoryItem, HistoryItemType};
+    use crate::windows::history::{model::HistoryLayout, HistoryWindow};
+
+    let colors = [
+        [64, 112, 192],
+        [232, 88, 56],
+        [48, 160, 104],
+        [184, 96, 192],
+    ];
+    let items: Vec<_> = colors
+        .iter()
+        .enumerate()
+        .map(|(index, color)| {
+            let path = scratch.join(format!("history-visual-{index}.png"));
+            image::RgbImage::from_pixel(640, 360, image::Rgb(*color))
+                .save(&path)
+                .unwrap();
+            assert!(crate::thumbnails::ensure(&path, HistoryItemType::Screenshot).is_some());
+            HistoryItem {
+                id: format!("visual-{index}"),
+                timestamp: 2_000_000_000_000,
+                original_path: path.to_string_lossy().into_owned(),
+                r#type: HistoryItemType::Screenshot,
+                editor_state: None,
+                duration: None,
+            }
+        })
+        .collect();
+    crate::history_store::save_history(&items);
+    let store = cx.update(|cx| crate::state::state(cx).config);
+    store.update(|settings| {
+        settings.history.filter = "all".into();
+        settings.history.sort_order = "newest".into();
+        settings.history.layout = "grid".into();
+    });
+    let handle = cx
+        .open_window(size(px(history_width), px(364.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| HistoryWindow::new(store, window, cx))
+        })
+        .unwrap()
+        .into();
+    let history = cx
+        .update_window(handle, |view, _, _| {
+            view.downcast::<HistoryWindow>().unwrap()
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        history.update(cx, |history, cx| history.focus_for_parity(window, cx));
+    })
+    .unwrap();
+    hover(cx, handle, -100., -100.);
+    settle(cx, handle);
+    assert!(cx.update(|cx| history.read(cx).parity_state().0));
+    let (first, second, fourth) = cx.update(|cx| {
+        let history = history.read(cx);
+        (
+            history.parity_item_bounds(0),
+            history.parity_item_bounds(1),
+            history.parity_item_bounds(3),
+        )
+    });
+    let first = first.expect("first history item must be rendered");
+    let second = second.expect("second history item must be rendered");
+    assert!(fourth.is_some(), "all four history items must be rendered");
+    assert_eq!(first.top(), second.top());
+    assert!(first.right() < second.left() && second.right() <= px(history_width));
+    let image = cx.capture_screenshot(handle).unwrap();
+    let x = ((f32::from(first.left()) + f32::from(first.size.width) / 2.) * scale).round() as u32;
+    let y =
+        ((f32::from(first.top()) + f32::from(first.size.width) * 9. / 32.) * scale).round() as u32;
+    let pixel = image.get_pixel(x, y);
+    assert!(
+        pixel.0[..3]
+            .iter()
+            .zip(colors[0])
+            .all(|(actual, expected)| actual.abs_diff(expected) <= 8),
+        "history thumbnail was not rendered: {pixel:?}"
+    );
+    capture(cx, handle, output, &format!("history-{history_width}-grid"));
+    key(cx, handle, "down");
+    let state = cx.update(|cx| history.read(cx).parity_state());
+    assert!(state.1 && state.2 == 2 && state.3 == HistoryLayout::Grid);
+    capture(
+        cx,
+        handle,
+        output,
+        &format!("history-{history_width}-grid-selected"),
+    );
+    click_measured(cx, handle, "history-actions", 1);
+    assert_eq!(
+        cx.update(|cx| history.read(cx).parity_state().3),
+        HistoryLayout::List
+    );
+    cx.update_window(handle, |_, window, cx| {
+        history.update(cx, |history, cx| history.focus_for_parity(window, cx));
+    })
+    .unwrap();
+    click(cx, handle, 5., 140.);
+    capture(
+        cx,
+        handle,
+        output,
+        &format!("history-{history_width}-list-selected"),
+    );
+    for (index, name) in [(0, "reveal"), (1, "delete")] {
+        let action = measured("history-row-actions", index).center();
+        hover(cx, handle, f32::from(action.x), f32::from(action.y));
+        cx.update_window(handle, |_, window, _| {
+            let tips: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    let bounds = quad.bounds;
+                    (31. ..=35.).contains(&(bounds.size.height.0 / scale))
+                        && bounds.size.width.0 / scale > 30.
+                        && bounds.bottom().0 <= f32::from(action.y) * scale
+                        && bounds.bottom().0 >= (f32::from(action.y) - 30.) * scale
+                })
+                .collect();
+            assert_eq!(
+                tips.len(),
+                1,
+                "one history tooltip must be painted: {tips:?}"
+            );
+            let tip = tips[0];
+            let bounds = tip.bounds;
+            let mask = tip.content_mask.bounds;
+            assert!(
+                bounds.left().0 >= 0.
+                    && bounds.right().0 <= history_width * scale
+                    && bounds.top().0 >= 0.
+                    && bounds.bottom().0 <= 364. * scale
+                    && mask.left().0 <= bounds.left().0
+                    && mask.right().0 >= bounds.right().0
+                    && mask.top().0 <= bounds.top().0
+                    && mask.bottom().0 >= bounds.bottom().0,
+                "history tooltip is clipped: {bounds:?}, mask {mask:?}"
+            );
+        })
+        .unwrap();
+        capture(
+            cx,
+            handle,
+            output,
+            &format!("history-{history_width}-list-tooltip-{name}"),
+        );
+    }
+    let windows_before = cx.update(|cx| cx.windows());
+    click_measured(cx, handle, "history-row-actions", 1);
+    let deleted = std::path::Path::new(&items[2].original_path);
+    assert!(!deleted.exists());
+    assert!(!crate::thumbnails::thumbnail_path(deleted).exists());
+    assert_eq!(
+        crate::history_store::load_history()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["visual-0", "visual-1", "visual-3"]
+    );
+    let state = cx.update(|cx| history.read(cx).parity_state());
+    assert!(state.1 && state.2 == 2 && state.3 == HistoryLayout::List);
+    assert_eq!(cx.update(|cx| cx.windows()), windows_before);
+    println!(
+        "history {history_width}px grid, list, tooltips and isolated deletion passed at {scale}x"
+    );
+    cx.update_window(handle, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
 fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
     if !cx.update(|cx| cx.windows().contains(&window)) {
         return;
@@ -639,6 +817,11 @@ pub fn capture_editor_interaction_states() {
     }
     #[cfg(windows)]
     capture_tray_menu(&mut cx, &output, scale);
+    if source.is_none() && width == 950. {
+        for history_width in [200., 240.] {
+            capture_history(&mut cx, &output, &scratch, scale, history_width);
+        }
+    }
     baselines::check(&output);
     cx.update(|cx| crate::state::state(cx).daemon.stop());
 }

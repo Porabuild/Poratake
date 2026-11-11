@@ -48,8 +48,11 @@ or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
 738 logical pixels high. Each case captures 142 states; the two 1280px, 100% cases
-also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states,
-for 2,328 baseline images per renderer. Both profiles include reviewed menu images.
+also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states.
+The eight 950px cases each add ten narrow-history states, for 2,408 images per
+complete renderer profile. The 80 new NVIDIA history images were reviewed; the
+local matrix passed all 16 cases and 2,408 images. The hosted profile still
+needs its corresponding images reviewed and added.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
@@ -296,7 +299,9 @@ those assignments were subsequently corrected. The [later hosted run](https://gi
 passed Linux, macOS and Windows, including all 16 cases and 2,328 exact images.
 The [framed-transparency run](https://github.com/Porabuild/Poratake/actions/runs/42941558246)
 also passed all required jobs and all 16 visual cases, including the new pixel
-checks on the hosted renderer. Check the current PR for subsequent changes.
+checks on the hosted renderer. The [history and frame-only run](https://github.com/Porabuild/Poratake/actions/runs/42945831848)
+passed all required jobs, 1,015 native tests and all 16 visual cases. Check the
+current PR for subsequent changes.
 The display-change test checks preview repositioning in a headless window, and
 synthetic geometry covers negative origins and mixed scaling. Physical monitor
 changes and destination-DPI movement remain unverified.
@@ -565,9 +570,12 @@ Bugs fixed in this pass:
   edge. GPUI now fits the popover to the work area and converts macOS
   secondary-display bounds as the tray menu does. Geometry tests cover offset
   displays, 200–400px window widths, both themes, simulated 100/125/200% scaling,
-  grid and list selection, and wrapped header and filter controls. These are not
-  image-baseline or physical monitor checks. Electron's horizontal placement
-  remains unclamped; physical multi-monitor behavior is not verified.
+  grid and list selection, and wrapped header and filter controls. Narrow list
+  actions now sit over the thumbnail so labels remain readable, with feature
+  icons wrapping as needed. The local visual fixture checks complete reveal and
+  delete tooltips, and deletes an isolated item without opening an editor. Its
+  80 NVIDIA images were reviewed; the hosted profile and physical monitors remain
+  unverified. Electron's horizontal placement remains unclamped.
 - Failed editor-attach captures also left a partially written temporary PNG.
   The attachment path now removes it before restoring the editor.
 - A competing capture or second attachment could replace the active attachment
@@ -659,7 +667,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                          |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Representative coverage only.                                                                                                                                                                                                    |
 | P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                      |
-| P2       | History visual and native verification                   | Add reviewed image baselines for the resized grid/list states and verify tooltips and physical multi-monitor placement at high DPI. Geometry tests cover widths down to 200px; smaller work areas are not verified.                                                                                                                                                                                                                |
+| P2       | History visual and native verification                   | Review and add the hosted narrow-history images; verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 200px; smaller work areas, other item states and grid tooltips are not verified.                                                                                                                                                                           |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                           |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                        |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                           |
