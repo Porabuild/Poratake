@@ -30,6 +30,7 @@ pub struct ScrollCaptureUi {
     daemon: DaemonHandle,
     signal: smol::channel::Sender<ScrollSessionSignal>,
     preview: Option<PreviewImage>,
+    preview_width: f32,
     preview_max_height: f32,
     cursor_outside: bool,
     auto_scrolling: bool,
@@ -86,7 +87,26 @@ impl ScrollCaptureSession {
                 size: size(px(1920.0), px(1080.0)),
             });
         let platform_display_id = display.as_ref().map(|display| display.id());
+        Self::open_on_display(
+            cx,
+            daemon,
+            area,
+            signal,
+            display_bounds,
+            platform_display_id,
+        )
+    }
+
+    fn open_on_display(
+        cx: &mut App,
+        daemon: DaemonHandle,
+        area: ScreenRect,
+        signal: smol::channel::Sender<ScrollSessionSignal>,
+        display_bounds: Bounds<gpui::Pixels>,
+        platform_display_id: Option<gpui::DisplayId>,
+    ) -> Entity<ScrollCaptureUi> {
         let (control_bounds, preview_bounds, prompt_bounds) = session_bounds(area, display_bounds);
+        let preview_width = f32::from(preview_bounds.size.width);
         let preview_max_height = f32::from(preview_bounds.size.height);
         let preview_offset =
             area.y as f32 - f32::from(display_bounds.origin.y) - f32::from(preview_bounds.origin.y);
@@ -94,6 +114,7 @@ impl ScrollCaptureSession {
             daemon,
             signal,
             preview: None,
+            preview_width,
             preview_max_height,
             cursor_outside: false,
             auto_scrolling: false,
@@ -224,10 +245,10 @@ fn set_session_shortcuts(enabled: bool, cx: &App) {
 pub fn apply_progress(ui: &Entity<ScrollCaptureUi>, signal: ScrollSessionSignal, cx: &mut App) {
     match signal {
         ScrollSessionSignal::Frame { preview } => {
-            let max_height = ui.read(cx).preview_max_height;
-            let image = preview
-                .as_deref()
-                .and_then(|preview| decode_preview(preview, max_height));
+            let state = ui.read(cx);
+            let image = preview.as_deref().and_then(|preview| {
+                decode_preview(preview, state.preview_width, state.preview_max_height)
+            });
             ui.update(cx, |ui, cx| {
                 ui.apply_frame(image);
                 cx.notify();
@@ -267,7 +288,7 @@ impl Render for ScrollPreviewPanel {
                     .debug_selector(|| "scroll-preview-image".to_string())
                     .absolute()
                     .top(px(top))
-                    .w(px(PREVIEW_WIDTH))
+                    .w(px(state.preview_width))
                     .h(px(image.height))
                     .overflow_hidden()
                     .rounded(px(chrome::RADIUS_LG))
@@ -275,7 +296,7 @@ impl Render for ScrollPreviewPanel {
                     .shadow_2xl()
                     .child(
                         img(image.image.clone())
-                            .w(px(PREVIEW_WIDTH))
+                            .w(px(state.preview_width))
                             .h(px(image.height)),
                     ),
             );
@@ -507,6 +528,7 @@ fn session_bounds(
         f32::from(display.size.height),
     );
     let (control_x, control_y) = control_origin(logical, display_size);
+    let preview_width = PREVIEW_WIDTH.min(display_size.0);
     let preview_height = PREVIEW_MAX_HEIGHT.min(display_size.1);
     (
         Bounds {
@@ -518,7 +540,7 @@ fn session_bounds(
                 px(preview_left(logical, display_size.0)),
                 px(logical.1.clamp(0.0, display_size.1 - preview_height)),
             ),
-            size: size(px(PREVIEW_WIDTH), px(preview_height)),
+            size: size(px(preview_width), px(preview_height)),
         },
         Bounds {
             origin: gpui::point(px(logical.0), px(logical.1)),
@@ -542,22 +564,28 @@ fn control_origin(area: (f32, f32, f32, f32), display: (f32, f32)) -> (f32, f32)
 }
 
 fn preview_left(area: (f32, f32, f32, f32), display_width: f32) -> f32 {
+    let preview_width = PREVIEW_WIDTH.min(display_width);
     let space_right = display_width - (area.0 + area.2);
-    if space_right >= PREVIEW_WIDTH + PREVIEW_GAP {
+    if space_right >= preview_width + PREVIEW_GAP {
         area.0 + area.2 + PREVIEW_GAP
     } else {
-        (area.0 - PREVIEW_WIDTH - PREVIEW_GAP).max(0.0)
+        (area.0 - preview_width - PREVIEW_GAP).max(0.0)
     }
 }
 
-fn preview_image_height(decoded_width: u32, decoded_height: u32, max_height: f32) -> f32 {
+fn preview_image_height(
+    decoded_width: u32,
+    decoded_height: u32,
+    preview_width: f32,
+    max_height: f32,
+) -> f32 {
     if decoded_width == 0 || decoded_height == 0 {
         return 0.0;
     }
-    (PREVIEW_WIDTH * decoded_height as f32 / decoded_width as f32).min(max_height)
+    (preview_width * decoded_height as f32 / decoded_width as f32).min(max_height)
 }
 
-fn decode_preview(encoded: &str, max_height: f32) -> Option<PreviewImage> {
+fn decode_preview(encoded: &str, preview_width: f32, max_height: f32) -> Option<PreviewImage> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded.trim())
@@ -567,11 +595,11 @@ fn decode_preview(encoded: &str, max_height: f32) -> Option<PreviewImage> {
     if width == 0 || height == 0 {
         return None;
     }
-    let panel_height = preview_image_height(width, height, max_height);
-    if panel_height <= 0.0 {
+    let panel_height = preview_image_height(width, height, preview_width, max_height);
+    if panel_height <= 0.0 || preview_width <= 0.0 {
         return None;
     }
-    let target_width = PREVIEW_WIDTH * PREVIEW_SCALE as f32;
+    let target_width = (preview_width * PREVIEW_SCALE as f32).round().max(1.0);
     let target_height = (panel_height * PREVIEW_SCALE as f32).round().max(1.0);
     let target_aspect = target_width / target_height;
     let source_aspect = width as f32 / height as f32;
@@ -675,6 +703,125 @@ mod tests {
         );
     }
 
+    #[test]
+    fn preview_window_fits_a_narrow_display() {
+        let (_, preview, _) = session_bounds(
+            ScreenRect {
+                x: 100,
+                y: 80,
+                width: 80,
+                height: 20,
+            },
+            Bounds {
+                origin: gpui::point(px(0.0), px(0.0)),
+                size: size(px(200.0), px(180.0)),
+            },
+        );
+        assert_eq!(preview.left(), px(0.0));
+        assert_eq!(preview.size.width, px(200.0));
+    }
+
+    #[herogpui::test]
+    fn narrow_preview_preserves_the_image_aspect(cx: &mut gpui::TestAppContext) {
+        use base64::Engine;
+
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let (signal, _) = smol::channel::bounded(1);
+        let ui = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            let daemon = crate::state::state(cx).daemon;
+            ScrollCaptureSession::open_on_display(
+                cx,
+                daemon,
+                ScreenRect {
+                    x: 100,
+                    y: 80,
+                    width: 80,
+                    height: 20,
+                },
+                signal,
+                Bounds {
+                    origin: gpui::point(px(0.0), px(0.0)),
+                    size: size(px(200.0), px(180.0)),
+                },
+                None,
+            )
+        });
+        let panel = cx.read(|cx| {
+            cx.windows()
+                .into_iter()
+                .find(|handle| handle.downcast::<ScrollPreviewPanel>().is_some())
+                .unwrap()
+        });
+        let mut visual = gpui::VisualTestContext::from_window(panel, cx);
+        visual.update(|window, _| {
+            assert_eq!(window.bounds().size, size(px(200.0), px(180.0)));
+        });
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 2))
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        visual.update(|_, cx| {
+            apply_progress(
+                &ui,
+                ScrollSessionSignal::Frame {
+                    preview: Some(
+                        base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
+                    ),
+                },
+                cx,
+            );
+        });
+        let bounds = visual.expect("scroll-preview-image");
+        assert_eq!(bounds.top(), px(80.0));
+        assert_eq!(bounds.size, size(px(200.0), px(100.0)));
+        visual.read(|cx| {
+            let decoded = ui.read(cx).preview.as_ref().unwrap();
+            assert_eq!(decoded.image.size(0).width.0, 400);
+            assert_eq!(decoded.image.size(0).height.0, 200);
+        });
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(4, 8, |_, y| {
+            if y < 4 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 255, 255])
+            }
+        }))
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+        visual.update(|_, cx| {
+            apply_progress(
+                &ui,
+                ScrollSessionSignal::Frame {
+                    preview: Some(
+                        base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
+                    ),
+                },
+                cx,
+            );
+        });
+        let bounds = visual.expect("scroll-preview-image");
+        assert_eq!(bounds.top(), px(0.0));
+        assert_eq!(bounds.size, size(px(200.0), px(180.0)));
+        visual.read(|cx| {
+            let decoded = ui.read(cx).preview.as_ref().unwrap();
+            assert_eq!(decoded.image.size(0).height.0, 360);
+            assert!(decoded
+                .image
+                .as_bytes(0)
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [255, 0, 0, 255]));
+        });
+    }
+
     #[herogpui::test]
     fn growing_preview_stays_visible_on_the_display(cx: &mut gpui::TestAppContext) {
         let (signal, _) = smol::channel::bounded(1);
@@ -684,6 +831,7 @@ mod tests {
                 daemon,
                 signal,
                 preview: None,
+                preview_width: 240.0,
                 preview_max_height: 360.0,
                 cursor_outside: false,
                 auto_scrolling: false,
@@ -947,9 +1095,9 @@ mod tests {
 
     #[test]
     fn preview_height_follows_the_stitch_aspect() {
-        assert_eq!(preview_image_height(480, 360, 360.0), 180.0);
-        assert_eq!(preview_image_height(240, 720, 360.0), 360.0);
-        assert_eq!(preview_image_height(240, 720, 200.0), 200.0);
-        assert_eq!(preview_image_height(0, 100, 360.0), 0.0);
+        assert_eq!(preview_image_height(480, 360, 240.0, 360.0), 180.0);
+        assert_eq!(preview_image_height(240, 720, 240.0, 360.0), 360.0);
+        assert_eq!(preview_image_height(240, 720, 240.0, 200.0), 200.0);
+        assert_eq!(preview_image_height(0, 100, 240.0, 360.0), 0.0);
     }
 }

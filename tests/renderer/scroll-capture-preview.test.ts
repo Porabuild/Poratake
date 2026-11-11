@@ -136,4 +136,39 @@ describe('scroll capture preview', () => {
       '720px'
     );
   });
+
+  it('fits the preview to a display narrower than the usual preview width', async () => {
+    await act(() => {
+      handlers['scroll-capture:begin'](undefined, {
+        displayId: 7,
+        displayBounds: { x: 0, y: 0, width: 200, height: 180 },
+        area: { x: 100, y: 80, width: 80, height: 20, displayId: 7 },
+      });
+      handlers['scroll-capture:update'](undefined, {
+        ...EMPTY_SCROLL_CAPTURE_STATE,
+        preview: 'fixture',
+        previewWidth: 400,
+        previewHeight: 200,
+      });
+    });
+    const preview = container.querySelector('img')?.parentElement;
+    expect(preview?.style.left).toBe('0px');
+    expect(preview?.style.top).toBe('80px');
+    expect(preview?.style.width).toBe('200px');
+    expect(preview?.style.height).toBe('100px');
+
+    await act(() => {
+      handlers['scroll-capture:update'](undefined, {
+        ...EMPTY_SCROLL_CAPTURE_STATE,
+        preview: 'fixture',
+        previewWidth: 200,
+        previewHeight: 800,
+      });
+    });
+    expect(preview?.style.top).toBe('0px');
+    expect(preview?.style.height).toBe('180px');
+    expect(container.querySelector('img')?.className).toContain(
+      'object-bottom'
+    );
+  });
 });

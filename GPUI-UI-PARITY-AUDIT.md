@@ -628,9 +628,11 @@ Bugs fixed in this pass:
   Electron tests covering primary and negative-origin displays. The macOS GPUI
   preview now uses the same native click-through setting as its prompt, matching
   Electron's overlay; native pointer delivery remains unverified. Both shells
-  keep the growing preview within the display. Electron renderer tests cover
-  offset and short displays, and a headless GPUI session verifies the fallback
-  window and painted-image positions as frames arrive.
+  keep the growing preview within the display, including a 200px-wide simulated
+  display. Electron renderer tests cover offset and short displays, and a
+  headless GPUI session verifies window and painted-image positions as frames
+  arrive; a narrow-display test also checks that tall previews retain the bottom
+  pixels. Physical narrow-display behavior remains unverified.
 - The macOS scroll-control tooltips painted above their 52px window and were
   clipped. They now use the native view tooltip, matching Electron's native
   tooltip behavior without enlarging the window. A headless test exercises all
