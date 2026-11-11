@@ -119,10 +119,14 @@ impl RenderOnce for EditorCanvas {
             && snap.layers.is_empty()
             && wallpaper.corners <= 0.0
             && wallpaper.shadow <= 0.0;
+        let inset_unframed = !window_frame
+            && snap.layers.is_empty()
+            && wallpaper.corners <= 0.0
+            && wallpaper.shadow <= 0.0;
         let transparent_backdrop = wallpaper.is_active_with_layers(!snap.layers.is_empty())
             && (snap.layers.is_empty() || overlay_above)
             && (!wallpaper.balance || balanced_unframed || layered_composite)
-            && (wallpaper.inset <= 0.0 || balanced_unframed)
+            && (wallpaper.inset <= 0.0 || inset_unframed)
             && (wallpaper.corners <= 0.0 || overlay_above)
             && (window_frame || wallpaper.shadow <= 0.0 || overlay_above);
         let mut frame = div()
@@ -247,6 +251,7 @@ impl RenderOnce for EditorCanvas {
                 group.width,
                 group.height,
                 frame_scale,
+                !layers.is_empty(),
             );
             (
                 px(canvas_width as f32 * zoom),
@@ -266,6 +271,7 @@ impl RenderOnce for EditorCanvas {
                     group.width,
                     group.height,
                     frame_scale,
+                    !layers.is_empty(),
                 );
             // The capture sits wherever the group's layout put it.
             let (offset_x, offset_y) = (offset_x + group.primary.x, offset_y + group.primary.y);
@@ -492,6 +498,7 @@ fn paint_annotations(
             layout.width,
             layout.height,
             snapshot.frame_scale,
+            !snapshot.layers.is_empty(),
         );
         let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
         (
@@ -535,6 +542,7 @@ fn paint_annotations(
             group.width,
             group.height,
             snapshot.frame_scale,
+            !snapshot.layers.is_empty(),
         );
         let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
         let title_bar = crate::render::window_frame::title_bar_height(
@@ -573,7 +581,13 @@ fn paint_annotations(
                 if style == "pixelate"
                     && !snapshot.draft.as_ref().is_some_and(|draft| std::ptr::eq(draft, *annotation))
         );
-        if !snapshot.backdrop_composite && !committed_pixelation {
+        let committed_blur = matches!(
+            annotation,
+            Annotation::Redact { style, .. }
+                if style == "blur"
+                    && !snapshot.draft.as_ref().is_some_and(|draft| std::ptr::eq(draft, *annotation))
+        );
+        if !snapshot.backdrop_composite && !committed_pixelation && !committed_blur {
             if let Annotation::Redact { id, .. } = annotation {
                 if let Some(patch) = snapshot.redact_patches.get(id) {
                     paint_patch(
@@ -594,6 +608,7 @@ fn paint_annotations(
         if preview_raster::is_rasterized(annotation)
             || (snapshot.backdrop_composite && matches!(annotation, Annotation::Redact { .. }))
             || committed_pixelation
+            || committed_blur
         {
             let clear_plain_pixelation = committed_pixelation
                 && !snapshot
@@ -601,14 +616,19 @@ fn paint_annotations(
                     .is_active_with_layers(!snapshot.layers.is_empty());
             let surface = if clear_plain_pixelation {
                 &surface
-            } else if committed_pixelation && !snapshot.backdrop_composite {
+            } else if !snapshot.backdrop_composite {
                 &redaction_surface
             } else {
                 &surface
             };
-            if let Some(patch) =
-                preview_raster::image(&keys, index, annotation, &visible[..index], surface, scale)
-            {
+            if let Some(patch) = preview_raster::image(
+                &keys,
+                index,
+                annotation,
+                &visible[..index],
+                surface,
+                if committed_blur { 1.0 } else { scale },
+            ) {
                 paint_patch(
                     window,
                     origin,

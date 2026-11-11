@@ -832,6 +832,166 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
     }
 }
 
+pub(super) fn simple_inset_preview(
+    cx: &mut HeadlessAppContext,
+    scratch: &Path,
+    scale: f32,
+    padding_setting: f64,
+    with_background: bool,
+    inset_setting: f64,
+    clipped_blur: bool,
+) {
+    let source = scratch.join(format!(
+        "simple-inset-{scale}-{padding_setting}-{with_background}-{inset_setting}-{clipped_blur}.png"
+    ));
+    image::RgbaImage::from_fn(100, 80, |x, y| {
+        if (30..70).contains(&x) && (20..60).contains(&y) {
+            image::Rgba([220, 70, 90, 128])
+        } else {
+            image::Rgba([40, 120, 180, 255])
+        }
+    })
+    .save(&source)
+    .unwrap();
+    crate::history_store::add_item(
+        HistoryItem {
+            id: format!("simple-inset-{scale}-{padding_setting}-{with_background}-{inset_setting}-{clipped_blur}"),
+            timestamp: 0,
+            original_path: source.to_string_lossy().into_owned(),
+            r#type: HistoryItemType::Screenshot,
+            editor_state: Some(serde_json::json!({"annotations": [
+                crate::editor::annotations::Annotation::Rectangle {
+                    id: "before-inset-blur".into(),
+                    x: 37.,
+                    y: 26.,
+                    width: 16.,
+                    height: 16.,
+                    stroke: "#ff00ff".into(),
+                    stroke_width: 1.,
+                    fill: Some("#ff00ff".into()),
+                },
+                crate::editor::annotations::Annotation::Redact {
+                    id: "inset-blur".into(),
+                    x: if clipped_blur { -5. } else { 32. },
+                    y: 22.,
+                    width: if clipped_blur { 40. } else { 30. },
+                    height: 30.,
+                    style: "blur".into(),
+                    intensity: 2.,
+                }
+            ]})),
+            duration: None,
+        },
+        100,
+        true,
+    );
+    let editor = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.wallpaper.set_gradient(with_background.then(|| {
+                crate::editor::wallpaper::GradientOption {
+                    id: "inset-background".into(),
+                    colors: vec!["#2468ac".into()],
+                    angle: 0.,
+                }
+            }));
+            editor.wallpaper.padding = padding_setting;
+            editor.wallpaper.inset = inset_setting;
+            let mut annotations = editor.history.current().to_vec();
+            annotations.push(crate::editor::annotations::Annotation::Rectangle {
+                id: "inset-annotation".into(),
+                x: 42.,
+                y: 32.,
+                width: 16.,
+                height: 16.,
+                stroke: "#00ff00".into(),
+                stroke_width: 1.,
+                fill: Some("#00ff00".into()),
+            });
+            editor.history.push(annotations);
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 1. / scale;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    let (bounds, png, matte) = cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        let theme = crate::theme::vars::active_theme(cx);
+        let theme = gpui::Rgba::from(
+            if inset_setting == 0. && padding_setting == 0. && !with_background {
+                theme.surface
+            } else {
+                theme.background
+            },
+        );
+        (
+            editor.bounds.borrow().unwrap(),
+            editor.export_png().unwrap(),
+            image::Rgba([
+                (theme.r * 255.).round() as u8,
+                (theme.g * 255.).round() as u8,
+                (theme.b * 255.).round() as u8,
+                255,
+            ]),
+        )
+    });
+    let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+    let native_inset = (inset_setting as f32 * scale).round() as u32;
+    let margin = (padding_setting as f32 * scale).round() as u32 + native_inset;
+    assert_eq!(saved.dimensions(), (100 + margin * 2, 80 + margin * 2));
+    let original = image::open(&source).unwrap().to_rgba8();
+    let mut unblurred = image::RgbaImage::from_pixel(
+        100,
+        80,
+        if native_inset > 0 {
+            image::Rgba([40, 120, 180, 255])
+        } else {
+            image::Rgba([0, 0, 0, 0])
+        },
+    );
+    image::imageops::overlay(&mut unblurred, &original, 0, 0);
+    assert_ne!(
+        saved.get_pixel(margin + 33, margin + 23),
+        unblurred.get_pixel(33, 23)
+    );
+    if native_inset > 0 {
+        assert_eq!(
+            saved.get_pixel(margin - 2, margin + 10).0,
+            [40, 120, 180, 255]
+        );
+    }
+    let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+    image::imageops::overlay(&mut expected, &saved, 0, 0);
+    let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+    let left = (f32::from(bounds.left()) * scale).round() as u32 - margin;
+    let top = (f32::from(bounds.top()) * scale).round() as u32 - margin;
+    for y in 0..saved.height() {
+        for x in 0..saved.width() {
+            let actual = screenshot.get_pixel(left + x, top + y).0;
+            let expected = expected.get_pixel(x, y).0;
+            assert!(
+                actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                "inset preview at {scale}x, padding {padding_setting}, inset {inset_setting}, background {with_background}, clipped {clipped_blur}, {x},{y}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+    cx.update_window(editor.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
 pub(super) fn balance_restoration(
     cx: &mut HeadlessAppContext,
     scratch: &Path,
@@ -954,9 +1114,10 @@ pub(super) fn balance_restoration(
     });
     let saved = image::load_from_memory(&png).unwrap().to_rgba8();
     let padding = (padding_setting as f32 * scale).round() as u32;
+    let native_inset = (inset as f32 * scale).round() as u32;
     let dimensions = (
-        200 - expected.left - expected.right + padding * 2,
-        160 - expected.top - expected.bottom + padding * 2,
+        200 - expected.left - expected.right + (padding + native_inset) * 2,
+        160 - expected.top - expected.bottom + (padding + native_inset) * 2,
     );
     assert_eq!(
         saved.dimensions(),
@@ -965,7 +1126,9 @@ pub(super) fn balance_restoration(
     );
     if inset > 0. {
         assert_eq!(
-            saved.get_pixel(padding - 4, saved.height() / 2).0,
+            saved
+                .get_pixel(padding + native_inset / 2, saved.height() / 2)
+                .0,
             [230, 230, 230, 255],
             "the inset must use the balanced source edge"
         );
@@ -981,8 +1144,10 @@ pub(super) fn balance_restoration(
     let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
     image::imageops::overlay(&mut composited, &saved, 0, 0);
     let screenshot = cx.capture_screenshot(window).unwrap();
-    let left = (f32::from(bounds.left()) * scale).round() as u32 + expected.left - padding;
-    let top = (f32::from(bounds.top()) * scale).round() as u32 + expected.top - padding;
+    let left =
+        (f32::from(bounds.left()) * scale).round() as u32 + expected.left - padding - native_inset;
+    let top =
+        (f32::from(bounds.top()) * scale).round() as u32 + expected.top - padding - native_inset;
     for y in 0..saved.height() {
         for x in 0..saved.width() {
             let actual = screenshot.get_pixel(left + x, top + y).0;
@@ -3369,6 +3534,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 group.width,
                 group.height,
                 f64::from(scale),
+                true,
             );
             let matte = stage_matte;
             let rectangles = std::iter::once(group.primary)
@@ -3623,7 +3789,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         let layers = editor.snapshot.borrow().layers.clone();
         let group = crate::editor::layers::compute(640., 360., &layers, wallpaper.spacing);
         let (_, (x, y, _, _)) =
-            crate::editor::wallpaper::layout(&wallpaper, group.width, group.height, 1.25);
+            crate::editor::wallpaper::layout(&wallpaper, group.width, group.height, 1.25, true);
         let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
         (
             editor.bounds.borrow().unwrap(),
@@ -3707,7 +3873,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             wallpaper.spacing,
         );
         let (_, (x, y, _, _)) =
-            crate::editor::wallpaper::layout(&wallpaper, group.width, group.height, 2.);
+            crate::editor::wallpaper::layout(&wallpaper, group.width, group.height, 2., true);
         let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
         (
             editor.bounds.borrow().unwrap(),
@@ -3891,6 +4057,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             group.width,
             group.height,
             snapshot.frame_scale,
+            true,
         );
         (
             editor.bounds.borrow().unwrap(),

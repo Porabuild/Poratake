@@ -72,7 +72,11 @@ fn padded(bounds: (f64, f64, f64, f64), padding: f64) -> (f64, f64, f64, f64) {
     )
 }
 
-fn raster_bounds(annotation: &Annotation) -> Option<(f64, f64, f64, f64)> {
+fn raster_bounds(
+    annotation: &Annotation,
+    surface: &Surface,
+    scale: f64,
+) -> Option<(f64, f64, f64, f64)> {
     match annotation {
         Annotation::Pen { stroke_width, .. } => {
             Some(padded(annotation.bounds(), stroke_width * 2.0 + 2.0))
@@ -130,12 +134,38 @@ fn raster_bounds(annotation: &Annotation) -> Option<(f64, f64, f64, f64)> {
         Annotation::Redact {
             style, intensity, ..
         } => {
-            let padding = if style == "blur" {
-                crate::editor::annotations::redact_intensity(*intensity).1 * 2.0 + 2.0
-            } else {
-                1.0
-            };
-            Some(padded(annotation.bounds(), padding))
+            if style != "blur" {
+                return Some(padded(annotation.bounds(), 1.0));
+            }
+            let padding = (crate::editor::annotations::redact_intensity(*intensity).1
+                * surface.native_scale)
+                .round()
+                .max(1.0)
+                * 2.0
+                + 2.0 / scale;
+            let target = annotation.bounds();
+            let mut bounds = padded(target, padding);
+            let left_limit = -surface.offset_x;
+            let top_limit = -surface.offset_y;
+            let right_limit = f64::from(surface.width) - surface.offset_x;
+            let bottom_limit = f64::from(surface.height) - surface.offset_y;
+            let left = target.0.floor().max(left_limit);
+            let top = target.1.floor().max(top_limit);
+            let right = target.2.ceil().min(right_limit);
+            let bottom = target.3.ceil().min(bottom_limit);
+            if right > left {
+                let source_left = (left - padding).max(left_limit);
+                bounds.2 = bounds
+                    .2
+                    .max((source_left + right - left + padding * 2.0).min(right_limit));
+            }
+            if bottom > top {
+                let source_top = (top - padding).max(top_limit);
+                bounds.3 = bounds
+                    .3
+                    .max((source_top + bottom - top + padding * 2.0).min(bottom_limit));
+            }
+            Some(bounds)
         }
     }
 }
@@ -157,7 +187,10 @@ pub fn patch(
     if scale <= 0.0 {
         return None;
     }
-    let bounds = raster_bounds(annotation)?;
+    let minimum_scale = fit_scale(f64::from(surface.width), f64::from(surface.height), scale)
+        .min((MAX_PATCH_DIMENSION - 1.0) / f64::from(surface.width))
+        .min((MAX_PATCH_DIMENSION - 1.0) / f64::from(surface.height));
+    let bounds = raster_bounds(annotation, surface, minimum_scale)?;
     let target = if matches!(annotation, Annotation::Redact { .. }) {
         annotation.bounds()
     } else {
@@ -170,7 +203,7 @@ pub fn patch(
             if !matches!(earlier, Annotation::Redact { .. }) {
                 continue;
             }
-            let Some(other) = raster_bounds(earlier) else {
+            let Some(other) = raster_bounds(earlier, surface, minimum_scale) else {
                 continue;
             };
             if sample.0 < other.2 && sample.2 > other.0 && sample.1 < other.3 && sample.3 > other.1
@@ -906,6 +939,127 @@ mod tests {
         };
         let dark = image(&keys, 0, &annotation, &[], &dark_surface, 1.).unwrap();
         assert_ne!(light.image.id, dark.image.id);
+    }
+
+    #[test]
+    fn interior_blur_sampling_stays_within_the_patch_budget() {
+        let surface = Surface {
+            image_id: None,
+            width: 4000,
+            height: 3000,
+            offset_x: 0.,
+            offset_y: 0.,
+            native_scale: 2.,
+            pixels: None,
+            matte: None,
+            matte_image: None,
+        };
+        let annotation = Annotation::Redact {
+            id: "large-blur".into(),
+            x: 400.,
+            y: 400.,
+            width: 3000.,
+            height: 1800.,
+            style: "blur".into(),
+            intensity: 10.,
+        };
+        let (left, top, right, bottom) = raster_bounds(&annotation, &surface, 1.).unwrap();
+        assert!((right - left) * (bottom - top) < MAX_PATCH_PIXELS);
+    }
+
+    #[test]
+    fn blur_patches_sample_at_low_zoom() {
+        let mut base = Pixmap::new(256, 256).unwrap();
+        for y in 0..256 {
+            for x in 0..256 {
+                let value = if (x / 3 + y / 5) % 2 == 0 { 255 } else { 0 };
+                let index = (y * 256 + x) as usize * 4;
+                base.data_mut()[index..index + 4].copy_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let bgra = to_bgra(&base);
+        let scale = 0.3125;
+        let mut cases = (40..48)
+            .map(|x| (f64::from(x), 40., f64::from(x), 48.))
+            .collect::<Vec<_>>();
+        cases.extend([
+            (-8., 40., 0., 48.),
+            (40., -8., 48., 0.),
+            (236., 40., 236., 48.),
+            (40., 236., 48., 236.),
+            (-8., -8., 0., 0.),
+            (236., 236., 236., 236.),
+        ]);
+        for (offset_x, offset_y) in [(0., 0.), (16., -16.)] {
+            let surface = Surface {
+                image_id: None,
+                width: 256,
+                height: 256,
+                offset_x,
+                offset_y,
+                native_scale: 1.25,
+                pixels: Some(&bgra),
+                matte: None,
+                matte_image: None,
+            };
+            for &(blur_x, blur_y, rectangle_x, rectangle_y) in &cases {
+                let blur = Annotation::Redact {
+                    id: "blur".into(),
+                    x: blur_x - offset_x,
+                    y: blur_y - offset_y,
+                    width: 100.,
+                    height: 100.,
+                    style: "blur".into(),
+                    intensity: 1.,
+                };
+                let rectangle = Annotation::Rectangle {
+                    id: "rectangle".into(),
+                    x: rectangle_x - offset_x,
+                    y: rectangle_y - offset_y,
+                    width: 30.,
+                    height: 30.,
+                    stroke: "#ff00ff".into(),
+                    stroke_width: 1.,
+                    fill: None,
+                };
+                for later in [false, true] {
+                    let actual = if later {
+                        patch(&rectangle, &[&blur], &surface, scale)
+                    } else {
+                        patch(&blur, &[], &surface, scale)
+                    }
+                    .unwrap();
+                    let mut expected = Canvas::new(80, 80).unwrap();
+                    expected.scale(scale as f32, scale as f32);
+                    expected.draw_pixmap(base.as_ref(), 0., 0., 256., 256.);
+                    expected.translate(offset_x as f32, offset_y as f32);
+                    renderer::draw_screenshot(&mut expected, &blur, surface.native_scale);
+                    if later {
+                        renderer::draw_screenshot(&mut expected, &rectangle, surface.native_scale);
+                    }
+                    let expected = expected.into_pixmap();
+                    let left = ((actual.x + offset_x) * scale).round() as u32;
+                    let top = ((actual.y + offset_y) * scale).round() as u32;
+                    for y in 0..actual.pixmap.height() {
+                        for x in 0..actual.pixmap.width() {
+                            let actual = actual.pixmap.pixel(x, y).unwrap();
+                            let expected = expected.pixel(left + x, top + y).unwrap();
+                            for (actual, expected) in [
+                                (actual.red(), expected.red()),
+                                (actual.green(), expected.green()),
+                                (actual.blue(), expected.blue()),
+                                (actual.alpha(), expected.alpha()),
+                            ] {
+                                assert!(
+                                    actual.abs_diff(expected) <= 1,
+                                    "later {later}, surface {offset_x},{offset_y}, blur {blur_x},{blur_y}, pixel {x},{y}: {actual} vs {expected}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

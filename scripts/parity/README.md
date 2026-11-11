@@ -120,13 +120,18 @@ atlas eviction. Overlapping translucent shadows differ by four color levels in
 at most 16 pixels; all other pixels use the limits above. Polish copy is checked
 against editor export separately. Balanced single captures are checked at 100%,
 125% and 200%, with zero or 20px padding, solid or transparent backgrounds,
-translucent pixels, annotations, crop, undo and history reopen. A 100% inset case
-checks the expected source-edge color and backdrop replacement after an equal-size
-crop. Attachments on all four edges without frames, inset, corners or shadows are
+translucent pixels, annotations, crop, undo and history reopen. Unframed single
+images with inset and no corners or shadow are compared against saved pixels at
+all three scales, with zero or 20px padding, transparent and solid backgrounds,
+translucent pixels and annotations. Balanced inset cases check the source-edge
+color and backdrop replacement after an equal-size crop. Plain translucent images
+also check that annotation patches do not blend the source twice. Attachments on
+all four edges without frames, inset, corners or shadows are
 checked at all three scales with padding and background variants, including an
 edge-crossing pixelated redaction and the reopened preview. The right attachment
 also checks clipping outside the canvas. Balanced frames, corners, shadows,
-arbitrary zoom and inset combinations remain outside these comparisons. In the unframed layered path, annotations and black, pixelated and
+arbitrary zoom and framed or layered inset combinations remain outside these
+comparisons. In the unframed layered path, annotations and black, pixelated and
 blurred redactions crossing into attachments are compared with saved pixels at
 125% and 200%; overlapping and clipped redactions, crop, undo and atlas
 retirement are also checked. Direct Electron pixel comparison and framed or
@@ -140,6 +145,13 @@ wallpaper at 100% for opaque and translucent images. Plain captures with the
 shape match a flattened PNG inside the redaction at 50% and 150% zoom; the
 surrounding edge band still differs at 150%. Complex compositions and physical
 DPI remain outside these checks.
+Committed screenshot blur is checked against saved pixels in unframed captures
+at the same three simulated scales, with transparent pixels, preceding and later
+annotations, and a clipped region. A CPU test checks low-zoom blur sampling and
+replay beneath a later annotation at aligned offsets and all four surface edges. A 50% zoom
+fixture still differs from a flattened image, and the blur kernel differs from an
+Electron canvas edge probe. A synthetic CPU comparison also differs at a
+fractional surface offset; the live editor case remains unverified.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain

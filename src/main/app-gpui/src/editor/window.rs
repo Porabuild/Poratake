@@ -639,7 +639,7 @@ impl EditorWindow {
                 else {
                     continue;
                 };
-                if style == "pixelate" {
+                if style == "pixelate" || style == "blur" {
                     continue;
                 }
                 let key = format!(
@@ -771,6 +771,7 @@ impl EditorWindow {
             group.width,
             group.height,
             self.native_scale,
+            !self.layers.is_empty(),
         );
         let size = (
             width.round().max(1.0) as u32,
@@ -2306,6 +2307,7 @@ impl EditorWindow {
                 group.width,
                 group.height,
                 self.native_scale,
+                !self.layers.is_empty(),
             );
             (width as f32, height as f32)
         } else {

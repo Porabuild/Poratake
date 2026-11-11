@@ -35,6 +35,21 @@ pub fn draw_screenshot(canvas: &mut Canvas, annotation: &Annotation, native_scal
                 .max(1.0);
             pixelate_screenshot(canvas, x, y, width, height, block);
         }
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            style,
+            intensity,
+            ..
+        } if style == "blur" => {
+            let (x, y, width, height) = normalize_rect(*x, *y, *width, *height);
+            let radius = (redact_intensity(*intensity).1 * native_scale)
+                .round()
+                .max(1.0);
+            blur_region(canvas, x, y, width, height, radius);
+        }
         _ => draw(canvas, annotation),
     }
 }
@@ -1060,6 +1075,31 @@ mod tests {
             },
         );
         assert_eq!(covered(&canvas), 32 * 32);
+    }
+
+    #[test]
+    fn screenshot_blur_expands_with_native_scale() {
+        let annotation = Annotation::Redact {
+            id: "blur".into(),
+            x: 16.0,
+            y: 8.0,
+            width: 96.0,
+            height: 48.0,
+            style: "blur".into(),
+            intensity: 2.0,
+        };
+        let sample = |native_scale| {
+            let mut canvas = Canvas::new(128, 64).unwrap();
+            canvas.fill_all(Color::BLACK);
+            canvas.fill_rect(Rect::from_xywh(64., 0., 64., 64.).unwrap(), Color::WHITE);
+            draw_screenshot(&mut canvas, &annotation, native_scale);
+            canvas.pixmap().pixel(54, 32).unwrap().red()
+        };
+        let samples = [sample(1.0), sample(1.25), sample(2.0)];
+        assert!(
+            samples[0] < samples[1] && samples[1] < samples[2],
+            "{samples:?}"
+        );
     }
 
     #[test]

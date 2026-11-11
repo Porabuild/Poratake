@@ -127,6 +127,7 @@ pub fn compose_with_layers(
         wallpaper,
         frame_scale,
         original_inset_color,
+        !layers.is_empty(),
     ))
 }
 
@@ -216,7 +217,7 @@ fn compose_layered_wallpaper(
         wallpaper.spacing.max(0.0),
     );
     let ((width, height), (offset_x, offset_y, _, _)) =
-        crate::editor::wallpaper::layout(wallpaper, layout.width, layout.height, frame_scale);
+        crate::editor::wallpaper::layout(wallpaper, layout.width, layout.height, frame_scale, true);
     let (width, height) = (
         width.round().max(1.0) as u32,
         height.round().max(1.0) as u32,
@@ -306,10 +307,17 @@ fn compose_wallpaper(
     wallpaper: &WallpaperSettings,
     frame_scale: f64,
     original_inset_color: Option<Option<String>>,
+    has_layers: bool,
 ) -> Pixmap {
     let (image_width, image_height) = (image.width() as f64, image.height() as f64);
     let ((canvas_width, canvas_height), (offset_x, offset_y, _, _)) =
-        crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
+        crate::editor::wallpaper::layout(
+            wallpaper,
+            image_width,
+            image_height,
+            frame_scale,
+            has_layers,
+        );
     let (canvas_width, canvas_height) = (
         canvas_width.round().max(1.0) as u32,
         canvas_height.round().max(1.0) as u32,
@@ -647,8 +655,13 @@ pub fn render_backdrop(
 
     if edge_preview && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none() {
         if let Some(shadow) = image_shadow(wallpaper.shadow) {
-            let (_, (offset_x, offset_y, _, _)) =
-                crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
+            let (_, (offset_x, offset_y, _, _)) = crate::editor::wallpaper::layout(
+                wallpaper,
+                image_width,
+                image_height,
+                frame_scale,
+                !layers.is_empty(),
+            );
             paint_rounded_shadow(
                 &mut canvas,
                 (
@@ -667,8 +680,13 @@ pub fn render_backdrop(
     // Attached images are static, so they belong to the backdrop; only the
     // primary capture and its annotations stay live.
     if !layers.is_empty() {
-        let (_, (offset_x, offset_y, _, _)) =
-            crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
+        let (_, (offset_x, offset_y, _, _)) = crate::editor::wallpaper::layout(
+            wallpaper,
+            image_width,
+            image_height,
+            frame_scale,
+            !layers.is_empty(),
+        );
         let layout = crate::editor::layers::compute(
             image_width,
             image_height,
@@ -696,8 +714,13 @@ pub fn render_backdrop(
     // The inset band belongs to the backdrop too; the live canvas draws the
     // image on top of it.
     if let Some(color_value) = inset_color.filter(|_| wallpaper.inset > 0.0) {
-        let (_, (offset_x, offset_y, _, _)) =
-            crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
+        let (_, (offset_x, offset_y, _, _)) = crate::editor::wallpaper::layout(
+            wallpaper,
+            image_width,
+            image_height,
+            frame_scale,
+            !layers.is_empty(),
+        );
         let inset = wallpaper.inset as f32;
         if let Some(path) = rounded_rect_path(
             offset_x.round() as f32 - inset,
@@ -737,8 +760,13 @@ pub fn render_backdrop(
     // image and its annotations inside it.
     let mut edge_tiles = None;
     if crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some() {
-        let (_, (offset_x, offset_y, _, _)) =
-            crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
+        let (_, (offset_x, offset_y, _, _)) = crate::editor::wallpaper::layout(
+            wallpaper,
+            image_width,
+            image_height,
+            frame_scale,
+            !layers.is_empty(),
+        );
         crate::render::window_frame::render_chrome(
             &mut canvas,
             offset_x.round(),
@@ -774,8 +802,13 @@ pub fn render_backdrop(
             }
         }
     } else if edge_preview {
-        let (_, (offset_x, offset_y, _, _)) =
-            crate::editor::wallpaper::layout(wallpaper, image_width, image_height, frame_scale);
+        let (_, (offset_x, offset_y, _, _)) = crate::editor::wallpaper::layout(
+            wallpaper,
+            image_width,
+            image_height,
+            frame_scale,
+            !layers.is_empty(),
+        );
         edge_tiles = crate::render::canvas::preview_clip_edges(
             canvas.pixmap(),
             offset_x.round(),
@@ -1576,20 +1609,28 @@ mod tests {
 
     #[test]
     fn an_inset_lays_the_image_on_a_band_of_its_own_edge_colour() {
-        let mut settings = WallpaperSettings::default();
-        settings.set_gradient(preset("slate"));
-        settings.padding = 20.0;
-        settings.inset = 6.0;
-
         let mut base = RgbaImage::from_pixel(60, 60, image::Rgba([10, 200, 10, 255]));
         // A distinct centre keeps the edge colour unambiguous.
         base.put_pixel(30, 30, image::Rgba([255, 255, 255, 255]));
         let base = image::DynamicImage::ImageRgba8(base);
-
-        let composed = compose(Some(&base), 60, 60, &[], &settings, 1.0);
-        // The band sits just outside the image and takes its border colour.
-        let band = composed.get_pixel(20 - 3, 50).0;
-        assert_eq!(&band[..3], &[10, 200, 10]);
+        for (padding, background) in [(0, false), (20, true)] {
+            let mut settings = WallpaperSettings::default();
+            if background {
+                settings.set_gradient(preset("slate"));
+            }
+            settings.padding = padding as f64;
+            settings.inset = 6.0;
+            let composed = compose(Some(&base), 60, 60, &[], &settings, 1.0);
+            assert_eq!(composed.dimensions(), (72 + padding * 2, 72 + padding * 2));
+            assert_eq!(
+                composed.get_pixel(padding + 3, padding + 30).0,
+                [10, 200, 10, 255]
+            );
+            assert_eq!(
+                composed.get_pixel(padding + 36, padding + 36).0,
+                [255, 255, 255, 255]
+            );
+        }
     }
 
     #[test]
@@ -1620,8 +1661,8 @@ mod tests {
             fill: None,
         };
         let composed = compose(Some(&base), 200, 160, &[annotation], &settings, 1.0);
-        assert_eq!(composed.dimensions(), (180, 160));
-        assert_eq!(composed.get_pixel(15, 80).0, [230, 230, 230, 255]);
+        assert_eq!(composed.dimensions(), (196, 176));
+        assert_eq!(composed.get_pixel(23, 88).0, [230, 230, 230, 255]);
     }
 
     #[test]

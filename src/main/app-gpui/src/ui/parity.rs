@@ -932,6 +932,15 @@ pub fn capture_editor_interaction_states() {
                         with_background,
                         0.,
                     );
+                    workflows::simple_inset_preview(
+                        &mut cx,
+                        &scratch,
+                        scale,
+                        padding,
+                        with_background,
+                        8.,
+                        false,
+                    );
                 }
             }
             for with_background in [false, true] {
@@ -942,8 +951,12 @@ pub fn capture_editor_interaction_states() {
                     workflows::restored_pixelation(&mut cx, &scratch, scale, transparent, clipped);
                 }
             }
+            workflows::simple_inset_preview(&mut cx, &scratch, scale, 0., false, 0., false);
+            workflows::simple_inset_preview(&mut cx, &scratch, scale, 0., false, 8., true);
+            workflows::balance_restoration(&mut cx, &scratch, scale, 0., false, 8.);
         }
         workflows::balance_restoration(&mut cx, &scratch, 1., 20., false, 8.);
+        workflows::balance_restoration(&mut cx, &scratch, 1.25, 20., true, 8.);
     }
     #[cfg(windows)]
     if source.is_none() {
