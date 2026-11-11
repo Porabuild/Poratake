@@ -113,6 +113,8 @@ struct FreezeState {
     state: Mutex<FreezeProgress>,
     settled: Condvar,
     operation: Mutex<()>,
+    #[cfg(test)]
+    release_waiting: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
 }
 
 #[derive(Default)]
@@ -253,6 +255,10 @@ impl CaptureService {
 
     fn wait_for_release(&self, generation: u64) -> bool {
         let mut state = self.freeze.state.lock();
+        #[cfg(test)]
+        if let Some(waiting) = self.freeze.release_waiting.lock().take() {
+            let _ = waiting.send(());
+        }
         while state.completed_generation < generation
             || state.captures.range(..=generation).next().is_some()
         {
@@ -285,11 +291,24 @@ impl CaptureService {
 
     /// `releaseScreen()`. Safe to call when nothing is frozen.
     pub fn release_screen(&self, generation: u64) -> bool {
-        let _operation = self.freeze.operation.lock();
-        if generation == 0 || !self.wait_for_release(generation) {
+        if generation == 0 {
             return true;
         }
-        self.release_screen_started()
+        loop {
+            if !self.wait_for_release(generation) {
+                return true;
+            }
+            let _operation = self.freeze.operation.lock();
+            let state = self.freeze.state.lock();
+            if state.next_generation > generation {
+                return true;
+            }
+            if state.captures.range(..=generation).next().is_some() {
+                continue;
+            }
+            drop(state);
+            return self.release_screen_started();
+        }
     }
 
     fn release_screen_started(&self) -> bool {
@@ -838,7 +857,15 @@ fn capture_screen_target(target: ScreenTarget, cx: &mut gpui::App) {
     let capture = overlay::display_capture(target.bounds, target.scale, target.capture_display_id);
     let coordinator = crate::state::coordinator(cx);
     coordinator.update(cx, |coordinator, cx| {
-        coordinator.capture_area_for(capture, intent::CaptureIntent::Screenshot, hide, cx);
+        coordinator.capture_area_reserved(
+            capture,
+            intent::CaptureIntent::Screenshot,
+            None,
+            None,
+            hide,
+            None,
+            cx,
+        );
     });
 }
 
@@ -897,8 +924,7 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
         }
     };
 
-    let previous_hide = overlay::capture_hide(cx);
-    overlay::release_capture_hide(previous_hide, cx);
+    let release_first = overlay::replace_all(cx);
 
     if targets.len() > 1
         && crate::system::capabilities::is_supported(
@@ -906,7 +932,6 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
         )
     {
         let fallback = targets[0].clone();
-        let release_first = overlay::replace_all(cx);
         with_frozen_screen(
             cx,
             release_first,
@@ -943,7 +968,38 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
         return;
     }
 
-    capture_screen_target(targets[0].clone(), cx);
+    let target = targets[0].clone();
+    let owner = overlay::revision(cx);
+    let Some(generation) = release_first.filter(|generation| *generation != 0) else {
+        cx.defer(move |cx| {
+            if overlay::revision(cx) == owner {
+                capture_screen_target(target, cx);
+            }
+        });
+        return;
+    };
+    let service = crate::state::state(cx);
+    cx.spawn(async move |cx| {
+        let released = cx
+            .background_executor()
+            .spawn(async move { service.release_screen(generation) })
+            .await;
+        cx.update(|cx| {
+            if overlay::revision(cx) != owner {
+                return;
+            }
+            if !released {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Capture Failed",
+                    "Could not release the frozen screen",
+                );
+                return;
+            }
+            capture_screen_target(target, cx);
+        });
+    })
+    .detach();
 }
 
 #[cfg(test)]
@@ -1051,6 +1107,55 @@ mod tests {
         assert!(super::all_screen_targets_opened(2, 2));
         assert!(!super::all_screen_targets_opened(1, 2));
         assert!(!super::all_screen_targets_opened(0, 2));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn screen_capture_closes_an_existing_area_selector(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.hide_desktop_icons = false;
+            settings.storage.screenshots_path = dir.path().to_string_lossy().into_owned();
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config.clone());
+            super::overlay::init_bindings(cx);
+        });
+        assert_eq!(cx.read(|cx| cx.displays().len()), 1);
+        for freeze in [false, true] {
+            config.update(|settings| settings.screenshot.freeze_screen = freeze);
+            cx.update(|cx| {
+                super::start_area_selection(super::intent::CaptureIntent::Screenshot, cx);
+            });
+            cx.run_until_parked();
+            assert!(cx.update(super::overlay::parity_is_active));
+            cx.update(super::start_screen_capture);
+            cx.run_until_parked();
+            assert!(!cx.update(super::overlay::parity_is_active));
+        }
+        assert_eq!(
+            *notifications.borrow(),
+            ["Capture Failed", "Capture Failed"]
+        );
+        notifications.borrow_mut().clear();
+        for freeze in [false, true] {
+            config.update(|settings| settings.screenshot.freeze_screen = freeze);
+            cx.update(|cx| {
+                super::start_area_selection(super::intent::CaptureIntent::Screenshot, cx);
+            });
+            cx.run_until_parked();
+            cx.update(|cx| {
+                super::start_screen_capture(cx);
+                super::start_area_selection(super::intent::CaptureIntent::Screenshot, cx);
+            });
+            cx.run_until_parked();
+            assert!(cx.update(super::overlay::parity_is_active));
+            assert!(notifications.borrow().is_empty());
+            cx.update(super::overlay::close_all);
+            cx.run_until_parked();
+        }
     }
 
     #[herogpui::test]
@@ -1178,6 +1283,58 @@ mod tests {
         assert!(receiver
             .recv_timeout(Duration::from_secs(1))
             .expect("release continued"));
+    }
+
+    #[test]
+    fn release_does_not_block_a_pending_freeze() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        let service =
+            CaptureService::new(DaemonHandle::with_binary(std::path::PathBuf::new()), config);
+        let generation = service.begin_freeze();
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::sync_channel(1);
+        *service.freeze.release_waiting.lock() = Some(waiting_tx);
+        let releasing = service.clone();
+        let release = std::thread::spawn(move || releasing.release_screen(generation));
+        waiting_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let freezing = service.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let freeze = std::thread::spawn(move || {
+            let _operation = freezing.freeze.operation.lock();
+            locked_tx.send(()).unwrap();
+            freezing.finish_freeze(generation, Ok(())).unwrap();
+        });
+        let freeze_started = locked_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        if !freeze_started {
+            service.finish_freeze(generation, Ok(())).unwrap();
+        }
+        assert!(release.join().unwrap());
+        freeze.join().unwrap();
+        assert!(freeze_started, "release blocked the pending freeze");
+    }
+
+    #[test]
+    fn release_rechecks_reservations_without_holding_the_operation_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        let service =
+            CaptureService::new(DaemonHandle::with_binary(std::path::PathBuf::new()), config);
+        let generation = service.begin_freeze();
+        service.finish_freeze(generation, Ok(())).unwrap();
+        let operation = service.freeze.operation.lock();
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::sync_channel(1);
+        *service.freeze.release_waiting.lock() = Some(waiting_tx);
+        let releasing = service.clone();
+        let release = std::thread::spawn(move || releasing.release_screen(generation));
+        waiting_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let reservation = service.reserve_cached_capture();
+        let (retry_tx, retry_rx) = std::sync::mpsc::sync_channel(1);
+        *service.freeze.release_waiting.lock() = Some(retry_tx);
+        drop(operation);
+        retry_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(service.freeze.operation.try_lock().is_some());
+        drop(reservation);
+        assert!(release.join().unwrap());
     }
 
     #[test]

@@ -461,6 +461,59 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
                 .filter_map(|window| window.downcast::<EditorWindow>())
                 .all(|editor| Path::new(&editor.read(cx).unwrap().file_path) != path)
     }));
+    let captures = scratch.join("screen-replaces-frozen-selection");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "frozen", "rect": display, "windowId": null,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = super::daemon_fixture::calls(output).len();
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+            config.screenshot.freeze_screen = true;
+        });
+        crate::capture::start_area_capture(cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.update(crate::capture::overlay::parity_is_active));
+    cx.update(crate::capture::start_screen_capture);
+    cx.run_until_parked();
+    assert!(!cx.update(crate::capture::overlay::parity_is_active));
+    let files: Vec<_> = std::fs::read_dir(&captures)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1);
+    let saved = image::open(&files[0]).unwrap().to_rgba8();
+    assert_eq!(
+        saved.dimensions(),
+        (display.width as u32, display.height as u32)
+    );
+    assert!(saved.pixels().all(|pixel| pixel.0 == [240, 80, 64, 255]));
+    let copied = cx
+        .update(|cx| crate::system::clipboard::ClipboardService::read_image(cx))
+        .unwrap();
+    assert_eq!(
+        image::load_from_memory(&copied.bytes).unwrap().to_rgba8(),
+        saved
+    );
+    let calls = super::daemon_fixture::calls(output);
+    let calls = &calls[before..];
+    let release = calls
+        .iter()
+        .position(|call| call["module"] == "freeze-screen" && call["method"] == "release")
+        .unwrap();
+    let capture = calls
+        .iter()
+        .position(|call| call["module"] == "screenshot" && call["method"] == "capture-area")
+        .unwrap();
+    assert!(release < capture);
+    assert_eq!(calls[capture]["params"]["cached"], false);
     cx.update(|cx| {
         crate::state::state(cx).config.update(|config| {
             config.screenshot.show_preview = true;

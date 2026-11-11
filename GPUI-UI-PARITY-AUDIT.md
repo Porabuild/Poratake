@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `3f0e3774` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `f3f949dc` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -73,8 +73,12 @@ The zoom follow-up changed 148 NVIDIA images; their differences were reviewed
 within the screenshot canvas or its one-pixel lower edge. The other 2,732 images
 were unchanged, and all eight affected cases passed exact comparison after the
 reviewed updates. The [hosted run at `e6454be4`](https://github.com/Porabuild/Poratake/actions/runs/43088770389)
-reported 148 changed images across eight cases. Its evidence upload failed after
-the artifact API returned HTML instead of JSON, so those images remain unreviewed.
+reported 148 changed images across eight cases, but its evidence upload failed
+after the artifact API returned HTML instead of JSON. The [run at `8b764bc0`](https://github.com/Porabuild/Poratake/actions/runs/43098740249)
+preserved all 16 renderer profiles and the 148 changed Basic Render Driver
+images; the other 2,732 images matched exactly. The changed pixels were checked
+against the fixture image bounds and representative controls were inspected in
+both themes. The reviewed images are now baselines; a hosted rerun is pending.
 An exact rerun after the target-menu interaction fixes passed all 16 cases and
 2,808 images. The corresponding 80 hosted images were reviewed, and all 2,728
 earlier hosted images were pixel-identical. [Hosted CI at `a9d025f`](https://github.com/Porabuild/Poratake/actions/runs/42980916944)
@@ -652,11 +656,21 @@ Bugs fixed in this pass:
   hide operation. A normal completion still attempts capture through the fake
   daemon. Native overlapping countdown and selection behavior still needs
   verification.
+- On Windows, a single-display screen capture could leave a previous selector
+  open and use its frozen pixels. It now closes the selector and releases its
+  freeze before capturing live pixels; a newer selector invalidates a pending
+  screen request. Mock-platform tests cover live and frozen replacement. A
+  saved-output and clipboard fixture is prepared but has not yet run on the
+  hosted renderer. A pending non-Windows freeze still needs ownership handling.
+- Releasing a selector while its freeze was starting could deadlock the freeze
+  worker. Release now waits outside the operation lock and rechecks later
+  reservations. Thread-coordinated tests cover the deadlock and a reservation
+  arriving during release.
 - A full GPUI scroll progress queue could discard Done or Cancel. Terminal and
   interruption signals now use a separate queue while preview updates stay
   bounded. A GPU-free test fills the progress queue, sends 20 warnings, and
-  verifies both terminal actions. Two burst-event workflow fixtures still need
-  a hosted visual run.
+  verifies both terminal actions. The burst-event workflow fixtures completed in
+  the hosted run at `8b764bc0` before its image baseline comparisons failed.
 - Scroll capture cleared its active state before finish or cancellation completed,
   allowing a second session to start while the daemon was still processing the
   first. Held-response fixtures now verify the state through both RPCs.
@@ -1038,6 +1052,7 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                        |
 | P1       | Screenshot blur preview and Electron parity              | The blur region and neighboring annotations match flattened PNG pixels within two levels at 50%, 73%, 137% and 150% effective zoom for the tested unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. A transparent single image over a gradient or inset is blurred before the backdrop in GPUI but after it in Electron. Recheck fractional surface offsets; verify draft, frames, attachments, physical DPI, large patches and interactive performance. |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                |
+| P1       | Superseded non-Windows frozen selector                   | On macOS and Linux, a selector opens after its asynchronous freeze. A newer capture can start while that freeze is pending, then the older continuation can open a stale selector. A direct screen capture can also proceed before the pending freeze is released. Verify and fix the handoff before claiming cross-platform coverage.                                                                                                                                                                                                                              |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                                                |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                          |
 | P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. Sparse text and stationary animation are tested. Some simultaneous size/color changes stop early. Verify real surfaces, weak overlaps and fixed headers; macOS has a separate, unfixed stitcher.                                                                                                                                                                                                                                    |

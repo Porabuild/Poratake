@@ -37,18 +37,6 @@ impl Coordinator {
     /// Captures a display-bound region and routes the pixels according to `intent`: the
     /// screenshot flows go to the library, the analysis flows hand a temp file
     /// to the daemon and delete it again.
-    pub fn capture_area_for(
-        &mut self,
-        capture: DisplayCapture,
-        intent: CaptureIntent,
-        hide: Option<Arc<CaptureHide>>,
-        cx: &mut Context<Self>,
-    ) {
-        let freeze = self.service.config.get().screenshot.freeze_screen;
-        let reservation = freeze.then(|| self.service.reserve_cached_capture());
-        self.capture_area_reserved(capture, intent, reservation, None, hide, None, cx);
-    }
-
     pub(crate) fn capture_area_reserved(
         &mut self,
         capture: DisplayCapture,
