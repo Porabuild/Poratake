@@ -943,7 +943,7 @@ class ScrollCaptureModule: NSObject, Module {
 
         let cropRect = CGRect(
             x: 0,
-            y: 0,
+            y: latestFrame.image.height - newContentHeight,
             width: latestFrame.image.width,
             height: newContentHeight
         )
@@ -1043,6 +1043,31 @@ class ScrollCaptureModule: NSObject, Module {
 
         return mutableData.base64EncodedString()
     }
+
+    #if SCROLL_CAPTURE_TEST
+    func testPreviewAndSave(frames: [CGImage], step: Int, outputPath: String) -> (CGImage, CGImage, String, [Int]) {
+        let first = frames[0]
+        captureArea = NSRect(x: 0, y: 0, width: first.width, height: first.height)
+        scrollStepPoints = step
+        capturedFrames.removeAll()
+        previewImage = nil
+        for image in frames {
+            capturedFrames.append(CapturedFrame(image: image, index: capturedFrames.count))
+            updatePreviewImage()
+        }
+        let overlaps = zip(frames, frames.dropFirst()).map { pair in
+            findOverlap(topFrame: pair.0, bottomFrame: pair.1, expectedOverlap: first.height - step)
+        }
+        guard let preview = previewImage,
+              let encoded = encodePreviewBase64(preview),
+              stitchFrames(outputPath: outputPath) != nil,
+              let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: outputPath) as CFURL, nil),
+              let saved = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            fatalError("Failed to create preview or saved scroll capture")
+        }
+        return (preview, saved, encoded, overlaps)
+    }
+    #endif
 }
 
 private func cocoaYFromTopLeft(

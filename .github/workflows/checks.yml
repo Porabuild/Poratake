@@ -129,6 +129,16 @@ jobs:
       - name: Build macOS daemon
         run: ./scripts/build-daemon.sh
 
+      - name: Test macOS scroll preview
+        run: |
+          swiftc -O -D SCROLL_CAPTURE_TEST -o "$RUNNER_TEMP/scroll-capture-preview-test" \
+            src/main/daemon/Core/Protocol.swift \
+            src/main/daemon/Core/ModuleProtocol.swift \
+            src/main/daemon/Core/DaemonContract.generated.swift \
+            src/main/daemon/Modules/ScrollCaptureModule.swift \
+            tests/native/scroll-capture-preview.swift
+          "$RUNNER_TEMP/scroll-capture-preview-test"
+
       - name: Check GPUI shell
         run: cargo check --locked --manifest-path src/main/app-gpui/Cargo.toml
 
