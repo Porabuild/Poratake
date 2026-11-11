@@ -906,13 +906,31 @@ pub(super) fn simple_inset_preview(
             let mut annotations = editor.history.current().to_vec();
             annotations.push(crate::editor::annotations::Annotation::Rectangle {
                 id: "inset-annotation".into(),
-                x: 42.,
+                x: if clipped_blur { 18. } else { 42. },
                 y: 32.,
                 width: 16.,
                 height: 16.,
                 stroke: "#00ff00".into(),
                 stroke_width: 1.,
                 fill: Some("#00ff00".into()),
+            });
+            annotations.push(crate::editor::annotations::Annotation::Redact {
+                id: "after-inset-blackout".into(),
+                x: if clipped_blur { 22. } else { 46. },
+                y: 36.,
+                width: 6.,
+                height: 6.,
+                style: "blackout".into(),
+                intensity: 2.,
+            });
+            annotations.push(crate::editor::annotations::Annotation::Redact {
+                id: "after-inset-pixelation".into(),
+                x: if clipped_blur { 5. } else { 32. },
+                y: 24.,
+                width: 8.,
+                height: 8.,
+                style: "pixelate".into(),
+                intensity: 3.,
             });
             editor.history.push(annotations);
             cx.notify();
@@ -966,6 +984,12 @@ pub(super) fn simple_inset_preview(
         saved.get_pixel(margin + 33, margin + 23),
         unblurred.get_pixel(33, 23)
     );
+    assert_eq!(
+        saved
+            .get_pixel(margin + if clipped_blur { 24 } else { 48 }, margin + 38)
+            .0,
+        [0, 0, 0, 255]
+    );
     if native_inset > 0 {
         assert_eq!(
             saved.get_pixel(margin - 2, margin + 10).0,
@@ -987,6 +1011,105 @@ pub(super) fn simple_inset_preview(
             );
         }
     }
+    let flattened_path = scratch.join("simple-inset-blur-flattened.png");
+    std::fs::write(&flattened_path, &png).unwrap();
+    let flattened = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    flattened
+        .update(cx, |editor, _, cx| {
+            editor
+                .wallpaper
+                .set_gradient(Some(crate::editor::wallpaper::GradientOption {
+                    id: "zoom-matte".into(),
+                    colors: vec![format!(
+                        "#{:02x}{:02x}{:02x}",
+                        matte.0[0], matte.0[1], matte.0[2]
+                    )],
+                    angle: 0.,
+                }));
+            editor.wallpaper.padding = 0.;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, flattened.into());
+    for effective_zoom in [0.5, 0.73, 1.37, 1.5] {
+        let zoom = effective_zoom / scale;
+        for window in [editor, flattened] {
+            window
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = zoom;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, window.into());
+        }
+        let (preview_bounds, flattened_bounds) = cx.update(|cx| {
+            (
+                editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                flattened.read(cx).unwrap().bounds.borrow().unwrap(),
+            )
+        });
+        let preview = cx.capture_screenshot(editor.into()).unwrap();
+        let flattened_image = cx.capture_screenshot(flattened.into()).unwrap();
+        let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
+        let margin_offset = snap(margin as f32 * zoom * scale);
+        let left = snap(f32::from(preview_bounds.left()) * scale) - margin_offset;
+        let top = snap(f32::from(preview_bounds.top()) * scale) - margin_offset;
+        let flat_left = snap(f32::from(flattened_bounds.left()) * scale);
+        let flat_top = snap(f32::from(flattened_bounds.top()) * scale);
+        if scale == 1. && padding_setting == 0. && !with_background && inset_setting == 8. {
+            let width = (saved.width() as f32 * effective_zoom).round() as u32;
+            let height = (saved.height() as f32 * effective_zoom).round() as u32;
+            image::imageops::crop_imm(&preview, left, top, width, height)
+                .to_image()
+                .save(scratch.join(format!(
+                    "blur-zoom-{effective_zoom}-{clipped_blur}-preview.png"
+                )))
+                .unwrap();
+            image::imageops::crop_imm(&flattened_image, flat_left, flat_top, width, height)
+                .to_image()
+                .save(scratch.join(format!(
+                    "blur-zoom-{effective_zoom}-{clipped_blur}-saved.png"
+                )))
+                .unwrap();
+        }
+        let mut worst = (0, 0, 0, [0; 4], [0; 4]);
+        let mut mismatched = 0;
+        let (start_x, end_x) = if clipped_blur { (0, 36) } else { (31, 63) };
+        for y in (((margin + 21) as f32 * effective_zoom).ceil() as u32)
+            ..(((margin + 53) as f32 * effective_zoom).floor() as u32)
+        {
+            for x in (((margin + start_x) as f32 * effective_zoom).ceil() as u32)
+                ..(((margin + end_x) as f32 * effective_zoom).floor() as u32)
+            {
+                let actual = preview.get_pixel(left + x, top + y).0;
+                let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
+                let difference = actual
+                    .iter()
+                    .zip(expected)
+                    .map(|(a, b)| a.abs_diff(b))
+                    .max()
+                    .unwrap();
+                if difference > 2 {
+                    mismatched += 1;
+                }
+                if difference > worst.0 {
+                    worst = (difference, x, y, actual, expected);
+                }
+            }
+        }
+        assert_eq!(
+                mismatched, 0,
+                "blur at {effective_zoom}x, DPI {scale}, padding {padding_setting}, background {with_background}, inset {inset_setting}, clipped {clipped_blur}: worst {worst:?}"
+            );
+    }
+    cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
     cx.update_window(editor.into(), |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();

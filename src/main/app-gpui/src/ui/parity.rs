@@ -952,6 +952,7 @@ pub fn capture_editor_interaction_states() {
                 }
             }
             workflows::simple_inset_preview(&mut cx, &scratch, scale, 0., false, 0., false);
+            workflows::simple_inset_preview(&mut cx, &scratch, scale, 20., false, 0., false);
             workflows::simple_inset_preview(&mut cx, &scratch, scale, 0., false, 8., true);
             workflows::balance_restoration(&mut cx, &scratch, scale, 0., false, 8.);
         }

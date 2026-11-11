@@ -49,6 +49,16 @@ pub struct PatchImage {
     pub height: f64,
 }
 
+#[derive(Clone, Copy)]
+pub struct SamplingGrid {
+    pub origin: (f32, f32),
+    pub stage_bounds: (f32, f32, f32, f32),
+    pub stage_size: (f64, f64),
+    pub offset: (f64, f64),
+    pub zoom: f32,
+    pub dpi: f32,
+}
+
 pub fn is_rasterized(annotation: &Annotation) -> bool {
     matches!(
         annotation,
@@ -170,6 +180,19 @@ fn raster_bounds(
     }
 }
 
+pub fn overlaps_blur(annotation: &Annotation, beneath: &[&Annotation], surface: &Surface) -> bool {
+    let Some(bounds) = raster_bounds(annotation, surface, 1.) else {
+        return false;
+    };
+    beneath.iter().any(|earlier| {
+        if !matches!(earlier, Annotation::Redact { style, .. } if style == "blur") {
+            return false;
+        }
+        let blur = padded(earlier.bounds(), 2.);
+        bounds.0 < blur.2 && bounds.2 > blur.0 && bounds.1 < blur.3 && bounds.3 > blur.1
+    })
+}
+
 fn fit_scale(width: f64, height: f64, scale: f64) -> f64 {
     let pixels = width * scale * height * scale;
     if pixels <= MAX_PATCH_PIXELS {
@@ -184,6 +207,16 @@ pub fn patch(
     surface: &Surface,
     scale: f64,
 ) -> Option<Patch> {
+    patch_padded(annotation, beneath, surface, scale, 0.)
+}
+
+fn patch_padded(
+    annotation: &Annotation,
+    beneath: &[&Annotation],
+    surface: &Surface,
+    scale: f64,
+    padding: f64,
+) -> Option<Patch> {
     if scale <= 0.0 {
         return None;
     }
@@ -196,7 +229,13 @@ pub fn patch(
     } else {
         bounds
     };
-    let mut sample = bounds;
+    let target = padded(target, padding);
+    let mut sample = (
+        bounds.0.min(target.0),
+        bounds.1.min(target.1),
+        bounds.2.max(target.2),
+        bounds.3.max(target.3),
+    );
     loop {
         let previous = sample;
         for earlier in beneath {
@@ -447,6 +486,177 @@ pub fn image(
         y: patch.y,
         width: patch.width,
         height: patch.height,
+    };
+    CACHE.with(|cache| {
+        cache.borrow_mut().insert(
+            key,
+            Entry {
+                patch: value.clone(),
+                frame,
+            },
+        )
+    });
+    Some(value)
+}
+
+pub fn aligned_image(
+    keys: &FrameKeys,
+    index: usize,
+    annotation: &Annotation,
+    beneath: &[&Annotation],
+    surface: &Surface,
+    grid: SamplingGrid,
+) -> Option<PatchImage> {
+    surface.pixels?;
+    let snap = |value: f32| {
+        let value = value * grid.dpi;
+        (value.abs() - 0.5).ceil().copysign(value) as f64
+    };
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u64(fingerprint(keys, index, surface, 1.)?);
+    hasher.write_u8(1);
+    hasher.write_u64((snap(grid.stage_bounds.0) - snap(grid.origin.0)).to_bits());
+    hasher.write_u64((snap(grid.stage_bounds.1) - snap(grid.origin.1)).to_bits());
+    hasher.write_u64(
+        (snap(grid.stage_bounds.0 + grid.stage_bounds.2) - snap(grid.stage_bounds.0)).to_bits(),
+    );
+    hasher.write_u64(
+        (snap(grid.stage_bounds.1 + grid.stage_bounds.3) - snap(grid.stage_bounds.1)).to_bits(),
+    );
+    for value in [
+        grid.stage_bounds.2,
+        grid.stage_bounds.3,
+        grid.zoom,
+        grid.dpi,
+    ] {
+        hasher.write_u32(value.to_bits());
+    }
+    for value in [
+        grid.stage_size.0,
+        grid.stage_size.1,
+        grid.offset.0,
+        grid.offset.1,
+    ] {
+        hasher.write_u64(value.to_bits());
+    }
+    let key = hasher.finish();
+    let frame = FRAME.with(|frame| frame.get());
+    let cached = CACHE.with(|cache| {
+        cache.borrow_mut().get_mut(&key).map(|entry| {
+            entry.frame = frame;
+            entry.patch.clone()
+        })
+    });
+    if let Some(cached) = cached {
+        return Some(cached);
+    }
+    let stage_x = grid.stage_bounds.0;
+    let stage_y = grid.stage_bounds.1;
+    let left = snap(stage_x);
+    let top = snap(stage_y);
+    let scale_x = (snap(stage_x + grid.stage_bounds.2) - left) / grid.stage_size.0;
+    let scale_y = (snap(stage_y + grid.stage_bounds.3) - top) / grid.stage_size.1;
+    if scale_x <= 0. || scale_y <= 0. {
+        return None;
+    }
+    let bounds = raster_bounds(annotation, surface, 1.)?;
+    let target = if matches!(annotation, Annotation::Redact { .. }) {
+        annotation.bounds()
+    } else {
+        bounds
+    };
+    let target = padded(target, 1.);
+    let target = (
+        target.0.max(-surface.offset_x),
+        target.1.max(-surface.offset_y),
+        target.2.min(f64::from(surface.width) - surface.offset_x),
+        target.3.min(f64::from(surface.height) - surface.offset_y),
+    );
+    if target.2 <= target.0 || target.3 <= target.1 {
+        return None;
+    }
+    let x0 = (left + (target.0 + grid.offset.0) * scale_x).floor();
+    let y0 = (top + (target.1 + grid.offset.1) * scale_y).floor();
+    let x1 = (left + (target.2 + grid.offset.0) * scale_x).ceil();
+    let y1 = (top + (target.3 + grid.offset.1) * scale_y).ceil();
+    let (width, height) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    if width == 0
+        || height == 0
+        || f64::from(width) > MAX_PATCH_DIMENSION
+        || f64::from(height) > MAX_PATCH_DIMENSION
+        || f64::from(width) * f64::from(height) > MAX_PATCH_PIXELS
+    {
+        return None;
+    }
+    let guard = (1. / scale_x.min(scale_y)).ceil() + 2.;
+    let raw_surface = Surface {
+        matte: None,
+        ..*surface
+    };
+    let patch = patch_padded(annotation, beneath, &raw_surface, 1., guard)?;
+    if f64::from(patch.pixmap.width()) != patch.width
+        || f64::from(patch.pixmap.height()) != patch.height
+    {
+        return None;
+    }
+    let source = crate::editor::export::to_rgba(&patch.pixmap);
+    let mut out = image::RgbaImage::new(width, height);
+    let xs = (0..width)
+        .map(|x| {
+            let sx = (x0 + f64::from(x) + 0.5 - left) / scale_x - grid.offset.0 - patch.x - 0.5;
+            let ix = sx.floor();
+            let first = ix.max(0.).min(f64::from(source.width() - 1)) as usize;
+            let second = (ix + 1.).max(0.).min(f64::from(source.width() - 1)) as usize;
+            (first, second, (sx - ix) as f32)
+        })
+        .collect::<Vec<_>>();
+    let stride = source.width() as usize;
+    let source_pixels = source.as_raw().as_chunks::<4>().0;
+    let output: &mut [u8] = out.as_mut();
+    for (y, row) in output
+        .as_chunks_mut::<4>()
+        .0
+        .chunks_exact_mut(width as usize)
+        .enumerate()
+    {
+        let sy = (y0 + y as f64 + 0.5 - top) / scale_y - grid.offset.1 - patch.y - 0.5;
+        let iy = sy.floor();
+        let fy = (sy - iy) as f32;
+        let first_y = iy.max(0.).min(f64::from(source.height() - 1)) as usize * stride;
+        let second_y = (iy + 1.).max(0.).min(f64::from(source.height() - 1)) as usize * stride;
+        for (pixel, &(first_x, second_x, fx)) in row.iter_mut().zip(&xs) {
+            let pixels = [
+                source_pixels[first_y + first_x],
+                source_pixels[first_y + second_x],
+                source_pixels[second_y + first_x],
+                source_pixels[second_y + second_x],
+            ];
+            let mut sample = [0.0_f32; 4];
+            for c in 0..4 {
+                let a = f32::from(pixels[0][c]) * (1. - fx) + f32::from(pixels[1][c]) * fx;
+                let b = f32::from(pixels[2][c]) * (1. - fx) + f32::from(pixels[3][c]) * fx;
+                sample[c] = a * (1. - fy) + b * fy;
+            }
+            if let Some(background) = surface.matte {
+                let alpha = sample[3] / 255.;
+                for c in 0..3 {
+                    sample[c] = sample[c] * alpha + f32::from(background[c]) * (1. - alpha);
+                }
+                sample[3] = 255.;
+            }
+            let mut color = sample.map(|value| value.round() as u8);
+            color.swap(0, 2);
+            *pixel = color;
+        }
+    }
+    let value = PatchImage {
+        image: Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
+            out
+        )])),
+        x: (x0 - snap(grid.origin.0)) / f64::from(grid.dpi * grid.zoom),
+        y: (y0 - snap(grid.origin.1)) / f64::from(grid.dpi * grid.zoom),
+        width: f64::from(width) / f64::from(grid.dpi * grid.zoom),
+        height: f64::from(height) / f64::from(grid.dpi * grid.zoom),
     };
     CACHE.with(|cache| {
         cache.borrow_mut().insert(
@@ -726,6 +936,200 @@ mod tests {
             first_patch.image.as_bytes(0),
             second_patch.image.as_bytes(0)
         );
+    }
+
+    #[test]
+    fn aligned_blur_cache_tracks_the_image_and_sampling_grid() {
+        let first = render_image(&base_pixmap(180, 140));
+        let mut other = base_pixmap(180, 140);
+        other.fill(tiny_skia::Color::from_rgba8(180, 200, 220, 255));
+        let second = render_image(&other);
+        let annotation = Annotation::Redact {
+            id: "blur".into(),
+            x: 20.,
+            y: 20.,
+            width: 80.,
+            height: 60.,
+            style: "blur".into(),
+            intensity: 2.,
+        };
+        let surface = Surface {
+            image_id: Some(first.id),
+            width: 180,
+            height: 140,
+            offset_x: 0.,
+            offset_y: 0.,
+            native_scale: 1.,
+            pixels: first.as_bytes(0),
+            matte: Some([240, 240, 240]),
+            matte_image: None,
+        };
+        let grid = SamplingGrid {
+            origin: (100., 50.),
+            stage_bounds: (100., 50., 270., 210.),
+            stage_size: (180., 140.),
+            offset: (0., 0.),
+            zoom: 1.5,
+            dpi: 1.,
+        };
+        let keys = begin_frame(&[&annotation]);
+        let first_patch = aligned_image(&keys, 0, &annotation, &[], &surface, grid).unwrap();
+        let repeated = aligned_image(&keys, 0, &annotation, &[], &surface, grid).unwrap();
+        assert!(Arc::ptr_eq(&first_patch.image, &repeated.image));
+        let shifted = aligned_image(
+            &keys,
+            0,
+            &annotation,
+            &[],
+            &surface,
+            SamplingGrid {
+                origin: (101., 51.),
+                stage_bounds: (101., 51., 270., 210.),
+                ..grid
+            },
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&first_patch.image, &shifted.image));
+        let resized = aligned_image(
+            &keys,
+            0,
+            &annotation,
+            &[],
+            &surface,
+            SamplingGrid {
+                stage_bounds: (100., 50., 271., 210.),
+                ..grid
+            },
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&first_patch.image, &resized.image));
+        let scaled_grid = SamplingGrid {
+            origin: (100., 50.4),
+            stage_bounds: (100., 50.4, 216., 168.),
+            zoom: 1.2,
+            dpi: 1.25,
+            ..grid
+        };
+        let scaled = aligned_image(&keys, 0, &annotation, &[], &surface, scaled_grid).unwrap();
+        let moved_grid = SamplingGrid {
+            origin: (100.8, 51.2),
+            stage_bounds: (100.8, 51.2, 216., 168.),
+            ..scaled_grid
+        };
+        let moved = aligned_image(&keys, 0, &annotation, &[], &surface, moved_grid).unwrap();
+        assert!(Arc::ptr_eq(&scaled.image, &moved.image));
+        CACHE.with(|cache| cache.borrow_mut().clear());
+        let rebuilt = aligned_image(&keys, 0, &annotation, &[], &surface, moved_grid).unwrap();
+        assert_eq!(scaled.image.as_bytes(0), rebuilt.image.as_bytes(0));
+        assert_eq!((scaled.x, scaled.y), (rebuilt.x, rebuilt.y));
+        let negative_grid = SamplingGrid {
+            origin: (-100., -50.4),
+            stage_bounds: (-100., -50.4, 216., 168.),
+            ..scaled_grid
+        };
+        let negative = aligned_image(&keys, 0, &annotation, &[], &surface, negative_grid).unwrap();
+        let moved_negative_grid = SamplingGrid {
+            origin: (-100.8, -51.2),
+            stage_bounds: (-100.8, -51.2, 216., 168.),
+            ..negative_grid
+        };
+        let moved_negative =
+            aligned_image(&keys, 0, &annotation, &[], &surface, moved_negative_grid).unwrap();
+        assert!(Arc::ptr_eq(&negative.image, &moved_negative.image));
+        CACHE.with(|cache| cache.borrow_mut().clear());
+        let rebuilt_negative =
+            aligned_image(&keys, 0, &annotation, &[], &surface, moved_negative_grid).unwrap();
+        assert_eq!(
+            negative.image.as_bytes(0),
+            rebuilt_negative.image.as_bytes(0)
+        );
+        assert_eq!(
+            (negative.x, negative.y),
+            (rebuilt_negative.x, rebuilt_negative.y)
+        );
+        let fractional_grid = SamplingGrid {
+            origin: (80., 80.),
+            stage_bounds: (80., 80., 131.36, 102.2),
+            zoom: 0.73,
+            dpi: 1.25,
+            ..grid
+        };
+        let before = aligned_image(&keys, 0, &annotation, &[], &surface, fractional_grid).unwrap();
+        let after = aligned_image(
+            &keys,
+            0,
+            &annotation,
+            &[],
+            &surface,
+            SamplingGrid {
+                origin: (80.25, 80.),
+                stage_bounds: (80.25, 80., 131.36, 102.2),
+                ..fractional_grid
+            },
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&before.image, &after.image));
+        let other_surface = Surface {
+            image_id: Some(second.id),
+            pixels: second.as_bytes(0),
+            ..surface
+        };
+        let other_patch = aligned_image(&keys, 0, &annotation, &[], &other_surface, grid).unwrap();
+        assert_ne!(first_patch.image.as_bytes(0), other_patch.image.as_bytes(0));
+
+        let mut earlier = Annotation::Rectangle {
+            id: "earlier".into(),
+            x: 32.,
+            y: 30.,
+            width: 20.,
+            height: 20.,
+            stroke: "#ff0000".into(),
+            stroke_width: 1.,
+            fill: Some("#ff0000".into()),
+        };
+        let keys = begin_frame(&[&earlier, &annotation]);
+        let red = aligned_image(&keys, 1, &annotation, &[&earlier], &surface, grid).unwrap();
+        if let Annotation::Rectangle { stroke, fill, .. } = &mut earlier {
+            *stroke = "#00ff00".into();
+            *fill = Some("#00ff00".into());
+        }
+        let keys = begin_frame(&[&earlier, &annotation]);
+        let green = aligned_image(&keys, 1, &annotation, &[&earlier], &surface, grid).unwrap();
+        assert_ne!(red.image.as_bytes(0), green.image.as_bytes(0));
+    }
+
+    #[test]
+    fn aligned_blur_declines_an_oversized_texture() {
+        let annotation = Annotation::Redact {
+            id: "wide".into(),
+            x: 0.,
+            y: 0.,
+            width: 17_000.,
+            height: 160.,
+            style: "blur".into(),
+            intensity: 2.,
+        };
+        let surface = Surface {
+            image_id: None,
+            width: 19_200,
+            height: 160,
+            offset_x: 0.,
+            offset_y: 0.,
+            native_scale: 1.,
+            pixels: Some(&[]),
+            matte: None,
+            matte_image: None,
+        };
+        let grid = SamplingGrid {
+            origin: (0., 0.),
+            stage_bounds: (0., 0., 19_200., 160.),
+            stage_size: (19_200., 160.),
+            offset: (0., 0.),
+            zoom: 1.,
+            dpi: 1.,
+        };
+        let keys = begin_frame(&[&annotation]);
+        assert!(aligned_image(&keys, 0, &annotation, &[], &surface, grid).is_none());
     }
 
     #[test]

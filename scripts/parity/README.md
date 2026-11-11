@@ -153,9 +153,11 @@ Committed screenshot blur is checked against saved pixels in unframed captures
 at the same three simulated scales, with transparent pixels, preceding and later
 annotations, and a clipped region. A CPU test checks low-zoom blur sampling and
 replay beneath a later annotation at aligned offsets and all four surface edges.
-An inset fixture with overlapping annotations differs from a flattened PNG by
-up to eight levels at 50% zoom and 65 at 150%. Sampled Electron canvas blur
-profiles now differ by at most three channel levels, and
+The blur region and neighboring annotations match a flattened PNG within two
+channel levels at 50%, 73%, 137% and 150% effective zoom with simulated 100%,
+125% and 200% DPI in both themes. A whole-frame comparison still finds
+differences outside the checked region, and patches exceeding the image budget
+use the previous rendering path. Sampled Electron canvas blur profiles now differ by at most three channel levels, and
 translucent clipped screenshot samples by at most two. A transparent single
 image over a gradient or inset is still blurred before the backdrop in GPUI but
 after it in Electron. A synthetic CPU comparison also differed at a fractional
