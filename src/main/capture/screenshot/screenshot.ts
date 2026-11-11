@@ -28,7 +28,7 @@ import {
 } from '@/main/history';
 import { getWindowData, getWindowFromWebContentsId } from './open-editor.ts';
 import {
-  generateScreenshotPath,
+  captureScreenshotToUniqueFile,
   generateScreenshotExportName,
 } from './utils.ts';
 import {
@@ -57,7 +57,7 @@ type CapturePreviewPreparationRef = {
 };
 
 async function withHiddenDesktopIcons<T>(
-  capture: () => Promise<T>,
+  capture: (restore: () => void) => Promise<T>,
   afterCapture: (result: T) => Promise<void>
 ): Promise<T> {
   const config = getConfig();
@@ -70,19 +70,22 @@ async function withHiddenDesktopIcons<T>(
     await hideDesktopIcons('capture');
   }
 
+  let restoreIcons: Promise<boolean> | null = null;
+  const restore = () => {
+    restoreIcons ??= shouldHideIcons
+      ? showDesktopIcons('capture')
+      : Promise.resolve(true);
+  };
+
   let result: T;
   try {
-    result = await capture();
+    result = await capture(restore);
   } catch (error) {
-    if (shouldHideIcons) {
-      await showDesktopIcons('capture');
-    }
+    restore();
+    await restoreIcons;
     throw error;
   }
-
-  const restoreIcons = shouldHideIcons
-    ? showDesktopIcons('capture')
-    : Promise.resolve(true);
+  restore();
 
   try {
     await afterCapture(result);
@@ -111,20 +114,25 @@ async function captureScreenWithDisplaySelector(): Promise<void> {
     }
   }
 
-  const screenshotPath = generateScreenshotPath();
   const preparation: CapturePreviewPreparationRef = { current: null };
-  let captured: boolean;
+  let captured: string | null;
 
   try {
     captured = await withHiddenDesktopIcons(
-      () => {
-        const capture = captureDisplayToFile(display, screenshotPath);
-        preparation.current = prepareScreenshotPreview();
-        return capture;
-      },
+      restore =>
+        captureScreenshotToUniqueFile((temporaryPath, started, failed) => {
+          const capture = captureDisplayToFile(
+            display,
+            temporaryPath(),
+            failed
+          );
+          started();
+          preparation.current = prepareScreenshotPreview();
+          return capture.finally(restore);
+        }),
       result =>
         result
-          ? finalizeCapture(screenshotPath, preparation.current)
+          ? finalizeCapture(result, preparation.current)
           : Promise.resolve()
     );
   } finally {
@@ -138,16 +146,23 @@ async function captureScreenWithDisplaySelector(): Promise<void> {
 }
 
 async function captureWindowWithSelector(): Promise<void> {
-  const screenshotPath = generateScreenshotPath();
   const preparation: CapturePreviewPreparationRef = { current: null };
-  const capture = captureWindowToFile(screenshotPath, () => {
-    preparation.current = prepareScreenshotPreview();
-  });
+  const capture = captureScreenshotToUniqueFile(
+    (temporaryPath, started, failed) =>
+      captureWindowToFile(
+        temporaryPath,
+        () => {
+          started();
+          preparation.current = prepareScreenshotPreview();
+        },
+        failed
+      )
+  );
 
   try {
-    const captured = await capture;
+    const screenshotPath = await capture;
 
-    if (!captured) {
+    if (!screenshotPath) {
       console.error('Window capture failed');
       return;
     }
@@ -159,20 +174,25 @@ async function captureWindowWithSelector(): Promise<void> {
 }
 
 async function captureAreaWithSelector(): Promise<void> {
-  const screenshotPath = generateScreenshotPath();
   const preparation: CapturePreviewPreparationRef = { current: null };
-  let captured: boolean;
+  let captured: string | null;
 
   try {
     captured = await withHiddenDesktopIcons(
-      () => {
-        return captureAreaToFile(screenshotPath, () => {
-          preparation.current = prepareScreenshotPreview();
-        });
-      },
+      restore =>
+        captureScreenshotToUniqueFile((temporaryPath, started, failed) =>
+          captureAreaToFile(
+            temporaryPath,
+            () => {
+              started();
+              preparation.current = prepareScreenshotPreview();
+            },
+            failed
+          ).finally(restore)
+        ),
       result =>
         result
-          ? finalizeCapture(screenshotPath, preparation.current)
+          ? finalizeCapture(result, preparation.current)
           : Promise.resolve()
     );
   } finally {

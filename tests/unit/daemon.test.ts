@@ -82,7 +82,29 @@ describe('NativeDaemon', () => {
 
   it('call rejects when daemon is not running', async () => {
     const { daemon } = await import('@/main/daemon');
-    await expect(daemon.call('m', 'foo')).rejects.toThrow('Daemon not running');
+    await expect(daemon.call('m', 'foo')).rejects.toMatchObject({
+      message: 'Daemon not running',
+      code: 'DAEMON_UNAVAILABLE',
+    });
+  });
+
+  it('reports an unwritable daemon before dispatching a request', async () => {
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    mockChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+    mockChild.stdin.writable = false;
+    await expect(daemon.call('m', 'foo')).rejects.toMatchObject({
+      message: 'Daemon stdin not writable',
+      code: 'DAEMON_UNAVAILABLE',
+    });
+    expect(mockChild.stdin.write).not.toHaveBeenCalled();
+    const stop = daemon.stop();
+    mockChild.emit('exit', 0, null);
+    await stop;
   });
 
   it('call sends a request and resolves on success response', async () => {
@@ -183,6 +205,7 @@ describe('NativeDaemon', () => {
     expect(await call).toEqual(
       expect.objectContaining({ message: 'Request timeout: mymod.method' })
     );
+    expect(await call).not.toHaveProperty('code');
 
     const stop = daemon.stop();
     mockChild.emit('exit', 0, null);
@@ -210,6 +233,7 @@ describe('NativeDaemon', () => {
     expect(await call).toEqual(
       expect.objectContaining({
         message: expect.stringMatching(/Daemon exited/),
+        code: 'DAEMON_UNAVAILABLE',
       })
     );
     await daemon.stop();

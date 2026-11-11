@@ -1001,13 +1001,12 @@ describe('area overlay', () => {
       return true;
     });
     const onCaptureStarted = vi.fn(() => calls.push('preview'));
+    const destination = vi.fn(() => '/tmp/shot.png');
     const module = await import('@/main/capture/area-overlay');
-    const captured = module.captureAreaToFile(
-      '/tmp/shot.png',
-      onCaptureStarted
-    );
+    const captured = module.captureAreaToFile(destination, onCaptureStarted);
     await settle();
 
+    expect(destination).not.toHaveBeenCalled();
     expect(onCaptureStarted).not.toHaveBeenCalled();
     fire('area-overlay:confirm', overlayWindows[0].webContents.id, {
       displayId: display.id,
@@ -1018,21 +1017,21 @@ describe('area overlay', () => {
     });
 
     expect(await captured).toBe(true);
+    expect(destination).toHaveBeenCalledOnce();
     expect(calls).toEqual(['native', 'preview']);
   });
 
   it('does not prepare a preview when area selection is cancelled', async () => {
     const onCaptureStarted = vi.fn();
+    const destination = vi.fn(() => '/tmp/shot.png');
     const module = await import('@/main/capture/area-overlay');
-    const captured = module.captureAreaToFile(
-      '/tmp/shot.png',
-      onCaptureStarted
-    );
+    const captured = module.captureAreaToFile(destination, onCaptureStarted);
     await settle();
 
     fire('area-overlay:cancel', overlayWindows[0].webContents.id);
 
     expect(await captured).toBe(false);
+    expect(destination).not.toHaveBeenCalled();
     expect(onCaptureStarted).not.toHaveBeenCalled();
   });
 
@@ -1076,9 +1075,11 @@ describe('area overlay', () => {
     });
 
     const module = await import('@/main/capture/area-overlay');
-    const captured = module.captureWindowToFile('/tmp/window.png');
+    const destination = vi.fn(() => '/tmp/window.png');
+    const captured = module.captureWindowToFile(destination);
     await settle();
 
+    expect(destination).not.toHaveBeenCalled();
     expect(mockCaptureFrozenWindowToFile).not.toHaveBeenCalled();
     expect(mockCaptureWindowByIdToFile).not.toHaveBeenCalled();
 
@@ -1092,6 +1093,7 @@ describe('area overlay', () => {
     });
 
     expect(await captured).toBe(true);
+    expect(destination).toHaveBeenCalledOnce();
     expect(mockCaptureFrozenWindowToFile).toHaveBeenCalledWith(
       { x: 150, y: 100, width: 400, height: 300 },
       '/tmp/window.png',
@@ -1140,5 +1142,24 @@ describe('area overlay', () => {
     expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
     expect(mockReleaseScreen).not.toHaveBeenCalled();
     expect(calls).toEqual(['native', 'preview']);
+  });
+
+  it('does not reserve a destination when window selection is cancelled', async () => {
+    mockResolveWindowPickTargets.mockResolvedValue({
+      targets: [{ id: 99, rect: { x: 150, y: 100, width: 400, height: 300 } }],
+      names: new Map([[99, 'Finder']]),
+      captureRects: new Map([
+        [99, { x: 150, y: 100, width: 400, height: 300 }],
+      ]),
+      prompt: 'Click a window',
+    });
+    const destination = vi.fn(() => '/tmp/window.png');
+    const module = await import('@/main/capture/area-overlay');
+    const captured = module.captureWindowToFile(destination);
+    await settle();
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+
+    expect(await captured).toBe(false);
+    expect(destination).not.toHaveBeenCalled();
   });
 });

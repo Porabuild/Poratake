@@ -8,6 +8,7 @@ const mockGenerateFilename = vi.fn();
 const mockEnsureDirectoryExists = vi.fn();
 const mockIsValidDirectory = vi.fn();
 const mockGetPath = vi.fn();
+const mockShowNotification = vi.fn();
 
 vi.mock('electron', () => ({
   app: { getPath: (...a: unknown[]) => mockGetPath(...a) },
@@ -24,6 +25,10 @@ vi.mock('@/main/utils/filename-generator', () => ({
 vi.mock('@/main/utils/paths', () => ({
   ensureDirectoryExists: (...a: unknown[]) => mockEnsureDirectoryExists(...a),
   isValidDirectory: (...a: unknown[]) => mockIsValidDirectory(...a),
+}));
+
+vi.mock('@/main/utils/notification', () => ({
+  showNotification: (...args: unknown[]) => mockShowNotification(...args),
 }));
 
 describe('screenshot utils', () => {
@@ -269,6 +274,244 @@ describe('screenshot utils', () => {
         expect(fs.readFileSync(temporary, 'utf8')).toBe('capture');
       } finally {
         fs.unlinkSync(temporary);
+        fs.rmdirSync(directory);
+      }
+    });
+  });
+
+  describe('captureScreenshotToUniqueFile', () => {
+    it('preserves existing files across concurrent captures with the same name', async () => {
+      const { captureScreenshotToUniqueFile } =
+        await import('@/main/capture/screenshot/utils');
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-capture-')
+      );
+      const existing = path.join(directory, 'Capture.png');
+      mockGetConfig.mockReturnValue({
+        storage: { screenshotsPath: directory },
+      });
+      mockIsValidDirectory.mockReturnValue(true);
+      mockGenerateFilename.mockReturnValue('Capture.png');
+
+      try {
+        fs.writeFileSync(existing, 'original');
+        const paths = await Promise.all(
+          ['first', 'second'].map(bytes =>
+            captureScreenshotToUniqueFile(async (temporary, started) => {
+              const file = temporary();
+              started();
+              await fs.promises.writeFile(file, bytes);
+              return true;
+            })
+          )
+        );
+
+        expect(new Set(paths)).toEqual(
+          new Set([
+            path.join(directory, 'Capture (1).png'),
+            path.join(directory, 'Capture (2).png'),
+          ])
+        );
+        expect(fs.readFileSync(existing, 'utf8')).toBe('original');
+        expect(
+          new Set(paths.map(file => fs.readFileSync(file!, 'utf8')))
+        ).toEqual(new Set(['first', 'second']));
+        expect(fs.readdirSync(directory)).toHaveLength(3);
+      } finally {
+        for (const name of fs.readdirSync(directory))
+          fs.unlinkSync(path.join(directory, name));
+        fs.rmdirSync(directory);
+      }
+    });
+
+    it('does not reserve a temporary file when selection is cancelled', async () => {
+      const { captureScreenshotToUniqueFile } =
+        await import('@/main/capture/screenshot/utils');
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-capture-')
+      );
+      mockGetConfig.mockReturnValue({
+        storage: { screenshotsPath: directory },
+      });
+      mockIsValidDirectory.mockReturnValue(true);
+      const open = vi.spyOn(fs, 'openSync');
+
+      try {
+        await expect(
+          captureScreenshotToUniqueFile(async () => false)
+        ).resolves.toBeNull();
+        expect(open).not.toHaveBeenCalled();
+        expect(fs.readdirSync(directory)).toEqual([]);
+        expect(mockShowNotification).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+        fs.rmdirSync(directory);
+      }
+    });
+
+    it('removes a prepared file if capture is cancelled before it starts', async () => {
+      const { captureScreenshotToUniqueFile } =
+        await import('@/main/capture/screenshot/utils');
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-capture-')
+      );
+      mockGetConfig.mockReturnValue({
+        storage: { screenshotsPath: directory },
+      });
+      mockIsValidDirectory.mockReturnValue(true);
+
+      try {
+        await expect(
+          captureScreenshotToUniqueFile(async temporary => {
+            temporary();
+            return false;
+          })
+        ).resolves.toBeNull();
+        expect(fs.readdirSync(directory)).toEqual([]);
+        expect(mockShowNotification).not.toHaveBeenCalled();
+      } finally {
+        fs.rmdirSync(directory);
+      }
+    });
+
+    it('retains and reports capture data when a started capture fails', async () => {
+      const { captureScreenshotToUniqueFile } =
+        await import('@/main/capture/screenshot/utils');
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-capture-')
+      );
+      mockGetConfig.mockReturnValue({
+        storage: { screenshotsPath: directory },
+      });
+      mockIsValidDirectory.mockReturnValue(true);
+      let temporaryPath = '';
+
+      try {
+        await expect(
+          captureScreenshotToUniqueFile(async (temporary, started, failed) => {
+            temporaryPath = temporary();
+            started();
+            await fs.promises.writeFile(temporaryPath, 'capture data');
+            failed(true);
+            return false;
+          })
+        ).resolves.toBeNull();
+        expect(fs.readFileSync(temporaryPath, 'utf8')).toBe('capture data');
+        expect(mockShowNotification).toHaveBeenCalledWith(
+          'Screenshot Not Saved',
+          `Capture data may be available at ${temporaryPath}`
+        );
+      } finally {
+        if (temporaryPath && fs.existsSync(temporaryPath))
+          fs.unlinkSync(temporaryPath);
+        fs.rmdirSync(directory);
+      }
+    });
+
+    it('removes an empty staging file after a confirmed capture failure', async () => {
+      const { captureScreenshotToUniqueFile } =
+        await import('@/main/capture/screenshot/utils');
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-capture-')
+      );
+      mockGetConfig.mockReturnValue({
+        storage: { screenshotsPath: directory },
+      });
+      mockIsValidDirectory.mockReturnValue(true);
+
+      try {
+        await expect(
+          captureScreenshotToUniqueFile(async (temporary, started, failed) => {
+            temporary();
+            started();
+            failed(true);
+            return false;
+          })
+        ).resolves.toBeNull();
+        expect(fs.readdirSync(directory)).toEqual([]);
+        expect(mockShowNotification).not.toHaveBeenCalled();
+      } finally {
+        for (const name of fs.readdirSync(directory))
+          fs.unlinkSync(path.join(directory, name));
+        fs.rmdirSync(directory);
+      }
+    });
+
+    it('retains an empty staging file when a timed-out worker may still write', async () => {
+      const { captureScreenshotToUniqueFile } =
+        await import('@/main/capture/screenshot/utils');
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-capture-')
+      );
+      mockGetConfig.mockReturnValue({
+        storage: { screenshotsPath: directory },
+      });
+      mockIsValidDirectory.mockReturnValue(true);
+      let temporaryPath = '';
+
+      try {
+        await expect(
+          captureScreenshotToUniqueFile(async (temporary, started, failed) => {
+            temporaryPath = temporary();
+            started();
+            failed(false);
+            return false;
+          })
+        ).resolves.toBeNull();
+        expect(fs.existsSync(temporaryPath)).toBe(true);
+        expect(mockShowNotification).toHaveBeenCalledWith(
+          'Screenshot Not Saved',
+          `Capture data may be available at ${temporaryPath}`
+        );
+        await fs.promises.writeFile(temporaryPath, 'late image');
+        expect(fs.readFileSync(temporaryPath, 'utf8')).toBe('late image');
+      } finally {
+        if (temporaryPath && fs.existsSync(temporaryPath))
+          fs.unlinkSync(temporaryPath);
+        fs.rmdirSync(directory);
+      }
+    });
+
+    it('retains capture data and an existing image when publication fails', async () => {
+      const { captureScreenshotToUniqueFile } =
+        await import('@/main/capture/screenshot/utils');
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-capture-')
+      );
+      const existing = path.join(directory, 'Capture.png');
+      mockGetConfig.mockReturnValue({
+        storage: { screenshotsPath: directory },
+      });
+      mockIsValidDirectory.mockReturnValue(true);
+      mockGenerateFilename.mockReturnValue('Capture.png');
+      let temporaryPath = '';
+      const failure = Object.assign(new Error('write denied'), {
+        code: 'EACCES',
+      });
+      const link = vi.spyOn(fs.promises, 'link').mockRejectedValue(failure);
+      const copy = vi.spyOn(fs.promises, 'copyFile').mockRejectedValue(failure);
+
+      try {
+        fs.writeFileSync(existing, 'original');
+        await expect(
+          captureScreenshotToUniqueFile(async (temporary, started) => {
+            temporaryPath = temporary();
+            started();
+            await fs.promises.writeFile(temporaryPath, 'capture data');
+            return true;
+          })
+        ).rejects.toThrow('write denied');
+        expect(fs.readFileSync(existing, 'utf8')).toBe('original');
+        expect(fs.readFileSync(temporaryPath, 'utf8')).toBe('capture data');
+        expect(mockShowNotification).toHaveBeenCalledWith(
+          'Screenshot Not Saved',
+          `Capture data may be available at ${temporaryPath}`
+        );
+      } finally {
+        link.mockRestore();
+        copy.mockRestore();
+        for (const name of fs.readdirSync(directory))
+          fs.unlinkSync(path.join(directory, name));
         fs.rmdirSync(directory);
       }
     });

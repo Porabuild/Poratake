@@ -5,6 +5,8 @@ export interface DaemonRequest {
   params?: Record<string, unknown>;
 }
 
+export const DAEMON_UNAVAILABLE = 'DAEMON_UNAVAILABLE';
+
 export interface DaemonResponse {
   id: string;
   success: boolean;
