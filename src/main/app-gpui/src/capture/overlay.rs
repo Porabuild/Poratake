@@ -812,6 +812,7 @@ pub struct AreaOverlay {
     color_frame_generation: u64,
     handed_off: bool,
     menu: crate::ui::menu::MenuHandle,
+    menu_trigger_focus: Option<gpui::FocusHandle>,
     service: CaptureService,
 }
 
@@ -846,6 +847,7 @@ impl AreaOverlay {
             color_frame_generation: 0,
             handed_off: false,
             menu: crate::ui::menu::MenuHandle::new(),
+            menu_trigger_focus: None,
             service,
         }
     }
@@ -889,6 +891,14 @@ impl AreaOverlay {
     #[cfg(feature = "parity")]
     pub(crate) fn parity_picking_color(&self) -> bool {
         self.picking_color
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_all_in_one_state(
+        &self,
+        cx: &App,
+    ) -> (Option<crate::capture::all_in_one::Choices>, bool) {
+        (self.all_in_one, self.menu.is_open(cx))
     }
 
     pub fn with_all_in_one(mut self, choices: crate::capture::all_in_one::Choices) -> Self {
@@ -1138,6 +1148,10 @@ impl AreaOverlay {
 
     pub fn close_all_in_one_menu(&self, window: &mut Window, cx: &App) {
         self.menu.close(window, cx);
+    }
+
+    pub fn set_all_in_one_menu_focus(&mut self, focus: Option<gpui::FocusHandle>) {
+        self.menu_trigger_focus = focus;
     }
 
     pub fn set_all_in_one_target(
@@ -1837,6 +1851,17 @@ impl AreaOverlay {
         let root = root
             .cursor(self.cursor)
             .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+                if this.menu.is_open(cx) {
+                    this.menu.close(window, cx);
+                    window.focus(
+                        this.menu_trigger_focus
+                            .as_ref()
+                            .unwrap_or(&this.focus_handle),
+                        cx,
+                    );
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.picking_color {
                     this.stop_color_picker(cx);
                     return;

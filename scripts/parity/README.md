@@ -26,9 +26,12 @@ overlay and a 200×180 case where preserving the cursor gap requires clipping.
 The capture-failure workflow also checks the stopped-state redraw, restored
 overlay, error notification and removal of the partial frame.
 The all-in-one Capture text, Pick color and Close tooltips are captured in normal
-and 400×300 overlays. Their measured bounds must stay below their controls and
-inside the viewport and clipping masks. A separate 175% probe passed in both
-themes; the image-baseline matrix uses the four scales listed above.
+and 400×300 overlays, and while Capture text is selected. Their measured bounds
+must stay below their controls and inside the viewport and clipping masks. The
+narrow overlay also checks the target menu's placement, keyboard selection and
+focus restoration: Escape closes the menu before the overlay, and Enter reopens
+the menu from its trigger. A separate 175% tooltip probe passed in both themes;
+the image-baseline matrix uses the four scales listed above.
 
 Each Windows case first renders adjacent red/white image atlas tiles at fractional
 bounds. Interior and edge samples must retain the red source color independently
@@ -154,7 +157,7 @@ The built-in 1280px, 100% cases add 28 workflow images each. The 950px cases add
 action tooltips in each grid column and the list at 200px and 240px. The fixture
 checks thumbnail pixels, keyboard selection, tooltip bounds and clipping masks,
 and deletes a scratch item without opening an editor. A complete renderer profile
-has 2,728 images.
+has 2,808 images.
 Each renderer's set must be reviewed before acceptance.
 
 Capture, timer and scroll completion first open a bottom-right preview without

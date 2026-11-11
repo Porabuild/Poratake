@@ -177,6 +177,7 @@ fn target_menu_placement() -> MenuPlacement {
 
 fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay>) -> AnyElement {
     let handle = menu.clone();
+    let owner = cx.entity().downgrade();
     let entries = {
         let mut builder = MenuBuilder::new();
         for target in Target::ALL {
@@ -226,6 +227,10 @@ fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay
                         )),
                 )
                 .on_press(move |_, window, cx| {
+                    let focus = window.focused(cx);
+                    if let Some(owner) = owner.upgrade() {
+                        owner.update(cx, |this, _| this.set_all_in_one_menu_focus(focus));
+                    }
                     handle.toggle(target_menu_placement(), entries.clone(), window, cx);
                     cx.stop_propagation();
                 }),

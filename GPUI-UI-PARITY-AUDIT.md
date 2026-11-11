@@ -47,12 +47,15 @@ input and frame scheduling use GPUI's headless harness. This is not installed-ap
 or physical-monitor DPI verification.
 
 The matrix is light/dark × 950/1280 logical pixels × 100/125/150/200% scale, at
-738 logical pixels high. Each case captures 158 states; the two 1280px, 100% cases
+738 logical pixels high. Each case captures 163 states; the two 1280px, 100% cases
 also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states.
-The eight 950px cases each add 18 narrow-history states, for 2,728 images per
-complete renderer profile. The 96 new NVIDIA all-in-one tooltip images were
-reviewed; all 2,632 existing images were unchanged. A normal rerun passed all
-16 cases and 2,728 images; the new states need hosted-renderer review. The local
+The eight 950px cases each add 18 narrow-history states, for 2,808 images per
+complete renderer profile. The 48 selected-OCR tooltip images and 32 target-menu
+images were reviewed for NVIDIA; all 2,728 earlier images were pixel-identical.
+These 80 states still need hosted-renderer review. The 96 earlier NVIDIA
+all-in-one tooltip images were reviewed; all 2,632 existing images were unchanged. A normal rerun passed all
+16 cases and 2,728 images. The corresponding 96 hosted images were also reviewed,
+and all 2,632 previous hosted images were pixel-identical. The local
 exact-baseline matrix at `80a5700` passed all 16 cases and 2,632 images. After
 the color-capture failure fix, the two
 1280px/100% workflow cases passed again in light and dark themes. The 96 new
@@ -134,8 +137,11 @@ focus pixels on the selected option's left edge. The shared Select fix passed
 that probe while preserving its 24px rows and 64×276px light-theme panel.
 All-in-one Capture text, Pick color and Close tooltips must fit below their
 controls, within the viewport and their clipping masks, in both normal and
-400×300 overlays. The original top placement started 5px above the display.
-An additional 175% geometry probe passed in both themes; it has no image baseline.
+400×300 overlays and while Capture text is selected. The original top placement
+started 5px above the display. An additional 175% tooltip geometry probe passed
+in both themes; it has no image baseline. The narrow target menu must remain
+anchored below its trigger and inside its clipping mask. Synthetic keyboard input
+checks target selection, Escape dismissal and reopening from the focused trigger.
 Capture-preview icon tooltips are checked inside all four corners. Polish preset
 names wrap inside the card, with very long names visually ellipsized while the
 full tooltip name remains available to accessibility tools. The fixture checks
@@ -248,12 +254,18 @@ also failed its scaled GTK X11 test after the print-dialog workflow completed,
 while waiting for daemon exit. Its exit status was not reported; the test now
 prints it if the failure recurs. An isolated GTK print-dialog probe exited cleanly
 300 times, but did not exercise the daemon and did not establish the cause.
-Windows passed its native tests and all visual geometry and workflow checks,
+The same run's Windows job passed its native tests and all visual geometry and workflow checks,
 then rejected the 96 new color-picker images absent from its baseline. All 96
 were reviewed; the other 2,536 images were unchanged. Artifact `13834135629` has
 SHA-256 `5d8e382bbbc961eb0f2a6d463db48d7ff5e77f496e1c7d6f4afe188f9ebd1a21`.
+The Linux job in the [next run](https://github.com/Porabuild/Poratake/actions/runs/42972460141)
+passed both X11 tests, including scaled GTK; the earlier exit remains unexplained.
+Its Windows native and geometry checks passed, then the visual gate rejected the
+96 new all-in-one tooltip states. All were reviewed; the previous 2,632 hosted
+images were pixel-identical. Artifact `13835681057` has SHA-256
+`69194ad53c1987a87bc5af0710f22a33f3929226c1fe2888a068176adac98d74`.
 
-The final local comparison passed all 16 cases. Contact sheets for all cases and
+The earlier local exact comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
 pixel failed with exit 101 and produced a diff image.
 
@@ -657,7 +669,11 @@ Bugs fixed in this pass:
   stopped-state notification, restored overlay pixels, error message and cleanup.
 - All-in-one toolbar tooltips opened above the top edge and clipped their labels.
   They now open below their controls, matching Electron. Normal and 400×300
-  overlays check all three tooltip bounds and clipping masks at each matrix scale.
+  overlays, including selected Capture text mode, check all three tooltip bounds
+  and clipping masks at each matrix scale.
+- Escape closed the all-in-one capture overlay while its target menu was open.
+  It now dismisses the menu first and returns focus to its trigger. A second
+  Escape closes the overlay; keyboard input can reopen the menu and select a target.
 - A history grid at simulated 175% and 456 physical pixels wrapped its second
   card onto a new row. The cards now fit the snapped available width. The unit
   test sweeps every physical width corresponding to 200–400 logical pixels at
@@ -755,6 +771,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Zero-padding wallpaper effects                           | Frame-only settings now activate at zero padding; editor output, Polish copy and the title-bar preview are checked. Corner- and shadow-only settings still do not activate without a background or padding. Attached layers and balance need coordinated preview/export handling before widening that gate.                                                                                                                        |
 | P1       | Wallpaper shadows and complex image compositions         | The screenshot preview uses a GPUI box shadow while export uses the rasterized image shadow and its white underlay; inset, balance, attached layers and annotations also need preview/output checks. An exact 4K preview-shadow prototype took 387–401 ms versus 55–56 ms without the shadow on this machine and allocated several image-sized buffers. Find a matching approach with measured interactive performance and memory. |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                               |
+| P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                         |
 | P1       | Scroll stitching with fixed footers                      | A synthetic 1280×320 capture with an 80px fixed footer reports changed scrolling content as repeated. With a 40px footer, two frames are accepted but the reopened PNG repeats the footer: 51,200 of 573,440 pixels differ from the expected image. Fix detection and composition together, and verify sparse content, moving animations and real scrolling surfaces.                                                              |
 | P1       | Scroll stitching with repeated content                   | A synthetic 1000×160 pair with period-8 center rows and distinct side content selects the expected 64px overlap when the actual overlap is 56px, shortening the stitch by eight rows. The exact-match correction leaves this ambiguous sampled tie unchanged. Verify full-width evidence, repeated patterns, animations, short overlaps and real pages before changing this choice.                                                |
 | P1       | Native Windows clipboard formats                         | GPUI now supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. Verify native format enumeration and DIB-only paste in an isolated Windows session, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                    |
@@ -766,6 +783,7 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                      |
 | P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 200px. Below 148px, the two-column grid cards are too narrow for both actions; smaller layouts and other item states need verification.                                                                                                                                                                     |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                           |
+| P2       | Target-menu focus after selection                        | A synthetic keyboard probe selects Full screen and then presses Enter; the menu does not reopen because focus no longer belongs to the trigger. Restore focus without allowing the selection key-up to reopen the menu prematurely, and verify pointer and keyboard selections.                                                                                                                                                    |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                        |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                           |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                             |
