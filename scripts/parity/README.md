@@ -143,10 +143,13 @@ canvas for alpha, clipping and scale. Restored plain previews are compared with
 saved pixels at simulated 100%, 125% and 200%, including translucent and
 clipped regions, 50% and 150% zoom, wallpaper toggles and a same-window DPI
 change. A shape beneath pixelation is checked with and without gradient
-wallpaper at 100% for opaque and translucent images. Plain captures with the
-shape match a flattened PNG inside the redaction at 50% and 150% zoom; the
-surrounding edge band still differs at 150%. Complex compositions and physical
-DPI remain outside these checks.
+wallpaper at 100% for opaque and translucent images. The redaction and its
+edge band match a flattened PNG within two channel levels at 50%, 73%, 137%
+and 150% effective zoom with simulated 100%, 125% and 200% DPI in both themes,
+including clipped regions and overlapping later annotations. Blur and
+pixelation drafts over a committed filtered redaction retain their dark drag
+preview in single captures and attached-image compositions. Complex
+compositions and physical DPI remain outside these checks.
 The recorded video export fixture compares both blurred and pixelated striped
 regions with decoded MP4 pixels across a cut and speed changes.
 Committed screenshot blur is checked against saved pixels in unframed captures

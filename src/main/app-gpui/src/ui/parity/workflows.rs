@@ -832,6 +832,62 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
     }
 }
 
+fn check_redaction_draft(
+    cx: &mut HeadlessAppContext,
+    editor: gpui::WindowHandle<EditorWindow>,
+    draft_x: f64,
+    draft_y: f64,
+) {
+    let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+    let left = f32::from(bounds.left()).round() as u32;
+    let top = f32::from(bounds.top()).round() as u32;
+    let x = left + ((draft_x as f32 + 8.5) * 1.5).floor() as u32;
+    let y = top + ((draft_y as f32 + 8.5) * 1.5).floor() as u32;
+    let baseline = cx
+        .capture_screenshot(editor.into())
+        .unwrap()
+        .get_pixel(x, y)
+        .0;
+    assert!(baseline[..3].iter().any(|channel| *channel > 40));
+    for style in ["blur", "pixelate", "blackout"] {
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.draft = Some(crate::editor::annotations::Annotation::Redact {
+                    id: "draft-over-redaction".into(),
+                    x: draft_x,
+                    y: draft_y,
+                    width: 24.,
+                    height: 16.,
+                    style: style.into(),
+                    intensity: 5.,
+                });
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+        let draft = cx
+            .capture_screenshot(editor.into())
+            .unwrap()
+            .get_pixel(x, y)
+            .0;
+        let opacity = if style == "blackout" { 0. } else { 0.15 };
+        for channel in 0..3 {
+            let expected = (f32::from(baseline[channel]) * opacity).round() as u8;
+            assert!(
+                draft[channel].abs_diff(expected) <= 3,
+                "{style} draft at {draft_x},{draft_y}: {draft:?} vs {baseline:?}"
+            );
+        }
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.draft = None;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+    }
+}
+
 pub(super) fn simple_inset_preview(
     cx: &mut HeadlessAppContext,
     scratch: &Path,
@@ -1110,6 +1166,46 @@ pub(super) fn simple_inset_preview(
     cx.update_window(flattened.into(), |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
+    if scale == 1.
+        && padding_setting == 0.
+        && !with_background
+        && inset_setting == 8.
+        && !clipped_blur
+    {
+        check_redaction_draft(cx, editor, 36., 26.);
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.wallpaper.inset = 0.;
+                editor.push_image_layer(
+                    source.to_string_lossy().into_owned(),
+                    100.,
+                    80.,
+                    crate::editor::layers::Edge::Right,
+                    cx,
+                );
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 1.5;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+        cx.update(|cx| {
+            assert!(
+                editor
+                    .read(cx)
+                    .unwrap()
+                    .snapshot
+                    .borrow()
+                    .backdrop_composite
+            );
+        });
+        check_redaction_draft(cx, editor, 36., 26.);
+    }
     cx.update_window(editor.into(), |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
@@ -1987,6 +2083,25 @@ pub(super) fn restored_pixelation(
         annotations.push(shape);
     }
     annotations.push(annotation);
+    annotations.push(crate::editor::annotations::Annotation::Rectangle {
+        id: "after-pixelation".into(),
+        x: if clipped { 50. } else { 100. },
+        y: 48.,
+        width: 12.,
+        height: 12.,
+        stroke: "#ff00ff".into(),
+        stroke_width: 1.,
+        fill: Some("#ff00ff".into()),
+    });
+    annotations.push(crate::editor::annotations::Annotation::Redact {
+        id: "after-pixelation-blackout".into(),
+        x: if clipped { 54. } else { 104. },
+        y: 52.,
+        width: 5.,
+        height: 5.,
+        style: "blackout".into(),
+        intensity: 2.,
+    });
     crate::history_store::add_item(
         HistoryItem {
             id: format!("restored-pixelation-{scale}-{transparent}-{clipped}"),
@@ -2035,6 +2150,10 @@ pub(super) fn restored_pixelation(
         saved.get_pixel(left_edge + 3, 32),
         original.get_pixel(left_edge + 3, 32)
     );
+    assert_eq!(
+        saved.get_pixel(if clipped { 56 } else { 106 }, 54).0,
+        [0, 0, 0, 255]
+    );
     let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
     image::imageops::overlay(&mut composited, &saved, 0, 0);
     let screenshot = cx.capture_screenshot(editor.into()).unwrap();
@@ -2050,53 +2169,72 @@ pub(super) fn restored_pixelation(
             );
         }
     }
-    if scale == 1. && !clipped {
-        let flattened_path = scratch.join(format!("restored-pixelation-flat-{transparent}.png"));
-        std::fs::write(&flattened_path, &png).unwrap();
-        let flattened = cx
-            .open_window(size(px(1280.), px(738.)), |window, cx| {
-                window.set_scale_factor(scale);
-                cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
-            })
-            .unwrap();
-        for zoom in [0.5, 1.5] {
-            for window in [editor, flattened] {
-                window
-                    .update(cx, |editor, _, cx| {
-                        editor.zoom = zoom;
-                        cx.notify();
-                    })
-                    .unwrap();
-                settle(cx, window.into());
-            }
-            let (preview_bounds, flattened_bounds) = cx.update(|cx| {
-                (
-                    editor.read(cx).unwrap().bounds.borrow().unwrap(),
-                    flattened.read(cx).unwrap().bounds.borrow().unwrap(),
-                )
-            });
-            let preview = cx.capture_screenshot(editor.into()).unwrap();
-            let flattened_image = cx.capture_screenshot(flattened.into()).unwrap();
-            let left = f32::from(preview_bounds.left()).round() as u32;
-            let top = f32::from(preview_bounds.top()).round() as u32;
-            let flat_left = f32::from(flattened_bounds.left()).round() as u32;
-            let flat_top = f32::from(flattened_bounds.top()).round() as u32;
-            for y in ((31. * zoom).ceil() as u32)..((69. * zoom).floor() as u32) {
-                for x in ((41. * zoom).ceil() as u32)..((119. * zoom).floor() as u32) {
-                    let actual = preview.get_pixel(left + x, top + y).0;
-                    let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
-                    assert!(
+    let flattened_path = scratch.join(format!("restored-pixelation-flat-{transparent}.png"));
+    std::fs::write(&flattened_path, &png).unwrap();
+    let flattened = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    for effective_zoom in [0.5, 0.73, 1.37, 1.5] {
+        let zoom = effective_zoom / scale;
+        for window in [editor, flattened] {
+            window
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = zoom;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, window.into());
+        }
+        let (preview_bounds, flattened_bounds) = cx.update(|cx| {
+            (
+                editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                flattened.read(cx).unwrap().bounds.borrow().unwrap(),
+            )
+        });
+        let preview = cx.capture_screenshot(editor.into()).unwrap();
+        let flattened_image = cx.capture_screenshot(flattened.into()).unwrap();
+        let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
+        let left = snap(f32::from(preview_bounds.left()) * scale);
+        let top = snap(f32::from(preview_bounds.top()) * scale);
+        let flat_left = snap(f32::from(flattened_bounds.left()) * scale);
+        let flat_top = snap(f32::from(flattened_bounds.top()) * scale);
+        if scale == 1. {
+            let width = (saved.width() as f32 * effective_zoom).round() as u32;
+            let height = (saved.height() as f32 * effective_zoom).round() as u32;
+            image::imageops::crop_imm(&preview, left, top, width, height)
+                .to_image()
+                .save(scratch.join(format!(
+                    "pixelation-zoom-{effective_zoom}-{transparent}-{clipped}-preview.png"
+                )))
+                .unwrap();
+            image::imageops::crop_imm(&flattened_image, flat_left, flat_top, width, height)
+                .to_image()
+                .save(scratch.join(format!(
+                    "pixelation-zoom-{effective_zoom}-{transparent}-{clipped}-saved.png"
+                )))
+                .unwrap();
+        }
+        for y in ((29. * effective_zoom).ceil() as u32)..((71. * effective_zoom).floor() as u32) {
+            for x in ((left_edge.saturating_sub(1) as f32 * effective_zoom).ceil() as u32)
+                ..(((right_edge + 1).min(200) as f32 * effective_zoom).floor() as u32)
+            {
+                let actual = preview.get_pixel(left + x, top + y).0;
+                let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
+                assert!(
                         actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
-                        "pixelation at zoom={zoom}, transparent={transparent}, {x},{y}: {actual:?} vs {expected:?}"
+                        "pixelation at zoom={effective_zoom}, DPI={scale}, transparent={transparent}, clipped={clipped}, {x},{y}: {actual:?} vs {expected:?}"
                     );
-                }
             }
         }
-        cx.update_window(flattened.into(), |_, window, _| window.remove_window())
-            .unwrap();
-        cx.run_until_parked();
     }
+    cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
     if scale == 1. && !clipped {
+        check_redaction_draft(cx, editor, f64::from(left_edge + 4), 32.);
         cx.update(|cx| {
             let editor = editor.read(cx).unwrap();
             assert!(!editor

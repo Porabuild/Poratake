@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `e76df4cc` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `e6454be4` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -805,11 +805,15 @@ Bugs fixed in this pass:
   regions, 50% and 150% zoom, wallpaper toggles and a same-window DPI change.
   At 100%, an earlier shape under the redaction is checked with and without a
   gradient wallpaper for opaque and translucent images. Plain captures with an
-  earlier shape also match the flattened image inside the redaction at 50% and
-  150% zoom, including translucent source pixels. At 150%, the surrounding edge
-  band still differed by up to 37 channel levels for an opaque image and 18 for
-  a translucent image in the tested fixture. Six NVIDIA
-  baseline changes were reviewed. A local opaque 4K block operation
+  earlier shape also match the flattened image, including translucent source
+  pixels. The redaction and its edge band now match within two channel levels
+  at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%,
+  125% and 200% DPI, including clipped regions and a later shape and blackout.
+  At 150%, the edge band previously differed by up to 37 channel levels for an
+  opaque image and 18 for a translucent image. New blur and pixelation drafts
+  over an existing filtered redaction retain their dark drag preview in single
+  captures and attached-image compositions. Six earlier NVIDIA baseline
+  changes and two later history-reopen changes were reviewed. A local opaque 4K block operation
   took 29–31 ms in six samples, excluding GPU upload; a redundant retained
   plain-image cache that took 128–137 ms and 31.6 MiB per redaction was removed.
   Complex compositions, physical DPI and slower hardware remain unverified.
@@ -1013,7 +1017,7 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Complex rounded screenshot preview versus export         | Single captures without a frame, inset, balance or attachments now match the PNG with and without shadows at simulated 125% and 200%, including transparent pixels and a corner annotation. Verify complex compositions, zero padding with balance or inset, arbitrary zoom and physical DPI transitions.                                                                                                                                                                                                                                                           |
 | P1       | Zero-padding wallpaper effects                           | Frame-only and corner/shadow-only settings without balance or inset now activate at zero padding; single and attached previews and Polish copy are checked. Single unframed insets without corners or shadows are checked with and without balance at simulated 100%, 125% and 200%. Framed, attached, rounded and shadowed inset combinations and balance with corners or shadows still need coordinated preview/export verification.                                                                                                                              |
 | P1       | Wallpaper shadows and complex image compositions         | Single-image shadows without a window frame, inset, balance or attachments now match saved output in the tested cases. Complex combinations still need preview/output checks. At 4K a 400px radius with the strongest shadow took 196–200 ms to prepare locally; measure interactive behavior, GPU upload, memory and slower hardware. At 17,000px, plain, inset and framed outputs retain shadows in CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                  |
-| P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples; restored previews and simple wallpaper toggles are checked against saved pixels. At 150% zoom, the boundary band around a redaction differed by up to 37 channel levels for opaque and 18 for translucent images versus a flattened PNG in the tested fixture. Fix that mismatch; verify frames, inset, balance, attached layers, physical DPI and large patches.                                                                                                                                             |
+| P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                        |
 | P1       | Screenshot blur preview and Electron parity              | The blur region and neighboring annotations match flattened PNG pixels within two levels at 50%, 73%, 137% and 150% effective zoom for the tested unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. A transparent single image over a gradient or inset is blurred before the backdrop in GPUI but after it in Electron. Recheck fractional surface offsets; verify draft, frames, attachments, physical DPI, large patches and interactive performance. |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                                                |

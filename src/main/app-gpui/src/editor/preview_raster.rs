@@ -180,16 +180,23 @@ fn raster_bounds(
     }
 }
 
-pub fn overlaps_blur(annotation: &Annotation, beneath: &[&Annotation], surface: &Surface) -> bool {
+pub fn overlaps_filtered_redaction(
+    annotation: &Annotation,
+    beneath: &[&Annotation],
+    surface: &Surface,
+) -> bool {
     let Some(bounds) = raster_bounds(annotation, surface, 1.) else {
         return false;
     };
     beneath.iter().any(|earlier| {
-        if !matches!(earlier, Annotation::Redact { style, .. } if style == "blur") {
+        if !matches!(earlier, Annotation::Redact { style, .. } if style == "blur" || style == "pixelate") {
             return false;
         }
-        let blur = padded(earlier.bounds(), 2.);
-        bounds.0 < blur.2 && bounds.2 > blur.0 && bounds.1 < blur.3 && bounds.3 > blur.1
+        let redaction = padded(earlier.bounds(), 2.);
+        bounds.0 < redaction.2
+            && bounds.2 > redaction.0
+            && bounds.1 < redaction.3
+            && bounds.3 > redaction.1
     })
 }
 

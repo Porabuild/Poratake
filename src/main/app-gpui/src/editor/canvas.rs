@@ -606,21 +606,30 @@ fn paint_annotations(
         if haloed == Some(annotation.id()) {
             draw_selection_halo(window, annotation, zoom, halo);
         }
+        let is_draft = snapshot
+            .draft
+            .as_ref()
+            .is_some_and(|draft| std::ptr::eq(draft, *annotation));
         let committed_pixelation = matches!(
             annotation,
             Annotation::Redact { style, .. }
-                if style == "pixelate"
-                    && !snapshot.draft.as_ref().is_some_and(|draft| std::ptr::eq(draft, *annotation))
+                if style == "pixelate" && !is_draft
         );
         let committed_blur = matches!(
             annotation,
             Annotation::Redact { style, .. }
-                if style == "blur"
-                    && !snapshot.draft.as_ref().is_some_and(|draft| std::ptr::eq(draft, *annotation))
+                if style == "blur" && !is_draft
         );
+        let draft_redaction = matches!(annotation, Annotation::Redact { .. }) && is_draft;
         let aligned = (scale - 1.).abs() > 0.0001
+            && !draft_redaction
             && (committed_blur
-                || preview_raster::overlaps_blur(annotation, &visible[..index], &surface));
+                || committed_pixelation
+                || preview_raster::overlaps_filtered_redaction(
+                    annotation,
+                    &visible[..index],
+                    &surface,
+                ));
         if !snapshot.backdrop_composite && !committed_pixelation && !committed_blur && !aligned {
             if let Annotation::Redact { id, .. } = annotation {
                 if let Some(patch) = snapshot.redact_patches.get(id) {
@@ -640,7 +649,9 @@ fn paint_annotations(
             }
         }
         if preview_raster::is_rasterized(annotation)
-            || (snapshot.backdrop_composite && matches!(annotation, Annotation::Redact { .. }))
+            || (snapshot.backdrop_composite
+                && matches!(annotation, Annotation::Redact { .. })
+                && !draft_redaction)
             || committed_pixelation
             || committed_blur
             || aligned
