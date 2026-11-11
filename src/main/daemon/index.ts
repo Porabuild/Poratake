@@ -78,10 +78,13 @@ class NativeDaemon extends EventEmitter {
     const request: DaemonRequest = { id, module, method, params };
 
     return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error(`Request timeout: ${module}.${method}`));
-      }, timeout);
+      const timeoutId =
+        timeout === null
+          ? undefined
+          : setTimeout(() => {
+              this.pendingRequests.delete(id);
+              reject(new Error(`Request timeout: ${module}.${method}`));
+            }, timeout);
 
       this.pendingRequests.set(id, {
         resolve: resolve as (result: unknown) => void,

@@ -26,7 +26,13 @@ fn wait_for_scroll_barrier(fixture: &serde_json::Value) {
     };
     let mut stream = std::net::TcpStream::connect(address).unwrap();
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .set_read_timeout(Some(std::time::Duration::from_secs(
+            if fixture["scroll"] == "finish-long-held" {
+                40
+            } else {
+                10
+            },
+        )))
         .unwrap();
     stream.write_all(&[1]).unwrap();
     stream.read_exact(&mut [0]).unwrap();

@@ -54,7 +54,8 @@ complete renderer profile. The 72 new 140px NVIDIA history images were reviewed;
 the previous 1,448 images in the 950px cases were pixel-identical. The complete
 local NVIDIA gate passed all 16 cases and 2,880 exact images. The 72 hosted
 variants were also reviewed; all 2,808 earlier hosted images were pixel-identical.
-An exact hosted rerun against the complete profile is pending. The 48 selected-OCR
+[Hosted CI at `0b79bd9`](https://github.com/Porabuild/Poratake/actions/runs/42992001485)
+passed all required jobs and the complete 2,880-image exact matrix. The 48 selected-OCR
 tooltip images and 32 target-menu images were reviewed for NVIDIA; all 2,728
 earlier images were pixel-identical.
 An exact rerun after the target-menu interaction fixes passed all 16 cases and
@@ -72,7 +73,7 @@ previous hosted images were unchanged. The 144 new NVIDIA history images were re
 states and 160 revised selection images were reviewed; the remaining 2,312 existing
 images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
 24 were reviewed and the other 2,512 images were unchanged. The final exact
-matrix passed all 16 cases. The latest Windows native gate passed 1,020 tests with two skipped.
+matrix passed all 16 cases. The latest local Windows native gate passed 1,033 tests with two skipped.
 All 144 hosted history images, 64 selection-corner images, 160 revised selection
 images and 24 DPI-adjusted history images were also reviewed. The other 2,512
 hosted images were unchanged.
@@ -626,6 +627,18 @@ Bugs fixed in this pass:
 - Scroll capture cleared its active state before finish or cancellation completed,
   allowing a second session to start while the daemon was still processing the
   first. Held-response fixtures now verify the state through both RPCs.
+- Both shells previously timed out a scroll stitch after 30 seconds while the
+  daemon could still be writing. They now wait for the response or daemon exit.
+  A 31-second held-worker GPUI workflow saves the expected pixels; restoring
+  the old timeout makes it fail. Electron tests advance the daemon client's
+  clock and verify ordinary requests retain their timeout.
+- Electron scroll capture also allowed a new session before cancellation
+  completed. It now waits for cancellation or an in-flight stitch, stages the
+  stitch in a unique sibling file, and removes only that file if canceled.
+  Filesystem tests preserve an existing destination on cancellation and compare
+  promoted bytes on success. A failed promotion retains the staged PNG and
+  reports its location. Auto-scroll cannot restart while the stitch is in flight;
+  real daemon and native UI delivery remain unverified.
 - The macOS GPUI scroll controls treated global logical selection coordinates as
   scaled, display-local coordinates. Control, preview and prompt bounds now use
   the selected display's local coordinates; a platform-specific unit test covers
@@ -652,11 +665,12 @@ Bugs fixed in this pass:
 - The macOS scroll preview appended the first rows of each new frame, while the
   saved stitch appends its last rows. It now uses the trailing rows. A macOS CI
   fixture compares one, two and three preview frames with saved PNG pixels when
-  measured overlap matches the expected scroll step; that run is pending.
+  measured overlap matches the expected scroll step; the fixture passed in
+  [hosted CI](https://github.com/Porabuild/Poratake/actions/runs/42998144733).
 - A macOS scroll capture could discard its first frame when its sampled hash was
   zero. The duplicate detector now starts without a previous hash. The macOS CI
-  fixture exercises a black zero-hash frame and subsequent duplicates; that run
-  is pending.
+  fixture exercised a black zero-hash frame and subsequent duplicates in the
+  same hosted run.
 - The coarse scroll overlap search rejected a true 97px overlap and selected
   716px for a true 217px overlap in patterned fixtures. When the sampled
   result is rejected or farther from the expected scroll, a unique exact
@@ -831,9 +845,11 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Zero-padding wallpaper effects                           | Frame-only settings now activate at zero padding; editor output, Polish copy and the title-bar preview are checked. Corner- and shadow-only settings still do not activate without a background or padding. Attached layers and balance need coordinated preview/export handling before widening that gate.                                                                                                                        |
 | P1       | Wallpaper shadows and complex image compositions         | The screenshot preview uses a GPUI box shadow while export uses the rasterized image shadow and its white underlay; inset, balance, attached layers and annotations also need preview/output checks. An exact 4K preview-shadow prototype took 387–401 ms versus 55–56 ms without the shadow on this machine and allocated several image-sized buffers. Find a matching approach with measured interactive performance and memory. |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                               |
+| P1       | Capture filename collisions                              | Both shells derive screenshot paths from a pattern without reserving a unique name. Windows scroll output uses `File::create`; an isolated Windows promotion probe also replaced an existing destination. Use atomic no-overwrite allocation across capture paths and verify concurrent captures, history and retries.                                                                                                             |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                         |
 | P1       | Scroll stitching with fixed footers                      | A synthetic 1280×320 capture with an 80px fixed footer reports changed scrolling content as repeated. With a 40px footer, two frames are accepted but the reopened PNG repeats the footer: 51,200 of 573,440 pixels differ from the expected image. Fix detection and composition together, and verify sparse content, moving animations and real scrolling surfaces.                                                              |
 | P1       | Scroll stitching with repeated content                   | A synthetic 1000×160 pair with period-8 center rows and distinct side content selects the expected 64px overlap when the actual overlap is 56px, shortening the stitch by eight rows. The exact-match correction leaves this ambiguous sampled tie unchanged. Verify full-width evidence, repeated patterns, animations, short overlaps and real pages before changing this choice.                                                |
+| P1       | Unresponsive scroll stitch                               | Finish now waits for the daemon response or exit, so a daemon that stays alive without responding also leaves cancellation pending. Add a daemon-owned stop-and-join operation and verify a stalled stitch can be canceled without affecting other daemon work or losing completed output.                                                                                                                                         |
 | P1       | macOS scroll preview with variable overlap               | The preview uses the expected scroll step while final stitching measures each overlap. Compare previews and saved pixels when actual movement differs, without blocking the capture UI; verify real scrolling surfaces.                                                                                                                                                                                                            |
 | P1       | Native Windows clipboard formats                         | GPUI now supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. Verify native format enumeration and DIB-only paste in an isolated Windows session, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                    |
 | P1       | Native attachment compositor coverage                    | The frozen handoff fix passed a real pixel-exact native capture and save. Add automated native Windows coverage for hide/show transitions and verify freezing off, cancellation and repeated attachments.                                                                                                                                                                                                                          |

@@ -140,6 +140,8 @@ at the platform boundary instead of being sent to the OS.
 Nine scroll scenarios check selection cancellation, completion/cancellation
 before the start response, start/finish failures, empty output, held finish and
 cancel responses, and retry. The session stays active until each held response.
+The dark 1280px/100% case additionally holds a stitch for 31 seconds and checks
+that the session remains active, then saves and reopens the expected pixels.
 Scroll selection must stay live even when freezing is enabled. Saved portrait
 output must match history/editor exports. At 1280px, the production macOS GPUI
 preview panel is also rendered through the Windows GPU backend at every matrix
@@ -164,7 +166,8 @@ action tooltips at 140px, 200px and 240px. The fixture checks thumbnail pixels,
 keyboard selection, all four sides of the narrow selection ring, tooltip bounds
 and clipping masks, and deletes a scratch item without opening an editor. A
 complete renderer profile has 2,880 images. The new hosted history states were
-reviewed; an exact hosted rerun against the complete profile is pending.
+reviewed, and the complete hosted profile passed exact comparison in
+[CI at `0b79bd9`](https://github.com/Porabuild/Poratake/actions/runs/42992001485).
 Each renderer's set must be reviewed before acceptance.
 
 Capture, timer and scroll completion first open a bottom-right preview without

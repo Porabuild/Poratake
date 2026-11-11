@@ -37,7 +37,7 @@ export type DaemonEventHandler = (event: string, data: unknown) => void;
 export interface PendingRequest {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | undefined;
 }
 
 export type DaemonModule = keyof typeof DAEMON_METHODS;
@@ -50,7 +50,7 @@ export type DaemonCallArguments = {
     module: TModule,
     method: DaemonMethod<TModule>,
     params?: Record<string, unknown>,
-    timeout?: number,
+    timeout?: number | null,
   ];
 }[DaemonModule];
 import { DAEMON_METHODS } from './daemon-methods.generated';

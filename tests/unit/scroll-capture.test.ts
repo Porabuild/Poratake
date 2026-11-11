@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as FileSystem from 'node:fs';
 
 const mockDaemonCall = vi.fn();
 const mockGetConfig = vi.fn();
@@ -9,6 +10,8 @@ const mockIsSupported = vi.fn();
 const mockCheckAccessibility = vi.fn();
 const mockExistsSync = vi.fn();
 const mockReadFileSync = vi.fn();
+const mockRenameSync = vi.fn();
+const mockUnlinkSync = vi.fn();
 const mockClipboardWriteImage = vi.fn();
 const mockShowCapturePreview = vi.fn();
 const mockPrepareCapturePreview = vi.fn();
@@ -25,6 +28,7 @@ const mockPrewarmScrollCaptureControl = vi.fn();
 const mockShowScrollCaptureOverlay = vi.fn();
 const mockUpdateScrollCaptureState = vi.fn();
 const mockHideScrollCaptureOverlay = vi.fn();
+const mockShowNotification = vi.fn();
 
 vi.mock('electron', () => ({
   clipboard: { writeImage: (...a: unknown[]) => mockClipboardWriteImage(...a) },
@@ -41,6 +45,8 @@ vi.mock('fs', () => ({
   default: {
     existsSync: (...a: unknown[]) => mockExistsSync(...a),
     readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
+    renameSync: (...a: unknown[]) => mockRenameSync(...a),
+    unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
@@ -118,6 +124,10 @@ vi.mock('@/main/capture/scroll-capture/scroll-capture-window', () => ({
     mockHideScrollCaptureOverlay(...a),
 }));
 
+vi.mock('@/main/utils/notification', () => ({
+  showNotification: (...a: unknown[]) => mockShowNotification(...a),
+}));
+
 describe('scroll-capture', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -129,6 +139,8 @@ describe('scroll-capture', () => {
     mockIsSupported.mockReturnValue(true);
     mockCheckAccessibility.mockReturnValue(true);
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
+    mockRenameSync.mockReset();
+    mockUnlinkSync.mockReset();
     mockDipToScreenRect.mockImplementation((_window, bounds) => bounds);
     mockGetDisplayMatching.mockReturnValue({ scaleFactor: 1 });
     mockReleaseSelection.mockResolvedValue(undefined);
@@ -343,6 +355,58 @@ describe('scroll-capture', () => {
       await daemonHandler?.('scroll-capture:cancelled');
       await Promise.all([first, second]);
 
+      vi.mocked(areaSelector.startAreaSelection).mockResolvedValueOnce(null);
+      await startScrollCapture();
+      expect(areaSelector.startAreaSelection).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a cancelled session active until the daemon responds', async () => {
+      const areaSelector = await import('@/main/capture/area-selector');
+      let options:
+        | { onSelected: (selection: unknown) => Promise<void> }
+        | undefined;
+      let finishCancel: () => void = () => {};
+      vi.mocked(areaSelector.startAreaSelection).mockImplementation((opts => {
+        options = opts as typeof options;
+        return new Promise<null>(() => {});
+      }) as never);
+      mockDaemonCall.mockImplementation((_module, method) => {
+        if (method === 'cancel') {
+          return new Promise<void>(resolve => {
+            finishCancel = resolve;
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const { startScrollCapture } =
+        await import('@/main/capture/scroll-capture');
+      const first = startScrollCapture();
+      await options?.onSelected({
+        status: 'selected',
+        x: 10,
+        y: 20,
+        width: 200,
+        height: 100,
+      });
+      const action = mockShowScrollCaptureOverlay.mock.calls[0][1] as (
+        action: 'cancel' | 'done'
+      ) => Promise<void>;
+      const cancellation = action('cancel');
+      await action('done');
+      expect(
+        mockDaemonCall.mock.calls.filter(([, method]) => method === 'finish')
+      ).toHaveLength(0);
+      await new Promise(resolve => setImmediate(resolve));
+      const second = startScrollCapture();
+      const selectionCount = vi.mocked(areaSelector.startAreaSelection).mock
+        .calls.length;
+
+      finishCancel();
+      await cancellation;
+      await first;
+      expect(selectionCount).toBe(1);
+      await second;
       vi.mocked(areaSelector.startAreaSelection).mockResolvedValueOnce(null);
       await startScrollCapture();
       expect(areaSelector.startAreaSelection).toHaveBeenCalledTimes(2);
@@ -744,6 +808,15 @@ describe('scroll-capture', () => {
       });
       await capturing;
 
+      const temporaryPath = mockDaemonCall.mock.calls.find(
+        ([, method]) => method === 'finish'
+      )?.[2].outputPath;
+      expect(
+        mockDaemonCall.mock.calls.find(([, method]) => method === 'finish')?.[3]
+      ).toBeNull();
+      expect(temporaryPath).toMatch(/^\/p\/out\.png\..+\.tmp\.png$/);
+      expect(mockRenameSync).toHaveBeenCalledWith(temporaryPath, '/p/out.png');
+      expect(mockUnlinkSync).not.toHaveBeenCalled();
       expect(mockShowCapturePreview).toHaveBeenCalledWith(
         '/p/out.png',
         'screenshot',
@@ -801,72 +874,307 @@ describe('scroll-capture', () => {
       expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
     });
 
-    it('disposes a pending finish preview immediately on cancellation', async () => {
-      mockGetConfig.mockReturnValue({
-        screenshot: {
-          hideDesktopIcons: false,
-          captureToClipboard: false,
-          showPreview: true,
-        },
-        scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
-      });
-      const daemonModule = await import('@/main/daemon');
-      const areaSelector = await import('@/main/capture/area-selector');
-      let daemonHandler: ((event: string) => void) | null = null;
-      let finishCapture: (result: unknown) => void = () => {};
-      let finishCancel: () => void = () => {};
-      vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
-        daemonHandler = handler as typeof daemonHandler;
-      }) as never);
-      mockDaemonCall.mockImplementation((_module, method) => {
-        if (method === 'finish') {
-          return new Promise(resolve => {
-            finishCapture = resolve;
+    it.each(['editor', 'rename'])(
+      'releases the session when %s fails after stitching',
+      async failure => {
+        const daemonModule = await import('@/main/daemon');
+        const areaSelector = await import('@/main/capture/area-selector');
+        let options:
+          | { onSelected: (selection: unknown) => Promise<void> }
+          | undefined;
+        let daemonHandler: ((event: string) => Promise<void>) | undefined;
+        vi.mocked(areaSelector.startAreaSelection).mockImplementation((opts => {
+          options = opts as typeof options;
+          return new Promise<null>(() => {});
+        }) as never);
+        vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
+          daemonHandler = handler as typeof daemonHandler;
+        }) as never);
+        mockGetConfig.mockReturnValue({
+          screenshot: { hideDesktopIcons: false, showPreview: false },
+          scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
+        });
+        mockExistsSync.mockReturnValue(true);
+        if (failure === 'editor') {
+          mockOpenScreenshotEditor.mockImplementationOnce(() => {
+            throw new Error('editor unavailable');
+          });
+        } else {
+          mockRenameSync.mockImplementationOnce(() => {
+            throw new Error('destination unavailable');
           });
         }
-        if (method === 'cancel') {
-          return new Promise<void>(resolve => {
-            finishCancel = resolve;
+        mockDaemonCall.mockImplementation(async (_module, method) =>
+          method === 'finish' ? { success: true } : {}
+        );
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const { startScrollCapture } =
+            await import('@/main/capture/scroll-capture');
+          let settled = false;
+          const capture = startScrollCapture().then(() => {
+            settled = true;
           });
-        }
-        return Promise.resolve({});
-      });
-      vi.mocked(areaSelector.startAreaSelection).mockImplementation(((opts: {
-        onSelected?: (selection: unknown) => Promise<void>;
-      }) => {
-        setImmediate(async () => {
-          await opts.onSelected?.({
+          await options?.onSelected({
             status: 'selected',
             x: 0,
             y: 0,
             width: 100,
             height: 100,
           });
+          await daemonHandler?.('scroll-capture:done');
           await new Promise(resolve => setImmediate(resolve));
-          daemonHandler?.('scroll-capture:done');
+          expect(settled).toBe(true);
+          await capture;
+          const temporaryPath = mockDaemonCall.mock.calls.find(
+            ([, method]) => method === 'finish'
+          )?.[2].outputPath;
+          expect(mockUnlinkSync).not.toHaveBeenCalled();
+          expect(
+            error.mock.calls.filter(
+              ([message]) => message === 'Scroll capture retained at:'
+            )
+          ).toEqual(
+            failure === 'rename'
+              ? [['Scroll capture retained at:', temporaryPath]]
+              : []
+          );
+          expect(mockShowNotification.mock.calls).toEqual(
+            failure === 'rename'
+              ? [
+                  [
+                    'Scroll Capture Not Saved',
+                    `Capture data may be available at ${temporaryPath}`,
+                  ],
+                ]
+              : []
+          );
+          vi.mocked(areaSelector.startAreaSelection).mockResolvedValueOnce(
+            null
+          );
+          await startScrollCapture();
+          expect(areaSelector.startAreaSelection).toHaveBeenCalledTimes(2);
+        } finally {
+          error.mockRestore();
+        }
+      }
+    );
+
+    it.each(['success', 'failure', 'daemon-exit'])(
+      'waits for an in-flight stitch before completing cancellation: %s',
+      async outcome => {
+        mockGetConfig.mockReturnValue({
+          screenshot: {
+            hideDesktopIcons: false,
+            captureToClipboard: false,
+            showPreview: true,
+          },
+          scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
         });
-        return undefined;
-      }) as never);
+        mockExistsSync.mockReturnValue(true);
+        const daemonModule = await import('@/main/daemon');
+        const areaSelector = await import('@/main/capture/area-selector');
+        let daemonHandler: ((event: string) => void) | null = null;
+        let finishCapture: (result: unknown) => void = () => {};
+        let failFinish: (error: Error) => void = () => {};
+        vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
+          daemonHandler = handler as typeof daemonHandler;
+        }) as never);
+        mockDaemonCall.mockImplementation((_module, method) => {
+          if (method === 'finish') {
+            return new Promise((resolve, reject) => {
+              finishCapture = resolve;
+              failFinish = reject;
+            });
+          }
+          return Promise.resolve({});
+        });
+        vi.mocked(areaSelector.startAreaSelection).mockImplementation(((opts: {
+          onSelected?: (selection: unknown) => Promise<void>;
+        }) => {
+          setImmediate(async () => {
+            await opts.onSelected?.({
+              status: 'selected',
+              x: 0,
+              y: 0,
+              width: 100,
+              height: 100,
+            });
+            await new Promise(resolve => setImmediate(resolve));
+            daemonHandler?.('scroll-capture:done');
+          });
+          return undefined;
+        }) as never);
 
-      const { cancelScrollCapture, startScrollCapture } =
-        await import('@/main/capture/scroll-capture');
-      const capturing = startScrollCapture();
-      await vi.waitFor(() =>
-        expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1)
-      );
+        const { startScrollCapture } =
+          await import('@/main/capture/scroll-capture');
+        const capturing = startScrollCapture();
+        await vi.waitFor(() =>
+          expect(mockPrepareCapturePreview).toHaveBeenCalledTimes(1)
+        );
 
-      const cancellation = cancelScrollCapture();
-      await Promise.resolve();
-      expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
-      finishCancel();
-      await cancellation;
-      await capturing;
+        const action = mockShowScrollCaptureOverlay.mock.calls[0][1] as (
+          action: 'cancel' | 'toggle-auto-scroll'
+        ) => Promise<void>;
+        await action('toggle-auto-scroll');
+        expect(mockDaemonCall).not.toHaveBeenCalledWith(
+          'scroll-capture',
+          'startAutoScroll'
+        );
+        const cancellation = action('cancel');
+        await new Promise(resolve => setImmediate(resolve));
+        expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
+        expect(mockDaemonCall).not.toHaveBeenCalledWith(
+          'scroll-capture',
+          'cancel'
+        );
+        const second = startScrollCapture();
+        expect(areaSelector.startAreaSelection).toHaveBeenCalledTimes(1);
 
-      finishCapture({ success: true, outputPath: '/p/out.png' });
-      await Promise.resolve();
-      expect(mockShowCapturePreview).not.toHaveBeenCalled();
-      expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
-    });
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          if (outcome === 'daemon-exit') {
+            failFinish(new Error('Daemon exited before responding'));
+          } else {
+            finishCapture({ success: outcome === 'success' });
+          }
+          await Promise.all([cancellation, capturing, second]);
+        } finally {
+          error.mockRestore();
+        }
+        const temporaryPath = mockDaemonCall.mock.calls.find(
+          ([, method]) => method === 'finish'
+        )?.[2].outputPath;
+        expect(temporaryPath).toMatch(/^\/p\/out\.png\..+\.tmp\.png$/);
+        expect(mockRenameSync).not.toHaveBeenCalled();
+        expect(mockUnlinkSync).toHaveBeenCalledExactlyOnceWith(temporaryPath);
+        expect(mockShowNotification).not.toHaveBeenCalled();
+        expect(mockShowCapturePreview).not.toHaveBeenCalled();
+        expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
+      }
+    );
+
+    it.each(['save', 'cancel', 'daemon-exit', 'failed'])(
+      'preserves the right files when a stitched capture ends: %s',
+      async outcome => {
+        const realFs = await vi.importActual<typeof FileSystem>('node:fs');
+        const path = await import('node:path');
+        const os = await import('node:os');
+        const directory = realFs.mkdtempSync(
+          path.join(os.tmpdir(), 'poratake-scroll-')
+        );
+        const outputPath = path.join(directory, 'capture.png');
+        const prior = Buffer.from('existing capture');
+        const captured = Buffer.from('new capture');
+        let temporaryPath = '';
+        if (outcome !== 'save') realFs.writeFileSync(outputPath, prior);
+        mockExistsSync.mockImplementation((file: string) =>
+          realFs.existsSync(file)
+        );
+        mockRenameSync.mockImplementation((from: string, to: string) =>
+          realFs.renameSync(from, to)
+        );
+        mockUnlinkSync.mockImplementation((file: string) =>
+          realFs.unlinkSync(file)
+        );
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        try {
+          const utils = await import('@/main/capture/screenshot/utils');
+          vi.mocked(utils.generateScreenshotPath).mockReturnValueOnce(
+            outputPath
+          );
+          const daemonModule = await import('@/main/daemon');
+          const areaSelector = await import('@/main/capture/area-selector');
+          let options:
+            | { onSelected: (selection: unknown) => Promise<void> }
+            | undefined;
+          let daemonHandler: ((event: string) => Promise<void>) | undefined;
+          let finishCapture: (result: unknown) => void = () => {};
+          let failFinish: (error: Error) => void = () => {};
+          vi.mocked(areaSelector.startAreaSelection).mockImplementation(
+            (opts => {
+              options = opts as typeof options;
+              return new Promise<null>(() => {});
+            }) as never
+          );
+          vi.mocked(daemonModule.daemon.onEvent).mockImplementation(
+            (handler => {
+              daemonHandler = handler as typeof daemonHandler;
+            }) as never
+          );
+          mockGetConfig.mockReturnValue({
+            screenshot: { hideDesktopIcons: false, showPreview: false },
+            scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
+          });
+          mockDaemonCall.mockImplementation((_module, method, params) => {
+            if (method === 'finish') {
+              temporaryPath = params.outputPath;
+              realFs.writeFileSync(temporaryPath, captured);
+              return new Promise((resolve, reject) => {
+                finishCapture = resolve;
+                failFinish = reject;
+              });
+            }
+            return Promise.resolve({});
+          });
+
+          const { startScrollCapture } =
+            await import('@/main/capture/scroll-capture');
+          const capture = startScrollCapture();
+          await options?.onSelected({
+            status: 'selected',
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+          });
+          const finish = daemonHandler?.('scroll-capture:done');
+          const action = mockShowScrollCaptureOverlay.mock.calls[0][1] as (
+            action: 'cancel'
+          ) => Promise<void>;
+          const cancellation =
+            outcome === 'cancel' ? action('cancel') : undefined;
+          if (outcome === 'daemon-exit') {
+            failFinish(new Error('Daemon exited before responding'));
+          } else {
+            finishCapture({ success: outcome !== 'failed' });
+          }
+          await Promise.all([capture, finish, cancellation]);
+
+          expect(temporaryPath).not.toBe(outputPath);
+          const retained = outcome === 'daemon-exit' || outcome === 'failed';
+          expect(realFs.existsSync(temporaryPath)).toBe(retained);
+          expect(
+            realFs.existsSync(temporaryPath)
+              ? realFs.readFileSync(temporaryPath)
+              : null
+          ).toEqual(retained ? captured : null);
+          expect(realFs.readFileSync(outputPath)).toEqual(
+            outcome === 'save' ? captured : prior
+          );
+          expect(mockShowNotification.mock.calls).toEqual(
+            retained
+              ? [
+                  [
+                    'Scroll Capture Not Saved',
+                    `Capture data may be available at ${temporaryPath}`,
+                  ],
+                ]
+              : []
+          );
+        } finally {
+          error.mockRestore();
+          mockExistsSync.mockReset();
+          mockRenameSync.mockReset();
+          mockUnlinkSync.mockReset();
+          if (temporaryPath && realFs.existsSync(temporaryPath))
+            realFs.unlinkSync(temporaryPath);
+          if (realFs.existsSync(outputPath)) realFs.unlinkSync(outputPath);
+          realFs.rmdirSync(directory);
+        }
+      }
+    );
 
     it('cancels a finish preview while session cleanup is pending', async () => {
       mockGetConfig.mockReturnValue({
@@ -919,12 +1227,13 @@ describe('scroll-capture', () => {
         expect(mockShowDesktopIcons).toHaveBeenCalledTimes(1)
       );
 
-      await cancelScrollCapture();
+      const cancellation = cancelScrollCapture();
+      await Promise.resolve();
       expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
       expect(mockShowCapturePreview).not.toHaveBeenCalled();
 
       restoreIcons();
-      await capturing;
+      await Promise.all([cancellation, capturing]);
       expect(mockShowCapturePreview).not.toHaveBeenCalled();
     });
 

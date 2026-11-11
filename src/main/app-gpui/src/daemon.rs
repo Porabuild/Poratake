@@ -420,7 +420,6 @@ impl DaemonHandle {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn call_without_timeout(
         &self,
         module: &str,
@@ -792,7 +791,7 @@ impl ScrollCaptureClient<'_> {
         request: &ScrollCaptureFinishRequest,
     ) -> Result<ScrollCaptureFinishResult> {
         self.daemon.ensure_running()?;
-        let response = self.daemon.call(
+        let response = self.daemon.call_without_timeout(
             SCROLL_CAPTURE_MODULE,
             ScrollCaptureMethod::Finish.id(),
             Some(serde_json::to_value(request)?),
