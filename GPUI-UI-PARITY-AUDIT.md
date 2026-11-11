@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-11 for Poratake 0.9.6, based on `d302ee4` plus this change.
+Refreshed 2026-11-11 for Poratake 0.9.6, based on `80a5700` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -58,9 +58,9 @@ states and 160 revised selection images were reviewed; the remaining 2,312 exist
 images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
 24 were reviewed and the other 2,512 images were unchanged. The final exact
 matrix passed all 16 cases. The Windows native gate passed 1,019 tests with two skipped.
-All 144 hosted history images, 64 selection-corner images and 160 revised
-selection images were also reviewed. The DPI follow-up's history changes require
-separate hosted-renderer review.
+All 144 hosted history images, 64 selection-corner images, 160 revised selection
+images and 24 DPI-adjusted history images were also reviewed. The other 2,512
+hosted images were unchanged.
 At 950 logical pixels and 125%, the synthetic picker backdrop spans 1187.5
 physical pixels, leaving a pale final screenshot column. The real color-picker
 overlay is transparent; this fixture artifact does not verify physical displays.
@@ -343,6 +343,11 @@ because 64 new corner images were absent. Those images and the 160 changed
 selection images were reviewed; the other 2,312 existing images were unchanged.
 Artifact `13829827867` has SHA-256
 `e8ed36fccbec9406e86d1411a6964032d79f9a86785d28c09aad9c2bd1e5598e`.
+The [DPI follow-up run](https://github.com/Porabuild/Poratake/actions/runs/42963926798)
+passed the geometry and workflow checks and 14 visual cases. The two narrow
+125% cases differed in 24 history-grid images, all reviewed; the other 2,512
+hosted images were unchanged. Artifact `13832141444` has SHA-256
+`d61c324f6de4a9030ecf81bed2977ed43963a693bfa22ad4fb6fa72e349eea6d`.
 Check the current PR for subsequent changes.
 The display-change test checks preview repositioning in a headless window, and
 synthetic geometry covers negative origins and mixed scaling. Physical monitor
