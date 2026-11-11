@@ -53,8 +53,8 @@ The eight 950px cases each add 18 narrow-history states, for 2,808 images per
 complete renderer profile. The 48 selected-OCR tooltip images and 32 target-menu
 images were reviewed for NVIDIA; all 2,728 earlier images were pixel-identical.
 An exact rerun after the target-menu interaction fixes passed all 16 cases and
-2,808 images. These 80 states still need
-hosted-renderer review. The 96 earlier NVIDIA all-in-one tooltip images were
+2,808 images. The corresponding 80 hosted images were reviewed, and all 2,728
+earlier hosted images were pixel-identical. The 96 earlier NVIDIA all-in-one tooltip images were
 reviewed; all 2,632 existing images were unchanged. The corresponding 96 hosted
 images were also reviewed, and all 2,632 previous hosted images were pixel-identical. The local
 exact-baseline matrix at `80a5700` passed all 16 cases and 2,632 images. After
@@ -265,6 +265,11 @@ Its Windows native and geometry checks passed, then the visual gate rejected the
 96 new all-in-one tooltip states. All were reviewed; the previous 2,632 hosted
 images were pixel-identical. Artifact `13835681057` has SHA-256
 `69194ad53c1987a87bc5af0710f22a33f3929226c1fe2888a068176adac98d74`.
+The [run at `bf4ac143`](https://github.com/Porabuild/Poratake/actions/runs/42977256566)
+passed Linux, macOS, Windows native and geometry checks, then rejected 80 new
+selected-OCR and target-menu images. All 80 were reviewed; the previous 2,728
+hosted images were pixel-identical. Artifact `13837611366` has SHA-256
+`08b97e272ba8d5a2c60a905936f643e8847b3185a908bd027d6f87da5bc34b5a`.
 
 The earlier local exact comparison passed all 16 cases. Contact sheets for all cases and
 full-resolution narrow menus were reviewed. An isolated baseline with one changed
