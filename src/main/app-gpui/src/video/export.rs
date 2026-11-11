@@ -1155,7 +1155,7 @@ mod tests {
             };
             let mut frame = color.repeat(320 * 180);
             for y in 60..80 {
-                for x in 160..190 {
+                for x in (160..190).chain(200..230) {
                     let shade = if x % 2 == 0 { 16 } else { 240 };
                     let pixel = (y * 320 + x) * 4;
                     frame[pixel..pixel + 4].copy_from_slice(&[shade, shade, shade, 255]);
@@ -1214,13 +1214,22 @@ mod tests {
                     style: "pixelate".into(),
                     intensity: 5.,
                 },
+                Annotation::Redact {
+                    id: "blur".into(),
+                    x: 200.,
+                    y: 60.,
+                    width: 30.,
+                    height: 20.,
+                    style: "blur".into(),
+                    intensity: 5.,
+                },
             ],
         });
         model::save_state(&recording, &state);
         assert_eq!(model::load_state(&recording), state);
         let mut preview = preview::Source::open(&recording, model::load_state(&recording)).unwrap();
         let mut unredacted_state = state.clone();
-        unredacted_state.drawing_segments[0].annotations.pop();
+        unredacted_state.drawing_segments[0].annotations.truncate(1);
         let mut unredacted = preview::Source::open(&recording, unredacted_state).unwrap();
         let output = directory.path().join("edited.mp4");
         let mut progress = 0.;
@@ -1275,26 +1284,31 @@ mod tests {
                 drawing_error as f64 / (24. * 40. * 3.) < 3.,
                 "the exported drawing differs from preview at {time}s"
             );
-            let mut redaction_change = 0_u64;
-            let mut redaction_error = 0_u64;
-            for y in 72..92 {
-                for x in 172..202 {
-                    let pixel = (y * info.width as usize + x) * 4;
-                    for channel in 0..3 {
-                        redaction_change += u64::from(
-                            expected[pixel + channel].abs_diff(original[pixel + channel]),
-                        );
-                        redaction_error += u64::from(
-                            actual.bgra[pixel + channel].abs_diff(expected[pixel + channel]),
-                        );
+            for (style, left) in [("pixelate", 172), ("blur", 212)] {
+                let mut redaction_change = 0_u64;
+                let mut redaction_error = 0_u64;
+                for y in 72..92 {
+                    for x in left..left + 30 {
+                        let pixel = (y * info.width as usize + x) * 4;
+                        for channel in 0..3 {
+                            redaction_change += u64::from(
+                                expected[pixel + channel].abs_diff(original[pixel + channel]),
+                            );
+                            redaction_error += u64::from(
+                                actual.bgra[pixel + channel].abs_diff(expected[pixel + channel]),
+                            );
+                        }
                     }
                 }
+                assert!(
+                    redaction_change as f64 / (20. * 30. * 3.) > 8.,
+                    "{style} must change the preview at {time}s"
+                );
+                assert!(
+                    redaction_error as f64 / (20. * 30. * 3.) < 8.,
+                    "the exported {style} differs from preview at {time}s"
+                );
             }
-            assert!(redaction_change as f64 / (20. * 30. * 3.) > 8.);
-            assert!(
-                redaction_error as f64 / (20. * 30. * 3.) < 8.,
-                "the exported redaction differs from preview at {time}s"
-            );
         }
     }
 

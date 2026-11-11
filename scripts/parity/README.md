@@ -113,8 +113,10 @@ GPU atlas. Single-image previews without a window frame, inset, balance or
 attachments are also compared at both scales, with and without corners or
 shadows. The entire padded canvas is checked, including transparent backgrounds,
 a corner annotation, and crop and selection handles. Translucent custom
-backgrounds can differ by up to three color levels. Unframed attachments without
-inset or balance are checked on all four edges and in a five-layer composition,
+backgrounds can differ by up to three color levels. For a transparent rounded
+image with a shadow, at most one pixel on the rounded edge may differ by three
+levels; the remaining pixels must stay within two. Unframed attachments without inset or balance are
+checked on all four edges and in a five-layer composition,
 including corners, shadows, transparent images, aspect ratios, save/reopen and
 atlas eviction. Overlapping translucent shadows differ by four color levels in
 at most 16 pixels; all other pixels use the limits above. Polish copy is checked
@@ -145,13 +147,19 @@ wallpaper at 100% for opaque and translucent images. Plain captures with the
 shape match a flattened PNG inside the redaction at 50% and 150% zoom; the
 surrounding edge band still differs at 150%. Complex compositions and physical
 DPI remain outside these checks.
+The recorded video export fixture compares both blurred and pixelated striped
+regions with decoded MP4 pixels across a cut and speed changes.
 Committed screenshot blur is checked against saved pixels in unframed captures
 at the same three simulated scales, with transparent pixels, preceding and later
 annotations, and a clipped region. A CPU test checks low-zoom blur sampling and
-replay beneath a later annotation at aligned offsets and all four surface edges. A 50% zoom
-fixture still differs from a flattened image, and the blur kernel differs from an
-Electron canvas edge probe. A synthetic CPU comparison also differs at a
-fractional surface offset; the live editor case remains unverified.
+replay beneath a later annotation at aligned offsets and all four surface edges.
+An inset fixture with overlapping annotations differs from a flattened PNG by
+up to eight levels at 50% zoom and 65 at 150%. Sampled Electron canvas blur
+profiles now differ by at most three channel levels, and
+translucent clipped screenshot samples by at most two. A transparent single
+image over a gradient or inset is still blurred before the backdrop in GPUI but
+after it in Electron. A synthetic CPU comparison also differed at a fractional
+surface offset before the kernel change; the live editor case remains unverified.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain

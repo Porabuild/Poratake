@@ -915,6 +915,43 @@ mod tests {
     }
 
     #[test]
+    fn shadow_blur_approximates_electron() {
+        let mut worst = (0, 0., 0, 0, 0);
+        for (blur, expected) in [
+            (2., [0, 0, 0, 0, 17, 79, 255, 255, 79, 17, 0, 0, 0, 0]),
+            (10., [0, 0, 7, 47, 98, 117, 255, 255, 117, 98, 35, 4, 0, 0]),
+            (
+                20.,
+                [7, 15, 44, 83, 112, 122, 255, 255, 122, 112, 74, 37, 12, 5],
+            ),
+            (
+                40.,
+                [37, 50, 72, 94, 107, 111, 255, 255, 111, 107, 89, 68, 47, 35],
+            ),
+        ] {
+            let mut canvas = Canvas::new(128, 128).unwrap();
+            canvas.set_shadow(Some(Shadow {
+                color: Color::BLACK,
+                blur,
+                offset_x: 0.,
+                offset_y: 0.,
+            }));
+            canvas.fill_rect(Rect::from_xywh(32., 32., 64., 64.).unwrap(), Color::WHITE);
+            for (x, expected) in [12, 16, 22, 27, 30, 31, 32, 64, 96, 97, 101, 106, 112, 116]
+                .into_iter()
+                .zip(expected)
+            {
+                let actual = alpha_at(&canvas, x, 64);
+                let difference = actual.abs_diff(expected);
+                if difference > worst.0 {
+                    worst = (difference, blur, x, actual, expected);
+                }
+            }
+        }
+        assert!(worst.0 <= 4, "{worst:?}");
+    }
+
+    #[test]
     fn a_clip_confines_later_fills() {
         let mut canvas = Canvas::new(20, 20).expect("canvas");
         canvas.save();

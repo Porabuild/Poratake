@@ -2,7 +2,10 @@
 //! Both the image editor's export and the video editor's drawing overlay draw
 //! through this, which is what keeps a saved file identical to the preview.
 
-use tiny_skia::{BlendMode, Color, FillRule, LineCap, LineJoin, PathBuilder, Pixmap, Rect, Stroke};
+use tiny_skia::{
+    BlendMode, Color, FillRule, LineCap, LineJoin, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke,
+    Transform,
+};
 
 use crate::editor::annotations::{
     arrow_curve_control, arrow_head_points, arrow_head_size, normalize_rect, number_size_config,
@@ -48,7 +51,7 @@ pub fn draw_screenshot(canvas: &mut Canvas, annotation: &Annotation, native_scal
             let radius = (redact_intensity(*intensity).1 * native_scale)
                 .round()
                 .max(1.0);
-            blur_region(canvas, x, y, width, height, radius);
+            blur_region(canvas, x, y, width, height, radius, true);
         }
         _ => draw(canvas, annotation),
     }
@@ -610,7 +613,15 @@ fn draw_redact(
 
     match style {
         "pixelate" => pixelate_region(canvas, left, top, width, height, pixel_size.max(1.0)),
-        "blur" => blur_region(canvas, left, top, width, height, blur_radius.max(1.0)),
+        "blur" => blur_region(
+            canvas,
+            left,
+            top,
+            width,
+            height,
+            blur_radius.max(1.0),
+            false,
+        ),
         _ => {
             let Some(rect) = Rect::from_xywh(left as f32, top as f32, width as f32, height as f32)
             else {
@@ -744,7 +755,15 @@ fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: 
     }
 }
 
-fn blur_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64, radius: f64) {
+fn blur_region(
+    canvas: &mut Canvas,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+    screenshot: bool,
+) {
     let Some(region) = clamp_region(canvas, x, y, width, height) else {
         return;
     };
@@ -758,6 +777,7 @@ fn blur_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64, rad
     let source_height =
         ((region.device_height as i32 + padding * 2).min(canvas.height() as i32 - source_y)).max(1);
 
+    let sigma = radius as f32 * region.scale_x;
     let Some(mut source) = canvas.read_region(
         source_x,
         source_y,
@@ -766,7 +786,20 @@ fn blur_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64, rad
     ) else {
         return;
     };
-    blur::blur(&mut source, radius as f32 * region.scale_x);
+    if screenshot {
+        let mut filtered = source.clone();
+        blur::blur_transparent(&mut filtered, sigma);
+        source.draw_pixmap(
+            0,
+            0,
+            filtered.as_ref(),
+            &PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
+    } else {
+        blur::blur(&mut source, sigma);
+    }
 
     canvas.save();
     canvas.set_shadow(None);
@@ -778,8 +811,8 @@ fn blur_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64, rad
         source.as_ref(),
         (source_x as f32 - canvas.transform().tx) / region.scale_x,
         (source_y as f32 - canvas.transform().ty) / region.scale_y,
-        source_width as f32 / region.scale_x,
-        source_height as f32 / region.scale_y,
+        source.width() as f32 / region.scale_x,
+        source.height() as f32 / region.scale_y,
     );
     canvas.restore();
 }
@@ -1121,6 +1154,157 @@ mod tests {
             2.,
         );
         assert_eq!(canvas.pixmap().data(), &before);
+    }
+
+    #[test]
+    fn screenshot_blur_matches_electron_on_translucent_clipped_regions() {
+        for (x, y, width, height, samples) in [
+            (
+                32.,
+                32.,
+                64.,
+                64.,
+                vec![
+                    (32, 64, [63, 128, 191, 223]),
+                    (64, 64, [64, 128, 191, 224]),
+                    (95, 64, [63, 128, 191, 223]),
+                    (20, 64, [64, 128, 191, 128]),
+                ],
+            ),
+            (
+                -10.,
+                32.,
+                50.,
+                64.,
+                vec![
+                    (0, 64, [65, 128, 191, 208]),
+                    (10, 64, [65, 129, 192, 220]),
+                    (39, 64, [64, 128, 191, 224]),
+                    (50, 64, [64, 128, 191, 128]),
+                ],
+            ),
+            (
+                96.,
+                32.,
+                50.,
+                64.,
+                vec![
+                    (96, 64, [63, 128, 191, 223]),
+                    (112, 64, [63, 127, 190, 223]),
+                    (127, 64, [65, 128, 191, 208]),
+                    (80, 64, [64, 128, 191, 128]),
+                ],
+            ),
+            (
+                0.,
+                0.,
+                128.,
+                128.,
+                vec![
+                    (0, 0, [65, 128, 191, 200]),
+                    (64, 64, [64, 128, 191, 224]),
+                    (127, 64, [65, 128, 191, 208]),
+                ],
+            ),
+        ] {
+            let mut canvas = Canvas::new(128, 128).unwrap();
+            canvas.fill_all(Color::from_rgba8(64, 128, 192, 128));
+            draw_screenshot(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x,
+                    y,
+                    width,
+                    height,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+                1.,
+            );
+            let rendered = crate::editor::export::to_rgba(canvas.pixmap());
+            for (sample_x, sample_y, expected) in samples {
+                let actual = rendered.get_pixel(sample_x, sample_y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                    "redaction {x},{y}, pixel {sample_x},{sample_y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_blur_approximates_electron_edge_profiles() {
+        for (intensity, native_scale, expected) in [
+            (1., 1., [0, 2, 33, 140, 234, 254, 255]),
+            (2., 1., [2, 30, 73, 134, 192, 231, 254]),
+            (2., 1.25, [6, 43, 83, 132, 180, 217, 250]),
+            (4., 1., [28, 71, 99, 131, 162, 189, 229]),
+            (5., 1., [42, 81, 105, 130, 155, 178, 216]),
+            (4., 2., [69, 98, 113, 129, 145, 160, 188]),
+        ] {
+            let mut canvas = Canvas::new(512, 512).unwrap();
+            canvas.fill_all(Color::BLACK);
+            canvas.fill_rect(Rect::from_xywh(256., 0., 256., 512.).unwrap(), Color::WHITE);
+            draw_screenshot(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x: 128.,
+                    y: 128.,
+                    width: 256.,
+                    height: 256.,
+                    style: "blur".into(),
+                    intensity,
+                },
+                native_scale,
+            );
+            for (offset, expected) in [-20, -10, -5, 0, 5, 10, 20].into_iter().zip(expected) {
+                let actual = canvas
+                    .pixmap()
+                    .pixel((256 + offset) as u32, 256)
+                    .unwrap()
+                    .red();
+                assert!(
+                    actual.abs_diff(expected) <= 3,
+                    "intensity={intensity}, scale={native_scale}, offset={offset}: {actual} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_blur_uses_electrons_padded_source_bounds() {
+        for (stripe_x, stripe_width, expected) in
+            [(0., 32., [0, 0, 0, 0, 0]), (32., 8., [32, 26, 14, 1, 0])]
+        {
+            let mut canvas = Canvas::new(128, 128).unwrap();
+            canvas.fill_all(Color::BLACK);
+            canvas.fill_rect(
+                Rect::from_xywh(stripe_x, 0., stripe_width, 128.).unwrap(),
+                Color::WHITE,
+            );
+            draw_screenshot(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x: 48.,
+                    y: 32.,
+                    width: 32.,
+                    height: 64.,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+                1.,
+            );
+            for (x, expected) in [48, 49, 52, 60, 79].into_iter().zip(expected) {
+                let actual = canvas.pixmap().pixel(x, 64).unwrap().red();
+                assert!(
+                    actual.abs_diff(expected) <= 3,
+                    "stripe at {stripe_x}, pixel {x}: {actual} vs {expected}"
+                );
+            }
+        }
     }
 
     #[test]
