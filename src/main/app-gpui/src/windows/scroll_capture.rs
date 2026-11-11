@@ -83,54 +83,20 @@ impl ScrollCaptureSession {
             auto_scrolling: false,
         });
         let display = crate::windows::recording_control::display_for_rect(cx, area);
-        let scale = display
-            .as_ref()
-            .map(|display| crate::capture::overlay::display_scale_factor(display.as_ref(), cx))
-            .unwrap_or(1.0)
-            .max(1.0);
-        let logical = logical_rect(area, scale);
         let display_bounds = display
             .as_ref()
-            .map(|display| crate::system::work_area::display_bounds(display.as_ref()));
+            .map(|display| crate::system::work_area::display_bounds(display.as_ref()))
+            .unwrap_or(Bounds {
+                origin: gpui::point(px(0.0), px(0.0)),
+                size: size(px(1920.0), px(1080.0)),
+            });
         let platform_display_id = display.as_ref().map(|display| display.id());
-        let (origin_x, origin_y, bounds_width, bounds_height) = display_bounds
-            .map(|bounds| {
-                (
-                    f32::from(bounds.origin.x),
-                    f32::from(bounds.origin.y),
-                    f32::from(bounds.size.width),
-                    f32::from(bounds.size.height),
-                )
-            })
-            .unwrap_or((logical.0, logical.1, 1920.0, 1080.0));
-
-        let (control_x, control_y) = control_origin(logical, (bounds_width, bounds_height));
-        let control_bounds = Bounds {
-            origin: gpui::point(px(origin_x + control_x), px(origin_y + control_y)),
-            size: size(px(CONTROL_WIDTH), px(CONTROL_HEIGHT)),
-        };
-        let preview_left = preview_left(logical, bounds_width);
-        let preview_bounds = Bounds {
-            origin: gpui::point(px(origin_x + preview_left), px(origin_y + logical.1)),
-            size: size(px(PREVIEW_WIDTH), px(1.0)),
-        };
-        let prompt_bounds = Bounds {
-            origin: gpui::point(px(origin_x + logical.0), px(origin_y + logical.1)),
-            size: size(px(logical.2), px(logical.3)),
-        };
-        let to_local = |bounds: Bounds<gpui::Pixels>| {
-            display
-                .as_ref()
-                .map(|display| {
-                    crate::system::work_area::local_window_bounds(bounds, display.as_ref())
-                })
-                .unwrap_or(bounds)
-        };
+        let (control_bounds, preview_bounds, prompt_bounds) = session_bounds(area, display_bounds);
 
         let preview_entity = ui.clone();
         let _ = cx.open_window(
             super::popup_window_options(
-                to_local(preview_bounds),
+                preview_bounds,
                 super::PopupWindowConfig {
                     focus: false,
                     display_id: platform_display_id,
@@ -151,7 +117,7 @@ impl ScrollCaptureSession {
         let prompt_entity = ui.clone();
         let _ = cx.open_window(
             super::popup_window_options(
-                to_local(prompt_bounds),
+                prompt_bounds,
                 super::PopupWindowConfig {
                     focus: false,
                     display_id: platform_display_id,
@@ -173,7 +139,7 @@ impl ScrollCaptureSession {
         let control_entity = ui.clone();
         let _ = cx.open_window(
             super::popup_window_options(
-                to_local(control_bounds),
+                control_bounds,
                 super::PopupWindowConfig {
                     focus: false,
                     display_id: platform_display_id,
@@ -435,12 +401,38 @@ impl Render for ScrollControlBar {
     }
 }
 
-fn logical_rect(area: ScreenRect, scale: f32) -> (f32, f32, f32, f32) {
+fn session_bounds(
+    area: ScreenRect,
+    display: Bounds<gpui::Pixels>,
+) -> (
+    Bounds<gpui::Pixels>,
+    Bounds<gpui::Pixels>,
+    Bounds<gpui::Pixels>,
+) {
+    let logical = (
+        area.x as f32 - f32::from(display.origin.x),
+        area.y as f32 - f32::from(display.origin.y),
+        area.width as f32,
+        area.height as f32,
+    );
+    let display_size = (
+        f32::from(display.size.width),
+        f32::from(display.size.height),
+    );
+    let (control_x, control_y) = control_origin(logical, display_size);
     (
-        area.x as f32 / scale,
-        area.y as f32 / scale,
-        area.width as f32 / scale,
-        area.height as f32 / scale,
+        Bounds {
+            origin: gpui::point(px(control_x), px(control_y)),
+            size: size(px(CONTROL_WIDTH), px(CONTROL_HEIGHT)),
+        },
+        Bounds {
+            origin: gpui::point(px(preview_left(logical, display_size.0)), px(logical.1)),
+            size: size(px(PREVIEW_WIDTH), px(1.0)),
+        },
+        Bounds {
+            origin: gpui::point(px(logical.0), px(logical.1)),
+            size: size(px(logical.2), px(logical.3)),
+        },
     )
 }
 
@@ -452,7 +444,10 @@ fn control_origin(area: (f32, f32, f32, f32), display: (f32, f32)) -> (f32, f32)
     } else {
         (area.1 - CONTROL_GAP - CONTROL_HEIGHT).max(0.0)
     };
-    (center_x - CONTROL_WIDTH / 2.0, top)
+    (
+        (center_x - CONTROL_WIDTH / 2.0).clamp(0.0, (display.0 - CONTROL_WIDTH).max(0.0)),
+        top,
+    )
 }
 
 fn preview_left(area: (f32, f32, f32, f32), display_width: f32) -> f32 {
@@ -550,6 +545,40 @@ mod tests {
         assert_eq!(
             control_origin((100.0, 900.0, 400.0, 150.0), (1920.0, 1080.0)),
             (216.0, 832.0)
+        );
+    }
+
+    #[test]
+    fn selection_coordinates_are_relative_to_the_display_without_backing_scale() {
+        let display = Bounds {
+            origin: gpui::point(px(-1600.0), px(120.0)),
+            size: size(px(1600.0), px(900.0)),
+        };
+        let selection = Bounds {
+            origin: gpui::point(px(-1390.0), px(260.0)),
+            size: size(px(400.0), px(300.0)),
+        };
+        for scale in [1.0, 2.0] {
+            let area = crate::capture::overlay::physical_rect(selection, scale);
+            let (control, preview, prompt) = session_bounds(area, display);
+            assert_eq!(control.origin, gpui::point(px(326.0), px(456.0)));
+            assert_eq!(control.size, size(px(168.0), px(52.0)));
+            assert_eq!(preview.origin, gpui::point(px(626.0), px(140.0)));
+            assert_eq!(preview.size, size(px(240.0), px(1.0)));
+            assert_eq!(prompt.origin, gpui::point(px(210.0), px(140.0)));
+            assert_eq!(prompt.size, size(px(400.0), px(300.0)));
+        }
+    }
+
+    #[test]
+    fn control_bar_stays_within_the_display_at_horizontal_edges() {
+        assert_eq!(
+            control_origin((0.0, 100.0, 10.0, 300.0), (1920.0, 1080.0)),
+            (0.0, 416.0)
+        );
+        assert_eq!(
+            control_origin((1910.0, 100.0, 10.0, 300.0), (1920.0, 1080.0)),
+            (1752.0, 416.0)
         );
     }
 

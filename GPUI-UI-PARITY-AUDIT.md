@@ -619,6 +619,13 @@ Bugs fixed in this pass:
 - Scroll capture cleared its active state before finish or cancellation completed,
   allowing a second session to start while the daemon was still processing the
   first. Held-response fixtures now verify the state through both RPCs.
+- The macOS GPUI scroll controls treated global logical selection coordinates as
+  scaled, display-local coordinates. Control, preview and prompt bounds now use
+  the selected display's local coordinates; a platform-specific unit test covers
+  a negative display origin at 1× and 2×. Native multi-display behavior remains
+  unverified. Narrow selections at either display edge also placed the GPUI and
+  Electron control bars offscreen; both now clamp the horizontal position, with
+  Electron tests covering primary and negative-origin displays.
 - The coarse scroll overlap search rejected a true 97px overlap and selected
   716px for a true 217px overlap in patterned fixtures. When the sampled
   result is rejected or farther from the expected scroll, a unique exact
