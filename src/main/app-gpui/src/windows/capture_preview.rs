@@ -2342,7 +2342,7 @@ mod tests {
         });
         visual.click_at(position);
         assert_eq!(config.get().preview.display_id, Some(12));
-        (stack, check) = bind_stack(visual, &wrapper);
+        check = bind_stack(visual, &wrapper).1;
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.click_at(gpui::point(px(184.), px(552.)));
         assert!(visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
@@ -2356,7 +2356,7 @@ mod tests {
         assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
         #[cfg(not(windows))]
         {
-            (stack, check) = bind_stack(visual, &wrapper);
+            check = bind_stack(visual, &wrapper).1;
         }
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.click_at(gpui::point(px(184.), px(552.)));
