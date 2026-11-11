@@ -10,7 +10,7 @@ use crate::capture::overlay::AreaOverlay;
 
 use super::{
     capture, click, event, hover, key, point, px, settle, size, Bounds, HeadlessAppContext,
-    Modifiers, Path,
+    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Path,
 };
 
 struct Scene {
@@ -167,40 +167,45 @@ fn exercise_all_in_one_target_menu(
     click(cx, window, f32::from(center.x), f32::from(center.y));
     assert!(state(cx).1, "target menu must open");
     capture(cx, window, output, "overlay-all-in-one-target-menu-open");
-    cx.update_window(window, |_, window, _| {
-        let scale = window.scale_factor();
-        let viewport = window.viewport_size();
-        let panels: Vec<_> = window
-            .painted_quads()
-            .into_iter()
-            .filter(|quad| {
-                (quad.bounds.size.width.0 / scale - 160.).abs() <= 1.
-                    && (60. ..=180.).contains(&(quad.bounds.size.height.0 / scale))
-            })
-            .collect();
-        assert_eq!(
-            panels.len(),
-            1,
-            "expected the target menu panel: {panels:?}"
-        );
-        let panel = panels[0];
-        let bounds = panel.bounds;
-        let mask = panel.content_mask.bounds;
-        assert!(
-            bounds.left().0 >= 0.
-                && bounds.top().0 >= 0.
-                && bounds.right().0 <= f32::from(viewport.width) * scale
-                && bounds.bottom().0 <= f32::from(viewport.height) * scale
-                && (bounds.left().0 / scale - f32::from(trigger.left())).abs() <= 1.
-                && (bounds.top().0 / scale - f32::from(trigger.bottom()) - 8.).abs() <= 1.
-                && mask.left().0 <= bounds.left().0
-                && mask.top().0 <= bounds.top().0
-                && mask.right().0 >= bounds.right().0
-                && mask.bottom().0 >= bounds.bottom().0,
-            "target menu must fit in the overlay: {bounds:?}, mask {mask:?}"
-        );
-    })
-    .unwrap();
+    let (row_x, first_row_y) = cx
+        .update_window(window, |_, window, _| {
+            let scale = window.scale_factor();
+            let viewport = window.viewport_size();
+            let panels: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    (quad.bounds.size.width.0 / scale - 160.).abs() <= 1.
+                        && (60. ..=180.).contains(&(quad.bounds.size.height.0 / scale))
+                })
+                .collect();
+            assert_eq!(
+                panels.len(),
+                1,
+                "expected the target menu panel: {panels:?}"
+            );
+            let panel = panels[0];
+            let bounds = panel.bounds;
+            let mask = panel.content_mask.bounds;
+            assert!(
+                bounds.left().0 >= 0.
+                    && bounds.top().0 >= 0.
+                    && bounds.right().0 <= f32::from(viewport.width) * scale
+                    && bounds.bottom().0 <= f32::from(viewport.height) * scale
+                    && (bounds.left().0 / scale - f32::from(trigger.left())).abs() <= 1.
+                    && (bounds.top().0 / scale - f32::from(trigger.bottom()) - 8.).abs() <= 1.
+                    && mask.left().0 <= bounds.left().0
+                    && mask.top().0 <= bounds.top().0
+                    && mask.right().0 >= bounds.right().0
+                    && mask.bottom().0 >= bounds.bottom().0,
+                "target menu must fit in the overlay: {bounds:?}, mask {mask:?}"
+            );
+            (
+                (bounds.left().0 + bounds.size.width.0 / 2.) / scale,
+                bounds.top().0 / scale + 20.,
+            )
+        })
+        .unwrap();
     key(cx, window, "escape");
     let (choices, open) = state(cx);
     assert!(!open, "Escape must dismiss the target menu");
@@ -217,12 +222,64 @@ fn exercise_all_in_one_target_menu(
     let (choices, open) = state(cx);
     assert!(!open, "selecting a target must dismiss its menu");
     assert_eq!(choices.unwrap().target, Target::Screen);
+    key(cx, window, "enter");
+    assert!(state(cx).1, "keyboard selection must restore the trigger");
+    click(cx, window, 20., 260.);
+    let (choices, open) = state(cx);
+    assert!(!open, "an outside press must dismiss the target menu");
+    assert_eq!(choices.unwrap().target, Target::Screen);
+    let selection_has_focus = scene
+        .update(cx, |scene, window, cx| {
+            scene.overlay.read(cx).focus_handle.is_focused(window)
+        })
+        .unwrap();
+    assert!(
+        selection_has_focus,
+        "outside dismissal must focus the overlay"
+    );
     click(cx, window, f32::from(center.x), f32::from(center.y));
-    assert!(state(cx).1, "target menu must reopen after selection");
+    assert!(
+        state(cx).1,
+        "target menu must reopen after an outside press"
+    );
+    click(cx, window, row_x, first_row_y);
+    let (choices, open) = state(cx);
+    assert!(!open, "pointer selection must dismiss its menu");
+    assert_eq!(choices.unwrap().target, Target::Area);
+    key(cx, window, "enter");
+    assert!(state(cx).1, "pointer selection must restore the trigger");
+    for (navigation, activation, target) in [
+        ("end", "space", Target::Screen),
+        ("home", "enter", Target::Area),
+    ] {
+        key(cx, window, navigation);
+        let keystroke = Keystroke::parse(activation).unwrap();
+        for is_held in [false, true, true] {
+            event(
+                cx,
+                window,
+                PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held,
+                    prefer_character_input: false,
+                }),
+            );
+            let (choices, open) = state(cx);
+            assert!(!open, "a held selection key must not reopen the menu");
+            assert_eq!(choices.unwrap().target, target);
+        }
+        cx.advance_clock(std::time::Duration::from_millis(500));
+        settle(cx, window);
+        event(cx, window, PlatformInput::KeyUp(KeyUpEvent { keystroke }));
+        settle(cx, window);
+        assert!(!state(cx).1, "selection key-up must not reopen the menu");
+        key(cx, window, "enter");
+        assert!(state(cx).1, "the trigger must regain focus after key-up");
+    }
     key(cx, window, "escape");
     let (choices, open) = state(cx);
     assert!(!open, "Escape must dismiss the reopened menu");
-    assert_eq!(choices.unwrap().target, Target::Screen);
+    assert_eq!(choices.unwrap().target, Target::Area);
     key(cx, window, "escape");
     assert!(
         !cx.update(|cx| cx.windows().contains(&window)),

@@ -52,10 +52,11 @@ also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states
 The eight 950px cases each add 18 narrow-history states, for 2,808 images per
 complete renderer profile. The 48 selected-OCR tooltip images and 32 target-menu
 images were reviewed for NVIDIA; all 2,728 earlier images were pixel-identical.
-These 80 states still need hosted-renderer review. The 96 earlier NVIDIA
-all-in-one tooltip images were reviewed; all 2,632 existing images were unchanged. A normal rerun passed all
-16 cases and 2,728 images. The corresponding 96 hosted images were also reviewed,
-and all 2,632 previous hosted images were pixel-identical. The local
+An exact rerun after the target-menu interaction fixes passed all 16 cases and
+2,808 images. These 80 states still need
+hosted-renderer review. The 96 earlier NVIDIA all-in-one tooltip images were
+reviewed; all 2,632 existing images were unchanged. The corresponding 96 hosted
+images were also reviewed, and all 2,632 previous hosted images were pixel-identical. The local
 exact-baseline matrix at `80a5700` passed all 16 cases and 2,632 images. After
 the color-capture failure fix, the two
 1280px/100% workflow cases passed again in light and dark themes. The 96 new
@@ -65,7 +66,7 @@ previous hosted images were unchanged. The 144 new NVIDIA history images were re
 states and 160 revised selection images were reviewed; the remaining 2,312 existing
 images were unchanged. The DPI follow-up changed 24 NVIDIA history images; all
 24 were reviewed and the other 2,512 images were unchanged. The final exact
-matrix passed all 16 cases. The Windows native gate passed 1,019 tests with two skipped.
+matrix passed all 16 cases. The latest Windows native gate passed 1,020 tests with two skipped.
 All 144 hosted history images, 64 selection-corner images, 160 revised selection
 images and 24 DPI-adjusted history images were also reviewed. The other 2,512
 hosted images were unchanged.
@@ -138,8 +139,8 @@ that probe while preserving its 24px rows and 64×276px light-theme panel.
 All-in-one Capture text, Pick color and Close tooltips must fit below their
 controls, within the viewport and their clipping masks, in both normal and
 400×300 overlays and while Capture text is selected. The original top placement
-started 5px above the display. An additional 175% tooltip geometry probe passed
-in both themes; it has no image baseline. The narrow target menu must remain
+started 5px above the display. An additional 175% tooltip and target-menu probe
+passed in both themes; it has no image baseline. The narrow target menu must remain
 anchored below its trigger and inside its clipping mask. Synthetic keyboard input
 checks target selection, Escape dismissal and reopening from the focused trigger.
 Capture-preview icon tooltips are checked inside all four corners. Polish preset
@@ -674,6 +675,12 @@ Bugs fixed in this pass:
 - Escape closed the all-in-one capture overlay while its target menu was open.
   It now dismisses the menu first and returns focus to its trigger. A second
   Escape closes the overlay; keyboard input can reopen the menu and select a target.
+- Selecting a target left keyboard focus on the disappearing menu, and clicking
+  a menu item could start a full-screen capture behind it. Selection now returns
+  focus to the trigger after the activation key is released; pointer selections
+  return it immediately. The fixture exercises repeated Enter/Space keydowns,
+  pointer and outside presses, and selection without an underlying capture. A
+  window-deactivation test clears state if a key release is lost.
 - A history grid at simulated 175% and 456 physical pixels wrapped its second
   card onto a new row. The cards now fit the snapped available width. The unit
   test sweeps every physical width corresponding to 200–400 logical pixels at
@@ -783,7 +790,6 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 | P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                      |
 | P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Geometry tests cover widths down to 200px. Below 148px, the two-column grid cards are too narrow for both actions; smaller layouts and other item states need verification.                                                                                                                                                                     |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                           |
-| P2       | Target-menu focus after selection                        | A synthetic keyboard probe selects Full screen and then presses Enter; the menu does not reopen because focus no longer belongs to the trigger. Restore focus without allowing the selection key-up to reopen the menu prematurely, and verify pointer and keyboard selections.                                                                                                                                                    |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                        |
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                           |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                             |

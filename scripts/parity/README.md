@@ -30,7 +30,9 @@ and 400×300 overlays, and while Capture text is selected. Their measured bounds
 must stay below their controls and inside the viewport and clipping masks. The
 narrow overlay also checks the target menu's placement, keyboard selection and
 focus restoration: Escape closes the menu before the overlay, and Enter reopens
-the menu from its trigger. A separate 175% tooltip probe passed in both themes;
+the menu from its trigger. Pointer selection and outside dismissal must not start
+an underlying capture. Repeated Enter/Space keydowns must not reopen the menu on
+release. A separate 175% tooltip and target-menu probe passed in both themes;
 the image-baseline matrix uses the four scales listed above.
 
 Each Windows case first renders adjacent red/white image atlas tiles at fractional

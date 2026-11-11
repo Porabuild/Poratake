@@ -686,9 +686,14 @@ fn open_overlay_window(
                 view
             });
             view.update(cx, |overlay, cx| {
-                #[cfg(all(windows, not(test)))]
                 cx.observe_window_activation(window, |overlay, window, _| {
-                    if window.is_window_active() {
+                    let active = window.is_window_active();
+                    if !active {
+                        overlay.menu_activation_key = None;
+                        overlay.menu_return_focus = false;
+                    }
+                    #[cfg(all(windows, not(test)))]
+                    if active {
                         prepare_overlay_window(window, overlay.display_bounds);
                     }
                 })
@@ -813,6 +818,8 @@ pub struct AreaOverlay {
     handed_off: bool,
     menu: crate::ui::menu::MenuHandle,
     menu_trigger_focus: Option<gpui::FocusHandle>,
+    menu_activation_key: Option<&'static str>,
+    menu_return_focus: bool,
     service: CaptureService,
 }
 
@@ -848,6 +855,8 @@ impl AreaOverlay {
             handed_off: false,
             menu: crate::ui::menu::MenuHandle::new(),
             menu_trigger_focus: None,
+            menu_activation_key: None,
+            menu_return_focus: false,
             service,
         }
     }
@@ -1152,6 +1161,24 @@ impl AreaOverlay {
 
     pub fn set_all_in_one_menu_focus(&mut self, focus: Option<gpui::FocusHandle>) {
         self.menu_trigger_focus = focus;
+    }
+
+    pub fn finish_all_in_one_target_selection(&mut self, window: &mut Window, cx: &mut App) {
+        if self.menu_activation_key.is_some() {
+            self.menu_return_focus = true;
+            window.focus(&self.focus_handle, cx);
+            return;
+        }
+        self.focus_all_in_one_menu_trigger(window, cx);
+    }
+
+    fn focus_all_in_one_menu_trigger(&self, window: &mut Window, cx: &mut App) {
+        window.focus(
+            self.menu_trigger_focus
+                .as_ref()
+                .unwrap_or(&self.focus_handle),
+            cx,
+        );
     }
 
     pub fn set_all_in_one_target(
@@ -1850,15 +1877,53 @@ impl AreaOverlay {
 
         let root = root
             .cursor(self.cursor)
+            .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                if this.menu.is_open(cx) {
+                    let menu = this.menu.clone();
+                    let focus = this.focus_handle.clone();
+                    let previous = window.focused(cx);
+                    window.defer(cx, move |window, cx| {
+                        if !menu.is_open(cx) && window.focused(cx) == previous {
+                            window.focus(&focus, cx);
+                        }
+                    });
+                    return;
+                }
+                this.menu_activation_key = None;
+                this.menu_return_focus = false;
+            }))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.menu.is_open(cx) && !event.keystroke.modifiers.modified() {
+                    this.menu_activation_key = match event.keystroke.key.as_str() {
+                        "enter" => Some("enter"),
+                        "space" => Some("space"),
+                        _ => None,
+                    };
+                    this.menu_return_focus = false;
+                } else if !event.is_held {
+                    this.menu_activation_key = None;
+                    this.menu_return_focus = false;
+                }
+            }))
+            .on_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, window, cx| {
+                if this.menu_activation_key != Some(event.keystroke.key.as_str()) {
+                    return;
+                }
+                this.menu_activation_key = None;
+                let restore = std::mem::take(&mut this.menu_return_focus);
+                if restore
+                    && this.focus_handle.is_focused(window)
+                    && this.all_in_one.is_some_and(|choices| {
+                        choices.mode != crate::capture::all_in_one::Mode::Ocr
+                    })
+                {
+                    this.focus_all_in_one_menu_trigger(window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &Cancel, window, cx| {
                 if this.menu.is_open(cx) {
                     this.menu.close(window, cx);
-                    window.focus(
-                        this.menu_trigger_focus
-                            .as_ref()
-                            .unwrap_or(&this.focus_handle),
-                        cx,
-                    );
+                    this.focus_all_in_one_menu_trigger(window, cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -2085,6 +2150,9 @@ impl AreaOverlay {
             if self.pick_color(event.position, cx) {
                 dismiss(window, cx);
             }
+            return;
+        }
+        if self.menu.is_present(cx) {
             return;
         }
         if self.is_picking_windows() {
@@ -2388,6 +2456,67 @@ mod tests {
                 .update(cx, |overlay, _, _| overlay.display_id)
                 .expect("read display id"),
             Some(u64::from(display_id) as u32)
+        );
+    }
+
+    #[herogpui::test]
+    fn deactivation_clears_a_menu_key_whose_release_was_lost(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (display_id, bounds) = cx.read(|cx| {
+            let display = cx.primary_display().expect("primary display");
+            (display.id(), display.bounds())
+        });
+        let first = cx.update(|cx| {
+            super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: false,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open overlay")
+        });
+        let service = cx.read(crate::state::state);
+        let second = cx.add_window(|_, cx| {
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        first
+            .update(cx, |_, window, _| window.activate_window())
+            .expect("activate overlay");
+        cx.run_until_parked();
+        first
+            .update(cx, |overlay, window, _| {
+                assert!(window.is_window_active());
+                overlay.menu_activation_key = Some("enter");
+                overlay.menu_return_focus = true;
+            })
+            .expect("hold menu key");
+        second
+            .update(cx, |_, window, _| window.activate_window())
+            .expect("activate another window");
+        cx.run_until_parked();
+        assert_eq!(
+            first
+                .update(cx, |overlay, _, _| (
+                    overlay.menu_activation_key,
+                    overlay.menu_return_focus
+                ))
+                .expect("read menu key"),
+            (None, false)
         );
     }
 

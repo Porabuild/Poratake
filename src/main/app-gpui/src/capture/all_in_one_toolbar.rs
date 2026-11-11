@@ -190,10 +190,11 @@ fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay
                     .trailing_check(choices.target == target)
                     .on_select({
                         let owner = cx.entity().downgrade();
-                        move |_window, app| {
+                        move |window, app| {
                             if let Some(owner) = owner.upgrade() {
                                 owner.update(app, |this, cx| {
                                     this.set_all_in_one_target(target, cx);
+                                    this.finish_all_in_one_target_selection(window, cx);
                                 });
                             }
                         }
