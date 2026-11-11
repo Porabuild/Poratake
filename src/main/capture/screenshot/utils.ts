@@ -1,4 +1,5 @@
 import { app } from 'electron';
+import fs from 'fs';
 import path from 'path';
 import { getConfig } from '@/main/settings';
 import { generateFilename } from '@/main/utils/filename-generator';
@@ -30,6 +31,50 @@ export function generateScreenshotPath(): string {
   });
 
   return path.join(getScreenshotsDir(), filename);
+}
+
+export async function publishScreenshot(
+  temporaryPath: string,
+  outputPath: string
+): Promise<string> {
+  const { dir, name, ext } = path.parse(outputPath);
+  let suffix = 0;
+  let copy = false;
+
+  while (true) {
+    const destination = suffix
+      ? path.join(dir, `${name} (${suffix})${ext}`)
+      : outputPath;
+    try {
+      if (copy) {
+        await fs.promises.copyFile(
+          temporaryPath,
+          destination,
+          fs.constants.COPYFILE_EXCL
+        );
+      } else {
+        await fs.promises.link(temporaryPath, destination);
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        suffix += 1;
+        continue;
+      }
+      if (!copy) {
+        copy = true;
+        continue;
+      }
+      throw error;
+    }
+
+    try {
+      await fs.promises.unlink(temporaryPath);
+    } catch (error) {
+      console.error('Failed to remove temporary screenshot:', error);
+    }
+    return destination;
+  }
 }
 
 export function generateScreenshotExportName(extension = 'png'): string {

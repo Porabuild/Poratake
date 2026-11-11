@@ -63,6 +63,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         "finish-long-held",
         "cancel-held",
         "retry",
+        "collision",
     ] {
         if name == "finish-long-held"
             && std::env::var("PORATAKE_PARITY_THEME").as_deref() != Ok("dark")
@@ -89,6 +90,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         };
         let captures = scratch.join(format!("scroll-{name}"));
         std::fs::create_dir_all(&captures).unwrap();
+        let existing = captures.join("Collision.png");
+        if name == "collision" {
+            std::fs::write(&existing, b"previous capture").unwrap();
+        }
         std::fs::write(
             output.join("capture-fixture.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -105,15 +110,21 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             .collect();
         let sentinel = format!("clipboard before scroll {name}");
         take_notifications();
-        cx.update(|cx| {
-            crate::state::state(cx).config.update(|config| {
+        let pattern = cx.update(|cx| {
+            let state = crate::state::state(cx);
+            let pattern = state.config.get().storage.naming_pattern;
+            state.config.update(|config| {
                 config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                if name == "collision" {
+                    config.storage.naming_pattern = "Collision".into();
+                }
                 config.screenshot.freeze_screen = true;
                 config.scroll_capture.auto_scroll_speed = "fast".into();
                 config.scroll_capture.max_height = 1800.;
             });
             ClipboardService::write_text(cx, sentinel.clone());
             crate::capture::start_area_selection(CaptureIntent::ScrollCapture, cx);
+            pattern
         });
         cx.run_until_parked();
         let picker = area_picker(cx);
@@ -147,12 +158,17 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         );
         let saved = matches!(
             name,
-            "early-finish" | "finish-held" | "finish-long-held" | "retry"
+            "early-finish" | "finish-held" | "finish-long-held" | "retry" | "collision"
         );
         if saved {
+            if name == "collision" {
+                assert_eq!(std::fs::read(&existing).unwrap(), b"previous capture");
+                assert!(captures.join("Collision (1).png").is_file());
+                std::fs::remove_file(existing).unwrap();
+            }
             verify_saved_capture(
                 cx,
-                if matches!(name, "finish-held" | "finish-long-held") {
+                if matches!(name, "finish-held" | "finish-long-held" | "collision") {
                     scratch
                 } else {
                     output
@@ -206,6 +222,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                         | "finish-held"
                         | "finish-long-held"
                         | "retry"
+                        | "collision"
                 )),
             ),
             (
@@ -221,6 +238,13 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 count,
                 "{name}: {method} requests"
             );
+        }
+        if name == "collision" {
+            cx.update(|cx| {
+                crate::state::state(cx)
+                    .config
+                    .update(|config| config.storage.naming_pattern = pattern);
+            });
         }
     }
     println!("scroll capture selection, early events, save/history/editor output, failures and retry passed");

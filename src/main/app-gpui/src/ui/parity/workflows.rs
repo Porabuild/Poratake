@@ -333,6 +333,81 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
         ]
     );
 
+    let captures = scratch.join("capture-collision");
+    std::fs::create_dir_all(&captures).unwrap();
+    let existing = captures.join("Collision.png");
+    std::fs::write(&existing, b"previous capture").unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live", "rect": SELECTED_RECT, "windowId": null,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let pattern = cx.update(|cx| {
+        let state = crate::state::state(cx);
+        let pattern = state.config.get().storage.naming_pattern;
+        state.config.update(|config| {
+            config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+            config.storage.naming_pattern = "Collision".into();
+            config.screenshot.freeze_screen = false;
+            config.screenshot.show_preview = true;
+            config.screenshot.capture_to_clipboard = false;
+            config.screenshot.auto_copy_to_clipboard = false;
+        });
+        crate::capture::start_area_capture(cx);
+        pattern
+    });
+    cx.run_until_parked();
+    let picker = area_picker(cx);
+    select_area(cx, picker);
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(&existing).unwrap(), b"previous capture");
+    assert!(captures.join("Collision (1).png").is_file());
+    std::fs::remove_file(&existing).unwrap();
+    verify_saved_capture(
+        cx,
+        scratch,
+        &captures,
+        (SELECTED_RECT, [240, 80, 64, 255]),
+        "workflow-capture-collision",
+    );
+    std::fs::write(&existing, b"previous capture").unwrap();
+    let clipboard_pixels = [70, 120, 180, 255].repeat(20 * 10);
+    cx.update(|cx| {
+        crate::system::clipboard::ClipboardService::write_rgba(
+            cx,
+            20,
+            10,
+            clipboard_pixels.clone(),
+        )
+        .unwrap();
+        crate::editor::open_clipboard(cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(&existing).unwrap(), b"previous capture");
+    let clipboard_path = captures.join("Collision (2).png");
+    assert_eq!(
+        image::open(&clipboard_path).unwrap().to_rgba8().into_raw(),
+        clipboard_pixels
+    );
+    let editor = cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<EditorWindow>())
+            .find(|editor| Path::new(&editor.read(cx).unwrap().file_path) == clipboard_path)
+            .unwrap()
+    });
+    cx.update_window(editor.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| config.storage.naming_pattern = pattern);
+    });
+
     let captures = scratch.join("clipboard-only");
     std::fs::create_dir_all(&captures).unwrap();
     std::fs::write(

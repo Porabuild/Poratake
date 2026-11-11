@@ -8,7 +8,10 @@ import {
   showDesktopIcons,
 } from '@/main/capture/desktop-icons';
 import { shouldHideDesktopIconsForCapture } from '@/main/capture/desktop-icons/preference';
-import { generateScreenshotPath } from '@/main/capture/screenshot/utils';
+import {
+  generateScreenshotPath,
+  publishScreenshot,
+} from '@/main/capture/screenshot/utils';
 import {
   finalizeCapture,
   prepareScreenshotPreview,
@@ -92,6 +95,7 @@ async function runScrollCapture(): Promise<void> {
     let cancellationInFlight: Promise<void> | null = null;
     let finishPreparation: ReturnType<typeof prepareScreenshotPreview> = null;
     let outputPromoted = false;
+    let publishing = false;
 
     const disposeFinishPreparation = () => {
       finishPreparation?.dispose();
@@ -123,11 +127,17 @@ async function runScrollCapture(): Promise<void> {
           return;
         }
 
-        fs.renameSync(temporaryPath, outputPath);
+        publishing = true;
+        let publishedPath: string;
+        try {
+          publishedPath = await publishScreenshot(temporaryPath, outputPath);
+        } finally {
+          publishing = false;
+        }
         outputPromoted = true;
         const preparation = finishPreparation;
         finishPreparation = null;
-        await handleCaptureComplete(outputPath, preparation);
+        await handleCaptureComplete(publishedPath, preparation);
       } finally {
         resolve();
       }
@@ -137,6 +147,7 @@ async function runScrollCapture(): Promise<void> {
       requestDaemon = false,
       discardOutput = requestDaemon
     ): Promise<void> => {
+      if (publishing) return finishInFlight ?? Promise.resolve();
       cancelled = true;
       discardFinishOutput ||= discardOutput;
       disposeFinishPreparation();

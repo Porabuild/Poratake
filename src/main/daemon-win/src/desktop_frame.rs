@@ -1089,6 +1089,11 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("reserve PNG path");
         let worker_path = path.clone();
         std::thread::spawn(move || {
             write_png(

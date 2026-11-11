@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type * as FileSystem from 'node:fs';
+import type * as ScreenshotUtils from '@/main/capture/screenshot/utils';
 
 const mockDaemonCall = vi.fn();
 const mockGetConfig = vi.fn();
@@ -10,8 +11,11 @@ const mockIsSupported = vi.fn();
 const mockCheckAccessibility = vi.fn();
 const mockExistsSync = vi.fn();
 const mockReadFileSync = vi.fn();
-const mockRenameSync = vi.fn();
+const mockLink = vi.fn();
+const mockCopyFile = vi.fn();
+const mockUnlink = vi.fn();
 const mockUnlinkSync = vi.fn();
+const mockPublishScreenshot = vi.fn();
 const mockClipboardWriteImage = vi.fn();
 const mockShowCapturePreview = vi.fn();
 const mockPrepareCapturePreview = vi.fn();
@@ -31,6 +35,7 @@ const mockHideScrollCaptureOverlay = vi.fn();
 const mockShowNotification = vi.fn();
 
 vi.mock('electron', () => ({
+  app: { isPackaged: false, getPath: vi.fn() },
   clipboard: { writeImage: (...a: unknown[]) => mockClipboardWriteImage(...a) },
   nativeImage: { createFromBuffer: vi.fn(() => ({ isEmpty: () => false })) },
   screen: {
@@ -45,7 +50,12 @@ vi.mock('fs', () => ({
   default: {
     existsSync: (...a: unknown[]) => mockExistsSync(...a),
     readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
-    renameSync: (...a: unknown[]) => mockRenameSync(...a),
+    promises: {
+      link: (...a: unknown[]) => mockLink(...a),
+      copyFile: (...a: unknown[]) => mockCopyFile(...a),
+      unlink: (...a: unknown[]) => mockUnlink(...a),
+    },
+    constants: { COPYFILE_EXCL: 1 },
     unlinkSync: (...a: unknown[]) => mockUnlinkSync(...a),
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
@@ -92,6 +102,7 @@ vi.mock('@/main/history', () => ({
 
 vi.mock('@/main/capture/screenshot/utils', () => ({
   generateScreenshotPath: vi.fn(() => '/p/out.png'),
+  publishScreenshot: (...a: unknown[]) => mockPublishScreenshot(...a),
 }));
 
 vi.mock('@/main/capture/capture-preview', () => ({
@@ -139,7 +150,13 @@ describe('scroll-capture', () => {
     mockIsSupported.mockReturnValue(true);
     mockCheckAccessibility.mockReturnValue(true);
     mockAddToHistory.mockResolvedValue({ id: 'h1' });
-    mockRenameSync.mockReset();
+    mockLink.mockReset();
+    mockCopyFile.mockReset();
+    mockUnlink.mockReset();
+    mockPublishScreenshot.mockReset();
+    mockPublishScreenshot.mockImplementation(
+      async (_temporary: string, output: string) => output
+    );
     mockUnlinkSync.mockReset();
     mockDipToScreenRect.mockImplementation((_window, bounds) => bounds);
     mockGetDisplayMatching.mockReturnValue({ scaleFactor: 1 });
@@ -815,7 +832,10 @@ describe('scroll-capture', () => {
         mockDaemonCall.mock.calls.find(([, method]) => method === 'finish')?.[3]
       ).toBeNull();
       expect(temporaryPath).toMatch(/^\/p\/out\.png\..+\.tmp\.png$/);
-      expect(mockRenameSync).toHaveBeenCalledWith(temporaryPath, '/p/out.png');
+      expect(mockPublishScreenshot).toHaveBeenCalledWith(
+        temporaryPath,
+        '/p/out.png'
+      );
       expect(mockUnlinkSync).not.toHaveBeenCalled();
       expect(mockShowCapturePreview).toHaveBeenCalledWith(
         '/p/out.png',
@@ -874,7 +894,7 @@ describe('scroll-capture', () => {
       expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
     });
 
-    it.each(['editor', 'rename'])(
+    it.each(['editor', 'publish'])(
       'releases the session when %s fails after stitching',
       async failure => {
         const daemonModule = await import('@/main/daemon');
@@ -900,9 +920,9 @@ describe('scroll-capture', () => {
             throw new Error('editor unavailable');
           });
         } else {
-          mockRenameSync.mockImplementationOnce(() => {
-            throw new Error('destination unavailable');
-          });
+          mockPublishScreenshot.mockRejectedValueOnce(
+            new Error('destination unavailable')
+          );
         }
         mockDaemonCall.mockImplementation(async (_module, method) =>
           method === 'finish' ? { success: true } : {}
@@ -935,12 +955,12 @@ describe('scroll-capture', () => {
               ([message]) => message === 'Scroll capture retained at:'
             )
           ).toEqual(
-            failure === 'rename'
+            failure === 'publish'
               ? [['Scroll capture retained at:', temporaryPath]]
               : []
           );
           expect(mockShowNotification.mock.calls).toEqual(
-            failure === 'rename'
+            failure === 'publish'
               ? [
                   [
                     'Scroll Capture Not Saved',
@@ -1046,13 +1066,80 @@ describe('scroll-capture', () => {
           ([, method]) => method === 'finish'
         )?.[2].outputPath;
         expect(temporaryPath).toMatch(/^\/p\/out\.png\..+\.tmp\.png$/);
-        expect(mockRenameSync).not.toHaveBeenCalled();
+        expect(mockPublishScreenshot).not.toHaveBeenCalled();
         expect(mockUnlinkSync).toHaveBeenCalledExactlyOnceWith(temporaryPath);
         expect(mockShowNotification).not.toHaveBeenCalled();
         expect(mockShowCapturePreview).not.toHaveBeenCalled();
         expect(mockDisposeCapturePreview).toHaveBeenCalledTimes(1);
       }
     );
+
+    it('waits for an already publishing capture before handling cancellation', async () => {
+      const daemonModule = await import('@/main/daemon');
+      const areaSelector = await import('@/main/capture/area-selector');
+      let options:
+        | { onSelected: (selection: unknown) => Promise<void> }
+        | undefined;
+      let daemonHandler: ((event: string) => Promise<void>) | undefined;
+      let finishPublication: (path: string) => void = () => {};
+      vi.mocked(areaSelector.startAreaSelection).mockImplementation((opts => {
+        options = opts as typeof options;
+        return new Promise<null>(() => {});
+      }) as never);
+      vi.mocked(daemonModule.daemon.onEvent).mockImplementation((handler => {
+        daemonHandler = handler as typeof daemonHandler;
+      }) as never);
+      mockGetConfig.mockReturnValue({
+        screenshot: { hideDesktopIcons: false, showPreview: true },
+        scrollCapture: { autoScrollSpeed: 'medium', maxHeight: 20000 },
+      });
+      mockExistsSync.mockReturnValue(true);
+      mockShowCapturePreview.mockReturnValue({ revealed: Promise.resolve() });
+      mockDaemonCall.mockImplementation(async (_module, method) =>
+        method === 'finish' ? { success: true } : {}
+      );
+      mockPublishScreenshot.mockReturnValueOnce(
+        new Promise<string>(resolve => {
+          finishPublication = resolve;
+        })
+      );
+
+      const { startScrollCapture } =
+        await import('@/main/capture/scroll-capture');
+      const capturing = startScrollCapture();
+      await options?.onSelected({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      const finishing = daemonHandler?.('scroll-capture:done');
+      await vi.waitFor(() => expect(mockPublishScreenshot).toHaveBeenCalled());
+      const action = mockShowScrollCaptureOverlay.mock.calls[0][1] as (
+        action: 'cancel'
+      ) => Promise<void>;
+      const cancellation = action('cancel');
+      const second = startScrollCapture();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(areaSelector.startAreaSelection).toHaveBeenCalledTimes(1);
+      expect(mockDisposeCapturePreview).not.toHaveBeenCalled();
+      expect(mockShowCapturePreview).not.toHaveBeenCalled();
+
+      finishPublication('/p/out (1).png');
+      await Promise.all([capturing, finishing, cancellation, second]);
+      expect(mockShowCapturePreview).toHaveBeenCalledWith(
+        '/p/out (1).png',
+        'screenshot',
+        undefined,
+        expect.anything(),
+        expect.any(Promise)
+      );
+      expect(mockDaemonCall).not.toHaveBeenCalledWith(
+        'scroll-capture',
+        'cancel'
+      );
+    });
 
     it.each(['save', 'cancel', 'daemon-exit', 'failed'])(
       'preserves the right files when a stitched capture ends: %s',
@@ -1067,12 +1154,19 @@ describe('scroll-capture', () => {
         const prior = Buffer.from('existing capture');
         const captured = Buffer.from('new capture');
         let temporaryPath = '';
-        if (outcome !== 'save') realFs.writeFileSync(outputPath, prior);
+        realFs.writeFileSync(outputPath, prior);
         mockExistsSync.mockImplementation((file: string) =>
           realFs.existsSync(file)
         );
-        mockRenameSync.mockImplementation((from: string, to: string) =>
-          realFs.renameSync(from, to)
+        mockLink.mockImplementation((from: string, to: string) =>
+          realFs.promises.link(from, to)
+        );
+        mockCopyFile.mockImplementation(
+          (from: string, to: string, flags: number) =>
+            realFs.promises.copyFile(from, to, flags)
+        );
+        mockUnlink.mockImplementation((file: string) =>
+          realFs.promises.unlink(file)
         );
         mockUnlinkSync.mockImplementation((file: string) =>
           realFs.unlinkSync(file)
@@ -1081,6 +1175,12 @@ describe('scroll-capture', () => {
 
         try {
           const utils = await import('@/main/capture/screenshot/utils');
+          const actualUtils = await vi.importActual<typeof ScreenshotUtils>(
+            '@/main/capture/screenshot/utils'
+          );
+          mockPublishScreenshot.mockImplementation(
+            actualUtils.publishScreenshot
+          );
           vi.mocked(utils.generateScreenshotPath).mockReturnValueOnce(
             outputPath
           );
@@ -1150,8 +1250,17 @@ describe('scroll-capture', () => {
               ? realFs.readFileSync(temporaryPath)
               : null
           ).toEqual(retained ? captured : null);
-          expect(realFs.readFileSync(outputPath)).toEqual(
-            outcome === 'save' ? captured : prior
+          expect(realFs.readFileSync(outputPath)).toEqual(prior);
+          const publishedPath = path.join(directory, 'capture (1).png');
+          expect(realFs.existsSync(publishedPath)).toBe(outcome === 'save');
+          expect(
+            outcome === 'save' ? realFs.readFileSync(publishedPath) : null
+          ).toEqual(outcome === 'save' ? captured : null);
+          expect(mockAddToHistory.mock.calls).toEqual(
+            outcome === 'save' ? [[publishedPath]] : []
+          );
+          expect(mockOpenScreenshotEditor.mock.calls).toEqual(
+            outcome === 'save' ? [[publishedPath, 'h1']] : []
           );
           expect(mockShowNotification.mock.calls).toEqual(
             retained
@@ -1166,11 +1275,16 @@ describe('scroll-capture', () => {
         } finally {
           error.mockRestore();
           mockExistsSync.mockReset();
-          mockRenameSync.mockReset();
+          mockLink.mockReset();
+          mockCopyFile.mockReset();
+          mockUnlink.mockReset();
           mockUnlinkSync.mockReset();
           if (temporaryPath && realFs.existsSync(temporaryPath))
             realFs.unlinkSync(temporaryPath);
           if (realFs.existsSync(outputPath)) realFs.unlinkSync(outputPath);
+          const publishedPath = path.join(directory, 'capture (1).png');
+          if (realFs.existsSync(publishedPath))
+            realFs.unlinkSync(publishedPath);
           realFs.rmdirSync(directory);
         }
       }

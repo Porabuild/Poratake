@@ -2,6 +2,7 @@
 //! so work started by short-lived windows (the area overlay) survives their
 //! removal and can still open follow-up UI on the main thread.
 
+use anyhow::Context as _;
 use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
 use poratake_daemon_common::contract::{
@@ -15,19 +16,10 @@ use poratake_daemon_common::contract::{
 };
 
 use crate::capture::intent::CaptureIntent;
-use crate::capture::{CachedCaptureReservation, CaptureService, DisplayCapture};
-
-fn uuid_simple() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{nanos:x}-{count:x}-{}", std::process::id())
-}
+use crate::capture::{
+    prepare_screenshot, publish_screenshot, uuid_simple, CachedCaptureReservation, CaptureService,
+    DisplayCapture,
+};
 
 pub struct Coordinator {
     pub service: CaptureService,
@@ -86,9 +78,21 @@ impl Coordinator {
         let path = service.generate_screenshot_path();
 
         let task = cx.background_executor().spawn(async move {
-            service
-                .capture_area_cached(capture, &path, reservation, release_after)
-                .map(|_| path)
+            let result = (|| -> anyhow::Result<_> {
+                let temporary = prepare_screenshot(&path)?;
+                service
+                    .capture_area_cached(capture, &temporary, reservation, None)
+                    .with_context(|| {
+                        format!("Capture data may be available at {}", temporary.display())
+                    })?;
+                publish_screenshot(&temporary, &path).with_context(|| {
+                    format!("Capture data is available at {}", temporary.display())
+                })
+            })();
+            if let Some(generation) = release_after {
+                service.release_screen(generation);
+            }
+            result
         });
 
         cx.spawn(async move |_entity, cx| match task.await {
@@ -310,9 +314,17 @@ impl Coordinator {
         let service = self.service.clone();
         let path = service.generate_screenshot_path();
         let task = cx.background_executor().spawn(async move {
-            let result = service
-                .capture_window_to_file(window_id, capture, &path, reservation)
-                .map(|_| path);
+            let result = (|| -> anyhow::Result<_> {
+                let temporary = prepare_screenshot(&path)?;
+                service
+                    .capture_window_to_file(window_id, capture, &temporary, reservation)
+                    .with_context(|| {
+                        format!("Capture data may be available at {}", temporary.display())
+                    })?;
+                publish_screenshot(&temporary, &path).with_context(|| {
+                    format!("Capture data is available at {}", temporary.display())
+                })
+            })();
             if let Some(generation) = release_after {
                 service.release_screen(generation);
             }
@@ -426,15 +438,31 @@ impl Coordinator {
             let daemon = service.daemon.clone();
             let stitched = cx
                 .background_executor()
-                .spawn(async move { crate::capture::scroll::finish(&daemon, &output) })
+                .spawn(async move {
+                    let temporary = match prepare_screenshot(&output) {
+                        Ok(temporary) => temporary,
+                        Err(error) => {
+                            crate::capture::scroll::cancel(&daemon);
+                            return Err(anyhow::Error::from(error));
+                        }
+                    };
+                    if crate::capture::scroll::finish(&daemon, &temporary).is_none() {
+                        if std::fs::metadata(&temporary).is_ok_and(|metadata| metadata.len() == 0) {
+                            let _ = std::fs::remove_file(&temporary);
+                            return Err(anyhow::anyhow!("The scroll capture produced no image"));
+                        }
+                        return Err(anyhow::anyhow!(
+                            "The scroll capture produced no image. Capture data may be available at {}",
+                            temporary.display()
+                        ));
+                    }
+                    publish_screenshot(&temporary, &output)
+                        .with_context(|| format!("Capture data is available at {}", temporary.display()))
+                })
                 .await;
             match stitched {
-                Some(path) => finalize_capture(path, true, cx).await,
-                None => show_capture_error(
-                    cx,
-                    "Scroll Capture Failed",
-                    "The scroll capture produced no image",
-                ),
+                Ok(path) => finalize_capture(path, true, cx).await,
+                Err(error) => show_capture_error(cx, "Scroll Capture Failed", &error.to_string()),
             }
         })
         .detach();

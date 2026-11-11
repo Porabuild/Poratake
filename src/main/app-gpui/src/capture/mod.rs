@@ -3,7 +3,7 @@
 //! call (same contract as `native-capture.ts`).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -14,6 +14,92 @@ pub use poratake_daemon_common::geometry::DisplayCaptureContext as DisplayCaptur
 
 use crate::config::store::ConfigStore;
 use crate::daemon::DaemonHandle;
+
+fn uuid_simple() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos:x}-{count:x}-{}", std::process::id())
+}
+
+pub(crate) fn prepare_screenshot(output: &Path) -> std::io::Result<PathBuf> {
+    let directory = output.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(directory)?;
+    loop {
+        let temporary = directory.join(format!(".poratake-{}.tmp.png", uuid_simple()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(_) => return Ok(temporary),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+pub(crate) fn publish_screenshot(temporary: &Path, output: &Path) -> std::io::Result<PathBuf> {
+    let mut suffix = 0;
+    let mut copy = false;
+    loop {
+        let destination = if suffix == 0 {
+            output.to_path_buf()
+        } else {
+            let mut name = output.file_stem().unwrap_or_default().to_os_string();
+            name.push(format!(" ({suffix})"));
+            if let Some(extension) = output.extension() {
+                name.push(".");
+                name.push(extension);
+            }
+            output.with_file_name(name)
+        };
+        if !copy {
+            match std::fs::hard_link(temporary, &destination) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    suffix += 1;
+                    continue;
+                }
+                Err(_) => {
+                    copy = true;
+                    continue;
+                }
+            }
+        } else {
+            let mut source = std::fs::File::open(temporary)?;
+            let mut target = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    suffix += 1;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if let Err(error) = std::io::copy(&mut source, &mut target) {
+                drop(target);
+                let _ = std::fs::remove_file(&destination);
+                return Err(error);
+            }
+        }
+        if let Err(error) = std::fs::remove_file(temporary) {
+            eprintln!(
+                "[capture] failed to remove {}: {error}",
+                temporary.display()
+            );
+        }
+        return Ok(destination);
+    }
+}
 
 #[derive(Clone)]
 pub struct CaptureService {
@@ -871,6 +957,63 @@ mod tests {
     use super::CaptureService;
     use crate::config::store::ConfigStore;
     use crate::daemon::DaemonHandle;
+
+    #[test]
+    fn concurrent_captures_keep_existing_files_and_each_others_pixels() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("screenshots").join("Capture.png");
+        let stages: Vec<_> = (0..12)
+            .map(|index| {
+                let stage = super::prepare_screenshot(&output).unwrap();
+                std::fs::write(&stage, format!("capture {index}")).unwrap();
+                stage
+            })
+            .collect();
+        std::fs::write(&output, "original").unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(stages.len()));
+        let workers: Vec<_> = stages
+            .into_iter()
+            .map(|stage| {
+                let barrier = barrier.clone();
+                let output = output.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    super::publish_screenshot(&stage, &output).unwrap()
+                })
+            })
+            .collect();
+        let paths: std::collections::HashSet<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 12);
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), "original");
+        let contents: std::collections::HashSet<_> = paths
+            .iter()
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect();
+        assert_eq!(
+            contents,
+            (0..12).map(|index| format!("capture {index}")).collect()
+        );
+        assert_eq!(
+            std::fs::read_dir(output.parent().unwrap()).unwrap().count(),
+            13
+        );
+    }
+
+    #[test]
+    fn failed_screenshot_publication_retains_the_temporary_capture() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Capture.png");
+        let stage = super::prepare_screenshot(&output).unwrap();
+        std::fs::write(&stage, "capture").unwrap();
+        assert!(
+            super::publish_screenshot(&stage, &directory.path().join("missing/Capture.png"))
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(stage).unwrap(), "capture");
+    }
 
     #[test]
     fn only_the_timer_and_scroll_flows_hide_icons_before_the_selection() {
