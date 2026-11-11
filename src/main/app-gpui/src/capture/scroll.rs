@@ -15,13 +15,13 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 pub enum ScrollSessionSignal {
     Finish,
     Cancel,
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     Frame {
         preview: Option<String>,
     },
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     AutoScrolling(bool),
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     CursorOutside(bool),
 }
 

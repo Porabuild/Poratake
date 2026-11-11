@@ -72,6 +72,7 @@ impl ScrollCaptureUi {
 pub struct ScrollCaptureSession;
 
 impl ScrollCaptureSession {
+    #[cfg(any(target_os = "macos", test))]
     pub fn open(
         cx: &mut App,
         daemon: DaemonHandle,
@@ -270,6 +271,46 @@ pub fn apply_progress(ui: &Entity<ScrollCaptureUi>, signal: ScrollSessionSignal,
     }
 }
 
+#[cfg(all(windows, feature = "parity"))]
+pub(crate) fn preview_for_parity(cx: &mut App, encoded: String) -> gpui::AnyWindowHandle {
+    let (signal, events) = smol::channel::bounded(2);
+    let ui = ScrollCaptureSession::open_on_display(
+        cx,
+        crate::state::state(cx).daemon,
+        ScreenRect {
+            x: 100,
+            y: 80,
+            width: 80,
+            height: 20,
+        },
+        signal,
+        Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(200.0), px(180.0)),
+        },
+        None,
+    );
+    apply_progress(
+        &ui,
+        ScrollSessionSignal::Frame {
+            preview: Some(encoded),
+        },
+        cx,
+    );
+    apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
+    apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
+    assert!(ui.read(cx).auto_scrolling && ui.read(cx).cursor_outside);
+    apply_progress(&ui, ScrollSessionSignal::CursorOutside(false), cx);
+    ScrollCaptureSession::finish_requested(cx);
+    ScrollCaptureSession::cancel_requested(cx);
+    assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Finish)));
+    assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Cancel)));
+    cx.windows()
+        .into_iter()
+        .find(|handle| handle.downcast::<ScrollPreviewPanel>().is_some())
+        .unwrap()
+}
+
 struct ScrollPreviewPanel {
     ui: Entity<ScrollCaptureUi>,
     offset: f32,
@@ -297,7 +338,8 @@ impl Render for ScrollPreviewPanel {
                     .child(
                         img(image.image.clone())
                             .w(px(state.preview_width))
-                            .h(px(image.height)),
+                            .h(px(image.height))
+                            .rounded(px(chrome::RADIUS_LG)),
                     ),
             );
         }

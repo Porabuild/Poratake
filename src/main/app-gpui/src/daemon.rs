@@ -813,7 +813,7 @@ impl ScrollCaptureClient<'_> {
             .map(|_| ())
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     pub fn start_auto_scroll(&self) -> Result<()> {
         #[cfg(test)]
         if record_auto_scroll_for_test(ScrollCaptureMethod::StartAutoScroll) {
@@ -829,7 +829,7 @@ impl ScrollCaptureClient<'_> {
             .map(|_| ())
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     pub fn stop_auto_scroll(&self) -> Result<()> {
         #[cfg(test)]
         if record_auto_scroll_for_test(ScrollCaptureMethod::StopAutoScroll) {

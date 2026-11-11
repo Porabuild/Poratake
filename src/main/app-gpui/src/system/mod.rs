@@ -1,6 +1,6 @@
 pub mod accelerator;
 pub mod capabilities;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
 pub mod click_through;
 pub mod clipboard;
 pub mod desktop;

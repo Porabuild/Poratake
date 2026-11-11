@@ -6,6 +6,51 @@ use super::daemon_fixture::calls;
 use super::workflows::{area_picker, select_area, verify_saved_capture, SELECTED_RECT};
 use super::{escape, take_notifications, HeadlessAppContext, Path};
 
+#[cfg(windows)]
+pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
+    use base64::Engine;
+
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        4,
+        2,
+        image::Rgba([255, 0, 0, 255]),
+    ))
+    .write_to(&mut encoded, image::ImageFormat::Png)
+    .unwrap();
+    let preview = cx.update(|cx| {
+        crate::windows::scroll_capture::preview_for_parity(
+            cx,
+            base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
+        )
+    });
+    cx.update_window(preview, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    super::settle(cx, preview);
+    let image = cx.capture_screenshot(preview).unwrap();
+    image
+        .save(output.join("scroll-preview-corners.png"))
+        .unwrap();
+    let center = image.get_pixel((100. * scale).round() as u32, (130. * scale).round() as u32);
+    assert!(center[0] > 240 && center[1] < 10 && center[2] < 10);
+    let right = (200. * scale).round() as u32 - 1;
+    let top = (80. * scale).round() as u32;
+    let bottom = (180. * scale).round() as u32 - 1;
+    for (x, y) in [(0, top), (right, top), (0, bottom), (right, bottom)] {
+        let corner = image.get_pixel(x, y);
+        let difference: u16 = corner.0[..3]
+            .iter()
+            .zip(&center.0[..3])
+            .map(|(actual, source)| u16::from(actual.abs_diff(*source)))
+            .sum();
+        assert!(
+            difference >= 60,
+            "square preview corner at {x}, {y}: {corner:?}"
+        );
+    }
+    cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+}
+
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     for name in [
         "selection-cancelled",

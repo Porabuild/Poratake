@@ -5,7 +5,7 @@ pub mod onboarding;
 pub mod pin;
 pub mod recording_control;
 pub mod registry;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
 pub mod scroll_capture;
 pub mod scrollbars;
 pub mod settings;

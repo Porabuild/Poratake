@@ -640,6 +640,10 @@ Bugs fixed in this pass:
   headless GPUI session verifies window and painted-image positions as frames
   arrive; a narrow-display test also checks that tall previews retain the bottom
   pixels. Physical narrow-display behavior remains unverified.
+- The macOS GPUI scroll preview's rounded container did not clip the image
+  corners. The image now has the same radius, and the Windows GPU harness samples
+  all four corners and the center of the production preview at each matrix scale.
+  Native macOS rendering remains unverified.
 - The macOS scroll-control tooltips painted above their 52px window and were
   clipped. They now use the native view tooltip, matching Electron's native
   tooltip behavior without enlarging the window. A headless test exercises all

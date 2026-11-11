@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
 use gpui::App;
 use gpui::{
     div, prelude::*, px, AnyElement, Context, Div, ElementId, SharedString, Styled, Window,
@@ -127,7 +127,7 @@ pub fn filled_glyph(color: gpui::Hsla, round: bool) -> AnyElement {
     glyph.rounded(px(chrome::RADIUS_SM)).into_any_element()
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
 pub fn filled_play(color: gpui::Hsla) -> AnyElement {
     gpui::canvas(
         |_, _, _| {},

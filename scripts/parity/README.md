@@ -141,7 +141,10 @@ Nine scroll scenarios check selection cancellation, completion/cancellation
 before the start response, start/finish failures, empty output, held finish and
 cancel responses, and retry. The session stays active until each held response.
 Scroll selection must stay live even when freezing is enabled. Saved portrait
-output must match history/editor exports. Eight editor-attachment scenarios
+output must match history/editor exports. At 1280px, the production macOS GPUI
+preview panel is also rendered through the Windows GPU backend at every matrix
+scale; the center must retain its source color and all four corners must be
+clipped. Eight editor-attachment scenarios
 check all four edges, live/frozen/fallback pixels, capture and invalid-image failures,
 cancellation, cleanup, clipboard preservation and identical history reopen.
 They activate the actual edge strips with left and right mouse buttons and reject

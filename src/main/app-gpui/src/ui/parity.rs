@@ -718,6 +718,10 @@ pub fn capture_editor_interaction_states() {
     });
     #[cfg(windows)]
     windows_renderer::verify_image_sampling(&mut cx, &output, scale);
+    #[cfg(windows)]
+    if source.is_none() && width == 1280. {
+        scroll_workflows::preview_corners(&mut cx, &output, scale);
+    }
     if source.is_none() && width == 1280. && scale == 1. {
         workflows::editor_sizes(&mut cx, &scratch);
     }
