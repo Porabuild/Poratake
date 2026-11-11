@@ -52,9 +52,11 @@ also capture 28 annotation/selection/timer/scroll/attachment/pin workflow states
 The eight 950px cases each add 27 narrow-history states, for 2,880 images per
 complete renderer profile. The 72 new 140px NVIDIA history images were reviewed;
 the previous 1,448 images in the 950px cases were pixel-identical. The complete
-local NVIDIA gate passed all 16 cases and 2,880 exact images. The hosted variants
-still need recording and review. The 48 selected-OCR tooltip images and 32 target-menu
-images were reviewed for NVIDIA; all 2,728 earlier images were pixel-identical.
+local NVIDIA gate passed all 16 cases and 2,880 exact images. The 72 hosted
+variants were also reviewed; all 2,808 earlier hosted images were pixel-identical.
+An exact hosted rerun against the complete profile is pending. The 48 selected-OCR
+tooltip images and 32 target-menu images were reviewed for NVIDIA; all 2,728
+earlier images were pixel-identical.
 An exact rerun after the target-menu interaction fixes passed all 16 cases and
 2,808 images. The corresponding 80 hosted images were reviewed, and all 2,728
 earlier hosted images were pixel-identical. [Hosted CI at `a9d025f`](https://github.com/Porabuild/Poratake/actions/runs/42980916944)
@@ -388,6 +390,11 @@ passed the geometry and workflow checks and 14 visual cases. The two narrow
 125% cases differed in 24 history-grid images, all reviewed; the other 2,512
 hosted images were unchanged. Artifact `13832141444` has SHA-256
 `d61c324f6de4a9030ecf81bed2977ed43963a693bfa22ad4fb6fa72e349eea6d`.
+The [140px history run](https://github.com/Porabuild/Poratake/actions/runs/42986753020)
+passed the geometry and workflow checks and eight wider visual cases. The eight
+narrow cases rejected their 72 missing states; those images were reviewed and
+all 2,808 existing images were pixel-identical. Artifact `13841822779` has SHA-256
+`0bdfea91ec8148b6390a7d7aead6dff99b853ce1f8374c88d66a7cd3b99049a6`.
 Check the current PR for subsequent changes.
 The display-change test checks preview repositioning in a headless window, and
 synthetic geometry covers negative origins and mixed scaling. Physical monitor

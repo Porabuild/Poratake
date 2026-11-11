@@ -160,8 +160,8 @@ The built-in 1280px, 100% cases add 28 workflow images each. The 950px cases add
 action tooltips at 140px, 200px and 240px. The fixture checks thumbnail pixels,
 keyboard selection, all four sides of the narrow selection ring, tooltip bounds
 and clipping masks, and deletes a scratch item without opening an editor. A
-complete renderer profile has 2,880 images; the new hosted history states still
-need recording and review.
+complete renderer profile has 2,880 images. The new hosted history states were
+reviewed; an exact hosted rerun against the complete profile is pending.
 Each renderer's set must be reviewed before acceptance.
 
 Capture, timer and scroll completion first open a bottom-right preview without
