@@ -3783,6 +3783,176 @@ pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &P
     });
     capture(cx, flattened.into(), output, "workflow-saved-reopened");
     println!("annotation, PNG save, history reopen and flattened reopen passed; preview/export changed pixels above two channel levels: {significant}");
+
+    let delayed_source = scratch.join("workflow-delayed-state.png");
+    std::fs::copy(scratch.join("capture.png"), &delayed_source).unwrap();
+    crate::history_store::add_item(
+        HistoryItem {
+            id: "visual-debounced-editor-state".into(),
+            timestamp: 0,
+            original_path: delayed_source.to_string_lossy().into_owned(),
+            r#type: HistoryItemType::Screenshot,
+            editor_state: None,
+            duration: None,
+        },
+        10,
+        true,
+    );
+    let delayed_editor = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(1.);
+            cx.new(|cx| EditorWindow::from_file(delayed_source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    let delayed_window = delayed_editor.into();
+    settle(cx, delayed_window);
+    click_measured(cx, delayed_window, "editor-tools", 2);
+    let delayed_bounds = cx.update(|cx| delayed_editor.read(cx).unwrap().bounds.borrow().unwrap());
+    drag_rectangle(
+        cx,
+        delayed_window,
+        delayed_bounds.origin,
+        (40., 40.),
+        (100., 80.),
+    );
+    let (delayed_annotations, delayed_png) = cx.update(|cx| {
+        let editor = delayed_editor.read(cx).unwrap();
+        (
+            editor.history.current().to_vec(),
+            editor.export_png().unwrap(),
+        )
+    });
+    assert!(crate::history_store::editor_state_for_path(&delayed_source).is_none());
+    cx.run_until_parked();
+    cx.advance_clock(std::time::Duration::from_millis(200));
+    cx.update(|cx| delayed_editor.update(cx, |editor, _, cx| editor.select_all_annotations(cx)))
+        .unwrap();
+    cx.run_until_parked();
+    cx.advance_clock(std::time::Duration::from_millis(299));
+    cx.run_until_parked();
+    assert!(crate::history_store::editor_state_for_path(&delayed_source).is_none());
+    cx.advance_clock(std::time::Duration::from_millis(1));
+    cx.run_until_parked();
+    assert_eq!(
+        crate::history_store::editor_state_for_path(&delayed_source)
+            .and_then(|state| state["annotations"]
+                .as_array()
+                .map(|annotations| annotations.len())),
+        Some(1),
+        "the debounced editor state must reach history while its window remains open"
+    );
+    let delayed_reopened = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(1.);
+            cx.new(|cx| EditorWindow::from_file(delayed_source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, delayed_reopened.into());
+    cx.update(|cx| {
+        let reopened = delayed_reopened.read(cx).unwrap();
+        assert_eq!(reopened.history.current(), delayed_annotations);
+        assert_eq!(reopened.export_png().unwrap(), delayed_png);
+    });
+    cx.update_window(delayed_reopened.into(), |_, window, _| {
+        window.remove_window()
+    })
+    .unwrap();
+    cx.update_window(delayed_window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(crate::history_store::delete_item(
+        "visual-debounced-editor-state"
+    ));
+
+    let draft_source = scratch.join("workflow-draft-state.png");
+    std::fs::copy(scratch.join("capture.png"), &draft_source).unwrap();
+    crate::history_store::add_item(
+        HistoryItem {
+            id: "visual-draft-flush".into(),
+            timestamp: 0,
+            original_path: draft_source.to_string_lossy().into_owned(),
+            r#type: HistoryItemType::Screenshot,
+            editor_state: None,
+            duration: None,
+        },
+        10,
+        true,
+    );
+    let draft_editor = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(1.);
+            cx.new(|cx| EditorWindow::from_file(draft_source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    let draft_window = draft_editor.into();
+    settle(cx, draft_window);
+    click_measured(cx, draft_window, "editor-tools", 2);
+    let draft_bounds = cx.update(|cx| draft_editor.read(cx).unwrap().bounds.borrow().unwrap());
+    drag_rectangle(
+        cx,
+        draft_window,
+        draft_bounds.origin,
+        (40., 40.),
+        (100., 80.),
+    );
+    let uncommitted_start = draft_bounds.origin + point(px(140.), px(100.));
+    event(
+        cx,
+        draft_window,
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: uncommitted_start,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    cx.update_window(draft_window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        crate::history_store::editor_state_for_path(&draft_source)
+            .and_then(|state| state["annotations"]
+                .as_array()
+                .map(|annotations| annotations.len())),
+        Some(1),
+        "closing during a new draft must persist the last committed annotation"
+    );
+    assert!(crate::history_store::delete_item("visual-draft-flush"));
+    println!("editor history saves after 500ms and reopens while the original editor stays open");
+}
+
+fn drag_rectangle(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    origin: gpui::Point<gpui::Pixels>,
+    start: (f32, f32),
+    end: (f32, f32),
+) {
+    let start = origin + point(px(start.0), px(start.1));
+    let end = origin + point(px(end.0), px(end.1));
+    for input in [
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: end,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::none(),
+        }),
+        PlatformInput::MouseUp(MouseUpEvent {
+            position: end,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+        }),
+    ] {
+        event(cx, window, input);
+    }
 }
 
 fn check_circle_selection(

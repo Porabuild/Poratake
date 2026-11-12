@@ -1,7 +1,7 @@
 //! Editor window entity — owns editor state, wires the title bar and canvas
 //! together, and hosts the color palette popover.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -440,7 +440,8 @@ pub struct EditorWindow {
     pan_origin: Option<(gpui::Point<Pixels>, gpui::Point<Pixels>)>,
     next_id: u32,
     persisted_editor_state: RefCell<Option<serde_json::Value>>,
-    last_editor_state_write: Cell<std::time::Instant>,
+    pending_editor_state: Option<serde_json::Value>,
+    editor_state_write_task: Option<gpui::Task<()>>,
     pub focus_handle: gpui::FocusHandle,
     bounds_sub: Option<Subscription>,
     activation_sub: Option<Subscription>,
@@ -589,7 +590,8 @@ impl EditorWindow {
             bounds: Rc::new(RefCell::new(None)),
             next_id,
             persisted_editor_state: RefCell::new(persisted_value),
-            last_editor_state_write: Cell::new(std::time::Instant::now()),
+            pending_editor_state: None,
+            editor_state_write_task: None,
             focus_handle: cx.focus_handle(),
             bounds_sub: None,
             activation_sub: None,
@@ -616,7 +618,7 @@ impl EditorWindow {
             editor.refresh_balance_crop();
         }
         editor.refresh_raster_patches();
-        editor.sync_snapshot();
+        editor.sync_snapshot(cx);
         editor
     }
 
@@ -882,7 +884,7 @@ impl EditorWindow {
         }));
     }
 
-    fn sync_snapshot(&self) {
+    fn sync_snapshot(&mut self, cx: &mut Context<Self>) {
         let wallpaper = self.wallpaper.for_scale(self.native_scale);
         {
             let mut snap = self.snapshot.borrow_mut();
@@ -915,12 +917,44 @@ impl EditorWindow {
             snap.color_hex = self.color_hex.clone();
             snap.stroke_width = self.stroke_width;
         }
-        self.persist_editor_state(false);
+        self.persist_editor_state(cx);
     }
 
-    fn persist_editor_state(&self, force: bool) {
+    fn persist_editor_state(&mut self, cx: &mut Context<Self>) {
         if self.file_path.is_empty() || self.draft.is_some() {
             return;
+        }
+        let Some(state) = self.editor_state_value() else {
+            return;
+        };
+        if self.persisted_editor_state.borrow().as_ref() == Some(&state) {
+            self.pending_editor_state = None;
+            self.editor_state_write_task.take();
+            return;
+        }
+
+        if self.pending_editor_state.as_ref() == Some(&state)
+            && self
+                .editor_state_write_task
+                .as_ref()
+                .is_some_and(|task| !task.is_ready())
+        {
+            return;
+        }
+
+        self.editor_state_write_task.take();
+        self.pending_editor_state = Some(state);
+        self.editor_state_write_task = Some(cx.spawn(async move |editor, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(500))
+                .await;
+            let _ = editor.update(cx, |editor, _| editor.flush_pending_editor_state());
+        }));
+    }
+
+    fn editor_state_value(&self) -> Option<serde_json::Value> {
+        if self.file_path.is_empty() {
+            return None;
         }
         let mut wallpaper = self.wallpaper.clone();
         if let Some(source) = wallpaper.background_image.as_deref() {
@@ -946,28 +980,38 @@ impl EditorWindow {
                 }
             }
         }
-        let state = match serde_json::to_value(PersistedEditorState {
+        serde_json::to_value(PersistedEditorState {
             annotations: self.history.current().to_vec(),
             wallpaper,
             layers: self.layers.clone(),
-        }) {
-            Ok(state) => state,
-            Err(_) => return,
+        })
+        .ok()
+    }
+
+    fn flush_pending_editor_state(&mut self) {
+        let Some(state) = self.pending_editor_state.take() else {
+            return;
         };
-        if self.persisted_editor_state.borrow().as_ref() == Some(&state) {
-            return;
-        }
-        if !force
-            && self.last_editor_state_write.get().elapsed() < std::time::Duration::from_millis(500)
-        {
-            return;
-        }
+        self.write_editor_state(state);
+    }
+
+    fn write_editor_state(&mut self, state: serde_json::Value) {
         if crate::history_store::update_editor_state_by_path(
             std::path::Path::new(&self.file_path),
             state.clone(),
         ) {
             *self.persisted_editor_state.borrow_mut() = Some(state);
-            self.last_editor_state_write.set(std::time::Instant::now());
+        }
+    }
+
+    fn force_persist_editor_state(&mut self) {
+        self.editor_state_write_task.take();
+        self.pending_editor_state = None;
+        let Some(state) = self.editor_state_value() else {
+            return;
+        };
+        if self.persisted_editor_state.borrow().as_ref() != Some(&state) {
+            self.write_editor_state(state);
         }
     }
 
@@ -1043,7 +1087,7 @@ impl EditorWindow {
             edge,
         });
         self.refresh_backdrop(cx);
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
@@ -1103,7 +1147,7 @@ impl EditorWindow {
         }
         self.layers.clear();
         self.refresh_backdrop(cx);
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
@@ -1325,7 +1369,7 @@ impl EditorWindow {
     }
 
     pub fn delete_selected_annotation(&mut self, cx: &mut Context<Self>) {
-        self.finish_active_transform();
+        self.finish_active_transform(cx);
         if self.selected_annotations.is_empty() {
             return;
         }
@@ -1338,16 +1382,16 @@ impl EditorWindow {
             .cloned()
             .collect();
         self.renumber_annotations(&mut annotations);
-        self.push_annotations(annotations);
+        self.push_annotations(annotations, cx);
         self.refresh_raster_patches();
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
     /// `handleCopyAnnotations` — returns false when nothing was selected, so
     /// the caller can fall back to copying the image.
-    pub fn copy_selected_annotation(&mut self) -> bool {
-        self.finish_active_transform();
+    pub fn copy_selected_annotation(&mut self, cx: &mut Context<Self>) -> bool {
+        self.finish_active_transform(cx);
         if self.selected_annotations.is_empty() {
             return false;
         }
@@ -1370,7 +1414,7 @@ impl EditorWindow {
     }
 
     pub fn cut_selected_annotation(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.copy_selected_annotation() {
+        if !self.copy_selected_annotation(cx) {
             return false;
         }
         self.delete_selected_annotation(cx);
@@ -1378,7 +1422,7 @@ impl EditorWindow {
     }
 
     pub fn select_all_annotations(&mut self, cx: &mut Context<Self>) {
-        self.finish_active_transform();
+        self.finish_active_transform(cx);
         if self.text_editor.is_some() {
             return;
         }
@@ -1388,14 +1432,14 @@ impl EditorWindow {
             .iter()
             .map(|annotation| annotation.id().to_string())
             .collect();
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
     /// `handlePasteAnnotations` — a pasted copy is offset so it does not hide
     /// the original.
     pub fn paste_annotations(&mut self, cx: &mut Context<Self>) {
-        self.finish_active_transform();
+        self.finish_active_transform(cx);
         if self.annotation_clipboard.is_empty() {
             return;
         }
@@ -1420,10 +1464,10 @@ impl EditorWindow {
             pasted_ids.push(id);
             annotations.push(copy);
         }
-        self.push_annotations(annotations);
+        self.push_annotations(annotations, cx);
         self.selected_annotations = pasted_ids;
         self.refresh_raster_patches();
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
@@ -1434,12 +1478,12 @@ impl EditorWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.finish_active_transform();
+        self.finish_active_transform(cx);
         let tool = self.tool;
         if tool != Tool::Crop {
             if let Some(handle) = self.selected_handle_at(point) {
                 self.begin_resize(handle, point);
-                self.sync_snapshot();
+                self.sync_snapshot(cx);
                 cx.notify();
                 return;
             }
@@ -1486,7 +1530,7 @@ impl EditorWindow {
                 };
                 let mut annotations = self.history.current().to_vec();
                 annotations.push(annotation);
-                self.push_annotations(annotations);
+                self.push_annotations(annotations, cx);
             }
             Tool::Text => {
                 self.drag_start = None;
@@ -1592,10 +1636,10 @@ impl EditorWindow {
             }
             _ => {}
         }
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 
-    fn extend_stroke(&mut self, point: Point) {
+    fn extend_stroke(&mut self, point: Point, cx: &mut Context<Self>) {
         let Some(start) = self.drag_start else {
             return;
         };
@@ -1611,7 +1655,7 @@ impl EditorWindow {
                 *width = clamped_x - *x;
                 *height = clamped_y - *y;
             }
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
             return;
         }
 
@@ -1662,7 +1706,7 @@ impl EditorWindow {
             }
             _ => {}
         }
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 
     fn queue_pointer_update(
@@ -1688,39 +1732,39 @@ impl EditorWindow {
         let editor = cx.entity().downgrade();
         window.on_next_frame(move |_window, cx| {
             let _ = editor.update(cx, |editor, cx| {
-                editor.apply_pending_pointer_update();
+                editor.apply_pending_pointer_update(cx);
                 cx.notify();
             });
         });
     }
 
-    fn apply_pending_pointer_update(&mut self) {
+    fn apply_pending_pointer_update(&mut self, cx: &mut Context<Self>) {
         self.pointer_update_scheduled = false;
         if let Some(point) = self.pending_pointer_update.take() {
             if self.resize_state.is_some() {
                 self.resize_selected(point);
-                self.sync_snapshot();
+                self.sync_snapshot(cx);
                 return;
             }
             if self.move_origin.is_some() {
                 self.move_selected(point);
-                self.sync_snapshot();
+                self.sync_snapshot(cx);
                 return;
             }
             if self.marquee.is_some() {
                 if let Some((_, current)) = self.marquee.as_mut() {
                     *current = point;
                 }
-                self.sync_snapshot();
+                self.sync_snapshot(cx);
                 return;
             }
             if self.crop_drag.is_some() {
                 self.update_crop_drag(point);
-                self.sync_snapshot();
+                self.sync_snapshot(cx);
                 return;
             }
             if self.drag_start.is_some() {
-                self.extend_stroke(point);
+                self.extend_stroke(point, cx);
             }
         }
         if self.drag_start.is_none() || self.pending_stroke_points.is_empty() {
@@ -1745,14 +1789,14 @@ impl EditorWindow {
             }
         }
         if changed {
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
         }
     }
 
     /// Port of `applyCrop`: crops the base image and shifts every annotation
     /// into the new coordinate space.
     pub fn apply_crop(&mut self, cx: &mut Context<Self>) {
-        self.finish_active_transform();
+        self.finish_active_transform(cx);
         let Some((x, y, width, height)) = self.crop.take() else {
             return;
         };
@@ -1762,7 +1806,7 @@ impl EditorWindow {
         );
         let (crop_width, crop_height) = (width.abs(), height.abs());
         if crop_width < 1.0 || crop_height < 1.0 {
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
             cx.notify();
             return;
         }
@@ -1806,7 +1850,7 @@ impl EditorWindow {
         self.pre_crop = pre_crop;
 
         self.refresh_raster_patches();
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
@@ -1814,7 +1858,7 @@ impl EditorWindow {
         self.crop = None;
         self.crop_drag = None;
         self.drag_start = None;
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
@@ -1843,7 +1887,7 @@ impl EditorWindow {
 
         let field = cx.new(|cx| InputState::new(cx));
         self.text_editor = Some((id, field));
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
@@ -1851,12 +1895,12 @@ impl EditorWindow {
     /// A draft that matches a committed annotation is a re-edit: the text is
     /// replaced, or the annotation deleted when emptied.
     pub fn commit_text(&mut self, cx: &mut Context<Self>) {
-        self.finish_active_transform();
+        self.finish_active_transform(cx);
         let Some((_, _)) = self.text_editor.take() else {
             return;
         };
         let Some(draft) = self.draft.take() else {
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
             cx.notify();
             return;
         };
@@ -1872,14 +1916,14 @@ impl EditorWindow {
                 {
                     *existing = draft;
                 }
-                self.push_annotations(annotations);
+                self.push_annotations(annotations, cx);
                 self.refresh_raster_patches();
             } else if !text.trim().is_empty() {
                 annotations.push(draft);
-                self.push_annotations(annotations);
+                self.push_annotations(annotations, cx);
             }
         }
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
     }
 
@@ -1901,7 +1945,7 @@ impl EditorWindow {
         self.draft = Some(existing);
         let field = cx.new(|cx| InputState::with_value(cx, text));
         self.text_editor = Some((id.to_string(), field));
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         cx.notify();
         self.focus_text_editor(window, cx);
     }
@@ -1939,7 +1983,7 @@ impl EditorWindow {
                         owner.update(cx, |editor, cx| {
                             editor.text_editor = None;
                             editor.draft = None;
-                            editor.sync_snapshot();
+                            editor.sync_snapshot(cx);
                             cx.notify();
                         });
                     }
@@ -1959,7 +2003,7 @@ impl EditorWindow {
                                         {
                                             *text = value.clone();
                                         }
-                                        editor.sync_snapshot();
+                                        editor.sync_snapshot(cx);
                                         cx.notify();
                                     });
                                 }
@@ -2002,16 +2046,16 @@ impl EditorWindow {
         }
     }
 
-    fn finish_active_transform(&mut self) {
+    fn finish_active_transform(&mut self, cx: &mut Context<Self>) {
         if self.move_origin.is_some() || self.resize_state.is_some() {
-            self.apply_pending_pointer_update();
-            self.finish_stroke();
+            self.apply_pending_pointer_update(cx);
+            self.finish_stroke(cx);
         }
     }
 
-    fn finish_stroke(&mut self) {
+    fn finish_stroke(&mut self, cx: &mut Context<Self>) {
         if self.crop_drag.take().is_some() {
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
             return;
         }
         if let Some(origin) = self.move_origin.take() {
@@ -2019,13 +2063,13 @@ impl EditorWindow {
             let returned = original.as_ref().is_some_and(|(start, _)| *start == origin);
             self.finish_annotation_edit(original.map(|(_, annotations)| annotations), returned);
             self.refresh_raster_patches();
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
             return;
         }
         if let Some(state) = self.resize_state.take() {
             self.finish_annotation_edit(state.original, state.last == state.start);
             self.refresh_raster_patches();
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
             return;
         }
         if let Some((start, current)) = self.marquee.take() {
@@ -2047,7 +2091,7 @@ impl EditorWindow {
             } else {
                 self.selected_annotations.clear();
             }
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
             return;
         }
         if let Some(draft) = self.draft.take() {
@@ -2069,12 +2113,12 @@ impl EditorWindow {
             if has_extent {
                 let mut annotations = self.history.current().to_vec();
                 annotations.push(draft);
-                self.push_annotations(annotations);
+                self.push_annotations(annotations, cx);
                 self.refresh_raster_patches();
             }
         }
         self.drag_start = None;
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 }
 
@@ -2357,7 +2401,7 @@ impl EditorWindow {
         }
     }
 
-    fn fit_to_window(&mut self, window: &mut Window) {
+    fn fit_to_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sheet_open = self.tool == Tool::Wallpaper;
         let viewport = window.viewport_size();
         let content = self.content_size();
@@ -2370,9 +2414,10 @@ impl EditorWindow {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        self.set_zoom(crate::editor::zoom_fit::optimal_zoom(
-            viewport, width, height, sheet_open,
-        ));
+        self.set_zoom(
+            crate::editor::zoom_fit::optimal_zoom(viewport, width, height, sheet_open),
+            cx,
+        );
     }
 
     /// Rebuilds the zoom control's `backdrop-blur-md` from the previous frame's
@@ -2485,12 +2530,12 @@ impl Render for EditorWindow {
             self.native_scale = native_scale;
             self.refresh_raster_patches();
         }
-        self.fit_to_window(window);
+        self.fit_to_window(window, cx);
         self.refresh_backdrop(cx);
         for image in self.retired_preview_edges.drain(..) {
             let _ = window.drop_image(image);
         }
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
         self.refresh_zoom_backdrop(cx);
 
         let handlers = build_handlers(&weak);
@@ -2547,35 +2592,43 @@ impl Render for EditorWindow {
 
         let content = root
             .on_action(
-                cx.listener(|this, _: &actions::ToolSelect, _, _cx| this.set_tool(Tool::Select)),
+                cx.listener(|this, _: &actions::ToolSelect, _, cx| this.set_tool(Tool::Select, cx)),
             )
-            .on_action(cx.listener(|this, _: &actions::ToolPen, _, _cx| this.set_tool(Tool::Pen)))
-            .on_action(cx.listener(|this, _: &actions::ToolHighlight, _, _cx| {
-                this.set_tool(Tool::Highlight)
+            .on_action(
+                cx.listener(|this, _: &actions::ToolPen, _, cx| this.set_tool(Tool::Pen, cx)),
+            )
+            .on_action(cx.listener(|this, _: &actions::ToolHighlight, _, cx| {
+                this.set_tool(Tool::Highlight, cx)
             }))
-            .on_action(cx.listener(|this, _: &actions::ToolRectangle, _, _cx| {
-                this.set_tool(Tool::Rectangle)
+            .on_action(cx.listener(|this, _: &actions::ToolRectangle, _, cx| {
+                this.set_tool(Tool::Rectangle, cx)
             }))
             .on_action(
-                cx.listener(|this, _: &actions::ToolCircle, _, _cx| this.set_tool(Tool::Circle)),
-            )
-            .on_action(cx.listener(|this, _: &actions::ToolLine, _, _cx| this.set_tool(Tool::Line)))
-            .on_action(
-                cx.listener(|this, _: &actions::ToolArrow, _, _cx| this.set_tool(Tool::Arrow)),
-            )
-            .on_action(cx.listener(|this, _: &actions::ToolText, _, _cx| this.set_tool(Tool::Text)))
-            .on_action(
-                cx.listener(|this, _: &actions::ToolNumber, _, _cx| this.set_tool(Tool::Number)),
+                cx.listener(|this, _: &actions::ToolCircle, _, cx| this.set_tool(Tool::Circle, cx)),
             )
             .on_action(
-                cx.listener(|this, _: &actions::ToolRedact, _, _cx| this.set_tool(Tool::Redact)),
+                cx.listener(|this, _: &actions::ToolLine, _, cx| this.set_tool(Tool::Line, cx)),
             )
-            .on_action(cx.listener(|this, _: &actions::ToolCrop, _, _cx| this.set_tool(Tool::Crop)))
-            .on_action(cx.listener(|this, _: &actions::ToolWallpaper, _, _cx| {
-                this.set_tool(Tool::Wallpaper)
+            .on_action(
+                cx.listener(|this, _: &actions::ToolArrow, _, cx| this.set_tool(Tool::Arrow, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ToolText, _, cx| this.set_tool(Tool::Text, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ToolNumber, _, cx| this.set_tool(Tool::Number, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ToolRedact, _, cx| this.set_tool(Tool::Redact, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ToolCrop, _, cx| this.set_tool(Tool::Crop, cx)),
+            )
+            .on_action(cx.listener(|this, _: &actions::ToolWallpaper, _, cx| {
+                this.set_tool(Tool::Wallpaper, cx)
             }))
-            .on_action(cx.listener(|this, _: &actions::Undo, _, _cx| this.undo()))
-            .on_action(cx.listener(|this, _: &actions::Redo, _, _cx| this.redo()))
+            .on_action(cx.listener(|this, _: &actions::Undo, _, cx| this.undo(cx)))
+            .on_action(cx.listener(|this, _: &actions::Redo, _, cx| this.redo(cx)))
             .on_action(
                 cx.listener(|this, _: &actions::SaveScreenshot, window, cx| {
                     this.save_as(window, cx);
@@ -2602,15 +2655,15 @@ impl Render for EditorWindow {
                 } else if this.text_editor.is_some() || this.draft.is_some() {
                     this.text_editor = None;
                     this.draft = None;
-                    this.sync_snapshot();
+                    this.sync_snapshot(cx);
                     cx.notify();
                 } else {
-                    this.finish_active_transform();
+                    this.finish_active_transform(cx);
                     this.selected_annotations.clear();
                     this.move_origin = None;
                     this.move_original = None;
                     this.resize_state = None;
-                    this.sync_snapshot();
+                    this.sync_snapshot(cx);
                     cx.notify();
                 }
             }))
@@ -2624,7 +2677,7 @@ impl Render for EditorWindow {
                 cx.listener(|this, _: &actions::CopyAnnotation, window, cx| {
                     // A selected annotation is copied; otherwise the whole image
                     // is, which is what the renderer's Ctrl+C falls back to.
-                    if !this.copy_selected_annotation() {
+                    if !this.copy_selected_annotation(cx) {
                         this.copy_to_clipboard(window, cx);
                     }
                 }),
@@ -2644,15 +2697,15 @@ impl Render for EditorWindow {
                 this.delete_selected_annotation(cx);
             }))
             .on_action(cx.listener(|this, _: &actions::ZoomIn, _, cx| {
-                this.set_zoom(this.zoom + ZOOM_STEP);
+                this.set_zoom(this.zoom + ZOOM_STEP, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &actions::ZoomOut, _, cx| {
-                this.set_zoom(this.zoom - ZOOM_STEP);
+                this.set_zoom(this.zoom - ZOOM_STEP, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &actions::ZoomReset, _, cx| {
-                this.set_zoom(1.0);
+                this.set_zoom(1.0, cx);
                 cx.notify();
             }))
             .child(TitleBar {
@@ -2865,8 +2918,8 @@ impl Render for EditorWindow {
                                                     cx,
                                                 );
                                             }
-                                            editor.apply_pending_pointer_update();
-                                            editor.finish_stroke();
+                                            editor.apply_pending_pointer_update(cx);
+                                            editor.finish_stroke(cx);
                                             cx.notify();
                                         })
                                         .ok();
@@ -2888,7 +2941,7 @@ impl Render for EditorWindow {
                                             } else {
                                                 return;
                                             };
-                                            editor.set_zoom(editor.zoom + step);
+                                            editor.set_zoom(editor.zoom + step, cx);
                                             cx.stop_propagation();
                                             cx.notify();
                                         })
@@ -2911,7 +2964,7 @@ impl Render for EditorWindow {
 
 impl Drop for EditorWindow {
     fn drop(&mut self) {
-        self.persist_editor_state(true);
+        self.force_persist_editor_state();
     }
 }
 
@@ -2928,7 +2981,7 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
                 editor.apply_option(option, cx);
                 editor.refresh_balance_crop();
                 editor.refresh_backdrop(cx);
-                editor.sync_snapshot();
+                editor.sync_snapshot(cx);
                 cx.notify();
             });
         }),
@@ -3085,13 +3138,13 @@ impl EditorWindow {
         }
     }
 
-    fn set_zoom(&mut self, zoom: f32) {
+    fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
         self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 
     fn apply_option(&mut self, option: EditorOption, cx: &mut Context<Self>) {
-        self.apply_option_to_selection(&option);
+        self.apply_option_to_selection(&option, cx);
         let persist = matches!(
             option,
             EditorOption::Tool(_)
@@ -3111,7 +3164,7 @@ impl EditorWindow {
                 | EditorOption::ShapeFillMode(_)
         );
         match option {
-            EditorOption::Tool(tool) => self.set_tool(tool),
+            EditorOption::Tool(tool) => self.set_tool(tool, cx),
             EditorOption::Color(value) => self.color_hex = value.to_string(),
             EditorOption::StrokeWidth(value) => self.stroke_width = value,
             EditorOption::ArrowStyle(value) => self.arrow_style = value.to_string(),
@@ -3119,12 +3172,12 @@ impl EditorWindow {
             EditorOption::HighlightColor(value) => self.highlight_color = value.to_string(),
             EditorOption::NumberStyle(value) => {
                 self.number_style = value.to_string();
-                self.renumber_current_without_history();
+                self.renumber_current_without_history(cx);
             }
             EditorOption::NumberSize(value) => self.number_size = value.to_string(),
             EditorOption::NumberStartValue(value) => {
                 self.number_start_value = value;
-                self.renumber_current_without_history();
+                self.renumber_current_without_history(cx);
             }
             EditorOption::TextBackground(value) => self.text_background = value,
             EditorOption::TextFontSize(value) => self.text_font_size = value,
@@ -3167,7 +3220,7 @@ impl EditorWindow {
                         Some(source) => {
                             editor.wallpaper.set_background_image(Some(source));
                             editor.refresh_backdrop(cx);
-                            editor.sync_snapshot();
+                            editor.sync_snapshot(cx);
                             cx.notify();
                         }
                         None => crate::windows::toast::Toast::show(
@@ -3399,12 +3452,12 @@ impl EditorWindow {
             EditorOption::WallpaperEditorSave => {
                 self.save_background_editor(cx);
             }
-            EditorOption::Zoom(value) => self.set_zoom(value),
+            EditorOption::Zoom(value) => self.set_zoom(value, cx),
         }
         if persist {
             self.persist_preferences(cx);
         }
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 
     #[cfg(test)]
@@ -3578,8 +3631,8 @@ impl EditorWindow {
         });
     }
 
-    fn apply_option_to_selection(&mut self, option: &EditorOption) {
-        self.finish_active_transform();
+    fn apply_option_to_selection(&mut self, option: &EditorOption, cx: &mut Context<Self>) {
+        self.finish_active_transform(cx);
         if self.selected_annotations.is_empty() {
             return;
         }
@@ -3597,15 +3650,15 @@ impl EditorWindow {
         if !changed || annotations == self.history.current() {
             return;
         }
-        self.push_annotations(annotations);
+        self.push_annotations(annotations, cx);
         self.refresh_raster_patches();
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 
     fn apply_action(&mut self, action: EditorAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
-            EditorAction::Undo => self.undo(),
-            EditorAction::Redo => self.redo(),
+            EditorAction::Undo => self.undo(cx),
+            EditorAction::Redo => self.redo(cx),
             EditorAction::Copy => self.copy_to_clipboard(window, cx),
             EditorAction::Save => self.save_as(window, cx),
             EditorAction::CloudUpload => self.upload_to_cloud(cx),
@@ -3614,7 +3667,7 @@ impl EditorWindow {
         }
     }
 
-    fn set_tool(&mut self, tool: Tool) {
+    fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
         let tool = crate::editor::options::toggled_tool(self.tool, tool);
         if self.tool == tool {
             return;
@@ -3623,7 +3676,7 @@ impl EditorWindow {
             self.begin_sheet_close();
         }
         self.tool = tool;
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 
     fn begin_sheet_close(&mut self) {
@@ -3657,8 +3710,8 @@ impl EditorWindow {
         window.focus(&focus, cx);
     }
 
-    fn undo(&mut self) {
-        self.finish_active_transform();
+    fn undo(&mut self, cx: &mut Context<Self>) {
+        self.finish_active_transform(cx);
         if let Some(pre) = self.pre_crop.take() {
             self.image_width = pre.width;
             self.image_height = pre.height;
@@ -3669,19 +3722,19 @@ impl EditorWindow {
             self.refresh_balance_crop();
             self.history.push(pre.annotations);
             self.refresh_raster_patches();
-            self.sync_snapshot();
+            self.sync_snapshot(cx);
             return;
         }
         self.history.undo();
         self.refresh_raster_patches();
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 
-    fn redo(&mut self) {
-        self.finish_active_transform();
+    fn redo(&mut self, cx: &mut Context<Self>) {
+        self.finish_active_transform(cx);
         self.history.redo();
         self.refresh_raster_patches();
-        self.sync_snapshot();
+        self.sync_snapshot(cx);
     }
 
     /// Port of `renumberAnnotations`: number badges count up from the start
@@ -3705,8 +3758,8 @@ impl EditorWindow {
 
     /// Port of the auto-renumber effect: style/start changes resequence
     /// badges in place, without pushing an undo step.
-    fn renumber_current_without_history(&mut self) {
-        self.finish_active_transform();
+    fn renumber_current_without_history(&mut self, cx: &mut Context<Self>) {
+        self.finish_active_transform(cx);
         let mut annotations = self.history.current().to_vec();
         let before = annotations.clone();
         self.renumber_annotations(&mut annotations);
@@ -3718,8 +3771,8 @@ impl EditorWindow {
 
     /// Pushes an annotation revision from an add/delete path, dropping the
     /// pre-crop state the way Electron clears `lastCropStateRef` there.
-    fn push_annotations(&mut self, annotations: Vec<Annotation>) {
-        self.finish_active_transform();
+    fn push_annotations(&mut self, annotations: Vec<Annotation>, cx: &mut Context<Self>) {
+        self.finish_active_transform(cx);
         self.pre_crop = None;
         self.history.push(annotations);
     }
@@ -4099,9 +4152,9 @@ mod tests {
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });
-        cx.update(|_, cx| editor.update(cx, |editor, _| {
+        cx.update(|_, cx| editor.update(cx, |editor, cx| {
             assert!(!editor.pointer_update_scheduled);
-            editor.finish_stroke();
+            editor.finish_stroke(cx);
             assert!(matches!(&editor.history.current()[0], Annotation::Pen { points, .. } if points == &[10., 10., 20., 20., 30., 30.]));
         }));
     }
@@ -4156,7 +4209,7 @@ mod tests {
                         assert!(editor.move_origin.is_some() && editor.resize_state.is_none());
                         editor.move_selected(point);
                     }
-                    editor.finish_stroke();
+                    editor.finish_stroke(cx);
                     results.push((
                         editor.history.can_redo(),
                         editor.history.len(),
@@ -4179,7 +4232,7 @@ mod tests {
                     editor.history.push(vec![later.clone()]);
                     assert!(editor.history.undo());
                     editor.selected_annotations = vec!["rectangle".into()];
-                    editor.apply_option_to_selection(&option);
+                    editor.apply_option_to_selection(&option, cx);
                     assert!(editor.history.can_redo());
                     assert_eq!(editor.history.current(), std::slice::from_ref(&original));
                     assert!(editor.history.redo());
@@ -4197,7 +4250,7 @@ mod tests {
                 editor.history.push(vec![later.clone(), other.clone()]);
                 assert!(editor.history.undo());
                 editor.selected_annotations = vec!["rectangle".into(), "other".into()];
-                editor.apply_option_to_selection(&EditorOption::Color("#ff00ff".into()));
+                editor.apply_option_to_selection(&EditorOption::Color("#ff00ff".into()), cx);
                 let mut recolored_other = other.clone();
                 recolored_other.apply_option(&EditorOption::Color("#ff00ff".into()));
                 assert_eq!(editor.history.current(), [original.clone(), recolored_other]);
@@ -4232,7 +4285,7 @@ mod tests {
                         editor.move_selected(away);
                         editor.move_selected(start);
                     }
-                    editor.finish_stroke();
+                    editor.finish_stroke(cx);
                     results.push((
                         editor.history.can_redo(),
                         editor.history.len(),
@@ -4266,13 +4319,13 @@ mod tests {
                 editor.begin_resize(ResizeHandle::BottomRight, point(104., 104.));
                 assert!(editor.resize_state.is_some());
                 editor.resize_selected(point(103., 103.));
-                editor.finish_stroke();
+                editor.finish_stroke(cx);
                 assert!(editor.history.can_redo());
                 assert_eq!(editor.history.current(), std::slice::from_ref(&limited));
                 editor.begin_resize(ResizeHandle::BottomRight, point(104., 104.));
                 editor.resize_selected(point(103., 103.));
                 editor.resize_selected(point(104., 104.));
-                editor.finish_stroke();
+                editor.finish_stroke(cx);
                 assert!(editor.history.can_redo());
                 assert_eq!(editor.history.current(), [limited]);
                 assert!(editor.history.redo());
@@ -4285,7 +4338,7 @@ mod tests {
                 editor.start_stroke(point(60., 60.), false, window, cx);
                 editor.move_selected(point(70., 65.));
                 editor.move_selected(point(72., 70.));
-                editor.finish_stroke();
+                editor.finish_stroke(cx);
                 let mut moved = original.clone();
                 moved.translate(12., 10.);
                 assert_eq!(editor.history.current(), [moved.clone()]);
@@ -4297,20 +4350,20 @@ mod tests {
 
                 editor.start_stroke(point(72., 70.), false, window, cx);
                 editor.queue_pointer_update(point(77., 75.), false, window, cx);
-                editor.undo();
+                editor.undo(cx);
                 assert!(editor.move_origin.is_none());
                 assert!(!editor.pointer_update_scheduled);
                 assert_eq!(editor.history.current(), [moved.clone()]);
                 let mut moved_again = moved.clone();
                 moved_again.translate(5., 5.);
-                editor.redo();
+                editor.redo(cx);
                 assert_eq!(editor.history.current(), [moved_again]);
-                editor.undo();
+                editor.undo(cx);
                 assert_eq!(editor.history.current(), [moved.clone()]);
 
                 editor.start_stroke(point(112., 110.), false, window, cx);
                 editor.resize_selected(point(122., 120.));
-                editor.finish_stroke();
+                editor.finish_stroke(cx);
                 assert!(matches!(editor.history.current(), [Annotation::Rectangle { width, height, .. }] if *width == 90. && *height == 90.));
                 assert!(editor.history.undo());
                 assert_eq!(editor.history.current(), [moved.clone()]);
@@ -4321,7 +4374,7 @@ mod tests {
                 editor.selected_annotations.clear();
                 editor.start_stroke(point(60., 60.), false, window, cx);
                 editor.queue_pointer_update(point(66., 63.), false, window, cx);
-                editor.apply_option_to_selection(&EditorOption::Color("#00ff00".into()));
+                editor.apply_option_to_selection(&EditorOption::Color("#00ff00".into()), cx);
                 let mut moved_for_option = original.clone();
                 moved_for_option.translate(6., 3.);
                 let mut recolored = moved_for_option.clone();

@@ -1155,7 +1155,7 @@ mod tests {
             };
             let mut frame = color.repeat(320 * 180);
             for y in 60..80 {
-                for x in (160..190).chain(200..230) {
+                for x in (0..30).chain(160..190).chain(200..230) {
                     let shade = if x % 2 == 0 { 16 } else { 240 };
                     let pixel = (y * 320 + x) * 4;
                     frame[pixel..pixel + 4].copy_from_slice(&[shade, shade, shade, 255]);
@@ -1223,6 +1223,15 @@ mod tests {
                     style: "blur".into(),
                     intensity: 5.,
                 },
+                Annotation::Redact {
+                    id: "clipped-blur".into(),
+                    x: -8.,
+                    y: 60.,
+                    width: 30.,
+                    height: 20.,
+                    style: "blur".into(),
+                    intensity: 5.,
+                },
             ],
         });
         model::save_state(&recording, &state);
@@ -1284,11 +1293,15 @@ mod tests {
                 drawing_error as f64 / (24. * 40. * 3.) < 3.,
                 "the exported drawing differs from preview at {time}s"
             );
-            for (style, left) in [("pixelate", 172), ("blur", 212)] {
+            for (style, left, top, width, height) in [
+                ("pixelate", 172, 72, 30, 20),
+                ("blur", 212, 72, 30, 20),
+                ("clipped blur", 0, 68, 24, 23),
+            ] {
                 let mut redaction_change = 0_u64;
                 let mut redaction_error = 0_u64;
-                for y in 72..92 {
-                    for x in left..left + 30 {
+                for y in top..top + height {
+                    for x in left..left + width {
                         let pixel = (y * info.width as usize + x) * 4;
                         for channel in 0..3 {
                             redaction_change += u64::from(
@@ -1301,12 +1314,48 @@ mod tests {
                     }
                 }
                 assert!(
-                    redaction_change as f64 / (20. * 30. * 3.) > 8.,
+                    redaction_change as f64 / (height as f64 * width as f64 * 3.) > 8.,
                     "{style} must change the preview at {time}s"
                 );
                 assert!(
-                    redaction_error as f64 / (20. * 30. * 3.) < 8.,
+                    redaction_error as f64 / (height as f64 * width as f64 * 3.) < 8.,
                     "the exported {style} differs from preview at {time}s"
+                );
+            }
+            for (x, y) in [(0, 80), (23, 80), (10, 68), (10, 90)] {
+                let pixel = (y * info.width as usize + x) * 4;
+                let effect: u16 = expected[pixel..pixel + 3]
+                    .iter()
+                    .zip(&original[pixel..pixel + 3])
+                    .map(|(actual, original)| u16::from(actual.abs_diff(*original)))
+                    .sum();
+                assert!(
+                    effect > 24,
+                    "clipped blur did not affect its bounds at {time}s, {x},{y}: {effect}"
+                );
+                let deviation = (0..3)
+                    .map(|channel| actual.bgra[pixel + channel].abs_diff(expected[pixel + channel]))
+                    .max()
+                    .unwrap();
+                assert!(
+                    deviation <= 40,
+                    "clipped blur export differs from preview at {time}s, {x},{y}: {deviation}"
+                );
+            }
+            for (x, y) in [(24, 80), (30, 80), (10, 67), (10, 91)] {
+                let pixel = (y * info.width as usize + x) * 4;
+                assert_eq!(
+                    &expected[pixel..pixel + 3],
+                    &original[pixel..pixel + 3],
+                    "clipped blur changed a preview pixel outside its bounds at {time}s, {x},{y}"
+                );
+                let deviation = (0..3)
+                    .map(|channel| actual.bgra[pixel + channel].abs_diff(expected[pixel + channel]))
+                    .max()
+                    .unwrap();
+                assert!(
+                    deviation <= 40,
+                    "clipped blur changed an exported pixel outside its bounds at {time}s, {x},{y}: {deviation}"
                 );
             }
         }

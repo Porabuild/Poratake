@@ -45,6 +45,16 @@ pub(crate) fn prepare_screenshot(output: &Path) -> std::io::Result<PathBuf> {
 }
 
 pub(crate) fn publish_screenshot(temporary: &Path, output: &Path) -> std::io::Result<PathBuf> {
+    publish_screenshot_with_link(temporary, output, |source, destination| {
+        std::fs::hard_link(source, destination)
+    })
+}
+
+fn publish_screenshot_with_link(
+    temporary: &Path,
+    output: &Path,
+    hard_link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<PathBuf> {
     let mut suffix = 0;
     let mut copy = false;
     loop {
@@ -60,7 +70,7 @@ pub(crate) fn publish_screenshot(temporary: &Path, output: &Path) -> std::io::Re
             output.with_file_name(name)
         };
         if !copy {
-            match std::fs::hard_link(temporary, &destination) {
+            match hard_link(temporary, &destination) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     suffix += 1;
@@ -1387,6 +1397,28 @@ mod tests {
                 .is_err()
         );
         assert_eq!(std::fs::read_to_string(stage).unwrap(), "capture");
+    }
+
+    #[test]
+    fn screenshot_publication_falls_back_to_exclusive_copy_without_hard_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Capture.png");
+        let stage = super::prepare_screenshot(&output).unwrap();
+        std::fs::write(&output, "original").unwrap();
+        std::fs::write(&stage, "capture").unwrap();
+
+        let published = super::publish_screenshot_with_link(&stage, &output, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "hard links unavailable",
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(published, directory.path().join("Capture (1).png"));
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), "original");
+        assert_eq!(std::fs::read_to_string(&published).unwrap(), "capture");
+        assert!(!stage.exists());
     }
 
     #[test]
