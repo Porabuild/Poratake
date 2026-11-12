@@ -1355,6 +1355,13 @@ the maximum was three; across 64 pixels at a flat clip edge, the mean was 0.473
 and the maximum was two. Pixels just outside the annotation matched. This does
 not exercise rounded-edge antialiasing, playback or the full export pipeline.
 
+A CPU regression compares complete GPUI preview and export pixmaps for two
+fractional annotation origins, both rectangle/blackout input orders and five
+coordinate scales. A separate Chrome 157 proxy matched the saved Electron corner
+sample at 1×, but 27 of 120 corner samples differed from GPUI by more than two channel
+levels, up to 27. This proxy does not establish parity with Poratake's pinned
+Electron version at the other positions and scales.
+
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                                                                                                                                                           |

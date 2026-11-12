@@ -1561,6 +1561,92 @@ mod tests {
     }
 
     #[test]
+    fn blackout_and_shape_patches_match_export_at_fractional_origins() {
+        let scales: [f64; 5] = [0.73, 1., 1.25, 1.5, 2.];
+        let origins = [(32.25, 22.375), (32.5, 22.5)];
+        let paint = PixmapPaint {
+            opacity: 1.,
+            blend_mode: BlendMode::Source,
+            quality: FilterQuality::Nearest,
+        };
+        for scale in scales {
+            for &(x, y) in &origins {
+                let width = (100. * scale).ceil() as u32;
+                let height = (80. * scale).ceil() as u32;
+                let mut base = Pixmap::new(width, height).expect("base");
+                base.fill(tiny_skia::Color::from_rgba8(64, 128, 192, 255));
+                let bgra = to_bgra(&base);
+                let surface = Surface {
+                    image_id: None,
+                    width,
+                    height,
+                    offset_x: 0.,
+                    offset_y: 0.,
+                    native_scale: 1.,
+                    pixels: Some(&bgra),
+                    matte: None,
+                    matte_image: None,
+                    composite_backdrop: false,
+                };
+                let shape = Annotation::Rectangle {
+                    id: "shape".into(),
+                    x: (x - 2.) * scale,
+                    y: (y - 2.) * scale,
+                    width: 24. * scale,
+                    height: 24. * scale,
+                    stroke: "#ff00ff".into(),
+                    stroke_width: scale,
+                    fill: Some("#ff00ff".into()),
+                };
+                let blackout = Annotation::Redact {
+                    id: "blackout".into(),
+                    x: x * scale,
+                    y: y * scale,
+                    width: 20. * scale,
+                    height: 20. * scale,
+                    style: "blackout".into(),
+                    intensity: 2.,
+                };
+                for (order, annotations) in [
+                    ("shape-blackout", vec![shape.clone(), blackout.clone()]),
+                    ("blackout-shape", vec![blackout.clone(), shape.clone()]),
+                ] {
+                    let mut exported = Canvas::new(width, height).unwrap();
+                    exported.draw_pixmap(base.as_ref(), 0., 0., width as f32, height as f32);
+                    let mut preview = exported.pixmap().clone();
+                    renderer::draw_all_screenshot(&mut exported, &annotations, 1.);
+                    let operations = renderer::screenshot_paints(annotations.iter());
+                    for (index, operation) in operations.iter().enumerate() {
+                        let patch =
+                            super::patch(*operation, &operations[..index], &surface, 1.).unwrap();
+                        preview.draw_pixmap(
+                            patch.x.round() as i32,
+                            patch.y.round() as i32,
+                            patch.pixmap.as_ref(),
+                            &paint,
+                            Transform::identity(),
+                            None,
+                        );
+                    }
+                    let exported = exported.into_pixmap();
+                    assert_eq!(
+                        (exported.width(), exported.height()),
+                        (preview.width(), preview.height())
+                    );
+                    for (index, (actual, expected)) in
+                        preview.data().iter().zip(exported.data()).enumerate()
+                    {
+                        assert!(
+                            actual.abs_diff(*expected) <= 2,
+                            "{order}, {scale}x, origin ({x},{y}), channel {index}: {actual} vs {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ordered_redaction_and_highlight_patches_match_export() {
         let base = base_pixmap(100, 80);
         let source = render_image(&base);
