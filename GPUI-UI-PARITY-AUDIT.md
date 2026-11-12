@@ -1252,9 +1252,13 @@ annotation ordering with frames and balance, and compare directly with Electron.
 The 4K attachment preparation cost above also needs interactive and
 slower-hardware measurement.
 
-The selected-highlight and committed-redaction paths paint opaque patches after
-their halos. Reproduce those selection states and preserve the halo without
-changing highlight blending or redacted pixels.
+Selected highlights and committed redactions now draw their outlines above all
+annotations, so later marks cannot cover them. This selection order deliberately
+differs from Electron; saved pixels and highlight blending remain unchanged.
+Light and dark fixtures check all four sides of blackout, blur and pixelate
+outlines, an overlapping highlight, and plain and inset-attached images at
+simulated 125% DPI. Verify selection outlines for other overlapping annotation
+types and on physical displays.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

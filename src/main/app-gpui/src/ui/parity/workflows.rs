@@ -5072,6 +5072,33 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 editor.wallpaper.background_blur = if background == "alpha" { 30. } else { 0. };
                 if name.starts_with("inset") {
                     editor.history.push(vec![
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "inset-redact-blackout".into(),
+                            x: 40.,
+                            y: 40.,
+                            width: 100.,
+                            height: 60.,
+                            style: "blackout".into(),
+                            intensity: 2.,
+                        },
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "inset-redact-blur".into(),
+                            x: 200.,
+                            y: 40.,
+                            width: 100.,
+                            height: 60.,
+                            style: "blur".into(),
+                            intensity: 2.,
+                        },
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "inset-redact-pixelate".into(),
+                            x: 360.,
+                            y: 40.,
+                            width: 100.,
+                            height: 60.,
+                            style: "pixelate".into(),
+                            intensity: 2.,
+                        },
                         crate::editor::annotations::Annotation::Rectangle {
                             id: "inset-layer-annotation".into(),
                             x: 280.,
@@ -5098,6 +5125,13 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                             fill: "#ffff00".into(),
                             opacity: 0.5,
                             stroke_width: 20.,
+                        },
+                        crate::editor::annotations::Annotation::Highlight {
+                            id: "inset-layer-later-highlight".into(),
+                            points: vec![90., 269., 110., 269.],
+                            fill: "#00ffff".into(),
+                            opacity: 0.5,
+                            stroke_width: 8.,
                         },
                     ]);
                 }
@@ -5387,6 +5421,9 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                     );
                 });
                 let selected = cx.capture_screenshot(window).unwrap();
+                selected
+                    .save(scratch.join("selected-highlight-halo.png"))
+                    .unwrap();
                 assert!(
                     before
                         .get_pixel(x, y)
@@ -5396,6 +5433,20 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                         .all(|(before, selected)| before.abs_diff(selected) <= 2),
                     "selecting an inset highlight must preserve its blended color"
                 );
+                let halo_top = (f32::from(bounds.top()) * scale + 268. * 0.73).round() as u32;
+                let halo_bottom = (f32::from(bounds.top()) * scale + 270. * 0.73).round() as u32;
+                let halo_difference = (halo_top..=halo_bottom)
+                    .flat_map(|y| {
+                        before
+                            .get_pixel(x, y)
+                            .0
+                            .into_iter()
+                            .zip(selected.get_pixel(x, y).0)
+                            .map(|(before, selected)| before.abs_diff(selected))
+                    })
+                    .max()
+                    .unwrap();
+                assert!(halo_difference > 10, "selected highlight halo is hidden");
                 super::click(
                     cx,
                     window,
@@ -5411,6 +5462,127 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                         .selected
                         .is_empty());
                 });
+                for (id, left) in [
+                    ("inset-redact-blackout", 40.),
+                    ("inset-redact-blur", 200.),
+                    ("inset-redact-pixelate", 360.),
+                ] {
+                    let before = cx.capture_screenshot(window).unwrap();
+                    super::click(
+                        cx,
+                        window,
+                        f32::from(bounds.left()) + (left + 50.) * 0.73 / scale,
+                        f32::from(bounds.top()) + 70. * 0.73 / scale,
+                    );
+                    cx.update(|cx| {
+                        assert_eq!(editor.read(cx).unwrap().snapshot.borrow().selected, [id]);
+                    });
+                    let selected = cx.capture_screenshot(window).unwrap();
+                    selected
+                        .save(scratch.join(format!("selected-{id}.png")))
+                        .unwrap();
+                    let center_x =
+                        (f32::from(bounds.left()) * scale + (left + 50.) * 0.73).round() as u32;
+                    let center_y = (f32::from(bounds.top()) * scale + 70. * 0.73).round() as u32;
+                    assert!(before
+                        .get_pixel(center_x, center_y)
+                        .0
+                        .iter()
+                        .zip(selected.get_pixel(center_x, center_y).0)
+                        .all(|(before, selected)| before.abs_diff(selected) <= 2));
+                    for (side, x, y, horizontal) in [
+                        ("top", left + 25., 38., true),
+                        ("bottom", left + 25., 100., true),
+                        ("left", left - 2., 55., false),
+                        ("right", left + 100., 55., false),
+                    ] {
+                        let difference = (0..=2)
+                            .flat_map(|step| {
+                                let x = (f32::from(bounds.left()) * scale
+                                    + (x + if horizontal { 0. } else { step as f32 }) * 0.73)
+                                    .round() as u32;
+                                let y = (f32::from(bounds.top()) * scale
+                                    + (y + if horizontal { step as f32 } else { 0. }) * 0.73)
+                                    .round() as u32;
+                                before
+                                    .get_pixel(x, y)
+                                    .0
+                                    .into_iter()
+                                    .zip(selected.get_pixel(x, y).0)
+                                    .map(|(before, selected)| before.abs_diff(selected))
+                            })
+                            .max()
+                            .unwrap();
+                        assert!(difference > 10, "{id} {side} selection halo is hidden");
+                    }
+                    super::click(
+                        cx,
+                        window,
+                        f32::from(bounds.left()) + 500. * 0.73 / scale,
+                        f32::from(bounds.top()) + 300. * 0.73 / scale,
+                    );
+                }
+                editor
+                    .update(cx, |editor, _, cx| {
+                        editor.wallpaper.inset = 0.;
+                        editor.clear_layers(cx);
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, window);
+                editor
+                    .update(cx, |editor, _, cx| {
+                        editor.zoom = 0.73 / scale;
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, window);
+                let bounds = cx.update(|cx| {
+                    let editor = editor.read(cx).unwrap();
+                    assert_eq!(editor.zoom, 0.73 / scale);
+                    let snapshot = editor.snapshot.borrow();
+                    assert!(!snapshot.backdrop_composite && snapshot.layers.is_empty());
+                    drop(snapshot);
+                    editor.bounds.borrow().unwrap()
+                });
+                for (id, click_x, click_y, sample_x, sample_top) in [
+                    ("inset-redact-blackout", 90., 70., 65., 38.),
+                    ("inset-layer-highlight", 130., 280., 100., 268.),
+                ] {
+                    let before = cx.capture_screenshot(window).unwrap();
+                    super::click(
+                        cx,
+                        window,
+                        f32::from(bounds.left()) + click_x * 0.73 / scale,
+                        f32::from(bounds.top()) + click_y * 0.73 / scale,
+                    );
+                    cx.update(|cx| {
+                        assert_eq!(editor.read(cx).unwrap().snapshot.borrow().selected, [id]);
+                    });
+                    let selected = cx.capture_screenshot(window).unwrap();
+                    let x = (f32::from(bounds.left()) * scale + sample_x * 0.73).round() as u32;
+                    let top = (f32::from(bounds.top()) * scale + sample_top * 0.73).round() as u32;
+                    let bottom =
+                        (f32::from(bounds.top()) * scale + (sample_top + 2.) * 0.73).round() as u32;
+                    let difference = (top..=bottom)
+                        .flat_map(|y| {
+                            before
+                                .get_pixel(x, y)
+                                .0
+                                .into_iter()
+                                .zip(selected.get_pixel(x, y).0)
+                                .map(|(before, selected)| before.abs_diff(selected))
+                        })
+                        .max()
+                        .unwrap();
+                    assert!(difference > 10, "plain {id} selection halo is hidden");
+                    super::click(
+                        cx,
+                        window,
+                        f32::from(bounds.left()) + 500. * 0.73 / scale,
+                        f32::from(bounds.top()) + 300. * 0.73 / scale,
+                    );
+                }
             }
         }
         if name.starts_with("plain") {

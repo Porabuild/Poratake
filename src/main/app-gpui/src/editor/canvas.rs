@@ -679,7 +679,12 @@ fn paint_annotations(
             paint,
             crate::render::annotations::ScreenshotPaint::BlackoutOverlay(_)
         );
-        if haloed == Some(annotation.id()) && !blackout_overlay {
+        let selected_overlay = haloed == Some(annotation.id())
+            && matches!(
+                annotation,
+                Annotation::Highlight { .. } | Annotation::Redact { .. }
+            );
+        if haloed == Some(annotation.id()) && !blackout_overlay && !selected_overlay {
             draw_selection_halo(window, annotation, zoom, halo);
         }
         let is_draft = snapshot
@@ -862,6 +867,15 @@ fn paint_annotations(
             continue;
         }
         draw_annotation(window, annotation, zoom);
+    }
+    if let Some(paint) = visible.iter().find(|paint| {
+        haloed == Some(paint.annotation().id())
+            && matches!(
+                paint.annotation(),
+                Annotation::Highlight { .. } | Annotation::Redact { .. }
+            )
+    }) {
+        draw_selection_halo(window, paint.annotation(), zoom, halo);
     }
     preview_raster::end_frame(window);
 }
