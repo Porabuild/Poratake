@@ -64,6 +64,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     replacement_waits_for_icons_before_freezing(cx, output);
     #[cfg(windows)]
     replacement_recovers_from_failed_icon_restore(cx, output);
+    #[cfg(windows)]
+    scroll_start_returns_before_daemon_reply(cx, output, scratch);
     for name in [
         "selection-cancelled",
         "early-finish",
@@ -338,6 +340,107 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         }
     }
     println!("scroll capture selection, early events, save/history/editor output, failures and retry passed");
+}
+
+#[cfg(windows)]
+fn scroll_start_returns_before_daemon_reply(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    scratch: &Path,
+) {
+    use poratake_daemon_common::geometry::DisplayOrigin;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let (returned_tx, returned_rx) = std::sync::mpsc::channel();
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let address = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.read_exact(&mut [0]).unwrap();
+        let returned = returned_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .is_ok();
+        stream.write_all(&[1]).unwrap();
+        observed_tx.send(returned).unwrap();
+    });
+    let captures = scratch.join("scroll-start-held");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live", "rect": SELECTED_RECT, "windowId": null,
+            "scroll": "start-held", "barrier": address,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = calls(output).len();
+    take_notifications();
+    assert!(crate::capture::desktop_icons::pending_transitions().is_empty());
+    assert!(!crate::capture::desktop_icons::needs_restoration());
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+            config.screenshot.hide_desktop_icons = false;
+            config.screenshot.show_preview = true;
+            config.screenshot.capture_to_clipboard = false;
+            config.screenshot.auto_copy_to_clipboard = false;
+            config.scroll_capture.auto_scroll_speed = "fast".into();
+            config.scroll_capture.max_height = 1800.;
+        });
+        let capture = crate::capture::DisplayCapture::new(
+            SELECTED_RECT,
+            2.,
+            DisplayOrigin { x: 0, y: 0 },
+            None,
+        );
+        crate::state::coordinator(cx).update(cx, |coordinator, cx| {
+            coordinator.capture_area_reserved(
+                capture,
+                CaptureIntent::ScrollCapture,
+                None,
+                None,
+                None,
+                None,
+                cx,
+            );
+        });
+    });
+    assert!(crate::capture::scroll::is_active());
+    cx.update(|cx| {
+        crate::intents::dispatch(crate::system::tray::Intent::ScrollCapture, None, cx);
+        assert!(!crate::capture::overlay::parity_is_active(cx));
+    });
+    let _ = returned_tx.send(());
+    cx.run_until_parked();
+    assert!(
+        observed_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap(),
+        "scroll capture startup blocked the UI until the daemon replied"
+    );
+    assert!(!crate::capture::scroll::is_active());
+    assert!(take_notifications().is_empty());
+    let recorded = calls(output);
+    let methods: Vec<_> = recorded[before..]
+        .iter()
+        .filter(|call| call["module"] == "scroll-capture")
+        .map(|call| call["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, ["start", "finish"]);
+    verify_saved_capture(
+        cx,
+        scratch,
+        &captures,
+        (
+            poratake_daemon_common::geometry::CaptureRect {
+                height: 900,
+                ..SELECTED_RECT
+            },
+            [32, 168, 96, 255],
+        ),
+        "workflow-scroll-start-held",
+    );
 }
 
 #[cfg(windows)]

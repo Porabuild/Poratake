@@ -227,6 +227,9 @@ pub fn run() {
                 assert_eq!(params["autoScrollSpeed"], "fast");
                 assert_eq!(params["maxHeight"], 1800);
                 assert_eq!(params["nativeControls"], !cfg!(target_os = "macos"));
+                if fixture["scroll"] == "start-held" {
+                    wait_for_scroll_barrier(&fixture);
+                }
                 if fixture["scroll"] == "start-failed" {
                     protocol::respond_error(
                         &request.id,
@@ -283,7 +286,9 @@ pub fn run() {
                 assert!(scrolling);
                 scrolling = false;
                 let fixture = capture_fixture(&output);
-                wait_for_scroll_barrier(&fixture);
+                if fixture["scroll"] != "start-held" {
+                    wait_for_scroll_barrier(&fixture);
+                }
                 if fixture["scroll"] == "finish-failed" {
                     protocol::respond_error(
                         &request.id,

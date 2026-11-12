@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `dfd7b44d` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `8f5fc1a9` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -133,6 +133,10 @@ The multi-display icon follow-up passed 191 exact baselines in each local
 light/dark 1280px/100% NVIDIA run, including a simulated two-target workflow.
 Its full GPUI suite passed 938 tests with one ignored; the project suite passed
 2,281 tests with three skipped.
+The scroll-start follow-up passed 191 exact baselines in each local light/dark
+1280px/100% NVIDIA run with no diff images. Its GPUI suite passed 939 tests with
+one ignored; the project suite passed 2,281 tests with three skipped using four
+workers after the default run timed out while inventorying installed licenses.
 The earlier frame and aspect-ratio follow-up passed 191 exact baselines in
 each local light/dark 1280px/100% NVIDIA run, including the new workflow checks.
 The earlier scroll follow-up passed 191 exact baselines in each of the isolated
@@ -615,7 +619,7 @@ separate verification.
 | Selection capture routing       | Production window, area and all-in-one display startup, saved pixels, history registration and editor-export equality for live, frozen, failed and unavailable-freeze paths. Physical rectangles and capture-before-release ordering are asserted. In-memory clipboard checks cover automatic copy, disabled copy and clipboard-only capture.                                           |
 | Timer capture lifecycle         | Production selection/countdown completion, cancellation, timeout, show failure and retry. The frozen selection frame is released before countdown; completed captures use live pixels; unsuccessful attempts leave no image/history/active selector.                                                                                                                                    |
 | OCR/QR capture lifecycle        | Twelve production scenarios cover success, whitespace-only results, recognition error, partial-file capture error, Escape cancellation and retry. Clipboard/notification outcomes, preprocessed OCR input, temp-file deletion and no history/output leaks are asserted.                                                                                                                 |
-| Scroll capture lifecycle        | Eleven scenarios cover cancellation, early events, errors, held finish/cancel responses and retry. Live-screen parameters, cleanup and saved output/history/editor equality are asserted. Synthetic 2-frame stitches reopen pixel-identically, including exact 97px and 217px overlaps previously rejected or misidentified, and a 101px tie. Real-screen stitching remains unverified. |
+| Scroll capture lifecycle        | Fourteen scenarios and a held-start probe cover cancellation, early events, errors, held responses and retry. Live-screen parameters, cleanup and saved output/history/editor equality are asserted. Two-frame stitches reopen pixel-identically, including exact 97px and 217px overlaps earlier rejected or misidentified, and a 101px tie. Real-screen stitching remains unverified. |
 | Editor attachment lifecycle     | Eight production scenarios cover all four edges, frozen/live/fallback pixels, partial capture failure, invalid image, cancellation and retry. Exact composed pixels and history reopen match; temporary files, new history entries and clipboard changes are rejected. Competing capture requests preserve the pending selector, and a selector that cannot open restores the editor.   |
 | Pin composition and restoration | Rendered pin pixels match the annotated PNG within two channel levels. Closing the pin restores annotations and identical export bytes with history enabled or disabled, without adding history entries. Enlarged/narrow bounds are checked against natural logical size.                                                                                                               |
 | Capture preview lifecycle       | Four corner configurations preserve 200×140 cards with 12px gaps. Adding a fifth capture evicts the oldest card without deleting its file; color pixels verify order. Double-click opens the selected capture with identical PNG export. Auto-dismiss closes the stack while preserving files and history.                                                                              |
@@ -704,6 +708,13 @@ Bugs fixed in this pass:
 - Scroll capture subscribed after the start RPC, losing early completion or
   cancellation events and leaving the session active. Subscription now precedes
   start; both early events and a successful retry are exercised.
+- Scroll startup waited for the daemon on the GPUI thread. It now reserves the
+  session before starting the RPC in the background. A held-reply fixture checks
+  that the coordinator returns, rejects a second user request, and still saves
+  and reopens an early completion. An isolated test checks that a queued start
+  skips the daemon after shutdown begins. The headless dispatcher exercises
+  ordering, not native OS responsiveness; an already admitted start can still
+  complete during shutdown and is then canceled.
 - A new selection could release another active capture's desktop-icon hide.
   Capture flows now retain their own hide through selection, handoff and cleanup.
   An isolated Windows GPUI test covers replacement, cancellation, disabled

@@ -485,7 +485,7 @@ impl Coordinator {
                 signal.send(&event_tx, &progress_tx);
             }
         }));
-        if !crate::capture::scroll::start(&service.daemon, &request) {
+        if !crate::capture::scroll::begin() {
             crate::capture::desktop_icons::release_for_capture(hide, cx);
             crate::windows::toast::Toast::show(
                 cx,
@@ -495,17 +495,45 @@ impl Coordinator {
             return;
         }
 
-        #[cfg(target_os = "macos")]
-        let ui = crate::windows::scroll_capture::ScrollCaptureSession::open(
-            cx,
-            service.daemon.clone(),
-            area,
-            tx.clone(),
-        );
-
         let output = service.generate_screenshot_path();
         cx.spawn(async move |_entity, cx| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
+            let daemon = service.daemon.clone();
+            let started = cx
+                .background_executor()
+                .spawn(async move { crate::capture::scroll::start_reserved(&daemon, &request) })
+                .await;
+            if !started {
+                cx.update(|cx| {
+                    crate::capture::desktop_icons::release_for_capture(hide, cx);
+                    if !crate::capture::desktop_icons::is_shutting_down() {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Scroll Capture Failed",
+                            "The scroll capture could not be started",
+                        );
+                    }
+                });
+                return;
+            }
+            if crate::capture::desktop_icons::is_shutting_down() {
+                cx.background_executor()
+                    .spawn(async move {
+                        crate::capture::scroll::cancel(&service.daemon);
+                        drop(hide);
+                    })
+                    .await;
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            let ui = cx.update(|cx| {
+                crate::windows::scroll_capture::ScrollCaptureSession::open(
+                    cx,
+                    service.daemon.clone(),
+                    area,
+                    tx.clone(),
+                )
+            });
             let finished = loop {
                 match Signal::receive(&rx, &progress_rx)
                     .await
@@ -782,6 +810,72 @@ impl gpui::Global for CoordinatorHandle {}
 
 #[cfg(all(test, windows))]
 mod tests {
+    #[test]
+    fn scroll_start_queued_before_shutdown_does_not_start_daemon() {
+        if std::env::var_os("PORATAKE_TEST_SCROLL_SHUTDOWN").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "capture::coordinator::tests::scroll_start_queued_before_shutdown_does_not_start_daemon",
+                    "--nocapture",
+                ])
+                .env("PORATAKE_TEST_SCROLL_SHUTDOWN", "1")
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                stderr
+            );
+            assert!(
+                !stderr.contains("[scroll-capture] start failed:"),
+                "{stderr}"
+            );
+            return;
+        }
+
+        use poratake_daemon_common::geometry::{CaptureRect, DisplayCaptureContext, DisplayOrigin};
+
+        let cx = gpui::TestAppContext::single();
+        let dir = tempfile::tempdir().unwrap();
+        let config = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| settings.screenshot.hide_desktop_icons = false);
+        let notifications = crate::system::notification::capture_for_test();
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            crate::state::coordinator(cx).update(cx, |coordinator, cx| {
+                coordinator.capture_area_reserved(
+                    DisplayCaptureContext::new(
+                        CaptureRect {
+                            x: 0,
+                            y: 0,
+                            width: 100,
+                            height: 100,
+                        },
+                        1.0,
+                        DisplayOrigin::default(),
+                        None,
+                    ),
+                    crate::capture::intent::CaptureIntent::ScrollCapture,
+                    None,
+                    None,
+                    None,
+                    None,
+                    cx,
+                );
+            });
+            assert!(crate::capture::scroll::is_active());
+            assert!(crate::capture::desktop_icons::begin_shutdown());
+        });
+        cx.run_until_parked();
+        assert!(!crate::capture::scroll::is_active());
+        assert!(notifications.borrow().is_empty());
+    }
+
     fn start_timer(cx: &gpui::TestAppContext) {
         cx.update(|cx| {
             crate::capture::start_area_selection(crate::capture::intent::CaptureIntent::Timer, cx);

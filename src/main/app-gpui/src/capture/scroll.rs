@@ -106,8 +106,13 @@ pub fn is_active() -> bool {
     ACTIVE.load(Ordering::SeqCst)
 }
 
-pub fn start(daemon: &DaemonHandle, request: &ScrollCaptureStartRequest) -> bool {
-    if ACTIVE.swap(true, Ordering::SeqCst) {
+pub fn begin() -> bool {
+    !ACTIVE.swap(true, Ordering::SeqCst)
+}
+
+pub fn start_reserved(daemon: &DaemonHandle, request: &ScrollCaptureStartRequest) -> bool {
+    if crate::capture::desktop_icons::is_shutting_down() {
+        ACTIVE.store(false, Ordering::SeqCst);
         return false;
     }
     let called = daemon.scroll_capture().start(request);
@@ -302,8 +307,9 @@ mod tests {
     #[test]
     fn tracks_a_single_active_session() {
         assert!(!is_active());
-        ACTIVE.store(true, Ordering::SeqCst);
+        assert!(begin());
         assert!(is_active());
+        assert!(!begin());
         ACTIVE.store(false, Ordering::SeqCst);
         assert!(!is_active());
     }
