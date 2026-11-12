@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use tiny_skia::{
-    BlendMode, Color, FillRule, FilterQuality, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint,
-    PixmapRef, Rect, Shader, Stroke, Transform,
+    BlendMode, Color, FillRule, FilterQuality, Mask, Paint, Path, PathBuilder, PathStroker, Pixmap,
+    PixmapPaint, PixmapRef, Rect, Shader, Stroke, Transform,
 };
 
 use crate::render::blur;
@@ -48,6 +48,7 @@ pub struct Canvas {
     state: State,
     stack: Vec<State>,
     shadow_scale: f32,
+    patch_path_anchor: Option<((f32, f32), (f32, f32))>,
 }
 
 impl Canvas {
@@ -61,6 +62,7 @@ impl Canvas {
             state: State::root(),
             stack: Vec::new(),
             shadow_scale: 1.0,
+            patch_path_anchor: None,
         }
     }
 
@@ -86,6 +88,14 @@ impl Canvas {
 
     pub fn transform(&self) -> Transform {
         self.state.transform
+    }
+
+    pub fn set_patch_path_anchor(
+        &mut self,
+        composition_origin: (f32, f32),
+        crop_origin: (f32, f32),
+    ) {
+        self.patch_path_anchor = Some((composition_origin, crop_origin));
     }
 
     pub fn global_alpha(&self) -> f32 {
@@ -238,18 +248,35 @@ impl Canvas {
                 stroke.width * self.device_scale(),
             );
             self.draw_shadow_of(bounds, shadow, |canvas| {
-                canvas.stroke_path_raw(path, Color::from_rgba8(0, 0, 0, 255), stroke);
+                canvas.stroke_path_raw(path, Color::from_rgba8(0, 0, 0, 255), stroke, false);
             });
         }
-        self.stroke_path_raw(path, color, stroke);
+        self.stroke_path_raw(path, color, stroke, self.state.shadow.is_none());
     }
 
-    fn stroke_path_raw(&mut self, path: &Path, color: Color, stroke: &Stroke) {
+    fn stroke_path_raw(&mut self, path: &Path, color: Color, stroke: &Stroke, anchored: bool) {
         let color = crate::render::color::with_alpha(color, self.state.alpha);
         if color.alpha() <= 0.0 || stroke.width <= 0.0 {
             return;
         }
         let paint = paint_for(Shader::SolidColor(color), BlendMode::SourceOver);
+        if anchored && self.patch_path_anchor.is_some() && stroke.dash.is_none() {
+            let resolution_scale = PathStroker::compute_resolution_scale(&self.state.transform);
+            if stroke.width * resolution_scale > 1.0 {
+                if let Some(outline) = path.stroke(stroke, resolution_scale) {
+                    if let Some(path) = self.patch_path(&outline) {
+                        self.pixmap.fill_path(
+                            &path,
+                            &paint,
+                            FillRule::Winding,
+                            Transform::identity(),
+                            self.state.clip.as_deref(),
+                        );
+                        return;
+                    }
+                }
+            }
+        }
         self.pixmap.stroke_path(
             path,
             &paint,
@@ -257,6 +284,25 @@ impl Canvas {
             self.state.transform,
             self.state.clip.as_deref(),
         );
+    }
+
+    fn patch_path(&self, path: &Path) -> Option<Path> {
+        let (composition_origin, crop_origin) = self.patch_path_anchor?;
+        let transform = self.state.transform;
+        let full_transform = Transform::from_row(
+            transform.sx,
+            transform.ky,
+            transform.kx,
+            transform.sy,
+            composition_origin.0 + (transform.tx + crop_origin.0),
+            composition_origin.1 + (transform.ty + crop_origin.1),
+        );
+        path.clone()
+            .transform(full_transform)?
+            .transform(Transform::from_translate(
+                -(composition_origin.0 + crop_origin.0),
+                -(composition_origin.1 + crop_origin.1),
+            ))
     }
 
     /// Draws `source` with its top-left at the user-space origin, scaled to

@@ -319,6 +319,18 @@ fn patch_padded(
     let mut canvas = Canvas::new(width, height)?;
     canvas.translate(-device_x as f32, -device_y as f32);
     canvas.scale(scale as f32, scale as f32);
+    let composition_origin = surface
+        .matte_image
+        .filter(|_| surface.composite_backdrop)
+        .map(|(_, x, y)| (x, y))
+        .unwrap_or((surface.offset_x, surface.offset_y));
+    canvas.set_patch_path_anchor(
+        (
+            (composition_origin.0 * scale) as f32,
+            (composition_origin.1 * scale) as f32,
+        ),
+        (device_x as f32, device_y as f32),
+    );
 
     let draw_matte = |canvas: &mut Canvas| {
         let Some((image, offset_x, offset_y)) = surface.matte_image else {
@@ -1045,6 +1057,220 @@ mod tests {
             first_patch.image.as_bytes(0),
             second_patch.image.as_bytes(0)
         );
+    }
+
+    #[test]
+    fn framed_attachment_rectangle_patch_matches_composed_export() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let top_path = directory.path().join("top.png");
+        image::RgbaImage::from_pixel(80, 24, image::Rgba([240, 80, 64, 255]))
+            .save(&top_path)
+            .unwrap();
+        let right_path = directory.path().join("right.png");
+        image::RgbaImage::from_pixel(30, 60, image::Rgba([72, 192, 112, 255]))
+            .save(&right_path)
+            .unwrap();
+        let layers = [
+            ImageLayer {
+                id: "top".into(),
+                image_url: top_path.to_string_lossy().into_owned(),
+                natural_width: 80.0,
+                natural_height: 24.0,
+                edge: Edge::Top,
+            },
+            ImageLayer {
+                id: "right".into(),
+                image_url: right_path.to_string_lossy().into_owned(),
+                natural_width: 30.0,
+                natural_height: 60.0,
+                edge: Edge::Right,
+            },
+        ];
+        let base = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            160,
+            120,
+            image::Rgba([64, 112, 192, 255]),
+        ));
+        let annotation = Annotation::Rectangle {
+            id: "rectangle".into(),
+            x: 38.0,
+            y: 36.0,
+            width: 20.0,
+            height: 20.0,
+            stroke: "#f43f5e".into(),
+            stroke_width: 3.0,
+            fill: Some("#f0c040".into()),
+        };
+        let mut wallpaper = crate::editor::wallpaper::WallpaperSettings::default();
+        wallpaper.window_frame.style = "windows-dark".into();
+        let export = crate::editor::export::compose_with_layers(
+            Some(&base),
+            160,
+            120,
+            std::slice::from_ref(&annotation),
+            &wallpaper,
+            &layers,
+            1.0,
+        );
+        let backdrop = crate::editor::export::compose_with_layers(
+            Some(&base),
+            160,
+            120,
+            &[],
+            &wallpaper,
+            &layers,
+            1.0,
+        );
+        assert_eq!(export.dimensions(), (210, 252));
+
+        let title_bar = crate::render::window_frame::title_bar_height("windows-dark", 1.0);
+        let group = crate::editor::layers::compute_with_title_bar(
+            160.0,
+            120.0,
+            &layers,
+            wallpaper.spacing.max(0.0),
+            wallpaper.layer_inset(true),
+            title_bar,
+        );
+        let (_, (x, y, _, _)) =
+            crate::editor::wallpaper::layout(&wallpaper, group.width, group.height, 1.0, true);
+        let primary_origin = (
+            x.round() + group.primary.x + wallpaper.layer_inset(true),
+            y.round() + group.primary.y + title_bar + wallpaper.layer_inset(true),
+        );
+        let mut backdrop_bgra = backdrop.as_raw().to_vec();
+        for pixel in backdrop_bgra.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let surface = Surface {
+            image_id: None,
+            width: backdrop.width(),
+            height: backdrop.height(),
+            offset_x: primary_origin.0,
+            offset_y: primary_origin.1,
+            native_scale: 1.0,
+            pixels: Some(&backdrop_bgra),
+            matte: Some([18, 18, 20]),
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let preview = patch(&annotation, &[], &surface, 1.0).unwrap();
+        let mut mismatches = Vec::new();
+        for y in 0..preview.pixmap.height() {
+            for x in 0..preview.pixmap.width() {
+                let actual = preview.pixmap.pixel(x, y).unwrap();
+                let export_x = (primary_origin.0 + preview.x + f64::from(x)) as u32;
+                let export_y = (primary_origin.1 + preview.y + f64::from(y)) as u32;
+                let expected = export.get_pixel(export_x, export_y).0;
+                let actual = [actual.red(), actual.green(), actual.blue(), actual.alpha()];
+                if actual != expected {
+                    mismatches.push((x, y, actual, expected));
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "CPU patch differs from the framed export: {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn anchored_preview_stroke_matches_composition_with_scale_and_clip() {
+        use tiny_skia::{Color, Rect};
+
+        let annotation = Annotation::Rectangle {
+            id: "rectangle".into(),
+            x: 38.0,
+            y: 36.0,
+            width: 20.0,
+            height: 20.0,
+            stroke: "#f43f5e".into(),
+            stroke_width: 3.0,
+            fill: Some("#f0c040".into()),
+        };
+        let blue = Color::from_rgba8(64, 112, 192, 255);
+
+        for scale in [1.0_f32, 1.25, 2.0] {
+            let composition_origin = (0.0, 132.0 * scale);
+            let crop_origin = ((32.0 * scale).floor(), (32.0 * scale).floor());
+            let clip = Rect::from_xywh(40.0, 40.0, 14.0, 10.0).unwrap();
+            let mut full = Canvas::new(280, 400).unwrap();
+            full.pixmap_mut().fill(blue);
+            full.translate(composition_origin.0, composition_origin.1);
+            full.scale(scale, scale);
+            full.clip_rect(clip);
+            renderer::draw_screenshot(&mut full, &annotation, 1.0);
+            let full = full.into_pixmap();
+
+            let mut patch = Canvas::new(52, 52).unwrap();
+            patch.pixmap_mut().fill(blue);
+            patch.translate(-crop_origin.0, -crop_origin.1);
+            patch.scale(scale, scale);
+            patch.set_patch_path_anchor(composition_origin, crop_origin);
+            patch.clip_rect(clip);
+            renderer::draw_screenshot(&mut patch, &annotation, 1.0);
+            let patch = patch.into_pixmap();
+            for y in 0..patch.height() {
+                for x in 0..patch.width() {
+                    let actual = patch.pixel(x, y).unwrap();
+                    let expected = full
+                        .pixel(
+                            (composition_origin.0 + crop_origin.0) as u32 + x,
+                            (composition_origin.1 + crop_origin.1) as u32 + y,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        [actual.red(), actual.green(), actual.blue(), actual.alpha()],
+                        [
+                            expected.red(),
+                            expected.green(),
+                            expected.blue(),
+                            expected.alpha()
+                        ],
+                        "scale {scale} pixel {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn thin_stroke_patch_keeps_the_existing_hairline_rendering() {
+        let annotation = Annotation::Rectangle {
+            id: "thin-rectangle".into(),
+            x: 20.0,
+            y: 20.0,
+            width: 30.0,
+            height: 24.0,
+            stroke: "#f43f5e".into(),
+            stroke_width: 0.5,
+            fill: None,
+        };
+        let surface = Surface {
+            image_id: None,
+            width: 100,
+            height: 80,
+            offset_x: 0.25,
+            offset_y: 0.25,
+            native_scale: 1.0,
+            pixels: None,
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let scale = 1.25;
+        let preview = patch(&annotation, &[], &surface, scale).unwrap();
+        let mut direct = Canvas::new(preview.pixmap.width(), preview.pixmap.height()).unwrap();
+        direct.translate(
+            -((preview.x * scale).floor() as f32),
+            -((preview.y * scale).floor() as f32),
+        );
+        direct.scale(scale as f32, scale as f32);
+        renderer::draw_screenshot(&mut direct, &annotation, 1.0);
+
+        assert_eq!(preview.pixmap.data(), direct.into_pixmap().data());
     }
 
     #[test]

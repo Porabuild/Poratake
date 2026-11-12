@@ -117,6 +117,14 @@ impl RenderOnce for EditorCanvas {
         let overlay_above = has_preview_edges || stage_annotations;
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
+        let layer_title_bar = if snap.layers.is_empty() {
+            0.0
+        } else {
+            crate::render::window_frame::title_bar_height(
+                &wallpaper.window_frame.style,
+                frame_scale,
+            )
+        };
         let balanced_unframed = wallpaper.balance
             && !window_frame
             && snap.layers.is_empty()
@@ -262,15 +270,18 @@ impl RenderOnce for EditorCanvas {
             image_width,
             image_height,
             self.snapshot.borrow().balance_crop,
-            !layers.is_empty() && !wallpaper.supports_edge_preview(true),
+            !layers.is_empty()
+                && !wallpaper.supports_edge_preview(true)
+                && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none(),
         );
         let layer_inset = wallpaper.layer_inset(!layers.is_empty());
-        let group = crate::editor::layers::compute_with_inset(
+        let group = crate::editor::layers::compute_with_title_bar(
             layout_width,
             layout_height,
             &layers,
             spacing,
             layer_inset,
+            layer_title_bar,
         );
         let framed = wallpaper.is_active_with_layers(!layers.is_empty());
         let snapped_composition = composited_primary
@@ -563,12 +574,22 @@ fn paint_annotations(
             false,
         );
         let layer_inset = snapshot.wallpaper.layer_inset(!snapshot.layers.is_empty());
-        let layout = crate::editor::layers::compute_with_inset(
+        let title_bar = crate::render::window_frame::title_bar_height(
+            &snapshot.wallpaper.window_frame.style,
+            snapshot.frame_scale,
+        );
+        let layer_title_bar = if snapshot.layers.is_empty() {
+            0.0
+        } else {
+            title_bar
+        };
+        let layout = crate::editor::layers::compute_with_title_bar(
             width,
             height,
             &snapshot.layers,
             snapshot.spacing.max(0.0),
             layer_inset,
+            layer_title_bar,
         );
         let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
             &snapshot.wallpaper,
@@ -578,10 +599,6 @@ fn paint_annotations(
             !snapshot.layers.is_empty(),
         );
         let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
-        let title_bar = crate::render::window_frame::title_bar_height(
-            &snapshot.wallpaper.window_frame.style,
-            snapshot.frame_scale,
-        );
         (
             snapshot.backdrop.as_ref(),
             x.round() + layout.primary.x + layer_inset - f64::from(crop_left),
@@ -611,15 +628,28 @@ fn paint_annotations(
             f64::from(snapshot.image_width),
             f64::from(snapshot.image_height),
             snapshot.balance_crop,
-            !snapshot.layers.is_empty() && !snapshot.wallpaper.supports_edge_preview(true),
+            !snapshot.layers.is_empty()
+                && !snapshot.wallpaper.supports_edge_preview(true)
+                && crate::render::window_frame::theme(&snapshot.wallpaper.window_frame.style)
+                    .is_none(),
         );
         let layer_inset = snapshot.wallpaper.layer_inset(!snapshot.layers.is_empty());
-        let group = crate::editor::layers::compute_with_inset(
+        let title_bar = crate::render::window_frame::title_bar_height(
+            &snapshot.wallpaper.window_frame.style,
+            snapshot.frame_scale,
+        );
+        let layer_title_bar = if snapshot.layers.is_empty() {
+            0.0
+        } else {
+            title_bar
+        };
+        let group = crate::editor::layers::compute_with_title_bar(
             width,
             height,
             &snapshot.layers,
             snapshot.spacing.max(0.0),
             layer_inset,
+            layer_title_bar,
         );
         let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
             &snapshot.wallpaper,
@@ -629,10 +659,6 @@ fn paint_annotations(
             !snapshot.layers.is_empty(),
         );
         let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
-        let title_bar = crate::render::window_frame::title_bar_height(
-            &snapshot.wallpaper.window_frame.style,
-            snapshot.frame_scale,
-        );
         let (x, y) =
             if crate::editor::export::composites_primary_backdrop(
                 &snapshot.wallpaper,

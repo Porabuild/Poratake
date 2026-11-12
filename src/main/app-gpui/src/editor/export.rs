@@ -105,6 +105,26 @@ pub fn compose_with_layers(
             })
             .flatten()
     });
+    if !layers.is_empty()
+        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some()
+    {
+        let cropped = original_balance.and_then(|bounds| balance_crop(canvas.pixmap(), bounds));
+        let primary = cropped.as_ref().unwrap_or(canvas.pixmap());
+        let offset = original_balance
+            .map(|bounds| (bounds.left as f32, bounds.top as f32))
+            .unwrap_or_default();
+        if let Some(composed) = compose_framed_layers(
+            primary,
+            wallpaper,
+            layers,
+            annotations,
+            frame_scale,
+            offset,
+            None,
+        ) {
+            return to_rgba(&composed);
+        }
+    }
     let layered_wallpaper = if !layers.is_empty() && wallpaper.supports_edge_preview(true) {
         let cropped = original_balance.and_then(|bounds| balance_crop(canvas.pixmap(), bounds));
         let primary = cropped.as_ref().unwrap_or(canvas.pixmap());
@@ -354,6 +374,95 @@ fn compose_layered_wallpaper(
     canvas.translate(
         primary_rect.0 + inset as f32 - crop_offset.0,
         primary_rect.1 + inset as f32 - crop_offset.1,
+    );
+    annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
+    Some(canvas.into_pixmap())
+}
+
+fn compose_framed_layers(
+    primary: &Pixmap,
+    wallpaper: &WallpaperSettings,
+    layers: &[crate::editor::layers::ImageLayer],
+    annotations: &[Annotation],
+    frame_scale: f64,
+    crop_offset: (f32, f32),
+    primary_inset_color: Option<String>,
+) -> Option<Pixmap> {
+    let inset = wallpaper.inset.max(0.0);
+    let title_bar =
+        crate::render::window_frame::title_bar_height(&wallpaper.window_frame.style, frame_scale);
+    let layout = crate::editor::layers::compute_with_title_bar(
+        f64::from(primary.width()),
+        f64::from(primary.height()),
+        layers,
+        wallpaper.spacing.max(0.0),
+        inset,
+        title_bar,
+    );
+    let ((width, height), (offset_x, offset_y, _, _)) =
+        crate::editor::wallpaper::layout(wallpaper, layout.width, layout.height, frame_scale, true);
+    let (width, height) = (
+        width.round().max(1.0) as u32,
+        height.round().max(1.0) as u32,
+    );
+    let mut canvas = Canvas::new(width, height)?;
+    paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
+
+    let primary_inset_color = primary_inset_color.or_else(|| {
+        (inset > 0.0).then(|| {
+            crate::render::color_detection::dominant_inset_color(
+                primary.as_ref(),
+                crate::render::color_detection::ContentBounds::default(),
+            )
+        })?
+    });
+    let render_layer = |canvas: &mut Canvas,
+                        image: tiny_skia::PixmapRef<'_>,
+                        rect: crate::editor::layers::LayerRect,
+                        inset_color: Option<&str>| {
+        let content_width = (rect.width - inset * 2.0).max(0.0);
+        let content_height = (rect.height - title_bar - inset * 2.0).max(0.0);
+        crate::render::window_frame::render(
+            canvas,
+            image,
+            offset_x.round() + rect.x,
+            offset_y.round() + rect.y,
+            content_width,
+            content_height,
+            &wallpaper.window_frame.style,
+            image_shadow_at_scale(wallpaper.shadow, frame_scale),
+            frame_scale,
+            inset,
+            inset_color,
+        );
+    };
+    render_layer(
+        &mut canvas,
+        primary.as_ref(),
+        layout.primary,
+        primary_inset_color.as_deref(),
+    );
+    for (id, rect) in layout.layers {
+        let Some(image) = layers
+            .iter()
+            .find(|layer| layer.id == id)
+            .and_then(|layer| gradient::load_image(&layer.image_url))
+        else {
+            continue;
+        };
+        let inset_color = if inset > 0.0 {
+            crate::render::color_detection::dominant_inset_color(
+                image.as_ref(),
+                crate::render::color_detection::ContentBounds::default(),
+            )
+        } else {
+            None
+        };
+        render_layer(&mut canvas, image.as_ref(), rect, inset_color.as_deref());
+    }
+    canvas.translate(
+        (offset_x.round() + layout.primary.x + inset) as f32 - crop_offset.0,
+        (offset_y.round() + layout.primary.y + title_bar + inset) as f32 - crop_offset.1,
     );
     annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     Some(canvas.into_pixmap())
@@ -714,6 +823,35 @@ pub fn render_backdrop(
         let primary = from_rgba(&base?.to_rgba8())?;
         let composite =
             compose_wallpaper(&primary, wallpaper, frame_scale, Some(inset_color), false);
+        let tiles = if composite.width() > 16384 || composite.height() > 16384 {
+            composite_tiles(&composite, stage_background, 8192)?
+        } else {
+            Vec::new()
+        };
+        return Some((render_image(&composite), tiles, true));
+    }
+    if !layers.is_empty()
+        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some()
+    {
+        let primary = from_rgba(&base?.to_rgba8())?;
+        let balance = wallpaper
+            .balance
+            .then(|| balance_bounds_pixmap(&primary))
+            .flatten();
+        let cropped = balance.and_then(|bounds| balance_crop(&primary, bounds));
+        let primary = cropped.as_ref().unwrap_or(&primary);
+        let offset = balance
+            .map(|bounds| (bounds.left as f32, bounds.top as f32))
+            .unwrap_or_default();
+        let composite = compose_framed_layers(
+            primary,
+            wallpaper,
+            layers,
+            &[],
+            frame_scale,
+            offset,
+            inset_color,
+        )?;
         let tiles = if composite.width() > 16384 || composite.height() > 16384 {
             composite_tiles(&composite, stage_background, 8192)?
         } else {
@@ -2098,6 +2236,307 @@ mod tests {
         assert_eq!(composed.dimensions(), (120, 108));
         assert_ne!(composed.get_pixel(60, 20).0, [255, 0, 0, 255]);
         assert_eq!(composed.get_pixel(60, 60).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn framed_unequal_top_attachment_matches_per_image_electron_layout() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let attachment = directory.path().join("top-attachment.png");
+        RgbaImage::from_pixel(40, 20, image::Rgba([240, 80, 64, 255]))
+            .save(&attachment)
+            .unwrap();
+        let right_attachment = directory.path().join("right-attachment.png");
+        RgbaImage::from_pixel(30, 40, image::Rgba([72, 192, 112, 255]))
+            .save(&right_attachment)
+            .unwrap();
+        let layers = [
+            ImageLayer {
+                id: "top".into(),
+                image_url: attachment.to_string_lossy().into_owned(),
+                natural_width: 40.0,
+                natural_height: 20.0,
+                edge: Edge::Top,
+            },
+            ImageLayer {
+                id: "right".into(),
+                image_url: right_attachment.to_string_lossy().into_owned(),
+                natural_width: 30.0,
+                natural_height: 40.0,
+                edge: Edge::Right,
+            },
+        ];
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            80,
+            60,
+            image::Rgba([64, 112, 192, 255]),
+        ));
+        let annotations = [Annotation::Redact {
+            id: "primary-mask".into(),
+            x: 10.0,
+            y: 10.0,
+            width: 5.0,
+            height: 5.0,
+            style: "blackout".into(),
+            intensity: 5.0,
+        }];
+        let mut settings = WallpaperSettings::default();
+        settings.window_frame.style = "windows-dark".into();
+
+        let exported =
+            compose_with_layers(Some(&base), 80, 60, &annotations, &settings, &layers, 1.0);
+
+        let title_bar = 28;
+        let primary_frame_height = 60 + title_bar;
+        let layer_frame_height = (20 + title_bar) * 2;
+        assert_eq!(
+            exported.dimensions(),
+            (119, primary_frame_height + layer_frame_height),
+            "Electron lays out each image's title bar before scaling top and side attachments"
+        );
+        assert_eq!(
+            exported.get_pixel(40, title_bar + 10).0,
+            [240, 80, 64, 255],
+            "the top image starts below its own title bar"
+        );
+        assert_eq!(
+            exported.get_pixel(40, layer_frame_height + 10).0,
+            [32, 32, 32, 255],
+            "the primary image has its own title bar after the attachment frame"
+        );
+        assert_eq!(
+            exported
+                .get_pixel(40, layer_frame_height + title_bar + 10)
+                .0,
+            [64, 112, 192, 255],
+            "the primary image starts below its own title bar"
+        );
+        assert_eq!(
+            exported
+                .get_pixel(85, layer_frame_height + title_bar + 10)
+                .0,
+            [72, 192, 112, 255],
+            "the unequal right attachment matches the primary frame height"
+        );
+        assert_eq!(
+            exported
+                .get_pixel(12, layer_frame_height + title_bar + 12)
+                .0,
+            [0, 0, 0, 255],
+            "primary annotations remain positioned in the framed image content"
+        );
+
+        let preview = render_backdrop(
+            &settings,
+            exported.width(),
+            exported.height(),
+            80.0,
+            60.0,
+            None,
+            &layers,
+            Some(&base),
+            1.0,
+            [24, 24, 27],
+        )
+        .unwrap()
+        .0;
+        let mut preview_pixels = preview.as_bytes(0).unwrap().to_vec();
+        for pixel in preview_pixels.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let preview =
+            RgbaImage::from_raw(exported.width(), exported.height(), preview_pixels).unwrap();
+        assert_eq!(
+            preview.get_pixel(40, title_bar + 30).0,
+            exported.get_pixel(40, title_bar + 30).0,
+            "the attachment preview must match its exported pixels below the title bar"
+        );
+        assert_eq!(
+            preview.get_pixel(85, layer_frame_height + title_bar + 10).0,
+            exported
+                .get_pixel(85, layer_frame_height + title_bar + 10)
+                .0,
+            "the side attachment preview must match its exported pixels"
+        );
+    }
+
+    #[test]
+    fn framed_balanced_attachments_crop_before_layout_and_match_preview() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let top_path = directory.path().join("top.png");
+        RgbaImage::from_pixel(40, 20, image::Rgba([240, 80, 64, 255]))
+            .save(&top_path)
+            .unwrap();
+        let right_path = directory.path().join("right.png");
+        RgbaImage::from_pixel(30, 40, image::Rgba([72, 192, 112, 255]))
+            .save(&right_path)
+            .unwrap();
+        let layers = [
+            ImageLayer {
+                id: "top".into(),
+                image_url: top_path.to_string_lossy().into_owned(),
+                natural_width: 40.0,
+                natural_height: 20.0,
+                edge: Edge::Top,
+            },
+            ImageLayer {
+                id: "right".into(),
+                image_url: right_path.to_string_lossy().into_owned(),
+                natural_width: 30.0,
+                natural_height: 40.0,
+                edge: Edge::Right,
+            },
+        ];
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(100, 80, |x, y| {
+            if (30..80).contains(&x) && (25..65).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else if (10..90).contains(&x) && (10..70).contains(&y) {
+                image::Rgba([235, 235, 235, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        let bounds = balance_bounds(&base.to_rgba8()).unwrap();
+        assert_eq!(
+            bounds,
+            crate::render::color_detection::ContentBounds {
+                top: 15,
+                right: 10,
+                bottom: 5,
+                left: 20,
+            }
+        );
+        let base_pixmap = from_rgba(&base.to_rgba8()).unwrap();
+        let uncropped_inset = crate::render::color_detection::dominant_inset_color(
+            base_pixmap.as_ref(),
+            crate::render::color_detection::ContentBounds::default(),
+        );
+        let cropped_inset =
+            crate::render::color_detection::dominant_inset_color(base_pixmap.as_ref(), bounds);
+        assert_eq!(uncropped_inset.as_deref(), Some("#ffffff"));
+        assert_eq!(cropped_inset.as_deref(), Some("#ebebeb"));
+        assert_ne!(uncropped_inset, cropped_inset);
+        let annotations = [Annotation::Redact {
+            id: "balanced-mask".into(),
+            x: 35.0,
+            y: 30.0,
+            width: 5.0,
+            height: 5.0,
+            style: "blackout".into(),
+            intensity: 5.0,
+        }];
+        let mut settings = WallpaperSettings {
+            balance: true,
+            inset: 4.0,
+            spacing: 5.0,
+            ..WallpaperSettings::default()
+        };
+        settings.window_frame.style = "windows-dark".into();
+
+        let exported =
+            compose_with_layers(Some(&base), 100, 80, &annotations, &settings, &layers, 1.0);
+        assert_eq!(exported.dimensions(), (131, 192));
+        assert_eq!(exported.get_pixel(2, 135).0, [235, 235, 235, 255]);
+        assert_eq!(exported.get_pixel(40, 42).0, [240, 80, 64, 255]);
+        assert_eq!(exported.get_pixel(20, 140).0, [64, 112, 192, 255]);
+        assert_eq!(exported.get_pixel(90, 140).0, [72, 192, 112, 255]);
+        assert_eq!(exported.get_pixel(20, 144).0, [0, 0, 0, 255]);
+
+        let preview = render_backdrop(
+            &settings,
+            exported.width(),
+            exported.height(),
+            100.0,
+            80.0,
+            Some("#ebebeb".into()),
+            &layers,
+            Some(&base),
+            1.0,
+            [24, 24, 27],
+        )
+        .unwrap()
+        .0;
+        let mut preview_pixels = preview.as_bytes(0).unwrap().to_vec();
+        for pixel in preview_pixels.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let preview =
+            RgbaImage::from_raw(exported.width(), exported.height(), preview_pixels).unwrap();
+        for (x, y) in [(2, 135), (40, 42), (20, 140), (90, 140)] {
+            assert_eq!(
+                preview.get_pixel(x, y).0,
+                exported.get_pixel(x, y).0,
+                "balanced preview/export pixel at {x},{y}"
+            );
+        }
+    }
+
+    #[test]
+    fn left_framed_attachment_matches_preview_at_fractional_scale() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let attachment = directory.path().join("left.png");
+        RgbaImage::from_pixel(40, 30, image::Rgba([240, 80, 64, 255]))
+            .save(&attachment)
+            .unwrap();
+        let layers = [ImageLayer {
+            id: "left".into(),
+            image_url: attachment.to_string_lossy().into_owned(),
+            natural_width: 40.0,
+            natural_height: 30.0,
+            edge: Edge::Left,
+        }];
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            80,
+            60,
+            image::Rgba([64, 112, 192, 255]),
+        ));
+        let settings = WallpaperSettings {
+            inset: 4.0,
+            spacing: 6.0,
+            ..WallpaperSettings::default()
+        }
+        .for_scale(1.25);
+        let mut settings = settings;
+        settings.window_frame.style = "macos-light".into();
+
+        let exported = compose_with_layers(Some(&base), 80, 60, &[], &settings, &layers, 1.25);
+        assert_eq!(exported.dimensions(), (168, 105));
+        assert_eq!(exported.get_pixel(20, 45).0, [240, 80, 64, 255]);
+        assert_eq!(exported.get_pixel(100, 45).0, [64, 112, 192, 255]);
+        assert_eq!(exported.get_pixel(100, 10).0, [232, 232, 232, 255]);
+
+        let preview = render_backdrop(
+            &settings,
+            exported.width(),
+            exported.height(),
+            80.0,
+            60.0,
+            None,
+            &layers,
+            Some(&base),
+            1.25,
+            [24, 24, 27],
+        )
+        .unwrap()
+        .0;
+        let mut preview_pixels = preview.as_bytes(0).unwrap().to_vec();
+        for pixel in preview_pixels.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let preview =
+            RgbaImage::from_raw(exported.width(), exported.height(), preview_pixels).unwrap();
+        for (x, y) in [(20, 45), (100, 45), (100, 10)] {
+            assert_eq!(
+                preview.get_pixel(x, y).0,
+                exported.get_pixel(x, y).0,
+                "fractional-scale left attachment preview/export pixel at {x},{y}"
+            );
+        }
     }
 
     #[test]

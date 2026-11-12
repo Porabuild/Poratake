@@ -614,7 +614,10 @@ impl EditorWindow {
                 f32::from(size.height),
             );
         }));
-        if editor.layers.is_empty() || editor.wallpaper.supports_edge_preview(true) {
+        if editor.layers.is_empty()
+            || editor.wallpaper.supports_edge_preview(true)
+            || crate::render::window_frame::theme(&editor.wallpaper.window_frame.style).is_some()
+        {
             editor.refresh_balance_crop();
         }
         editor.refresh_raster_patches();
@@ -761,14 +764,25 @@ impl EditorWindow {
             f64::from(self.image_width),
             f64::from(self.image_height),
             self.balance_crop,
-            !self.layers.is_empty() && !wallpaper.supports_edge_preview(true),
+            !self.layers.is_empty()
+                && !wallpaper.supports_edge_preview(true)
+                && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none(),
         );
-        let group = crate::editor::layers::compute_with_inset(
+        let title_bar = if self.layers.is_empty() {
+            0.0
+        } else {
+            crate::render::window_frame::title_bar_height(
+                &wallpaper.window_frame.style,
+                self.native_scale,
+            )
+        };
+        let group = crate::editor::layers::compute_with_title_bar(
             image_width,
             image_height,
             &self.layers,
             wallpaper.spacing.max(0.0),
             wallpaper.layer_inset(!self.layers.is_empty()),
+            title_bar,
         );
         let ((width, height), _) = crate::editor::wallpaper::layout(
             &wallpaper,
@@ -796,7 +810,10 @@ impl EditorWindow {
             .then_some(stage_background),
             (wallpaper.inset > 0.0
                 || crate::editor::export::composites_wallpaper_effects(&wallpaper, &self.layers)
-                || (!self.layers.is_empty() && wallpaper.supports_edge_preview(true)))
+                || (!self.layers.is_empty() && wallpaper.supports_edge_preview(true))
+                || (!self.layers.is_empty()
+                    && crate::render::window_frame::theme(&wallpaper.window_frame.style)
+                        .is_some()))
             .then(|| self.image.as_ref().map(|image| image.id))
             .flatten(),
         );
@@ -2378,14 +2395,25 @@ impl EditorWindow {
             f64::from(self.image_width),
             f64::from(self.image_height),
             self.balance_crop,
-            !self.layers.is_empty() && !wallpaper.supports_edge_preview(true),
+            !self.layers.is_empty()
+                && !wallpaper.supports_edge_preview(true)
+                && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none(),
         );
-        let group = crate::editor::layers::compute_with_inset(
+        let title_bar = if self.layers.is_empty() {
+            0.0
+        } else {
+            crate::render::window_frame::title_bar_height(
+                &wallpaper.window_frame.style,
+                self.native_scale,
+            )
+        };
+        let group = crate::editor::layers::compute_with_title_bar(
             image_width,
             image_height,
             &self.layers,
             wallpaper.spacing.max(0.0),
             wallpaper.layer_inset(!self.layers.is_empty()),
+            title_bar,
         );
         if wallpaper.is_active_with_layers(!self.layers.is_empty()) {
             let ((width, height), _) = crate::editor::wallpaper::layout(
@@ -4119,6 +4147,116 @@ mod tests {
                 .to_rgba8()
                 .dimensions(),
             (1800, 1200)
+        );
+    }
+
+    #[herogpui::test]
+    fn reopening_framed_balanced_layers_restores_crop_and_inset(cx: &mut gpui::TestAppContext) {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_fn(100, 80, |x, y| {
+            if (30..80).contains(&x) && (25..65).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else if (10..90).contains(&x) && (10..70).contains(&y) {
+                image::Rgba([235, 235, 235, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        })
+        .save(&source)
+        .unwrap();
+        let attached = directory.path().join("top.png");
+        image::RgbaImage::from_pixel(40, 20, image::Rgba([240, 80, 64, 255]))
+            .save(&attached)
+            .unwrap();
+        let attached_right = directory.path().join("right.png");
+        image::RgbaImage::from_pixel(30, 40, image::Rgba([72, 192, 112, 255]))
+            .save(&attached_right)
+            .unwrap();
+        let mut wallpaper = crate::editor::wallpaper::WallpaperSettings {
+            balance: true,
+            inset: 4.0,
+            spacing: 5.0,
+            ..crate::editor::wallpaper::WallpaperSettings::default()
+        };
+        wallpaper.window_frame.style = "windows-dark".into();
+        let persisted = PersistedEditorState {
+            annotations: vec![Annotation::Rectangle {
+                id: "balance-probe".into(),
+                x: 35.0,
+                y: 30.0,
+                width: 10.0,
+                height: 10.0,
+                stroke: "#ff00ff".into(),
+                stroke_width: 2.0,
+                fill: None,
+            }],
+            wallpaper,
+            layers: vec![
+                ImageLayer {
+                    id: "top".into(),
+                    image_url: attached.to_string_lossy().into_owned(),
+                    natural_width: 40.0,
+                    natural_height: 20.0,
+                    edge: Edge::Top,
+                },
+                ImageLayer {
+                    id: "right".into(),
+                    image_url: attached_right.to_string_lossy().into_owned(),
+                    natural_width: 30.0,
+                    natural_height: 40.0,
+                    edge: Edge::Right,
+                },
+            ],
+        };
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, move |window, cx| {
+            window.set_scale_factor(1.0);
+            let mut editor =
+                EditorWindow::from_file_with_state(&source_path, persisted, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+
+        let (crop, content_size, inset_color, exported, selected) = cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            let bounds = editor.bounds.borrow().unwrap();
+            let point = to_canvas_point(
+                gpui::point(
+                    bounds.origin.x + px(35.0 * editor.zoom),
+                    bounds.origin.y + px(30.0 * editor.zoom),
+                ),
+                Some(bounds),
+                editor.zoom,
+            );
+            (
+                editor.balance_crop,
+                editor.content_size(),
+                editor.inset_color.clone(),
+                editor.export_png().unwrap(),
+                editor.annotation_at(point),
+            )
+        });
+        assert_eq!(crop, Some((20.0, 15.0, 10.0, 5.0)));
+        assert_eq!(inset_color.as_deref(), Some("#ebebeb"));
+        assert_eq!(content_size, (131.0, 192.0));
+        assert_eq!(selected.as_deref(), Some("balance-probe"));
+        assert_eq!(
+            image::load_from_memory(&exported)
+                .unwrap()
+                .to_rgba8()
+                .dimensions(),
+            (131, 192)
         );
     }
 

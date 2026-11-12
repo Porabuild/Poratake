@@ -121,8 +121,8 @@ impl WallpaperSettings {
 
     pub fn layer_inset(&self, has_layers: bool) -> f64 {
         if has_layers
-            && !self.balance
-            && crate::render::window_frame::theme(&self.window_frame.style).is_none()
+            && (!self.balance
+                || crate::render::window_frame::theme(&self.window_frame.style).is_some())
         {
             self.inset.max(0.0)
         } else {
@@ -399,8 +399,11 @@ pub fn layout(
         0.0
     };
     let padding = settings.padding.max(0.0) + inset;
-    let title_bar =
-        crate::render::window_frame::title_bar_height(&settings.window_frame.style, frame_scale);
+    let title_bar = if has_layers {
+        0.0
+    } else {
+        crate::render::window_frame::title_bar_height(&settings.window_frame.style, frame_scale)
+    };
     let content_height = image_height + title_bar;
     let mut canvas_width = image_width + padding * 2.0;
     let mut canvas_height = content_height + padding * 2.0;

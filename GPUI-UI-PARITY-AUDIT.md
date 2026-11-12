@@ -974,8 +974,19 @@ Bugs fixed in this pass:
   attached images. Light/dark previews match saved pixels at simulated 125% and
   200%; Polish copy matches the editor for zero-padding corners. Transparent
   previews now use the active theme background, and a same-window theme change
-  replaces and retires the old backdrop. Balanced effects and framed attached
-  insets still need coordinated preview/export geometry.
+  replaces and retires the old backdrop. Balanced effects and additional framed attached
+  inset combinations still need visual verification.
+- Framed attached screenshots previously used one title bar for the group. The
+  compositor now frames each image before laying out attachments, and restores
+  the balanced primary crop and sampled inset color on reopen. A CPU fixture
+  matches the 119×184 layout and interior landmarks of an isolated Electron
+  canvas fixture; 510 of 21,896 pixels differ by more than two channel levels,
+  up to 123 at transparent frame corners. This does not represent a complete
+  Electron editor workflow. An anchored wide-stroke preview patch matches the
+  full composition in CPU tests, including clipping at 100%, 125% and 200%
+  scale. Hairline, dashed and shadowed stroke paths retain the prior behavior.
+  The new light/dark GPU workflow, physical DPI and broader frame/inset
+  combinations remain unverified.
 - An unframed single-image inset was omitted at zero padding when corners or a
   shadow were enabled, and otherwise occupied the outer padding. The inset now
   surrounds the image and the preview uses the exported composition. Light and
@@ -1489,3 +1500,8 @@ These are not evidence that unrelated features match.
 | Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                                                                  |
 | Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                                                           |
 | Blocked or unverified                 | CI on the current head, physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. The approved permission isolation and icon-only contrast refinements are implemented.                                                                                                                                  |
+
+The local Windows GPUI suite passed serially with 948 tests and one ignored. One
+earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while
+three tests were unfinished. Those tests passed individually, and the video-
+export group passed with four test threads. The cause remains unverified.

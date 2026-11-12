@@ -946,6 +946,7 @@ pub fn capture_editor_interaction_states() {
             for with_background in [false, true] {
                 workflows::balanced_attachment_edges(&mut cx, &scratch, scale, with_background);
             }
+            workflows::framed_attachment_layout(&mut cx, &scratch, scale);
             for transparent in [false, true] {
                 for clipped in [false, true] {
                     workflows::restored_pixelation(&mut cx, &scratch, scale, transparent, clipped);

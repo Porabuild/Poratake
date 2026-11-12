@@ -191,6 +191,31 @@ pub fn compute_with_inset(
     }
 }
 
+pub fn compute_with_title_bar(
+    primary_width: f64,
+    primary_height: f64,
+    layers: &[ImageLayer],
+    spacing: f64,
+    inset: f64,
+    title_bar: f64,
+) -> Layout {
+    let framed_layers = layers
+        .iter()
+        .cloned()
+        .map(|mut layer| {
+            layer.natural_height += title_bar;
+            layer
+        })
+        .collect::<Vec<_>>();
+    compute_with_inset(
+        primary_width,
+        primary_height + title_bar,
+        &framed_layers,
+        spacing,
+        inset,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

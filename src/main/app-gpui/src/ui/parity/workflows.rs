@@ -1,4 +1,7 @@
-use gpui::{AppContext, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
+use gpui::{
+    AppContext, KeyDownEvent, KeyUpEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PlatformInput,
+};
 use herogpui::gpui;
 use poratake_daemon_common::geometry::CaptureRect;
 
@@ -3084,6 +3087,443 @@ pub(super) fn balanced_attachment_edges(
                 .unwrap();
             cx.run_until_parked();
         }
+    }
+}
+
+pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Path, scale: f32) {
+    use crate::editor::annotations::Annotation;
+    use crate::editor::layers::{Edge, ImageLayer};
+
+    if scale == 1.0 {
+        let reference_base = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            80,
+            60,
+            image::Rgba([64, 112, 192, 255]),
+        ));
+        let reference_top = scratch.join("framed-electron-reference-top.png");
+        image::RgbaImage::from_pixel(40, 20, image::Rgba([240, 80, 64, 255]))
+            .save(&reference_top)
+            .unwrap();
+        let reference_right = scratch.join("framed-electron-reference-right.png");
+        image::RgbaImage::from_pixel(30, 40, image::Rgba([72, 192, 112, 255]))
+            .save(&reference_right)
+            .unwrap();
+        let reference_layers = [
+            ImageLayer {
+                id: "top".into(),
+                image_url: reference_top.to_string_lossy().into_owned(),
+                natural_width: 40.0,
+                natural_height: 20.0,
+                edge: Edge::Top,
+            },
+            ImageLayer {
+                id: "right".into(),
+                image_url: reference_right.to_string_lossy().into_owned(),
+                natural_width: 30.0,
+                natural_height: 40.0,
+                edge: Edge::Right,
+            },
+        ];
+        let reference_annotations = [Annotation::Redact {
+            id: "reference-blackout".into(),
+            x: 10.0,
+            y: 10.0,
+            width: 5.0,
+            height: 5.0,
+            style: "blackout".into(),
+            intensity: 5.0,
+        }];
+        let mut reference_wallpaper = crate::editor::wallpaper::WallpaperSettings::default();
+        reference_wallpaper.window_frame.style = "windows-dark".into();
+        let reference = crate::editor::export::compose_with_layers(
+            Some(&reference_base),
+            80,
+            60,
+            &reference_annotations,
+            &reference_wallpaper,
+            &reference_layers,
+            1.0,
+        );
+        assert_eq!(reference.dimensions(), (119, 184));
+        assert_eq!(reference.get_pixel(40, 38).0, [240, 80, 64, 255]);
+        assert_eq!(reference.get_pixel(85, 134).0, [72, 192, 112, 255]);
+        assert_eq!(reference.get_pixel(12, 136).0, [0, 0, 0, 255]);
+        reference
+            .save(scratch.join("gpui-framed-attachment-electron-reference.png"))
+            .unwrap();
+        std::fs::remove_file(reference_top).unwrap();
+        std::fs::remove_file(reference_right).unwrap();
+    }
+
+    for balanced in [false, true] {
+        let name = format!("framed-attachments-{scale}-{balanced}");
+        let source = scratch.join(format!("{name}-source.png"));
+        let (source_width, source_height, crop_left, crop_top, primary_width, primary_height) =
+            if balanced {
+                (200, 160, 30, 20, 140, 120)
+            } else {
+                (160, 120, 0, 0, 160, 120)
+            };
+        let image = image::RgbaImage::from_fn(source_width, source_height, |x, y| {
+            if balanced {
+                if (40..160).contains(&x) && (30..130).contains(&y) {
+                    image::Rgba([64, 112, 192, 255])
+                } else if (5..195).contains(&x) && (5..155).contains(&y) {
+                    image::Rgba([230, 230, 230, 255])
+                } else {
+                    image::Rgba([255, 255, 255, 255])
+                }
+            } else {
+                image::Rgba([64, 112, 192, 255])
+            }
+        });
+        if balanced {
+            assert_eq!(
+                crate::editor::export::balance_bounds(&image),
+                Some(crate::render::color_detection::ContentBounds {
+                    left: crop_left,
+                    top: crop_top,
+                    right: crop_left,
+                    bottom: crop_top,
+                }),
+                "the bordered fixture must produce a known nonzero balance crop"
+            );
+        }
+        image.save(&source).unwrap();
+
+        let top_path = scratch.join(format!("{name}-top.png"));
+        image::RgbaImage::from_pixel(80, 24, image::Rgba([240, 80, 64, 255]))
+            .save(&top_path)
+            .unwrap();
+        let right_path = scratch.join(format!("{name}-right.png"));
+        image::RgbaImage::from_pixel(30, 60, image::Rgba([72, 192, 112, 255]))
+            .save(&right_path)
+            .unwrap();
+
+        let id = name.clone();
+        crate::history_store::add_item(
+            HistoryItem {
+                id: id.clone(),
+                timestamp: 0,
+                original_path: source.to_string_lossy().into_owned(),
+                r#type: HistoryItemType::Screenshot,
+                editor_state: Some(serde_json::json!({
+                    "wallpaper": {
+                        "balance": balanced,
+                        "windowFrame": {"style": "windows-dark"}
+                    },
+                    "layers": [
+                        {
+                            "id": "top",
+                            "imageUrl": top_path.to_string_lossy(),
+                            "naturalWidth": 80.0,
+                            "naturalHeight": 24.0,
+                            "edge": "top"
+                        },
+                        {
+                            "id": "right",
+                            "imageUrl": right_path.to_string_lossy(),
+                            "naturalWidth": 30.0,
+                            "naturalHeight": 60.0,
+                            "edge": "right"
+                        }
+                    ]
+                })),
+                duration: None,
+            },
+            100,
+            true,
+        );
+
+        let editor = cx
+            .open_window(size(px(1280.), px(738.)), |window, cx| {
+                window.set_scale_factor(scale);
+                cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+            })
+            .unwrap();
+        let window = editor.into();
+        settle(cx, window);
+        let native_scale = crate::editor::wallpaper::native_scale(
+            f64::from(source_width),
+            f64::from(source_height),
+            f64::from(scale),
+        );
+        let zoom = (1.0 / native_scale) as f32;
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.zoom = zoom;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, window);
+
+        let title_bar = crate::render::window_frame::title_bar_height("windows-dark", native_scale);
+        let primary_frame_height = f64::from(primary_height) + title_bar;
+        let top_height = ((24.0 + title_bar) * f64::from(primary_width) / 80.0).round();
+        let right_width = (30.0 * primary_frame_height / (60.0 + title_bar)).round();
+        let composition_width = (f64::from(primary_width) + right_width).round() as u32;
+        let composition_height = (top_height + primary_frame_height).round() as u32;
+
+        let tool_start = if balanced { (70.0, 70.0) } else { (30.0, 30.0) };
+        let tool_end = (tool_start.0 + 20.0, tool_start.1 + 20.0);
+        click_measured(cx, window, "editor-tools", 2);
+        settle(cx, window);
+        let image_bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+        drag_rectangle(
+            cx,
+            window,
+            image_bounds.origin,
+            (
+                (tool_start.0 * f64::from(zoom)) as f32,
+                (tool_start.1 * f64::from(zoom)) as f32,
+            ),
+            (
+                (tool_end.0 * f64::from(zoom)) as f32,
+                (tool_end.1 * f64::from(zoom)) as f32,
+            ),
+        );
+        click_measured(cx, window, "editor-tools", 9);
+        settle(cx, window);
+        let selection_origin = (
+            ((tool_start.0 + tool_end.0) / 2.0 * f64::from(zoom)) as f32,
+            ((tool_start.1 + tool_end.1) / 2.0 * f64::from(zoom)) as f32,
+        );
+        drag_rectangle(
+            cx,
+            window,
+            image_bounds.origin,
+            selection_origin,
+            (
+                selection_origin.0 + 8.0 * zoom,
+                selection_origin.1 + 6.0 * zoom,
+            ),
+        );
+        settle(cx, window);
+        cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            assert!(
+                matches!(
+                    editor.history.current(),
+                    [Annotation::Rectangle { x, y, width, height, .. }]
+                        if (*x - (tool_start.0 + 8.0)).abs() < 0.01
+                            && (*y - (tool_start.1 + 6.0)).abs() < 0.01
+                            && (*width - 20.0).abs() < 0.01
+                            && (*height - 20.0).abs() < 0.01
+                ),
+                "pointer selection and dragging must update the primary annotation coordinates"
+            );
+        });
+        let escape = Keystroke::parse("escape").unwrap();
+        event(
+            cx,
+            window,
+            PlatformInput::KeyDown(KeyDownEvent {
+                keystroke: escape.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            }),
+        );
+        event(
+            cx,
+            window,
+            PlatformInput::KeyUp(KeyUpEvent { keystroke: escape }),
+        );
+        settle(cx, window);
+        cx.update(|cx| {
+            assert!(
+                editor
+                    .read(cx)
+                    .unwrap()
+                    .snapshot
+                    .borrow()
+                    .selected
+                    .is_empty(),
+                "Escape must clear the selected annotation before preview comparison"
+            );
+        });
+
+        let (png, matte, stage_bounds) = cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            assert!(
+                matches!(
+                    editor.history.current(),
+                    [Annotation::Rectangle { x, y, width, height, .. }]
+                        if (*x - (tool_start.0 + 8.0)).abs() < 0.01
+                            && (*y - (tool_start.1 + 6.0)).abs() < 0.01
+                            && (*width - 20.0).abs() < 0.01
+                            && (*height - 20.0).abs() < 0.01
+                ),
+                "drawing, selecting and dragging must use the framed primary image coordinates"
+            );
+            let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+            (
+                editor.export_png().unwrap(),
+                image::Rgba([
+                    (theme.r * 255.0).round() as u8,
+                    (theme.g * 255.0).round() as u8,
+                    (theme.b * 255.0).round() as u8,
+                    255,
+                ]),
+                super::measured("editor-stage", 0),
+            )
+        });
+        let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(
+            saved.dimensions(),
+            (composition_width, composition_height),
+            "Electron's per-image title bars determine the full attachment composition"
+        );
+        std::fs::write(scratch.join(format!("gpui-{name}-export.png")), &png).unwrap();
+
+        let (content_y, right_content_x) = (
+            top_height.round() as u32 + title_bar.round() as u32 + 10,
+            primary_width + 10,
+        );
+        assert_eq!(
+            saved
+                .get_pixel(primary_width / 2, title_bar.round() as u32 + 4)
+                .0,
+            [240, 80, 64, 255],
+            "the top attachment content starts below its own title bar"
+        );
+        assert_eq!(
+            saved
+                .get_pixel(primary_width / 2, top_height.round() as u32 + 2)
+                .0,
+            [32, 32, 32, 255],
+            "the primary image has a separate title bar"
+        );
+        assert_eq!(
+            saved.get_pixel(primary_width / 2, content_y).0,
+            [64, 112, 192, 255],
+            "the primary image starts below its own title bar"
+        );
+        assert_eq!(
+            saved
+                .get_pixel(right_content_x, top_height.round() as u32 + 2)
+                .0,
+            [32, 32, 32, 255],
+            "the side attachment has its own title bar"
+        );
+        assert_eq!(
+            saved.get_pixel(right_content_x, content_y).0,
+            [72, 192, 112, 255],
+            "the right attachment is laid out alongside the primary"
+        );
+        if balanced {
+            assert_eq!(saved.get_pixel(0, content_y).0, [230, 230, 230, 255]);
+        }
+
+        let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+        image::imageops::overlay(&mut composited, &saved, 0, 0);
+        let screenshot = cx.capture_screenshot(window).unwrap();
+        let stage_left = (f32::from(stage_bounds.left()) * scale).round() as u32;
+        let stage_top = (f32::from(stage_bounds.top()) * scale).round() as u32;
+        image::imageops::crop_imm(
+            &screenshot,
+            stage_left,
+            stage_top,
+            saved.width(),
+            saved.height(),
+        )
+        .to_image()
+        .save(scratch.join(format!("gpui-{name}-scale-{scale}-preview.png")))
+        .unwrap();
+        composited
+            .save(scratch.join(format!("gpui-{name}-scale-{scale}-expected.png")))
+            .unwrap();
+        for y in 0..saved.height() {
+            for x in 0..saved.width() {
+                let actual = screenshot.get_pixel(stage_left + x, stage_top + y).0;
+                let expected = composited.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                    "{name} scale {scale} preview/export differs at {x},{y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+
+        cx.update_window(window, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        let reopened = cx
+            .open_window(size(px(1280.), px(738.)), |window, cx| {
+                window.set_scale_factor(scale);
+                cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+            })
+            .unwrap();
+        settle(cx, reopened.into());
+        reopened
+            .update(cx, |editor, _, cx| {
+                editor.zoom = zoom;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, reopened.into());
+        let (reopened_png, reopened_matte, reopened_stage_bounds) = cx.update(|cx| {
+            let editor = reopened.read(cx).unwrap();
+            assert!(matches!(
+                editor.history.current(),
+                [Annotation::Rectangle { x, y, width, height, .. }]
+                    if (*x - (tool_start.0 + 8.0)).abs() < 0.01
+                        && (*y - (tool_start.1 + 6.0)).abs() < 0.01
+                        && (*width - 20.0).abs() < 0.01
+                        && (*height - 20.0).abs() < 0.01
+            ));
+            let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+            (
+                editor.export_png().unwrap(),
+                image::Rgba([
+                    (theme.r * 255.0).round() as u8,
+                    (theme.g * 255.0).round() as u8,
+                    (theme.b * 255.0).round() as u8,
+                    255,
+                ]),
+                super::measured("editor-stage", 0),
+            )
+        });
+        assert_eq!(reopened_png, png);
+        let reopened_saved = image::load_from_memory(&reopened_png).unwrap().to_rgba8();
+        let mut reopened_composited = image::RgbaImage::from_pixel(
+            reopened_saved.width(),
+            reopened_saved.height(),
+            reopened_matte,
+        );
+        image::imageops::overlay(&mut reopened_composited, &reopened_saved, 0, 0);
+        let reopened_screenshot = cx.capture_screenshot(reopened.into()).unwrap();
+        let reopened_stage_left = (f32::from(reopened_stage_bounds.left()) * scale).round() as u32;
+        let reopened_stage_top = (f32::from(reopened_stage_bounds.top()) * scale).round() as u32;
+        image::imageops::crop_imm(
+            &reopened_screenshot,
+            reopened_stage_left,
+            reopened_stage_top,
+            reopened_saved.width(),
+            reopened_saved.height(),
+        )
+        .to_image()
+        .save(scratch.join(format!("gpui-{name}-scale-{scale}-reopened-preview.png")))
+        .unwrap();
+        reopened_composited
+            .save(scratch.join(format!("gpui-{name}-scale-{scale}-reopened-expected.png")))
+            .unwrap();
+        for y in 0..reopened_saved.height() {
+            for x in 0..reopened_saved.width() {
+                let actual = reopened_screenshot
+                    .get_pixel(reopened_stage_left + x, reopened_stage_top + y)
+                    .0;
+                let expected = reopened_composited.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                    "reopened {name} scale {scale} preview/export differs at {x},{y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+        cx.update_window(reopened.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        assert!(crate::history_store::delete_item(&id));
+        std::fs::remove_file(top_path).unwrap();
+        std::fs::remove_file(right_path).unwrap();
     }
 }
 
