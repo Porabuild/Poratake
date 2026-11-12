@@ -666,6 +666,7 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
         width: 400,
         height: 240,
     };
+    let mut first_overlay: Option<image::RgbaImage> = None;
     for (name, rect) in [("first", SELECTED_RECT), ("second", second_rect)] {
         let captures = scratch.join(format!("selection-reset-{name}"));
         std::fs::create_dir_all(&captures).unwrap();
@@ -695,6 +696,23 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             None,
             "{name}: a newly opened selector must not carry a previous rectangle"
         );
+        let overlay = cx.capture_screenshot(picker).unwrap();
+        if let Some(first_overlay) = &first_overlay {
+            if first_overlay != &overlay {
+                first_overlay
+                    .save(scratch.join("selection-reset-first-initial-overlay.png"))
+                    .unwrap();
+                overlay
+                    .save(scratch.join("selection-reset-second-initial-overlay.png"))
+                    .unwrap();
+            }
+            assert!(
+                first_overlay == &overlay,
+                "a reopened selector must render the same initial overlay pixels"
+            );
+        } else {
+            first_overlay = Some(overlay);
+        }
         select_area_rect(cx, picker, rect);
         cx.run_until_parked();
         assert!(!cx.update(crate::capture::overlay::parity_is_active));
@@ -4056,7 +4074,7 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
         );
         assert_eq!(
             saved
-                .get_pixel(right_content_x, top_height.round() as u32 + 2)
+                .get_pixel(right_content_x + 10, top_height.round() as u32 + 10)
                 .0,
             [32, 32, 32, 255],
             "the side attachment has its own title bar"

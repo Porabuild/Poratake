@@ -995,13 +995,13 @@ Bugs fixed in this pass:
   Electron editor workflow. An anchored wide-stroke preview patch matches the
   full composition in CPU tests, including clipping at 100%, 125% and 200%
   scale. Hairline, dashed and shadowed stroke paths retain the prior behavior.
-  [Hosted CI at `e4e72a8a`](https://github.com/Porabuild/Poratake/actions/runs/43234554650)
+  [Hosted CI at `808730eb`](https://github.com/Porabuild/Poratake/actions/runs/43240023837)
   passed 14 of 16 visual cases and 2,498 exact baselines. In both themes, the
-  unbalanced attachment preview and reopened PNG matched within one channel
-  level at 100%; the balanced case stopped at a test landmark on the frame
-  border before its preview comparison. The landmark was moved inside the
-  balance margin for the next run. Physical DPI and broader frame/inset
-  combinations remain unverified.
+  balanced and unbalanced attachment previews and reopened PNGs matched within
+  one channel level at simulated 100% and 125%. The 200% case stopped before
+  its preview comparison because a title-bar landmark sampled the antialiased
+  frame corner; the landmark now samples its interior. Physical DPI and broader
+  frame/inset combinations remain unverified.
 - An unframed single-image inset was omitted at zero padding when corners or a
   shadow were enabled, and otherwise occupied the outer padding. The inset now
   surrounds the image and the preview uses the exported composition. Light and
