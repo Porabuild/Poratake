@@ -897,9 +897,17 @@ Bugs fixed in this pass:
   At simulated 125%, a pointer test selects and drags a framed-inset annotation;
   its handle remains visible two pixels beyond the image's left and top edges,
   and the moved result matches a reopened PNG at those three zoom levels.
-  An independent Electron 170×185 frame sample differed by more than two
-  channel levels at 786 of 28,030 pixels outside the annotation area; the
-  maximum difference was 43 near the window controls and frame edges.
+  An independent Electron 170×185 frame sample originally differed by more than
+  two channel levels at 786 of 28,950 pixels outside the annotation area, with
+  a maximum difference of 43. Higher-precision antialiasing for the Windows
+  maximize icon reduces that sample to 707 pixels and a maximum of 27; other
+  controls, shadows and frame edges still differ. A reviewed Electron image
+  baseline covers the maximize icon in both themes at seven scales from 100%
+  to 250% and four fractional positions, with every sampled channel within two
+  levels. CPU checks also cover clipping, alpha and canvas edges; transformed
+  canvases retain the previous stroke path. Local light and dark Windows GPU
+  runs each passed 191 exact baselines and the framed preview/export checks at
+  simulated 125% and 200%. Physical DPI remains unverified.
 - Fixed aspect ratios that add height placed unbalanced content at the top.
   The shared layout now centers it; a 9:16 framed and unframed inset with a
   solid background matched its reopened PNG at 73%, 100% and 150% zoom. A

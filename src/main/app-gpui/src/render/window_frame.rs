@@ -2,7 +2,7 @@
 //! themes in `renderer/utils/window-frame.ts` — the macOS and Windows window
 //! chrome the editor can wrap a screenshot in.
 
-use tiny_skia::{Color, FillRule, LineCap, PixmapRef, Rect, Stroke};
+use tiny_skia::{Color, FillRule, LineCap, Paint, Pixmap, PixmapRef, Rect, Stroke, Transform};
 
 use crate::render::canvas::{circle_path, paint_rounded_shadow, rounded_rect_path, Canvas, Shadow};
 use crate::render::color;
@@ -344,7 +344,9 @@ fn draw_windows_controls(
         let mut builder = tiny_skia::PathBuilder::new();
         builder.push_rect(rect);
         if let Some(path) = builder.finish() {
-            canvas.stroke_path(&path, paint, &pen);
+            if stroke_maximize(canvas, &path, rect, paint, &pen).is_none() {
+                canvas.stroke_path(&path, paint, &pen);
+            }
         }
     }
 
@@ -356,6 +358,65 @@ fn draw_windows_controls(
     if let Some(path) = builder.finish() {
         canvas.stroke_path(&path, paint, &pen);
     }
+}
+
+fn stroke_maximize(
+    canvas: &mut Canvas,
+    path: &tiny_skia::Path,
+    rect: Rect,
+    color: Color,
+    stroke: &Stroke,
+) -> Option<()> {
+    if !canvas.transform().is_identity() {
+        return None;
+    }
+    let margin = stroke.width / 2.0 + 1.0;
+    let left = (rect.left() - margin).floor().max(0.0) as u32;
+    let top = (rect.top() - margin).floor().max(0.0) as u32;
+    let right = (rect.right() + margin).ceil().min(canvas.width() as f32) as u32;
+    let bottom = (rect.bottom() + margin).ceil().min(canvas.height() as f32) as u32;
+    if left >= right || top >= bottom {
+        return Some(());
+    }
+    let (width, height) = (right - left, bottom - top);
+    let mut high = Pixmap::new(width.checked_mul(4)?, height.checked_mul(4)?)?;
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    high.stroke_path(
+        path,
+        &paint,
+        stroke,
+        Transform::from_scale(4.0, 4.0).pre_translate(-(left as f32), -(top as f32)),
+        None,
+    );
+    let mut tile = Pixmap::new(width, height)?;
+    let stride = width as usize * 4;
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = [0_u32; 4];
+            for sub_y in 0..4 {
+                for sub_x in 0..4 {
+                    let index = ((y as usize * 4 + sub_y) * stride + x as usize * 4 + sub_x) * 4;
+                    for (sum, value) in sum.iter_mut().zip(&high.data()[index..index + 4]) {
+                        *sum += u32::from(*value);
+                    }
+                }
+            }
+            let index = (y as usize * width as usize + x as usize) * 4;
+            for (target, sum) in tile.data_mut()[index..index + 4].iter_mut().zip(sum) {
+                *target = ((sum + 8) / 16) as u8;
+            }
+        }
+    }
+    canvas.draw_pixmap(
+        tile.as_ref(),
+        left as f32,
+        top as f32,
+        width as f32,
+        height as f32,
+    );
+    Some(())
 }
 
 #[cfg(test)]
@@ -412,6 +473,119 @@ mod tests {
         // The title bar is the theme's grey, the content below it is the image.
         assert_ne!(pixel(100, 20), [255, 0, 0]);
         assert_eq!(pixel(100, 60), [255, 0, 0]);
+    }
+
+    #[test]
+    fn windows_maximize_matches_electron_at_fractional_positions() {
+        let baseline = image::load_from_memory(include_bytes!(
+            "../ui/parity/fixtures/window-controls-electron.png"
+        ))
+        .unwrap()
+        .to_rgba8();
+        for (theme_index, style) in ["windows-dark", "windows-light"].into_iter().enumerate() {
+            for (scale_index, scale) in [1.0, 1.125, 1.25, 1.5, 1.75, 2.0, 2.5]
+                .into_iter()
+                .enumerate()
+            {
+                for (offset_index, offset) in [0.0, 0.25, 0.5, 0.75].into_iter().enumerate() {
+                    let mut canvas = Canvas::new(450, 240).unwrap();
+                    canvas.fill_all(Color::from_rgba8(66, 98, 130, 255));
+                    render_chrome(
+                        &mut canvas,
+                        30.0 + offset,
+                        30.0 + offset,
+                        320.0,
+                        100.0,
+                        style,
+                        None,
+                        scale,
+                        0.0,
+                        None,
+                        None,
+                        true,
+                    );
+                    let center_x = 350.0 + offset - 51.0 * scale;
+                    let center_y = 30.0 + offset + 14.0 * scale;
+                    let half = 4.5 * scale + 1.0;
+                    let left = (center_x - half).floor() as u32;
+                    let top = (center_y - half).floor() as u32;
+                    let right = (center_x + half).ceil() as u32;
+                    let bottom = (center_y + half).ceil() as u32;
+                    for y in top..bottom {
+                        for x in left..right {
+                            let expected = baseline.get_pixel(
+                                scale_index as u32 * 32 + x - left,
+                                (theme_index * 4 + offset_index) as u32 * 32 + y - top,
+                            );
+                            let index = ((y * canvas.width() + x) * 4) as usize;
+                            let actual = &canvas.pixmap().data()[index..index + 4];
+                            assert!(
+                                actual
+                                    .iter()
+                                    .zip(expected.0)
+                                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                                "{style}, scale {scale}, offset {offset}, pixel {x},{y}: {actual:?} != {expected:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_controls_respect_clip_and_alpha() {
+        let mut full = Canvas::new(180, 60).unwrap();
+        let mut clipped = Canvas::new(180, 60).unwrap();
+        for canvas in [&mut full, &mut clipped] {
+            canvas.set_global_alpha(0.5);
+        }
+        clipped.clip_rect(Rect::from_xywh(0.0, 0.0, 96.0, 60.0).unwrap());
+        draw_windows_controls(&mut full, 0.0, 0.0, 160.0, "#FFFFFF", 1.25);
+        draw_windows_controls(&mut clipped, 0.0, 0.0, 160.0, "#FFFFFF", 1.25);
+        for y in 0..60 {
+            for x in 0..180 {
+                let index = ((y * 180 + x) * 4) as usize;
+                let expected = if x < 96 {
+                    &full.pixmap().data()[index..index + 4]
+                } else {
+                    &[0, 0, 0, 0]
+                };
+                assert_eq!(&clipped.pixmap().data()[index..index + 4], expected);
+            }
+        }
+        assert!(full
+            .pixmap()
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 128));
+        assert!(clipped
+            .pixmap()
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn windows_controls_remain_visible_at_the_canvas_edge() {
+        let mut small = Canvas::new(80, 60).unwrap();
+        let mut large = Canvas::new(130, 60).unwrap();
+        draw_windows_controls(&mut small, 0.0, 0.0, 66.0, "#FFFFFF", 1.25);
+        draw_windows_controls(&mut large, 50.0, 0.0, 66.0, "#FFFFFF", 1.25);
+        for y in 0..60 {
+            for x in 0..80 {
+                let small_index = ((y * 80 + x) * 4) as usize;
+                let large_index = ((y * 130 + x + 50) * 4) as usize;
+                assert_eq!(
+                    &small.pixmap().data()[small_index..small_index + 4],
+                    &large.pixmap().data()[large_index..large_index + 4]
+                );
+            }
+        }
     }
 
     #[test]
