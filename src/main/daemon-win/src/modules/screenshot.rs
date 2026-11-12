@@ -38,7 +38,7 @@ fn capture_area(request: &Request) -> Reply {
     let Some(bounds) = area_bounds(wire.capture.rect) else {
         return Reply::Now(Err((
             "INVALID_PARAMS".to_string(),
-            "A capture area with a positive width and height is required".to_string(),
+            "Capture area must have positive dimensions and non-overflowing bounds".to_string(),
         )));
     };
 
@@ -141,12 +141,14 @@ fn area_bounds(rect: CaptureRect) -> Option<RECT> {
     if rect.width <= 0 || rect.height <= 0 {
         return None;
     }
+    let right = rect.x.checked_add(rect.width)?;
+    let bottom = rect.y.checked_add(rect.height)?;
 
     Some(RECT {
         left: rect.x,
         top: rect.y,
-        right: rect.x + rect.width,
-        bottom: rect.y + rect.height,
+        right,
+        bottom,
     })
 }
 
@@ -155,4 +157,76 @@ fn missing_path() -> Reply {
         "INVALID_PARAMS".to_string(),
         "A destination path is required".to_string(),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn area_bounds_rejects_coordinate_overflow() {
+        assert!(
+            area_bounds(CaptureRect {
+                x: i32::MAX - 10,
+                y: 0,
+                width: 11,
+                height: 1,
+            })
+            .is_none()
+        );
+        assert!(
+            area_bounds(CaptureRect {
+                x: 0,
+                y: i32::MAX - 10,
+                width: 1,
+                height: 11,
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn area_bounds_preserves_valid_exclusive_edges() {
+        let bounds = area_bounds(CaptureRect {
+            x: -20,
+            y: 30,
+            width: 40,
+            height: 50,
+        })
+        .expect("valid capture area");
+
+        assert_eq!(bounds.left, -20);
+        assert_eq!(bounds.top, 30);
+        assert_eq!(bounds.right, 20);
+        assert_eq!(bounds.bottom, 80);
+    }
+
+    #[test]
+    fn capture_area_reports_coordinate_overflow_as_invalid_params() {
+        for (x, y, width, height) in [(i32::MAX - 10, 0, 11, 1), (0, i32::MAX - 10, 1, 11)] {
+            let request = Request {
+                id: "overflowing-capture-area".into(),
+                module: SCREENSHOT_MODULE.into(),
+                method: ScreenshotMethod::CaptureArea.id().into(),
+                params: Some(HashMap::from([
+                    ("x".into(), serde_json::json!(x)),
+                    ("y".into(), serde_json::json!(y)),
+                    ("width".into(), serde_json::json!(width)),
+                    ("height".into(), serde_json::json!(height)),
+                    ("path".into(), serde_json::json!("capture.png")),
+                ])),
+            };
+
+            let Reply::Now(Err((code, message))) = ScreenshotModule.handle(&request) else {
+                panic!("overflowing bounds must be rejected before capture starts");
+            };
+
+            assert_eq!(code, "INVALID_PARAMS");
+            assert_eq!(
+                message,
+                "Capture area must have positive dimensions and non-overflowing bounds"
+            );
+        }
+    }
 }

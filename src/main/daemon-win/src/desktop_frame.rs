@@ -901,10 +901,15 @@ pub fn crop(frame: &DesktopFrame, bounds: RECT) -> Option<DesktopFrame> {
 
     let scale_x = frame.width as f64 / source_width as f64;
     let scale_y = frame.height as f64 / source_height as f64;
-    let left = scaled(bounds.left - frame.bounds.left, scale_x).clamp(0, frame.width as i32);
-    let top = scaled(bounds.top - frame.bounds.top, scale_y).clamp(0, frame.height as i32);
-    let right = scaled(bounds.right - frame.bounds.left, scale_x).clamp(0, frame.width as i32);
-    let bottom = scaled(bounds.bottom - frame.bounds.top, scale_y).clamp(0, frame.height as i32);
+    let left = scaled_offset(bounds.left, frame.bounds.left, scale_x, frame.width as i32);
+    let top = scaled_offset(bounds.top, frame.bounds.top, scale_y, frame.height as i32);
+    let right = scaled_offset(bounds.right, frame.bounds.left, scale_x, frame.width as i32);
+    let bottom = scaled_offset(
+        bounds.bottom,
+        frame.bounds.top,
+        scale_y,
+        frame.height as i32,
+    );
 
     let width = (right - left) as usize;
     let height = (bottom - top) as usize;
@@ -1030,14 +1035,16 @@ fn capture_with_gdi(bounds: RECT) -> Option<DesktopFrame> {
     })
 }
 
-fn scaled(value: i32, scale: f64) -> i32 {
-    (value as f64 * scale).round() as i32
+fn scaled_offset(coordinate: i32, origin: i32, scale: f64, limit: i32) -> i32 {
+    ((i64::from(coordinate) - i64::from(origin)) as f64 * scale)
+        .round()
+        .clamp(0.0, f64::from(limit)) as i32
 }
 
 fn center_of(rect: RECT) -> POINT {
     POINT {
-        x: (rect.left + rect.right) / 2,
-        y: (rect.top + rect.bottom) / 2,
+        x: ((i64::from(rect.left) + i64::from(rect.right)) / 2) as i32,
+        y: ((i64::from(rect.top) + i64::from(rect.bottom)) / 2) as i32,
     }
 }
 
@@ -1138,6 +1145,47 @@ mod tests {
     }
 
     #[test]
+    fn center_of_handles_extreme_positive_and_negative_bounds() {
+        assert_eq!(
+            center_of(RECT {
+                left: i32::MAX - 2,
+                top: i32::MAX - 2,
+                right: i32::MAX,
+                bottom: i32::MAX,
+            }),
+            POINT {
+                x: i32::MAX - 1,
+                y: i32::MAX - 1,
+            }
+        );
+        assert_eq!(
+            center_of(RECT {
+                left: i32::MIN,
+                top: i32::MIN,
+                right: i32::MIN + 1,
+                bottom: i32::MIN + 1,
+            }),
+            POINT {
+                x: i32::MIN + 1,
+                y: i32::MIN + 1,
+            }
+        );
+    }
+
+    #[test]
+    fn center_of_handles_mixed_sign_and_negative_origin_bounds() {
+        assert_eq!(
+            center_of(RECT {
+                left: -30,
+                top: -21,
+                right: 11,
+                bottom: 8,
+            }),
+            POINT { x: -9, y: -6 }
+        );
+    }
+
+    #[test]
     #[ignore = "benchmarks real screen capture; run with --ignored --nocapture"]
     fn measures_capture_monitor_timings() {
         prewarm_capture();
@@ -1231,6 +1279,90 @@ mod tests {
         assert_eq!(cropped.width, 4);
         assert_eq!(cropped.height, 6);
         assert_eq!(cropped.pixels.len(), 4 * 6 * BYTES_PER_PIXEL);
+    }
+
+    #[test]
+    fn rejects_extreme_coordinates_outside_a_small_frame() {
+        let mut positive_origin = frame(4, 4, 7);
+        positive_origin.bounds = RECT {
+            left: 100,
+            top: 100,
+            right: 104,
+            bottom: 104,
+        };
+        assert!(
+            crop(
+                &positive_origin,
+                RECT {
+                    left: i32::MIN,
+                    top: 100,
+                    right: -1,
+                    bottom: 104,
+                }
+            )
+            .is_none()
+        );
+
+        let mut negative_origin = frame(4, 4, 7);
+        negative_origin.bounds = RECT {
+            left: -104,
+            top: -104,
+            right: -100,
+            bottom: -100,
+        };
+        assert!(
+            crop(
+                &negative_origin,
+                RECT {
+                    left: 1,
+                    top: -104,
+                    right: i32::MAX,
+                    bottom: -100,
+                }
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn crops_a_partial_overlap_at_negative_origin() {
+        let mut source = frame(4, 4, 0);
+        source.bounds = RECT {
+            left: -10,
+            top: -20,
+            right: -6,
+            bottom: -16,
+        };
+        for (index, pixel) in source
+            .pixels
+            .as_chunks_mut::<BYTES_PER_PIXEL>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            pixel.copy_from_slice(&[index as u8, 0, 0, u8::MAX]);
+        }
+
+        let cropped = crop(
+            &source,
+            RECT {
+                left: -12,
+                top: -21,
+                right: -8,
+                bottom: -18,
+            },
+        )
+        .expect("partial overlap");
+
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        assert_eq!(
+            cropped.pixels,
+            [
+                source.pixels[..2 * BYTES_PER_PIXEL].to_vec(),
+                source.pixels[4 * BYTES_PER_PIXEL..6 * BYTES_PER_PIXEL].to_vec()
+            ]
+            .concat()
+        );
     }
 
     #[test]
