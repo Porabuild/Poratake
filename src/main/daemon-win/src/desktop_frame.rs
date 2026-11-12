@@ -300,61 +300,13 @@ impl FrozenComposition {
     }
 
     fn write_png(&self, path: &str, stride: usize) -> Result<(), String> {
-        crate::com::retain_process_mta()
-            .map_err(|error| format!("Failed to initialize COM: {error}"))?;
-        let _apartment = MtaApartment::initialize()?;
-        let factory: IWICImagingFactory =
-            unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
-                .map_err(|error| format!("Failed to open the image encoder: {error}"))?;
-        let stream = unsafe { factory.CreateStream() }
-            .map_err(|error| format!("Failed to open the image stream: {error}"))?;
-        let wide_path = to_wide(path);
-        unsafe {
-            stream
-                .InitializeFromFilename(PCWSTR(wide_path.as_ptr()), GENERIC_WRITE.0)
-                .map_err(|error| format!("Failed to create '{path}': {error}"))?;
-        }
-        let encoder = unsafe { factory.CreateEncoder(&GUID_ContainerFormatPng, null()) }
-            .map_err(|error| format!("Failed to create the PNG encoder: {error}"))?;
-        unsafe {
-            encoder
-                .Initialize(&stream, WICBitmapEncoderNoCache)
-                .map_err(|error| format!("Failed to initialize the PNG encoder: {error}"))?;
-        }
-        let mut encoded_frame: Option<IWICBitmapFrameEncode> = None;
-        unsafe {
-            encoder
-                .CreateNewFrame(&mut encoded_frame, null_mut())
-                .map_err(|error| format!("Failed to create the PNG frame: {error}"))?;
-        }
-        let encoded_frame =
-            encoded_frame.ok_or_else(|| "The PNG frame was not created".to_string())?;
-        let mut format = GUID_WICPixelFormat32bppBGRA;
-        unsafe {
-            encoded_frame
-                .Initialize(None)
-                .map_err(|error| format!("Failed to initialize the PNG frame: {error}"))?;
-            encoded_frame
-                .SetSize(self.width, self.height)
-                .map_err(|error| format!("Failed to size the PNG frame: {error}"))?;
-            encoded_frame
-                .SetPixelFormat(&mut format)
-                .map_err(|error| format!("Failed to configure the PNG frame: {error}"))?;
-        }
-        self.write_bands(stride, |rows, _, pixels| unsafe {
-            encoded_frame
-                .WritePixels(rows, stride as u32, pixels)
-                .map_err(|error| format!("Failed to write the PNG frame: {error}"))
-        })?;
-        unsafe {
-            encoded_frame
-                .Commit()
-                .map_err(|error| format!("Failed to commit the PNG frame: {error}"))?;
-            encoder
-                .Commit()
-                .map_err(|error| format!("Failed to save '{path}': {error}"))?;
-        }
-        Ok(())
+        write_png_with(path, self.width, self.height, |encoded_frame| {
+            self.write_bands(stride, |rows, _, pixels| unsafe {
+                encoded_frame
+                    .WritePixels(rows, stride as u32, pixels)
+                    .map_err(|error| format!("Failed to write the PNG frame: {error}"))
+            })
+        })
     }
 
     fn write_bands(
@@ -632,6 +584,23 @@ fn write_bmp(frame: &DesktopFrame, path: &str) -> Result<(), String> {
 }
 
 fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
+    write_png_with(path, frame.width, frame.height, |encoded_frame| unsafe {
+        encoded_frame
+            .WritePixels(
+                frame.height,
+                frame.width * BYTES_PER_PIXEL as u32,
+                &frame.pixels,
+            )
+            .map_err(|error| format!("Failed to write the PNG frame: {error}"))
+    })
+}
+
+fn write_png_with(
+    path: &str,
+    width: u32,
+    height: u32,
+    write_pixels: impl FnOnce(&IWICBitmapFrameEncode) -> Result<(), String>,
+) -> Result<(), String> {
     crate::trace::trace("write_png enter");
     // WIC encodes safely on the process MTA. The previous STA-per-worker
     // scheme deadlocked: an STA that never pumps messages blocks any WIC
@@ -680,20 +649,16 @@ fn write_png(frame: &DesktopFrame, path: &str) -> Result<(), String> {
             .Initialize(None)
             .map_err(|error| format!("Failed to initialize the PNG frame: {error}"))?;
         encoded_frame
-            .SetSize(frame.width, frame.height)
+            .SetSize(width, height)
             .map_err(|error| format!("Failed to size the PNG frame: {error}"))?;
         encoded_frame
             .SetPixelFormat(&mut format)
             .map_err(|error| format!("Failed to configure the PNG frame: {error}"))?;
-        crate::trace::trace("write_png writing pixels");
-        encoded_frame
-            .WritePixels(
-                frame.height,
-                frame.width * BYTES_PER_PIXEL as u32,
-                &frame.pixels,
-            )
-            .map_err(|error| format!("Failed to write the PNG frame: {error}"))?;
-        crate::trace::trace("write_png committing");
+    }
+    crate::trace::trace("write_png writing pixels");
+    write_pixels(&encoded_frame)?;
+    crate::trace::trace("write_png committing");
+    unsafe {
         encoded_frame
             .Commit()
             .map_err(|error| format!("Failed to commit the PNG frame: {error}"))?;
