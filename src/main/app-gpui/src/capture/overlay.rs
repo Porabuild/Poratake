@@ -992,14 +992,13 @@ fn begin_recording_after_icon_restore(
         };
         let transition = crate::capture::desktop_icons::track_transition();
         cx.spawn(async move |cx| {
-            let restored = cx
-                .background_executor()
-                .spawn(async move {
-                    let restored = crate::capture::desktop_icons::restore_after_capture_hide(hide);
-                    drop(transition);
-                    restored
-                })
-                .await;
+            let worker_transition = transition.clone();
+            let restored = smol::unblock(move || {
+                let restored = crate::capture::desktop_icons::restore_after_capture_hide(hide);
+                drop(worker_transition);
+                restored
+            })
+            .await;
             cx.update(|cx| {
                 if revision(cx) != owner || crate::capture::desktop_icons::is_shutting_down() {
                     return;
@@ -1030,6 +1029,7 @@ fn begin_recording_after_icon_restore(
                     });
                 }
             });
+            drop(transition);
         })
         .detach();
     });

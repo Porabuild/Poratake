@@ -151,6 +151,22 @@ fn select_area_rect(cx: &mut HeadlessAppContext, picker: gpui::AnyWindowHandle, 
     }
 }
 
+#[cfg(windows)]
+fn wait_for_icon_restoration(cx: &mut HeadlessAppContext) {
+    let started = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        if crate::capture::desktop_icons::pending_transitions().is_empty() {
+            return;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "desktop icon restoration did not settle"
+        );
+        std::thread::yield_now();
+    }
+}
+
 pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output: &Path) {
     #[cfg(windows)]
     use std::io::{Read, Write};
@@ -202,6 +218,8 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             );
         }
         cx.run_until_parked();
+        #[cfg(windows)]
+        wait_for_icon_restoration(cx);
         #[cfg(windows)]
         {
             let calls = super::daemon_fixture::calls(output);
@@ -302,6 +320,17 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             .unwrap(),
         )
         .unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let show = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.read_exact(&mut [1]).unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            stream.write_all(&[0]).unwrap();
+        });
         let before = super::daemon_fixture::calls(output).len();
         let duplicate_display = DuplicateDisplayTarget::enable();
         cx.update(|cx| {
@@ -324,6 +353,9 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         );
         select_area(cx, overlays[0]);
         cx.run_until_parked();
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
         assert!(
             cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
             "recording controls must wait for restoration on the selected display"
@@ -337,13 +369,9 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         assert!(!super::daemon_fixture::calls(output)[before..]
             .iter()
             .any(|call| call["module"] == "screen-recorder" && call["method"] == "start"));
-        let show = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.read_exact(&mut [1]).unwrap();
-            stream.write_all(&[0]).unwrap();
-        });
+        release_tx.send(()).unwrap();
         show.join().unwrap();
-        cx.run_until_parked();
+        wait_for_icon_restoration(cx);
         assert!(
             cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)),
             "only the selected display should open recording controls after restoration"
@@ -443,7 +471,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         cx.run_until_parked();
         let picker = area_picker(cx);
         select_area(cx, picker);
-        cx.run_until_parked();
+        wait_for_icon_restoration(cx);
         assert!(
             cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
             "recording controls must stay closed when desktop icon restoration fails"
@@ -469,6 +497,17 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             .unwrap(),
         )
         .unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let show = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.read_exact(&mut [1]).unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            stream.write_all(&[0]).unwrap();
+        });
         cx.update(|cx| {
             crate::state::state(cx).config.update(|config| {
                 config.screenshot.freeze_screen = true;
@@ -483,6 +522,9 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         let picker = area_picker(cx);
         select_area(cx, picker);
         cx.run_until_parked();
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
         assert!(
             cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
             "recording controls must wait for desktop icon restoration"
@@ -494,13 +536,9 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             "a duplicate selection must not open controls before restoration"
         );
         cx.update(crate::capture::start_area_capture);
-        let show = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.read_exact(&mut [1]).unwrap();
-            stream.write_all(&[0]).unwrap();
-        });
+        release_tx.send(()).unwrap();
         show.join().unwrap();
-        cx.run_until_parked();
+        wait_for_icon_restoration(cx);
         assert_eq!(
             cx.update(crate::capture::overlay::active_intents_for_test),
             [crate::capture::intent::CaptureIntent::Screenshot],
@@ -997,7 +1035,7 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
         );
         assert!(crate::capture::desktop_icons::are_hidden());
         select_area(cx, picker);
-        cx.run_until_parked();
+        wait_for_icon_restoration(cx);
         assert!(cx.update(|cx| crate::windows::registry::is_open(
             crate::windows::registry::WindowKind::RecordingControl,
             cx
@@ -7874,11 +7912,19 @@ pub(super) fn video(
     assert!(saved.wallpaper.enabled);
     assert_eq!(saved.wallpaper.padding, 12.);
     let mut expected = preview::Source::open(&project, saved).unwrap();
-    let expected = preview::to_render_image(&expected.compose(0., None).unwrap()).unwrap();
+    let expected = preview::to_render_image_opaque(&expected.compose(0., None).unwrap()).unwrap();
     cx.update(|cx| {
         let actual = video.read(cx).unwrap().preview_image().unwrap();
         assert_eq!(actual.size(0), expected.size(0));
-        assert_eq!(actual.as_bytes(0), expected.as_bytes(0));
+        let actual = actual.as_bytes(0).unwrap();
+        let expected = expected.as_bytes(0).unwrap();
+        assert_eq!(actual.len(), expected.len());
+        if let Some(index) = actual.iter().zip(expected).position(|(a, b)| a != b) {
+            panic!(
+                "video preview differs at byte {index}: {} != {}",
+                actual[index], expected[index]
+            );
+        }
     });
     hover(cx, window, 300., 300.);
     capture(cx, window, output, "video-loaded-default");

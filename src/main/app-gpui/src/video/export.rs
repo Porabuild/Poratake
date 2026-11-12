@@ -1188,6 +1188,11 @@ mod tests {
         state.wallpaper.enabled = true;
         state.wallpaper.padding = 12.;
         state.wallpaper.corners = 8.;
+        state.wallpaper.gradient = Some(serde_json::json!({
+            "id": "translucent-export-test",
+            "colors": ["#80402080", "#80402080"],
+            "angle": 135.0,
+        }));
         state.drawing_segments.push(model::DrawingSegment {
             id: "drawing".into(),
             start_time: 0.,
@@ -1258,8 +1263,15 @@ mod tests {
         assert_eq!((info.width, info.height), (344, 204));
         assert!((info.duration - 1.375).abs() <= 1. / 8., "{info:?}");
         for time in [0., 0.25, 0.5, 1.25] {
-            let expected = preview.compose(time, None).unwrap();
-            let expected = to_bgra(&expected);
+            let composed = preview.compose(time, None).unwrap();
+            assert_eq!(
+                composed.data()[3],
+                128,
+                "wallpaper padding must retain alpha"
+            );
+            let preview_image = preview::to_render_image_opaque(&composed).unwrap();
+            let expected = preview_image.as_bytes(0).unwrap().to_vec();
+            assert_eq!(expected, to_bgra(&composed));
             let original = to_bgra(&unredacted.compose(time, None).unwrap());
             let actual = exported.frame_at(time).unwrap();
             assert_eq!(actual.bgra.len(), expected.len());
@@ -1961,6 +1973,43 @@ mod tests {
         let mut pixmap = Pixmap::new(1, 1).expect("pixmap");
         pixmap.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
         assert_eq!(to_bgra(&pixmap), vec![30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn translucent_wallpaper_video_preview_matches_encoder_pixels() {
+        let mut state = VideoEditorState::default();
+        state.wallpaper.enabled = true;
+        state.wallpaper.padding = 1.0;
+        state.wallpaper.gradient = Some(serde_json::json!({
+            "id": "translucent-test",
+            "colors": ["#80402080", "#80402080"],
+            "angle": 135.0,
+        }));
+        state.segments = vec![crate::windows::video_editor::model::Segment::spanning(1.0)];
+        let mut engine = Engine::new(Config::new(1.0, 1.0, state));
+        let mut video = Pixmap::new(1, 1).expect("video frame");
+        video.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        let frame = engine
+            .render_frame(
+                0.0,
+                Frames {
+                    video: Some(video.as_ref()),
+                    camera: None,
+                },
+            )
+            .expect("composed frame");
+        let preview = crate::windows::video_editor::preview::to_render_image_opaque(&frame)
+            .expect("preview image");
+        assert_eq!(preview.size(0).width.0, 3);
+        assert_eq!(preview.size(0).height.0, 3);
+
+        let padding_pixel = &frame.data()[0..4];
+        assert_eq!(padding_pixel, &[64, 32, 16, 128]);
+        assert_eq!(&frame.data()[4 * 4..4 * 5], &[10, 20, 30, 255]);
+        let preview_bytes = preview.as_bytes(0).expect("preview pixels");
+        let exported = to_bgra(&frame);
+        assert_eq!(&exported[0..4], &[32, 64, 128, 255]);
+        assert_eq!(preview_bytes, exported);
     }
 
     #[test]

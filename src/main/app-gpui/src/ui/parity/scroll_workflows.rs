@@ -244,9 +244,22 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             }
             if name == "cancel-finishing-held" {
                 let (_, received, release_cancel) = cancel_barrier.as_ref().unwrap();
-                received
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
+                let started = std::time::Instant::now();
+                loop {
+                    cx.run_until_parked();
+                    match received.try_recv() {
+                        Ok(()) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            panic!("cancel request worker exited before reaching its barrier")
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    }
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(10),
+                        "Cancel was not sent while Finish was held"
+                    );
+                    std::thread::yield_now();
+                }
                 release_cancel.send(()).unwrap();
                 cx.run_until_parked();
                 assert!(crate::capture::scroll::is_active());
@@ -346,6 +359,18 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 std::thread::yield_now();
             }
         }
+        let saved = matches!(
+            name,
+            "early-finish"
+                | "finish-held"
+                | "finish-long-held"
+                | "retry"
+                | "retryable-success"
+                | "collision"
+                | "interrupted"
+                | "burst-finish"
+        );
+        let notifications = wait_for_scroll_result(cx, output, &captures, name, before, saved);
         assert!(
             !crate::capture::scroll::is_active(),
             "{name}: scroll session must settle"
@@ -357,17 +382,6 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         assert_eq!(
             cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
             Some(sentinel)
-        );
-        let saved = matches!(
-            name,
-            "early-finish"
-                | "finish-held"
-                | "finish-long-held"
-                | "retry"
-                | "retryable-success"
-                | "collision"
-                | "interrupted"
-                | "burst-finish"
         );
         if saved {
             if name == "collision" {
@@ -381,6 +395,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                     name,
                     "finish-held"
                         | "finish-long-held"
+                        | "retryable-success"
                         | "collision"
                         | "interrupted"
                         | "burst-finish"
@@ -412,7 +427,6 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 history
             );
         }
-        let notifications = take_notifications();
         let body = match name {
             "start-failed" => Some("The scroll capture could not be started"),
             "finish-failed" | "empty" => Some("The scroll capture produced no image"),
@@ -587,6 +601,88 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     println!("scroll capture selection, early events, save/history/editor output, failures and retry passed");
 }
 
+fn wait_for_scroll_result(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    captures: &Path,
+    name: &str,
+    before: usize,
+    saved: bool,
+) -> Vec<(String, String, bool)> {
+    let expected_notification_count = match name {
+        "interrupted" => 3,
+        "burst-finish" | "burst-cancel" => 20,
+        "start-failed"
+        | "finish-failed"
+        | "finish-partial-failed"
+        | "empty"
+        | "finish-spawn-failed" => 1,
+        _ => 0,
+    };
+    let started = std::time::Instant::now();
+    let mut notifications = Vec::new();
+    loop {
+        cx.run_until_parked();
+        notifications.extend(take_notifications());
+        assert!(
+            notifications.len() <= expected_notification_count,
+            "{name}: received more than {expected_notification_count} notifications"
+        );
+
+        let session_settled = !crate::capture::scroll::is_active()
+            && !cx.update(crate::capture::overlay::parity_is_active);
+        let output_settled = if saved {
+            if name == "collision" {
+                captures.join("Collision (1).png").is_file()
+            } else {
+                std::fs::read_dir(captures).unwrap().count() == 1
+            }
+        } else {
+            std::fs::read_dir(captures).unwrap().count()
+                == usize::from(name == "finish-partial-failed")
+        };
+        let calls = calls(output);
+        let temporary_settled = calls[before..]
+            .iter()
+            .filter(|call| call["module"] == "scroll-capture" && call["method"] == "finish")
+            .all(|call| {
+                if name == "finish-partial-failed" {
+                    true
+                } else {
+                    call["params"]["outputPath"]
+                        .as_str()
+                        .is_some_and(|path| !Path::new(path).exists())
+                }
+            });
+        let history_settled = !saved
+            || crate::history_store::load_history()
+                .iter()
+                .any(|item| Path::new(&item.original_path).parent() == Some(captures));
+        let preview_settled = !saved
+            || cx.update(|cx| {
+                crate::windows::registry::is_open(
+                    crate::windows::registry::WindowKind::CapturePreview,
+                    cx,
+                )
+            });
+
+        if session_settled
+            && output_settled
+            && temporary_settled
+            && history_settled
+            && preview_settled
+            && notifications.len() == expected_notification_count
+        {
+            return notifications;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{name}: scroll result did not settle"
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[cfg(windows)]
 fn scroll_start_returns_before_daemon_reply(
     cx: &mut HeadlessAppContext,
@@ -664,8 +760,8 @@ fn scroll_start_returns_before_daemon_reply(
             .unwrap(),
         "scroll capture startup blocked the UI until the daemon replied"
     );
-    assert!(!crate::capture::scroll::is_active());
-    assert!(take_notifications().is_empty());
+    let notifications = wait_for_scroll_result(cx, output, &captures, "start-held", before, true);
+    assert!(notifications.is_empty());
     let recorded = calls(output);
     let methods: Vec<_> = recorded[before..]
         .iter()

@@ -742,7 +742,7 @@ impl VideoEditorWindow {
                     let image = guard
                         .compose(time, max_dimensions)
                         .as_ref()
-                        .and_then(preview::to_render_image);
+                        .and_then(preview::to_render_image_opaque);
                     (image, started.elapsed())
                 })
                 .await;
