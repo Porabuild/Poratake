@@ -3411,7 +3411,7 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
             "the right attachment is laid out alongside the primary"
         );
         if balanced {
-            assert_eq!(saved.get_pixel(0, content_y).0, [230, 230, 230, 255]);
+            assert_eq!(saved.get_pixel(2, content_y).0, [230, 230, 230, 255]);
         }
 
         let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
