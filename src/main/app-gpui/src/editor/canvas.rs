@@ -666,16 +666,18 @@ fn paint_annotations(
             Annotation::Redact { style, .. }
                 if style == "blur" && !is_draft
         );
+        let committed_blackout = matches!(
+            annotation,
+            Annotation::Redact { style, .. }
+                if style == "blackout" && !is_draft
+        );
         let draft_redaction = matches!(annotation, Annotation::Redact { .. }) && is_draft;
         let aligned = (scale - 1.).abs() > 0.0001
             && !draft_redaction
             && (committed_blur
                 || committed_pixelation
-                || preview_raster::overlaps_filtered_redaction(
-                    annotation,
-                    &visible[..index],
-                    &surface,
-                ));
+                || committed_blackout
+                || preview_raster::overlaps_redaction(annotation, &visible[..index], &surface));
         if !snapshot.backdrop_composite
             && !redaction_surface.composite_backdrop
             && !committed_pixelation

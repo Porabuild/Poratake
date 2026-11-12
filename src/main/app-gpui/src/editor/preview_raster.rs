@@ -199,7 +199,7 @@ fn raster_bounds(
     }
 }
 
-pub fn overlaps_filtered_redaction(
+pub fn overlaps_redaction(
     annotation: &Annotation,
     beneath: &[ScreenshotPaint<'_>],
     surface: &Surface,
@@ -209,7 +209,7 @@ pub fn overlaps_filtered_redaction(
     };
     beneath.iter().any(|earlier| {
         let earlier = earlier.annotation();
-        if !matches!(earlier, Annotation::Redact { style, .. } if style == "blur" || style == "pixelate") {
+        if !matches!(earlier, Annotation::Redact { .. }) {
             return false;
         }
         let redaction = padded(earlier.bounds(), 2.);

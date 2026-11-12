@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `642d16a7` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `ab0e7a95` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -89,7 +89,15 @@ passed 14 of 16 visual cases. A transparent wallpaper exposed the editor stage's
 shadow in its preview, and a fractional-position test compared GPU-rendered pixels
 directly with raw PNG pixels. The stage now has the editor's background behind
 its wallpaper, and the fractional test compares a reopened PNG at the same bounds.
-New alpha-gradient and transparent-image cases also need a hosted GPU run.
+The follow-up also adds alpha-gradient and transparent-image cases.
+The [run at `642d16a7`](https://github.com/Porabuild/Poratake/actions/runs/43132888460)
+passed the Windows native, accessibility and clipboard checks and 14 of 16 visual
+cases. Both 1280px/100% themes passed the alpha wallpaper checks, then failed the
+same zoomed blackout-edge comparison.
+Its preserved artifact contains 16 renderer profiles and 3,193 PNGs with no diff
+images. After aligning blackout patches, local NVIDIA runs passed the light/dark
+1280px/100% workflows and 191 baselines per theme, plus 190 baselines per theme
+at 950px/125%. The updated checks still need hosted verification.
 The current scroll follow-up passed 191 exact baselines in each of the isolated
 1280px/100% light and dark NVIDIA cases, with no diff images. The runs peaked at
 4,070 MiB and 4,065 MiB of total GPU memory respectively.
@@ -921,15 +929,16 @@ Bugs fixed in this pass:
   Unframed single images without balance, corners or shadows now composite the
   gradient or inset before redaction in export and patch-local preview tests.
   Twelve independent Electron canvas samples, including a clipped blur, differ
-  by at most three channel levels. Visual verification of annotation and draft
-  transitions and fractional aspect-ratio offsets for the patch-local path
-  remains pending. A CPU sample at one fractional origin matches export with
-  either the rounded or unrounded sampling offset. Screenshot export and CPU
-  preview patches now apply redactions before vectors and highlights, with a
-  rounded blackout pass in vector order. Eight independent Electron center
-  samples for overlapping annotations match within two levels; one rounded
-  corner differs by 22 levels. GPUI visual and selection checks for the new
-  order remain pending. Framed, balanced,
+  by at most three channel levels. Light and dark local GPU workflows at 1280px
+  and 100% now check annotation and draft transitions and a fractional aspect
+  ratio against reopened PNG pixels. A CPU sample at one fractional origin
+  matches export with either the rounded or unrounded sampling offset. Screenshot
+  export and CPU preview patches now apply redactions before vectors and
+  highlights, with a rounded blackout pass in vector order. Eight independent
+  Electron center samples for overlapping annotations match within two levels;
+  one rounded corner differs by 22 levels. Light and dark local GPU checks cover selection
+  and both blackout/shape orders at 73% and 150% zoom, within two channel levels.
+  Framed, balanced,
   rounded, shadowed and attached compositions, native interaction and broader
   images remain unverified. On this machine, the revised transparent kernel took
   220–235 ms for 19,200×160 pixels at sigma 104 in three local kernel-only
@@ -1178,7 +1187,10 @@ independently moving sampled columns still appends an ambiguous frame.
 Injecting one changed pixel or a 16-pixel horizontal or vertical animation into
 each of those 40 exact-offset cases produced 24 correct outputs and 16 early stops,
 with no incorrect outputs. All 16 stops had a fixed footer and also occurred before
-this guard. The fixed-footer matcher still needs broader animation tolerance.
+this guard. An approximate fallback resumed those cases but changed 13 pixels in
+two vertical-animation outputs because its detected footer included static body
+rows. It was not adopted; the fixed-footer matcher still needs broader animation
+tolerance.
 For a synthetic 4K repeated-row overlap with one animated pixel, ten local
 post-warmup samples had medians of 3.13 ms before and 4.12 ms after this guard;
 native capture and slower machines were not measured.

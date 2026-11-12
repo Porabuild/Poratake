@@ -168,13 +168,17 @@ is now composed before redaction in the export and CPU patch tests. Twelve
 Electron samples, including a clipped blur, are within three channel levels; the
 hosted visual run at `fb13d389` failed a transparent wallpaper preview and a
 fractional aspect-ratio comparison. The stage background and comparison bounds
-have been corrected; alpha-gradient and transparent-image cases were added, and
-the visual workflow needs a fresh run. A CPU case confirms the sampled backdrop matches export
-at a rounded fractional origin. Screenshot export and CPU preview patches now
-apply redactions before vectors and highlights, with an ordered rounded blackout
-pass. Eight Electron center samples are within two levels; one rounded corner
-differs by 22. New preview and selection checks need a GPU run, and the live
-editor case remains unverified.
+have been corrected; alpha-gradient and transparent-image cases were added. The
+hosted follow-up passed those wallpaper checks but failed a zoomed blackout edge
+in both themes. Local light/dark NVIDIA workflows at 1280px and 100% passed the
+updated checks and 191 exact baselines per theme; hosted verification is pending.
+A CPU case confirms the
+sampled backdrop matches export at a rounded fractional origin. Screenshot export
+and CPU preview patches now apply redactions before vectors and highlights, with
+an ordered rounded blackout pass. Eight Electron center samples are within two
+levels; one rounded corner differs by 22. Both blackout/shape orders match
+reopened PNG pixels at 73% and 150% zoom in those local workflows. The live editor
+case remains unverified.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain

@@ -1349,6 +1349,8 @@ pub(super) fn simple_inset_preview(
             ),
             (true, false, None, annotations),
         ] {
+            let zoomed_blackout_order = current.iter().any(|item| item.id() == "ordered-blackout")
+                && current.iter().any(|item| item.id() == "ordered-shape");
             editor
                 .update(cx, |editor, _, cx| {
                     editor.history.push(current);
@@ -1384,7 +1386,8 @@ pub(super) fn simple_inset_preview(
                     );
                 }
             }
-            if selection == Some("ordered-blackout") {
+            if zoomed_blackout_order {
+                let order_label = selection.expect("ordered annotation selection");
                 let flattened_path = scratch.join("ordered-blackout-flattened.png");
                 std::fs::write(&flattened_path, &current_png).unwrap();
                 let flattened = cx
@@ -1419,6 +1422,11 @@ pub(super) fn simple_inset_preview(
                     let top = snap(f32::from(preview_bounds.top())) - snap(margin as f32 * zoom);
                     let flat_left = snap(f32::from(flattened_bounds.left()));
                     let flat_top = snap(f32::from(flattened_bounds.top()));
+                    assert_eq!(
+                        (left, top),
+                        (flat_left, flat_top),
+                        "ordered blackout {order_label} at {zoom}x"
+                    );
                     for y in ((margin + 19) as f32 * zoom).ceil() as u32
                         ..((margin + 45) as f32 * zoom).floor() as u32
                     {
@@ -1427,9 +1435,21 @@ pub(super) fn simple_inset_preview(
                         {
                             let actual = preview.get_pixel(left + x, top + y).0;
                             let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
+                            if actual.iter().zip(expected).any(|(a, e)| a.abs_diff(e) > 2) {
+                                preview
+                                    .save(scratch.join(format!(
+                                        "ordered-blackout-preview-{order_label}-{zoom}.png"
+                                    )))
+                                    .unwrap();
+                                flattened_image
+                                    .save(scratch.join(format!(
+                                        "ordered-blackout-reopened-{order_label}-{zoom}.png"
+                                    )))
+                                    .unwrap();
+                            }
                             assert!(
                                 actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
-                                "ordered blackout at {zoom}x, {x},{y}: {actual:?} vs {expected:?}"
+                                "ordered blackout {order_label} at {zoom}x, {x},{y}: {actual:?} vs {expected:?}, bounds {preview_bounds:?} vs {flattened_bounds:?}, origins ({left},{top}) vs ({flat_left},{flat_top})"
                             );
                         }
                     }
@@ -1575,8 +1595,16 @@ pub(super) fn simple_inset_preview(
             })
             .unwrap();
         settle(cx, editor.into());
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 1. / scale;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
         let (bounds, current_png, offset) = cx.update(|cx| {
             let editor = editor.read(cx).unwrap();
+            assert_eq!(editor.zoom, 1. / scale);
             let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
                 &editor.wallpaper.for_scale(f64::from(scale)),
                 100.,
@@ -1601,6 +1629,7 @@ pub(super) fn simple_inset_preview(
                 cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
             })
             .unwrap();
+        settle(cx, flattened.into());
         flattened
             .update(cx, |editor, _, cx| {
                 editor.zoom = 1. / scale;
@@ -1608,7 +1637,11 @@ pub(super) fn simple_inset_preview(
             })
             .unwrap();
         settle(cx, flattened.into());
-        let flattened_bounds = cx.update(|cx| flattened.read(cx).unwrap().bounds.borrow().unwrap());
+        let flattened_bounds = cx.update(|cx| {
+            let flattened = flattened.read(cx).unwrap();
+            assert_eq!(flattened.zoom, 1. / scale);
+            flattened.bounds.borrow().unwrap()
+        });
         let screenshot = cx.capture_screenshot(editor.into()).unwrap();
         let expected = cx.capture_screenshot(flattened.into()).unwrap();
         let left = f32::from(bounds.left()).round() as u32 - offset.0;
