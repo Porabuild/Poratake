@@ -685,6 +685,7 @@ fn paint_annotations(
                 Annotation::Highlight { .. }
                     | Annotation::Redact { .. }
                     | Annotation::Rectangle { .. }
+                    | Annotation::Circle { .. }
             );
         if haloed == Some(annotation.id()) && !blackout_overlay && !selected_overlay {
             draw_selection_halo(window, annotation, zoom, halo);
@@ -716,7 +717,9 @@ fn paint_annotations(
             && preview_raster::is_rasterized(annotation)
             && !matches!(
                 annotation,
-                Annotation::Highlight { .. } | Annotation::Rectangle { .. }
+                Annotation::Highlight { .. }
+                    | Annotation::Rectangle { .. }
+                    | Annotation::Circle { .. }
             );
         let aligned = (scale - 1.).abs() > 0.0001
             && !draft_redaction
@@ -880,6 +883,7 @@ fn paint_annotations(
                 Annotation::Highlight { .. }
                     | Annotation::Redact { .. }
                     | Annotation::Rectangle { .. }
+                    | Annotation::Circle { .. }
             )
     }) {
         if let Annotation::Rectangle {
@@ -907,6 +911,24 @@ fn paint_annotations(
                 gpui::outline(region, halo, gpui::BorderStyle::Solid)
                     .border_widths(px(HALO_STROKE / 2. * zoom))
                     .corner_radii(px((1. + offset) * zoom)),
+            );
+        } else if let Annotation::Circle {
+            x,
+            y,
+            radius,
+            stroke_width,
+            ..
+        } = paint.annotation()
+        {
+            let radius = *radius as f32 + *stroke_width as f32 / 2. + HALO_STROKE / 4.;
+            halo_ellipse(
+                window,
+                *x as f32,
+                *y as f32,
+                radius,
+                HALO_STROKE / 2.,
+                zoom,
+                halo,
             );
         } else {
             draw_selection_halo(window, paint.annotation(), zoom, halo);

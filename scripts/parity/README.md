@@ -132,12 +132,16 @@ all four edges without frames, inset, corners or shadows are
 checked at all three scales with padding and background variants, including an
 edge-crossing pixelated redaction and the reopened preview. The right attachment
 also checks clipping outside the canvas. Balanced frames, corners, shadows,
-arbitrary zoom and framed or layered inset combinations remain outside these
-comparisons. In the unframed layered path, annotations and black, pixelated and
-blurred redactions crossing into attachments are compared with saved pixels at
-125% and 200%; overlapping and clipped redactions, crop, undo and atlas
-retirement are also checked. Direct Electron pixel comparison and framed or
-inset layered annotations remain outside these checks.
+arbitrary zoom and framed attachments remain outside these comparisons. In the
+unframed layered path, annotations and black, pixelated and blurred redactions
+crossing into attachments are compared with saved pixels at 125% and 200%;
+overlapping and clipped redactions, crop, undo and atlas retirement are also
+checked. A textured right attachment with inset checks all three redactions on
+both sides of the boundary, blackout coverage, unchanged pixels outside the
+redactions, preview/export equality and PNG reopen at 73% and 100% zoom. An
+isolated Electron canvas comparison matched blackout and pixelation exactly;
+blur differed by up to five channel levels. Framed attachments and a complete
+Electron editor workflow remain outside these checks.
 Screenshot pixelation uses fixed-size block averages checked against an Electron
 canvas for alpha, clipping and scale. Restored plain previews are compared with
 saved pixels at simulated 100%, 125% and 200%, including translucent and

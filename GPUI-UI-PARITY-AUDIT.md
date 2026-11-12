@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `8f5fc1a9` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -125,6 +125,10 @@ diff files; the artifact and log are retained under `.scratch-parity/hosted-b2d0
 passed all required jobs, including 16 visual cases and 2,880 exact baselines.
 Its preserved artifact contains 3,409 PNGs and 16 renderer profiles with no diff
 files. It predates the selected-outline follow-ups below.
+[Hosted CI at `27798e87`](https://github.com/Porabuild/Poratake/actions/runs/43189153989)
+passed all required jobs and 2,880 exact comparisons across 16 visual cases. Its
+preserved artifact contains 3,423 PNGs and 16 renderer profiles with no diff
+files. It predates the subsequent redaction and circle-selection checks.
 The desktop-icon transition follow-up passed 191 exact baselines in each local
 light/dark 1280px/100% NVIDIA run. Its fake-daemon checks cover failed and delayed
 icon transitions, stale direct capture errors and attachment recovery; the dark
@@ -1268,7 +1272,10 @@ outlines, an overlapping highlight, and plain and inset-attached images at
 simulated 125% DPI. Rectangles now use an outside-only outline above later marks
 so their stroke and fill remain visible. Light and dark fixtures check overlapping
 thin and thick rectangles, all four sides, sampled stroke and fill pixels, export,
-and plain and inset-attached images at simulated 125% DPI. Verify selection
+and plain and inset-attached images at simulated 125% DPI. Circles use the same
+outside-only order; the fixtures check all four sides, the interior, thick stroke,
+and unchanged export for thin and thick circles. At fractional zoom, antialiasing
+can blend the ring and a thin stroke into the same device pixel. Verify selection
 outlines for other overlapping annotation types and on physical displays.
 
 Electron's all-in-one screenshot code also starts the frozen selection before it
@@ -1401,6 +1408,12 @@ full-row matches changed the remaining 12 incorrect results into early stops:
 offset remained correct. A valid translation can stop if its expected step is
 wrong and the sampled strip is repetitive. A synthetic case with three
 independently moving sampled columns still appends an ambiguous frame.
+The same input frames also represent a valid 104px translation: the current
+matcher selects its correct 40px overlap, while a tested three-column guard
+stops. For a 96px main translation with independently moving columns, those
+identical frames instead require a 48px overlap. The guard was not adopted;
+the input alone cannot distinguish these cases. It left the 360-case translated
+UI probe unchanged and had no incorrect output in the 1,236-case footer probe.
 Injecting one changed pixel or a 16-pixel horizontal or vertical animation into
 each of those 40 exact-offset cases produced 24 correct outputs and 16 early stops,
 with no incorrect outputs. All 16 stops had a fixed footer and also occurred before
@@ -1423,8 +1436,8 @@ scrolling stops. GPUI and Electron now notify the user while retaining the previ
 frames for saving; normal end-of-content and height-limit stops remain quiet.
 Electron event tests cover both native and overlay-based paths and save the capture
 after interruption. A GPU-free GPUI unit test checks the event mapping. A GPUI
-workflow fixture checks the same sequence; its hosted run and native notification
-presentation still need verification.
+workflow fixture checks the same sequence and passed in the hosted run at
+`27798e87`; native notification presentation still needs verification.
 
 Keep known platform differences explicit: preview/zoom use a baked blur because
 GPUI has no live backdrop filter; the capture eyedropper remains an app overlay;

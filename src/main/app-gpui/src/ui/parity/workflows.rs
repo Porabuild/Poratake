@@ -3785,6 +3785,159 @@ pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &P
     println!("annotation, PNG save, history reopen and flattened reopen passed; preview/export changed pixels above two channel levels: {significant}");
 }
 
+fn check_circle_selection(
+    cx: &mut HeadlessAppContext,
+    editor: gpui::WindowHandle<EditorWindow>,
+    scale: f32,
+    scratch: &Path,
+    label: &str,
+) {
+    let window = editor.into();
+    let original = editor
+        .update(cx, |editor, _, _| {
+            std::mem::replace(
+                &mut editor.history,
+                crate::editor::annotations::AnnotationHistory::new(Vec::new()),
+            )
+        })
+        .unwrap();
+    for (weight, stroke_width) in [("thin", 1.), ("thick", 12.)] {
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.history.replace_current(vec![
+                    crate::editor::annotations::Annotation::Circle {
+                        id: "overlapped-circle".into(),
+                        x: 300.,
+                        y: 180.,
+                        radius: 70.,
+                        stroke: "#ff00ff".into(),
+                        stroke_width,
+                        fill: Some("#ff00ff".into()),
+                    },
+                    crate::editor::annotations::Annotation::Highlight {
+                        id: "circle-overlap".into(),
+                        points: vec![240., 110., 360., 110.],
+                        fill: "#00ffff".into(),
+                        opacity: 1.,
+                        stroke_width: 40.,
+                    },
+                ]);
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, window);
+        let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+        let before = cx.capture_screenshot(window).unwrap();
+        let saved = cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap());
+        super::click(
+            cx,
+            window,
+            f32::from(bounds.left()) + 300. * 0.73 / scale,
+            f32::from(bounds.top()) + 180. * 0.73 / scale,
+        );
+        cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            assert_eq!(editor.snapshot.borrow().selected, ["overlapped-circle"]);
+            assert_eq!(editor.export_png().unwrap(), saved);
+        });
+        let selected = cx.capture_screenshot(window).unwrap();
+        before
+            .save(scratch.join(format!("circle-{label}-{weight}-before.png")))
+            .unwrap();
+        selected
+            .save(scratch.join(format!("circle-{label}-{weight}-selected.png")))
+            .unwrap();
+        let left = (f32::from(bounds.left()) * scale + 260. * 0.73).round() as u32;
+        let right = (f32::from(bounds.left()) * scale + 340. * 0.73).round() as u32;
+        let top = (f32::from(bounds.top()) * scale + 150. * 0.73).round() as u32;
+        let bottom = (f32::from(bounds.top()) * scale + 210. * 0.73).round() as u32;
+        for y in top..bottom {
+            for x in left..right {
+                assert!(
+                    before
+                        .get_pixel(x, y)
+                        .0
+                        .iter()
+                        .zip(selected.get_pixel(x, y).0)
+                        .all(|(before, selected)| before.abs_diff(selected) <= 2),
+                    "selecting {label} {weight} circle changed its interior"
+                );
+            }
+        }
+        let content_radius = if stroke_width < 2. { 68. } else { 70. };
+        for (x, y) in [
+            (300., 180.),
+            (300., 180. - content_radius),
+            (300. - content_radius, 180.),
+            (300. + content_radius, 180.),
+            (300., 180. + content_radius),
+        ] {
+            let x = (f32::from(bounds.left()) * scale + x * 0.73).round() as u32;
+            let y = (f32::from(bounds.top()) * scale + y * 0.73).round() as u32;
+            assert!(
+                before
+                    .get_pixel(x, y)
+                    .0
+                    .iter()
+                    .zip(selected.get_pixel(x, y).0)
+                    .all(|(before, selected)| before.abs_diff(selected) <= 2),
+                "selecting {label} {weight} circle changed its content"
+            );
+        }
+        let inner = 70. + stroke_width as f32 / 2.;
+        for (side, x, y, horizontal) in [
+            ("top", 300., 180. - inner - 4., false),
+            ("bottom", 300., 180. + inner, false),
+            ("left", 300. - inner - 4., 180., true),
+            ("right", 300. + inner, 180., true),
+        ] {
+            let difference = (0..=4)
+                .flat_map(|step| {
+                    let x = (f32::from(bounds.left()) * scale
+                        + (x + if horizontal { step as f32 } else { 0. }) * 0.73)
+                        .round() as u32;
+                    let y = (f32::from(bounds.top()) * scale
+                        + (y + if horizontal { 0. } else { step as f32 }) * 0.73)
+                        .round() as u32;
+                    before
+                        .get_pixel(x, y)
+                        .0
+                        .into_iter()
+                        .zip(selected.get_pixel(x, y).0)
+                        .map(|(before, selected)| before.abs_diff(selected))
+                })
+                .max()
+                .unwrap();
+            assert!(
+                difference > 10,
+                "{label} {weight} circle {side} halo is hidden"
+            );
+        }
+        super::click(
+            cx,
+            window,
+            f32::from(bounds.left()) + 500. * 0.73 / scale,
+            f32::from(bounds.top()) + 300. * 0.73 / scale,
+        );
+        cx.update(|cx| {
+            assert!(editor
+                .read(cx)
+                .unwrap()
+                .snapshot
+                .borrow()
+                .selected
+                .is_empty());
+        });
+    }
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.history = original;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, window);
+}
+
 pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Path) {
     let source = scratch.join("scaled-wallpaper.png");
     image::RgbaImage::from_fn(640, 360, |x, y| {
@@ -5775,6 +5928,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                         f32::from(bounds.top()) + 300. * 0.73 / scale,
                     );
                 }
+                check_circle_selection(cx, editor, scale, scratch, "inset");
                 editor
                     .update(cx, |editor, _, cx| {
                         editor.wallpaper.inset = 0.;
@@ -5837,6 +5991,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                         f32::from(bounds.top()) + 300. * 0.73 / scale,
                     );
                 }
+                check_circle_selection(cx, editor, scale, scratch, "plain");
             }
         }
         if name.starts_with("plain") {
