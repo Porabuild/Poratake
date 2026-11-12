@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `fb13d389` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `58a15946` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -81,6 +81,15 @@ against the fixture image bounds and representative controls were inspected in
 both themes. [Hosted CI at `2d50016b`](https://github.com/Porabuild/Poratake/actions/runs/43107376955)
 passed all required jobs and all 16 visual cases with 2,880 exact baselines. Its
 evidence includes 16 renderer profiles and 3,373 PNGs, with no diff images.
+The [run at `64317044`](https://github.com/Porabuild/Poratake/actions/runs/43123318593)
+also passed all required jobs and the 2,880-image visual matrix, before the
+wallpaper-redaction change.
+The [run at `fb13d389`](https://github.com/Porabuild/Poratake/actions/runs/43128687500)
+passed 14 of 16 visual cases. A transparent wallpaper exposed the editor stage's
+shadow in its preview, and a fractional-position test compared GPU-rendered pixels
+directly with raw PNG pixels. The stage now has the editor's background behind
+its wallpaper, and the fractional test compares a reopened PNG at the same bounds.
+New alpha-gradient and transparent-image cases also need a hosted GPU run.
 The current scroll follow-up passed 191 exact baselines in each of the isolated
 1280px/100% light and dark NVIDIA cases, with no diff images. The runs peaked at
 4,070 MiB and 4,065 MiB of total GPU memory respectively.

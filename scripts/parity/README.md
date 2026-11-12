@@ -166,8 +166,10 @@ channel levels, and translucent clipped screenshot samples by at most two. For
 unframed single images without balance, corners or shadows, the gradient or inset
 is now composed before redaction in the export and CPU patch tests. Twelve
 Electron samples, including a clipped blur, are within three channel levels; the
-visual workflow's annotation, draft transition, and fractional aspect-ratio
-checks need a fresh run. A CPU case confirms the sampled backdrop matches export
+hosted visual run at `fb13d389` failed a transparent wallpaper preview and a
+fractional aspect-ratio comparison. The stage background and comparison bounds
+have been corrected; alpha-gradient and transparent-image cases were added, and
+the visual workflow needs a fresh run. A CPU case confirms the sampled backdrop matches export
 at a rounded fractional origin. Screenshot export and CPU preview patches now
 apply redactions before vectors and highlights, with an ordered rounded blackout
 pass. Eight Electron center samples are within two levels; one rounded corner

@@ -1592,21 +1592,69 @@ pub(super) fn simple_inset_preview(
             )
         });
         let saved = image::load_from_memory(&current_png).unwrap().to_rgba8();
-        let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
-        image::imageops::overlay(&mut expected, &saved, 0, 0);
+        assert!(saved.pixels().all(|pixel| pixel.0[3] == 255));
+        let flattened_path = scratch.join("fractional-wallpaper-flattened.png");
+        std::fs::write(&flattened_path, &current_png).unwrap();
+        let flattened = cx
+            .open_window(size(px(1280.), px(738.)), |window, cx| {
+                window.set_scale_factor(scale);
+                cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
+            })
+            .unwrap();
+        flattened
+            .update(cx, |editor, _, cx| {
+                editor.zoom = 1. / scale;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, flattened.into());
+        let flattened_bounds = cx.update(|cx| flattened.read(cx).unwrap().bounds.borrow().unwrap());
         let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+        let expected = cx.capture_screenshot(flattened.into()).unwrap();
         let left = f32::from(bounds.left()).round() as u32 - offset.0;
         let top = f32::from(bounds.top()).round() as u32 - offset.1;
+        let flat_left = f32::from(flattened_bounds.left()).round() as u32;
+        let flat_top = f32::from(flattened_bounds.top()).round() as u32;
+        assert_eq!((left, top), (flat_left, flat_top));
+        assert_eq!(
+            (
+                (f32::from(flattened_bounds.size.width) * scale).round() as u32,
+                (f32::from(flattened_bounds.size.height) * scale).round() as u32,
+            ),
+            saved.dimensions()
+        );
+        let mut mismatched = 0;
+        let mut first = None;
         for y in 0..saved.height() {
             for x in 0..saved.width() {
                 let actual = screenshot.get_pixel(left + x, top + y).0;
-                let expected = expected.get_pixel(x, y).0;
-                assert!(
-                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
-                    "fractional wallpaper offset at {x},{y}: {actual:?} vs {expected:?}"
-                );
+                let expected = expected.get_pixel(flat_left + x, flat_top + y).0;
+                if actual.iter().zip(expected).any(|(a, e)| a.abs_diff(e) > 2) {
+                    mismatched += 1;
+                    first.get_or_insert((x, y, actual, expected));
+                }
             }
         }
+        if mismatched > 0 {
+            image::imageops::crop_imm(&screenshot, left, top, saved.width(), saved.height())
+                .to_image()
+                .save(scratch.join("fractional-wallpaper-preview.png"))
+                .unwrap();
+            image::imageops::crop_imm(
+                &expected,
+                flat_left,
+                flat_top,
+                saved.width(),
+                saved.height(),
+            )
+            .to_image()
+            .save(scratch.join("fractional-wallpaper-expected.png"))
+            .unwrap();
+        }
+        assert_eq!(mismatched, 0, "fractional wallpaper offset: {first:?}");
+        cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
     }
     if scale == 1.
         && padding_setting == 0.
@@ -3088,21 +3136,41 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             .backdrop
             .is_none());
     });
-    for (scale, padding, transparent, blurred) in [
-        (1.25_f32, 25_u32, false, false),
-        (2., 40, false, false),
-        (1.25, 25, true, false),
-        (2., 40, true, false),
-        (1.25, 25, false, true),
-        (2., 40, false, true),
+    let alpha_background = scratch.join("scaled-wallpaper-alpha-background.png");
+    image::RgbaImage::from_pixel(64, 64, image::Rgba([32, 96, 160, 128]))
+        .save(&alpha_background)
+        .unwrap();
+    for (scale, padding, background, blurred) in [
+        (1.25_f32, 25_u32, "slate", false),
+        (2., 40, "slate", false),
+        (1.25, 25, "none", false),
+        (2., 40, "none", false),
+        (1.25, 25, "alpha-gradient", false),
+        (2., 40, "alpha-gradient", false),
+        (1.25, 25, "alpha-image", false),
+        (2., 40, "alpha-image", false),
+        (1.25, 25, "slate", true),
+        (2., 40, "slate", true),
     ] {
         editor
             .update(cx, |editor, _, cx| {
-                editor.wallpaper.set_gradient(if transparent {
-                    None
-                } else {
-                    crate::editor::wallpaper::preset("slate")
-                });
+                match background {
+                    "none" => editor.wallpaper.set_gradient(None),
+                    "slate" => editor
+                        .wallpaper
+                        .set_gradient(crate::editor::wallpaper::preset("slate")),
+                    "alpha-gradient" => editor.wallpaper.set_gradient(Some(
+                        crate::editor::wallpaper::GradientOption {
+                            id: "alpha-background".into(),
+                            colors: vec!["#2060a080".into(), "#2060a080".into()],
+                            angle: 0.,
+                        },
+                    )),
+                    "alpha-image" => editor.wallpaper.set_background_image(Some(
+                        alpha_background.to_string_lossy().into_owned(),
+                    )),
+                    _ => unreachable!(),
+                }
                 editor.wallpaper.padding = 20.;
                 editor.wallpaper.corners = 0.;
                 editor.wallpaper.background_blur = if blurred { 30. } else { 0. };
@@ -3134,8 +3202,11 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         });
         assert_eq!(saved.dimensions(), (640 + 2 * padding, 360 + 2 * padding));
         let mut expected = saved.clone();
-        if transparent {
-            assert_eq!(saved.get_pixel(0, 0).0[3], 0);
+        if background != "slate" {
+            assert_eq!(
+                saved.get_pixel(0, 0).0[3],
+                if background == "none" { 0 } else { 128 }
+            );
             expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), stage_matte);
             image::imageops::overlay(&mut expected, &saved, 0, 0);
         }
@@ -3166,7 +3237,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         }
         assert_eq!(
             significant, 0,
-            "wallpaper preview/export at {scale}x, transparent: {transparent}, blurred: {blurred}"
+            "wallpaper preview/export at {scale}x, background: {background}, blurred: {blurred}"
         );
     }
     for (scale, transparent, radius, shadow, padding_setting) in [

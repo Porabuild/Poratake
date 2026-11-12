@@ -318,7 +318,7 @@ impl RenderOnce for EditorCanvas {
                 .w(px(canvas_width as f32 * zoom))
                 .h(px(canvas_height as f32 * zoom))
                 .shadow_md()
-                .when(layered_composite, |el| el.bg(theme.background))
+                .bg(theme.background)
                 .overflow_hidden()
                 .child(
                     canvas(

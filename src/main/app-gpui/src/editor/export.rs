@@ -1337,6 +1337,47 @@ mod tests {
     }
 
     #[test]
+    fn translucent_wallpaper_keeps_its_alpha_in_the_saved_image() {
+        use base64::Engine as _;
+
+        let background = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            64,
+            64,
+            image::Rgba([32, 96, 160, 128]),
+        ));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        background
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let source = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes.get_ref())
+        );
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            100,
+            80,
+            image::Rgba([240, 80, 64, 255]),
+        ));
+        for scale in [1.25, 2.] {
+            for image_background in [false, true] {
+                let mut settings = WallpaperSettings::default();
+                if image_background {
+                    settings.set_background_image(Some(source.clone()));
+                } else {
+                    settings.set_gradient(Some(crate::editor::wallpaper::GradientOption {
+                        id: "alpha-background".into(),
+                        colors: vec!["#2060a080".into(), "#2060a080".into()],
+                        angle: 0.,
+                    }));
+                }
+                settings.padding = 20.;
+                let saved = compose(Some(&base), 100, 80, &[], &settings.for_scale(scale), scale);
+                assert_eq!(saved.get_pixel(0, 0).0[3], 128);
+            }
+        }
+    }
+
+    #[test]
     fn an_inactive_wallpaper_leaves_the_image_alone() {
         let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
             8,
