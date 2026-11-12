@@ -31,6 +31,269 @@ private final class ScrollFinishJob {
     }
 }
 
+private final class ScrollPreviewSession {
+    struct Snapshot {
+        let image: CGImage
+        let encodedImage: String
+        let frameCount: Int
+        let estimatedHeight: Int
+    }
+
+    private struct PreviewRequest {
+        let frames: [CGImage]
+        let overlaps: [Int]
+        let frameCount: Int
+        let pointsPerPixel: CGFloat
+        let compose: ([CGImage], [Int], () -> Bool) -> CGImage?
+        let encode: (CGImage) -> String?
+        let completion: ((Snapshot) -> Void)?
+    }
+
+    private let alignmentQueue = DispatchQueue(label: "com.poratake.scroll-alignment", qos: .userInitiated)
+    private let previewQueue = DispatchQueue(label: "com.poratake.scroll-preview", qos: .userInitiated)
+    private let lock = NSLock()
+    private var cancelled = false
+    private var previewStopped = false
+    private var latestRequestedFrameCount = 0
+    private var frames: [CGImage] = []
+    private var overlaps: [Int] = []
+    private var pendingPreview: PreviewRequest?
+    private var previewWorkerScheduled = false
+    private var latestSnapshot: Snapshot?
+    private var pendingPublication: (Snapshot, (Snapshot) -> Void)?
+    private var publicationScheduled = false
+
+    func enqueueFrame(
+        previousFrame: CGImage?,
+        frame: CGImage,
+        expectedOverlap: Int,
+        frameCount: Int,
+        pointsPerPixel: CGFloat,
+        align: @escaping (CGImage, CGImage, Int, () -> Bool) -> Int,
+        compose: @escaping ([CGImage], [Int], () -> Bool) -> CGImage?,
+        encode: @escaping (CGImage) -> String?,
+        completion: ((Snapshot) -> Void)?
+    ) {
+        lock.lock()
+        latestRequestedFrameCount = frameCount
+        pendingPreview = nil
+        pendingPublication = nil
+        latestSnapshot = nil
+        lock.unlock()
+
+        alignmentQueue.async { [weak self] in
+            guard let self = self, !self.isCancelled() else { return }
+
+            let overlap: Int?
+            if let previousFrame = previousFrame {
+                overlap = align(previousFrame, frame, expectedOverlap) { [weak self] in
+                    self?.isCancelled() ?? true
+                }
+                guard !self.isCancelled() else { return }
+            } else {
+                overlap = nil
+            }
+
+            self.lock.lock()
+            self.frames.append(frame)
+            if let overlap = overlap {
+                self.overlaps.append(overlap)
+            }
+            let request = self.makePreviewRequest(
+                frameCount: frameCount,
+                pointsPerPixel: pointsPerPixel,
+                compose: compose,
+                encode: encode,
+                completion: completion
+            )
+            self.lock.unlock()
+            if let request = request {
+                self.schedulePreview(request)
+            }
+        }
+    }
+
+    func resolvedOverlaps() -> [Int] {
+        alignmentQueue.sync {
+            lock.lock()
+            defer { lock.unlock() }
+            return overlaps
+        }
+    }
+
+    func waitForWork() {
+        alignmentQueue.sync {}
+        previewQueue.sync {}
+    }
+
+    func previewSnapshot() -> Snapshot? {
+        waitForWork()
+        lock.lock()
+        defer { lock.unlock() }
+        return latestSnapshot
+    }
+
+    func stopPreviewRendering() {
+        lock.lock()
+        previewStopped = true
+        pendingPreview = nil
+        pendingPublication = nil
+        latestSnapshot = nil
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        previewStopped = true
+        pendingPreview = nil
+        pendingPublication = nil
+        latestSnapshot = nil
+        lock.unlock()
+    }
+
+    private func makePreviewRequest(
+        frameCount: Int,
+        pointsPerPixel: CGFloat,
+        compose: @escaping ([CGImage], [Int], () -> Bool) -> CGImage?,
+        encode: @escaping (CGImage) -> String?,
+        completion: ((Snapshot) -> Void)?
+    ) -> PreviewRequest? {
+        guard !cancelled,
+              !previewStopped,
+              latestRequestedFrameCount == frameCount,
+              frames.count == frameCount,
+              overlaps.count == frameCount - 1 else {
+            return nil
+        }
+
+        return PreviewRequest(
+            frames: frames,
+            overlaps: overlaps,
+            frameCount: frameCount,
+            pointsPerPixel: pointsPerPixel,
+            compose: compose,
+            encode: encode,
+            completion: completion
+        )
+    }
+
+    private func schedulePreview(_ request: PreviewRequest) {
+        lock.lock()
+        guard !cancelled, !previewStopped else {
+            lock.unlock()
+            return
+        }
+        pendingPreview = request
+        let shouldStartWorker = !previewWorkerScheduled
+        previewWorkerScheduled = true
+        lock.unlock()
+
+        guard shouldStartWorker else { return }
+        previewQueue.async { [weak self] in
+            self?.drainPreviewQueue()
+        }
+    }
+
+    private func drainPreviewQueue() {
+        while true {
+            lock.lock()
+            guard !cancelled, !previewStopped else {
+                pendingPreview = nil
+                previewWorkerScheduled = false
+                lock.unlock()
+                return
+            }
+            guard let request = pendingPreview else {
+                previewWorkerScheduled = false
+                lock.unlock()
+                return
+            }
+            pendingPreview = nil
+            let isCurrentRequest = latestRequestedFrameCount == request.frameCount
+            lock.unlock()
+
+            guard isCurrentRequest else { continue }
+            let isStale = { [weak self] in
+                guard let self = self else { return true }
+                return self.shouldStopPreview(frameCount: request.frameCount)
+            }
+            guard let image = request.compose(request.frames, request.overlaps, isStale), !isStale(),
+                  let encodedImage = request.encode(image), !isStale() else {
+                continue
+            }
+
+            let snapshot = Snapshot(
+                image: image,
+                encodedImage: encodedImage,
+                frameCount: request.frameCount,
+                estimatedHeight: Int(CGFloat(image.height) * request.pointsPerPixel)
+            )
+            lock.lock()
+            guard !cancelled,
+                  !previewStopped,
+                  latestRequestedFrameCount == request.frameCount else {
+                lock.unlock()
+                continue
+            }
+            latestSnapshot = snapshot
+            lock.unlock()
+
+            if let completion = request.completion {
+                schedulePublication(snapshot, completion: completion)
+            }
+        }
+    }
+
+    private func schedulePublication(_ snapshot: Snapshot, completion: @escaping (Snapshot) -> Void) {
+        lock.lock()
+        guard !cancelled,
+              !previewStopped,
+              latestRequestedFrameCount == snapshot.frameCount else {
+            lock.unlock()
+            return
+        }
+        pendingPublication = (snapshot, completion)
+        let shouldSchedule = !publicationScheduled
+        publicationScheduled = true
+        lock.unlock()
+
+        guard shouldSchedule else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.deliverLatestPublication()
+        }
+    }
+
+    private func deliverLatestPublication() {
+        lock.lock()
+        guard !cancelled, !previewStopped, let publication = pendingPublication else {
+            pendingPublication = nil
+            publicationScheduled = false
+            lock.unlock()
+            return
+        }
+        pendingPublication = nil
+        publicationScheduled = false
+        let isCurrent = latestRequestedFrameCount == publication.0.frameCount
+        lock.unlock()
+
+        guard isCurrent, !shouldStopPreview(frameCount: publication.0.frameCount) else { return }
+        publication.1(publication.0)
+    }
+
+    private func isCancelled() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    private func shouldStopPreview(frameCount: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled || previewStopped || latestRequestedFrameCount != frameCount
+    }
+}
+
 class ScrollCaptureModule: NSObject, Module {
     let name = DaemonContract.ScrollCapture.module
 
@@ -44,10 +307,17 @@ class ScrollCaptureModule: NSObject, Module {
     private var finishRequested = false
     private var cancelBeforeFinish = false
     private var cancelEventEmitted = false
+    private var previewSession: ScrollPreviewSession?
+    private var publishedPreviewFrameCount = 0
 #if SCROLL_CAPTURE_TEST
     private var testCancelResponder: ((String, Bool) -> Void)?
     private var testFinishWorker: (() -> (width: Int, height: Int))?
     private var testFinishResponder: ((String, [String: Any]) -> Void)?
+    private var testPreviewAlignment: ((CGImage, CGImage, Int, () -> Bool) -> Int)?
+    private var testPreviewEncoder: ((CGImage) -> String?)?
+    private var testPreviewResponder: ((CGImage, Int, Int) -> Void)?
+    private var testFinishAlignmentWaitStarted: DispatchSemaphore?
+    private var testRetiredPreviewSessions: [ScrollPreviewSession] = []
 #endif
     private var isAutoScrolling = false
     private var autoScrollTimer: Timer?
@@ -71,7 +341,6 @@ class ScrollCaptureModule: NSObject, Module {
         !isCapturing && finishingJob == nil
     }
 
-    private var previewImage: CGImage?
     private var boundaryWindows: [NSWindow] = []
     private var controlPanel: NSPanel?
     private var autoButton: NSButton?
@@ -119,6 +388,14 @@ class ScrollCaptureModule: NSObject, Module {
         finishRequested = false
         cancelBeforeFinish = false
         cancelEventEmitted = false
+#if SCROLL_CAPTURE_TEST
+        if let previewSession = previewSession {
+            testRetiredPreviewSessions.append(previewSession)
+        }
+#endif
+        previewSession?.cancel()
+        previewSession = ScrollPreviewSession()
+        publishedPreviewFrameCount = 0
 
         displayId = CGMainDisplayID()
         targetScreen = nil
@@ -156,7 +433,6 @@ class ScrollCaptureModule: NSObject, Module {
 
         captureArea = NSRect(x: CGFloat(x), y: cocoaY, width: CGFloat(width), height: CGFloat(height))
         capturedFrames.removeAll()
-        previewImage = nil
         isCapturing = true
         lastFrameHash = nil
         duplicateFrameCount = 0
@@ -232,11 +508,13 @@ class ScrollCaptureModule: NSObject, Module {
 
         stopAutoScroll()
         finishRequested = true
+        previewSession?.stopPreviewRendering()
         updateFinishingControls(cancelled: cancelBeforeFinish)
         let frameCount = capturedFrames.count
         let frames = capturedFrames
         let captureAreaHeight = captureArea.height
         let scrollStepPoints = self.scrollStepPoints
+        let previewSession = self.previewSession
         let job = ScrollFinishJob()
         if cancelBeforeFinish {
             _ = job.requestCancellation()
@@ -255,6 +533,7 @@ class ScrollCaptureModule: NSObject, Module {
                 frames: frames,
                 captureAreaHeight: captureAreaHeight,
                 scrollStepPoints: scrollStepPoints,
+                alignedOverlaps: self.finishAlignedOverlaps(session: previewSession, job: job),
                 outputPath: outputPath,
                 isCancelled: { job.isCancellationRequested() }
             )
@@ -263,6 +542,7 @@ class ScrollCaptureModule: NSObject, Module {
                 frames: frames,
                 captureAreaHeight: captureAreaHeight,
                 scrollStepPoints: scrollStepPoints,
+                alignedOverlaps: self.finishAlignedOverlaps(session: previewSession, job: job),
                 outputPath: outputPath,
                 isCancelled: { job.isCancellationRequested() }
             )
@@ -282,12 +562,24 @@ class ScrollCaptureModule: NSObject, Module {
         }
     }
 
+    private func finishAlignedOverlaps(
+        session: ScrollPreviewSession?,
+        job: ScrollFinishJob
+    ) -> [Int]? {
+        guard !job.isCancellationRequested() else { return nil }
+#if SCROLL_CAPTURE_TEST
+        testFinishAlignmentWaitStarted?.signal()
+#endif
+        return session?.resolvedOverlaps()
+    }
+
     private func handleCancel(requestId: String) {
         if let job = finishingJob {
             guard job.requestCancellation() else {
                 respondCancel(id: requestId, cancelled: job.isCancellationRequested())
                 return
             }
+            previewSession?.cancel()
             finishCancelRequestIds.append(requestId)
             emitCancelledOnce()
             updateFinishingControls(cancelled: true)
@@ -295,6 +587,7 @@ class ScrollCaptureModule: NSObject, Module {
         }
         if finishRequested {
             cancelBeforeFinish = true
+            previewSession?.cancel()
             finishCancelRequestIds.append(requestId)
             emitCancelledOnce()
             updateFinishingControls(cancelled: true)
@@ -564,7 +857,6 @@ class ScrollCaptureModule: NSObject, Module {
         capturedFrames.append(frame)
 
         updatePreviewImage()
-        emitFrameCaptured()
 
         return frame.index
     }
@@ -621,6 +913,7 @@ class ScrollCaptureModule: NSObject, Module {
         frames: [CapturedFrame],
         captureAreaHeight: CGFloat,
         scrollStepPoints: Int,
+        alignedOverlaps: [Int]?,
         outputPath: String,
         isCancelled: () -> Bool
     ) -> (width: Int, height: Int)? {
@@ -630,7 +923,6 @@ class ScrollCaptureModule: NSObject, Module {
             return saveSingleFrame(frame: frames[0].image, outputPath: outputPath, isCancelled: isCancelled)
         }
 
-        let frameWidth = frames[0].image.width
         let frameHeight = frames[0].image.height
 
         let scale = CGFloat(frameHeight) / captureAreaHeight
@@ -638,58 +930,30 @@ class ScrollCaptureModule: NSObject, Module {
         let clampedScrollStep = min(max(scrollStepPixels, 1), frameHeight)
         let expectedOverlapPixels = frameHeight - clampedScrollStep
 
-        var overlaps = [Int]()
-        for i in 1..<frames.count {
-            guard !isCancelled() else { return nil }
-            let overlap = findOverlap(
-                topFrame: frames[i - 1].image,
-                bottomFrame: frames[i].image,
-                expectedOverlap: expectedOverlapPixels,
-                isCancelled: isCancelled
-            )
-            overlaps.append(overlap)
+        let overlaps: [Int]
+        if let alignedOverlaps = alignedOverlaps, alignedOverlaps.count == frames.count - 1 {
+            overlaps = alignedOverlaps
+        } else {
+            var measuredOverlaps = [Int]()
+            for i in 1..<frames.count {
+                guard !isCancelled() else { return nil }
+                let overlap = findOverlap(
+                    topFrame: frames[i - 1].image,
+                    bottomFrame: frames[i].image,
+                    expectedOverlap: expectedOverlapPixels,
+                    isCancelled: isCancelled
+                )
+                measuredOverlaps.append(overlap)
+            }
+            overlaps = measuredOverlaps
         }
         guard !isCancelled() else { return nil }
 
-        var totalHeight = frameHeight
-        for i in 0..<overlaps.count {
-            let newContent = frames[i + 1].image.height - overlaps[i]
-            if newContent > 0 {
-                totalHeight += newContent
-            }
-        }
-
-        guard let context = CGContext(
-            data: nil,
-            width: frameWidth,
-            height: totalHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: frameWidth * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return nil
-        }
-
-        var currentY = totalHeight - frameHeight
-        context.draw(frames[0].image, in: CGRect(x: 0, y: currentY, width: frameWidth, height: frameHeight))
-
-        for i in 1..<frames.count {
-            guard !isCancelled() else { return nil }
-            let frame = frames[i]
-            let overlap = overlaps[i - 1]
-            let newContentHeight = frame.image.height - overlap
-
-            guard newContentHeight > 0 else { continue }
-
-            let cropRect = CGRect(x: 0, y: overlap, width: frame.image.width, height: newContentHeight)
-            guard let croppedImage = frame.image.cropping(to: cropRect) else { continue }
-
-            currentY -= newContentHeight
-            context.draw(croppedImage, in: CGRect(x: 0, y: currentY, width: frameWidth, height: newContentHeight))
-        }
-
-        guard !isCancelled(), let outputImage = context.makeImage(), !isCancelled() else { return nil }
+        guard let outputImage = composeFrames(
+            frames: frames.map(\.image),
+            overlaps: overlaps,
+            isCancelled: isCancelled
+        ) else { return nil }
 
         let url = URL(fileURLWithPath: outputPath)
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
@@ -701,10 +965,60 @@ class ScrollCaptureModule: NSObject, Module {
         guard !isCancelled() else { return nil }
         if CGImageDestinationFinalize(destination) {
             guard !isCancelled() else { return nil }
-            return (width: frameWidth, height: totalHeight)
+            return (width: outputImage.width, height: outputImage.height)
         }
 
         return nil
+    }
+
+    private func composeFrames(
+        frames: [CGImage],
+        overlaps: [Int],
+        isCancelled: () -> Bool
+    ) -> CGImage? {
+        guard let firstFrame = frames.first, !isCancelled() else { return nil }
+        guard frames.count > 1 else { return firstFrame }
+
+        var totalHeight = firstFrame.height
+        for index in 1..<frames.count {
+            guard !isCancelled() else { return nil }
+            let newContent = frames[index].height - overlaps[index - 1]
+            if newContent > 0 {
+                totalHeight += newContent
+            }
+        }
+        guard !isCancelled() else { return nil }
+
+        guard let context = CGContext(
+            data: nil,
+            width: firstFrame.width,
+            height: totalHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: firstFrame.width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        var currentY = totalHeight - firstFrame.height
+        context.draw(firstFrame, in: CGRect(x: 0, y: currentY, width: firstFrame.width, height: firstFrame.height))
+
+        for index in 1..<frames.count {
+            guard !isCancelled() else { return nil }
+            let frame = frames[index]
+            let overlap = overlaps[index - 1]
+            let newContentHeight = frame.height - overlap
+
+            guard newContentHeight > 0 else { continue }
+
+            let cropRect = CGRect(x: 0, y: overlap, width: frame.width, height: newContentHeight)
+            guard let croppedImage = frame.cropping(to: cropRect) else { continue }
+
+            currentY -= newContentHeight
+            context.draw(croppedImage, in: CGRect(x: 0, y: currentY, width: firstFrame.width, height: newContentHeight))
+        }
+
+        guard !isCancelled() else { return nil }
+        return context.makeImage()
     }
 
     private func saveSingleFrame(
@@ -1096,6 +1410,7 @@ class ScrollCaptureModule: NSObject, Module {
     @objc private func cancelFromUI(_ sender: Any?) {
         if let job = finishingJob {
             if job.requestCancellation() {
+                previewSession?.cancel()
                 emitCancelledOnce()
                 updateFinishingControls(cancelled: true)
             }
@@ -1104,6 +1419,7 @@ class ScrollCaptureModule: NSObject, Module {
         guard isCapturing else { return }
         if finishRequested {
             cancelBeforeFinish = true
+            previewSession?.cancel()
             emitCancelledOnce()
             updateFinishingControls(cancelled: true)
             return
@@ -1134,7 +1450,14 @@ class ScrollCaptureModule: NSObject, Module {
         stopCursorMonitor()
         hideCaptureUI()
 
-        previewImage = nil
+#if SCROLL_CAPTURE_TEST
+        if let previewSession = previewSession {
+            testRetiredPreviewSessions.append(previewSession)
+        }
+#endif
+        previewSession?.cancel()
+        previewSession = nil
+        publishedPreviewFrameCount = 0
         capturedFrames.removeAll()
         isCapturing = false
         isCursorOutside = false
@@ -1152,86 +1475,105 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     private func updatePreviewImage() {
-        guard let latestFrame = capturedFrames.last else {
-            previewImage = nil
-            return
-        }
+        guard let latestFrame = capturedFrames.last else { return }
 
-        if capturedFrames.count == 1 {
-            previewImage = latestFrame.image
-            return
+        guard let session = previewSession else { return }
+        let frameIndex = capturedFrames.count - 1
+        let previousFrame = frameIndex > 0 ? capturedFrames[frameIndex - 1].image : nil
+        enqueuePreviewImage(
+            latestFrame.image,
+            previousFrame: previousFrame,
+            frameCount: capturedFrames.count,
+            session: session
+        ) { [weak self, weak session] snapshot in
+            guard let self = self,
+                  let session = session,
+                  self.previewSession === session,
+                  self.isCapturing,
+                  !self.finishRequested,
+                  self.finishingJob == nil,
+                  snapshot.frameCount > self.publishedPreviewFrameCount else {
+                return
+            }
+            self.publishedPreviewFrameCount = snapshot.frameCount
+#if SCROLL_CAPTURE_TEST
+            if let testPreviewResponder = self.testPreviewResponder {
+                testPreviewResponder(snapshot.image, snapshot.frameCount, snapshot.estimatedHeight)
+                return
+            }
+#endif
+            self.emitFrameCaptured(snapshot)
         }
+    }
 
-        guard let previousImage = previewImage else {
-            previewImage = latestFrame.image
-            return
-        }
-
-        let pixelScale = CGFloat(latestFrame.image.height) / captureArea.height
+    private func enqueuePreviewImage(
+        _ image: CGImage,
+        previousFrame: CGImage?,
+        frameCount: Int,
+        session: ScrollPreviewSession,
+        completion: ((ScrollPreviewSession.Snapshot) -> Void)?
+    ) {
+        let pixelScale = CGFloat(image.height) / captureArea.height
         let scrollStepPixels = Int(CGFloat(scrollStepPoints) * pixelScale)
-        let newContentHeight = min(latestFrame.image.height, scrollStepPixels)
+        let expectedOverlap = image.height - min(max(scrollStepPixels, 1), image.height)
+        let pointsPerPixel = captureArea.height / CGFloat(image.height)
+        let backingScaleFactor = targetScreen?.backingScaleFactor ?? 1
+#if SCROLL_CAPTURE_TEST
+        let testPreviewAlignment = self.testPreviewAlignment
+        let testPreviewEncoder = self.testPreviewEncoder
+#endif
 
-        guard newContentHeight > 0 else { return }
-
-        let cropRect = CGRect(
-            x: 0,
-            y: latestFrame.image.height - newContentHeight,
-            width: latestFrame.image.width,
-            height: newContentHeight
+        session.enqueueFrame(
+            previousFrame: previousFrame,
+            frame: image,
+            expectedOverlap: expectedOverlap,
+            frameCount: frameCount,
+            pointsPerPixel: pointsPerPixel,
+            align: { [weak self] topFrame, bottomFrame, expected, isCancelled in
+#if SCROLL_CAPTURE_TEST
+                if let testPreviewAlignment = testPreviewAlignment {
+                    return testPreviewAlignment(topFrame, bottomFrame, expected, isCancelled)
+                }
+#endif
+                guard let self = self else { return expected }
+                return self.findOverlap(
+                    topFrame: topFrame,
+                    bottomFrame: bottomFrame,
+                    expectedOverlap: expected,
+                    isCancelled: isCancelled
+                )
+            },
+            compose: { [weak self] frames, overlaps, isCancelled in
+                self?.composeFrames(frames: frames, overlaps: overlaps, isCancelled: isCancelled)
+            },
+            encode: { [weak self] image in
+#if SCROLL_CAPTURE_TEST
+                if let testPreviewEncoder = testPreviewEncoder {
+                    return testPreviewEncoder(image)
+                }
+#endif
+                self?.encodePreviewBase64(image, backingScaleFactor: backingScaleFactor)
+            },
+            completion: completion
         )
-        guard let croppedNew = latestFrame.image.cropping(to: cropRect) else { return }
-
-        let totalHeight = previousImage.height + newContentHeight
-
-        guard let context = CGContext(
-            data: nil,
-            width: previousImage.width,
-            height: totalHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: previousImage.width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return }
-
-        context.draw(previousImage, in: CGRect(
-            x: 0,
-            y: newContentHeight,
-            width: previousImage.width,
-            height: previousImage.height
-        ))
-
-        context.draw(croppedNew, in: CGRect(
-            x: 0,
-            y: 0,
-            width: croppedNew.width,
-            height: newContentHeight
-        ))
-
-        guard let stitched = context.makeImage() else { return }
-        previewImage = stitched
     }
 
     private func emitAutoScrollChanged(scrolling: Bool) {
         emit(event: "auto-scroll", data: ["scrolling": scrolling])
     }
 
-    private func emitFrameCaptured() {
-        var payload: [String: Any] = [
-            "frameCount": capturedFrames.count,
-            "estimatedHeight": calculateEstimatedHeight()
+    private func emitFrameCaptured(_ snapshot: ScrollPreviewSession.Snapshot) {
+        let payload: [String: Any] = [
+            "frameCount": snapshot.frameCount,
+            "estimatedHeight": snapshot.estimatedHeight,
+            "preview": snapshot.encodedImage,
+            "previewWidth": snapshot.image.width,
+            "previewHeight": snapshot.image.height
         ]
-
-        if let preview = previewImage, let encoded = encodePreviewBase64(preview) {
-            payload["preview"] = encoded
-            payload["previewWidth"] = preview.width
-            payload["previewHeight"] = preview.height
-        }
-
         emit(event: "frame", data: payload)
     }
 
-    private func encodePreviewBase64(_ image: CGImage) -> String? {
-        let backingScaleFactor = targetScreen?.backingScaleFactor ?? 1
+    private func encodePreviewBase64(_ image: CGImage, backingScaleFactor: CGFloat) -> String? {
         let targetWidth = Int(previewWidthPoints * backingScaleFactor)
         guard image.width > targetWidth else {
             return base64PNG(for: image)
@@ -1293,33 +1635,53 @@ class ScrollCaptureModule: NSObject, Module {
         return (hash, results, count, restarted, lastFrameHash == nil)
     }
 
-    func testPreviewAndSave(frames: [CGImage], step: Int, outputPath: String) -> (CGImage, CGImage, String, [Int]) {
+    func testPreviewAndSave(
+        frames: [CGImage],
+        step: Int,
+        outputPath: String
+    ) -> (CGImage, CGImage, String, [Int], Int, Int) {
         let first = frames[0]
+        previewSession?.cancel()
+        let session = ScrollPreviewSession()
+        previewSession = session
         captureArea = NSRect(x: 0, y: 0, width: first.width, height: first.height)
         scrollStepPoints = step
         capturedFrames.removeAll()
-        previewImage = nil
-        for image in frames {
+        for (index, image) in frames.enumerated() {
+            let previousFrame = index > 0 ? frames[index - 1] : nil
             capturedFrames.append(CapturedFrame(image: image, index: capturedFrames.count))
-            updatePreviewImage()
+            enqueuePreviewImage(
+                image,
+                previousFrame: previousFrame,
+                frameCount: index + 1,
+                session: session,
+                completion: nil
+            )
         }
-        let overlaps = zip(frames, frames.dropFirst()).map { pair in
-            findOverlap(topFrame: pair.0, bottomFrame: pair.1, expectedOverlap: first.height - step)
+        guard let snapshot = session.previewSnapshot() else {
+            fatalError("Failed to create scroll preview")
         }
-        guard let preview = previewImage,
-              let encoded = encodePreviewBase64(preview),
-              stitchFrames(
-                  frames: capturedFrames,
-                  captureAreaHeight: captureArea.height,
-                  scrollStepPoints: step,
-                  outputPath: outputPath,
-                  isCancelled: { false }
-              ) != nil,
-              let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: outputPath) as CFURL, nil),
-              let saved = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+        let overlaps = session.resolvedOverlaps()
+        guard stitchFrames(
+            frames: capturedFrames,
+            captureAreaHeight: captureArea.height,
+            scrollStepPoints: step,
+            alignedOverlaps: overlaps,
+            outputPath: outputPath,
+            isCancelled: { false }
+        ) != nil,
+        let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: outputPath) as CFURL, nil),
+        let saved = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             fatalError("Failed to create preview or saved scroll capture")
         }
-        return (preview, saved, encoded, overlaps)
+        return (
+            snapshot.image,
+            saved,
+            snapshot.encodedImage,
+            overlaps,
+            snapshot.frameCount,
+            snapshot.estimatedHeight
+        )
     }
 
     func testFinishRace(cancelBeforeCompletion: Bool) -> (Bool, Bool, Bool, Bool) {
@@ -1348,6 +1710,62 @@ class ScrollCaptureModule: NSObject, Module {
         isCapturing = true
     }
 
+    func testPreparePreview(step: Int) {
+        cleanup()
+        captureArea = NSRect(x: 0, y: 0, width: 80, height: 160)
+        scrollStepPoints = step
+        previewSession = ScrollPreviewSession()
+        isCapturing = true
+    }
+
+    func testAppendPreviewFrame(_ image: CGImage) {
+        let previousFrame = capturedFrames.last?.image
+        capturedFrames.append(CapturedFrame(image: image, index: capturedFrames.count))
+        guard let session = previewSession else { return }
+        enqueuePreviewImage(
+            image,
+            previousFrame: previousFrame,
+            frameCount: capturedFrames.count,
+            session: session
+        ) { [weak self, weak session] snapshot in
+            guard let self = self,
+                  let session = session,
+                  self.previewSession === session,
+                  self.isCapturing,
+                  !self.finishRequested,
+                  self.finishingJob == nil,
+                  snapshot.frameCount > self.publishedPreviewFrameCount else {
+                return
+            }
+            self.publishedPreviewFrameCount = snapshot.frameCount
+            self.testPreviewResponder?(snapshot.image, snapshot.frameCount, snapshot.estimatedHeight)
+        }
+    }
+
+    func testWaitForPreviewAlignment() {
+        previewSession?.resolvedOverlaps()
+    }
+
+    func testWaitForPreviewWork() {
+        previewSession?.waitForWork()
+    }
+
+    func testWaitForRetiredPreviewWork() {
+        testRetiredPreviewSessions.forEach { $0.waitForWork() }
+    }
+
+    func testSetPreviewAlignment(_ alignment: @escaping (CGImage, CGImage, Int, () -> Bool) -> Int) {
+        testPreviewAlignment = alignment
+    }
+
+    func testSetPreviewEncoder(_ encoder: @escaping (CGImage) -> String?) {
+        testPreviewEncoder = encoder
+    }
+
+    func testSetPreviewResponder(_ responder: @escaping (CGImage, Int, Int) -> Void) {
+        testPreviewResponder = responder
+    }
+
     func testHoldFinishWorker(started: DispatchSemaphore, release: DispatchSemaphore) {
         testFinishWorker = {
             started.signal()
@@ -1362,6 +1780,10 @@ class ScrollCaptureModule: NSObject, Module {
 
     func testSetCancelResponder(_ responder: @escaping (String, Bool) -> Void) {
         testCancelResponder = responder
+    }
+
+    func testSetFinishAlignmentWaitStarted(_ semaphore: DispatchSemaphore) {
+        testFinishAlignmentWaitStarted = semaphore
     }
 
     func testStartCaptureAfterFinish() -> Bool {
@@ -1420,6 +1842,7 @@ class ScrollCaptureModule: NSObject, Module {
             frames: [CapturedFrame(image: frame, index: 0)],
             captureAreaHeight: 160,
             scrollStepPoints: 112,
+            alignedOverlaps: nil,
             outputPath: outputPath,
             isCancelled: { true }
         )

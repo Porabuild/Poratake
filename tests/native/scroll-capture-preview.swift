@@ -128,11 +128,165 @@ struct ScrollCapturePreviewTest {
         precondition(finishModule.testStartCaptureAfterFinish(), "A capture must be retryable after finish and cancel settle")
 
         let allFrames = [0, step, step * 2].map { frame(start: $0, width: width, height: height) }
+        let alignmentModule = ScrollCaptureModule()
+        let alignmentStarted = DispatchSemaphore(value: 0)
+        let releaseAlignment = DispatchSemaphore(value: 0)
+        let finishWaitingForAlignment = DispatchSemaphore(value: 0)
+        let alignmentResponseLock = NSLock()
+        var alignmentResponses: [(String, [String: Any])] = []
+        var alignmentPublications: [Int] = []
+        alignmentModule.testSetPreviewAlignment { _, _, expected, _ in
+            alignmentStarted.signal()
+            releaseAlignment.wait()
+            return expected
+        }
+        alignmentModule.testSetPreviewEncoder { _ in "preview" }
+        alignmentModule.testSetPreviewResponder { _, frameCount, _ in
+            alignmentPublications.append(frameCount)
+        }
+        alignmentModule.testSetFinishAlignmentWaitStarted(finishWaitingForAlignment)
+        alignmentModule.testSetFinishResponder { id, result in
+            alignmentResponseLock.lock()
+            alignmentResponses.append((id, result))
+            alignmentResponseLock.unlock()
+        }
+        alignmentModule.testSetCancelResponder { id, cancelled in
+            alignmentResponseLock.lock()
+            alignmentResponses.append((id, ["cancelled": cancelled]))
+            alignmentResponseLock.unlock()
+        }
+        alignmentModule.testPreparePreview(step: step)
+        alignmentModule.testAppendPreviewFrame(allFrames[0])
+        alignmentModule.testAppendPreviewFrame(allFrames[1])
+        precondition(alignmentStarted.wait(timeout: .now() + 5) == .success)
+        let alignmentOutput = NSTemporaryDirectory() + "/scroll-alignment-cancel-\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: alignmentOutput) }
+        alignmentModule.handle(
+            method: DaemonContract.ScrollCapture.Method.finish.rawValue,
+            params: ["outputPath": AnyCodable(alignmentOutput)],
+            requestId: "alignment-finish"
+        )
+        precondition(finishWaitingForAlignment.wait(timeout: .now() + 5) == .success)
+        alignmentModule.handle(
+            method: DaemonContract.ScrollCapture.Method.cancel.rawValue,
+            params: nil,
+            requestId: "alignment-cancel"
+        )
+        alignmentResponseLock.lock()
+        precondition(alignmentResponses.isEmpty, "Finish and Cancel must wait for held alignment")
+        alignmentResponseLock.unlock()
+        releaseAlignment.signal()
+        let alignmentDeadline = Date(timeIntervalSinceNow: 5)
+        while Date() < alignmentDeadline {
+            alignmentResponseLock.lock()
+            let complete = alignmentResponses.count == 2
+            alignmentResponseLock.unlock()
+            if complete { break }
+            _ = RunLoop.current.run(mode: .default, before: alignmentDeadline)
+        }
+        alignmentResponseLock.lock()
+        precondition(alignmentResponses.map { $0.0 } == ["alignment-finish", "alignment-cancel"])
+        precondition((alignmentResponses[0].1["success"] as? Bool) == false)
+        precondition((alignmentResponses[1].1["cancelled"] as? Bool) == true)
+        alignmentResponseLock.unlock()
+        precondition(!alignmentPublications.contains(2), "Cancelled alignment must not publish a stale preview")
+
+        let backlogModule = ScrollCaptureModule()
+        let firstEncodeStarted = DispatchSemaphore(value: 0)
+        let releaseFirstEncode = DispatchSemaphore(value: 0)
+        let backlogLock = NSLock()
+        var backlogEncodeCount = 0
+        var backlogPublications: [Int] = []
+        backlogModule.testSetPreviewAlignment { _, _, expected, _ in expected }
+        backlogModule.testSetPreviewEncoder { _ in
+            backlogLock.lock()
+            backlogEncodeCount += 1
+            let count = backlogEncodeCount
+            backlogLock.unlock()
+            if count == 1 {
+                firstEncodeStarted.signal()
+                releaseFirstEncode.wait()
+            }
+            return "preview-\(count)"
+        }
+        backlogModule.testSetPreviewResponder { _, frameCount, _ in
+            backlogPublications.append(frameCount)
+        }
+        backlogModule.testPreparePreview(step: step)
+        backlogModule.testAppendPreviewFrame(allFrames[0])
+        precondition(firstEncodeStarted.wait(timeout: .now() + 5) == .success)
+        backlogModule.testAppendPreviewFrame(allFrames[1])
+        backlogModule.testAppendPreviewFrame(allFrames[2])
+        backlogModule.testWaitForPreviewAlignment()
+        releaseFirstEncode.signal()
+        backlogModule.testWaitForPreviewWork()
+        let backlogDeadline = Date(timeIntervalSinceNow: 5)
+        while backlogPublications.isEmpty && Date() < backlogDeadline {
+            _ = RunLoop.current.run(mode: .default, before: backlogDeadline)
+        }
+        backlogLock.lock()
+        precondition(backlogEncodeCount == 2, "Only the active and latest preview should be encoded")
+        backlogLock.unlock()
+        precondition(backlogPublications == [3], "A preview backlog must publish only its latest frame")
+
+        let staleModule = ScrollCaptureModule()
+        let staleEncodeStarted = DispatchSemaphore(value: 0)
+        let releaseStaleEncode = DispatchSemaphore(value: 0)
+        let staleLock = NSLock()
+        var staleEncodeCount = 0
+        var stalePublications: [Int] = []
+        staleModule.testSetPreviewAlignment { _, _, expected, _ in expected }
+        staleModule.testSetPreviewEncoder { _ in
+            staleLock.lock()
+            staleEncodeCount += 1
+            let count = staleEncodeCount
+            staleLock.unlock()
+            if count == 1 {
+                staleEncodeStarted.signal()
+                releaseStaleEncode.wait()
+            }
+            return "preview-\(count)"
+        }
+        staleModule.testSetPreviewResponder { _, frameCount, _ in
+            stalePublications.append(frameCount)
+        }
+        staleModule.testPreparePreview(step: step)
+        staleModule.testAppendPreviewFrame(allFrames[0])
+        precondition(staleEncodeStarted.wait(timeout: .now() + 5) == .success)
+        staleModule.testPreparePreview(step: step)
+        staleModule.testAppendPreviewFrame(allFrames[0])
+        staleModule.testAppendPreviewFrame(allFrames[1])
+        staleModule.testWaitForPreviewWork()
+        let freshDeadline = Date(timeIntervalSinceNow: 5)
+        while stalePublications.isEmpty && Date() < freshDeadline {
+            _ = RunLoop.current.run(mode: .default, before: freshDeadline)
+        }
+        precondition(stalePublications == [2], "The replacement session should publish its current preview")
+        releaseStaleEncode.signal()
+        staleModule.testWaitForRetiredPreviewWork()
+        let staleCallbackDrained = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            staleCallbackDrained.signal()
+        }
+        let staleCallbackDeadline = Date(timeIntervalSinceNow: 5)
+        while staleCallbackDrained.wait(timeout: .now()) != .success {
+            precondition(Date() < staleCallbackDeadline, "Main-queue callbacks did not drain")
+            _ = RunLoop.current.run(mode: .default, before: staleCallbackDeadline)
+        }
+        precondition(stalePublications == [2], "A retired session must not publish after restart")
+
         for count in [1, 2, 3] {
             let output = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("poratake-scroll-preview-\(UUID().uuidString).png")
             defer { try? FileManager.default.removeItem(at: output) }
-            let (preview, saved, encoded, overlaps) = ScrollCaptureModule().testPreviewAndSave(
+            let (
+                preview,
+                saved,
+                encoded,
+                overlaps,
+                previewFrameCount,
+                estimatedHeight
+            ) = ScrollCaptureModule().testPreviewAndSave(
                 frames: Array(allFrames.prefix(count)),
                 step: step,
                 outputPath: output.path
@@ -140,12 +294,37 @@ struct ScrollCapturePreviewTest {
             precondition(overlaps == Array(repeating: height - step, count: count - 1))
             precondition(preview.width == width && preview.height == height + step * (count - 1))
             precondition(saved.width == preview.width && saved.height == preview.height)
+            precondition(previewFrameCount == count)
+            precondition(estimatedHeight == height + step * (count - 1))
             precondition(pixels(preview) == pixels(saved), "Preview differs from the saved scroll capture")
             let data = Data(base64Encoded: encoded)!
             let source = CGImageSourceCreateWithData(data as CFData, nil)!
             let emitted = CGImageSourceCreateImageAtIndex(source, 0, nil)!
             precondition(pixels(emitted) == pixels(saved), "Emitted preview differs from the saved scroll capture")
         }
-        print("macOS scroll captures retain zero-hash first frames and previews match saved pixels for one, two and three frames")
+        let variableOverlapFrames = [
+            frame(start: 0, width: width, height: height),
+            frame(start: 96, width: width, height: height)
+        ]
+        let variableOverlapOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-variable-overlap-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: variableOverlapOutput) }
+        let (
+            variablePreview,
+            variableSaved,
+            _,
+            variableOverlaps,
+            variablePreviewFrameCount,
+            variableEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: variableOverlapFrames,
+            step: 112,
+            outputPath: variableOverlapOutput.path
+        )
+        precondition(variableOverlaps == [64], "The alignment search must find the 64-pixel overlap")
+        precondition(variablePreview.height == 256 && variableSaved.height == 256)
+        precondition(variablePreviewFrameCount == 2 && variableEstimatedHeight == 256)
+        precondition(pixels(variablePreview) == pixels(variableSaved), "Variable-overlap preview differs from saved pixels")
+        print("macOS scroll captures match saved pixels for nominal and measured overlap and suppress stale previews")
     }
 }
