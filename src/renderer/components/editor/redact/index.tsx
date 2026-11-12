@@ -11,6 +11,7 @@ import {
 
 interface RedactRenderProps extends Omit<AnnotationRenderProps, 'annotation'> {
   annotation: RedactAnnotation;
+  showBlackoutFill?: boolean;
 }
 
 export function renderRedact({
@@ -20,6 +21,7 @@ export function renderRedact({
   isSelected,
   isPreview,
   onMouseDown,
+  showBlackoutFill = false,
 }: RedactRenderProps): JSX.Element {
   const key = isPreview ? `preview-${ann.id}` : ann.id;
   const x = ann.x + offsetX;
@@ -40,6 +42,18 @@ export function renderRedact({
       }}
       onMouseDown={isPreview ? undefined : e => onMouseDown?.(e, ann.id)}
     >
+      {showBlackoutFill && ann.style === 'blackout' && (
+        <rect
+          x={rectX}
+          y={rectY}
+          width={rectW}
+          height={rectH}
+          fill="#000000"
+          rx="2"
+          pointerEvents="none"
+        />
+      )}
+
       {isSelected && (
         <rect
           x={rectX}
