@@ -325,6 +325,7 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(cx.update(crate::capture::overlay::parity_is_active));
+        assert_eq!(capture_count(), Some(2));
         cancel_overlay(&mut cx);
         assert_eq!(capture_count(), Some(1));
         for (intent, replace) in [
@@ -342,7 +343,7 @@ mod tests {
                     );
                 });
                 cx.run_until_parked();
-                assert_eq!(capture_count(), Some(1));
+                assert_eq!(capture_count(), Some(2));
             }
             cancel_overlay(&mut cx);
             assert_eq!(capture_count(), Some(1));

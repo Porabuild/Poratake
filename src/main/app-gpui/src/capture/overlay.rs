@@ -1600,11 +1600,7 @@ impl AreaOverlay {
             return;
         }
 
-        let hide = if hides_icons_at_confirm(intent) {
-            None
-        } else {
-            take_capture_hide(cx)
-        };
+        let hide = take_capture_hide(cx);
 
         let owner = (intent == crate::capture::intent::CaptureIntent::Timer).then(|| revision(cx));
         let coordinator = crate::state::coordinator(cx);
@@ -1790,15 +1786,6 @@ fn capture_intent(mode: crate::capture::all_in_one::Mode) -> crate::capture::int
             crate::capture::intent::CaptureIntent::Screenshot
         }
     }
-}
-
-fn hides_icons_at_confirm(intent: crate::capture::intent::CaptureIntent) -> bool {
-    !matches!(
-        intent,
-        crate::capture::intent::CaptureIntent::Recording
-            | crate::capture::intent::CaptureIntent::Timer
-            | crate::capture::intent::CaptureIntent::ScrollCapture
-    )
 }
 
 fn hand_off_for_timer(cx: &mut Context<AreaOverlay>) -> bool {
@@ -2337,11 +2324,7 @@ impl AreaOverlay {
             cx.notify();
             return;
         }
-        let hide = if hides_icons_at_confirm(intent) {
-            None
-        } else {
-            take_capture_hide(cx)
-        };
+        let hide = take_capture_hide(cx);
         let owner = (intent == crate::capture::intent::CaptureIntent::Timer).then(|| revision(cx));
         let coordinator = crate::state::coordinator(cx);
         let retained = retains_overlay_after_selection(intent);
@@ -2491,17 +2474,6 @@ mod tests {
             CaptureIntent::Screenshot
         ));
         assert!(!super::retains_overlay_after_selection(CaptureIntent::Ocr));
-    }
-
-    #[test]
-    fn only_the_pre_selection_flows_keep_their_icon_hide() {
-        use crate::capture::intent::CaptureIntent;
-
-        assert!(super::hides_icons_at_confirm(CaptureIntent::Screenshot));
-        assert!(super::hides_icons_at_confirm(CaptureIntent::Ocr));
-        assert!(!super::hides_icons_at_confirm(CaptureIntent::Timer));
-        assert!(!super::hides_icons_at_confirm(CaptureIntent::ScrollCapture));
-        assert!(!super::hides_icons_at_confirm(CaptureIntent::Recording));
     }
 
     #[test]

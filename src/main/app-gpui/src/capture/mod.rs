@@ -650,7 +650,9 @@ fn with_frozen_screen(
 fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
     matches!(
         intent,
-        intent::CaptureIntent::Timer | intent::CaptureIntent::ScrollCapture
+        intent::CaptureIntent::Screenshot
+            | intent::CaptureIntent::Timer
+            | intent::CaptureIntent::ScrollCapture
     )
 }
 
@@ -1342,14 +1344,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_timer_and_scroll_flows_hide_icons_before_the_selection() {
+    fn screenshots_timers_and_scroll_hide_icons_before_the_selection() {
         use crate::capture::intent::CaptureIntent;
 
         assert!(super::hides_icons_before_selection(CaptureIntent::Timer));
         assert!(super::hides_icons_before_selection(
             CaptureIntent::ScrollCapture
         ));
-        assert!(!super::hides_icons_before_selection(
+        assert!(super::hides_icons_before_selection(
             CaptureIntent::Screenshot
         ));
         assert!(!super::hides_icons_before_selection(

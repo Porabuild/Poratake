@@ -47,6 +47,7 @@ pub fn run() {
         .unwrap();
     protocol::send_event("system:ready", None);
     let mut frozen = false;
+    let mut frozen_desktop_icons_hidden = false;
     let mut timer_visible = false;
     let mut scrolling = false;
     let mut desktop_show_held = false;
@@ -95,6 +96,8 @@ pub fn run() {
                     }
                     "frozen" => {
                         frozen = true;
+                        frozen_desktop_icons_hidden =
+                            desktop_icons_hidden.load(std::sync::atomic::Ordering::SeqCst);
                         json!({"frozen": true})
                     }
                     value => panic!("unexpected freeze case: {value}"),
@@ -330,7 +333,7 @@ pub fn run() {
                 if fixture["outcome"] == "invalid-image" {
                     std::fs::write(path, b"invalid image").unwrap();
                 } else {
-                    let image = if fixture["pattern"] == "quadrants" {
+                    let mut image = if fixture["pattern"] == "quadrants" {
                         image::RgbaImage::from_fn(width, height, |x, y| {
                             image::Rgba([
                                 if x < width / 2 { 240 } else { 40 },
@@ -342,6 +345,16 @@ pub fn run() {
                     } else {
                         image::RgbaImage::from_pixel(width, height, color)
                     };
+                    if fixture["frozenDesktopIcon"] == true
+                        && params.get("cached").and_then(serde_json::Value::as_bool) == Some(true)
+                        && !frozen_desktop_icons_hidden
+                    {
+                        for y in 0..16 {
+                            for x in 0..16 {
+                                image.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+                            }
+                        }
+                    }
                     image.save(path).unwrap();
                 }
                 if fixture["outcome"] == "capture-failed" {

@@ -405,6 +405,76 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
         });
     }
 
+    #[cfg(windows)]
+    for name in ["capture", "cancelled"] {
+        let captures = scratch.join(format!("frozen-desktop-icons-{name}"));
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen", "rect": SELECTED_RECT, "windowId": null,
+                "frozenDesktopIcon": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = super::daemon_fixture::calls(output).len();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                config.screenshot.freeze_screen = true;
+                config.screenshot.show_preview = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+            });
+            crate::capture::start_area_capture(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        if name == "cancelled" {
+            super::escape(cx, picker);
+        } else {
+            select_area(cx, picker);
+        }
+        cx.run_until_parked();
+        if name == "capture" {
+            verify_saved_capture(
+                cx,
+                scratch,
+                &captures,
+                (SELECTED_RECT, [64, 112, 192, 255]),
+                "workflow-frozen-desktop-icons",
+            );
+        } else {
+            assert_eq!(std::fs::read_dir(&captures).unwrap().count(), 0);
+        }
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let position = |module: &str, method: &str| {
+            calls
+                .iter()
+                .position(|call| call["module"] == module && call["method"] == method)
+                .unwrap()
+        };
+        assert!(position("desktop-helper", "hide") < position("freeze-screen", "freeze"));
+        assert!(position("freeze-screen", "freeze") < position("desktop-helper", "show"));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["module"] == "screenshot")
+                .count(),
+            usize::from(name == "capture")
+        );
+        assert!(!crate::capture::desktop_icons::are_hidden());
+    }
+    #[cfg(windows)]
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| config.screenshot.hide_desktop_icons = false);
+    });
+
     let captures = scratch.join("capture-collision");
     std::fs::create_dir_all(&captures).unwrap();
     let existing = captures.join("Collision.png");

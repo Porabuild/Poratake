@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `1e5d547c` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `b2d00217` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -122,6 +122,9 @@ light/dark 1280px/100% NVIDIA run. Its fake-daemon checks cover failed and delay
 icon transitions, stale direct capture errors and attachment recovery; the dark
 run also holds a scroll finish for 31 seconds. The full GPUI suite passed 939
 tests with one ignored, and the project suite passed 2,281 tests with three skipped.
+The frozen-area icon follow-up also passed 191 exact baselines in each local
+light/dark 1280px/100% NVIDIA run. Its full GPUI suite passed 938 tests with one
+ignored, and the project suite passed 2,281 tests with three skipped.
 The earlier frame and aspect-ratio follow-up passed 191 exact baselines in
 each local light/dark 1280px/100% NVIDIA run, including the new workflow checks.
 The earlier scroll follow-up passed 191 exact baselines in each of the isolated
@@ -708,6 +711,11 @@ Bugs fixed in this pass:
   headless fixture. Isolated tests cover replacement, timer ownership and shutdown.
   Native overlapping captures and real desktop-icon transitions still need
   verification.
+- GPUI area screenshots froze the screen before hiding desktop icons, so the
+  frozen image could retain them. Like Electron's area flow, GPUI now hides icons
+  before selection and retains the hide through capture or cancellation. A fake
+  frozen-frame fixture checks saved and reopened pixels and cancellation; real
+  desktop compositor timing still needs verification.
 - A timer could close a newer selector and capture its old area after the
   selector was replaced. Replacement now cancels its countdown; isolated GPUI
   tests cover replacement, queued completion or cancellation events and a held
@@ -1215,6 +1223,7 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance. |
 | P1       | Screenshot annotation order                              | Screenshot export and CPU preview patches now order redactions, vectors with a rounded blackout pass, and highlights like Electron export. Eight center samples match within two levels; one rounded corner differs by 22. Local light/dark checks cover selection, drafts and both blackout orders; verify complex compositions and physical DPI. Electron's live preview can differ from its export when a shape precedes blackout.                                                                                                                               |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                |
+| P1       | Frozen all-in-one and display-picker desktop icons       | Source inspection shows these separate GPUI paths freeze before their confirmation-time icon hide, unlike the corrected area flow. Reproduce their saved pixels with hiding enabled and preserve mode-switch and recording handoffs when correcting them.                                                                                                                                                                                                                                                                                                           |
 | P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                    |
 | P1       | Native screen-recording selector handoff                 | Mock-platform tests cover replacing an existing or pending selector, release failure and retry, and a newer request that supersedes recording. Verify real single-display recording handoffs and the corresponding multi-display picker behavior.                                                                                                                                                                                                                                                                                                                   |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                                                |
