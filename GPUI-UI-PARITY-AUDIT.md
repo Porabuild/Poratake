@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `c764851e` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `2d95c748` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -1225,6 +1225,17 @@ changed pixel on the last overlapping row. In 1,236 generated cases, all accepte
 frames produced the expected rows and 291 cases stopped early. Ambiguous or
 animated content can still require different evidence. macOS uses a separate
 duplicate check and stitcher.
+
+When a sampled hash changes because one pixel blinks on a stationary page,
+Windows and Linux now treat the frame as repeated if neither footer detection nor
+an exact full-row overlap identifies scrolling. The accepted frames and saved PNG
+remain unchanged through the three-frame duplicate limit. An edge pixel leaving
+a genuinely scrolled viewport still stitches with both an exact and a biased
+expected step. In 5,184 generated stationary-animation variants, erroneous frame
+additions fell from 374 to 132; no previous stop became an addition. A 4K local
+probe measured 9.86 ms before and 11.29 ms after for the one-pixel case, and
+2.47 ms versus 2.61 ms for its translated control. Multi-pixel animations, real
+pages, native capture time and slower hardware remain unverified.
 
 The footer matcher now tries exact stationary rows first, then allows sparse
 changes above an exact stationary suffix while retaining the full-row overlap and

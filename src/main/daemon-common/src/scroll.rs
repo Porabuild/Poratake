@@ -141,7 +141,28 @@ impl FrameAccumulator {
             } else {
                 None
             };
-        if fixed_footer.is_none() && normal_overlap.is_none() && self.last_frame_hash == Some(hash)
+        if fixed_footer.is_none()
+            && normal_overlap.is_none()
+            && (self.last_frame_hash == Some(hash)
+                || self.frames.last().is_some_and(|previous| {
+                    let min_overlap = 8_usize.min(height / 2).min(expected_overlap.max(1));
+                    previous.width == width
+                        && previous.height == height
+                        && previous.pixels.len() == pixels.len()
+                        && width != 0
+                        && min_overlap != 0
+                        && previous
+                            .pixels
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .zip(pixels.as_chunks::<4>().0)
+                            .filter(|(old, new)| old != new)
+                            .take(2)
+                            .count()
+                            == 1
+                        && exact_overlap(&previous.pixels, &pixels, width, min_overlap).is_none()
+                }))
         {
             self.duplicate_frame_count += 1;
             return if self.duplicate_frame_count >= MAX_DUPLICATE_FRAMES {
@@ -1614,6 +1635,80 @@ mod tests {
             accumulator.submit(animated, width, height, height - 8),
             CaptureOutcome::Repeated
         );
+    }
+
+    #[test]
+    fn stationary_pixel_after_a_scroll_does_not_add_a_frame() {
+        let (width, height, step) = (64, 160, 16);
+        let make_frame = |start: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                for x in 0..width {
+                    let value = start + y;
+                    let pixel = if x == 0 {
+                        [
+                            value as u8,
+                            (value >> 8) as u8,
+                            value.wrapping_mul(17) as u8,
+                            255,
+                        ]
+                    } else {
+                        [235, 235, 235, 255]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            pixels
+        };
+        let mut accumulator = FrameAccumulator::default();
+        assert_eq!(
+            accumulator.submit(make_frame(0), width, height, height - step),
+            CaptureOutcome::Added
+        );
+        let previous = make_frame(step);
+        assert_eq!(
+            accumulator.submit(previous.clone(), width, height, height - step),
+            CaptureOutcome::Added
+        );
+        let mut animated = previous.clone();
+        animated[158 * width * 4] ^= 255;
+        assert_ne!(
+            frame_hash(&previous, width, height),
+            frame_hash(&animated, width, height)
+        );
+        for expected in [
+            CaptureOutcome::Repeated,
+            CaptureOutcome::Repeated,
+            CaptureOutcome::Ended,
+        ] {
+            assert_eq!(
+                accumulator.submit(animated.clone(), width, height, height - step),
+                expected
+            );
+        }
+        assert_eq!(accumulator.frames().len(), 2);
+        assert_eq!(accumulator.frames()[1].pixels, previous);
+        assert_eq!(accumulator.estimated_height(), height + step);
+    }
+
+    #[test]
+    fn one_pixel_leaving_a_scrolled_viewport_keeps_its_overlap() {
+        let (width, height) = (96, 160);
+        let mut first = [255; 4].repeat(width * height);
+        let current = first.clone();
+        first[120 * width * 4..120 * width * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+        for (expected, overlap) in [(32, 32), (40, 39)] {
+            let mut accumulator = FrameAccumulator::default();
+            assert_eq!(
+                accumulator.submit(first.clone(), width, height, expected),
+                CaptureOutcome::Added
+            );
+            assert_eq!(
+                accumulator.submit(current.clone(), width, height, expected),
+                CaptureOutcome::Added
+            );
+            assert_eq!(accumulator.frames()[1].overlap, overlap);
+        }
     }
 
     #[test]
