@@ -31,6 +31,172 @@ struct ScrollCapturePreviewTest {
         )!
     }
 
+    static func fixedFooterFrame(index: Int, periodic: Bool, width: Int, height: Int, footerHeight: Int, step: Int, blankTail: Bool = false, changingTail: Bool = false, bodyNoise: Int = 0, changingFooter: Bool = false) -> CGImage {
+        var pixels = [UInt8]()
+        pixels.reserveCapacity(width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                var pixel: [UInt8]
+                if y >= height - footerHeight {
+                    let offset = changingFooter ? 10 + index : 0
+                    pixel = blankTail
+                        ? [0, 0, 0, 255]
+                        : [
+                            UInt8(truncatingIfNeeded: 62 + offset),
+                            UInt8(truncatingIfNeeded: (y - (height - footerHeight)) % 251 + offset),
+                            UInt8(truncatingIfNeeded: x % 251 + offset),
+                            255
+                        ]
+                } else if periodic {
+                    let absoluteY = y + index * step
+                    if x == 0 && absoluteY % 256 < 32 {
+                        let value = UInt32(truncatingIfNeeded: absoluteY) &* 0x45d9f3b
+                        pixel = [
+                            UInt8(truncatingIfNeeded: value),
+                            UInt8(truncatingIfNeeded: value << 9 | value >> 23),
+                            UInt8(truncatingIfNeeded: value << 17 | value >> 15),
+                            255
+                        ]
+                    } else {
+                        pixel = [UInt8((absoluteY % 8) * 30), 0, 0, 255]
+                    }
+                } else {
+                    let absoluteY = UInt32(truncatingIfNeeded: y + index * step)
+                    let value = absoluteY &* 0x45d9f3b &+ UInt32(x) &* 0x119de1f3
+                    pixel = [
+                        UInt8(value % 200) + UInt8(index * bodyNoise),
+                        UInt8((value << 9 | value >> 23) % 200) + UInt8(index * bodyNoise),
+                        UInt8((value << 17 | value >> 15) % 200) + UInt8(index * bodyNoise),
+                        255
+                    ]
+                }
+                if periodic && (1..<11).contains(x) && (32..<42).contains(y) {
+                    pixel[0] ^= UInt8(truncatingIfNeeded: 51 * index)
+                }
+                if changingTail && footerHeight == 0 && y >= height - 20 && x == width - 1 {
+                    pixel[2] ^= UInt8(truncatingIfNeeded: index)
+                }
+                pixels.append(contentsOf: pixel)
+            }
+        }
+        let provider = CGDataProvider(data: Data(pixels) as CFData)!
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+    }
+
+    static func expectedFooterDocument(width: Int, contentHeight: Int, footerHeight: Int, blankTail: Bool = false, footerOffset: Int = 0) -> CGImage {
+        let totalHeight = contentHeight + footerHeight
+        var pixels = [UInt8]()
+        pixels.reserveCapacity(width * totalHeight * 4)
+        for y in 0..<totalHeight {
+            for x in 0..<width {
+                if y >= contentHeight {
+                    let footerY = y - contentHeight
+                    let pixel: [UInt8] = blankTail
+                        ? [0, 0, 0, 255]
+                        : [
+                            UInt8(truncatingIfNeeded: 62 + footerOffset),
+                            UInt8(truncatingIfNeeded: footerY % 251 + footerOffset),
+                            UInt8(truncatingIfNeeded: x % 251 + footerOffset),
+                            255
+                        ]
+                    pixels.append(contentsOf: pixel)
+                    continue
+                }
+                let absoluteY = UInt32(truncatingIfNeeded: y)
+                let value = absoluteY &* 0x45d9f3b &+ UInt32(x) &* 0x119de1f3
+                pixels.append(contentsOf: [
+                    UInt8(value % 200),
+                    UInt8((value << 9 | value >> 23) % 200),
+                    UInt8((value << 17 | value >> 15) % 200),
+                    255
+                ])
+            }
+        }
+        let provider = CGDataProvider(data: Data(pixels) as CFData)!
+        return CGImage(
+            width: width,
+            height: totalHeight,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+    }
+
+    static func sparseContentFrame(start: Int, width: Int, height: Int) -> CGImage {
+        var pixels = [UInt8]()
+        pixels.reserveCapacity(width * height * 4)
+        for y in start..<(start + height) {
+            for x in 0..<width {
+                if x == 0 {
+                    let absoluteY = UInt32(truncatingIfNeeded: y)
+                    pixels.append(UInt8(truncatingIfNeeded: absoluteY))
+                    pixels.append(UInt8(truncatingIfNeeded: absoluteY >> 8))
+                    pixels.append(UInt8(truncatingIfNeeded: absoluteY &* 37))
+                    pixels.append(255)
+                } else {
+                    pixels.append(contentsOf: [0, 0, 0, 255])
+                }
+            }
+        }
+        let provider = CGDataProvider(data: Data(pixels) as CFData)!
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+    }
+
+    static func monotoneFrame(start: Int, width: Int, height: Int) -> CGImage {
+        var pixels = [UInt8]()
+        pixels.reserveCapacity(width * height * 4)
+        for y in start..<(start + height) {
+            let value = UInt8(truncatingIfNeeded: y)
+            for _ in 0..<width {
+                pixels.append(contentsOf: [value, value, value, 255])
+            }
+        }
+        let provider = CGDataProvider(data: Data(pixels) as CFData)!
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+    }
+
     static func pixels(_ image: CGImage) -> Data {
         let context = CGContext(
             data: nil,
@@ -382,6 +548,45 @@ struct ScrollCapturePreviewTest {
         let width = 80
         let height = 160
         let step = 112
+        let mismatchedOverlap = ScrollCaptureModule().testFindOverlap(
+            topFrame: frame(start: 0, width: width, height: height),
+            bottomFrame: frame(start: 20, width: width - 1, height: height),
+            expectedOverlap: height - step
+        )
+        precondition(mismatchedOverlap == nil, "Frames with different dimensions must fail closed before full-row matching")
+        let cancellationFooterFrames = (0..<2).map {
+            fixedFooterFrame(index: $0, periodic: false, width: 640, height: height, footerHeight: 20, step: 96)
+        }
+        precondition(ScrollCaptureModule().testFooterExtractionFailure(
+            topFrame: cancellationFooterFrames[0],
+            bottomFrame: cancellationFooterFrames[1]
+        ), "Footer extraction failure must not be treated as an absent footer")
+        var footerCancellationChecks = 0
+        let cancelledFooterScan = ScrollCaptureModule().testFixedFooterHeight(
+            topFrame: cancellationFooterFrames[0],
+            bottomFrame: cancellationFooterFrames[1]
+        ) {
+            footerCancellationChecks += 1
+            return footerCancellationChecks == 10
+        }
+        precondition(cancelledFooterScan == nil && footerCancellationChecks == 10, "Footer scanning must observe cancellation between rows")
+
+        let cancellationSparseFrames = [
+            sparseContentFrame(start: 0, width: 1000, height: height),
+            sparseContentFrame(start: 96, width: 1000, height: height)
+        ]
+        var overlapCancellationChecks = 0
+        let cancelledOverlapScan = ScrollCaptureModule().testExactFullImageOverlap(
+            topFrame: cancellationSparseFrames[0],
+            bottomFrame: cancellationSparseFrames[1],
+            contentHeight: height,
+            minimumOverlap: 8
+        ) {
+            overlapCancellationChecks += 1
+            return overlapCancellationChecks == 20
+        }
+        precondition(cancelledOverlapScan == nil && overlapCancellationChecks == 20, "Full-row overlap arbitration must observe cancellation during prefix scanning")
+
         let black = CGContext(
             data: nil,
             width: width,
@@ -524,6 +729,49 @@ struct ScrollCapturePreviewTest {
         precondition((alignmentResponses[1].1["cancelled"] as? Bool) == true)
         alignmentResponseLock.unlock()
         precondition(!alignmentPublications.contains(2), "Cancelled alignment must not publish a stale preview")
+
+        let drainModule = ScrollCaptureModule()
+        let firstDrainAlignmentStarted = DispatchSemaphore(value: 0)
+        let releaseFirstDrainAlignment = DispatchSemaphore(value: 0)
+        let finishWaitingForDrain = DispatchSemaphore(value: 0)
+        var drainAlignmentCount = 0
+        var drainFinishResult: [String: Any]?
+        drainModule.testSetPreviewAlignment { _, _, expected, _ in
+            drainAlignmentCount += 1
+            if drainAlignmentCount == 1 {
+                firstDrainAlignmentStarted.signal()
+                releaseFirstDrainAlignment.wait()
+            }
+            return expected
+        }
+        drainModule.testSetPreviewEncoder { _ in "preview" }
+        drainModule.testSetFinishAlignmentWaitStarted(finishWaitingForDrain)
+        drainModule.testSetFinishResponder { _, result in drainFinishResult = result }
+        drainModule.testPreparePreview(step: 112)
+        drainModule.testAppendPreviewFrame(frame(start: 0, width: width, height: height))
+        drainModule.testAppendPreviewFrame(frame(start: 112, width: width, height: height))
+        precondition(firstDrainAlignmentStarted.wait(timeout: .now() + 5) == .success)
+        drainModule.testAppendPreviewFrame(frame(start: 224, width: width, height: height))
+        let drainOutput = NSTemporaryDirectory() + "/scroll-alignment-drain-\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: drainOutput) }
+        drainModule.handle(
+            method: DaemonContract.ScrollCapture.Method.finish.rawValue,
+            params: ["outputPath": AnyCodable(drainOutput)],
+            requestId: "alignment-drain-finish"
+        )
+        precondition(finishWaitingForDrain.wait(timeout: .now() + 5) == .success)
+        releaseFirstDrainAlignment.signal()
+        let drainDeadline = Date(timeIntervalSinceNow: 5)
+        while drainFinishResult == nil && Date() < drainDeadline {
+            _ = RunLoop.current.run(mode: .default, before: drainDeadline)
+        }
+        precondition((drainFinishResult?["success"] as? Bool) == true)
+        precondition((drainFinishResult?["frameCount"] as? Int) == 3)
+        precondition(drainAlignmentCount == 2, "Finish must reuse both alignments drained after preview rendering stopped")
+        let drainSource = CGImageSourceCreateWithURL(URL(fileURLWithPath: drainOutput) as CFURL, nil)!
+        let drainSaved = CGImageSourceCreateImageAtIndex(drainSource, 0, nil)!
+        precondition(drainSaved.height == height + 224)
+        precondition(pixels(drainSaved) == pixels(frame(start: 0, width: width, height: height + 224)))
 
         let backlogModule = ScrollCaptureModule()
         let firstEncodeStarted = DispatchSemaphore(value: 0)
@@ -671,6 +919,418 @@ struct ScrollCapturePreviewTest {
         precondition(variablePreview.height == 256 && variableSaved.height == 256)
         precondition(variablePreviewFrameCount == 2 && variableEstimatedHeight == 256)
         precondition(pixels(variablePreview) == pixels(variableSaved), "Variable-overlap preview differs from saved pixels")
+
+        let closeScrollFrames = [
+            monotoneFrame(start: 0, width: width, height: height),
+            monotoneFrame(start: 30, width: width, height: height)
+        ]
+        let closeScrollOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-close-overlap-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: closeScrollOutput) }
+        let (
+            closeScrollPreview,
+            closeScrollSaved,
+            _,
+            closeScrollOverlaps,
+            closeScrollFrameCount,
+            closeScrollEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: closeScrollFrames,
+            step: 30,
+            outputPath: closeScrollOutput.path
+        )
+        precondition(closeScrollOverlaps == [130], "Small scrolls must include overlaps above the former search limit")
+        precondition(closeScrollFrameCount == 2 && closeScrollEstimatedHeight == 190)
+        precondition(pixels(closeScrollPreview) == pixels(closeScrollSaved))
+        precondition(pixels(closeScrollSaved) == pixels(monotoneFrame(start: 0, width: width, height: 190)))
+
+        let shortOverlapFrames = [
+            monotoneFrame(start: 0, width: width, height: height),
+            monotoneFrame(start: 128, width: width, height: height)
+        ]
+        let shortOverlapOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-short-overlap-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: shortOverlapOutput) }
+        let (
+            shortOverlapPreview,
+            shortOverlapSaved,
+            _,
+            shortOverlaps,
+            shortOverlapFrameCount,
+            shortOverlapEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: shortOverlapFrames,
+            step: 128,
+            outputPath: shortOverlapOutput.path
+        )
+        precondition(shortOverlaps == [32], "A sub-40px seam must be accepted only when full rows prove it")
+        precondition(shortOverlapFrameCount == 2 && shortOverlapEstimatedHeight == 288)
+        precondition(pixels(shortOverlapPreview) == pixels(shortOverlapSaved))
+        precondition(pixels(shortOverlapSaved) == pixels(monotoneFrame(start: 0, width: width, height: 288)))
+
+        let sparseFrames = [
+            sparseContentFrame(start: 0, width: 1000, height: height),
+            sparseContentFrame(start: 96, width: 1000, height: height)
+        ]
+        let sparseOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-sparse-overlap-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: sparseOutput) }
+        let (
+            sparsePreview,
+            sparseSaved,
+            _,
+            sparseOverlaps,
+            sparseFrameCount,
+            sparseEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: sparseFrames,
+            step: 96,
+            outputPath: sparseOutput.path
+        )
+        precondition(sparseOverlaps == [64], "Full-width row evidence must resolve a blank, repeated 40-row sample")
+        precondition(sparseFrameCount == 2 && sparseEstimatedHeight == 256)
+        precondition(pixels(sparsePreview) == pixels(sparseSaved))
+        precondition(pixels(sparseSaved) == pixels(sparseContentFrame(start: 0, width: 1000, height: 256)))
+
+        let zeroStepFrames = [frame(start: 0, width: width, height: height), frame(start: 48, width: width, height: height)]
+        let zeroStepOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-zero-step-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: zeroStepOutput) }
+        let (
+            zeroStepPreview,
+            zeroStepSaved,
+            _,
+            zeroStepOverlaps,
+            zeroStepFrameCount,
+            zeroStepEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: zeroStepFrames,
+            step: 0,
+            outputPath: zeroStepOutput.path
+        )
+        precondition(zeroStepOverlaps == [height - 48], "A zero requested step should still use measured content alignment")
+        precondition(zeroStepFrameCount == 2 && zeroStepEstimatedHeight == height + 48)
+        precondition(pixels(zeroStepPreview) == pixels(zeroStepSaved))
+
+        let noisySeamFrames = (0..<2).map {
+            fixedFooterFrame(
+                index: $0,
+                periodic: false,
+                width: 640,
+                height: height,
+                footerHeight: 0,
+                step: 96,
+                bodyNoise: 18
+            )
+        }
+        let noisySeamOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-noisy-seam-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: noisySeamOutput) }
+        let (
+            noisySeamPreview,
+            noisySeamSaved,
+            _,
+            noisySeamOverlaps,
+            noisySeamFrameCount,
+            noisySeamEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: noisySeamFrames,
+            step: 96,
+            outputPath: noisySeamOutput.path
+        )
+        precondition(noisySeamOverlaps == [64], "A unique seam at the shared 18-level per-channel confidence boundary should be accepted")
+        precondition(noisySeamFrameCount == 2 && noisySeamEstimatedHeight == 256)
+        precondition(pixels(noisySeamPreview) == pixels(noisySeamSaved))
+
+        let overThresholdFrames = (0..<2).map {
+            fixedFooterFrame(
+                index: $0,
+                periodic: false,
+                width: 640,
+                height: height,
+                footerHeight: 0,
+                step: 96,
+                bodyNoise: 19
+            )
+        }
+        let overThresholdOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-over-threshold-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: overThresholdOutput) }
+        let overThresholdResult = ScrollCaptureModule().testFinishReportsAcceptedStitchPrefix(
+            frames: overThresholdFrames,
+            step: 96,
+            outputPath: overThresholdOutput.path
+        )
+        precondition((overThresholdResult?["success"] as? Bool) == true)
+        precondition((overThresholdResult?["frameCount"] as? Int) == 1, "A seam above the confidence boundary must preserve only the valid prefix")
+
+        let noOverlapFrames = [frame(start: 0, width: width, height: height), frame(start: 180, width: width, height: height)]
+        let noOverlapOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-no-overlap-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: noOverlapOutput) }
+        let noOverlapResult = ScrollCaptureModule().testFinishReportsAcceptedStitchPrefix(
+            frames: noOverlapFrames,
+            step: step,
+            outputPath: noOverlapOutput.path
+        )
+        precondition((noOverlapResult?["success"] as? Bool) == true)
+        precondition((noOverlapResult?["frameCount"] as? Int) == 1, "A poor unique score must not discard rows when the frames have no true overlap")
+
+        let footerWidth = 640
+        let footerHeight = 160
+        let footerSize = 20
+        let footerStep = 96
+        let periodicFooterFrames = (0..<2).map {
+            fixedFooterFrame(
+                index: $0,
+                periodic: true,
+                width: footerWidth,
+                height: footerHeight,
+                footerHeight: footerSize,
+                step: footerStep
+            )
+        }
+        let periodicFooterOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-periodic-footer-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: periodicFooterOutput) }
+        let periodicFooterResult = ScrollCaptureModule().testFinishReportsAcceptedStitchPrefix(
+            frames: periodicFooterFrames,
+            step: footerStep,
+            outputPath: periodicFooterOutput.path
+        )
+        precondition((periodicFooterResult?["success"] as? Bool) == true)
+        precondition((periodicFooterResult?["frameCount"] as? Int) == 1, "A rejected ambiguous frame must not be reported as saved")
+        precondition((periodicFooterResult?["width"] as? Int) == footerWidth)
+        precondition((periodicFooterResult?["height"] as? Int) == footerHeight)
+        let periodicFooterSource = CGImageSourceCreateWithURL(periodicFooterOutput as CFURL, nil)!
+        let periodicFooterSaved = CGImageSourceCreateImageAtIndex(periodicFooterSource, 0, nil)!
+        precondition(pixels(periodicFooterSaved) == pixels(periodicFooterFrames[0]), "Ambiguous alignment must save the previous accepted frame")
+
+        let autoStopModule = ScrollCaptureModule()
+        var autoStopPreviewCounts: [Int] = []
+        var noOverlapEvents: [[String: Any]] = []
+        autoStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        autoStopModule.testSetPreviewEncoder { _ in "preview" }
+        autoStopModule.testSetPreviewResponder { _, frameCount, _ in
+            autoStopPreviewCounts.append(frameCount)
+        }
+        autoStopModule.testSetScrollEndedResponder { data in noOverlapEvents.append(data) }
+        autoStopModule.testAppendPreviewFrame(periodicFooterFrames[0])
+        autoStopModule.testWaitForPreviewWork()
+        let firstAutoPreviewDeadline = Date(timeIntervalSinceNow: 5)
+        while autoStopPreviewCounts.isEmpty && Date() < firstAutoPreviewDeadline {
+            _ = RunLoop.current.run(mode: .default, before: firstAutoPreviewDeadline)
+        }
+        precondition(autoStopPreviewCounts == [1], "The last accepted preview must be visible before an ambiguous frame")
+        autoStopModule.testAppendPreviewFrame(periodicFooterFrames[1])
+        autoStopModule.testWaitForPreviewAlignment()
+        let autoStopDeadline = Date(timeIntervalSinceNow: 5)
+        while noOverlapEvents.isEmpty && Date() < autoStopDeadline {
+            _ = RunLoop.current.run(mode: .default, before: autoStopDeadline)
+        }
+        precondition(!autoStopModule.testIsAutoScrolling(), "Ambiguous alignment must stop auto-scroll")
+        precondition((noOverlapEvents.first?["reason"] as? String) == "no-overlap")
+        precondition((noOverlapEvents.first?["frameCount"] as? Int) == 1)
+        precondition(autoStopPreviewCounts == [1], "The ambiguous frame must not replace the last accepted preview")
+        let autoStopOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-auto-stop-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: autoStopOutput) }
+        let autoStopResult = autoStopModule.testFinishCurrentCapture(outputPath: autoStopOutput.path)
+        precondition((autoStopResult?["success"] as? Bool) == true)
+        precondition((autoStopResult?["frameCount"] as? Int) == 1)
+        precondition(noOverlapEvents.count == 1, "Finish must not duplicate the auto-stop notification")
+        let autoStopSource = CGImageSourceCreateWithURL(autoStopOutput as CFURL, nil)!
+        let autoStopSaved = CGImageSourceCreateImageAtIndex(autoStopSource, 0, nil)!
+        precondition(pixels(autoStopSaved) == pixels(periodicFooterFrames[0]))
+
+        let repeatedNoFooterFrames = (0..<2).map {
+            fixedFooterFrame(
+                index: $0,
+                periodic: true,
+                width: footerWidth,
+                height: footerHeight,
+                footerHeight: 0,
+                step: footerStep,
+                changingTail: true
+            )
+        }
+        let manualStopModule = ScrollCaptureModule()
+        var manualStopPreviewCounts: [Int] = []
+        var manualNoOverlapEvents: [[String: Any]] = []
+        manualStopModule.testPreparePreview(step: footerStep, width: footerWidth, height: footerHeight)
+        manualStopModule.testSetPreviewEncoder { _ in "preview" }
+        manualStopModule.testSetPreviewResponder { _, frameCount, _ in
+            manualStopPreviewCounts.append(frameCount)
+        }
+        manualStopModule.testSetScrollEndedResponder { data in manualNoOverlapEvents.append(data) }
+        manualStopModule.testAppendPreviewFrame(repeatedNoFooterFrames[0])
+        manualStopModule.testWaitForPreviewWork()
+        let firstManualPreviewDeadline = Date(timeIntervalSinceNow: 5)
+        while manualStopPreviewCounts.isEmpty && Date() < firstManualPreviewDeadline {
+            _ = RunLoop.current.run(mode: .default, before: firstManualPreviewDeadline)
+        }
+        precondition(manualStopPreviewCounts == [1])
+        manualStopModule.testAppendPreviewFrame(repeatedNoFooterFrames[1])
+        manualStopModule.testWaitForPreviewAlignment()
+        let manualStopDeadline = Date(timeIntervalSinceNow: 5)
+        while manualNoOverlapEvents.isEmpty && Date() < manualStopDeadline {
+            _ = RunLoop.current.run(mode: .default, before: manualStopDeadline)
+        }
+        precondition((manualNoOverlapEvents.first?["reason"] as? String) == "no-overlap", "Manual scrolling must report an ambiguous repeated-content seam")
+        precondition((manualNoOverlapEvents.first?["frameCount"] as? Int) == 1)
+        precondition(manualStopPreviewCounts == [1], "Manual scrolling must keep the last accepted preview")
+        let manualStopOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-manual-stop-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: manualStopOutput) }
+        let manualStopResult = manualStopModule.testFinishCurrentCapture(outputPath: manualStopOutput.path)
+        precondition((manualStopResult?["success"] as? Bool) == true)
+        precondition((manualStopResult?["frameCount"] as? Int) == 1)
+        precondition(manualNoOverlapEvents.count == 1)
+        let manualStopSource = CGImageSourceCreateWithURL(manualStopOutput as CFURL, nil)!
+        let manualStopSaved = CGImageSourceCreateImageAtIndex(manualStopSource, 0, nil)!
+        precondition(pixels(manualStopSaved) == pixels(repeatedNoFooterFrames[0]))
+
+        let uniqueFooterFrames = (0..<2).map {
+            fixedFooterFrame(
+                index: $0,
+                periodic: false,
+                width: footerWidth,
+                height: footerHeight,
+                footerHeight: footerSize,
+                step: footerStep
+            )
+        }
+        let uniqueFooterOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-unique-footer-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: uniqueFooterOutput) }
+        let (
+            uniqueFooterPreview,
+            uniqueFooterSaved,
+            _,
+            uniqueFooterOverlaps,
+            uniqueFooterFrameCount,
+            uniqueFooterEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: uniqueFooterFrames,
+            step: footerStep,
+            outputPath: uniqueFooterOutput.path
+        )
+        precondition(uniqueFooterOverlaps == [footerHeight - footerSize - footerStep], "Unique content should align after excluding the fixed footer")
+        precondition(uniqueFooterFrameCount == 2 && uniqueFooterEstimatedHeight == footerHeight + footerStep)
+        precondition(uniqueFooterSaved.height == footerHeight + footerStep)
+        precondition(pixels(uniqueFooterPreview) == pixels(uniqueFooterSaved), "Fixed-footer preview must match the saved capture")
+        let expectedUniqueFooter = expectedFooterDocument(
+            width: footerWidth,
+            contentHeight: footerHeight - footerSize + footerStep,
+            footerHeight: footerSize
+        )
+        precondition(pixels(uniqueFooterSaved) == pixels(expectedUniqueFooter), "The reopened PNG must contain every document row and one footer")
+
+        let changingFooterFrames = (0..<2).map {
+            fixedFooterFrame(
+                index: $0,
+                periodic: false,
+                width: footerWidth,
+                height: footerHeight,
+                footerHeight: footerSize,
+                step: footerStep,
+                changingFooter: true
+            )
+        }
+        let changingFooterDetection = ScrollCaptureModule().testFooterDetection(
+            topFrame: changingFooterFrames[0],
+            bottomFrame: changingFooterFrames[1]
+        )
+        precondition(changingFooterDetection?.height == footerSize && changingFooterDetection?.isExact == false)
+        let changingFooterOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-changing-footer-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: changingFooterOutput) }
+        let (
+            changingFooterPreview,
+            changingFooterSaved,
+            _,
+            changingFooterOverlaps,
+            changingFooterFrameCount,
+            changingFooterEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: changingFooterFrames,
+            step: footerStep,
+            outputPath: changingFooterOutput.path
+        )
+        precondition(changingFooterOverlaps == [footerHeight - footerSize - footerStep])
+        precondition(changingFooterFrameCount == 2 && changingFooterEstimatedHeight == footerHeight + footerStep)
+        precondition(pixels(changingFooterPreview) == pixels(changingFooterSaved))
+        precondition(
+            pixels(changingFooterSaved) == pixels(expectedFooterDocument(
+                width: footerWidth,
+                contentHeight: footerHeight - footerSize + footerStep,
+                footerHeight: footerSize,
+                footerOffset: 11
+            )),
+            "A one-level animated footer must not replace document rows or appear twice"
+        )
+
+        let unprovableFooterFrames = (0..<2).map {
+            fixedFooterFrame(
+                index: $0,
+                periodic: false,
+                width: footerWidth,
+                height: footerHeight,
+                footerHeight: footerSize,
+                step: 180,
+                changingFooter: true
+            )
+        }
+        let unprovableFooterOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-unprovable-footer-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: unprovableFooterOutput) }
+        let unprovableFooterResult = ScrollCaptureModule().testFinishReportsAcceptedStitchPrefix(
+            frames: unprovableFooterFrames,
+            step: footerStep,
+            outputPath: unprovableFooterOutput.path
+        )
+        precondition((unprovableFooterResult?["success"] as? Bool) == true)
+        precondition((unprovableFooterResult?["frameCount"] as? Int) == 1, "A near-static footer without a proven document seam must preserve only the accepted prefix")
+        let unprovableFooterSource = CGImageSourceCreateWithURL(unprovableFooterOutput as CFURL, nil)!
+        let unprovableFooterSaved = CGImageSourceCreateImageAtIndex(unprovableFooterSource, 0, nil)!
+        precondition(pixels(unprovableFooterSaved) == pixels(unprovableFooterFrames[0]))
+
+        let blankTailFrames = (0..<2).map {
+            fixedFooterFrame(
+                index: $0,
+                periodic: false,
+                width: footerWidth,
+                height: footerHeight,
+                footerHeight: footerSize,
+                step: footerStep,
+                blankTail: true
+            )
+        }
+        let blankTailOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-blank-tail-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: blankTailOutput) }
+        let (
+            blankTailPreview,
+            blankTailSaved,
+            _,
+            blankTailOverlaps,
+            blankTailFrameCount,
+            blankTailEstimatedHeight
+        ) = ScrollCaptureModule().testPreviewAndSave(
+            frames: blankTailFrames,
+            step: footerStep,
+            outputPath: blankTailOutput.path
+        )
+        precondition(blankTailOverlaps == [footerHeight - footerSize - footerStep])
+        precondition(blankTailFrameCount == 2 && blankTailEstimatedHeight == footerHeight + footerStep)
+        precondition(pixels(blankTailPreview) == pixels(blankTailSaved))
+        let expectedBlankTail = expectedFooterDocument(
+            width: footerWidth,
+            contentHeight: footerHeight - footerSize + footerStep,
+            footerHeight: footerSize,
+            blankTail: true
+        )
+        precondition(pixels(blankTailSaved) == pixels(expectedBlankTail), "Identical blank tail rows must occur once in the output")
         print("macOS scroll captures match saved pixels for nominal and measured overlap and suppress stale previews")
     }
 }
