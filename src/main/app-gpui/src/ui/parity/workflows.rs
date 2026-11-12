@@ -4976,6 +4976,11 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
     image::RgbaImage::from_fn(120, 360, |x, y| {
         if y == 0 || (x == 0 && (30..60).contains(&y)) {
             image::Rgba([240, 20, 40, 0])
+        } else if (20..100).contains(&x)
+            && ((105..155).contains(&y) || (275..325).contains(&y))
+            && (x + y) % 2 == 0
+        {
+            image::Rgba([200, 20, 120, 255])
         } else {
             image::Rgba([40, 190, 80, 255])
         }
@@ -5099,6 +5104,33 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                             style: "pixelate".into(),
                             intensity: 2.,
                         },
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "inset-edge-blackout".into(),
+                            x: 630.,
+                            y: 20.,
+                            width: 100.,
+                            height: 50.,
+                            style: "blackout".into(),
+                            intensity: 2.,
+                        },
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "inset-edge-blur".into(),
+                            x: 630.,
+                            y: 105.,
+                            width: 100.,
+                            height: 50.,
+                            style: "blur".into(),
+                            intensity: 2.,
+                        },
+                        crate::editor::annotations::Annotation::Redact {
+                            id: "inset-edge-pixelate".into(),
+                            x: 630.,
+                            y: 275.,
+                            width: 100.,
+                            height: 50.,
+                            style: "pixelate".into(),
+                            intensity: 2.,
+                        },
                         crate::editor::annotations::Annotation::Rectangle {
                             id: "inset-layer-annotation".into(),
                             x: 280.,
@@ -5203,7 +5235,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             }
         })
         .unwrap();
-        let (bounds, saved, offset_x, offset_y, matte, rectangles) = cx.update(|cx| {
+        let (bounds, saved, offset_x, offset_y, matte, rectangles, layer_inset) = cx.update(|cx| {
             let editor = editor.read(cx).unwrap();
             let wallpaper = editor.wallpaper.for_scale(f64::from(scale));
             let layer_inset = wallpaper.layer_inset(true);
@@ -5242,8 +5274,90 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 (y.round() + group.primary.y + layer_inset).round() as u32,
                 matte,
                 rectangles,
+                layer_inset,
             )
         });
+        if name.starts_with("inset") {
+            let original = editor
+                .update(cx, |editor, _, _| {
+                    let annotations = editor.history.current().to_vec();
+                    editor.history.replace_current(
+                        annotations
+                            .iter()
+                            .filter(|annotation| {
+                                !matches!(
+                                    annotation.id(),
+                                    "inset-edge-blackout"
+                                        | "inset-edge-blur"
+                                        | "inset-edge-pixelate"
+                                )
+                            })
+                            .cloned()
+                            .collect(),
+                    );
+                    let png = editor.export_png().unwrap();
+                    editor.history.replace_current(annotations);
+                    image::load_from_memory(&png).unwrap().to_rgba8()
+                })
+                .unwrap();
+            original
+                .save(scratch.join(format!("layered-{name}-unredacted.png")))
+                .unwrap();
+            for y in 20..70 {
+                for x in 630..730 {
+                    assert_eq!(
+                        saved.get_pixel(offset_x + x, offset_y + y).0,
+                        [0, 0, 0, 255],
+                        "blackout missed {x},{y}"
+                    );
+                }
+            }
+            let changed_outside = saved
+                .enumerate_pixels()
+                .filter(|&(x, y, pixel)| {
+                    let in_redaction = x >= offset_x + 630
+                        && x < offset_x + 730
+                        && [20, 105, 275]
+                            .into_iter()
+                            .any(|top| y >= offset_y + top && y < offset_y + top + 50);
+                    !in_redaction && pixel != original.get_pixel(x, y)
+                })
+                .count();
+            assert_eq!(
+                changed_outside, 0,
+                "redaction changed pixels outside its bounds"
+            );
+            for x in [635, 680] {
+                assert_ne!(
+                    original.get_pixel(offset_x + x, offset_y + 40).0,
+                    [0, 0, 0, 255]
+                );
+            }
+            for (y, style) in [(120, "blur"), (300, "pixelate")] {
+                let before = original.get_pixel(offset_x + 635, offset_y + y).0;
+                let redacted = saved.get_pixel(offset_x + 635, offset_y + y).0;
+                assert!(
+                    before
+                        .into_iter()
+                        .zip(redacted)
+                        .any(|(before, redacted)| before.abs_diff(redacted) > 10),
+                    "{style} did not change the original image"
+                );
+            }
+            let left = (rectangles[1].0 + layer_inset).round() as u32;
+            let top = (rectangles[1].1 + layer_inset).round() as u32;
+            for (y, style) in [(130, "blur"), (300, "pixelate")] {
+                let original = original.get_pixel(left + 30, top + y).0;
+                let redacted = saved.get_pixel(left + 30, top + y).0;
+                assert!(
+                    original
+                        .into_iter()
+                        .zip(redacted)
+                        .any(|(original, redacted)| original.abs_diff(redacted) > 10),
+                    "{style} did not change the attached image"
+                );
+            }
+        }
         match name {
             "inset125" => {
                 assert_eq!(saved.dimensions(), (792, 376));

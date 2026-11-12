@@ -921,7 +921,10 @@ Bugs fixed in this pass:
   6px inset. CPU checks cover all four attachment edges and transparent source
   pixels. Light and dark GPU fixtures check zero-padding right attachments at
   simulated 125% and 200%, including transparent edge pixels, an annotation
-  crossing the attachment, and a PNG reopened at 73% and 100% zoom. At 125%,
+  crossing the attachment, and a PNG reopened at 73% and 100% zoom. Blackout,
+  blur and pixelation now cross a textured right attachment; the checks verify
+  their effects on both images, full blackout coverage, no changes outside the
+  redaction bounds, and preview/export equality. At 125%,
   selection halos are checked both inside the primary and across the attachment;
   a selected highlight retains its independently checked blended color. Tied
   edge colors now use the first sampled color, matching Electron and avoiding
@@ -1251,8 +1254,9 @@ Windows adapter maps a range-value request to the numeric action handled by the
 slider; delivery through the operating system remains unverified.
 
 Unframed layered annotations now render after attachments in the tested path,
-including the tested inset rectangle. Verify redaction ordering with insets and
-annotation ordering with frames and balance, and compare directly with Electron.
+including the inset rectangle and cross-boundary redactions above. Verify their
+ordering where annotations overlap, and with frames and balance; compare the
+complete workflow directly with Electron.
 The 4K attachment preparation cost above also needs interactive and
 slower-hardware measurement.
 
@@ -1270,6 +1274,13 @@ outlines for other overlapping annotation types and on physical displays.
 Electron's all-in-one screenshot code also starts the frozen selection before it
 hides desktop icons. That suggests the same frozen-frame mismatch, but it has not
 been reproduced in a native Electron session.
+
+An isolated Electron canvas probe applied its current redaction operations to the
+same unredacted inset-attachment PNG used by GPUI. Across 4,136 interior pixels
+per effect at simulated 125% and 200%, blackout and pixelation matched exactly.
+Blur differed by up to five and four channel levels respectively; 487 and 602
+pixels differed by more than two levels. This checks the effect functions, not
+the complete Electron editor workflow.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
