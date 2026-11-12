@@ -216,12 +216,11 @@ fn assert_text_submenu_focus(
 }
 
 #[cfg(windows)]
-fn capture_tray_menu(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
-    let tray =
-        cx.update(|cx| crate::windows::tray_menu::TrayMenuWindow::open(None, false, cx).unwrap());
-    let window = tray.into();
-    cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
-        .unwrap();
+fn assert_tray_menu_geometry(
+    cx: &mut HeadlessAppContext,
+    window: AnyWindowHandle,
+    scale: f32,
+) -> Bounds<Pixels> {
     settle(cx, window);
     cx.update_window(window, |_, window, _| {
         let panel = window
@@ -237,17 +236,124 @@ fn capture_tray_menu(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
             })
             .unwrap();
         let viewport = window.viewport_size();
+        let bounds = window.bounds();
         assert!(
-            (f32::from(viewport.height) * scale - panel.bounds.size.height.0).abs() < 0.01,
-            "the tray window must fit its painted menu: {viewport:?}, {:?}",
-            panel.bounds
+            (f32::from(viewport.width) * scale - panel.bounds.size.width.0).abs() < 0.01
+                && (f32::from(viewport.height) * scale - panel.bounds.size.height.0).abs() < 0.01,
+            "the tray viewport must fit its painted menu: {viewport:?}, {:?}",
+            panel.bounds,
         );
+        assert!(
+            (f32::from(bounds.size.width) * scale - panel.bounds.size.width.0).abs() < 0.01
+                && (f32::from(bounds.size.height) * scale - panel.bounds.size.height.0).abs()
+                    < 0.01,
+            "the tray window bounds must fit its painted menu: {bounds:?}, {:?}",
+            panel.bounds,
+        );
+        bounds
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[cfg(windows)]
+fn prewarmed_tray_menu_reuses_measured_geometry(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    scale: f32,
+) {
+    use crate::windows::tray_menu::TrayMenuWindow;
+
+    cx.update(TrayMenuWindow::prewarm);
+    let handle = cx
+        .update(TrayMenuWindow::cached_handle_for_parity)
+        .expect("the tray menu must be prewarmed");
+    assert!(!cx.update(|cx| TrayMenuWindow::is_shown_for_parity(handle, cx)));
+    let window: AnyWindowHandle = handle.into();
+    cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+
+    cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+    let first = assert_tray_menu_geometry(cx, window, scale);
+    assert!(cx.update(|cx| TrayMenuWindow::is_shown_for_parity(handle, cx)));
+    assert_eq!(
+        cx.update(TrayMenuWindow::cached_handle_for_parity),
+        Some(handle),
+        "the first show must reuse the prewarmed window"
+    );
+    let first_image = cx.capture_screenshot(window).unwrap();
+
+    cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+    cx.run_until_parked();
+    assert!(!cx.update(|cx| TrayMenuWindow::is_shown_for_parity(handle, cx)));
+
+    cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+    let reopened = assert_tray_menu_geometry(cx, window, scale);
+    assert!(cx.update(|cx| TrayMenuWindow::is_shown_for_parity(handle, cx)));
+    assert_eq!(
+        cx.update(TrayMenuWindow::cached_handle_for_parity),
+        Some(handle),
+        "reopening must reuse the same tray window"
+    );
+    assert_eq!(
+        first.size, reopened.size,
+        "the reused tray window must retain its measured menu geometry"
+    );
+    let reopened_image = cx.capture_screenshot(window).unwrap();
+    let changed_pixels = if first_image.dimensions() == reopened_image.dimensions() {
+        first_image
+            .pixels()
+            .zip(reopened_image.pixels())
+            .filter(|(first, reopened)| first != reopened)
+            .count()
+    } else {
+        0
+    };
+    if first_image.dimensions() != reopened_image.dimensions() || changed_pixels > 0 {
+        first_image
+            .save(output.join("tray-reuse-first.png"))
+            .unwrap();
+        reopened_image
+            .save(output.join("tray-reuse-reopened.png"))
+            .unwrap();
+        if first_image.dimensions() == reopened_image.dimensions() {
+            image::RgbaImage::from_fn(first_image.width(), first_image.height(), |x, y| {
+                if first_image.get_pixel(x, y) == reopened_image.get_pixel(x, y) {
+                    image::Rgba([32, 32, 32, 255])
+                } else {
+                    image::Rgba([255, 0, 80, 255])
+                }
+            })
+            .save(output.join("tray-reuse-diff.png"))
+            .unwrap();
+        }
+        panic!(
+            "tray menu changed after reuse: {:?} vs {:?}; {changed_pixels} pixels differ",
+            first_image.dimensions(),
+            reopened_image.dimensions(),
+        );
+    }
+
+    cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+    cx.run_until_parked();
+    assert!(!cx.update(|cx| TrayMenuWindow::is_shown_for_parity(handle, cx)));
+    cx.update(TrayMenuWindow::remove_cached_for_parity);
+    cx.run_until_parked();
+    assert!(!cx.update(|cx| cx.windows().contains(&window)));
+}
+
+#[cfg(windows)]
+fn capture_tray_menu(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
+    let tray =
+        cx.update(|cx| crate::windows::tray_menu::TrayMenuWindow::open(None, false, cx).unwrap());
+    let window = tray.into();
+    cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    assert_tray_menu_geometry(cx, window, scale);
     capture(cx, window, output, "tray-default");
     cx.update_window(window, |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
+    prewarmed_tray_menu_reuses_measured_geometry(cx, output, scale);
 }
 
 fn capture_history(

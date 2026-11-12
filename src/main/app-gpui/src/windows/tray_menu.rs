@@ -207,6 +207,25 @@ impl TrayMenuWindow {
         tray_menu_cache(cx).handle = opened;
     }
 
+    #[cfg(all(windows, feature = "parity"))]
+    pub(crate) fn cached_handle_for_parity(cx: &mut App) -> Option<WindowHandle<Self>> {
+        tray_menu_cache(cx).handle
+    }
+
+    #[cfg(all(windows, feature = "parity"))]
+    pub(crate) fn is_shown_for_parity(handle: WindowHandle<Self>, cx: &mut App) -> bool {
+        handle
+            .update(cx, |this, _, _| this.visibility.is_shown())
+            .unwrap_or(false)
+    }
+
+    #[cfg(all(windows, feature = "parity"))]
+    pub(crate) fn remove_cached_for_parity(cx: &mut App) {
+        if let Some(handle) = tray_menu_cache(cx).handle.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+    }
+
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
         if recently_closed_on_deactivation(cx) {
             return;
