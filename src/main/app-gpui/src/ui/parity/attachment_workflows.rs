@@ -93,7 +93,11 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         ("right", Edge::Right, "live", false),
         ("top", Edge::Top, "freeze-failed", true),
         ("bottom", Edge::Bottom, "freeze-unavailable", true),
+        ("icons-restore-failed", Edge::Right, "live", false),
     ] {
+        if name == "icons-restore-failed" && !cfg!(windows) {
+            continue;
+        }
         let directory = scratch.join(format!("attach-{name}"));
         std::fs::create_dir_all(&directory).unwrap();
         let source = directory.join("original.png");
@@ -119,6 +123,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             output.join("capture-fixture.json"),
             serde_json::to_vec(&serde_json::json!({
                 "freeze": freeze, "rect": SELECTED_RECT, "windowId": null, "outcome": name,
+                "scroll": (name == "icons-restore-failed").then_some("icons-show-never"),
             }))
             .unwrap(),
         )
@@ -129,6 +134,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 config.screenshot.show_preview = true;
                 config.screenshot.capture_to_clipboard = true;
                 config.screenshot.auto_copy_to_clipboard = true;
+                if name == "icons-restore-failed" {
+                    config.screenshot.hide_desktop_icons = false;
+                }
                 config.storage.screenshots_path = directory.to_string_lossy().into_owned();
             });
             ClipboardService::write_text(cx, "before editor attachment".into());
@@ -223,6 +231,14 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 "a second editor replaced the attachment"
             );
         }
+        #[cfg(windows)]
+        if name == "icons-restore-failed" {
+            use crate::capture::desktop_icons::{self, HideSource};
+
+            let daemon = cx.update(|cx| crate::state::state(cx).daemon.clone());
+            assert!(desktop_icons::hide(&daemon, HideSource::Menu));
+            assert!(!desktop_icons::show(&daemon, HideSource::Menu));
+        }
         if name == "cancelled" {
             escape(cx, picker);
         } else {
@@ -236,8 +252,16 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 .iter()
                 .filter(|call| call["module"] == "screenshot")
                 .count(),
-            usize::from(name != "cancelled")
+            usize::from(!matches!(name, "cancelled" | "icons-restore-failed"))
         );
+        if name == "icons-restore-failed" {
+            assert!(!cx.update(|cx| {
+                crate::state::coordinator(cx)
+                    .read(cx)
+                    .has_pending_editor_attach()
+            }));
+            assert_eq!(cx.update(|cx| cx.active_window()), Some(window));
+        }
         for call in &calls {
             if let Some(path) = call["params"]["path"].as_str() {
                 assert!(
@@ -258,7 +282,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 .collect::<Vec<_>>(),
             history
         );
-        let succeeded = !matches!(name, "capture-failed" | "invalid-image" | "cancelled");
+        let succeeded = !matches!(
+            name,
+            "capture-failed" | "invalid-image" | "cancelled" | "icons-restore-failed"
+        );
         let (layers, png) = cx.update(|cx| {
             let editor = editor.read(cx).unwrap();
             (
@@ -362,8 +389,33 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         let notifications = take_notifications();
         assert_eq!(
             notifications.len(),
-            usize::from(matches!(name, "capture-failed" | "invalid-image"))
+            usize::from(matches!(
+                name,
+                "capture-failed" | "invalid-image" | "icons-restore-failed"
+            ))
         );
+        if name == "icons-restore-failed" {
+            assert_eq!(
+                notifications,
+                [(
+                    "Capture Failed".into(),
+                    "Could not restore desktop icons".into(),
+                    false
+                )]
+            );
+        }
+        #[cfg(windows)]
+        if name == "icons-restore-failed" {
+            use crate::capture::desktop_icons::{self, HideSource};
+
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({"scroll": "icons-restored"})).unwrap(),
+            )
+            .unwrap();
+            let daemon = cx.update(|cx| crate::state::state(cx).daemon.clone());
+            assert!(desktop_icons::show(&daemon, HideSource::Menu));
+        }
     }
     println!("editor attachment passed: four edges, live/frozen/fallback pixels, cancellation, failure, cleanup and reopen");
 }

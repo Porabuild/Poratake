@@ -142,7 +142,8 @@ pub(crate) fn release_capture_hide(
         .as_ref()
         .is_some_and(|current| expected.ptr_eq(&std::sync::Arc::downgrade(current)))
     {
-        session(cx).capture_hide.take();
+        let hide = session(cx).capture_hide.take();
+        crate::capture::desktop_icons::release_for_capture(hide, cx);
     }
 }
 
@@ -156,7 +157,7 @@ pub(crate) fn parity_active_overlay(cx: &mut App) -> Option<AnyWindowHandle> {
     session(cx).handles.first().map(|overlay| overlay.handle)
 }
 
-#[cfg(all(test, windows))]
+#[cfg(all(windows, any(test, feature = "parity")))]
 pub(crate) fn active_intents_for_test(cx: &mut App) -> Vec<crate::capture::intent::CaptureIntent> {
     session(cx)
         .handles
@@ -315,7 +316,8 @@ fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
         let _ = cancel.try_send(false);
     }
     let handles = std::mem::take(&mut session(cx).handles);
-    take_capture_hide(cx);
+    let hide = take_capture_hide(cx);
+    crate::capture::desktop_icons::release_for_capture(hide, cx);
     let pending = session(cx).pending_freeze.take();
     let generation = handles
         .iter()
@@ -1599,10 +1601,7 @@ impl AreaOverlay {
         }
 
         let hide = if hides_icons_at_confirm(intent) {
-            crate::capture::desktop_icons::hide_for_capture(
-                &self.service.daemon,
-                &self.service.config,
-            )
+            None
         } else {
             take_capture_hide(cx)
         };
@@ -1626,6 +1625,7 @@ impl AreaOverlay {
                 "Could not release the frozen screen",
             );
             dismiss(window, cx);
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             return;
         } else {
             None
@@ -2338,10 +2338,7 @@ impl AreaOverlay {
             return;
         }
         let hide = if hides_icons_at_confirm(intent) {
-            crate::capture::desktop_icons::hide_for_capture(
-                &self.service.daemon,
-                &self.service.config,
-            )
+            None
         } else {
             take_capture_hide(cx)
         };
@@ -2359,6 +2356,7 @@ impl AreaOverlay {
                 "Could not release the frozen screen",
             );
             dismiss(window, cx);
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             return;
         } else {
             None
@@ -3260,6 +3258,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
             Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        config.update(|settings| settings.screenshot.hide_desktop_icons = false);
         cx.update(|cx| crate::state::set_test_state(cx, config));
         let service = cx.read(crate::state::state);
         let bounds = gpui::Bounds {

@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `c7b0fab8` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `1e5d547c` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -113,7 +113,16 @@ the artifact and Windows log are retained under `.scratch-parity/hosted-8f6b7169
 also passed all required jobs, including all 16 visual cases and 2,880 exact
 baselines. Its artifact contains 3,393 PNGs with no diff files; the evidence is
 retained under `.scratch-parity/hosted-2d26dab5`, alongside the Windows log.
-The subsequent frame and aspect-ratio follow-up passed 191 exact baselines in
+[Hosted CI at `1e5d547c`](https://github.com/Porabuild/Poratake/actions/runs/43157671728)
+passed all required jobs, including 16 visual cases and 2,880 exact baselines.
+Its preserved artifact contains 3,395 PNGs and no diff files; the artifact and
+Windows log are retained under `.scratch-parity/hosted-1e5d547c`.
+The desktop-icon transition follow-up passed 191 exact baselines in each local
+light/dark 1280px/100% NVIDIA run. Its fake-daemon checks cover failed and delayed
+icon transitions, stale direct capture errors and attachment recovery; the dark
+run also holds a scroll finish for 31 seconds. The full GPUI suite passed 939
+tests with one ignored, and the project suite passed 2,281 tests with three skipped.
+The earlier frame and aspect-ratio follow-up passed 191 exact baselines in
 each local light/dark 1280px/100% NVIDIA run, including the new workflow checks.
 The earlier scroll follow-up passed 191 exact baselines in each of the isolated
 1280px/100% light and dark NVIDIA cases, with no diff images. The runs peaked at
@@ -688,7 +697,17 @@ Bugs fixed in this pass:
   Capture flows now retain their own hide through selection, handoff and cleanup.
   An isolated Windows GPUI test covers replacement, cancellation, disabled
   hiding and failed timer/scroll handoffs without changing the real desktop.
-  Native overlapping-capture behavior still needs verification.
+  Windows scroll completion and cancellation attempt to restore icons before
+  waiting for the daemon's final response. Pending icon transitions are serialized
+  off the UI thread; replacement selectors and captures wait before freezing or
+  reading pixels. Failed restores are retried; a second failure stops the next
+  capture with an error. The fake-daemon workflow holds hide/show replies, checks
+  saved pixels and failed-reply recovery, verifies rapid tray toggles, and checks
+  that a superseded direct capture cannot report a stale error. An attachment
+  restore failure clears the pending attachment and focuses its editor in the
+  headless fixture. Isolated tests cover replacement, timer ownership and shutdown.
+  Native overlapping captures and real desktop-icon transitions still need
+  verification.
 - A timer could close a newer selector and capture its old area after the
   selector was replaced. Replacement now cancels its countdown; isolated GPUI
   tests cover replacement, queued completion or cancellation events and a held

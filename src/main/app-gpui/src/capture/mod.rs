@@ -454,9 +454,61 @@ fn with_frozen_screen(
     failure_title: &'static str,
     open: impl FnOnce(&mut gpui::App, bool, u64) -> bool + 'static,
 ) {
+    if desktop_icons::is_shutting_down() {
+        return;
+    }
     let service = crate::state::state(cx);
-    let capture_hide = overlay::capture_hide(cx);
     let owner = overlay::revision(cx);
+    let pending = desktop_icons::pending_transitions();
+    if !pending.is_empty() {
+        if let Some(generation) = release_first.filter(|generation| *generation != 0) {
+            overlay::set_pending_freeze(generation, cx);
+        }
+        cx.spawn(async move |cx| {
+            for transition in pending {
+                let _ = transition.recv().await;
+            }
+            cx.update(|cx| {
+                if overlay::revision(cx) == owner && !desktop_icons::is_shutting_down() {
+                    with_frozen_screen(cx, release_first, freeze, failure_title, open);
+                }
+            });
+        })
+        .detach();
+        return;
+    }
+    if desktop_icons::needs_restoration() {
+        if let Some(generation) = release_first.filter(|generation| *generation != 0) {
+            overlay::set_pending_freeze(generation, cx);
+        }
+        let transition = desktop_icons::track_transition();
+        cx.spawn(async move |cx| {
+            let restored = cx
+                .background_executor()
+                .spawn(async move { desktop_icons::restore_if_unowned(&service.daemon) })
+                .await;
+            drop(transition);
+            cx.update(|cx| {
+                if overlay::revision(cx) != owner || desktop_icons::is_shutting_down() {
+                    return;
+                }
+                if !restored {
+                    let coordinator = crate::state::coordinator(cx);
+                    coordinator.update(cx, |coordinator, cx| coordinator.cancel_editor_attach(cx));
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        failure_title,
+                        "Could not restore desktop icons",
+                    );
+                    return;
+                }
+                with_frozen_screen(cx, release_first, freeze, failure_title, open);
+            });
+        })
+        .detach();
+        return;
+    }
+    let capture_hide = overlay::capture_hide(cx);
     if !freeze
         || !crate::system::capabilities::is_supported(
             crate::system::capabilities::Feature::FreezeScreen,
@@ -604,6 +656,9 @@ fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
 
 /// Opens the shared area overlay for one of the selection-driven flows.
 pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
+    if desktop_icons::is_shutting_down() {
+        return;
+    }
     if intent != intent::CaptureIntent::EditorAttach
         && crate::state::coordinator(cx)
             .read(cx)
@@ -623,9 +678,56 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
     let release_first = overlay::replace_all(cx);
     if hides_icons_before_selection(intent) {
         let service = crate::state::state(cx);
-        let hide = desktop_icons::hide_for_capture(&service.daemon, &service.config);
-        overlay::set_capture_hide(hide, cx);
+        if desktop_icons::should_hide_for_capture(&service.config) {
+            let owner = overlay::revision(cx);
+            if let Some(generation) = release_first.filter(|generation| *generation != 0) {
+                overlay::set_pending_freeze(generation, cx);
+            }
+            let transition = desktop_icons::track_transition();
+            cx.spawn(async move |cx| {
+                let current = cx.update(|cx| {
+                    overlay::revision(cx) == owner && !desktop_icons::is_shutting_down()
+                });
+                if !current {
+                    drop(transition);
+                    return;
+                }
+                let hide = cx
+                    .background_executor()
+                    .spawn(async move {
+                        desktop_icons::hide_for_capture(&service.daemon, &service.config)
+                    })
+                    .await;
+                let stale = cx.update(|cx| {
+                    if overlay::revision(cx) != owner || desktop_icons::is_shutting_down() {
+                        return Some((hide, transition));
+                    }
+                    drop(transition);
+                    overlay::set_capture_hide(hide, cx);
+                    open_area_selection(intent, release_first, cx);
+                    None
+                });
+                if let Some((hide, transition)) = stale {
+                    cx.background_executor()
+                        .spawn(async move {
+                            drop(hide);
+                            drop(transition);
+                        })
+                        .detach();
+                }
+            })
+            .detach();
+            return;
+        }
     }
+    open_area_selection(intent, release_first, cx);
+}
+
+fn open_area_selection(
+    intent: intent::CaptureIntent,
+    release_first: Option<u64>,
+    cx: &mut gpui::App,
+) {
     let freeze = intent.allows_freeze();
     with_frozen_screen(
         cx,
@@ -666,6 +768,9 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
 /// Opens the all-in-one overlay: one surface that switches between the
 /// screenshot, recording and OCR flows over area, window or screen.
 pub fn start_all_in_one(cx: &mut gpui::App) {
+    if desktop_icons::is_shutting_down() {
+        return;
+    }
     if crate::state::coordinator(cx)
         .read(cx)
         .has_pending_editor_attach()
@@ -733,6 +838,9 @@ fn selected_display(cx: &mut gpui::App) -> Option<std::rc::Rc<dyn gpui::Platform
 /// (`recordScreen` picks through the overlay too); a click opens the
 /// pre-recording bar for that display.
 pub fn start_screen_recording(cx: &mut gpui::App) {
+    if desktop_icons::is_shutting_down() {
+        return;
+    }
     if crate::state::coordinator(cx)
         .read(cx)
         .has_pending_editor_attach()
@@ -824,6 +932,9 @@ fn open_screen_recording_bar(target: &ScreenTarget, cx: &mut gpui::App) {
 }
 
 fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
+    if desktop_icons::is_shutting_down() {
+        return;
+    }
     if crate::state::coordinator(cx)
         .read(cx)
         .has_pending_editor_attach()
@@ -983,9 +1094,7 @@ fn screen_targets(cx: &mut gpui::App) -> Result<Vec<ScreenTarget>> {
     Ok(targets)
 }
 
-fn capture_screen_target(target: ScreenTarget, cx: &mut gpui::App) {
-    let service = crate::state::state(cx);
-    let hide = desktop_icons::hide_for_capture(&service.daemon, &service.config);
+fn capture_screen_target(target: ScreenTarget, owner: u64, cx: &mut gpui::App) {
     let capture = overlay::display_capture(target.bounds, target.scale, target.capture_display_id);
     let coordinator = crate::state::coordinator(cx);
     coordinator.update(cx, |coordinator, cx| {
@@ -994,8 +1103,8 @@ fn capture_screen_target(target: ScreenTarget, cx: &mut gpui::App) {
             intent::CaptureIntent::Screenshot,
             None,
             None,
-            hide,
             None,
+            Some(owner),
             cx,
         );
     });
@@ -1016,7 +1125,7 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
             overlay::release_frozen_screen(generation, cx);
         }
     }
-    let hide = desktop_icons::hide_for_capture(&service.daemon, &service.config);
+    let owner = overlay::revision(cx);
     cx.defer(move |cx| {
         coordinator.update(cx, |coordinator, cx| {
             coordinator.capture_area_reserved(
@@ -1024,8 +1133,8 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
                 intent::CaptureIntent::Screenshot,
                 reservation,
                 None,
-                hide,
                 None,
+                Some(owner),
                 cx,
             );
         });
@@ -1037,6 +1146,9 @@ fn all_screen_targets_opened(opened: usize, target_count: usize) -> bool {
 }
 
 pub fn start_screen_capture(cx: &mut gpui::App) {
+    if desktop_icons::is_shutting_down() {
+        return;
+    }
     if crate::state::coordinator(cx)
         .read(cx)
         .has_pending_editor_attach()
@@ -1109,7 +1221,7 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
     let Some(generation) = release_first.filter(|generation| *generation != 0) else {
         cx.defer(move |cx| {
             if overlay::revision(cx) == owner {
-                capture_screen_target(target, cx);
+                capture_screen_target(target, owner, cx);
             }
         });
         return;
@@ -1134,7 +1246,7 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
                 return;
             }
             overlay::clear_pending_freeze(generation, owner, cx);
-            capture_screen_target(target, cx);
+            capture_screen_target(target, owner, cx);
         });
     })
     .detach();
@@ -1444,6 +1556,143 @@ mod tests {
         finish_queued_freeze(cx, &service, generation);
         cx.run_until_parked();
         assert!(!cx.update(super::overlay::parity_is_active));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pending_freeze_survives_a_replaced_icon_hide() {
+        const CHILD: &str = "PORATAKE_TEST_FREEZE_ICON_REPLACEMENT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "capture::tests::pending_freeze_survives_a_replaced_icon_hide",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let mut cx = gpui::TestAppContext::single();
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config.clone());
+            super::overlay::init_bindings(cx);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .defer_open_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+                .freeze
+                .freeze_succeeds_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+        });
+        let generation = queue_pending_freeze(&mut cx, &service);
+        config.update(|settings| settings.screenshot.hide_desktop_icons = true);
+        service
+            .freeze
+            .release_fails_for_test
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        cx.update(|cx| {
+            super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
+            super::start_area_selection(super::intent::CaptureIntent::Ocr, cx);
+        });
+        finish_queued_freeze(&cx, &service, generation);
+        cx.run_until_parked();
+        assert!(!cx.update(super::overlay::parity_is_active));
+        assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+        service
+            .freeze
+            .release_fails_for_test
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        cx.update(|cx| super::start_area_selection(super::intent::CaptureIntent::Ocr, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(super::overlay::active_intents_for_test),
+            [super::intent::CaptureIntent::Ocr]
+        );
+        assert!(service.reserve_cached_capture().wait_for_freeze());
+        cx.update(super::overlay::close_all);
+        cx.run_until_parked();
+
+        notifications.borrow_mut().clear();
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        let transition = super::desktop_icons::track_transition();
+        cx.update(super::start_screen_capture);
+        cx.run_until_parked();
+        drop(transition);
+        cx.run_until_parked();
+        assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+        notifications.borrow_mut().clear();
+        for fallback in [false, true] {
+            let transition = super::desktop_icons::track_transition();
+            cx.update(|cx| {
+                if fallback {
+                    let target = super::screen_targets(cx).unwrap().remove(0);
+                    super::fallback_screen_target(target, false, cx);
+                } else {
+                    super::start_screen_capture(cx);
+                }
+            });
+            cx.run_until_parked();
+            cx.update(super::start_area_capture);
+            drop(transition);
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(super::overlay::active_intents_for_test),
+                [super::intent::CaptureIntent::Screenshot]
+            );
+            assert!(notifications.borrow().is_empty());
+            cx.update(super::overlay::close_all);
+            cx.run_until_parked();
+        }
+
+        let transition = super::desktop_icons::track_transition();
+        cx.update(super::start_screen_capture);
+        cx.run_until_parked();
+        assert!(super::desktop_icons::begin_shutdown());
+        drop(transition);
+        cx.run_until_parked();
+        assert!(notifications.borrow().is_empty());
+        assert!(!cx.update(super::overlay::parity_is_active));
+        let generation = service.freeze.state.lock().next_generation;
+        cx.update(|cx| {
+            super::start_area_capture(cx);
+            super::start_all_in_one(cx);
+            super::start_window_capture(cx);
+            super::start_screen_capture(cx);
+            super::start_screen_recording(cx);
+            super::start_window_recording(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(service.freeze.state.lock().next_generation, generation);
+        assert!(!cx.update(super::overlay::parity_is_active));
+        assert!(cx.update(|cx| {
+            crate::windows::registry::handle(
+                crate::windows::registry::WindowKind::RecordingControl,
+                cx,
+            )
+            .is_none()
+        }));
+        assert!(notifications.borrow().is_empty());
     }
 
     #[cfg(windows)]

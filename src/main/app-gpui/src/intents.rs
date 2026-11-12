@@ -113,25 +113,45 @@ fn start_selection(intent: CaptureIntent, feature: Feature, cx: &mut App) {
 }
 
 fn toggle_desktop_icons(cx: &mut App) {
-    use crate::capture::desktop_icons::{self, HideSource};
+    use crate::capture::desktop_icons;
 
     let daemon = crate::state::state(cx).daemon;
-    if desktop_icons::are_hidden() {
-        desktop_icons::show(&daemon, HideSource::Menu);
-    } else {
-        desktop_icons::hide(&daemon, HideSource::Menu);
-    }
-    refresh_shell(cx);
+    let pending = desktop_icons::pending_transitions();
+    let transition = desktop_icons::track_transition();
+    cx.spawn(async move |cx| {
+        for previous in pending {
+            let _ = previous.recv().await;
+        }
+        cx.background_executor()
+            .spawn(async move {
+                desktop_icons::toggle_menu(&daemon);
+                drop(transition);
+            })
+            .await;
+        cx.update(refresh_shell);
+    })
+    .detach();
 }
 
 fn quit(cx: &mut App) {
     use crate::capture::desktop_icons::{self, HideSource};
 
     let service = crate::state::state(cx);
-    desktop_icons::show(&service.daemon, HideSource::System);
-    service.config.flush();
-    service.daemon.stop();
-    cx.quit();
+    if !desktop_icons::begin_shutdown() {
+        return;
+    }
+    crate::capture::overlay::close_all(cx);
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .spawn(async move {
+                desktop_icons::show(&service.daemon, HideSource::System);
+                service.config.flush();
+                service.daemon.stop();
+            })
+            .await;
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
 }
 
 /// Rebuilds the tray menu and re-registers the global shortcuts from the

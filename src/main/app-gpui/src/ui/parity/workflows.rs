@@ -333,6 +333,78 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
         ]
     );
 
+    #[cfg(windows)]
+    {
+        use std::io::{Read, Write};
+
+        let captures = scratch.join("capture-held-icons");
+        std::fs::create_dir_all(&captures).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "live", "rect": SELECTED_RECT, "windowId": null,
+                "desktopHideHeld": true, "expectDesktopHidden": true,
+                "barrier": listener.local_addr().unwrap().to_string(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = super::daemon_fixture::calls(output).len();
+        let daemon_output = output.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.read_exact(&mut [0]).unwrap();
+            let captured = super::daemon_fixture::calls(&daemon_output)[before..]
+                .iter()
+                .any(|call| call["module"] == "screenshot");
+            stream.write_all(&[1]).unwrap();
+            tx.send(captured).unwrap();
+        });
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                config.screenshot.freeze_screen = false;
+                config.screenshot.show_preview = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+            });
+            crate::capture::start_area_capture(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        select_area(cx, picker);
+        cx.run_until_parked();
+        assert!(
+            !rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+            "capture started while the desktop icon hide was held"
+        );
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let position = |module: &str, method: &str| {
+            calls
+                .iter()
+                .position(|call| call["module"] == module && call["method"] == method)
+                .unwrap()
+        };
+        assert!(position("desktop-helper", "hide") < position("screenshot", "capture-area"));
+        assert!(position("screenshot", "capture-area") < position("desktop-helper", "show"));
+        verify_saved_capture(
+            cx,
+            scratch,
+            &captures,
+            (SELECTED_RECT, [240, 80, 64, 255]),
+            "workflow-capture-held-icons",
+        );
+        cx.update(|cx| {
+            crate::state::state(cx)
+                .config
+                .update(|config| config.screenshot.hide_desktop_icons = false);
+        });
+    }
+
     let captures = scratch.join("capture-collision");
     std::fs::create_dir_all(&captures).unwrap();
     let existing = captures.join("Collision.png");

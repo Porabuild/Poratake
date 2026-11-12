@@ -49,6 +49,11 @@ pub fn run() {
     let mut frozen = false;
     let mut timer_visible = false;
     let mut scrolling = false;
+    let mut desktop_show_held = false;
+    let mut desktop_hide_failed = false;
+    let mut desktop_show_failed = false;
+    let mut desktop_show_not_applied = false;
+    let desktop_icons_hidden = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
         let request: Request = serde_json::from_str(&line).unwrap();
@@ -63,7 +68,18 @@ pub fn run() {
                 "bounds": {"x": 80., "y": 90., "width": 640., "height": 360.}
             }]}),
             ("freeze-screen", "freeze") => {
-                match capture_fixture(&output)["freeze"].as_str().unwrap() {
+                let fixture = capture_fixture(&output);
+                if fixture["expectDesktopVisible"] == true
+                    && desktop_icons_hidden.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    protocol::respond_error(
+                        &request.id,
+                        "FIXTURE_ERROR",
+                        "Desktop icons are hidden",
+                    );
+                    continue;
+                }
+                match fixture["freeze"].as_str().unwrap() {
                     "freeze-failed" => {
                         frozen = true;
                         protocol::respond_error(
@@ -87,6 +103,58 @@ pub fn run() {
             ("freeze-screen", "release") => {
                 frozen = false;
                 json!({"frozen": false})
+            }
+            ("desktop-helper", "hide") => {
+                let fixture = capture_fixture(&output);
+                if fixture["scroll"] == "icons-hide-uncertain" && !desktop_hide_failed {
+                    desktop_hide_failed = true;
+                    desktop_icons_hidden.store(true, std::sync::atomic::Ordering::SeqCst);
+                    protocol::respond_error(
+                        &request.id,
+                        "FIXTURE_ERROR",
+                        "Fixture lost hide reply",
+                    );
+                    continue;
+                }
+                if fixture["desktopHideHeld"] == true {
+                    let hidden = desktop_icons_hidden.clone();
+                    let id = request.id.clone();
+                    std::thread::spawn(move || {
+                        wait_for_scroll_barrier(&fixture);
+                        hidden.store(true, std::sync::atomic::Ordering::SeqCst);
+                        protocol::respond_success(&id, json!({}));
+                    });
+                    continue;
+                }
+                desktop_icons_hidden.store(true, std::sync::atomic::Ordering::SeqCst);
+                json!({})
+            }
+            ("desktop-helper", "show") => {
+                let fixture = capture_fixture(&output);
+                if (fixture["scroll"] == "icons-show-held" && !desktop_show_held)
+                    || fixture["scroll"] == "icons-show-held-replacement"
+                {
+                    desktop_show_held = true;
+                    wait_for_scroll_barrier(&fixture);
+                }
+                if (fixture["scroll"] == "icons-show-not-applied" && !desktop_show_not_applied)
+                    || fixture["scroll"] == "icons-show-never"
+                {
+                    desktop_show_not_applied = true;
+                    protocol::respond_error(&request.id, "FIXTURE_ERROR", "Fixture show failed");
+                    continue;
+                }
+                desktop_icons_hidden.store(false, std::sync::atomic::Ordering::SeqCst);
+                if fixture["scroll"] == "icons-show-uncertain" && !desktop_show_failed {
+                    desktop_show_failed = true;
+                    protocol::respond_error(
+                        &request.id,
+                        "FIXTURE_ERROR",
+                        "Fixture lost show reply",
+                    );
+                    continue;
+                }
+                json!({})
             }
             ("timer-control", "show") => {
                 assert!(!frozen, "timer capture must release the selection frame");
@@ -228,6 +296,12 @@ pub fn run() {
             ("screenshot", method @ ("capture-area" | "capture-window")) => {
                 let params = request.params.as_ref().unwrap();
                 let fixture = capture_fixture(&output);
+                if fixture["expectDesktopHidden"] == true {
+                    assert!(
+                        desktop_icons_hidden.load(std::sync::atomic::Ordering::SeqCst),
+                        "the desktop must be hidden before capture"
+                    );
+                }
                 assert_eq!(
                     params.get("windowId").and_then(serde_json::Value::as_i64),
                     fixture["windowId"].as_i64()

@@ -52,6 +52,16 @@ pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale:
 }
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
+    #[cfg(windows)]
+    icon_hides_wait_for_an_in_flight_show(cx, output);
+    #[cfg(windows)]
+    icon_visibility_recovers_from_a_lost_reply(cx, output);
+    #[cfg(windows)]
+    tray_icon_toggles_are_serialized(cx, output);
+    #[cfg(windows)]
+    replacement_waits_for_icons_before_freezing(cx, output);
+    #[cfg(windows)]
+    replacement_recovers_from_failed_icon_restore(cx, output);
     for name in [
         "selection-cancelled",
         "early-finish",
@@ -84,8 +94,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                     std::thread::sleep(std::time::Duration::from_secs(31));
                 }
                 let active = crate::capture::scroll::is_active();
+                let icons_hidden = crate::capture::desktop_icons::are_hidden();
                 stream.write_all(&[1]).unwrap();
-                tx.send(active).unwrap();
+                tx.send((active, icons_hidden)).unwrap();
             });
             Some((address, rx))
         } else {
@@ -124,6 +135,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 config.screenshot.freeze_screen = true;
                 config.scroll_capture.auto_scroll_speed = "fast".into();
                 config.scroll_capture.max_height = 1800.;
+                if cfg!(windows) && matches!(name, "finish-held" | "cancel-held") {
+                    config.screenshot.hide_desktop_icons = true;
+                }
             });
             ClipboardService::write_text(cx, sentinel.clone());
             crate::capture::start_area_selection(CaptureIntent::ScrollCapture, cx);
@@ -138,13 +152,21 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         }
         cx.run_until_parked();
         if let Some((_, rx)) = barrier {
-            assert!(
-                rx.recv_timeout(std::time::Duration::from_secs(
-                    if name == "finish-long-held" { 40 } else { 10 }
+            let (active, icons_hidden) = rx
+                .recv_timeout(std::time::Duration::from_secs(
+                    if name == "finish-long-held" { 40 } else { 10 },
                 ))
-                .unwrap(),
+                .unwrap();
+            assert!(
+                active,
                 "{name}: scroll capture must remain active until the daemon responds"
             );
+            if cfg!(windows) && matches!(name, "finish-held" | "cancel-held") {
+                assert!(
+                    !icons_hidden,
+                    "desktop icons must be restored before {name} completes"
+                );
+            }
             cx.run_until_parked();
         }
         assert!(
@@ -246,6 +268,27 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         };
         assert_eq!(notifications, expected);
         let calls: Vec<_> = calls(output).into_iter().skip(before).collect();
+        if cfg!(windows) && matches!(name, "finish-held" | "cancel-held") {
+            let position = |module: &str, method: &str| {
+                calls
+                    .iter()
+                    .position(|call| call["module"] == module && call["method"] == method)
+                    .unwrap()
+            };
+            assert!(position("desktop-helper", "hide") < position("scroll-capture", "start"));
+            assert!(position("scroll-capture", "start") < position("desktop-helper", "show"));
+            let terminal = if name == "finish-held" {
+                "finish"
+            } else {
+                "cancel"
+            };
+            assert!(position("desktop-helper", "show") < position("scroll-capture", terminal));
+            cx.update(|cx| {
+                crate::state::state(cx)
+                    .config
+                    .update(|config| config.screenshot.hide_desktop_icons = false)
+            });
+        }
         assert!(!calls
             .iter()
             .any(|call| call["module"] == "freeze-screen" && call["method"] == "freeze"));
@@ -293,4 +336,361 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         }
     }
     println!("scroll capture selection, early events, save/history/editor output, failures and retry passed");
+}
+
+#[cfg(windows)]
+fn icon_hides_wait_for_an_in_flight_show(cx: &mut HeadlessAppContext, output: &Path) {
+    use crate::capture::desktop_icons::{self, HideSource};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "scroll": "icons-show-held",
+            "barrier": listener.local_addr().unwrap().to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = calls(output).len();
+    let daemon = cx.update(|cx| crate::state::state(cx).daemon.clone());
+    assert!(desktop_icons::hide(&daemon, HideSource::Capture));
+    let showing_daemon = daemon.clone();
+    let showing =
+        std::thread::spawn(move || desktop_icons::show(&showing_daemon, HideSource::Capture));
+    let (mut stream, _) = listener.accept().unwrap();
+    stream.read_exact(&mut [0]).unwrap();
+
+    let hiding_daemon = daemon.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let hiding = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result = desktop_icons::hide(&hiding_daemon, HideSource::Capture);
+        finished_tx.send(result).unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let early = finished_rx.recv_timeout(Duration::from_millis(500)).ok();
+    stream.write_all(&[1]).unwrap();
+    let shown = showing.join().unwrap();
+    let hidden =
+        early.unwrap_or_else(|| finished_rx.recv_timeout(Duration::from_secs(10)).unwrap());
+    hiding.join().unwrap();
+    let still_hidden = desktop_icons::are_hidden();
+    let restored = desktop_icons::show(&daemon, HideSource::Capture);
+    let methods: Vec<_> = calls(output)
+        .into_iter()
+        .skip(before)
+        .filter(|call| call["module"] == "desktop-helper")
+        .map(|call| call["method"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        early.is_none(),
+        "a new hide returned while a show was still in flight"
+    );
+    assert!(shown && hidden && still_hidden && restored);
+    assert_eq!(methods, ["hide", "show", "hide", "show"]);
+}
+
+#[cfg(windows)]
+fn icon_visibility_recovers_from_a_lost_reply(cx: &mut HeadlessAppContext, output: &Path) {
+    use crate::capture::desktop_icons::{self, HideSource};
+
+    let daemon = cx.update(|cx| crate::state::state(cx).daemon.clone());
+    for scenario in ["icons-hide-uncertain", "icons-show-uncertain"] {
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({"scroll": scenario})).unwrap(),
+        )
+        .unwrap();
+        let before = calls(output).len();
+        let hidden = desktop_icons::hide(&daemon, HideSource::Capture);
+        assert_eq!(hidden, scenario != "icons-hide-uncertain");
+        let shown = desktop_icons::show(&daemon, HideSource::Capture);
+        assert_eq!(shown, scenario != "icons-show-uncertain");
+        if scenario == "icons-show-uncertain" {
+            assert!(desktop_icons::hide(&daemon, HideSource::Capture));
+            assert!(desktop_icons::show(&daemon, HideSource::Capture));
+        }
+        let methods: Vec<_> = calls(output)
+            .into_iter()
+            .skip(before)
+            .filter(|call| call["module"] == "desktop-helper")
+            .map(|call| call["method"].as_str().unwrap().to_string())
+            .collect();
+        let expected = if scenario == "icons-hide-uncertain" {
+            vec!["hide", "show"]
+        } else {
+            vec!["hide", "show", "hide", "show"]
+        };
+        assert_eq!(methods, expected, "{scenario}");
+        assert!(!desktop_icons::are_hidden());
+    }
+}
+
+#[cfg(windows)]
+fn tray_icon_toggles_are_serialized(cx: &mut HeadlessAppContext, output: &Path) {
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({"scroll": "icons-tray"})).unwrap(),
+    )
+    .unwrap();
+    let before = calls(output).len();
+    cx.update(|cx| {
+        for _ in 0..2 {
+            crate::intents::dispatch(crate::system::tray::Intent::ToggleDesktopIcons, None, cx);
+        }
+    });
+    cx.run_until_parked();
+    let methods: Vec<_> = calls(output)
+        .into_iter()
+        .skip(before)
+        .filter(|call| call["module"] == "desktop-helper")
+        .map(|call| call["method"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(methods, ["hide", "show"]);
+    assert!(!crate::capture::desktop_icons::are_hidden());
+}
+
+#[cfg(windows)]
+fn replacement_waits_for_icons_before_freezing(cx: &mut HeadlessAppContext, output: &Path) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "frozen", "scroll": "icons-show-held-replacement",
+            "barrier": listener.local_addr().unwrap().to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = calls(output).len();
+    let daemon_output = output.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.read_exact(&mut [0]).unwrap();
+        let frozen = calls(&daemon_output)[before..]
+            .iter()
+            .any(|call| call["module"] == "freeze-screen" && call["method"] == "freeze");
+        stream.write_all(&[1]).unwrap();
+        tx.send(frozen).unwrap();
+    });
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.screenshot.freeze_screen = true;
+            config.screenshot.hide_desktop_icons = true;
+        });
+        crate::capture::start_area_selection(CaptureIntent::ScrollCapture, cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.update(crate::capture::overlay::parity_is_active));
+    cx.update(|cx| {
+        crate::capture::start_area_selection(CaptureIntent::Recording, cx);
+        assert!(!crate::capture::overlay::parity_is_active(cx));
+    });
+    cx.run_until_parked();
+    assert!(
+        !rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+        "replacement froze the screen before desktop icons were restored"
+    );
+    assert_eq!(
+        cx.update(crate::capture::overlay::active_intents_for_test),
+        [CaptureIntent::Recording]
+    );
+    let calls = calls(output);
+    let calls = &calls[before..];
+    let position = |module: &str, method: &str| {
+        calls
+            .iter()
+            .position(|call| call["module"] == module && call["method"] == method)
+            .unwrap()
+    };
+    assert!(position("desktop-helper", "hide") < position("desktop-helper", "show"));
+    assert!(position("desktop-helper", "show") < position("freeze-screen", "freeze"));
+    cx.update(|cx| {
+        crate::capture::overlay::close_all(cx);
+        crate::state::state(cx)
+            .config
+            .update(|config| config.screenshot.hide_desktop_icons = false);
+    });
+    cx.run_until_parked();
+}
+
+#[cfg(windows)]
+fn replacement_recovers_from_failed_icon_restore(cx: &mut HeadlessAppContext, output: &Path) {
+    use crate::capture::desktop_icons::{self, HideSource};
+
+    let daemon = cx.update(|cx| crate::state::state(cx).daemon.clone());
+    for scenario in ["icons-show-not-applied", "icons-show-never"] {
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen", "scroll": scenario, "expectDesktopVisible": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = calls(output).len();
+        take_notifications();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.freeze_screen = true;
+                config.screenshot.hide_desktop_icons = true;
+            });
+            crate::capture::start_area_selection(CaptureIntent::ScrollCapture, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| crate::capture::start_area_selection(CaptureIntent::Recording, cx));
+        cx.run_until_parked();
+        let calls = calls(output);
+        let calls = &calls[before..];
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["module"] == "desktop-helper" && call["method"] == "show")
+                .count(),
+            2,
+            "{scenario}: restore must be retried"
+        );
+        if scenario == "icons-show-not-applied" {
+            assert_eq!(
+                cx.update(crate::capture::overlay::active_intents_for_test),
+                [CaptureIntent::Recording]
+            );
+            assert!(calls
+                .iter()
+                .any(|call| call["module"] == "freeze-screen" && call["method"] == "freeze"));
+            assert!(take_notifications().is_empty());
+            cx.update(crate::capture::overlay::close_all);
+            cx.run_until_parked();
+        } else {
+            assert!(!cx.update(crate::capture::overlay::parity_is_active));
+            assert!(!calls.iter().any(|call| call["module"] == "freeze-screen"));
+            assert_eq!(
+                take_notifications(),
+                [(
+                    "Recording failed".into(),
+                    "Could not restore desktop icons".into(),
+                    false
+                )]
+            );
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({"scroll": "icons-restored"})).unwrap(),
+            )
+            .unwrap();
+            assert!(desktop_icons::show(&daemon, HideSource::Menu));
+        }
+    }
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live", "scroll": "icons-show-never", "windowId": null,
+            "rect": {"x": 0, "y": 0, "width": 3840, "height": 2160},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = calls(output).len();
+    take_notifications();
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.screenshot.freeze_screen = false;
+            config.screenshot.hide_desktop_icons = true;
+        });
+        crate::capture::start_area_selection(CaptureIntent::ScrollCapture, cx);
+    });
+    cx.run_until_parked();
+    let picker = area_picker(cx);
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| config.screenshot.hide_desktop_icons = false);
+        crate::capture::start_screen_capture(cx);
+    });
+    cx.update_window(picker, |_, _, _| ()).unwrap();
+    cx.run_until_parked();
+    let recorded = calls(output);
+    let recorded = &recorded[before..];
+    let notifications = take_notifications();
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|call| call["module"] == "desktop-helper" && call["method"] == "show")
+            .count(),
+        2,
+        "direct screen restore: {recorded:?}; notifications: {notifications:?}"
+    );
+    assert!(!recorded.iter().any(|call| call["module"] == "screenshot"));
+    assert_eq!(
+        notifications,
+        [(
+            "Capture Failed".into(),
+            "Could not restore desktop icons".into(),
+            false
+        )]
+    );
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({"scroll": "icons-restored"})).unwrap(),
+    )
+    .unwrap();
+    assert!(desktop_icons::show(&daemon, HideSource::Menu));
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({"scroll": "icons-show-never"})).unwrap(),
+    )
+    .unwrap();
+    let before = calls(output).len();
+    assert!(desktop_icons::hide(&daemon, HideSource::Menu));
+    assert!(!desktop_icons::show(&daemon, HideSource::Menu));
+    take_notifications();
+    cx.update(crate::capture::start_screen_capture);
+    cx.update_window(picker, |_, _, _| ()).unwrap();
+    for _ in 0..1000 {
+        if calls(output)[before..]
+            .iter()
+            .filter(|call| call["module"] == "desktop-helper" && call["method"] == "show")
+            .count()
+            == 2
+        {
+            break;
+        }
+        assert!(cx.background_executor().tick(), "restore task did not run");
+    }
+    assert_eq!(
+        calls(output)[before..]
+            .iter()
+            .filter(|call| call["module"] == "desktop-helper" && call["method"] == "show")
+            .count(),
+        2
+    );
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({"scroll": "icons-restored"})).unwrap(),
+    )
+    .unwrap();
+    cx.update(crate::capture::start_area_capture);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(crate::capture::overlay::active_intents_for_test),
+        [CaptureIntent::Screenshot]
+    );
+    assert!(
+        take_notifications().is_empty(),
+        "replaced capture reported an error"
+    );
+    assert!(!calls(output)[before..]
+        .iter()
+        .any(|call| call["module"] == "screenshot"));
+    cx.update(crate::capture::overlay::close_all);
+    cx.run_until_parked();
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| config.screenshot.hide_desktop_icons = false);
+    });
 }

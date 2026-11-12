@@ -47,6 +47,128 @@ impl Coordinator {
         owner: Option<u64>,
         cx: &mut Context<Self>,
     ) {
+        let should_hide = hide.is_none()
+            && !matches!(intent, CaptureIntent::Timer | CaptureIntent::ScrollCapture)
+            && crate::capture::desktop_icons::should_hide_for_capture(&self.service.config);
+        let pending = crate::capture::desktop_icons::pending_transitions();
+        let needs_restoration =
+            hide.is_none() && crate::capture::desktop_icons::needs_restoration();
+        if should_hide || !pending.is_empty() || needs_restoration {
+            let transition = crate::capture::desktop_icons::track_transition();
+            let service = self.service.clone();
+            cx.spawn(async move |entity, cx| {
+                for transition in pending {
+                    let _ = transition.recv().await;
+                }
+                let stale = cx.update(|cx| {
+                    crate::capture::desktop_icons::is_shutting_down()
+                        || (intent == CaptureIntent::Screenshot
+                            && owner.is_some_and(|owner| {
+                                crate::capture::overlay::revision(cx) != owner
+                            }))
+                });
+                if stale {
+                    drop(transition);
+                    let _ = entity.update(cx, |coordinator, cx| {
+                        coordinator.capture_area_ready(
+                            capture,
+                            intent,
+                            reservation,
+                            release_after,
+                            hide,
+                            owner,
+                            cx,
+                        );
+                    });
+                    return;
+                }
+                let hide = if should_hide {
+                    let capture_service = service.clone();
+                    cx.background_executor()
+                        .spawn(async move {
+                            crate::capture::desktop_icons::hide_for_capture(
+                                &capture_service.daemon,
+                                &capture_service.config,
+                            )
+                        })
+                        .await
+                } else {
+                    hide
+                };
+                if hide.is_none() && crate::capture::desktop_icons::needs_restoration() {
+                    let daemon = service.daemon.clone();
+                    let restored =
+                        cx.background_executor()
+                            .spawn(async move {
+                                crate::capture::desktop_icons::restore_if_unowned(&daemon)
+                            })
+                            .await;
+                    if !restored {
+                        drop(transition);
+                        let _ = entity.update(cx, |coordinator, cx| {
+                            drop(reservation);
+                            if let Some(generation) = release_after {
+                                crate::capture::overlay::release_frozen_screen(generation, cx);
+                            }
+                            let stale = crate::capture::desktop_icons::is_shutting_down()
+                                || (intent == CaptureIntent::Screenshot
+                                    && owner.is_some_and(|owner| {
+                                        crate::capture::overlay::revision(cx) != owner
+                                    }));
+                            if !stale {
+                                if intent == CaptureIntent::EditorAttach {
+                                    coordinator.cancel_editor_attach(cx);
+                                }
+                                crate::windows::toast::Toast::show(
+                                    cx,
+                                    "Capture Failed",
+                                    "Could not restore desktop icons",
+                                );
+                            }
+                        });
+                        return;
+                    }
+                }
+                drop(transition);
+                let _ = entity.update(cx, |coordinator, cx| {
+                    coordinator.capture_area_ready(
+                        capture,
+                        intent,
+                        reservation,
+                        release_after,
+                        hide,
+                        owner,
+                        cx,
+                    );
+                });
+            })
+            .detach();
+            return;
+        }
+        self.capture_area_ready(capture, intent, reservation, release_after, hide, owner, cx);
+    }
+
+    fn capture_area_ready(
+        &mut self,
+        capture: DisplayCapture,
+        intent: CaptureIntent,
+        reservation: Option<CachedCaptureReservation>,
+        release_after: Option<u64>,
+        hide: Option<Arc<CaptureHide>>,
+        owner: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::capture::desktop_icons::is_shutting_down()
+            || (intent == CaptureIntent::Screenshot
+                && owner.is_some_and(|owner| crate::capture::overlay::revision(cx) != owner))
+        {
+            drop(reservation);
+            if let Some(generation) = release_after {
+                crate::capture::overlay::release_frozen_screen(generation, cx);
+            }
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
+            return;
+        }
         if intent == CaptureIntent::EditorAttach {
             return self.attach_area(capture, reservation, release_after, hide, cx);
         }
@@ -61,6 +183,9 @@ impl Coordinator {
         }
         let service = self.service.clone();
         let path = service.generate_screenshot_path();
+        let transition = hide
+            .as_ref()
+            .map(|_| crate::capture::desktop_icons::track_transition());
 
         let task = cx.background_executor().spawn(async move {
             let result = (|| -> anyhow::Result<_> {
@@ -77,12 +202,13 @@ impl Coordinator {
             if let Some(generation) = release_after {
                 service.release_screen(generation);
             }
+            drop(hide);
+            drop(transition);
             result
         });
 
         cx.spawn(async move |_entity, cx| {
             let result = task.await;
-            drop(hide);
             match result {
                 Ok(path) => finalize_capture(path, false, cx).await,
                 Err(error) => show_capture_error(cx, "Capture Failed", &error.to_string()),
@@ -210,6 +336,7 @@ impl Coordinator {
             if let Some(generation) = release_after {
                 crate::capture::overlay::release_frozen_screen(generation, cx);
             }
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             return;
         };
         let service = self.service.clone();
@@ -218,18 +345,22 @@ impl Coordinator {
             CaptureIntent::EditorAttach.temp_prefix(),
             uuid_simple()
         ));
+        let transition = hide
+            .as_ref()
+            .map(|_| crate::capture::desktop_icons::track_transition());
         let task = cx.background_executor().spawn(async move {
             let result = service.capture_area_cached(capture, &path, reservation, release_after);
             if result.is_err() {
                 let _ = std::fs::remove_file(&path);
             }
+            drop(hide);
+            drop(transition);
             result.map(|_| path)
         });
         cx.spawn(async move |_entity, cx| {
             let captured = match task.await {
                 Ok(path) => path,
                 Err(error) => {
-                    drop(hide);
                     cx.update(|cx| {
                         restore_editor_window(pending.window, cx);
                         crate::windows::toast::Toast::show(cx, "Capture Failed", error.to_string());
@@ -250,7 +381,6 @@ impl Coordinator {
                 }
             });
             let Some((bytes, (width, height))) = attached.await else {
-                drop(hide);
                 cx.update(|cx| {
                     restore_editor_window(pending.window, cx);
                     crate::windows::toast::Toast::show(
@@ -266,7 +396,6 @@ impl Coordinator {
                 "data:image/png;base64,{}",
                 base64::engine::general_purpose::STANDARD.encode(bytes)
             );
-            drop(hide);
             cx.update(|cx| {
                 restore_editor_window(pending.window, cx);
                 let _ = pending.editor.update(cx, |editor, cx| {
@@ -346,7 +475,7 @@ impl Coordinator {
             }
         }));
         if !crate::capture::scroll::start(&service.daemon, &request) {
-            drop(hide);
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             crate::windows::toast::Toast::show(
                 cx,
                 "Scroll Capture Failed",
@@ -388,9 +517,20 @@ impl Coordinator {
                 }
             };
             drop(subscription);
+            let transition = hide
+                .as_ref()
+                .map(|_| crate::capture::desktop_icons::track_transition());
             if !finished {
-                crate::capture::scroll::cancel(&service.daemon);
-                drop(hide);
+                cx.background_executor()
+                    .spawn(async move {
+                        #[cfg(windows)]
+                        drop(hide);
+                        crate::capture::scroll::cancel(&service.daemon);
+                        #[cfg(not(windows))]
+                        drop(hide);
+                        drop(transition);
+                    })
+                    .await;
                 #[cfg(target_os = "macos")]
                 cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
                 return;
@@ -401,6 +541,14 @@ impl Coordinator {
             let stitched = cx
                 .background_executor()
                 .spawn(async move {
+                    #[cfg(not(windows))]
+                    let _transition = transition;
+                    #[cfg(not(windows))]
+                    let _hide = hide;
+                    #[cfg(windows)]
+                    drop(hide);
+                    #[cfg(windows)]
+                    drop(transition);
                     let temporary = match prepare_screenshot(&output) {
                         Ok(temporary) => temporary,
                         Err(error) => {
@@ -422,7 +570,6 @@ impl Coordinator {
                         .with_context(|| format!("Capture data is available at {}", temporary.display()))
                 })
                 .await;
-            drop(hide);
             match stitched {
                 Ok(path) => finalize_capture(path, true, cx).await,
                 Err(error) => show_capture_error(cx, "Scroll Capture Failed", &error.to_string()),
@@ -448,11 +595,13 @@ impl Coordinator {
                     "Another timer capture is still finishing",
                 );
             }
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             return;
         };
         let daemon = self.service.daemon.clone();
         let (tx, rx) = smol::channel::bounded::<bool>(1);
         if !crate::capture::overlay::watch_timer(owner, tx.clone(), cx) {
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             return;
         }
         let subscription =
@@ -479,7 +628,7 @@ impl Coordinator {
             drop(subscription);
             drop(session);
             crate::capture::overlay::close_timer(owner, cx);
-            drop(hide);
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             crate::windows::toast::Toast::show(
                 cx,
                 "Timer Capture Failed",
@@ -488,6 +637,9 @@ impl Coordinator {
             return;
         }
 
+        let transition = hide
+            .as_ref()
+            .map(|_| crate::capture::desktop_icons::track_transition());
         cx.spawn(async move |entity, cx| {
             let timeout = cx
                 .background_executor()
@@ -506,10 +658,17 @@ impl Coordinator {
             drop(session);
             let owned = cx.update(|cx| crate::capture::overlay::close_timer(owner, cx));
             if !completed || !owned {
+                cx.background_executor()
+                    .spawn(async move {
+                        drop(hide);
+                        drop(transition);
+                    })
+                    .detach();
                 return;
             }
             cx.update(|cx| {
                 cx.defer(move |cx| {
+                    drop(transition);
                     let _ = entity.update(cx, |coordinator, cx| {
                         coordinator.capture_area_reserved(
                             capture,
@@ -539,11 +698,15 @@ impl Coordinator {
         let service = self.service.clone();
         let path =
             std::env::temp_dir().join(format!("{}-{}.png", intent.temp_prefix(), uuid_simple()));
+        let transition = hide
+            .as_ref()
+            .map(|_| crate::capture::desktop_icons::track_transition());
 
         let task = cx.background_executor().spawn(async move {
-            if let Err(error) =
-                service.capture_area_cached(capture, &path, reservation, release_after)
-            {
+            let result = service.capture_area_cached(capture, &path, reservation, release_after);
+            drop(hide);
+            drop(transition);
+            if let Err(error) = result {
                 let _ = std::fs::remove_file(&path);
                 return Err(error);
             }
@@ -554,7 +717,6 @@ impl Coordinator {
             let captured = match task.await {
                 Ok(path) => path,
                 Err(error) => {
-                    drop(hide);
                     eprintln!("[capture] analysis capture failed: {error}");
                     let title = match intent {
                         CaptureIntent::Ocr => "OCR Failed",
@@ -571,7 +733,6 @@ impl Coordinator {
             let Some(daemon) = daemon else {
                 return;
             };
-            drop(hide);
 
             let analysis = cx.background_executor().spawn({
                 let captured = captured.clone();

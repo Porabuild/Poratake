@@ -186,6 +186,9 @@ impl DaemonHandle {
     }
 
     fn ensure_running(&self) -> Result<()> {
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(anyhow!("Daemon is shutting down"));
+        }
         if !self.is_running() {
             self.start()?;
         }
@@ -195,11 +198,12 @@ impl DaemonHandle {
     /// Starts the daemon and waits for its `system:ready` event.
     pub fn start(&self) -> Result<()> {
         let _lifecycle = self.inner.lifecycle.lock();
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(anyhow!("Daemon is shutting down"));
+        }
         if self.inner.child.lock().is_some() {
             return Ok(());
         }
-
-        self.inner.shutting_down.store(false, Ordering::SeqCst);
 
         let mut command = Command::new(&self.inner.binary_path);
         #[cfg(target_os = "linux")]
@@ -1169,6 +1173,15 @@ mod tests {
             &Value::Null,
         );
         assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn stopped_daemon_does_not_restart_for_a_late_request() {
+        let daemon = DaemonHandle::with_binary(PathBuf::from("unused"));
+        daemon.stop();
+        let error = daemon.desktop_helper().hide().unwrap_err().to_string();
+        assert_eq!(error, "Daemon is shutting down");
+        assert!(!daemon.is_running());
     }
 
     #[test]
