@@ -110,25 +110,38 @@ pub(super) fn area_picker(cx: &mut HeadlessAppContext) -> gpui::AnyWindowHandle 
 }
 
 pub(super) fn select_area(cx: &mut HeadlessAppContext, picker: gpui::AnyWindowHandle) {
+    select_area_rect(cx, picker, SELECTED_RECT);
+}
+
+fn select_area_rect(cx: &mut HeadlessAppContext, picker: gpui::AnyWindowHandle, rect: CaptureRect) {
     let scale = cx
         .update_window(picker, |_, window, _| window.scale_factor())
         .unwrap();
     assert_eq!(scale, 2.);
+    let start = point(px(rect.x as f32 / scale), px(rect.y as f32 / scale));
+    let end = point(
+        px((rect.x + rect.width) as f32 / scale),
+        px((rect.y + rect.height) as f32 / scale),
+    );
+    let drag = point(
+        px((rect.x + rect.width - 20) as f32 / scale),
+        px((rect.y + rect.height - 20) as f32 / scale),
+    );
     for input in [
         PlatformInput::MouseDown(MouseDownEvent {
-            position: point(px(80. / scale), px(90. / scale)),
+            position: start,
             button: MouseButton::Left,
             click_count: 1,
             modifiers: Modifiers::none(),
             first_mouse: false,
         }),
         PlatformInput::MouseMove(MouseMoveEvent {
-            position: point(px(700. / scale), px(430. / scale)),
+            position: drag,
             pressed_button: Some(MouseButton::Left),
             modifiers: Modifiers::none(),
         }),
         PlatformInput::MouseUp(MouseUpEvent {
-            position: point(px(720. / scale), px(450. / scale)),
+            position: end,
             button: MouseButton::Left,
             click_count: 1,
             modifiers: Modifiers::none(),
@@ -646,6 +659,54 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             "capture-area",
         ]
     );
+
+    let second_rect = CaptureRect {
+        x: 240,
+        y: 180,
+        width: 400,
+        height: 240,
+    };
+    for (name, rect) in [("first", SELECTED_RECT), ("second", second_rect)] {
+        let captures = scratch.join(format!("selection-reset-{name}"));
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "live", "rect": rect, "windowId": null,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                config.screenshot.freeze_screen = false;
+                config.screenshot.show_preview = false;
+                config.screenshot.hide_desktop_icons = false;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+            });
+            crate::capture::start_area_capture(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        assert_eq!(
+            cx.update(crate::capture::overlay::parity_selection),
+            None,
+            "{name}: a newly opened selector must not carry a previous rectangle"
+        );
+        select_area_rect(cx, picker, rect);
+        cx.run_until_parked();
+        assert!(!cx.update(crate::capture::overlay::parity_is_active));
+        let files: Vec<_> = std::fs::read_dir(&captures)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1, "{name}: selection should save one capture");
+        let saved = image::open(&files[0]).unwrap().to_rgba8();
+        assert_eq!(saved.dimensions(), (rect.width as u32, rect.height as u32));
+        assert!(saved.pixels().all(|pixel| pixel.0 == [240, 80, 64, 255]));
+    }
 
     #[cfg(windows)]
     {
