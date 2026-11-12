@@ -515,7 +515,7 @@ fn run_gif_direct(
             1,
         );
         elapsed_centiseconds = next_centiseconds;
-        let frame = image::Frame::from_parts(to_rgba_buffer(&composed), 0, 0, delay);
+        let frame = image::Frame::from_parts(to_opaque_rgba_buffer(&composed), 0, 0, delay);
         encoder
             .encode_frame(frame)
             .map_err(|error| format!("could not write a frame: {error}"))?;
@@ -531,8 +531,7 @@ fn run_gif_direct(
     Ok(request.output.clone())
 }
 
-/// Straight-alpha RGBA, which the GIF encoder quantizes from.
-fn to_rgba_buffer(pixmap: &Pixmap) -> image::RgbaImage {
+fn to_opaque_rgba_buffer(pixmap: &Pixmap) -> image::RgbaImage {
     let mut buffer = image::RgbaImage::new(pixmap.width(), pixmap.height());
     for (index, pixel) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
         let alpha = pixel[3];
@@ -552,7 +551,7 @@ fn to_rgba_buffer(pixmap: &Pixmap) -> image::RgbaImage {
                 unpremultiply(pixel[0]),
                 unpremultiply(pixel[1]),
                 unpremultiply(pixel[2]),
-                alpha,
+                255,
             ]),
         );
     }
@@ -1420,8 +1419,14 @@ mod tests {
             ],
             ..VideoEditorState::default()
         };
-        state.wallpaper.enabled = false;
         state.export_settings.format = "gif".into();
+        state.wallpaper.enabled = true;
+        state.wallpaper.padding = 12.;
+        state.wallpaper.gradient = Some(serde_json::json!({
+            "id": "transparent-gif-test",
+            "colors": ["#80402000", "#80402000", "#80402080", "#80402080"],
+            "angle": 135.0,
+        }));
         state.export_settings.resolution = "480p".into();
         state.drawing_segments.push(model::DrawingSegment {
             id: "drawing".into(),
@@ -1471,7 +1476,15 @@ mod tests {
             let mut elapsed_ms = 0.;
             let mut max_error_ms = 0_f64;
             for (index, frame) in frames.iter().enumerate() {
-                assert_eq!(frame.buffer().dimensions(), (160, 90));
+                assert_eq!(frame.buffer().dimensions(), (184, 114));
+                assert!(
+                    frame
+                        .buffer()
+                        .as_raw()
+                        .chunks_exact(4)
+                        .all(|pixel| pixel[3] == 255),
+                    "{fps} fps frame {index} contains transparent pixels"
+                );
                 for (sample, source_color) in [
                     (fps / 4, [32_u8, 96, 176]),
                     (fps * 3 / 4, [192, 80, 48]),
@@ -1480,19 +1493,65 @@ mod tests {
                     if index != sample {
                         continue;
                     }
-                    let expected = preview.compose(index as f64 / fps as f64, None).unwrap();
+                    let composed = preview.compose(index as f64 / fps as f64, None).unwrap();
+                    let padding_alpha: Vec<_> = composed
+                        .data()
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, pixel)| {
+                            let x = index as u32 % composed.width();
+                            let y = index as u32 / composed.width();
+                            (x < 12 || x >= 172 || y < 12 || y >= 102).then_some((index, pixel[3]))
+                        })
+                        .collect();
+                    let transparent_pixel = padding_alpha
+                        .iter()
+                        .find(|(_, alpha)| *alpha == 0)
+                        .map(|(index, _)| *index)
+                        .unwrap_or_else(|| {
+                            let min = padding_alpha.iter().map(|(_, alpha)| *alpha).min();
+                            let max = padding_alpha.iter().map(|(_, alpha)| *alpha).max();
+                            panic!("wallpaper padding should include transparent pixels: {min:?}..{max:?}");
+                        });
+                    let translucent_pixel = padding_alpha
+                        .iter()
+                        .find(|(_, alpha)| (1..255).contains(alpha))
+                        .map(|(index, _)| *index)
+                        .expect("wallpaper padding should include translucent pixels");
+                    let preview_image = preview::to_render_image_opaque(&composed).unwrap();
+                    let mut expected = Vec::with_capacity(preview_image.as_bytes(0).unwrap().len());
+                    for pixel in preview_image.as_bytes(0).unwrap().chunks_exact(4) {
+                        expected.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+                    }
                     let actual = frame.buffer().as_raw();
                     let error: u64 = actual
                         .iter()
-                        .zip(expected.data())
+                        .zip(&expected)
                         .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
                         .sum();
                     let mean = error as f64 / actual.len() as f64;
                     assert!(mean < 4., "{fps} fps, frame {index}: mean error {mean}");
-                    for (x, y, color) in [(120, 60, source_color), (30, 30, [224, 64, 64])] {
-                        let pixel = (y * 160 + x) * 4;
+                    assert_eq!(
+                        actual[3], 255,
+                        "the GIF padding should match opaque preview"
+                    );
+                    for pixel in [transparent_pixel, translucent_pixel] {
+                        assert_eq!(actual[pixel * 4 + 3], 255);
+                        for channel in 0..3 {
+                            assert!(
+                                actual[pixel * 4 + channel]
+                                    .abs_diff(expected[pixel * 4 + channel])
+                                    <= 8,
+                                "{fps} fps frame {index} differs at padding pixel {pixel} channel {channel}"
+                            );
+                        }
+                    }
+                    for (x, y, color) in [(132, 72, source_color), (42, 42, [224, 64, 64])] {
+                        let pixel = (y * 184 + x) * 4;
                         for (channel, expected_color) in color.into_iter().enumerate() {
-                            assert!(expected.data()[pixel + channel].abs_diff(expected_color) < 8);
+                            assert!(composed.data()[pixel + channel].abs_diff(expected_color) < 8);
                             assert!(actual[pixel + channel].abs_diff(expected_color) < 8);
                         }
                     }
