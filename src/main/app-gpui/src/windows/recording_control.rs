@@ -1782,6 +1782,7 @@ impl Render for RecordingControl {
                     "recording-target-tip",
                     name.clone(),
                     div()
+                        .debug_selector(|| "recording-target-label".into())
                         .max_w(px(chrome::RECORDING_TARGET_CHIP_MAX_W))
                         .truncate()
                         .px(px(4.0))
@@ -2067,11 +2068,9 @@ mod tests {
         assert!(crate::system::native_tooltip::take_test_requests().is_empty());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     #[herogpui::test]
-    fn linux_short_target_title_tooltip_fits_inside_the_fixed_control_window(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn recording_target_title_tooltip_uses_measured_chip_bounds(cx: &mut gpui::TestAppContext) {
         use herogpui::test::TestWindowExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -2104,57 +2103,70 @@ mod tests {
             .unwrap();
         let mut visual = gpui::VisualTestContext::from_window(control.into(), cx);
         visual.settle();
-        let (window_size, height, scale) = visual.update(|window, _| {
-            (
-                window.bounds().size,
-                window.bounds().size.height.as_f32(),
-                window.scale_factor(),
-            )
-        });
-        let target_chip_x = chrome::RECORDING_WINDOW_GUTTER
-            + chrome::OVERLAY_BORDER_WIDTH
-            + chrome::OVERLAY_SURFACE_PADDING
-            + 2.0;
-        visual.simulate_mouse_move(
-            gpui::point(px(target_chip_x), px(height / 2.0)),
-            None,
-            gpui::Modifiers::none(),
-        );
+        let window_size = visual.update(|window, _| window.bounds().size);
+        let target_chip = visual.expect("recording-target-label");
+        let target_center = target_chip.center();
+        visual.simulate_mouse_move(target_center, None, gpui::Modifiers::none());
+        #[cfg(target_os = "linux")]
         visual.executor().advance_clock(Duration::from_millis(300));
-        visual.settle();
-        let (tooltip, mask, viewport, tooltip_count) = visual.update(|window, cx| {
-            let background = gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
-            let tooltips = window
-                .painted_quads()
-                .into_iter()
-                .filter(|quad| {
-                    quad.background == background
-                        && (31.0..=35.0).contains(&(quad.bounds.size.height.as_f32()))
-                        && quad.bounds.size.width.as_f32() > 35.0
+        #[cfg(windows)]
+        {
+            cx.executor().advance_clock(Duration::from_millis(150));
+            cx.run_until_parked();
+            let tooltip = control
+                .update(cx, |this, _, _| {
+                    this.hovered_tooltip
+                        .as_ref()
+                        .map(|(_, text)| text.to_string())
                 })
-                .collect::<Vec<_>>();
-            let tooltip = tooltips
-                .first()
-                .expect("the target-title tooltip must be painted");
-            (
-                tooltip.bounds,
-                tooltip.content_mask.bounds,
-                window.viewport_size(),
-                tooltips.len(),
-            )
-        });
-        assert_eq!(tooltip_count, 1, "only the target-title tooltip is open");
-        assert!(
-            tooltip.left().as_f32() > target_chip_x * scale
-                && tooltip.top().as_f32() >= 0.0
-                && tooltip.right().as_f32() <= f32::from(viewport.width) * scale
-                && tooltip.bottom().as_f32() <= f32::from(viewport.height) * scale
-                && mask.left().as_f32() <= tooltip.left().as_f32()
-                && mask.top().as_f32() <= tooltip.top().as_f32()
-                && mask.right().as_f32() >= tooltip.right().as_f32()
-                && mask.bottom().as_f32() >= tooltip.bottom().as_f32(),
-            "short target-title tooltip is clipped: {tooltip:?}, mask {mask:?}"
-        );
+                .unwrap();
+            assert_eq!(
+                tooltip.as_deref(),
+                Some("Browser"),
+                "pointer at {target_center:?} missed target chip {target_chip:?}"
+            );
+        }
+        visual.settle();
+        #[cfg(target_os = "linux")]
+        {
+            let scale = visual.update(|window, _| window.scale_factor());
+            let (tooltip, mask, viewport, tooltip_count) = visual.update(|window, cx| {
+                let background =
+                    gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                let tooltips = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        quad.background == background
+                            && (31.0..=35.0).contains(&(quad.bounds.size.height.as_f32()))
+                            && quad.bounds.size.width.as_f32() > 35.0
+                    })
+                    .collect::<Vec<_>>();
+                let tooltip = tooltips.first().unwrap_or_else(|| {
+                    panic!(
+                        "the target-title tooltip must be painted after hovering {target_chip:?} at {target_center:?}"
+                    )
+                });
+                (
+                    tooltip.bounds,
+                    tooltip.content_mask.bounds,
+                    window.viewport_size(),
+                    tooltips.len(),
+                )
+            });
+            assert_eq!(tooltip_count, 1, "only the target-title tooltip is open");
+            assert!(
+                tooltip.left().as_f32() >= f32::from(target_chip.right()) * scale
+                    && tooltip.top().as_f32() >= 0.0
+                    && tooltip.right().as_f32() <= f32::from(viewport.width) * scale
+                    && tooltip.bottom().as_f32() <= f32::from(viewport.height) * scale
+                    && mask.left().as_f32() <= tooltip.left().as_f32()
+                    && mask.top().as_f32() <= tooltip.top().as_f32()
+                    && mask.right().as_f32() >= tooltip.right().as_f32()
+                    && mask.bottom().as_f32() >= tooltip.bottom().as_f32(),
+                "short target-title tooltip is clipped: {tooltip:?}, mask {mask:?}"
+            );
+        }
         assert_eq!(visual.update(|window, _| window.bounds().size), window_size);
     }
 
