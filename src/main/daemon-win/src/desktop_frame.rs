@@ -51,12 +51,23 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 const BYTES_PER_PIXEL: usize = 4;
 const HDR_BYTES_PER_PIXEL: usize = 8;
 const BMP_HEADER_SIZE: usize = 54;
+const ROW_BAND_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SCANLINE_BYTES: usize = ROW_BAND_BYTES;
+const MAX_CACHED_COMPOSITION_PIXELS: u64 = 512 * 1024 * 1024;
 
 pub struct DesktopFrame {
     pub bounds: RECT,
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+}
+
+pub struct FrozenComposition {
+    frames: Arc<[DesktopFrame]>,
+    bounds: RECT,
+    width: u32,
+    height: u32,
+    mask: Option<DesktopFrame>,
 }
 
 pub fn capture_monitors() -> Vec<DesktopFrame> {
@@ -195,26 +206,266 @@ pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
 
 pub fn store_frozen(frames: Vec<DesktopFrame>) {
     if let Ok(mut frozen) = frozen_frames().lock() {
-        *frozen = frames;
+        *frozen = Arc::from(frames);
     }
 }
 
 pub fn clear_frozen() {
     if let Ok(mut frozen) = frozen_frames().lock() {
-        frozen.clear();
+        *frozen = Arc::from([]);
     }
 }
 
-pub fn frozen_rect(bounds: RECT) -> Result<Option<DesktopFrame>, String> {
-    let frozen = frozen_frames()
-        .lock()
-        .map_err(|_| "Frozen frame cache is unavailable".to_string())?;
-    if frozen.is_empty() {
+pub fn frozen_composition(bounds: RECT) -> Result<Option<FrozenComposition>, String> {
+    let frames = frozen_snapshot()?;
+    if frames.is_empty() {
         return Ok(None);
     }
-    composite_frames(&frozen, bounds).map(Some)
+    let (width, height) = composition_dimensions(bounds)?;
+    validate_cached_composition_work(width, height)?;
+    scanline_stride(width as u32)?;
+    if !frames.iter().any(|frame| {
+        intersect_rects(frame.bounds, bounds)
+            .is_some_and(|piece| crop_bounds(frame, piece).is_some())
+    }) {
+        return Err("The capture area does not intersect the frozen displays".to_string());
+    }
+    Ok(Some(FrozenComposition {
+        frames,
+        bounds,
+        width: width as u32,
+        height: height as u32,
+        mask: None,
+    }))
 }
 
+fn frozen_snapshot() -> Result<Arc<[DesktopFrame]>, String> {
+    frozen_frames()
+        .lock()
+        .map(|frozen| Arc::clone(&frozen))
+        .map_err(|_| "Frozen frame cache is unavailable".to_string())
+}
+
+impl FrozenComposition {
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub(crate) fn set_alpha_mask(&mut self, mask: DesktopFrame) {
+        if mask.width == self.width && mask.height == self.height {
+            self.mask = Some(mask);
+        }
+    }
+
+    pub(crate) fn write_image(&self, path: &str) -> Result<(), String> {
+        let stride = scanline_stride(self.width)?;
+        if path.to_ascii_lowercase().ends_with(".bmp") {
+            return self.write_bmp(path, stride);
+        }
+        self.write_png(path, stride)
+    }
+
+    fn write_bmp(&self, path: &str, stride: usize) -> Result<(), String> {
+        let image_size = stride
+            .checked_mul(self.height as usize)
+            .ok_or_else(|| "The frozen capture is too large for BMP".to_string())?;
+        let file_size = BMP_HEADER_SIZE
+            .checked_add(image_size)
+            .filter(|size| *size <= u32::MAX as usize)
+            .ok_or_else(|| "The frozen capture is too large for BMP".to_string())?;
+        let mut file = BufWriter::new(
+            File::create(path).map_err(|error| format!("Failed to create '{path}': {error}"))?,
+        );
+        let mut header = Vec::with_capacity(BMP_HEADER_SIZE);
+        header.extend_from_slice(b"BM");
+        header.extend_from_slice(&(file_size as u32).to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&(BMP_HEADER_SIZE as u32).to_le_bytes());
+        header.extend_from_slice(&40u32.to_le_bytes());
+        header.extend_from_slice(&(self.width as i32).to_le_bytes());
+        header.extend_from_slice(&(-(self.height as i32)).to_le_bytes());
+        header.extend_from_slice(&1u16.to_le_bytes());
+        header.extend_from_slice(&32u16.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&(image_size as u32).to_le_bytes());
+        header.extend_from_slice(&[0u8; 16]);
+        file.write_all(&header)
+            .map_err(|error| format!("Failed to write '{path}': {error}"))?;
+        self.write_bands(stride, |_, _, pixels| {
+            file.write_all(pixels)
+                .map_err(|error| format!("Failed to write '{path}': {error}"))
+        })?;
+        file.flush()
+            .map_err(|error| format!("Failed to write '{path}': {error}"))
+    }
+
+    fn write_png(&self, path: &str, stride: usize) -> Result<(), String> {
+        crate::com::retain_process_mta()
+            .map_err(|error| format!("Failed to initialize COM: {error}"))?;
+        let _apartment = MtaApartment::initialize()?;
+        let factory: IWICImagingFactory =
+            unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
+                .map_err(|error| format!("Failed to open the image encoder: {error}"))?;
+        let stream = unsafe { factory.CreateStream() }
+            .map_err(|error| format!("Failed to open the image stream: {error}"))?;
+        let wide_path = to_wide(path);
+        unsafe {
+            stream
+                .InitializeFromFilename(PCWSTR(wide_path.as_ptr()), GENERIC_WRITE.0)
+                .map_err(|error| format!("Failed to create '{path}': {error}"))?;
+        }
+        let encoder = unsafe { factory.CreateEncoder(&GUID_ContainerFormatPng, null()) }
+            .map_err(|error| format!("Failed to create the PNG encoder: {error}"))?;
+        unsafe {
+            encoder
+                .Initialize(&stream, WICBitmapEncoderNoCache)
+                .map_err(|error| format!("Failed to initialize the PNG encoder: {error}"))?;
+        }
+        let mut encoded_frame: Option<IWICBitmapFrameEncode> = None;
+        unsafe {
+            encoder
+                .CreateNewFrame(&mut encoded_frame, null_mut())
+                .map_err(|error| format!("Failed to create the PNG frame: {error}"))?;
+        }
+        let encoded_frame =
+            encoded_frame.ok_or_else(|| "The PNG frame was not created".to_string())?;
+        let mut format = GUID_WICPixelFormat32bppBGRA;
+        unsafe {
+            encoded_frame
+                .Initialize(None)
+                .map_err(|error| format!("Failed to initialize the PNG frame: {error}"))?;
+            encoded_frame
+                .SetSize(self.width, self.height)
+                .map_err(|error| format!("Failed to size the PNG frame: {error}"))?;
+            encoded_frame
+                .SetPixelFormat(&mut format)
+                .map_err(|error| format!("Failed to configure the PNG frame: {error}"))?;
+        }
+        self.write_bands(stride, |rows, _, pixels| unsafe {
+            encoded_frame
+                .WritePixels(rows, stride as u32, pixels)
+                .map_err(|error| format!("Failed to write the PNG frame: {error}"))
+        })?;
+        unsafe {
+            encoded_frame
+                .Commit()
+                .map_err(|error| format!("Failed to commit the PNG frame: {error}"))?;
+            encoder
+                .Commit()
+                .map_err(|error| format!("Failed to save '{path}': {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn write_bands(
+        &self,
+        stride: usize,
+        mut write: impl FnMut(u32, u32, &[u8]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let band_height = row_band_height(stride, self.height)?;
+        let band_size = stride
+            .checked_mul(band_height as usize)
+            .ok_or_else(|| "The frozen capture band is too large".to_string())?;
+        let mut band = Vec::new();
+        band.try_reserve_exact(band_size)
+            .map_err(|error| format!("Failed to allocate frozen capture band: {error}"))?;
+        band.resize(band_size, 0);
+        let mut top = 0u32;
+        while top < self.height {
+            let rows = row_band_height(stride, self.height - top)?;
+            let bytes = stride * rows as usize;
+            self.fill_rows(top, rows, &mut band[..bytes]);
+            write(rows, top, &band[..bytes])?;
+            top += rows;
+        }
+        Ok(())
+    }
+
+    fn fill_rows(&self, top: u32, rows: u32, pixels: &mut [u8]) {
+        pixels.fill(0);
+        let width = self.width as usize;
+        let stride = width * BYTES_PER_PIXEL;
+        for frame in self.frames.iter() {
+            let Some(intersection) = intersect_rects(frame.bounds, self.bounds) else {
+                continue;
+            };
+            let Some((left, source_top, right, source_bottom)) = crop_bounds(frame, intersection)
+            else {
+                continue;
+            };
+            let destination_x = (intersection.left - self.bounds.left) as usize;
+            let destination_y = (intersection.top - self.bounds.top) as u32;
+            let destination_width = (intersection.right - intersection.left) as usize;
+            let destination_height = (intersection.bottom - intersection.top) as usize;
+            let piece_width = (right - left) as usize;
+            let piece_height = (source_bottom - source_top) as usize;
+            let first_row = top.max(destination_y);
+            let last_row = (top + rows).min(destination_y + destination_height as u32);
+            for y in first_row..last_row {
+                let relative_y = (y - destination_y) as usize;
+                let source_y = source_top as usize + relative_y * piece_height / destination_height;
+                let output_row = (y - top) as usize * stride;
+                for x in 0..destination_width {
+                    let source_x = left as usize + x * piece_width / destination_width;
+                    let source_offset =
+                        (source_y * frame.width as usize + source_x) * BYTES_PER_PIXEL;
+                    let destination_offset = output_row + (destination_x + x) * BYTES_PER_PIXEL;
+                    pixels[destination_offset..destination_offset + BYTES_PER_PIXEL]
+                        .copy_from_slice(
+                            &frame.pixels[source_offset..source_offset + BYTES_PER_PIXEL],
+                        );
+                }
+            }
+        }
+        if let Some(mask) = &self.mask {
+            let mask_stride = mask.width as usize * BYTES_PER_PIXEL;
+            for y in 0..rows as usize {
+                let mask_row = (top as usize + y) * mask_stride;
+                let output_row = y * stride;
+                for x in 0..width {
+                    pixels[output_row + x * BYTES_PER_PIXEL + 3] =
+                        mask.pixels[mask_row + x * BYTES_PER_PIXEL + 3];
+                }
+            }
+        }
+    }
+}
+
+fn scanline_stride(width: u32) -> Result<usize, String> {
+    let stride = (width as usize)
+        .checked_mul(BYTES_PER_PIXEL)
+        .filter(|stride| *stride <= MAX_SCANLINE_BYTES)
+        .ok_or_else(|| "The frozen capture row is too wide to encode".to_string())?;
+    if stride > u32::MAX as usize {
+        return Err("The frozen capture row is too wide to encode".to_string());
+    }
+    Ok(stride)
+}
+
+fn row_band_height(stride: usize, remaining_rows: u32) -> Result<u32, String> {
+    if stride == 0 || stride > MAX_SCANLINE_BYTES {
+        return Err("The frozen capture row is too wide to encode".to_string());
+    }
+    Ok(remaining_rows.min((ROW_BAND_BYTES / stride) as u32))
+}
+
+#[cfg(test)]
+fn band_count(stride: usize, height: u32) -> Result<usize, String> {
+    let rows = row_band_height(stride, height)?;
+    Ok((height as usize).div_ceil(rows as usize))
+}
+
+fn validate_cached_composition_work(width: i32, height: i32) -> Result<(), String> {
+    let pixels = (width as u64)
+        .checked_mul(height as u64)
+        .ok_or_else(|| "The frozen capture area is too large".to_string())?;
+    if pixels > MAX_CACHED_COMPOSITION_PIXELS {
+        return Err("The frozen capture area is too large to encode".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Result<DesktopFrame, String> {
     if !frames
         .iter()
@@ -223,11 +474,7 @@ fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Result<DesktopFram
         return Err("The capture area does not intersect the frozen displays".to_string());
     }
 
-    let width = rect_width(&bounds);
-    let height = rect_height(&bounds);
-    if width <= 0 || height <= 0 {
-        return Err("The frozen capture area has invalid dimensions".to_string());
-    }
+    let (width, height) = composition_dimensions(bounds)?;
 
     let pixel_count = (width as usize)
         .checked_mul(height as usize)
@@ -281,6 +528,35 @@ fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Result<DesktopFram
         height: height as u32,
         pixels,
     })
+}
+
+fn composition_dimensions(bounds: RECT) -> Result<(i32, i32), String> {
+    let width = rect_width(&bounds);
+    let height = rect_height(&bounds);
+    if width <= 0 || height <= 0 {
+        return Err("The frozen capture area has invalid dimensions".to_string());
+    }
+    Ok((width, height))
+}
+
+fn crop_bounds(frame: &DesktopFrame, bounds: RECT) -> Option<(i32, i32, i32, i32)> {
+    let source_width = rect_width(&frame.bounds);
+    let source_height = rect_height(&frame.bounds);
+    if source_width <= 0 || source_height <= 0 {
+        return None;
+    }
+    let scale_x = frame.width as f64 / source_width as f64;
+    let scale_y = frame.height as f64 / source_height as f64;
+    let left = scaled_offset(bounds.left, frame.bounds.left, scale_x, frame.width as i32);
+    let top = scaled_offset(bounds.top, frame.bounds.top, scale_y, frame.height as i32);
+    let right = scaled_offset(bounds.right, frame.bounds.left, scale_x, frame.width as i32);
+    let bottom = scaled_offset(
+        bounds.bottom,
+        frame.bounds.top,
+        scale_y,
+        frame.height as i32,
+    );
+    (left < right && top < bottom).then_some((left, top, right, bottom))
 }
 
 fn intersect_rects(left: RECT, right: RECT) -> Option<RECT> {
@@ -519,9 +795,9 @@ fn capture_with_cached_device(
     captured
 }
 
-fn frozen_frames() -> &'static Mutex<Vec<DesktopFrame>> {
-    static FROZEN: OnceLock<Mutex<Vec<DesktopFrame>>> = OnceLock::new();
-    FROZEN.get_or_init(|| Mutex::new(Vec::new()))
+fn frozen_frames() -> &'static Mutex<Arc<[DesktopFrame]>> {
+    static FROZEN: OnceLock<Mutex<Arc<[DesktopFrame]>>> = OnceLock::new();
+    FROZEN.get_or_init(|| Mutex::new(Arc::from([])))
 }
 
 fn ensure_multithreaded_apartment() {
@@ -960,7 +1236,8 @@ pub fn crop(frame: &DesktopFrame, bounds: RECT) -> Option<DesktopFrame> {
     })
 }
 
-pub fn apply_alpha_mask(frame: &mut DesktopFrame, mask: &DesktopFrame) -> bool {
+#[cfg(test)]
+fn apply_alpha_mask(frame: &mut DesktopFrame, mask: &DesktopFrame) -> bool {
     if frame.width != mask.width || frame.height != mask.height {
         return false;
     }
@@ -1159,6 +1436,390 @@ mod tests {
             height,
             pixels: vec![fill; (width * height) as usize * BYTES_PER_PIXEL],
         }
+    }
+
+    fn patterned_frame(bounds: RECT, width: u32, height: u32, seed: u8) -> DesktopFrame {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * BYTES_PER_PIXEL);
+        for y in 0..height {
+            for x in 0..width {
+                pixels.extend_from_slice(&[
+                    seed.wrapping_add(x as u8),
+                    seed.wrapping_add(y as u8),
+                    seed.wrapping_add(x.wrapping_mul(7) as u8),
+                    255,
+                ]);
+            }
+        }
+        DesktopFrame {
+            bounds,
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    fn test_composition(frames: Vec<DesktopFrame>, bounds: RECT) -> FrozenComposition {
+        let (width, height) = composition_dimensions(bounds).unwrap();
+        FrozenComposition {
+            frames: Arc::from(frames),
+            bounds,
+            width: width as u32,
+            height: height as u32,
+            mask: None,
+        }
+    }
+
+    #[test]
+    fn streamed_frozen_rows_match_composition_for_scaled_overlapping_frames_and_padding() {
+        let frames = vec![
+            patterned_frame(
+                RECT {
+                    left: -2,
+                    top: -1,
+                    right: 2,
+                    bottom: 2,
+                },
+                8,
+                6,
+                10,
+            ),
+            patterned_frame(
+                RECT {
+                    left: 1,
+                    top: 0,
+                    right: 4,
+                    bottom: 2,
+                },
+                3,
+                2,
+                100,
+            ),
+        ];
+        let bounds = RECT {
+            left: -3,
+            top: -2,
+            right: 5,
+            bottom: 3,
+        };
+        let expected = composite_frames(&frames, bounds).unwrap();
+        let composition = test_composition(frames, bounds);
+        let mut actual = vec![0; expected.pixels.len()];
+        composition.fill_rows(0, composition.height, &mut actual);
+        assert_eq!(actual, expected.pixels);
+    }
+
+    #[test]
+    fn streamed_frozen_rows_apply_only_a_matching_window_alpha_mask() {
+        let bounds = RECT {
+            left: -1,
+            top: 0,
+            right: 2,
+            bottom: 2,
+        };
+        let mut composition = test_composition(vec![patterned_frame(bounds, 3, 2, 20)], bounds);
+        let mut mask = frame(3, 2, 0);
+        for (index, pixel) in mask
+            .pixels
+            .as_chunks_mut::<BYTES_PER_PIXEL>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            pixel[3] = [0, 128, 255, 64, 192, 32][index];
+        }
+        let mut expected = composite_frames(&composition.frames, bounds).unwrap();
+        assert!(apply_alpha_mask(&mut expected, &mask));
+        composition.set_alpha_mask(mask);
+        let mut actual = vec![0; expected.pixels.len()];
+        composition.fill_rows(0, composition.height, &mut actual);
+        assert_eq!(actual, expected.pixels);
+
+        let mut mismatched = test_composition(vec![patterned_frame(bounds, 3, 2, 20)], bounds);
+        mismatched.set_alpha_mask(frame(1, 1, 0));
+        let mut without_mask = vec![0; expected.pixels.len()];
+        mismatched.fill_rows(0, mismatched.height, &mut without_mask);
+        assert_eq!(
+            without_mask,
+            composite_frames(&mismatched.frames, bounds).unwrap().pixels
+        );
+    }
+
+    #[test]
+    fn frozen_scanline_bands_stay_within_the_scratch_budget() {
+        let stride = scanline_stride(17_000).unwrap();
+        let rows = row_band_height(stride, 10_000).unwrap();
+        let virtual_height = i32::MAX as u32;
+        assert!(rows > 1);
+        assert!(stride * rows as usize <= ROW_BAND_BYTES);
+        assert!(virtual_height > rows);
+        assert!(
+            stride * row_band_height(stride, virtual_height).unwrap() as usize <= ROW_BAND_BYTES
+        );
+        assert_eq!(row_band_height(ROW_BAND_BYTES, 10).unwrap(), 1);
+        assert!(scanline_stride((ROW_BAND_BYTES / BYTES_PER_PIXEL + 1) as u32).is_err());
+    }
+
+    #[test]
+    fn cached_composition_pixel_limit_preserves_large_display_layouts() {
+        let eight_8k_displays_with_padding = (8 * 7_680 + 3_000, 4_320 + 2_000);
+        assert!(
+            validate_cached_composition_work(
+                eight_8k_displays_with_padding.0,
+                eight_8k_displays_with_padding.1,
+            )
+            .is_ok()
+        );
+        assert!(scanline_stride(eight_8k_displays_with_padding.0 as u32).is_ok());
+
+        let sixteen_4k_displays = (16 * 3_840, 2_160);
+        assert!(
+            validate_cached_composition_work(sixteen_4k_displays.0, sixteen_4k_displays.1).is_ok()
+        );
+    }
+
+    #[test]
+    fn cached_composition_pixel_limit_rejects_one_pixel_over_without_allocating() {
+        assert!(validate_cached_composition_work(1, MAX_CACHED_COMPOSITION_PIXELS as i32).is_ok());
+        let height = MAX_CACHED_COMPOSITION_PIXELS as i32 + 1;
+        let bounds = RECT {
+            left: 0,
+            top: 0,
+            right: 1,
+            bottom: height,
+        };
+        let (width, height) = composition_dimensions(bounds).unwrap();
+        assert_eq!(
+            validate_cached_composition_work(width, height).unwrap_err(),
+            "The frozen capture area is too large to encode"
+        );
+    }
+
+    #[test]
+    fn tall_narrow_compositions_keep_band_count_and_scratch_bounded() {
+        let stride = scanline_stride(1).unwrap();
+        assert_eq!(
+            band_count(stride, MAX_CACHED_COMPOSITION_PIXELS as u32).unwrap(),
+            512
+        );
+        assert!(stride * row_band_height(stride, u32::MAX).unwrap() as usize <= ROW_BAND_BYTES);
+    }
+
+    #[test]
+    fn streamed_mask_matches_contiguous_pixels_across_band_boundary() {
+        let bounds = RECT {
+            left: 0,
+            top: 0,
+            right: 1024,
+            bottom: 1025,
+        };
+        let mut composition = test_composition(vec![frame(1024, 1025, 7)], bounds);
+        let mut mask = frame(1024, 1025, 0);
+        for pixel in mask.pixels[1023 * 1024 * BYTES_PER_PIXEL..1024 * 1024 * BYTES_PER_PIXEL]
+            .as_chunks_mut::<BYTES_PER_PIXEL>()
+            .0
+        {
+            pixel[3] = 128;
+        }
+        for pixel in mask.pixels[1024 * 1024 * BYTES_PER_PIXEL..]
+            .as_chunks_mut::<BYTES_PER_PIXEL>()
+            .0
+        {
+            pixel[3] = 255;
+        }
+        let mut expected = composite_frames(&composition.frames, bounds).unwrap();
+        assert!(apply_alpha_mask(&mut expected, &mask));
+        composition.set_alpha_mask(mask);
+        let mut actual = Vec::with_capacity(expected.pixels.len());
+        let mut calls = 0;
+        composition
+            .write_bands(
+                scanline_stride(composition.width).unwrap(),
+                |_, top, pixels| {
+                    assert_eq!(top, actual.len() as u32 / (composition.width * 4));
+                    calls += 1;
+                    actual.extend_from_slice(pixels);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(actual, expected.pixels);
+    }
+
+    #[test]
+    fn frozen_bmp_rejects_unrepresentable_file_size_before_creating_output() {
+        let path = std::env::temp_dir().join(format!(
+            "poratake-frozen-oversized-{}-{}.bmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let composition = FrozenComposition {
+            frames: Arc::from([]),
+            bounds: RECT::default(),
+            width: 1,
+            height: i32::MAX as u32,
+            mask: None,
+        };
+        let error = composition
+            .write_image(path.to_string_lossy().as_ref())
+            .unwrap_err();
+        assert_eq!(error, "The frozen capture is too large for BMP");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn frozen_png_accepts_multiple_bands_and_decodes_exactly() {
+        use windows::Win32::Foundation::GENERIC_READ;
+        use windows::Win32::Graphics::Imaging::{
+            GUID_WICPixelFormat32bppBGRA, IWICPalette, WICBitmapDitherTypeNone,
+            WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnLoad,
+        };
+
+        let bounds = RECT {
+            left: 0,
+            top: 0,
+            right: 1024,
+            bottom: 1280,
+        };
+        let mut frame = patterned_frame(bounds, 1024, 1280, 40);
+        for (index, pixel) in frame
+            .pixels
+            .as_chunks_mut::<BYTES_PER_PIXEL>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            pixel[3] = [0, 128, 255][index % 3];
+            if pixel[3] == 0 {
+                pixel[..3].fill(0);
+            }
+        }
+        let band_rows =
+            row_band_height(scanline_stride(frame.width).unwrap(), frame.height).unwrap() as usize;
+        for row in [band_rows - 1, band_rows] {
+            for (x, alpha) in [0u8, 128, 255].into_iter().enumerate() {
+                let start = (row * 1024 + x) * BYTES_PER_PIXEL;
+                frame.pixels[start + 3] = alpha;
+                if alpha == 0 {
+                    frame.pixels[start..start + 3].fill(0);
+                }
+            }
+        }
+        let composition = test_composition(vec![frame], bounds);
+        assert_eq!(
+            band_count(
+                scanline_stride(composition.width).unwrap(),
+                composition.height
+            )
+            .unwrap(),
+            2
+        );
+        let path = std::env::temp_dir().join(format!(
+            "poratake-frozen-stream-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        composition
+            .write_image(path.to_string_lossy().as_ref())
+            .expect("write streamed PNG");
+        crate::com::retain_process_mta().expect("retain process MTA");
+        let _apartment = MtaApartment::initialize().expect("join process MTA");
+        let factory: IWICImagingFactory = unsafe {
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                .expect("create WIC factory")
+        };
+        let wide_path = to_wide(path.to_string_lossy().as_ref());
+        let decoder = unsafe {
+            factory
+                .CreateDecoderFromFilename(
+                    PCWSTR(wide_path.as_ptr()),
+                    None,
+                    GENERIC_READ,
+                    WICDecodeMetadataCacheOnLoad,
+                )
+                .expect("open streamed PNG")
+        };
+        let decoded = unsafe { decoder.GetFrame(0).expect("read PNG frame") };
+        let mut width = 0;
+        let mut height = 0;
+        unsafe {
+            decoded
+                .GetSize(&mut width, &mut height)
+                .expect("read PNG dimensions");
+        }
+        let converter = unsafe { factory.CreateFormatConverter().expect("create converter") };
+        unsafe {
+            converter
+                .Initialize(
+                    &decoded,
+                    &GUID_WICPixelFormat32bppBGRA,
+                    WICBitmapDitherTypeNone,
+                    None::<&IWICPalette>,
+                    0.0,
+                    WICBitmapPaletteTypeCustom,
+                )
+                .expect("convert PNG pixels");
+        }
+        let mut pixels = vec![0; width as usize * height as usize * BYTES_PER_PIXEL];
+        unsafe {
+            converter
+                .CopyPixels(null(), width * BYTES_PER_PIXEL as u32, &mut pixels)
+                .expect("decode PNG pixels");
+        }
+        let _ = std::fs::remove_file(path);
+        assert_eq!((width, height), (1024, 1280));
+        assert_eq!(pixels, composition_reference(&composition));
+    }
+
+    #[test]
+    fn frozen_bmp_bytes_match_the_contiguous_writer() {
+        let bounds = RECT {
+            left: -2,
+            top: -1,
+            right: 4,
+            bottom: 4,
+        };
+        let composition = test_composition(vec![patterned_frame(bounds, 6, 5, 30)], bounds);
+        let expected = DesktopFrame {
+            bounds,
+            width: composition.width,
+            height: composition.height,
+            pixels: composition_reference(&composition),
+        };
+        let expected_path = std::env::temp_dir().join(format!(
+            "poratake-frozen-reference-{}-{}.bmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let actual_path = expected_path.with_file_name(format!(
+            "{}-stream.bmp",
+            expected_path.file_stem().unwrap().to_string_lossy()
+        ));
+        write_bmp(&expected, expected_path.to_string_lossy().as_ref()).unwrap();
+        composition
+            .write_image(actual_path.to_string_lossy().as_ref())
+            .unwrap();
+        let expected_bytes = std::fs::read(&expected_path).unwrap();
+        let actual_bytes = std::fs::read(&actual_path).unwrap();
+        let _ = std::fs::remove_file(expected_path);
+        let _ = std::fs::remove_file(actual_path);
+        assert_eq!(actual_bytes, expected_bytes);
+    }
+
+    fn composition_reference(composition: &FrozenComposition) -> Vec<u8> {
+        let mut pixels =
+            vec![0; composition.width as usize * composition.height as usize * BYTES_PER_PIXEL];
+        composition.fill_rows(0, composition.height, &mut pixels);
+        pixels
     }
 
     #[test]

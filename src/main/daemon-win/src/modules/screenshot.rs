@@ -1,5 +1,5 @@
 use crate::desktop_frame::{
-    DesktopFrame, apply_alpha_mask, capture_rect, capture_window, frozen_rect, write_image,
+    DesktopFrame, FrozenComposition, capture_rect, capture_window, frozen_composition, write_image,
 };
 use crate::protocol::{Request, params, respond_error, respond_success};
 use crate::router::{Module, Reply, method_not_found};
@@ -50,42 +50,57 @@ fn capture_area(request: &Request) -> Reply {
 
     spawn_capture(request_id, path, move || {
         crate::trace::trace("capture() entered");
-        let (mut frame, from_frozen) = capture_cached_or_live(
+        let mut capture = capture_cached_or_live(
             cached,
-            || frozen_rect(bounds),
+            || frozen_composition(bounds).map(|composition| composition.map(CapturedImage::Frozen)),
             || {
                 crate::trace::trace("calling DwmFlush");
                 unsafe { DwmFlush() }.map_err(|error| error.to_string())?;
                 crate::trace::trace("calling capture_rect");
-                capture_rect(bounds)
+                capture_rect(bounds).map(CapturedImage::Frame)
             },
         )?;
         crate::trace::trace("frame resolved");
-        if !from_frozen {
-            return Ok(frame);
+        if let (CapturedImage::Frozen(composition), Some(window_id)) = (&mut capture, window_id) {
+            let window = HWND(window_id as isize as *mut c_void);
+            if let Ok(mask) = capture_window(window) {
+                composition.set_alpha_mask(mask);
+            }
         }
-        let Some(window_id) = window_id else {
-            return Ok(frame);
-        };
-        let window = HWND(window_id as isize as *mut c_void);
-        let Ok(mask) = capture_window(window) else {
-            return Ok(frame);
-        };
-
-        apply_alpha_mask(&mut frame, &mask);
-        Ok(frame)
+        Ok(capture)
     })
 }
 
-fn capture_cached_or_live(
-    cached: bool,
-    frozen: impl FnOnce() -> Result<Option<DesktopFrame>, String>,
-    live: impl FnOnce() -> Result<DesktopFrame, String>,
-) -> Result<(DesktopFrame, bool), String> {
-    if cached && let Some(frame) = frozen()? {
-        return Ok((frame, true));
+enum CapturedImage {
+    Frame(DesktopFrame),
+    Frozen(FrozenComposition),
+}
+
+impl CapturedImage {
+    fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::Frame(frame) => (frame.width, frame.height),
+            Self::Frozen(composition) => composition.dimensions(),
+        }
     }
-    live().map(|frame| (frame, false))
+
+    fn write_image(&self, path: &str) -> Result<(), String> {
+        match self {
+            Self::Frame(frame) => write_image(frame, path),
+            Self::Frozen(composition) => composition.write_image(path),
+        }
+    }
+}
+
+fn capture_cached_or_live<T>(
+    cached: bool,
+    frozen: impl FnOnce() -> Result<Option<T>, String>,
+    live: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if cached && let Some(frame) = frozen()? {
+        return Ok(frame);
+    }
+    live()
 }
 
 fn capture_target_window(request: &Request) -> Reply {
@@ -102,20 +117,20 @@ fn capture_target_window(request: &Request) -> Reply {
     let window_id = wire.window_id;
 
     spawn_capture(request_id, path, move || {
-        capture_window(HWND(window_id as isize as *mut c_void))
+        capture_window(HWND(window_id as isize as *mut c_void)).map(CapturedImage::Frame)
     })
 }
 
 fn spawn_capture(
     request_id: String,
     path: String,
-    capture: impl FnOnce() -> Result<DesktopFrame, String> + Send + 'static,
+    capture: impl FnOnce() -> Result<CapturedImage, String> + Send + 'static,
 ) -> Reply {
     crate::trace::trace("spawning worker");
     let spawned = std::thread::Builder::new().spawn(move || {
         crate::trace::trace("worker thread started");
-        let frame = match capture() {
-            Ok(frame) => frame,
+        let capture = match capture() {
+            Ok(capture) => capture,
             Err(message) => {
                 crate::trace::trace(&format!("capture failed: {message}"));
                 respond_error(&request_id, "CAPTURE_FAILED", &message);
@@ -124,17 +139,18 @@ fn spawn_capture(
         };
         crate::trace::trace("writing image");
 
-        if let Err(message) = write_image(&frame, &path) {
+        if let Err(message) = capture.write_image(&path) {
             respond_error(&request_id, "CAPTURE_FAILED", &message);
             return;
         }
+        let (width, height) = capture.dimensions();
 
         respond_success(
             &request_id,
             json!({
                 "path": path,
-                "width": frame.width,
-                "height": frame.height,
+                "width": width,
+                "height": height,
             }),
         );
     });
@@ -282,36 +298,33 @@ mod tests {
 
     #[test]
     fn missing_frozen_cache_uses_live_capture() {
-        let (captured, from_frozen) =
+        let captured =
             capture_cached_or_live(true, || Ok(None), || Ok(frame())).expect("live fallback");
 
-        assert!(!from_frozen);
         assert_eq!(captured.pixels, [0, 0, 0, 255]);
     }
 
     #[test]
     fn disabled_freeze_uses_live_capture_without_checking_cache() {
-        let (captured, from_frozen) = capture_cached_or_live(
+        let captured = capture_cached_or_live(
             false,
             || panic!("disabled freeze must not inspect the cache"),
             || Ok(frame()),
         )
         .expect("live capture");
 
-        assert!(!from_frozen);
         assert_eq!(captured.pixels, [0, 0, 0, 255]);
     }
 
     #[test]
     fn frozen_composition_uses_cached_pixels() {
-        let (captured, from_frozen) = capture_cached_or_live(
+        let captured = capture_cached_or_live(
             true,
             || Ok(Some(frame())),
             || panic!("cached pixels must not fall back to live capture"),
         )
         .expect("frozen capture");
 
-        assert!(from_frozen);
         assert_eq!(captured.pixels, [0, 0, 0, 255]);
     }
 }
