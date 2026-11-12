@@ -118,6 +118,14 @@ impl FrameAccumulator {
                 )
             })
         };
+        if let Some((footer, _)) = fixed_footer
+            && footer >= expected_overlap
+            && self.frames.last().is_some_and(|previous| {
+                has_multiple_zero_score_overlaps(previous, &pixels, width, height, expected_overlap)
+            })
+        {
+            return CaptureOutcome::NoOverlap;
+        }
         let normal_overlap =
             if !identical && fixed_footer.is_none() && self.last_frame_hash == Some(hash) {
                 self.frames.last().and_then(|previous| {
@@ -285,6 +293,44 @@ impl FrameAccumulator {
         });
         CaptureOutcome::Added
     }
+}
+
+fn has_multiple_zero_score_overlaps(
+    previous: &CapturedFrame,
+    current: &[u8],
+    width: usize,
+    height: usize,
+    expected: usize,
+) -> bool {
+    let strip_height = 8_usize.min(height / 2).min(expected.max(1));
+    let strip_width = width.min(800);
+    let start_x = (width - strip_width) / 2;
+    let mut zero_score_count = 0;
+    for overlap in strip_height..=height {
+        if overlap == height && previous.pixels != current {
+            continue;
+        }
+        let mut equal = true;
+        'pixels: for y in (0..strip_height).step_by(2) {
+            for x in (0..strip_width).step_by(2) {
+                let previous_offset = ((height - overlap + y) * width + start_x + x) * 4;
+                let current_offset = (y * width + start_x + x) * 4;
+                if previous.pixels[previous_offset..previous_offset + 3]
+                    != current[current_offset..current_offset + 3]
+                {
+                    equal = false;
+                    break 'pixels;
+                }
+            }
+        }
+        if equal {
+            zero_score_count += 1;
+            if zero_score_count > 1 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn find_fixed_footer(
@@ -1182,6 +1228,149 @@ mod tests {
             overlap: 0,
             trim_bottom: 0,
         }
+    }
+
+    fn periodic_body_frame(index: usize, footer_height: usize) -> Vec<u8> {
+        let (width, height, step, side) = (640, 160, 96, 10);
+        let mut pixels = Vec::with_capacity(width * height * 4);
+        for y in 0..height {
+            for x in 0..width {
+                let mut pixel = if y >= height - footer_height {
+                    [
+                        62,
+                        ((y - (height - footer_height)) % 251) as u8,
+                        (x % 251) as u8,
+                        255,
+                    ]
+                } else {
+                    let absolute_y = y + index * step;
+                    if x == 0 && absolute_y % 256 < 32 {
+                        let value = (absolute_y as u32).wrapping_mul(0x45d9f3b);
+                        [
+                            value as u8,
+                            value.rotate_left(9) as u8,
+                            value.rotate_left(17) as u8,
+                            255,
+                        ]
+                    } else {
+                        [((absolute_y % 8) * 30) as u8, 0, 0, 255]
+                    }
+                };
+                if (1..1 + side).contains(&x) && (32..32 + side).contains(&y) {
+                    pixel[0] ^= 51 * index as u8;
+                }
+                pixels.extend_from_slice(&pixel);
+            }
+        }
+        pixels
+    }
+
+    #[test]
+    fn stops_on_periodic_body_mistaken_for_a_twenty_pixel_footer() {
+        assert_periodic_body_footer_alias_stops(20);
+    }
+
+    #[test]
+    fn stops_on_periodic_body_mistaken_for_a_forty_pixel_footer() {
+        assert_periodic_body_footer_alias_stops(40);
+    }
+
+    #[test]
+    fn zero_score_overlap_guard_matches_overlap_score_semantics() {
+        for (width, height, expected) in [(1, 9, 1), (7, 16, 5), (19, 21, 20)] {
+            for pattern in 0..4 {
+                let mut previous = Vec::with_capacity(width * height * 4);
+                let mut current = Vec::with_capacity(width * height * 4);
+                for y in 0..height {
+                    for x in 0..width {
+                        let value = (if pattern == 1 { y % 3 } else { y * width + x }) as u32;
+                        let seed = value
+                            .wrapping_mul(0x45d9f3b)
+                            .wrapping_add((x as u32).rotate_left(11));
+                        let pixel = [
+                            seed as u8,
+                            seed.rotate_left(9) as u8,
+                            seed.rotate_left(17) as u8,
+                            (y + x) as u8,
+                        ];
+                        previous.extend_from_slice(&pixel);
+                        let mut next = pixel;
+                        match pattern {
+                            0 => next[0] ^= 0x5a,
+                            2 => next[3] ^= 0x5a,
+                            3 if x == 0 && y == 0 => next[1] ^= 0x5a,
+                            _ => {}
+                        }
+                        current.extend_from_slice(&next);
+                    }
+                }
+
+                let strip_height = 8_usize.min(height / 2).min(expected.max(1));
+                let strip_width = width.min(800);
+                let start_x = (width - strip_width) / 2;
+                let expected_ambiguous = (strip_height..=height)
+                    .filter(|&overlap| {
+                        overlap_score(
+                            &previous,
+                            &current,
+                            width,
+                            height,
+                            overlap,
+                            start_x,
+                            strip_width,
+                            strip_height,
+                        ) == 0
+                    })
+                    .take(2)
+                    .count()
+                    > 1;
+                let previous_frame = CapturedFrame {
+                    width,
+                    height,
+                    pixels: previous,
+                    overlap: 0,
+                    trim_bottom: 0,
+                };
+
+                assert_eq!(
+                    has_multiple_zero_score_overlaps(
+                        &previous_frame,
+                        &current,
+                        width,
+                        height,
+                        expected,
+                    ),
+                    expected_ambiguous,
+                    "pattern={pattern} size={width}x{height} expected={expected}"
+                );
+            }
+        }
+    }
+
+    fn assert_periodic_body_footer_alias_stops(footer_height: usize) {
+        let (width, height, step) = (640, 160, 96);
+        let mut accumulator = FrameAccumulator::default();
+        assert_eq!(
+            accumulator.submit(
+                periodic_body_frame(0, footer_height),
+                width,
+                height,
+                height - step
+            ),
+            CaptureOutcome::Added
+        );
+        assert_eq!(
+            accumulator.submit(
+                periodic_body_frame(1, footer_height),
+                width,
+                height,
+                height - step
+            ),
+            CaptureOutcome::NoOverlap
+        );
+        assert_eq!(accumulator.frames().len(), 1);
+        assert_eq!(accumulator.frames()[0].trim_bottom, 0);
+        assert_eq!(accumulator.estimated_height(), height);
     }
 
     #[test]

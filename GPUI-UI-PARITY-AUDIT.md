@@ -48,6 +48,17 @@ Geist fonts and DirectWrite. Hidden native render targets provide GPU readback;
 input and frame scheduling use GPUI's headless harness. This is not installed-app
 or physical-monitor DPI verification.
 
+Each profile has a ten-minute watchdog; the first timeout stops the matrix and
+preserves that profile's partial evidence. On Windows, process-tree termination
+uses `taskkill /T` only while the tracked profile process is still active. If its
+leader has exited, the runner avoids targeting a potentially reused PID and
+reports that cleanup failed; this is not a Job Object guarantee, so a descendant
+that outlives its leader before timeout may remain. If `taskkill` fails, the
+fallback stops only the root and reports the failure. POSIX cleanup targets the
+detached process group after leader exit. The persistent timeout test verifies
+profile-worker cleanup and that an unrelated sibling survives; its POSIX
+leader-exit case is skipped on Windows.
+
 [Hosted CI at `515fa5cd`](https://github.com/Porabuild/Poratake/actions/runs/43286352987)
 passed the complete 16-case Windows visual gate, native Windows checks and
 accessibility actions. Its macOS daemon build, scroll-preview and GPUI shell
@@ -1411,7 +1422,7 @@ Electron version at the other positions and scales.
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, forced unsupported-hard-link fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                   |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                          |
 | P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. Sparse text and stationary animation are tested; a small animated footer block now stitches in the tested cases. Some animations and footer changes still stop early or produce incorrect output in synthetic multi-frame cases. Verify real surfaces, weak overlaps and fixed headers; macOS has a separate, unfixed stitcher.                                                                                                     |
-| P1       | Scroll stitching with repeated content                   | Windows/Linux stop and retain prior frames for tested conflicts between full-row alignment and an expected strip. A full-overlap guard stopped 1,308 incorrect periodic cases; two remain. Isolated changes can trigger early stops. A 360-case translated-UI probe accepted no incorrect outputs and stopped early 164 times. Investigate broader patterns, animations and real pages; macOS uses a separate stitcher.                                                                                                                                             |
+| P1       | Scroll stitching with repeated content                   | Windows/Linux stop and retain prior frames for tested conflicts between full-row alignment and an expected strip. The full-overlap and footer-ambiguity guards stop 1,310 incorrect periodic cases; 2,795 cases stop early. Isolated changes can trigger early stops. A 360-case translated-UI probe accepted no incorrect outputs and stopped early 164 times. Investigate broader patterns, animations and real pages; macOS uses a separate stitcher.                                                                                                            |
 | P1       | Unresponsive scroll stitch                               | Cancellation now cooperatively stops the stitch writer, and the shells wait for the finish and cancellation responses before discarding their temporary output. Windows and Linux worker tests cover joining and retryable startup failures; hosted macOS fixtures and GPUI parity cases also ran. A noninterruptible file write can still delay cancellation, and daemon shutdown can interrupt an in-flight stitch. Verify native UI handoffs and graceful shutdown on all three platforms.                                                                       |
 | P1       | macOS scroll preview with variable overlap               | The preview shares measured overlap with the saved stitch and coalesces background rendering. Hosted native fixtures compare variable-overlap pixels and cancellation; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                                              |
 | P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                             |
@@ -1445,12 +1456,6 @@ registers camera and overlay windows with its ScreenCaptureKit filter. New
 synthetic fixtures cover filter updates and stop coordination; they still need
 the hosted macOS compile and test run. Verify a real recording, including whether
 staged transparent windows appear in `SCShareableContent` before they are shown.
-
-The visual matrix now stops after a ten-minute profile timeout and preserves
-partial evidence. A Windows process-tree probe stopped a timed-out fixture and
-its worker without stopping an unrelated process. If the system tree-termination
-command itself fails, the fallback stops only the root and reports the failure;
-descendants could remain.
 
 A full-frame comparison alone was rejected as a replacement for the sampled
 duplicate hash: a blinking pixel on a stationary page was accepted as scrolling.
@@ -1507,6 +1512,14 @@ corpus were unchanged. A local sampled-perfect, non-exact overlap benchmark
 measured an additional 0.25 ms at 1080p and 0.79 ms at 4K, excluding native
 capture. Large moving content may stop early, and sparse aliases and slower
 hardware remain unverified.
+
+The two remaining incorrect periodic cases were caused by a repeated body being
+mistaken for a large fixed footer. A guard now stops those captures before
+appending corrupt pixels: the same 5,412-case matrix has 2,617 correct outputs,
+no incorrect outputs and 2,795 early stops. The footer and translated-UI probes
+showed no new incorrect results. On one synthetic 4K worst-scan input, the
+short-circuit guard took a median 0.035 ms versus 12.326 ms for the equivalent
+full-score scan; that isolated timing excludes native capture and slower hardware.
 
 In a synthetic two-frame scroll, period-8 main content shifted by 96px with an
 independently moving edge produces the same pixels as a complete 104px shift.
