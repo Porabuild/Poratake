@@ -156,15 +156,21 @@ Committed screenshot blur is checked against saved pixels in unframed captures
 at the same three simulated scales, with transparent pixels, preceding and later
 annotations, and a clipped region. A CPU test checks low-zoom blur sampling and
 replay beneath a later annotation at aligned offsets and all four surface edges.
-The blur region and neighboring annotations match a flattened PNG within two
-channel levels at 50%, 73%, 137% and 150% effective zoom with simulated 100%,
-125% and 200% DPI in both themes. A whole-frame comparison still finds
-differences outside the checked region, and patches exceeding the image budget
-use the previous rendering path. Sampled Electron canvas blur profiles now differ by at most three channel levels, and
-translucent clipped screenshot samples by at most two. A transparent single
-image over a gradient or inset is still blurred before the backdrop in GPUI but
-after it in Electron. A synthetic CPU comparison also differed at a fractional
-surface offset before the kernel change; the live editor case remains unverified.
+Earlier runs matched the blur region and neighboring annotations to a flattened
+PNG within two channel levels at 50%, 73%, 137% and 150% effective zoom with
+simulated 100%, 125% and 200% DPI in both themes. Repeat them for the patch-local
+change. A whole-frame comparison found differences outside the checked region
+for clipped blur, and patches exceeding the image budget use the previous
+rendering path. Sampled Electron canvas blur profiles now differ by at most three
+channel levels, and translucent clipped screenshot samples by at most two. For
+unframed single images without balance, corners or shadows, the gradient or inset
+is now composed before redaction in the export and CPU patch tests. Twelve
+Electron samples, including a clipped blur, are within three channel levels; the
+visual workflow's annotation, draft transition, and fractional aspect-ratio
+checks need a fresh run. A CPU case confirms the sampled backdrop matches export
+at a rounded fractional origin. GPUI still draws annotations in list order, while
+Electron export applies redactions before vectors and highlights, with an extra
+ordered blackout shape. The live editor case remains unverified.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain

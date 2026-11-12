@@ -111,7 +111,10 @@ impl RenderOnce for EditorCanvas {
         let frame_scale = snap.frame_scale;
         let has_preview_edges = !snap.preview_edges.is_empty();
         let layered_composite = snap.backdrop_composite;
-        let overlay_above = has_preview_edges || layered_composite;
+        let composited_primary =
+            crate::editor::export::composites_primary_backdrop(&wallpaper, &snap.layers);
+        let stage_annotations = layered_composite || (snap.image.is_some() && composited_primary);
+        let overlay_above = has_preview_edges || stage_annotations;
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
         let balanced_unframed = wallpaper.balance
@@ -226,7 +229,7 @@ impl RenderOnce for EditorCanvas {
                 move |bounds, (), window, _cx| {
                     set_paint_origin(bounds.origin);
                     let snapshot = overlay_snapshot.borrow();
-                    if !layered_composite {
+                    if !stage_annotations {
                         paint_annotations(
                             window,
                             bounds,
@@ -272,6 +275,11 @@ impl RenderOnce for EditorCanvas {
                 frame_scale,
                 !layers.is_empty(),
             );
+            let (canvas_width, canvas_height) = if composited_primary {
+                (canvas_width.round(), canvas_height.round())
+            } else {
+                (canvas_width, canvas_height)
+            };
             (
                 px(canvas_width as f32 * zoom),
                 px(canvas_height as f32 * zoom),
@@ -292,6 +300,16 @@ impl RenderOnce for EditorCanvas {
                     frame_scale,
                     !layers.is_empty(),
                 );
+            let (canvas_width, canvas_height, offset_x, offset_y) = if composited_primary {
+                (
+                    canvas_width.round(),
+                    canvas_height.round(),
+                    offset_x.round(),
+                    offset_y.round(),
+                )
+            } else {
+                (canvas_width, canvas_height, offset_x, offset_y)
+            };
             // The capture sits wherever the group's layout put it.
             let (offset_x, offset_y) = (offset_x + group.primary.x, offset_y + group.primary.y);
             let measured_stage = stage_bounds.clone();
@@ -398,7 +416,7 @@ impl RenderOnce for EditorCanvas {
                                 |_, _, _| (),
                                 move |bounds, (), window, _cx| {
                                     set_paint_origin(bounds.origin);
-                                    if layered_composite {
+                                    if stage_annotations {
                                         let mask = gpui::ContentMask {
                                             bounds: gpui::Bounds {
                                                 origin: gpui::point(
@@ -554,6 +572,7 @@ fn paint_annotations(
         pixels: surface_image.and_then(|image| image.as_bytes(0)),
         matte: snapshot.backdrop_composite.then_some(stage_background),
         matte_image: None,
+        composite_backdrop: false,
     };
     let matte_image = if transparent_backdrop && !snapshot.backdrop_composite {
         let (width, height) = crate::editor::wallpaper::balanced_size(
@@ -580,6 +599,14 @@ fn paint_annotations(
             &snapshot.wallpaper.window_frame.style,
             snapshot.frame_scale,
         );
+        let (x, y) = if crate::editor::export::composites_primary_backdrop(
+            &snapshot.wallpaper,
+            &snapshot.layers,
+        ) {
+            (x.round(), y.round())
+        } else {
+            (x, y)
+        };
         snapshot.backdrop.as_deref().map(|image| {
             (
                 image,
@@ -597,6 +624,11 @@ fn paint_annotations(
             stage_surface
         }),
         matte_image,
+        composite_backdrop: matte_image.is_some()
+            && crate::editor::export::composites_primary_backdrop(
+                &snapshot.wallpaper,
+                &snapshot.layers,
+            ),
         ..surface
     };
     let scale = f64::from(zoom) * f64::from(window.scale_factor());
@@ -630,7 +662,12 @@ fn paint_annotations(
                     &visible[..index],
                     &surface,
                 ));
-        if !snapshot.backdrop_composite && !committed_pixelation && !committed_blur && !aligned {
+        if !snapshot.backdrop_composite
+            && !redaction_surface.composite_backdrop
+            && !committed_pixelation
+            && !committed_blur
+            && !aligned
+        {
             if let Annotation::Redact { id, .. } = annotation {
                 if let Some(patch) = snapshot.redact_patches.get(id) {
                     paint_patch(
@@ -649,7 +686,7 @@ fn paint_annotations(
             }
         }
         if preview_raster::is_rasterized(annotation)
-            || (snapshot.backdrop_composite
+            || ((snapshot.backdrop_composite || redaction_surface.composite_backdrop)
                 && matches!(annotation, Annotation::Redact { .. })
                 && !draft_redaction)
             || committed_pixelation
@@ -691,7 +728,7 @@ fn paint_annotations(
                         .is_none()
                     && snapshot.layers.is_empty();
                 let aligned_surface = preview_raster::Surface {
-                    matte_image: if transparent_only {
+                    matte_image: if transparent_only && !surface.composite_backdrop {
                         None
                     } else {
                         surface.matte_image

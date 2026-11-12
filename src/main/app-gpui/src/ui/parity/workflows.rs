@@ -1032,8 +1032,12 @@ pub(super) fn simple_inset_preview(
             editor.wallpaper.set_gradient(with_background.then(|| {
                 crate::editor::wallpaper::GradientOption {
                     id: "inset-background".into(),
-                    colors: vec!["#2468ac".into()],
-                    angle: 0.,
+                    colors: if scale == 1. && padding_setting == 20. && inset_setting == 8. {
+                        vec!["#2468ac".into(), "#de7840".into()]
+                    } else {
+                        vec!["#2468ac".into()]
+                    },
+                    angle: 45.,
                 }
             }));
             editor.wallpaper.padding = padding_setting;
@@ -1245,6 +1249,217 @@ pub(super) fn simple_inset_preview(
     cx.update_window(flattened.into(), |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
+    if scale == 1. && padding_setting == 20. && with_background && inset_setting == 8. {
+        let annotations = cx.update(|cx| editor.read(cx).unwrap().history.current().to_vec());
+        let mut without_redactions = annotations
+            .iter()
+            .filter(|annotation| {
+                !matches!(
+                    annotation,
+                    crate::editor::annotations::Annotation::Redact { .. }
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        without_redactions.push(crate::editor::annotations::Annotation::Rectangle {
+            id: "outside-image".into(),
+            x: -6.,
+            y: 24.,
+            width: 12.,
+            height: 12.,
+            stroke: "#ff00ff".into(),
+            stroke_width: 1.,
+            fill: Some("#ff00ff".into()),
+        });
+        for (restored, draft_check, current) in [
+            (false, false, without_redactions),
+            (false, true, Vec::new()),
+            (
+                false,
+                false,
+                vec![crate::editor::annotations::Annotation::Redact {
+                    id: "outside-image-blackout".into(),
+                    x: -6.,
+                    y: 24.,
+                    width: 12.,
+                    height: 12.,
+                    style: "blackout".into(),
+                    intensity: 2.,
+                }],
+            ),
+            (true, false, annotations),
+        ] {
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.history.push(current);
+                    editor.zoom = 1. / scale;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            let (bounds, current_png) = cx.update(|cx| {
+                let editor = editor.read(cx).unwrap();
+                assert!(!editor.snapshot.borrow().backdrop_composite);
+                (
+                    editor.bounds.borrow().unwrap(),
+                    editor.export_png().unwrap(),
+                )
+            });
+            if restored {
+                assert_eq!(current_png, png);
+            }
+            let saved = image::load_from_memory(&current_png).unwrap().to_rgba8();
+            let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+            image::imageops::overlay(&mut expected, &saved, 0, 0);
+            let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+            let left = (f32::from(bounds.left()) * scale).round() as u32 - margin;
+            let top = (f32::from(bounds.top()) * scale).round() as u32 - margin;
+            for y in 0..saved.height() {
+                for x in 0..saved.width() {
+                    let actual = screenshot.get_pixel(left + x, top + y).0;
+                    let expected = expected.get_pixel(x, y).0;
+                    assert!(
+                        actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                        "redaction transition {restored} at {x},{y}: {actual:?} vs {expected:?}"
+                    );
+                }
+            }
+            if draft_check {
+                for zoom in [1_f32, 1.5] {
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.zoom = zoom / scale;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, editor.into());
+                    let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+                    let left =
+                        (f32::from(bounds.left()) * scale - margin as f32 * zoom).round() as u32;
+                    let top =
+                        (f32::from(bounds.top()) * scale - margin as f32 * zoom).round() as u32;
+                    let before = cx.capture_screenshot(editor.into()).unwrap();
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.draft =
+                                Some(crate::editor::annotations::Annotation::Rectangle {
+                                    id: "draft-outside-image".into(),
+                                    x: -6.,
+                                    y: 24.,
+                                    width: 12.,
+                                    height: 12.,
+                                    stroke: "#ff00ff".into(),
+                                    stroke_width: 1.,
+                                    fill: Some("#ff00ff".into()),
+                                });
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, editor.into());
+                    cx.update(|cx| {
+                        assert!(
+                            !editor
+                                .read(cx)
+                                .unwrap()
+                                .snapshot
+                                .borrow()
+                                .backdrop_composite
+                        );
+                    });
+                    let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+                    assert_eq!(
+                        screenshot
+                            .get_pixel(
+                                left + ((margin - 3) as f32 * zoom).round() as u32,
+                                top + ((margin + 30) as f32 * zoom).round() as u32
+                            )
+                            .0,
+                        [255, 0, 255, 255]
+                    );
+                    let mut changed = 0;
+                    let mut first = None;
+                    for y in 0..(saved.height() as f32 * zoom).round() as u32 {
+                        for x in 0..(saved.width() as f32 * zoom).round() as u32 {
+                            if ((margin - 8) as f32 * zoom).floor() as u32 <= x
+                                && x < ((margin + 8) as f32 * zoom).ceil() as u32
+                                && ((margin + 22) as f32 * zoom).floor() as u32 <= y
+                                && y < ((margin + 38) as f32 * zoom).ceil() as u32
+                            {
+                                continue;
+                            }
+                            let actual = screenshot.get_pixel(left + x, top + y).0;
+                            let previous = before.get_pixel(left + x, top + y).0;
+                            if actual.iter().zip(previous).any(|(a, b)| a.abs_diff(b) > 2) {
+                                changed += 1;
+                                first.get_or_insert((x, y, actual, previous));
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        changed, 0,
+                        "draft at {zoom}x changed pixels outside its bounds: {first:?}"
+                    );
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.draft = None;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, editor.into());
+                }
+            }
+        }
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.wallpaper.aspect_ratio = "4:3".into();
+                editor
+                    .history
+                    .push(vec![crate::editor::annotations::Annotation::Redact {
+                        id: "fractional-offset-blur".into(),
+                        x: -5.,
+                        y: 22.,
+                        width: 40.,
+                        height: 30.,
+                        style: "blur".into(),
+                        intensity: 2.,
+                    }]);
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+        let (bounds, current_png, offset) = cx.update(|cx| {
+            let editor = editor.read(cx).unwrap();
+            let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
+                &editor.wallpaper.for_scale(f64::from(scale)),
+                100.,
+                80.,
+                f64::from(scale),
+                false,
+            );
+            assert_ne!(x, x.round());
+            (
+                editor.bounds.borrow().unwrap(),
+                editor.export_png().unwrap(),
+                (x.round() as u32, y.round() as u32),
+            )
+        });
+        let saved = image::load_from_memory(&current_png).unwrap().to_rgba8();
+        let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+        image::imageops::overlay(&mut expected, &saved, 0, 0);
+        let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+        let left = f32::from(bounds.left()).round() as u32 - offset.0;
+        let top = f32::from(bounds.top()).round() as u32 - offset.1;
+        for y in 0..saved.height() {
+            for x in 0..saved.width() {
+                let actual = screenshot.get_pixel(left + x, top + y).0;
+                let expected = expected.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                    "fractional wallpaper offset at {x},{y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
     if scale == 1.
         && padding_setting == 0.
         && !with_background

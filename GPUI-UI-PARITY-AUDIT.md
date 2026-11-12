@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `6720336b` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `64317044` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -898,19 +898,28 @@ Bugs fixed in this pass:
   at 150% took 179–189 ms in three local samples, excluding GPU upload; cached
   lookups took about 2 μs. Large textures that exceed the existing patch budget
   fall back to the previous rendering path.
-  Whole-frame comparisons outside the tested blur region still differ: the
-  inset fixture reached 19 levels at 150% zoom, and the clipped variant reached
-  56 levels at 137%. Complex compositions and physical DPI remain unverified.
+  Before the patch-local composition change, a whole-frame comparison of the
+  inset fixture at simulated 100% DPI stayed within one level at those zooms
+  when the blur was not clipped. The clipped variant differed outside the
+  checked region, reaching 56 levels at 137% and 55 at 150%. Repeat those
+  comparisons for the patch-local path; physical DPI remains unverified.
   The shared blur kernel previously used the box width as its radius. Sampled
   Electron canvas edge profiles at sigma 0.5–32 now differ by at most three
   channel levels; 56 shadow samples differ by at most four alpha levels.
   Translucent screenshot blur now composites the filtered source over the
   original temp image as Electron does, with interior and clipped samples within
   two channel levels. Narrow buffers and transparent padding have CPU checks.
-  With a transparent image over a gradient or inset, the single-image GPUI
-  export still blurs the image before adding the backdrop; Electron blurs the
-  combined image and backdrop. Native editor interaction and broader images
-  remain unverified. On this machine, the revised transparent kernel took
+  Unframed single images without balance, corners or shadows now composite the
+  gradient or inset before redaction in export and patch-local preview tests.
+  Twelve independent Electron canvas samples, including a clipped blur, differ
+  by at most three channel levels. Visual verification of annotation and draft
+  transitions and fractional aspect-ratio offsets for the patch-local path
+  remains pending. A CPU sample at one fractional origin matches export with
+  either the rounded or unrounded sampling offset. GPUI still draws annotations in
+  list order, while Electron applies redactions before vectors and highlights;
+  blackout also has a second ordered SVG pass. Framed, balanced,
+  rounded, shadowed and attached compositions, native interaction and broader
+  images remain unverified. On this machine, the revised transparent kernel took
   220–235 ms for 19,200×160 pixels at sigma 104 in three local kernel-only
   samples; the screenshot path's estimated peak live buffers, including the
   canvas, are about 49 MB for that case. At 3840×2160 and sigma 20, three
@@ -1083,7 +1092,8 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Zero-padding wallpaper effects                           | Frame-only and corner/shadow-only settings without balance or inset now activate at zero padding; single and attached previews and Polish copy are checked. Single unframed insets without corners or shadows are checked with and without balance at simulated 100%, 125% and 200%. Framed, attached, rounded and shadowed inset combinations and balance with corners or shadows still need coordinated preview/export verification.                                                                                                                              |
 | P1       | Wallpaper shadows and complex image compositions         | Single-image shadows without a window frame, inset, balance or attachments now match saved output in the tested cases. Complex combinations still need preview/output checks. At 4K a 400px radius with the strongest shadow took 196–200 ms to prepare locally; measure interactive behavior, GPU upload, memory and slower hardware. At 17,000px, plain, inset and framed outputs retain shadows in CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                  |
 | P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                        |
-| P1       | Screenshot blur preview and Electron parity              | The blur region and neighboring annotations match flattened PNG pixels within two levels at 50%, 73%, 137% and 150% effective zoom for the tested unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. A transparent single image over a gradient or inset is blurred before the backdrop in GPUI but after it in Electron. Recheck fractional surface offsets; verify draft, frames, attachments, physical DPI, large patches and interactive performance. |
+| P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; annotation order still differs from Electron. Verify fractional surface offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance. |
+| P1       | Screenshot annotation order                              | GPUI preview and export draw annotations in list order. Electron export applies redactions first, then vector annotations and highlights; blackout also contributes an ordered SVG shape. Electron's live preview can differ from its export when a shape precedes blackout. Align GPUI preview and export together and compare overlapping blur, pixelation, blackout, vectors and highlights against independent Electron output.                                                                                                                                 |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                |
 | P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                    |
 | P1       | Native screen-recording selector handoff                 | Mock-platform tests cover replacing an existing or pending selector, release failure and retry, and a newer request that supersedes recording. Verify real single-display recording handoffs and the corresponding multi-display picker behavior.                                                                                                                                                                                                                                                                                                                   |

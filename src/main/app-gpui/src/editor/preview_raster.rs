@@ -30,6 +30,27 @@ pub struct Surface<'a> {
     pub pixels: Option<&'a [u8]>,
     pub matte: Option<[u8; 3]>,
     pub matte_image: Option<(&'a RenderImage, f64, f64)>,
+    pub composite_backdrop: bool,
+}
+
+impl Surface<'_> {
+    fn bounds(&self) -> (f64, f64, f64, f64) {
+        if let Some((image, x, y)) = self.matte_image.filter(|_| self.composite_backdrop) {
+            let size = image.size(0);
+            return (
+                -x,
+                -y,
+                f64::from(u32::from(size.width)) - x,
+                f64::from(u32::from(size.height)) - y,
+            );
+        }
+        (
+            -self.offset_x,
+            -self.offset_y,
+            f64::from(self.width) - self.offset_x,
+            f64::from(self.height) - self.offset_y,
+        )
+    }
 }
 
 pub struct Patch {
@@ -155,10 +176,7 @@ fn raster_bounds(
                 + 2.0 / scale;
             let target = annotation.bounds();
             let mut bounds = padded(target, padding);
-            let left_limit = -surface.offset_x;
-            let top_limit = -surface.offset_y;
-            let right_limit = f64::from(surface.width) - surface.offset_x;
-            let bottom_limit = f64::from(surface.height) - surface.offset_y;
+            let (left_limit, top_limit, right_limit, bottom_limit) = surface.bounds();
             let left = target.0.floor().max(left_limit);
             let top = target.1.floor().max(top_limit);
             let right = target.2.ceil().min(right_limit);
@@ -227,9 +245,12 @@ fn patch_padded(
     if scale <= 0.0 {
         return None;
     }
-    let minimum_scale = fit_scale(f64::from(surface.width), f64::from(surface.height), scale)
-        .min((MAX_PATCH_DIMENSION - 1.0) / f64::from(surface.width))
-        .min((MAX_PATCH_DIMENSION - 1.0) / f64::from(surface.height));
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
+    let (surface_width, surface_height) =
+        (surface_right - surface_left, surface_bottom - surface_top);
+    let minimum_scale = fit_scale(surface_width, surface_height, scale)
+        .min((MAX_PATCH_DIMENSION - 1.0) / surface_width)
+        .min((MAX_PATCH_DIMENSION - 1.0) / surface_height);
     let bounds = raster_bounds(annotation, surface, minimum_scale)?;
     let target = if matches!(annotation, Annotation::Redact { .. }) {
         annotation.bounds()
@@ -266,10 +287,10 @@ fn patch_padded(
             break;
         }
     }
-    let left = sample.0.max(-surface.offset_x);
-    let top = sample.1.max(-surface.offset_y);
-    let right = sample.2.min(f64::from(surface.width) - surface.offset_x);
-    let bottom = sample.3.min(f64::from(surface.height) - surface.offset_y);
+    let left = sample.0.max(surface_left);
+    let top = sample.1.max(surface_top);
+    let right = sample.2.min(surface_right);
+    let bottom = sample.3.min(surface_bottom);
     if right <= left || bottom <= top {
         return None;
     }
@@ -295,6 +316,33 @@ fn patch_padded(
     canvas.translate(-device_x as f32, -device_y as f32);
     canvas.scale(scale as f32, scale as f32);
 
+    let draw_matte = |canvas: &mut Canvas| {
+        let Some((image, offset_x, offset_y)) = surface.matte_image else {
+            return;
+        };
+        let Some(pixels) = image.as_bytes(0) else {
+            return;
+        };
+        let background = Surface {
+            image_id: Some(image.id),
+            width: image.size(0).width.into(),
+            height: image.size(0).height.into(),
+            offset_x,
+            offset_y,
+            native_scale: surface.native_scale,
+            pixels: Some(pixels),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        draw_backdrop(
+            canvas,
+            &background,
+            pixels,
+            (left, top, right, bottom),
+            tiny_skia::BlendMode::DestinationOver,
+        );
+    };
     if let Some(pixels) = surface.pixels {
         draw_backdrop(
             &mut canvas,
@@ -303,32 +351,18 @@ fn patch_padded(
             (left, top, right, bottom),
             tiny_skia::BlendMode::SourceOver,
         );
+    }
+    if surface.composite_backdrop {
+        draw_matte(&mut canvas);
+    }
+    if surface.pixels.is_some() {
         for earlier in beneath {
             renderer::draw_screenshot(&mut canvas, earlier, surface.native_scale);
         }
     }
     renderer::draw_screenshot(&mut canvas, annotation, surface.native_scale);
-    if let Some((image, offset_x, offset_y)) = surface.matte_image {
-        if let Some(pixels) = image.as_bytes(0) {
-            let background = Surface {
-                image_id: Some(image.id),
-                width: image.size(0).width.into(),
-                height: image.size(0).height.into(),
-                offset_x,
-                offset_y,
-                native_scale: surface.native_scale,
-                pixels: Some(pixels),
-                matte: None,
-                matte_image: None,
-            };
-            draw_backdrop(
-                &mut canvas,
-                &background,
-                pixels,
-                (left, top, right, bottom),
-                tiny_skia::BlendMode::DestinationOver,
-            );
-        }
+    if !surface.composite_backdrop {
+        draw_matte(&mut canvas);
     }
 
     let target_left = (target.0 * scale).floor().max(device_x);
@@ -573,11 +607,12 @@ pub fn aligned_image(
         bounds
     };
     let target = padded(target, 1.);
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
     let target = (
-        target.0.max(-surface.offset_x),
-        target.1.max(-surface.offset_y),
-        target.2.min(f64::from(surface.width) - surface.offset_x),
-        target.3.min(f64::from(surface.height) - surface.offset_y),
+        target.0.max(surface_left),
+        target.1.max(surface_top),
+        target.2.min(surface_right),
+        target.3.min(surface_bottom),
     );
     if target.2 <= target.0 || target.3 <= target.1 {
         return None;
@@ -704,6 +739,7 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u64(surface.native_scale.to_bits());
     hasher.write_u8(u8::from(surface.pixels.is_some()));
     surface.matte.hash(&mut hasher);
+    surface.composite_backdrop.hash(&mut hasher);
     surface.image_id.hash(&mut hasher);
     if let Some((image, x, y)) = surface.matte_image {
         image.id.hash(&mut hasher);
@@ -800,6 +836,7 @@ mod tests {
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
+            composite_backdrop: false,
         };
         let paint = PixmapPaint {
             opacity: 1.0,
@@ -928,6 +965,7 @@ mod tests {
             pixels: first.as_bytes(0),
             matte: None,
             matte_image: None,
+            composite_backdrop: false,
         };
         let second_surface = Surface {
             image_id: Some(second.id),
@@ -970,6 +1008,7 @@ mod tests {
             pixels: first.as_bytes(0),
             matte: Some([240, 240, 240]),
             matte_image: None,
+            composite_backdrop: false,
         };
         let grid = SamplingGrid {
             origin: (100., 50.),
@@ -1126,6 +1165,7 @@ mod tests {
             pixels: Some(&[]),
             matte: None,
             matte_image: None,
+            composite_backdrop: false,
         };
         let grid = SamplingGrid {
             origin: (0., 0.),
@@ -1192,6 +1232,7 @@ mod tests {
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
+            composite_backdrop: false,
         };
         let paint = PixmapPaint {
             opacity: 1.0,
@@ -1252,6 +1293,7 @@ mod tests {
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
+            composite_backdrop: false,
         };
         let annotation = Annotation::Redact {
             id: "left".into(),
@@ -1318,6 +1360,7 @@ mod tests {
             pixels: source.as_bytes(0),
             matte: Some([240, 240, 240]),
             matte_image: None,
+            composite_backdrop: false,
         };
         let mut exported = Canvas::from_pixmap(base);
         renderer::draw_screenshot(&mut exported, &annotation, surface.native_scale);
@@ -1353,6 +1396,199 @@ mod tests {
     }
 
     #[test]
+    fn redaction_patch_samples_the_backdrop_before_filtering() {
+        let foreground =
+            crate::editor::export::from_rgba(&image::RgbaImage::from_fn(100, 80, |x, y| {
+                image::Rgba([
+                    220,
+                    70,
+                    90,
+                    if (30..70).contains(&x) && (20..60).contains(&y) {
+                        128
+                    } else {
+                        255
+                    },
+                ])
+            }))
+            .unwrap();
+        let source = render_image(&foreground);
+        for transparent in [false, true] {
+            let background = if transparent {
+                crate::editor::export::from_rgba(&image::RgbaImage::from_fn(124, 104, |x, y| {
+                    image::Rgba([
+                        80,
+                        110,
+                        150,
+                        if (4..120).contains(&x) && (4..100).contains(&y) {
+                            255
+                        } else {
+                            0
+                        },
+                    ])
+                }))
+                .unwrap()
+            } else {
+                base_pixmap(124, 104)
+            };
+            let backdrop = render_image(&background);
+            for matte in [[240, 240, 240], [24, 24, 27]] {
+                let surface = Surface {
+                    image_id: Some(source.id),
+                    width: 100,
+                    height: 80,
+                    offset_x: 0.,
+                    offset_y: 0.,
+                    native_scale: 1.,
+                    pixels: source.as_bytes(0),
+                    matte: Some(matte),
+                    matte_image: Some((&backdrop, 12., 12.)),
+                    composite_backdrop: true,
+                };
+                for style in ["blur", "pixelate", "blackout"] {
+                    for (left, top) in [(32., 22.), (-5., 22.), (90., 22.), (32., -5.), (32., 70.)]
+                    {
+                        let annotation = Annotation::Redact {
+                            id: style.into(),
+                            x: left,
+                            y: top,
+                            width: 40.,
+                            height: 30.,
+                            style: style.into(),
+                            intensity: 2.,
+                        };
+                        let mut expected = Canvas::from_pixmap(background.clone());
+                        expected.draw_pixmap(foreground.as_ref(), 12., 12., 100., 80.);
+                        expected.translate(12., 12.);
+                        renderer::draw_screenshot(&mut expected, &annotation, 1.);
+                        let mut expected = expected.into_pixmap();
+                        let mut paint = tiny_skia::Paint::default();
+                        paint.set_color_rgba8(matte[0], matte[1], matte[2], 255);
+                        paint.blend_mode = BlendMode::DestinationOver;
+                        expected.fill_rect(
+                            tiny_skia::Rect::from_xywh(0., 0., 124., 104.).unwrap(),
+                            &paint,
+                            Transform::identity(),
+                            None,
+                        );
+                        let actual = patch(&annotation, &[], &surface, 1.).unwrap();
+                        for y in 0..actual.pixmap.height() {
+                            for x in 0..actual.pixmap.width() {
+                                let pixel = actual.pixmap.pixel(x, y).unwrap();
+                                let expected = expected
+                                    .pixel(
+                                        (actual.x as i32 + x as i32 + 12) as u32,
+                                        (actual.y as i32 + y as i32 + 12) as u32,
+                                    )
+                                    .unwrap();
+                                assert!(
+                                    pixel.red().abs_diff(expected.red()) <= 2
+                                        && pixel.green().abs_diff(expected.green()) <= 2
+                                        && pixel.blue().abs_diff(expected.blue()) <= 2
+                                        && pixel.alpha() == expected.alpha(),
+                                    "transparent {transparent}, matte {matte:?}, {style} at {left},{top}, pixel {x},{y}: {pixel:?} vs {expected:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fractional_layout_redaction_sampling_matches_export() {
+        let settings = crate::editor::wallpaper::WallpaperSettings {
+            padding: 20.,
+            inset: 8.,
+            aspect_ratio: "4:3".into(),
+            ..Default::default()
+        };
+        let ((width, height), (x, y, _, _)) =
+            crate::editor::wallpaper::layout(&settings, 100., 80., 1., false);
+        assert_ne!(x, x.round());
+        let (width, height) = (width.round() as u32, height.round() as u32);
+        let (snapped_x, snapped_y) = (x.round(), y.round());
+        let foreground = crate::editor::export::from_rgba(&image::RgbaImage::from_pixel(
+            100,
+            80,
+            image::Rgba([220, 70, 90, 128]),
+        ))
+        .unwrap();
+        let background =
+            crate::editor::export::from_rgba(&image::RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([
+                    80,
+                    110,
+                    150,
+                    if (33..149).contains(&x) && (20..116).contains(&y) {
+                        255
+                    } else {
+                        0
+                    },
+                ])
+            }))
+            .unwrap();
+        let source = render_image(&foreground);
+        let backdrop = render_image(&background);
+        let annotation = Annotation::Redact {
+            id: "fractional-offset".into(),
+            x: -12.,
+            y: 22.,
+            width: 40.,
+            height: 30.,
+            style: "blur".into(),
+            intensity: 2.,
+        };
+        let mut expected = Canvas::from_pixmap(background);
+        expected.draw_pixmap(
+            foreground.as_ref(),
+            snapped_x as f32,
+            snapped_y as f32,
+            100.,
+            80.,
+        );
+        expected.translate(snapped_x as f32, snapped_y as f32);
+        renderer::draw_screenshot(&mut expected, &annotation, 1.);
+        for offset in [x, snapped_x] {
+            let surface = Surface {
+                image_id: Some(source.id),
+                width: 100,
+                height: 80,
+                offset_x: 0.,
+                offset_y: 0.,
+                native_scale: 1.,
+                pixels: source.as_bytes(0),
+                matte: None,
+                matte_image: Some((&backdrop, offset, snapped_y)),
+                composite_backdrop: true,
+            };
+            let actual = patch(&annotation, &[], &surface, 1.).unwrap();
+            let mut worst = 0;
+            for row in 0..actual.pixmap.height() {
+                for column in 0..actual.pixmap.width() {
+                    let actual_pixel = actual.pixmap.pixel(column, row).unwrap();
+                    let expected_pixel = expected
+                        .pixmap()
+                        .pixel(
+                            (actual.x as i32 + column as i32 + snapped_x as i32) as u32,
+                            (actual.y as i32 + row as i32 + snapped_y as i32) as u32,
+                        )
+                        .unwrap();
+                    for (actual, expected) in [
+                        (actual_pixel.red(), expected_pixel.red()),
+                        (actual_pixel.green(), expected_pixel.green()),
+                        (actual_pixel.blue(), expected_pixel.blue()),
+                        (actual_pixel.alpha(), expected_pixel.alpha()),
+                    ] {
+                        worst = worst.max(actual.abs_diff(expected));
+                    }
+                }
+            }
+            assert!(worst <= 2, "offset {offset}, worst {worst}");
+        }
+    }
+
+    #[test]
     fn interior_blur_sampling_stays_within_the_patch_budget() {
         let surface = Surface {
             image_id: None,
@@ -1364,6 +1600,7 @@ mod tests {
             pixels: None,
             matte: None,
             matte_image: None,
+            composite_backdrop: false,
         };
         let annotation = Annotation::Redact {
             id: "large-blur".into(),
@@ -1412,6 +1649,7 @@ mod tests {
                 pixels: Some(&bgra),
                 matte: None,
                 matte_image: None,
+                composite_backdrop: false,
             };
             for &(blur_x, blur_y, rectangle_x, rectangle_y) in &cases {
                 let blur = Annotation::Redact {
@@ -1592,6 +1830,7 @@ mod tests {
                 pixels: None,
                 matte: None,
                 matte_image: None,
+                composite_backdrop: false,
             };
             let annotation = Annotation::Rectangle {
                 id: "long".into(),
@@ -1617,6 +1856,7 @@ mod tests {
             pixels: None,
             matte: None,
             matte_image: None,
+            composite_backdrop: false,
         };
         let preceding = Annotation::Redact {
             id: "long-redaction".into(),

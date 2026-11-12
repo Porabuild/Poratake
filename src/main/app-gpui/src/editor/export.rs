@@ -21,6 +21,18 @@ pub struct PreviewEdgeImage {
     pub image: std::sync::Arc<gpui::RenderImage>,
 }
 
+pub fn composites_primary_backdrop(
+    wallpaper: &WallpaperSettings,
+    layers: &[crate::editor::layers::ImageLayer],
+) -> bool {
+    layers.is_empty()
+        && !wallpaper.balance
+        && wallpaper.corners <= 0.0
+        && wallpaper.shadow <= 0.0
+        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
+        && wallpaper.is_active(false)
+}
+
 /// Renders the base image plus every annotation into a fresh RGBA buffer at
 /// natural size, on its wallpaper backdrop when one is set.
 #[allow(dead_code)]
@@ -95,7 +107,10 @@ pub fn compose_with_layers(
         return to_rgba(&composed);
     }
 
-    annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
+    let composited_primary = base.is_some() && composites_primary_backdrop(wallpaper, layers);
+    if !composited_primary {
+        annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
+    }
     let mut annotated = canvas.into_pixmap();
 
     // Attached images sit around the annotated capture, before the wallpaper
@@ -122,13 +137,27 @@ pub fn compose_with_layers(
             annotated = cropped;
         }
     }
-    to_rgba(&compose_wallpaper(
+    let composed = compose_wallpaper(
         &annotated,
         wallpaper,
         frame_scale,
         original_inset_color,
         !layers.is_empty(),
-    ))
+    );
+    if !composited_primary {
+        return to_rgba(&composed);
+    }
+    let (_, (offset_x, offset_y, _, _)) = crate::editor::wallpaper::layout(
+        wallpaper,
+        annotated.width() as f64,
+        annotated.height() as f64,
+        frame_scale,
+        false,
+    );
+    let mut canvas = Canvas::from_pixmap(composed);
+    canvas.translate(offset_x.round() as f32, offset_y.round() as f32);
+    annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
+    to_rgba(canvas.pixmap())
 }
 
 /// Lays the primary image and its attached layers out on one surface.
@@ -622,7 +651,7 @@ pub fn render_backdrop(
         return Some((render_image(&composite), tiles, true));
     }
     let mut canvas = Canvas::new(width.max(1), height.max(1))?;
-    if !wallpaper.has_background() {
+    if !wallpaper.has_background() && !composites_primary_backdrop(wallpaper, layers) {
         canvas.fill_all(Color::from_rgba8(
             stage_background[0],
             stage_background[1],
@@ -1690,6 +1719,178 @@ mod tests {
         redact_region(&mut canvas, (2, 2, 4, 4), "blackout", 5.0, 1.0);
         assert_eq!(canvas.get_pixel(3, 3).0, [0, 0, 0, 255]);
         assert_eq!(canvas.get_pixel(0, 0).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn redactions_sample_the_composited_wallpaper_and_inset() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(100, 80, |x, y| {
+            if (30..70).contains(&x) && (20..60).contains(&y) {
+                image::Rgba([220, 70, 90, 128])
+            } else {
+                image::Rgba([40, 120, 180, 255])
+            }
+        }));
+        for (background, inset, x) in [(true, 0., 32.), (false, 8., 32.), (true, 8., -5.)] {
+            let mut settings = WallpaperSettings::default();
+            settings.set_gradient(background.then(|| preset("ocean").unwrap()));
+            settings.padding = 12.;
+            settings.inset = inset;
+            let annotations = [
+                Annotation::Rectangle {
+                    id: "before".into(),
+                    x: 37.,
+                    y: 26.,
+                    width: 16.,
+                    height: 16.,
+                    stroke: "#ff00ff".into(),
+                    stroke_width: 1.,
+                    fill: Some("#ff00ff".into()),
+                },
+                Annotation::Redact {
+                    id: "blur".into(),
+                    x,
+                    y: 22.,
+                    width: 40.,
+                    height: 30.,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+            ];
+            let unannotated = compose(Some(&base), 100, 80, &[], &settings, 1.);
+            let mut expected = Canvas::from_pixmap(from_rgba(&unannotated).unwrap());
+            let (_, (offset_x, offset_y, _, _)) =
+                crate::editor::wallpaper::layout(&settings, 100., 80., 1., false);
+            expected.translate(offset_x.round() as f32, offset_y.round() as f32);
+            annotation_renderer::draw_all_screenshot(&mut expected, &annotations, 1.);
+            let expected = to_rgba(expected.pixmap());
+            let actual = compose(Some(&base), 100, 80, &annotations, &settings, 1.);
+            let changed = actual
+                .pixels()
+                .zip(expected.pixels())
+                .filter(|(actual, expected)| actual != expected)
+                .count();
+            assert_eq!(changed, 0, "background {background}, inset {inset}, x {x}");
+        }
+    }
+
+    #[test]
+    fn screenshot_blur_matches_electron_over_wallpaper_and_inset() {
+        use crate::editor::wallpaper::GradientOption;
+
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(100, 80, |x, y| {
+            if (30..70).contains(&x) && (20..60).contains(&y) {
+                image::Rgba([220, 70, 90, 128])
+            } else {
+                image::Rgba([40, 120, 180, 255])
+            }
+        }));
+        let cases = [
+            (
+                true,
+                0.,
+                32.,
+                [
+                    (32, [96, 99, 150, 255]),
+                    (40, [121, 90, 135, 255]),
+                    (50, [127, 87, 131, 255]),
+                    (71, [77, 106, 159, 255]),
+                ],
+            ),
+            (
+                false,
+                8.,
+                32.,
+                [
+                    (32, [98, 104, 152, 255]),
+                    (40, [122, 97, 139, 255]),
+                    (50, [129, 95, 135, 255]),
+                    (71, [78, 109, 161, 255]),
+                ],
+            ),
+            (
+                true,
+                8.,
+                -5.,
+                [
+                    (-5, [38, 115, 178, 255]),
+                    (0, [39, 118, 179, 255]),
+                    (26, [70, 112, 165, 255]),
+                    (34, [105, 103, 148, 255]),
+                ],
+            ),
+        ];
+        for (background, inset, x, samples) in cases {
+            let mut settings = WallpaperSettings::default();
+            settings.set_gradient(background.then(|| GradientOption {
+                id: "solid".into(),
+                colors: vec!["#2468ac".into()],
+                angle: 0.,
+            }));
+            settings.padding = 12.;
+            settings.inset = inset;
+            let annotation = Annotation::Redact {
+                id: "blur".into(),
+                x,
+                y: 22.,
+                width: 40.,
+                height: 30.,
+                style: "blur".into(),
+                intensity: 2.,
+            };
+            let actual = compose(Some(&base), 100, 80, &[annotation], &settings, 1.);
+            let offset = (12. + inset) as i32;
+            for (sample_x, expected) in samples {
+                let pixel = actual
+                    .get_pixel((offset + sample_x) as u32, (offset + 37) as u32)
+                    .0;
+                assert!(
+                    pixel.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 3),
+                    "background {background}, inset {inset}, x {sample_x}: {pixel:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn removing_a_redaction_does_not_clip_other_annotations() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            100,
+            80,
+            image::Rgba([40, 120, 180, 255]),
+        ));
+        let mut settings = WallpaperSettings::default();
+        settings.set_gradient(preset("ocean"));
+        settings.padding = 12.;
+        let shape = Annotation::Rectangle {
+            id: "edge".into(),
+            x: -6.,
+            y: 24.,
+            width: 12.,
+            height: 12.,
+            stroke: "#ff00ff".into(),
+            stroke_width: 1.,
+            fill: Some("#ff00ff".into()),
+        };
+        let redact = Annotation::Redact {
+            id: "redact".into(),
+            x: 60.,
+            y: 20.,
+            width: 10.,
+            height: 10.,
+            style: "blackout".into(),
+            intensity: 2.,
+        };
+        let without = compose(
+            Some(&base),
+            100,
+            80,
+            std::slice::from_ref(&shape),
+            &settings,
+            1.,
+        );
+        let with = compose(Some(&base), 100, 80, &[shape, redact], &settings, 1.);
+        assert_eq!(without.get_pixel(9, 42).0, [255, 0, 255, 255]);
+        assert_eq!(with.get_pixel(9, 42), without.get_pixel(9, 42));
     }
 
     #[test]
