@@ -1,4 +1,6 @@
-use gpui::{div, prelude::*, px, AnyElement, App, Context, SharedString, Styled, Window};
+#[cfg(any(windows, target_os = "macos"))]
+use gpui::Styled;
+use gpui::{div, prelude::*, px, AnyElement, App, Context, SharedString, Window};
 use herogpui::components::{Button, Tooltip, TooltipPlacement, Variant};
 use herogpui::gpui;
 
@@ -7,6 +9,7 @@ use crate::ui::chrome;
 use crate::ui::icon::{icon_element, Icon};
 
 pub trait NativeTooltipHost: Sized + 'static {
+    #[cfg(any(windows, target_os = "macos"))]
     fn preview_tooltip_hover(
         &mut self,
         key: &gpui::ElementId,
@@ -16,6 +19,7 @@ pub trait NativeTooltipHost: Sized + 'static {
         cx: &mut Context<Self>,
     );
 
+    #[cfg(any(windows, target_os = "macos"))]
     fn preview_tooltip_cancel(&mut self, key: &gpui::ElementId, window: &mut Window);
 }
 
@@ -150,7 +154,8 @@ fn chip<T: NativeTooltipHost>(
     disabled: bool,
     tooltip: Option<SharedString>,
     placement: TooltipPlacement,
-    cx: &mut Context<T>,
+    #[cfg(any(windows, target_os = "macos"))] cx: &mut Context<T>,
+    #[cfg(not(any(windows, target_os = "macos")))] _: &mut Context<T>,
     content: impl FnOnce(Button) -> Button + 'static,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
@@ -223,9 +228,7 @@ fn chip<T: NativeTooltipHost>(
                     .child(trigger);
             }
             #[cfg(not(any(windows, target_os = "macos")))]
-            {
-                tip = tip.child(button);
-            }
+            let tip = tip.child(button);
             tip.into_any_element()
         }
         None => button.into_any_element(),

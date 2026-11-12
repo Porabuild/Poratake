@@ -93,17 +93,21 @@ struct DismissAnimation {
 
 #[derive(Default)]
 struct NativeTooltipStatus {
+    #[cfg(any(windows, target_os = "macos", test))]
     key: Option<gpui::ElementId>,
+    #[cfg(any(windows, target_os = "macos", test))]
     generation: u64,
 }
 
 impl NativeTooltipStatus {
+    #[cfg(any(windows, target_os = "macos", test))]
     fn enter(&mut self, key: &gpui::ElementId) -> u64 {
         self.generation = self.generation.wrapping_add(1);
         self.key = Some(key.clone());
         self.generation
     }
 
+    #[cfg(any(windows, target_os = "macos", test))]
     fn leave(&mut self, key: &gpui::ElementId) -> bool {
         if self.key.as_ref() != Some(key) {
             return false;
@@ -113,13 +117,17 @@ impl NativeTooltipStatus {
         true
     }
 
+    #[cfg(any(windows, target_os = "macos", test))]
     fn is_current(&self, key: &gpui::ElementId, generation: u64) -> bool {
         self.generation == generation && self.key.as_ref() == Some(key)
     }
 
     fn clear(&mut self) {
-        self.key = None;
-        self.generation = self.generation.wrapping_add(1);
+        #[cfg(any(windows, target_os = "macos", test))]
+        {
+            self.key = None;
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 }
 
@@ -2189,6 +2197,7 @@ impl Render for CapturePreviewWindow {
 }
 
 impl preview::NativeTooltipHost for CapturePreviewWindow {
+    #[cfg(any(windows, target_os = "macos"))]
     fn preview_tooltip_hover(
         &mut self,
         key: &gpui::ElementId,
@@ -2237,6 +2246,7 @@ impl preview::NativeTooltipHost for CapturePreviewWindow {
         .detach();
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
     fn preview_tooltip_cancel(&mut self, key: &gpui::ElementId, _window: &mut Window) {
         if !self.native_tooltip_status.leave(key) {
             return;
@@ -2251,9 +2261,14 @@ impl preview::NativeTooltipHost for CapturePreviewWindow {
 }
 
 impl CapturePreviewWindow {
-    #[cfg(feature = "parity")]
+    #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
     pub(crate) fn native_tooltip_active(&self) -> bool {
         self.native_tooltip_status.key.is_some()
+    }
+
+    #[cfg(all(feature = "parity", not(any(windows, target_os = "macos"))))]
+    pub(crate) fn native_tooltip_active(&self) -> bool {
+        false
     }
 
     fn clear_native_tooltip(&mut self, _window: &mut Window) {
