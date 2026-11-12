@@ -216,18 +216,18 @@ overlay is transparent; this fixture artifact does not verify physical displays.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
-| Surface             | Exercised evidence                                                                                                                          | Limits                                                                                                    |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                                           |
-| Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                                    |
-| Color picker        | Center, four display corners and 400×300 narrow window; exact sampled loupe pixels and pointer clearance                                    | Physical pointer transitions and native clipboard delivery remain unverified                              |
-| All-in-one          | Screenshot/record area, window and display pickers; OCR area, window highlights, pointer leave and normal/narrow tooltips                   | Window ownership is simulated; physical pointer transitions remain unverified                             |
-| Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks              |
-| Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                                     |
-| Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                  | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                              |
-| Pin window          | Default, hover, enlarged and narrow windows; image bounds and close control; annotated editor restoration with history enabled and disabled | Native movement and Alt+F4 restoration verified on Windows at 100%; mixed DPI remains unverified          |
-| Capture preview     | Single cards and four-card stacks; four corners, eviction, explicit editor handoff, auto-dismiss, inward tooltips and a four-display menu   | Native bottom-right capture handoff and Close tooltip verified; physical multi-monitor menu checks remain |
-| Tray menu           | Window height equals the painted menu at every simulated scale; fitted-menu image baselines                                                 | Native prewarmed client height verified at 100%; physical mixed-DPI transitions remain unverified         |
+| Surface             | Exercised evidence                                                                                                                          | Limits                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                                    |
+| Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                             |
+| Color picker        | Center, four display corners and 400×300 narrow window; exact sampled loupe pixels and pointer clearance                                    | Physical pointer transitions and native clipboard delivery remain unverified                       |
+| All-in-one          | Screenshot/record area, window and display pickers; OCR area, window highlights, pointer leave and normal/narrow tooltips                   | Window ownership is simulated; physical pointer transitions remain unverified                      |
+| Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks       |
+| Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                              |
+| Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                  | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                       |
+| Pin window          | Default, hover, enlarged and narrow windows; image bounds and close control; annotated editor restoration with history enabled and disabled | Native movement and Alt+F4 restoration verified on Windows at 100%; mixed DPI remains unverified   |
+| Capture preview     | Single cards and four-card stacks; four corners, eviction, explicit editor handoff, auto-dismiss, hover ownership and a four-display menu   | Native capture handoff verified; current native tooltips and multi-monitor menus need verification |
+| Tray menu           | Window height equals the painted menu at every simulated scale; fitted-menu image baselines                                                 | Native prewarmed client height verified at 100%; physical mixed-DPI transitions remain unverified  |
 
 Geometry assertions check 21 toolbar entries, 28/32px control sizes, spacing,
 nonoverlapping options, visible caption buttons and the ability to scroll overflow
@@ -283,11 +283,13 @@ started 5px above the display. An additional 175% tooltip and target-menu probe
 passed in both themes; it has no image baseline. The narrow target menu must remain
 anchored below its trigger and inside its clipping mask. Synthetic keyboard input
 checks target selection, Escape dismissal and reopening from the focused trigger.
-Capture-preview icon tooltips are checked inside all four corners. Polish preset
-names wrap inside the card, with very long names visually ellipsized while the
-full tooltip name remains available to accessibility tools. The fixture checks
-that Edit remains clickable after each tooltip. Video Copy and Show in Folder
-tooltip images use a missing-media fallback, not a decoded recording preview.
+Capture-preview hover ownership and keyboard dismissal are checked in all four
+corners. Windows and macOS use native hover tooltips, which are outside GPUI's
+headless screenshots; Linux keeps the in-window HeroGPUI tooltip. Keyboard focus
+labels and Linux preset names wrap inside the card, with long visual labels
+ellipsized while the full name remains available to accessibility tools. The
+fixture checks that Edit has no tooltip and remains clickable. Video Copy and
+Show in Folder hover images use a missing-media fallback, not a decoded recording.
 
 Baseline comparison requires identical image dimensions, state filenames and every
 pixel. A changed pixel fails; failed images get a highlighted diff. Updates require
@@ -440,7 +442,7 @@ Native foreground input added a rectangle to an owned checker fixture, pinned
 it, moved the pin and sent Alt+F4. The pin HWND disappeared and a new editor
 retained the rectangle. A real screen capture opened only a bottom-right preview;
 double-clicking that preview opened its saved image in the editor. The older
-development editor remained open. A separate fixture preview showed the complete
+development editor remained open. A separate preview on the earlier inward-tooltip build showed the complete
 Close tooltip inside the native card.
 
 A native attachment captured darkened pixels because the editor was still
@@ -469,7 +471,9 @@ showed an invalid identity selecting a nearby monitor; it now rejects that
 identity and matches Windows' monitor and work rectangles for a valid one. The
 physical mixed-DPI and monitor-transition checks remain outstanding.
 A tooltip regression reproduced a 94x32px label above and left of the preview.
-Preview controls now use inward HeroGPUI tooltip placements; Edit has no tooltip.
+The initial fix used inward HeroGPUI placements; Edit has no tooltip. Hover labels
+now use native tooltips on Windows and macOS, while keyboard focus labels and
+Linux retain HeroGPUI tooltips.
 The tooltip-presence guard also rejects a build with tooltips disabled. A preset
 name later produced a 254px Polish tooltip inside a 200px card; it now wraps
 within the card and limits very long visual labels to three lines. All 80 new
@@ -588,8 +592,9 @@ covers undoing an edit while its audio rebuild is in flight. The local native ga
 passes 984 tests with one skip after the audio, attachment, QR and monitor fixes.
 The normal local visual matrix also passed all 16 cases and 2,136 exact images
 after the audio, attachment and monitor fixes, without updating baselines.
-Tooltip usage across the GPUI source uses HeroGPUI components and their shared
-helpers. The tray icon and macOS scroll controls use native tooltips.
+Most GPUI surfaces use HeroGPUI tooltips and shared helpers. The tray icon,
+macOS scroll controls, and Windows and macOS recording and capture-preview
+hover controls use native tooltips.
 The earlier camera/zoom export expansion passed the native gate with 960 tests and one
 skip, plus typecheck, lint, formatting and parity-feature Clippy. The seven decoded
 samples verify camera visibility and source-frame changes across a cut; an
