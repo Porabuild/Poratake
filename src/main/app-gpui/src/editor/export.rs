@@ -916,27 +916,29 @@ pub fn from_rgba(source: &RgbaImage) -> Option<Pixmap> {
 /// Converts a premultiplied pixmap back into straight-alpha RGBA.
 pub fn to_rgba(source: &Pixmap) -> RgbaImage {
     let mut target = RgbaImage::new(source.width(), source.height());
-    for (index, pixel) in source.data().as_chunks::<4>().0.iter().enumerate() {
+    for (pixel, output) in source
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(target.as_chunks_mut::<4>().0.iter_mut())
+    {
         let alpha = pixel[3];
-        let unpremultiply = |value: u8| -> u8 {
-            if alpha == 0 {
-                0
-            } else {
+        *output = if alpha == 0 {
+            [0, 0, 0, 0]
+        } else if alpha == 255 {
+            *pixel
+        } else {
+            let unpremultiply = |value: u8| -> u8 {
                 ((value as u32 * 255 + alpha as u32 / 2) / alpha as u32).min(255) as u8
-            }
-        };
-        let x = index as u32 % source.width();
-        let y = index as u32 / source.width();
-        target.put_pixel(
-            x,
-            y,
-            image::Rgba([
+            };
+            [
                 unpremultiply(pixel[0]),
                 unpremultiply(pixel[1]),
                 unpremultiply(pixel[2]),
                 alpha,
-            ]),
-        );
+            ]
+        };
     }
     target
 }
@@ -1397,6 +1399,26 @@ mod tests {
                     "preview shadow differs for {style}, inset {inset}, horizontal {horizontal}, y {y}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn converts_premultiplied_pixels_across_all_alpha_values() {
+        let source = RgbaImage::from_fn(256, 256, |x, y| {
+            image::Rgba([x as u8, (255 - x) as u8, (x ^ y) as u8, y as u8])
+        });
+        let pixmap = from_rgba(&source).unwrap();
+        let restored = to_rgba(&pixmap);
+        for (original, actual) in source.pixels().zip(restored.pixels()) {
+            let alpha = u32::from(original.0[3]);
+            let mut expected = [0, 0, 0, original.0[3]];
+            if alpha != 0 {
+                for (channel, value) in original.0[..3].iter().enumerate() {
+                    let premultiplied = u32::from(*value) * alpha / 255;
+                    expected[channel] = ((premultiplied * 255 + alpha / 2) / alpha).min(255) as u8;
+                }
+            }
+            assert_eq!(actual.0, expected);
         }
     }
 

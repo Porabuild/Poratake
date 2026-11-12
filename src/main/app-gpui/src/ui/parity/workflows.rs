@@ -1458,6 +1458,130 @@ pub(super) fn simple_inset_preview(
                         "framed-inset",
                         &[0.73, 1.0, 1.5],
                     );
+                    let (original, original_tool) = cx.update(|cx| {
+                        let editor = editor.read(cx).unwrap();
+                        (editor.history.current().to_vec(), editor.tool)
+                    });
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            let mut annotations = original.clone();
+                            annotations.push(crate::editor::annotations::Annotation::Rectangle {
+                                id: "framed-inset-selection".into(),
+                                x: 2.,
+                                y: 2.,
+                                width: 32.,
+                                height: 24.,
+                                stroke: "#ffdb00".into(),
+                                stroke_width: 1.,
+                                fill: Some("#ffdb00".into()),
+                            });
+                            editor.history.push(annotations);
+                            editor.tool = crate::ui::colors::Tool::Select;
+                            editor.zoom = 1. / scale;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, editor.into());
+                    let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+                    let start = bounds.origin + point(px(18. / scale), px(14. / scale));
+                    let end = bounds.origin + point(px(30. / scale), px(20. / scale));
+                    super::click(cx, editor.into(), f32::from(start.x), f32::from(start.y));
+                    cx.update(|cx| {
+                        assert_eq!(
+                            editor.read(cx).unwrap().snapshot.borrow().selected,
+                            ["framed-inset-selection"]
+                        );
+                    });
+                    let selected = cx.capture_screenshot(editor.into()).unwrap();
+                    let foreground = cx.update(|cx| {
+                        gpui::Rgba::from(crate::theme::vars::active_theme(cx).primary_foreground)
+                    });
+                    let left = (f32::from(bounds.left()) * scale).round() as i32 + 2;
+                    let top = (f32::from(bounds.top()) * scale).round() as i32 + 2;
+                    for (x, y) in [(-4, 0), (0, -4), (-2, -2), (2, 2)] {
+                        assert!(
+                            selected.get_pixel((left + x) as u32, (top + y) as u32).0[..3]
+                                .iter()
+                                .zip([foreground.r, foreground.g, foreground.b])
+                                .all(|(actual, expected)| (f32::from(*actual) - expected * 255.)
+                                    .abs()
+                                    <= 2.),
+                            "the framed inset selection handle must remain visible at {x},{y}"
+                        );
+                    }
+                    for input in [
+                        PlatformInput::MouseDown(MouseDownEvent {
+                            position: start,
+                            button: MouseButton::Left,
+                            click_count: 1,
+                            modifiers: Modifiers::none(),
+                            first_mouse: false,
+                        }),
+                        PlatformInput::MouseMove(MouseMoveEvent {
+                            position: end,
+                            pressed_button: Some(MouseButton::Left),
+                            modifiers: Modifiers::none(),
+                        }),
+                        PlatformInput::MouseUp(MouseUpEvent {
+                            position: end,
+                            button: MouseButton::Left,
+                            click_count: 1,
+                            modifiers: Modifiers::none(),
+                        }),
+                    ] {
+                        event(cx, editor.into(), input);
+                    }
+                    settle(cx, editor.into());
+                    cx.update(|cx| {
+                        let editor = editor.read(cx).unwrap();
+                        let annotation = editor
+                            .history
+                            .current()
+                            .iter()
+                            .find(|annotation| annotation.id() == "framed-inset-selection")
+                            .unwrap();
+                        let (left, top, right, bottom) = annotation.bounds();
+                        for (actual, expected) in [left, top, right, bottom]
+                            .into_iter()
+                            .zip([14., 8., 46., 32.])
+                        {
+                            assert!(
+                                (actual - expected).abs() < 0.01,
+                                "framed inset drag: {actual} vs {expected}"
+                            );
+                        }
+                    });
+                    super::click(
+                        cx,
+                        editor.into(),
+                        f32::from(bounds.left()) + 95. / scale,
+                        f32::from(bounds.top()) + 75. / scale,
+                    );
+                    let png = cx.update(|cx| {
+                        let editor = editor.read(cx).unwrap();
+                        assert!(editor.snapshot.borrow().selected.is_empty());
+                        editor.export_png().unwrap()
+                    });
+                    let path = scratch.join("framed-inset-drag.png");
+                    std::fs::write(&path, png).unwrap();
+                    check_inset_reopen(
+                        cx,
+                        editor,
+                        scale,
+                        &path,
+                        (margin, margin + title),
+                        scratch,
+                        "framed-inset-drag",
+                        &[0.73, 1.0, 1.5],
+                    );
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.history.push(original);
+                            editor.tool = original_tool;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, editor.into());
                     for (ratio_style, ratio_inset, ratio_shadow) in [
                         ("windows-dark", 8., 50.),
                         ("none", 8., 50.),
