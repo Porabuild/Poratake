@@ -34,8 +34,9 @@ published archive; all dependency versions remain unchanged.
 HeroGPUI components 0.15.1 resolve to `vendor/herogpui-components`. The patched
 `src/select.rs` preserves focus-ring gutters and handles accessibility expansion;
 `src/dropdown.rs` preserves scrollable menu focus gutters within the available
-panel padding; `src/slider.rs` handles accessibility value actions. The archive checksum,
-original licenses and NOTICE are retained.
+panel padding; `src/slider.rs` handles accessibility value actions; and
+`src/util.rs` releases a keyboard press after focus moves into a menu. The archive
+checksum, original licenses and NOTICE are retained.
 Zero-padding dropdown recipes still have no scroll-end focus gutter; Poratake's
 current recipes use 4px or 6px of panel padding.
 
@@ -47,27 +48,22 @@ Geist fonts and DirectWrite. Hidden native render targets provide GPU readback;
 input and frame scheduling use GPUI's headless harness. This is not installed-app
 or physical-monitor DPI verification.
 
-[Hosted CI at `904073a1`](https://github.com/Porabuild/Poratake/actions/runs/43263136775)
-passed 14 of 16 visual cases. Both 1280px/100% cases passed the selection capture
-workflow, then stalled while the test scheduler ran a blocking desktop-icon restore
-against a held fixture response. The follow-up moves that restore to a blocking
-worker and confirms the response is held before checking the second display. A
-local light-theme run passed that handoff, the scroll completion and retry cases,
-and the screenshot save, attachment, pin and editor-reopen workflows. Its final
-gate found one redundant retry-success image and 12 changed video-preview images.
-The retry image matched the existing retry baseline exactly; the follow-up keeps
-it as scratch evidence. The video changes were confined to the preview area and
-the other 179 baseline images matched exactly. Updated video baselines for the
-remaining themes, scales and renderers still need capture and review.
-The hosted evidence contains 3,124 PNGs and 16 renderer profiles with no diff
-images. Windows native, accessibility and clipboard-format checks passed; the
-later Windows steps did not run. The macOS test job was cancelled before it had
-a runner. Linux, typecheck, lint and format passed.
+[Hosted CI at `515fa5cd`](https://github.com/Porabuild/Poratake/actions/runs/43286352987)
+passed the complete 16-case Windows visual gate, native Windows checks and
+accessibility actions. Its macOS daemon build, scroll-preview and GPUI shell
+tests passed, as did Linux, typecheck, lint and formatting; the remaining Windows
+tests passed too. The preceding
+[hosted evidence](https://github.com/Porabuild/Poratake/actions/runs/43273775369)
+and local NVIDIA runs showed 192 changes confined to the video preview. Those
+reviewed images for both renderers are now committed and passed the hosted gate.
+The desktop-icon restore no longer blocks the held-response fixture, and the
+screenshot save, attachment, pin and editor-reopen workflows reach the baseline gate.
 
 For translucent video wallpaper, the preview now uses the encoder's opaque
 pixel conversion. A Windows MP4 test compares the decoded export with the actual
-preview image at four edited times, including drawing and redaction. The
-representative local screenshots above show the resulting opaque preview padding.
+preview image at four edited times, including drawing and redaction. A GIF test
+also reopens every exported frame at several frame rates and checks opaque alpha
+and preview colors for transparent and translucent padding.
 
 [Hosted CI at `f9df4d81`](https://github.com/Porabuild/Poratake/actions/runs/43252165030)
 passed 4 of 16 visual cases and 706 exact baseline comparisons. Ten cases stopped
@@ -1324,6 +1320,17 @@ Bugs fixed in this pass:
   on light toolbars in both shells. Foreground and hover colors now follow the
   active theme. Electron light/dark computed styles were checked; browser
   screenshot and hover-state evidence remain unavailable in this environment.
+- The recording bar and capture-preview controls now use native hover tooltips
+  on Windows and macOS to let their labels extend beyond the small window.
+  An isolated Windows tooltip painted readable text outside a 52px owner window;
+  the preview fixture checks hover ownership, stale leave events and keyboard
+  dismissal. A real GPUI hover and macOS tooltip still need native verification.
+- A keyboard-opened all-in-one target menu could leave its trigger pressed after
+  focus moved. The shared keyboard release now runs in the capture phase; the
+  vendored control test reproduces the focus transfer and stopped propagation.
+- The missing-thumbnail video placeholder now fades when its controls appear,
+  keeping the film icon out of the Copy and Edit controls. New idle and hover
+  pixel checks await the next visual run.
 - Windows change-driven capture wrote every frame with a fixed short duration,
   truncating static takes. Pending samples now receive their real duration before
   submission; finalization and pause accounting use the capture clock.
@@ -1398,15 +1405,15 @@ Electron version at the other positions and scales.
 | P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance. |
 | P1       | Screenshot annotation order                              | CPU preview and export match within two levels at tested fractional origins and scales. A rounded corner differs from Electron export (`[191, 0, 191]` versus `[169, 0, 169]`); reverse order matches. Verify live GPUI composition, other corners, complex compositions and physical DPI. Electron's live preview can differ from its export when a shape precedes blackout.                                                                                                                                                                                       |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                |
-| P1       | Frozen all-in-one desktop icons                          | Related capture and recording unit checks pass; new fake-daemon workflows for hide-before-freeze and recording restoration need a hosted run. Verify native icon timing, mode switches and recording handoffs on real displays.                                                                                                                                                                                                                                                                                                                                     |
+| P1       | Frozen all-in-one desktop icons                          | Capture and recording unit checks pass; hosted fake-daemon workflows reach the visual baseline gate for hide-before-freeze and recording restoration. Verify native icon timing, mode switches and recording handoffs on real displays.                                                                                                                                                                                                                                                                                                                             |
 | P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                    |
 | P1       | Native screen-recording selector handoff                 | Mock-platform tests cover replacing an existing or pending selector, release failure and retry, and a newer request that supersedes recording. Verify real single-display recording handoffs and the corresponding multi-display picker behavior.                                                                                                                                                                                                                                                                                                                   |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, forced unsupported-hard-link fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                   |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                          |
 | P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. Sparse text and stationary animation are tested; a small animated footer block now stitches in the tested cases. Some animations and footer changes still stop early or produce incorrect output in synthetic multi-frame cases. Verify real surfaces, weak overlaps and fixed headers; macOS has a separate, unfixed stitcher.                                                                                                     |
 | P1       | Scroll stitching with repeated content                   | Windows/Linux stop and retain prior frames for tested conflicts between full-row alignment and an expected strip. A full-overlap guard stopped 1,308 incorrect periodic cases; two remain. Isolated changes can trigger early stops. A 360-case translated-UI probe accepted no incorrect outputs and stopped early 164 times. Investigate broader patterns, animations and real pages; macOS uses a separate stitcher.                                                                                                                                             |
-| P1       | Unresponsive scroll stitch                               | Cancellation now cooperatively stops the stitch writer, and the shells wait for the finish and cancellation responses before discarding their temporary output. Windows and Linux worker tests cover joining and retryable startup failures; macOS and GPUI parity cases still need the hosted run. A noninterruptible file write can still delay cancellation, and daemon shutdown can interrupt an in-flight stitch. Verify native UI handoffs and graceful shutdown on all three platforms.                                                                      |
-| P1       | macOS scroll preview with variable overlap               | The preview now shares measured overlap with the saved stitch and coalesces background rendering. New native fixtures compare variable-overlap pixels and cancellation, but macOS compilation and execution are pending hosted CI; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                  |
+| P1       | Unresponsive scroll stitch                               | Cancellation now cooperatively stops the stitch writer, and the shells wait for the finish and cancellation responses before discarding their temporary output. Windows and Linux worker tests cover joining and retryable startup failures; hosted macOS fixtures and GPUI parity cases also ran. A noninterruptible file write can still delay cancellation, and daemon shutdown can interrupt an in-flight stitch. Verify native UI handoffs and graceful shutdown on all three platforms.                                                                       |
+| P1       | macOS scroll preview with variable overlap               | The preview shares measured overlap with the saved stitch and coalesces background rendering. Hosted native fixtures compare variable-overlap pixels and cancellation; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                                              |
 | P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                             |
 | P1       | Native attachment compositor coverage                    | The frozen handoff fix passed a real pixel-exact native capture and save. Add automated native Windows coverage for hide/show transitions and verify freezing off, cancellation and repeated attachments.                                                                                                                                                                                                                                                                                                                                                           |
 | P1       | Cached Windows screenshot resources                      | Cached composition streams with 4 MiB scratch bands and rejects requests over 512 Mi pixels. Tests retain offscreen padding, gaps, alpha and the empty-cache fallback. Window alpha-mask capture and WIC internals can allocate separately; profile large native captures, encoding latency and slower hardware.                                                                                                                                                                                                                                                    |
@@ -1427,6 +1434,23 @@ on-screen windows. The daemon's native boundary and control windows use
 `NSWindowSharingNone`, a legacy value that [Apple does not recommend relying on to omit captured content](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none).
 Verify saved pixels against a real selected area, including a full-width area,
 before claiming that the overlay is absent from capture output.
+
+Windows tooltip capture protection falls back to `WDA_MONITOR` if full exclusion
+fails; that mode can leave a black rectangle in a recording. If both affinity
+methods fail, the tooltip is suppressed and the error is logged. Verify native
+hover delivery, click-through, and recorded pixels on supported Windows displays.
+
+The macOS recording path now requests exclusion of the recording control and
+registers camera and overlay windows with its ScreenCaptureKit filter. New
+synthetic fixtures cover filter updates and stop coordination; they still need
+the hosted macOS compile and test run. Verify a real recording, including whether
+staged transparent windows appear in `SCShareableContent` before they are shown.
+
+The visual matrix now stops after a ten-minute profile timeout and preserves
+partial evidence. A Windows process-tree probe stopped a timed-out fixture and
+its worker without stopping an unrelated process. If the system tree-termination
+command itself fails, the fallback stops only the root and reports the failure;
+descendants could remain.
 
 A full-frame comparison alone was rejected as a replacement for the sampled
 duplicate hash: a blinking pixel on a stationary page was accepted as scrolling.
