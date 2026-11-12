@@ -1522,9 +1522,12 @@ The two remaining incorrect periodic cases were caused by a repeated body being
 mistaken for a large fixed footer. A guard now stops those captures before
 appending corrupt pixels: the same 5,412-case matrix has 2,617 correct outputs,
 no incorrect outputs and 2,795 early stops. The footer and translated-UI probes
-showed no new incorrect results. On one synthetic 4K worst-scan input, the
-short-circuit guard took a median 0.035 ms versus 12.326 ms for the equivalent
-full-score scan; that isolated timing excludes native capture and slower hardware.
+showed no new incorrect results. On one synthetic 4K input with one matching
+offset and early mismatches at most others, the short-circuit guard took a median
+0.035 ms versus 12.326 ms for the equivalent full-score scan. A repetitive 4K
+input with mismatches at the last sampled pixel took 5.745 ms versus 11.032 ms.
+These isolated timings exclude native capture and slower hardware and do not
+bound every input.
 
 In a synthetic two-frame scroll, period-8 main content shifted by 96px with an
 independently moving edge produces the same pixels as a complete 104px shift.

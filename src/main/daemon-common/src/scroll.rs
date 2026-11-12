@@ -1277,7 +1277,7 @@ mod tests {
 
     #[test]
     fn zero_score_overlap_guard_matches_overlap_score_semantics() {
-        for (width, height, expected) in [(1, 9, 1), (7, 16, 5), (19, 21, 20)] {
+        for (width, height, expected) in [(1, 9, 1), (7, 16, 5), (19, 21, 20), (1024, 25, 9)] {
             for pattern in 0..4 {
                 let mut previous = Vec::with_capacity(width * height * 4);
                 let mut current = Vec::with_capacity(width * height * 4);
