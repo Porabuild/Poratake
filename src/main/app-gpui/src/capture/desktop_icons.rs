@@ -64,14 +64,24 @@ impl Drop for CaptureHide {
     }
 }
 
-pub fn hide_for_capture(daemon: &DaemonHandle, config: &ConfigStore) -> Option<Arc<CaptureHide>> {
+pub fn hide_for_capture(
+    daemon: &DaemonHandle,
+    config: &ConfigStore,
+) -> Result<Option<Arc<CaptureHide>>, &'static str> {
     if !should_hide_for_capture(config) {
-        return None;
+        return Ok(None);
     }
-    hide(daemon, HideSource::Capture);
-    Some(Arc::new(CaptureHide {
+    if !hide(daemon, HideSource::Capture) {
+        let restored = is_shutting_down() || show(daemon, HideSource::Capture);
+        return Err(if restored {
+            "Could not hide desktop icons"
+        } else {
+            "Could not restore desktop icons"
+        });
+    }
+    Ok(Some(Arc::new(CaptureHide {
         daemon: daemon.clone(),
-    }))
+    })))
 }
 
 pub(crate) fn track_transition() -> smol::channel::Sender<()> {
@@ -443,6 +453,10 @@ mod tests {
             crate::state::set_test_state(cx, config);
             crate::capture::overlay::init_bindings(cx);
             crate::state::state(cx)
+        });
+        with_state(|state| {
+            state.reasons.insert(HideSource::Menu, 1);
+            state.hidden = true;
         });
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();

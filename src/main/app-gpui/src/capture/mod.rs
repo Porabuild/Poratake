@@ -684,11 +684,21 @@ fn with_selection_icon_hide(
             .await;
         let stale = cx.update(|cx| {
             if overlay::revision(cx) != owner || desktop_icons::is_shutting_down() {
-                return Some((hide, transition));
+                return Some((hide.ok().flatten(), transition));
             }
             drop(transition);
-            overlay::set_capture_hide(hide, cx);
-            open(cx);
+            match hide {
+                Ok(hide) => {
+                    overlay::set_capture_hide(hide, cx);
+                    open(cx);
+                }
+                Err(error) => {
+                    if let Some(generation) = release_first {
+                        overlay::release_frozen_screen(generation, cx);
+                    }
+                    crate::windows::toast::Toast::show(cx, "Capture Failed", error);
+                }
+            }
             None
         });
         if let Some((hide, transition)) = stale {

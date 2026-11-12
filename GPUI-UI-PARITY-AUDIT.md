@@ -117,6 +117,10 @@ retained under `.scratch-parity/hosted-2d26dab5`, alongside the Windows log.
 passed all required jobs, including 16 visual cases and 2,880 exact baselines.
 Its preserved artifact contains 3,395 PNGs and no diff files; the artifact and
 Windows log are retained under `.scratch-parity/hosted-1e5d547c`.
+[Hosted CI at `b2d00217`](https://github.com/Porabuild/Poratake/actions/runs/43165588606)
+passed all required jobs, including 16 visual cases and 2,880 exact baselines.
+Its preserved artifact contains 3,397 PNGs and 16 renderer profiles with no
+diff files; the artifact and log are retained under `.scratch-parity/hosted-b2d00217`.
 The desktop-icon transition follow-up passed 191 exact baselines in each local
 light/dark 1280px/100% NVIDIA run. Its fake-daemon checks cover failed and delayed
 icon transitions, stale direct capture errors and attachment recovery; the dark
@@ -713,6 +717,9 @@ Bugs fixed in this pass:
   that a superseded direct capture cannot report a stale error. An attachment
   restore failure clears the pending attachment and focuses its editor in the
   headless fixture. Isolated tests cover replacement, timer ownership and shutdown.
+  Failed hide requests now stop the capture and attempt to restore icons even
+  when the reply was lost. The fake daemon checks area, display, direct-screen,
+  OCR and QR failures, restoration retry and release of a previous frozen frame.
   Native overlapping captures and real desktop-icon transitions still need
   verification.
 - GPUI area screenshots froze the screen before hiding desktop icons, so the

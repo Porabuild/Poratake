@@ -93,9 +93,16 @@ impl Coordinator {
                         })
                         .await
                 } else {
-                    hide
+                    Ok(hide)
                 };
-                if hide.is_none() && crate::capture::desktop_icons::needs_restoration() {
+                let (hide, mut failure) = match hide {
+                    Ok(hide) => (hide, None),
+                    Err(error) => (None, Some(error)),
+                };
+                if failure.is_none()
+                    && hide.is_none()
+                    && crate::capture::desktop_icons::needs_restoration()
+                {
                     let daemon = service.daemon.clone();
                     let restored =
                         cx.background_executor()
@@ -104,30 +111,34 @@ impl Coordinator {
                             })
                             .await;
                     if !restored {
-                        drop(transition);
-                        let _ = entity.update(cx, |coordinator, cx| {
-                            drop(reservation);
-                            if let Some(generation) = release_after {
-                                crate::capture::overlay::release_frozen_screen(generation, cx);
-                            }
-                            let stale = crate::capture::desktop_icons::is_shutting_down()
-                                || (intent == CaptureIntent::Screenshot
-                                    && owner.is_some_and(|owner| {
-                                        crate::capture::overlay::revision(cx) != owner
-                                    }));
-                            if !stale {
-                                if intent == CaptureIntent::EditorAttach {
-                                    coordinator.cancel_editor_attach(cx);
-                                }
-                                crate::windows::toast::Toast::show(
-                                    cx,
-                                    "Capture Failed",
-                                    "Could not restore desktop icons",
-                                );
-                            }
-                        });
-                        return;
+                        failure = Some("Could not restore desktop icons");
                     }
+                }
+                if let Some(error) = failure {
+                    drop(transition);
+                    let _ = entity.update(cx, |coordinator, cx| {
+                        drop(reservation);
+                        if let Some(generation) = release_after {
+                            crate::capture::overlay::release_frozen_screen(generation, cx);
+                        }
+                        let stale = crate::capture::desktop_icons::is_shutting_down()
+                            || (intent == CaptureIntent::Screenshot
+                                && owner.is_some_and(|owner| {
+                                    crate::capture::overlay::revision(cx) != owner
+                                }));
+                        if !stale {
+                            if intent == CaptureIntent::EditorAttach {
+                                coordinator.cancel_editor_attach(cx);
+                            }
+                            let title = match intent {
+                                CaptureIntent::Ocr => "OCR Failed",
+                                CaptureIntent::QrCode => "Scan Failed",
+                                _ => "Capture Failed",
+                            };
+                            crate::windows::toast::Toast::show(cx, title, error);
+                        }
+                    });
+                    return;
                 }
                 drop(transition);
                 let _ = entity.update(cx, |coordinator, cx| {

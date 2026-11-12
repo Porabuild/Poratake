@@ -57,6 +57,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     #[cfg(windows)]
     icon_visibility_recovers_from_a_lost_reply(cx, output);
     #[cfg(windows)]
+    failed_icon_hides_stop_captures(cx, output);
+    #[cfg(windows)]
     tray_icon_toggles_are_serialized(cx, output);
     #[cfg(windows)]
     replacement_waits_for_icons_before_freezing(cx, output);
@@ -428,6 +430,202 @@ fn icon_visibility_recovers_from_a_lost_reply(cx: &mut HeadlessAppContext, outpu
         assert_eq!(methods, expected, "{scenario}");
         assert!(!desktop_icons::are_hidden());
     }
+}
+
+#[cfg(windows)]
+fn failed_icon_hides_stop_captures(cx: &mut HeadlessAppContext, output: &Path) {
+    use std::sync::atomic::Ordering;
+
+    let mut previous_picker = None;
+    for kind in ["area", "display", "screen"] {
+        for error in ["not-applied", "lost-reply"] {
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "freeze": "frozen", "desktopHideError": error,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let before = calls(output).len();
+            take_notifications();
+            crate::capture::DUPLICATE_SCREEN_TARGET_FOR_PARITY
+                .store(kind == "display", Ordering::SeqCst);
+            cx.update(|cx| {
+                crate::state::state(cx).config.update(|config| {
+                    config.screenshot.freeze_screen = true;
+                    config.screenshot.hide_desktop_icons = true;
+                });
+                if kind == "area" {
+                    crate::capture::start_area_capture(cx);
+                } else {
+                    crate::capture::start_screen_capture(cx);
+                }
+            });
+            if kind == "screen" {
+                cx.update_window(previous_picker.unwrap(), |_, _, _| ())
+                    .unwrap();
+            }
+            cx.run_until_parked();
+            crate::capture::DUPLICATE_SCREEN_TARGET_FOR_PARITY.store(false, Ordering::SeqCst);
+            let recorded = calls(output);
+            let recorded = &recorded[before..];
+            assert!(
+                !cx.update(crate::capture::overlay::parity_is_active),
+                "{kind} {error}"
+            );
+            assert!(
+                !recorded.iter().any(|call| call["module"] == "freeze-screen"
+                    || call["module"] == "screenshot"),
+                "{kind} {error}: {recorded:?}"
+            );
+            let methods: Vec<_> = recorded
+                .iter()
+                .filter(|call| call["module"] == "desktop-helper")
+                .map(|call| call["method"].as_str().unwrap())
+                .collect();
+            assert_eq!(methods, ["hide", "show"], "{kind} {error}");
+            assert_eq!(
+                take_notifications(),
+                [(
+                    "Capture Failed".into(),
+                    "Could not hide desktop icons".into(),
+                    false
+                )],
+                "{kind} {error}"
+            );
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "freeze": "frozen", "expectDesktopVisible": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            cx.update(|cx| crate::capture::start_area_selection(CaptureIntent::Recording, cx));
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(crate::capture::overlay::active_intents_for_test),
+                [CaptureIntent::Recording],
+                "{kind} {error}"
+            );
+            let reservation = cx.update(|cx| crate::state::state(cx).reserve_cached_capture());
+            assert!(reservation.wait_for_freeze(), "{kind} {error}");
+            drop(reservation);
+            previous_picker = Some(area_picker(cx));
+            cx.update(crate::capture::overlay::close_all);
+            cx.run_until_parked();
+        }
+    }
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "frozen", "desktopHideError": "lost-reply", "desktopShowError": true,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = calls(output).len();
+    take_notifications();
+    cx.update(crate::capture::start_area_capture);
+    cx.run_until_parked();
+    assert!(!cx.update(crate::capture::overlay::parity_is_active));
+    assert!(crate::capture::desktop_icons::needs_restoration());
+    assert_eq!(
+        take_notifications(),
+        [(
+            "Capture Failed".into(),
+            "Could not restore desktop icons".into(),
+            false
+        )]
+    );
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "frozen", "expectDesktopVisible": true,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    cx.update(|cx| crate::capture::start_area_selection(CaptureIntent::Recording, cx));
+    cx.run_until_parked();
+    let reservation = cx.update(|cx| crate::state::state(cx).reserve_cached_capture());
+    assert!(reservation.wait_for_freeze());
+    drop(reservation);
+    let recorded = calls(output);
+    let methods: Vec<_> = recorded[before..]
+        .iter()
+        .filter(|call| call["module"] == "desktop-helper")
+        .map(|call| call["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, ["hide", "show", "show"]);
+    assert!(!crate::capture::desktop_icons::needs_restoration());
+
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "frozen", "desktopHideError": "not-applied",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = calls(output).len();
+    take_notifications();
+    cx.update(crate::capture::start_area_capture);
+    cx.run_until_parked();
+    let recorded = calls(output);
+    let recorded = &recorded[before..];
+    assert!(!cx.update(crate::capture::overlay::parity_is_active));
+    assert!(recorded
+        .iter()
+        .any(|call| call["module"] == "freeze-screen" && call["method"] == "release"));
+    assert!(!recorded
+        .iter()
+        .any(|call| call["method"] == "freeze" || call["module"] == "screenshot"));
+    assert_eq!(
+        take_notifications(),
+        [(
+            "Capture Failed".into(),
+            "Could not hide desktop icons".into(),
+            false
+        )]
+    );
+    for (intent, title) in [
+        (CaptureIntent::Ocr, "OCR Failed"),
+        (CaptureIntent::QrCode, "Scan Failed"),
+    ] {
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen", "desktopHideError": "not-applied",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        take_notifications();
+        cx.update(|cx| crate::capture::start_area_selection(intent, cx));
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        let before = calls(output).len();
+        select_area(cx, picker);
+        cx.run_until_parked();
+        let recorded = calls(output);
+        let recorded = &recorded[before..];
+        assert!(!recorded.iter().any(|call| call["module"] == "screenshot"));
+        assert!(recorded
+            .iter()
+            .any(|call| call["module"] == "freeze-screen" && call["method"] == "release"));
+        assert_eq!(
+            take_notifications(),
+            [(title.into(), "Could not hide desktop icons".into(), false)]
+        );
+    }
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| config.screenshot.hide_desktop_icons = false);
+    });
+    println!("failed icon hides stop capture and restore desktop visibility");
 }
 
 #[cfg(windows)]

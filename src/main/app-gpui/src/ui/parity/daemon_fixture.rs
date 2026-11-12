@@ -109,6 +109,13 @@ pub fn run() {
             }
             ("desktop-helper", "hide") => {
                 let fixture = capture_fixture(&output);
+                if let Some(error) = fixture["desktopHideError"].as_str() {
+                    if error == "lost-reply" {
+                        desktop_icons_hidden.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    protocol::respond_error(&request.id, "FIXTURE_ERROR", "Fixture hide failed");
+                    continue;
+                }
                 if fixture["scroll"] == "icons-hide-uncertain" && !desktop_hide_failed {
                     desktop_hide_failed = true;
                     desktop_icons_hidden.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -139,6 +146,10 @@ pub fn run() {
                 {
                     desktop_show_held = true;
                     wait_for_scroll_barrier(&fixture);
+                }
+                if fixture["desktopShowError"] == true {
+                    protocol::respond_error(&request.id, "FIXTURE_ERROR", "Fixture show failed");
+                    continue;
                 }
                 if (fixture["scroll"] == "icons-show-not-applied" && !desktop_show_not_applied)
                     || fixture["scroll"] == "icons-show-never"
