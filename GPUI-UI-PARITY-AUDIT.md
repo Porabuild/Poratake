@@ -70,6 +70,15 @@ reviewed images for both renderers are now committed and passed the hosted gate.
 The desktop-icon restore no longer blocks the held-response fixture, and the
 screenshot save, attachment, pin and editor-reopen workflows reach the baseline gate.
 
+[Hosted CI at `98d84f77`](https://github.com/Porabuild/Poratake/actions/runs/43296056019)
+passed the workflow and geometry assertions in all 16 Windows visual profiles,
+then failed on the expected changed state list. Its Microsoft Basic renderer
+images were compared across every profile and the changed tooltip, pressed and
+video-preview states were reviewed. The corresponding NVIDIA baselines still
+need a final capture and review, including the latest video-preview change. Windows native and
+accessibility checks passed; Linux Clippy found platform-specific tooltip warnings
+that a follow-up gates, and the macOS job was cancelled before obtaining a runner.
+
 For translucent video wallpaper, the preview now uses the encoder's opaque
 pixel conversion. A Windows MP4 test compares the decoded export with the actual
 preview image at four edited times, including drawing and redaction. A GIF test
@@ -1577,6 +1586,9 @@ stop. An earlier approximate fallback resumed those cases but changed 13 pixels 
 two vertical-animation outputs because its detected footer included static body
 rows. That fallback was not adopted; the fixed-footer matcher still needs broader
 animation tolerance.
+An older near-edge animation failure no longer reproduces: eight light/dark,
+image and scroll-distance cases now match all expected pixels with the current
+localized-footer fallback. This is synthetic evidence, not a real-page test.
 For a synthetic 4K repeated-row overlap with one animated pixel, ten local
 post-warmup samples had medians of 3.13 ms before and 4.12 ms after this guard;
 native capture and slower machines were not measured.
