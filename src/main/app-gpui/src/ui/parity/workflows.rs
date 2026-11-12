@@ -338,11 +338,11 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                     config.all_in_one.recording.camera_enabled = true;
                 });
             });
-            let before = super::daemon_fixture::calls(output).len();
+            let recording_before = super::daemon_fixture::calls(output).len();
             click_measured(cx, control, "recording-controls", 2);
             cx.run_until_parked();
             let first_calls = super::daemon_fixture::calls(output);
-            let first_attempt = &first_calls[before..];
+            let first_attempt = &first_calls[recording_before..];
             assert_eq!(
                 first_attempt
                     .iter()
@@ -379,7 +379,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             loop {
                 cx.run_until_parked();
                 let calls = super::daemon_fixture::calls(output);
-                let calls = &calls[before..];
+                let calls = &calls[recording_before..];
                 let stopped = calls
                     .iter()
                     .any(|call| call["module"] == "screen-recorder" && call["method"] == "stop");
@@ -403,7 +403,30 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 std::thread::yield_now();
             }
             let calls = super::daemon_fixture::calls(output);
-            let calls = &calls[before..];
+            let handoff_calls = &calls[before..];
+            let outlines: Vec<_> = handoff_calls
+                .iter()
+                .filter(|call| {
+                    call["module"] == "recording-overlay" && call["method"] == "showWindow"
+                })
+                .collect();
+            assert_eq!(outlines.len(), 1, "the picked window keeps one outline");
+            assert_eq!(outlines[0]["params"]["windowId"], 43);
+            let outline = handoff_calls
+                .iter()
+                .position(|call| {
+                    call["module"] == "recording-overlay" && call["method"] == "showWindow"
+                })
+                .unwrap();
+            let start = handoff_calls
+                .iter()
+                .position(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+                .unwrap();
+            assert!(
+                outline < start,
+                "the outline begins when the window is picked"
+            );
+            let calls = &calls[recording_before..];
             assert_eq!(
                 calls
                     .iter()
@@ -418,9 +441,6 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                     .count(),
                 2
             );
-            assert!(calls.iter().any(|call| {
-                call["module"] == "recording-overlay" && call["method"] == "showWindow"
-            }));
             let last_stop = calls
                 .iter()
                 .rposition(|call| call["module"] == "screen-recorder" && call["method"] == "stop")

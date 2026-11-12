@@ -87,14 +87,20 @@ response wait. The fixture compiled and passed in
 the full run passed its active jobs, including all 16 Windows visual profiles.
 The [macOS fixture at `83a84d45`](https://github.com/Porabuild/Poratake/actions/runs/43315713985)
 also passed the expanded scroll alignment, fixed-footer, accepted-prefix and
-cancellation checks. Its full run remains in progress.
+cancellation checks. Its Windows visual job was cancelled when the next commit
+was pushed.
 
 The GPUI recording error listener now starts before the daemon request and stays
 active through a failed stop. A fake-daemon run observed a failed start, retry,
 two stop attempts and the expected camera and overlay cleanup, then stopped on a
 test-harness redraw race. That race is fixed in the harness; the next local run
-stopped at the GPU safety limit before reaching this workflow. The complete new
-recording regression still needs hosted Windows verification.
+stopped at the GPU safety limit before reaching this workflow. A CPU-only daemon
+protocol smoke test passed the injected failures and retries. At
+[`fe64d934`](https://github.com/Porabuild/Poratake/actions/runs/43321344519),
+14 of 16 Windows visual profiles passed. The two remaining profiles reached both
+stop attempts and cleanup, then failed a test assertion that searched for the
+window outline only after it had already been shown during selection. The test
+now checks the complete handoff; a hosted rerun is still required.
 
 For translucent video wallpaper, the preview now uses the encoder's opaque
 pixel conversion. A Windows MP4 test compares the decoded export with the actual
@@ -1440,6 +1446,7 @@ order; it does not exercise the complete editor workflow.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1       | Native compact-window tooltips                           | Windows tests separately verify GPUI hover requests and a native tooltip on a synthetic owner. Verify a real GPUI owner, capture exclusion in saved pixels, macOS appearance and hover exit, and physical mixed-DPI placement. The macOS tooltip is registered on the whole native view and cleared on hover exit.                                                                                                                                                                                                                                                  |
 | P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                                                                                                                                                           |
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                                                                                                                                                           |
 | P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions and restarts, and cross-shell IDs on macOS/Linux.                                                                                                                                                                                                       |
