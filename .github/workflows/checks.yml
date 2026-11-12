@@ -248,6 +248,9 @@ jobs:
       - name: Test GPUI accessibility actions
         run: bun scripts/parity/gpui-accessibility-test.mjs
 
+      - name: Test native GPUI recording tooltips
+        run: pwsh -NoProfile -File scripts/parity/windows-recording-tooltip-test.ps1
+
       - name: Test Windows clipboard image formats
         id: clipboard_formats
         run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests
