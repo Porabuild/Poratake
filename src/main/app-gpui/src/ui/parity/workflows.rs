@@ -1150,6 +1150,174 @@ pub(super) fn simple_inset_preview(
             );
         }
     }
+    if [1.25, 2.].contains(&scale) && inset_setting == 8. {
+        for (name, corners, shadow) in [
+            ("rounded", 24., 0.),
+            ("shadow", 0., 50.),
+            ("rounded-shadow", 24., 50.),
+        ] {
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.wallpaper.corners = corners;
+                    editor.wallpaper.shadow = shadow;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = 1. / scale;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            let (bounds, saved, offset_x, offset_y) = cx.update(|cx| {
+                let editor = editor.read(cx).unwrap();
+                assert_eq!(editor.zoom, 1. / scale);
+                let wallpaper = editor.wallpaper.for_scale(f64::from(scale));
+                let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
+                    &wallpaper,
+                    100.,
+                    80.,
+                    f64::from(scale),
+                    false,
+                );
+                (
+                    editor.bounds.borrow().unwrap(),
+                    image::load_from_memory(&editor.export_png().unwrap())
+                        .unwrap()
+                        .to_rgba8(),
+                    x.round() as u32,
+                    y.round() as u32,
+                )
+            });
+            let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+            let left = (f32::from(bounds.left()) * scale).round() as u32 - offset_x;
+            let top = (f32::from(bounds.top()) * scale).round() as u32 - offset_y;
+            assert_eq!(
+                saved.dimensions(),
+                (100 + margin * 2, 80 + margin * 2),
+                "inset {name} must surround the image in the saved PNG"
+            );
+            if scale == 1.25
+                && padding_setting == 20.
+                && with_background
+                && name == "rounded-shadow"
+            {
+                saved
+                    .save(scratch.join("rounded-inset-output.png"))
+                    .unwrap();
+            }
+            let preview =
+                image::imageops::crop_imm(&screenshot, left, top, saved.width(), saved.height())
+                    .to_image();
+            let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+            image::imageops::overlay(&mut expected, &saved, 0, 0);
+            let mismatched = preview
+                .pixels()
+                .zip(expected.pixels())
+                .filter(|(actual, expected)| {
+                    actual
+                        .0
+                        .iter()
+                        .zip(expected.0)
+                        .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+                })
+                .count();
+            if mismatched > 0 {
+                preview
+                    .save(scratch.join(format!(
+                        "inset-{name}-{scale}-{padding_setting}-{with_background}-{clipped_blur}-preview.png"
+                    )))
+                    .unwrap();
+                expected
+                    .save(scratch.join(format!(
+                        "inset-{name}-{scale}-{padding_setting}-{with_background}-{clipped_blur}-expected.png"
+                    )))
+                    .unwrap();
+            }
+            assert_eq!(mismatched, 0, "inset {name} preview differs from export at {scale}x, padding {padding_setting}, background {with_background}, clipped blur {clipped_blur}");
+            if scale == 1.25
+                && padding_setting == 20.
+                && with_background
+                && name == "rounded-shadow"
+            {
+                let path = scratch.join("rounded-inset-output.png");
+                let flattened = cx
+                    .open_window(size(px(1280.), px(738.)), |window, cx| {
+                        window.set_scale_factor(scale);
+                        cx.new(|cx| EditorWindow::from_file(path.to_str().unwrap(), window, cx))
+                    })
+                    .unwrap();
+                settle(cx, flattened.into());
+                for effective_zoom in [0.73_f32, 1.5] {
+                    for window in [editor, flattened] {
+                        window
+                            .update(cx, |editor, _, cx| {
+                                editor.zoom = effective_zoom / scale;
+                                cx.notify();
+                            })
+                            .unwrap();
+                        settle(cx, window.into());
+                    }
+                    let (preview_bounds, flattened_bounds) = cx.update(|cx| {
+                        (
+                            editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                            flattened.read(cx).unwrap().bounds.borrow().unwrap(),
+                        )
+                    });
+                    let preview = cx.capture_screenshot(editor.into()).unwrap();
+                    let reopened = cx.capture_screenshot(flattened.into()).unwrap();
+                    let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
+                    let left = snap(f32::from(preview_bounds.left()) * scale)
+                        - snap(offset_x as f32 * effective_zoom);
+                    let top = snap(f32::from(preview_bounds.top()) * scale)
+                        - snap(offset_y as f32 * effective_zoom);
+                    let flat_left = snap(f32::from(flattened_bounds.left()) * scale);
+                    let flat_top = snap(f32::from(flattened_bounds.top()) * scale);
+                    assert_eq!((left, top), (flat_left, flat_top));
+                    let width = snap(f32::from(flattened_bounds.right()) * scale) - flat_left;
+                    let height = snap(f32::from(flattened_bounds.bottom()) * scale) - flat_top;
+                    let mismatched = (0..height)
+                        .flat_map(|y| (0..width).map(move |x| (x, y)))
+                        .filter(|&(x, y)| {
+                            preview
+                                .get_pixel(left + x, top + y)
+                                .0
+                                .iter()
+                                .zip(reopened.get_pixel(flat_left + x, flat_top + y).0)
+                                .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+                        })
+                        .count();
+                    if mismatched > 0 {
+                        preview
+                            .save(
+                                scratch.join(format!("rounded-inset-{effective_zoom}-preview.png")),
+                            )
+                            .unwrap();
+                        reopened
+                            .save(
+                                scratch
+                                    .join(format!("rounded-inset-{effective_zoom}-reopened.png")),
+                            )
+                            .unwrap();
+                    }
+                    assert_eq!(mismatched, 0, "rounded inset reopen at {effective_zoom}x");
+                }
+                cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+                cx.run_until_parked();
+            }
+        }
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.wallpaper.corners = 0.;
+                editor.wallpaper.shadow = 0.;
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+    }
     let flattened_path = scratch.join("simple-inset-blur-flattened.png");
     std::fs::write(&flattened_path, &png).unwrap();
     let flattened = cx

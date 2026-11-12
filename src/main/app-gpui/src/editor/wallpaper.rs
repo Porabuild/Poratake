@@ -113,8 +113,7 @@ impl WallpaperSettings {
                 && self.shadow <= 0.0)
             || (!has_layers
                 && self.inset > 0.0
-                && self.corners <= 0.0
-                && self.shadow <= 0.0
+                && (!self.balance || (self.corners <= 0.0 && self.shadow <= 0.0))
                 && crate::render::window_frame::theme(&self.window_frame.style).is_none())
             || crate::render::window_frame::theme(&self.window_frame.style).is_some()
     }
@@ -375,8 +374,7 @@ pub fn layout(
     has_layers: bool,
 ) -> ((f64, f64), (f64, f64, f64, f64)) {
     let inset = if !has_layers
-        && settings.corners <= 0.0
-        && settings.shadow <= 0.0
+        && (!settings.balance || (settings.corners <= 0.0 && settings.shadow <= 0.0))
         && crate::render::window_frame::theme(&settings.window_frame.style).is_none()
     {
         settings.inset.max(0.0)
@@ -418,7 +416,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zero_padding_effects_do_not_activate_unsupported_balance_or_inset() {
+    fn zero_padding_effects_activate_single_image_inset() {
         let mut settings = WallpaperSettings {
             corners: 20.0,
             ..WallpaperSettings::default()
@@ -428,7 +426,7 @@ mod tests {
         assert!(!settings.is_active(false));
         settings.balance = false;
         settings.inset = 10.0;
-        assert!(!settings.is_active(false));
+        assert!(settings.is_active(false));
         settings.padding = 1.0;
         assert!(settings.is_active(false));
         settings = WallpaperSettings {

@@ -21,14 +21,25 @@ pub struct PreviewEdgeImage {
     pub image: std::sync::Arc<gpui::RenderImage>,
 }
 
+pub fn composites_inset_effects(
+    wallpaper: &WallpaperSettings,
+    layers: &[crate::editor::layers::ImageLayer],
+) -> bool {
+    layers.is_empty()
+        && !wallpaper.balance
+        && wallpaper.inset > 0.0
+        && (wallpaper.corners > 0.0 || wallpaper.shadow > 0.0)
+        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
+}
+
 pub fn composites_primary_backdrop(
     wallpaper: &WallpaperSettings,
     layers: &[crate::editor::layers::ImageLayer],
 ) -> bool {
     layers.is_empty()
         && !wallpaper.balance
-        && wallpaper.corners <= 0.0
-        && wallpaper.shadow <= 0.0
+        && ((wallpaper.corners <= 0.0 && wallpaper.shadow <= 0.0)
+            || composites_inset_effects(wallpaper, layers))
         && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
         && wallpaper.is_active(false)
 }
@@ -633,6 +644,17 @@ pub fn render_backdrop(
     Vec<PreviewEdgeImage>,
     bool,
 )> {
+    if composites_inset_effects(wallpaper, layers) {
+        let primary = from_rgba(&base?.to_rgba8())?;
+        let composite =
+            compose_wallpaper(&primary, wallpaper, frame_scale, Some(inset_color), false);
+        let tiles = if composite.width() > 16384 || composite.height() > 16384 {
+            composite_tiles(&composite, stage_background, 8192)?
+        } else {
+            Vec::new()
+        };
+        return Some((render_image(&composite), tiles, true));
+    }
     if wallpaper.supports_edge_preview(!layers.is_empty()) && !layers.is_empty() {
         let primary = from_rgba(&base?.to_rgba8())?;
         let cropped = wallpaper
@@ -1178,18 +1200,21 @@ mod tests {
 
     #[test]
     fn large_inset_and_framed_shadows_match_smaller_exports() {
-        for (style, inset, horizontal) in [
-            ("none", 6.0, true),
-            ("none", 6.0, false),
-            ("windows-dark", 0.0, true),
-            ("windows-dark", 0.0, false),
-            ("macos-light", 0.0, true),
-            ("macos-light", 0.0, false),
+        for (style, inset, corners, horizontal) in [
+            ("none", 6.0, 0.0, true),
+            ("none", 6.0, 0.0, false),
+            ("none", 6.0, 24.0, true),
+            ("none", 6.0, 24.0, false),
+            ("windows-dark", 0.0, 0.0, true),
+            ("windows-dark", 0.0, 0.0, false),
+            ("macos-light", 0.0, 0.0, true),
+            ("macos-light", 0.0, 0.0, false),
         ] {
             let mut settings = WallpaperSettings {
                 padding: 40.0,
                 shadow: 50.0,
                 inset,
+                corners,
                 ..WallpaperSettings::default()
             };
             settings.window_frame.style = style.into();
@@ -1213,16 +1238,19 @@ mod tests {
             let source = make_image(width, height);
             let output = compose(Some(&source), width, height, &[], &settings, 1.0);
             let title_height = crate::render::window_frame::title_bar_height(style, 1.0) as u32;
-            let mut reference =
-                Canvas::new(reference_width + 80, reference_height + title_height + 80).unwrap();
+            let mut reference = Canvas::new(
+                reference_width + 80 + inset as u32 * 2,
+                reference_height + title_height + 80 + inset as u32 * 2,
+            )
+            .unwrap();
             let radius = if style == "none" {
-                0.0
+                corners as f32
             } else {
                 crate::render::window_frame::corner_radius(style) as f32
             };
             let path = rounded_rect_path(
-                40.0 - inset as f32,
-                40.0 - inset as f32,
+                40.0,
+                40.0,
                 reference_width as f32 + inset as f32 * 2.0,
                 (reference_height + title_height) as f32 + inset as f32 * 2.0,
                 radius,
@@ -1231,7 +1259,7 @@ mod tests {
             reference.set_shadow(image_shadow(settings.shadow));
             reference.fill_path(&path, Color::WHITE, FillRule::Winding);
             let reference = to_rgba(reference.pixmap());
-            let shadow_y = if inset > 0.0 { 29 } else { 35 };
+            let shadow_y = 35;
             assert!(reference.get_pixel(reference.width() / 2, shadow_y).0[3] > 0);
             assert!(
                 output.get_pixel(output.width() / 2, shadow_y).0[3] > 0,
@@ -1266,7 +1294,7 @@ mod tests {
                 None
             };
             assert_eq!(inset_color.is_some(), inset > 0.0);
-            let (preview, _, _) = render_backdrop(
+            let (preview, tiles, composite) = render_backdrop(
                 &settings,
                 output.width(),
                 output.height(),
@@ -1274,29 +1302,70 @@ mod tests {
                 f64::from(height),
                 inset_color,
                 &[],
-                None,
+                Some(&source),
                 1.0,
                 [24, 24, 27],
             )
             .unwrap();
-            let preview = preview.as_bytes(0).unwrap();
+            let mut pixels = preview.as_bytes(0).unwrap().to_vec();
+            for pixel in pixels.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let pixels = RgbaImage::from_raw(output.width(), output.height(), pixels).unwrap();
+            let mut actual = RgbaImage::from_pixel(
+                output.width(),
+                output.height(),
+                image::Rgba([24, 24, 27, 255]),
+            );
+            image::imageops::overlay(&mut actual, &pixels, 0, 0);
             let mut expected = RgbaImage::from_pixel(
                 output.width(),
                 output.height(),
                 image::Rgba([24, 24, 27, 255]),
             );
             image::imageops::overlay(&mut expected, &output, 0, 0);
+            if corners > 0.0 {
+                assert!(composite);
+                assert!(!tiles.is_empty());
+                for (x, y) in [
+                    (40, 40),
+                    (45, 45),
+                    (55, 42),
+                    (42, 55),
+                    (output.width() - 41, 40),
+                    (40, output.height() - 41),
+                    (output.width() - 41, output.height() - 41),
+                ] {
+                    let tile = tiles
+                        .iter()
+                        .find(|tile| {
+                            (tile.x..tile.x + tile.width).contains(&x)
+                                && (tile.y..tile.y + tile.height).contains(&y)
+                        })
+                        .unwrap();
+                    let bytes = tile.image.as_bytes(0).unwrap();
+                    let stride = u32::from(tile.image.size(0).width);
+                    let offset = (((y - tile.y + tile.inset_y) * stride + x - tile.x
+                        + tile.inset_x)
+                        * 4) as usize;
+                    let pixel = [
+                        bytes[offset + 2],
+                        bytes[offset + 1],
+                        bytes[offset],
+                        bytes[offset + 3],
+                    ];
+                    assert!(pixel
+                        .iter()
+                        .zip(expected.get_pixel(x, y).0)
+                        .all(|(actual, expected)| actual.abs_diff(expected) <= 2));
+                }
+            }
             for y in 0..shadow_y + 1 {
                 let x = output.width() / 2;
-                let offset = ((y * output.width() + x) * 4) as usize;
-                let actual = [
-                    preview[offset + 2],
-                    preview[offset + 1],
-                    preview[offset],
-                    preview[offset + 3],
-                ];
                 assert!(
                     actual
+                        .get_pixel(x, y)
+                        .0
                         .iter()
                         .zip(expected.get_pixel(x, y).0)
                         .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
@@ -1700,6 +1769,42 @@ mod tests {
                 composed.get_pixel(padding + 36, padding + 36).0,
                 [255, 255, 255, 255]
             );
+        }
+    }
+
+    #[test]
+    fn rounded_inset_surrounds_the_image_with_or_without_padding() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(60, 60, |x, y| {
+            if (20..40).contains(&x) && (20..40).contains(&y) {
+                image::Rgba([255, 255, 255, 255])
+            } else {
+                image::Rgba([10, 200, 10, 255])
+            }
+        }));
+        for (padding, shadow) in [(0, 0.0), (20, 50.0)] {
+            let settings = WallpaperSettings {
+                padding: f64::from(padding),
+                inset: 6.0,
+                corners: 20.0,
+                shadow,
+                ..WallpaperSettings::default()
+            };
+            let composed = compose(Some(&base), 60, 60, &[], &settings, 1.0);
+            assert_eq!(composed.dimensions(), (72 + padding * 2, 72 + padding * 2));
+            assert_eq!(
+                composed.get_pixel(padding + 3, padding + 36).0,
+                [10, 200, 10, 255]
+            );
+            assert_eq!(
+                composed.get_pixel(padding + 36, padding + 36).0,
+                [255, 255, 255, 255]
+            );
+            if padding == 0 {
+                assert_eq!(composed.get_pixel(0, 0).0[3], 0);
+            } else {
+                let shadow_alpha = composed.get_pixel(padding + 36, padding - 5).0[3];
+                assert!((1..255).contains(&shadow_alpha));
+            }
         }
     }
 

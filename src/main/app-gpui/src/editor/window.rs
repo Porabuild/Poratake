@@ -787,7 +787,8 @@ impl EditorWindow {
             self.layers.clone(),
             self.native_scale,
             (!wallpaper.has_background()
-                || wallpaper.supports_edge_preview(!self.layers.is_empty()))
+                || wallpaper.supports_edge_preview(!self.layers.is_empty())
+                || crate::editor::export::composites_inset_effects(&wallpaper, &self.layers))
             .then_some(stage_background),
             (wallpaper.inset > 0.0
                 || (!self.layers.is_empty() && wallpaper.supports_edge_preview(true)))

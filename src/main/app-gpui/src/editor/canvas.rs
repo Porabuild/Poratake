@@ -129,7 +129,7 @@ impl RenderOnce for EditorCanvas {
         let transparent_backdrop = wallpaper.is_active_with_layers(!snap.layers.is_empty())
             && (snap.layers.is_empty() || overlay_above)
             && (!wallpaper.balance || balanced_unframed || layered_composite)
-            && (wallpaper.inset <= 0.0 || inset_unframed)
+            && (wallpaper.inset <= 0.0 || inset_unframed || layered_composite)
             && (wallpaper.corners <= 0.0 || overlay_above)
             && (window_frame || wallpaper.shadow <= 0.0 || overlay_above);
         let stage_bounds = Rc::new(RefCell::new(None));
