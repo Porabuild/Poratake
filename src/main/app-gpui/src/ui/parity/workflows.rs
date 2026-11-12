@@ -967,6 +967,110 @@ fn check_redaction_draft(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn check_inset_reopen(
+    cx: &mut HeadlessAppContext,
+    editor: gpui::WindowHandle<EditorWindow>,
+    scale: f32,
+    path: &Path,
+    offset: (u32, u32),
+    scratch: &Path,
+    label: &str,
+    zooms: &[f32],
+) {
+    let flattened = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|cx| EditorWindow::from_file(path.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, flattened.into());
+    for effective_zoom in zooms.iter().copied() {
+        let mut stage_bounds = None;
+        for (index, window) in [editor, flattened].into_iter().enumerate() {
+            window
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = effective_zoom / scale;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, window.into());
+            if index == 0 {
+                stage_bounds = Some(super::measured("editor-stage", 0));
+            }
+        }
+        let stage_bounds = stage_bounds.unwrap();
+        let (preview_bounds, flattened_bounds) = cx.update(|cx| {
+            assert_eq!(editor.read(cx).unwrap().zoom, effective_zoom / scale);
+            assert_eq!(flattened.read(cx).unwrap().zoom, effective_zoom / scale);
+            (
+                editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                flattened.read(cx).unwrap().bounds.borrow().unwrap(),
+            )
+        });
+        let preview = cx.capture_screenshot(editor.into()).unwrap();
+        let reopened = cx.capture_screenshot(flattened.into()).unwrap();
+        let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
+        let left = snap(f32::from(stage_bounds.left()) * scale);
+        let top = snap(f32::from(stage_bounds.top()) * scale);
+        let flat_left = snap(f32::from(flattened_bounds.left()) * scale);
+        let flat_top = snap(f32::from(flattened_bounds.top()) * scale);
+        assert_eq!(
+            (left, top),
+            (flat_left, flat_top),
+            "{label} at {effective_zoom}"
+        );
+        for (actual, expected) in [
+            (
+                f32::from(preview_bounds.left() - stage_bounds.left()) * scale,
+                offset.0 as f32 * effective_zoom,
+            ),
+            (
+                f32::from(preview_bounds.top() - stage_bounds.top()) * scale,
+                offset.1 as f32 * effective_zoom,
+            ),
+        ] {
+            assert!(
+                (actual - expected).abs() <= 1.0,
+                "{label} image offset at {effective_zoom}: {actual} vs {expected}"
+            );
+        }
+        let width = snap(f32::from(flattened_bounds.right()) * scale) - flat_left;
+        let height = snap(f32::from(flattened_bounds.bottom()) * scale) - flat_top;
+        assert_eq!(
+            (
+                snap(f32::from(stage_bounds.right()) * scale) - left,
+                snap(f32::from(stage_bounds.bottom()) * scale) - top
+            ),
+            (width, height),
+            "{label} stage size at {effective_zoom}"
+        );
+        let mismatched = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                preview
+                    .get_pixel(left + x, top + y)
+                    .0
+                    .iter()
+                    .zip(reopened.get_pixel(flat_left + x, flat_top + y).0)
+                    .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+            })
+            .count();
+        if mismatched > 0 {
+            preview
+                .save(scratch.join(format!("{label}-{effective_zoom}-preview.png")))
+                .unwrap();
+            reopened
+                .save(scratch.join(format!("{label}-{effective_zoom}-reopened.png")))
+                .unwrap();
+        }
+        assert_eq!(mismatched, 0, "{label} reopen at {effective_zoom}x");
+    }
+    cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
 pub(super) fn simple_inset_preview(
     cx: &mut HeadlessAppContext,
     scratch: &Path,
@@ -1243,76 +1347,254 @@ pub(super) fn simple_inset_preview(
                 && name == "rounded-shadow"
             {
                 let path = scratch.join("rounded-inset-output.png");
-                let flattened = cx
-                    .open_window(size(px(1280.), px(738.)), |window, cx| {
-                        window.set_scale_factor(scale);
-                        cx.new(|cx| EditorWindow::from_file(path.to_str().unwrap(), window, cx))
+                check_inset_reopen(
+                    cx,
+                    editor,
+                    scale,
+                    &path,
+                    (offset_x, offset_y),
+                    scratch,
+                    "rounded-inset",
+                    &[0.73, 1.0, 1.5],
+                );
+            }
+        }
+        for style in ["macos-light", "macos-dark", "windows-light", "windows-dark"] {
+            for shadow in [0., 50.] {
+                editor
+                    .update(cx, |editor, _, cx| {
+                        editor.wallpaper.window_frame.style = style.into();
+                        editor.wallpaper.corners = 0.;
+                        editor.wallpaper.shadow = shadow;
+                        cx.notify();
                     })
                     .unwrap();
-                settle(cx, flattened.into());
-                for effective_zoom in [0.73_f32, 1.5] {
-                    for window in [editor, flattened] {
-                        window
+                settle(cx, editor.into());
+                editor
+                    .update(cx, |editor, _, cx| {
+                        editor.zoom = 1. / scale;
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, editor.into());
+                let (bounds, saved) = cx.update(|cx| {
+                    let editor = editor.read(cx).unwrap();
+                    assert_eq!(editor.zoom, 1. / scale);
+                    (
+                        editor.bounds.borrow().unwrap(),
+                        image::load_from_memory(&editor.export_png().unwrap())
+                            .unwrap()
+                            .to_rgba8(),
+                    )
+                });
+                let title = (28. * scale).round() as u32;
+                assert_eq!(
+                    saved.dimensions(),
+                    (100 + margin * 2, 80 + margin * 2 + title)
+                );
+                assert_eq!(
+                    saved.get_pixel(margin - 2, margin + title + 10).0,
+                    [40, 120, 180, 255]
+                );
+                assert_eq!(
+                    saved
+                        .get_pixel(
+                            margin + if clipped_blur { 24 } else { 48 },
+                            margin + title + 38
+                        )
+                        .0,
+                    [0, 0, 0, 255]
+                );
+                let screenshot = cx.capture_screenshot(editor.into()).unwrap();
+                let left = (f32::from(bounds.left()) * scale).round() as u32 - margin;
+                let top = (f32::from(bounds.top()) * scale).round() as u32 - margin - title;
+                let preview = image::imageops::crop_imm(
+                    &screenshot,
+                    left,
+                    top,
+                    saved.width(),
+                    saved.height(),
+                )
+                .to_image();
+                let mut expected =
+                    image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+                image::imageops::overlay(&mut expected, &saved, 0, 0);
+                let mismatched = preview
+                    .pixels()
+                    .zip(expected.pixels())
+                    .filter(|(actual, expected)| {
+                        actual
+                            .0
+                            .iter()
+                            .zip(expected.0)
+                            .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+                    })
+                    .count();
+                if mismatched > 0 {
+                    preview
+                        .save(scratch.join("framed-inset-preview.png"))
+                        .unwrap();
+                    expected
+                        .save(scratch.join("framed-inset-expected.png"))
+                        .unwrap();
+                }
+                assert_eq!(mismatched, 0, "framed inset {scale}x, {style}, shadow {shadow}, padding {padding_setting}, background {with_background}, clipped blur {clipped_blur}");
+                if scale == 1.25
+                    && padding_setting == 20.
+                    && with_background
+                    && !clipped_blur
+                    && style == "windows-dark"
+                    && shadow == 50.
+                {
+                    let path = scratch.join("framed-inset-output.png");
+                    saved.save(&path).unwrap();
+                    check_inset_reopen(
+                        cx,
+                        editor,
+                        scale,
+                        &path,
+                        (margin, margin + title),
+                        scratch,
+                        "framed-inset",
+                        &[0.73, 1.0, 1.5],
+                    );
+                    for (ratio_style, ratio_inset, ratio_shadow) in [
+                        ("windows-dark", 8., 50.),
+                        ("none", 8., 50.),
+                        ("windows-dark", 0., 50.),
+                        ("none", 0., 50.),
+                        ("windows-dark", 0., 0.),
+                    ] {
+                        editor
                             .update(cx, |editor, _, cx| {
-                                editor.zoom = effective_zoom / scale;
+                                editor.wallpaper.window_frame.style = ratio_style.into();
+                                editor.wallpaper.aspect_ratio = "9:16".into();
+                                editor.wallpaper.inset = ratio_inset;
+                                editor.wallpaper.shadow = ratio_shadow;
                                 cx.notify();
                             })
                             .unwrap();
-                        settle(cx, window.into());
+                        settle(cx, editor.into());
+                        let (saved, offset) = cx.update(|cx| {
+                            let editor = editor.read(cx).unwrap();
+                            let wallpaper = editor.wallpaper.for_scale(f64::from(scale));
+                            let ((width, height), (x, y, _, _)) = crate::editor::wallpaper::layout(
+                                &wallpaper,
+                                100.,
+                                80.,
+                                f64::from(scale),
+                                false,
+                            );
+                            let title = crate::render::window_frame::title_bar_height(
+                                ratio_style,
+                                f64::from(scale),
+                            ) as u32;
+                            let inset = (ratio_inset as f32 * scale).round() as u32;
+                            let frame_top = y - f64::from(inset);
+                            let frame_height = 80. + f64::from(title + inset * 2);
+                            assert!(
+                                (frame_top - (height - frame_top - frame_height)).abs() < 0.001
+                            );
+                            let saved = image::load_from_memory(&editor.export_png().unwrap())
+                                .unwrap()
+                                .to_rgba8();
+                            assert_eq!(
+                                saved.dimensions(),
+                                (width.round() as u32, height.round() as u32)
+                            );
+                            (saved, (x.round() as u32, y.round() as u32 + title))
+                        });
+                        let label = format!(
+                            "{ratio_style}-inset-{ratio_inset}-shadow-{ratio_shadow}-ratio"
+                        );
+                        let path = scratch.join(format!("{label}-output.png"));
+                        saved.save(&path).unwrap();
+                        check_inset_reopen(
+                            cx,
+                            editor,
+                            scale,
+                            &path,
+                            offset,
+                            scratch,
+                            &label,
+                            &[0.73, 1.0, 1.5],
+                        );
                     }
-                    let (preview_bounds, flattened_bounds) = cx.update(|cx| {
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.wallpaper.shadow = 50.;
+                            editor.wallpaper.window_frame.style = "none".into();
+                            editor.push_image_layer(
+                                source.to_string_lossy().into_owned(),
+                                100.,
+                                80.,
+                                crate::editor::layers::Edge::Right,
+                                cx,
+                            );
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, editor.into());
+                    let (saved, offset) = cx.update(|cx| {
+                        let editor = editor.read(cx).unwrap();
+                        let wallpaper = editor.wallpaper.for_scale(f64::from(scale));
+                        let group = crate::editor::layers::compute(
+                            100.,
+                            80.,
+                            &editor.snapshot.borrow().layers,
+                            wallpaper.spacing.max(0.),
+                        );
+                        let ((width, height), (x, y, _, _)) = crate::editor::wallpaper::layout(
+                            &wallpaper,
+                            group.width,
+                            group.height,
+                            f64::from(scale),
+                            true,
+                        );
+                        assert!((y - (height - y - group.height)).abs() < 0.001);
+                        let saved = image::load_from_memory(&editor.export_png().unwrap())
+                            .unwrap()
+                            .to_rgba8();
+                        assert_eq!(
+                            saved.dimensions(),
+                            (width.round() as u32, height.round() as u32)
+                        );
                         (
-                            editor.read(cx).unwrap().bounds.borrow().unwrap(),
-                            flattened.read(cx).unwrap().bounds.borrow().unwrap(),
+                            saved,
+                            (
+                                (x.round() + group.primary.x) as u32,
+                                (y.round() + group.primary.y) as u32,
+                            ),
                         )
                     });
-                    let preview = cx.capture_screenshot(editor.into()).unwrap();
-                    let reopened = cx.capture_screenshot(flattened.into()).unwrap();
-                    let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
-                    let left = snap(f32::from(preview_bounds.left()) * scale)
-                        - snap(offset_x as f32 * effective_zoom);
-                    let top = snap(f32::from(preview_bounds.top()) * scale)
-                        - snap(offset_y as f32 * effective_zoom);
-                    let flat_left = snap(f32::from(flattened_bounds.left()) * scale);
-                    let flat_top = snap(f32::from(flattened_bounds.top()) * scale);
-                    assert_eq!((left, top), (flat_left, flat_top));
-                    let width = snap(f32::from(flattened_bounds.right()) * scale) - flat_left;
-                    let height = snap(f32::from(flattened_bounds.bottom()) * scale) - flat_top;
-                    let mismatched = (0..height)
-                        .flat_map(|y| (0..width).map(move |x| (x, y)))
-                        .filter(|&(x, y)| {
-                            preview
-                                .get_pixel(left + x, top + y)
-                                .0
-                                .iter()
-                                .zip(reopened.get_pixel(flat_left + x, flat_top + y).0)
-                                .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+                    let path = scratch.join("attachment-ratio-output.png");
+                    saved.save(&path).unwrap();
+                    check_inset_reopen(
+                        cx,
+                        editor,
+                        scale,
+                        &path,
+                        offset,
+                        scratch,
+                        "attachment-ratio",
+                        &[0.73, 1.0, 1.5],
+                    );
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.clear_layers(cx);
                         })
-                        .count();
-                    if mismatched > 0 {
-                        preview
-                            .save(
-                                scratch.join(format!("rounded-inset-{effective_zoom}-preview.png")),
-                            )
-                            .unwrap();
-                        reopened
-                            .save(
-                                scratch
-                                    .join(format!("rounded-inset-{effective_zoom}-reopened.png")),
-                            )
-                            .unwrap();
-                    }
-                    assert_eq!(mismatched, 0, "rounded inset reopen at {effective_zoom}x");
+                        .unwrap();
+                    settle(cx, editor.into());
                 }
-                cx.update_window(flattened.into(), |_, window, _| window.remove_window())
-                    .unwrap();
-                cx.run_until_parked();
             }
         }
         editor
             .update(cx, |editor, _, cx| {
                 editor.wallpaper.corners = 0.;
                 editor.wallpaper.shadow = 0.;
+                editor.wallpaper.window_frame.style = "none".into();
+                editor.wallpaper.aspect_ratio = "auto".into();
+                editor.wallpaper.inset = inset_setting;
                 cx.notify();
             })
             .unwrap();

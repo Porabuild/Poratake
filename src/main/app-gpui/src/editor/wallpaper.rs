@@ -374,8 +374,10 @@ pub fn layout(
     has_layers: bool,
 ) -> ((f64, f64), (f64, f64, f64, f64)) {
     let inset = if !has_layers
-        && (!settings.balance || (settings.corners <= 0.0 && settings.shadow <= 0.0))
-        && crate::render::window_frame::theme(&settings.window_frame.style).is_none()
+        && (!settings.balance
+            || (settings.corners <= 0.0
+                && settings.shadow <= 0.0
+                && crate::render::window_frame::theme(&settings.window_frame.style).is_none()))
     {
         settings.inset.max(0.0)
     } else {
@@ -399,11 +401,7 @@ pub fn layout(
     }
 
     let x = (canvas_width - image_width) / 2.0;
-    let y = if settings.balance {
-        (canvas_height - content_height) / 2.0
-    } else {
-        ((canvas_height - content_height) / 2.0).min(padding)
-    };
+    let y = (canvas_height - content_height) / 2.0;
 
     (
         (canvas_width, canvas_height),
@@ -537,6 +535,23 @@ mod tests {
         let ((width, height), _) = layout(&settings, 100.0, 100.0, 1.0, false);
         assert!(width > height);
         assert!((width / height - 16.0 / 9.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_tall_fixed_ratio_centers_the_image_and_window_frame() {
+        for (style, y) in [("none", 26.0), ("windows-dark", 12.0)] {
+            let settings = WallpaperSettings {
+                inset: 6.0,
+                aspect_ratio: "1:1".into(),
+                window_frame: WindowFrameSettings {
+                    style: style.into(),
+                },
+                ..WallpaperSettings::default()
+            };
+            let ((width, height), (x, actual_y, _, _)) = layout(&settings, 100.0, 60.0, 1.0, false);
+            assert_eq!((width, height), (112.0, 112.0));
+            assert_eq!((x, actual_y), (6.0, y));
+        }
     }
 
     #[test]

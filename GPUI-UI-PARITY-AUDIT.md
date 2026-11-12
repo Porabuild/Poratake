@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `ab0e7a95` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `8f6b7169` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -104,7 +104,14 @@ in the earlier hosted artifact; both baselines were reviewed and updated.
 Fourteen of 16 visual cases passed, and the artifact retains 16 renderer profiles,
 3,381 PNGs and both diff images. The Windows test step did not run after the
 visual failure. Linux, macOS, lint, formatting and typecheck passed.
-The current scroll follow-up passed 191 exact baselines in each of the isolated
+The [run at `8f6b7169`](https://github.com/Porabuild/Poratake/actions/runs/43141680459)
+passed all required jobs, including 16 visual cases and 2,880 exact baselines,
+Windows native and accessibility tests, clipboard roundtrip and the project test
+suite. Its artifact contains 16 renderer profiles and 3,381 PNGs with no diffs;
+the artifact and Windows log are retained under `.scratch-parity/hosted-8f6b7169`.
+The subsequent frame and aspect-ratio follow-up passed 191 exact baselines in
+each local light/dark 1280px/100% NVIDIA run, including the new workflow checks.
+The earlier scroll follow-up passed 191 exact baselines in each of the isolated
 1280px/100% light and dark NVIDIA cases, with no diff images. The runs peaked at
 4,070 MiB and 4,065 MiB of total GPU memory respectively.
 An exact rerun after the target-menu interaction fixes passed all 16 cases and
@@ -862,8 +869,8 @@ Bugs fixed in this pass:
   attached images. Light/dark previews match saved pixels at simulated 125% and
   200%; Polish copy matches the editor for zero-padding corners. Transparent
   previews now use the active theme background, and a same-window theme change
-  replaces and retires the old backdrop. Balanced effects and framed or
-  attached insets still need coordinated preview/export geometry.
+  replaces and retires the old backdrop. Balanced effects and attached insets
+  still need coordinated preview/export geometry.
 - An unframed single-image inset was omitted at zero padding when corners or a
   shadow were enabled, and otherwise occupied the outer padding. The inset now
   surrounds the image and the preview uses the exported composition. Light and
@@ -878,6 +885,35 @@ Bugs fixed in this pass:
   apart, with a maximum difference of eight near rounded edges. A local 4K CPU
   composite took 151–159 ms in six samples, excluding inset-color detection,
   GPU upload and interactive behavior; slower hardware is unmeasured.
+- A window frame ignored the inset around a single unbalanced capture. The
+  frame, inset and annotations now share the saved composition. Light/dark GPU
+  checks cover all four frame styles, zero or 20px padding, transparent or solid
+  backgrounds, shadow, translucent content and clipped blur at simulated 125%
+  and 200%. A solid-background PNG was reopened at 73%, 100% and 150% zoom.
+  An independent Electron 170×185 frame sample differed by more than two
+  channel levels at 786 of 28,030 pixels outside the annotation area; the
+  maximum difference was 43 near the window controls and frame edges.
+- Fixed aspect ratios that add height placed unbalanced content at the top.
+  The shared layout now centers it; a 9:16 framed and unframed inset with a
+  solid background matched its reopened PNG at 73%, 100% and 150% zoom. A
+  composited attachment also rounded its preview height differently from its
+  PNG; its 9:16 preview now matches the reopened output at those zooms in the
+  local light/dark probes. Source inspection shows Electron applies the aspect
+  ratio to its editor preview but does not pass it to PNG export.
+- Single unbalanced frames and shadows used separate scaled image and effect
+  layers in the preview. In a light-theme, simulated 125% probe, a 9:16 frame
+  without inset differed from its reopened PNG at 73% zoom by 948 pixels with a
+  shadow and 947 without one, beyond two channel levels. They now share the
+  saved composition and match the reopened PNG at 73%, 100% and 150% in the
+  local light/dark probes. CPU tests cover horizontal and vertical 17,000px tiled
+  frames, including the unshadowed case. Full-sized backing pixels remain
+  necessary for blur and pixelation sampling across tiles. For a 3840×2160
+  shadow with 20px padding, an alternating optimized CPU test with one warmup and
+  six measured samples found median backdrop preparation times of 89ms before
+  and 149ms after for an unframed image, and 92ms before and 146ms after for a
+  Windows frame. The new image buffers were 32.56 and 32.98 MiB respectively;
+  source pixels, temporary allocations, GPU upload, interactive behavior and
+  slower hardware are not measured by this test.
 - Balanced single captures now restore their source crop on reopen and recompute
   it after crop and undo. The crop is detected before annotations, and preview
   geometry and translucent pixels follow the saved PNG. Light/dark GPU checks at
@@ -1119,9 +1155,10 @@ Entries distinguish observed defects from missing evidence. An unverified path
 is not a demonstrated product defect; reproduce before changing its behavior.
 
 In an isolated native Windows editor, the inset slider responded to a pointer
-click, but two UI Automation set-value requests left its value unchanged, both
-before and after scrolling it into view. The control tool reported delivery as
-unverified, so the adapter and tool path still need to be distinguished.
+click. Two control-tool set-value attempts left its value unchanged, but that
+tool documents set-value for text fields, not numeric range controls. The
+Windows adapter maps a range-value request to the numeric action handled by the
+slider; delivery through the operating system remains unverified.
 
 Unframed layered annotations now render after attachments in the tested path.
 Verify annotation and redaction ordering with frames, inset and balance, and
@@ -1133,10 +1170,10 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                                                                                                                                                           |
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                                                                                                                                                           |
 | P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions and restarts, and cross-shell IDs on macOS/Linux.                                                                                                                                                                                                       |
-| P1       | Complex framed screenshot preview versus export          | Single-image frames now match the PNG at simulated 125% and 200%, including corner annotations and translucent backgrounds. Verify wallpaper corners, inset, balance, attached layers, arbitrary zoom and physical DPI transitions.                                                                                                                                                                                                                                                                                                                                 |
+| P1       | Complex framed screenshot preview versus export          | Single unbalanced frames with inset match the PNG in the tested light/dark cases at simulated 125% and 200%; one solid-background case also matches a reopened PNG at 73%, 100% and 150%. A 9:16 frame without inset, with or without shadow, matches a reopened PNG at 73%, 100% and 150% zoom in the local light/dark probes. Verify selection and dragging with inset, other zooms, transparent reopen, balance, attached layers and physical DPI transitions.                                                                                                   |
 | P1       | Complex rounded screenshot preview versus export         | Single unframed captures with and without inset or shadow match the PNG in the tested light/dark cases at simulated 125% and 200%, including transparency and annotations. Verify frames, balance, attachments, more zoom levels and physical DPI.                                                                                                                                                                                                                                                                                                                  |
-| P1       | Zero-padding wallpaper effects                           | Frame-only, corner/shadow-only and single unframed inset effects activate at zero padding. Light/dark GPU checks cover inset with corners and shadow; framed and attached insets and balanced effects still need verification.                                                                                                                                                                                                                                                                                                                                      |
-| P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. A local 4K rounded-inset composite took 151–159 ms; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, rounded inset tiles and plain or framed shadows have CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                                                                                                                            |
+| P1       | Zero-padding wallpaper effects                           | Frame-only, corner/shadow-only and single unbalanced framed or unframed inset effects activate at zero padding. Light/dark GPU checks cover the tested frame and inset combinations; attached insets and balanced effects still need verification.                                                                                                                                                                                                                                                                                                                  |
+| P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. A local 4K shadow composite took a median 146–149 ms versus 89–92 ms before; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, rounded inset tiles, plain or framed shadows and unshadowed frames have CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                                                                                |
 | P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                        |
 | P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance. |
 | P1       | Screenshot annotation order                              | Screenshot export and CPU preview patches now order redactions, vectors with a rounded blackout pass, and highlights like Electron export. Eight center samples match within two levels; one rounded corner differs by 22. Local light/dark checks cover selection, drafts and both blackout orders; verify complex compositions and physical DPI. Electron's live preview can differ from its export when a shape precedes blackout.                                                                                                                               |

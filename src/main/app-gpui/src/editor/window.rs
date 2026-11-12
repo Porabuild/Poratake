@@ -788,9 +788,10 @@ impl EditorWindow {
             self.native_scale,
             (!wallpaper.has_background()
                 || wallpaper.supports_edge_preview(!self.layers.is_empty())
-                || crate::editor::export::composites_inset_effects(&wallpaper, &self.layers))
+                || crate::editor::export::composites_wallpaper_effects(&wallpaper, &self.layers))
             .then_some(stage_background),
             (wallpaper.inset > 0.0
+                || crate::editor::export::composites_wallpaper_effects(&wallpaper, &self.layers)
                 || (!self.layers.is_empty() && wallpaper.supports_edge_preview(true)))
             .then(|| self.image.as_ref().map(|image| image.id))
             .flatten(),

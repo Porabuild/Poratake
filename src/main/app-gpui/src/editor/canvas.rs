@@ -266,6 +266,9 @@ impl RenderOnce for EditorCanvas {
         );
         let group = crate::editor::layers::compute(layout_width, layout_height, &layers, spacing);
         let framed = wallpaper.is_active_with_layers(!layers.is_empty());
+        let snapped_composition = composited_primary
+            || layered_composite
+            || (window_frame && layers.is_empty() && !wallpaper.balance);
 
         let (stage_width, stage_height) = if framed {
             let ((canvas_width, canvas_height), _) = crate::editor::wallpaper::layout(
@@ -275,7 +278,7 @@ impl RenderOnce for EditorCanvas {
                 frame_scale,
                 !layers.is_empty(),
             );
-            let (canvas_width, canvas_height) = if composited_primary {
+            let (canvas_width, canvas_height) = if snapped_composition {
                 (canvas_width.round(), canvas_height.round())
             } else {
                 (canvas_width, canvas_height)
@@ -300,7 +303,7 @@ impl RenderOnce for EditorCanvas {
                     frame_scale,
                     !layers.is_empty(),
                 );
-            let (canvas_width, canvas_height, offset_x, offset_y) = if composited_primary {
+            let (canvas_width, canvas_height, offset_x, offset_y) = if snapped_composition {
                 (
                     canvas_width.round(),
                     canvas_height.round(),
@@ -322,7 +325,11 @@ impl RenderOnce for EditorCanvas {
                 .overflow_hidden()
                 .child(
                     canvas(
-                        move |bounds, _, _| *measured_stage.borrow_mut() = Some(bounds),
+                        move |bounds, _, _| {
+                            *measured_stage.borrow_mut() = Some(bounds);
+                            #[cfg(feature = "parity")]
+                            crate::ui::parity::record("editor-stage", vec![bounds]);
+                        },
                         |_, (), _, _| (),
                     )
                     .absolute()
@@ -559,10 +566,14 @@ fn paint_annotations(
             !snapshot.layers.is_empty(),
         );
         let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
+        let title_bar = crate::render::window_frame::title_bar_height(
+            &snapshot.wallpaper.window_frame.style,
+            snapshot.frame_scale,
+        );
         (
             snapshot.backdrop.as_ref(),
             x.round() + layout.primary.x - f64::from(crop_left),
-            y.round() + layout.primary.y - f64::from(crop_top),
+            y.round() + layout.primary.y + title_bar - f64::from(crop_top),
         )
     } else {
         (snapshot.image.as_ref(), 0.0, 0.0)
@@ -608,14 +619,19 @@ fn paint_annotations(
             &snapshot.wallpaper.window_frame.style,
             snapshot.frame_scale,
         );
-        let (x, y) = if crate::editor::export::composites_primary_backdrop(
-            &snapshot.wallpaper,
-            &snapshot.layers,
-        ) {
-            (x.round(), y.round())
-        } else {
-            (x, y)
-        };
+        let (x, y) =
+            if crate::editor::export::composites_primary_backdrop(
+                &snapshot.wallpaper,
+                &snapshot.layers,
+            ) || (crate::render::window_frame::theme(&snapshot.wallpaper.window_frame.style)
+                .is_some()
+                && snapshot.layers.is_empty()
+                && !snapshot.wallpaper.balance)
+            {
+                (x.round(), y.round())
+            } else {
+                (x, y)
+            };
         snapshot.backdrop.as_deref().map(|image| {
             (
                 image,

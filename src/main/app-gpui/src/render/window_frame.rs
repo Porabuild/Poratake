@@ -93,6 +93,8 @@ pub fn render(
     style: &str,
     shadow: Option<Shadow>,
     scale: f64,
+    inset: f64,
+    inset_color: Option<&str>,
 ) {
     render_chrome(
         canvas,
@@ -103,6 +105,8 @@ pub fn render(
         style,
         shadow,
         scale,
+        inset,
+        inset_color,
         Some(image),
         true,
     );
@@ -120,6 +124,8 @@ pub fn render_chrome(
     style: &str,
     shadow: Option<Shadow>,
     scale: f64,
+    inset: f64,
+    inset_color: Option<&str>,
     image: Option<PixmapRef<'_>>,
     paint_outline: bool,
 ) {
@@ -128,8 +134,8 @@ pub fn render_chrome(
     };
     let bar_height = (TITLE_BAR_HEIGHT * scale).round();
     let radius = corner_radius(style) * scale;
-    let frame_width = content_width;
-    let frame_height = content_height + bar_height;
+    let frame_width = content_width + inset * 2.0;
+    let frame_height = content_height + bar_height + inset * 2.0;
 
     let Some(outline) = rounded_rect_path(
         x as f32,
@@ -191,11 +197,22 @@ pub fn render_chrome(
         );
     }
 
+    if let Some(inset_color) = inset_color.filter(|_| inset > 0.0) {
+        if let Some(band) = Rect::from_xywh(
+            x as f32,
+            (y + bar_height) as f32,
+            frame_width as f32,
+            (frame_height - bar_height) as f32,
+        ) {
+            canvas.fill_rect(band, color::parse_or(inset_color, Color::TRANSPARENT));
+        }
+    }
+
     if let Some(image) = image {
         canvas.draw_pixmap(
             image,
-            x as f32,
-            (y + bar_height) as f32,
+            (x + inset) as f32,
+            (y + bar_height + inset) as f32,
             content_width as f32,
             content_height as f32,
         );
@@ -383,6 +400,8 @@ mod tests {
             "macos-light",
             None,
             1.0,
+            0.0,
+            None,
         );
 
         let pixel = |x: u32, y: u32| {
@@ -418,6 +437,8 @@ mod tests {
                 "windows-light",
                 shadow,
                 1.0,
+                0.0,
+                None,
             );
             let index = ((68 * canvas.width() + 40) * 4) as usize;
             let pixel = &canvas.pixmap().data()[index..index + 4];
@@ -442,6 +463,8 @@ mod tests {
             "windows-light",
             None,
             1.0,
+            0.0,
+            None,
         );
         let index = ((68 * canvas.width() + 40) * 4) as usize;
         assert_eq!(canvas.pixmap().data()[index + 3], 128);
@@ -480,6 +503,8 @@ mod tests {
                             style,
                             shadow,
                             scale,
+                            0.0,
+                            None,
                         );
                         let mut backdrop = Canvas::new(96, 140).unwrap();
                         backdrop.fill_all(Color::from_rgba8(36, 104, 172, 255));
@@ -492,6 +517,8 @@ mod tests {
                             style,
                             shadow,
                             scale,
+                            0.0,
+                            None,
                             None,
                             false,
                         );
@@ -550,6 +577,8 @@ mod tests {
             "windows-dark",
             None,
             1.25,
+            0.0,
+            None,
             None,
             false,
         );
@@ -574,6 +603,8 @@ mod tests {
             "windows-dark",
             None,
             1.25,
+            0.0,
+            None,
             None,
             true,
         );
@@ -594,6 +625,8 @@ mod tests {
             "none",
             None,
             1.0,
+            0.0,
+            None,
         );
         assert!(canvas
             .pixmap()
