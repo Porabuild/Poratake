@@ -194,6 +194,8 @@ struct ScrollCapturePreviewTest {
         let backlogModule = ScrollCaptureModule()
         let firstEncodeStarted = DispatchSemaphore(value: 0)
         let releaseFirstEncode = DispatchSemaphore(value: 0)
+        let latestEncodeStarted = DispatchSemaphore(value: 0)
+        let releaseLatestEncode = DispatchSemaphore(value: 0)
         let backlogLock = NSLock()
         var backlogEncodeCount = 0
         var backlogPublications: [Int] = []
@@ -206,6 +208,9 @@ struct ScrollCapturePreviewTest {
             if count == 1 {
                 firstEncodeStarted.signal()
                 releaseFirstEncode.wait()
+            } else {
+                latestEncodeStarted.signal()
+                releaseLatestEncode.wait()
             }
             return "preview-\(count)"
         }
@@ -219,15 +224,22 @@ struct ScrollCapturePreviewTest {
         backlogModule.testAppendPreviewFrame(allFrames[2])
         backlogModule.testWaitForPreviewAlignment()
         releaseFirstEncode.signal()
+        precondition(latestEncodeStarted.wait(timeout: .now() + 5) == .success)
+        let firstBacklogPublicationDeadline = Date(timeIntervalSinceNow: 5)
+        while backlogPublications.isEmpty && Date() < firstBacklogPublicationDeadline {
+            _ = RunLoop.current.run(mode: .default, before: firstBacklogPublicationDeadline)
+        }
+        precondition(backlogPublications == [1], "A completed preview must publish while newer frames are pending")
+        releaseLatestEncode.signal()
         backlogModule.testWaitForPreviewWork()
         let backlogDeadline = Date(timeIntervalSinceNow: 5)
-        while backlogPublications.isEmpty && Date() < backlogDeadline {
+        while backlogPublications.count < 2 && Date() < backlogDeadline {
             _ = RunLoop.current.run(mode: .default, before: backlogDeadline)
         }
         backlogLock.lock()
         precondition(backlogEncodeCount == 2, "Only the active and latest preview should be encoded")
         backlogLock.unlock()
-        precondition(backlogPublications == [3], "A preview backlog must publish only its latest frame")
+        precondition(backlogPublications == [1, 3], "A preview backlog must publish monotonically and coalesce pending frames")
 
         let staleModule = ScrollCaptureModule()
         let staleEncodeStarted = DispatchSemaphore(value: 0)

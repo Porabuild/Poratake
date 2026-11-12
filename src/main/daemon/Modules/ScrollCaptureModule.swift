@@ -54,7 +54,7 @@ private final class ScrollPreviewSession {
     private let lock = NSLock()
     private var cancelled = false
     private var previewStopped = false
-    private var latestRequestedFrameCount = 0
+    private var latestPublishedFrameCount = 0
     private var frames: [CGImage] = []
     private var overlaps: [Int] = []
     private var pendingPreview: PreviewRequest?
@@ -74,13 +74,6 @@ private final class ScrollPreviewSession {
         encode: @escaping (CGImage) -> String?,
         completion: ((Snapshot) -> Void)?
     ) {
-        lock.lock()
-        latestRequestedFrameCount = frameCount
-        pendingPreview = nil
-        pendingPublication = nil
-        latestSnapshot = nil
-        lock.unlock()
-
         alignmentQueue.async { [weak self] in
             guard let self = self, !self.isCancelled() else { return }
 
@@ -161,7 +154,6 @@ private final class ScrollPreviewSession {
     ) -> PreviewRequest? {
         guard !cancelled,
               !previewStopped,
-              latestRequestedFrameCount == frameCount,
               frames.count == frameCount,
               overlaps.count == frameCount - 1 else {
             return nil
@@ -210,14 +202,9 @@ private final class ScrollPreviewSession {
                 return
             }
             pendingPreview = nil
-            let isCurrentRequest = latestRequestedFrameCount == request.frameCount
             lock.unlock()
 
-            guard isCurrentRequest else { continue }
-            let isStale = { [weak self] in
-                guard let self = self else { return true }
-                return self.shouldStopPreview(frameCount: request.frameCount)
-            }
+            let isStale = { [weak self] in self?.shouldStopPreview() ?? true }
             guard let image = request.compose(request.frames, request.overlaps, isStale), !isStale(),
                   let encodedImage = request.encode(image), !isStale() else {
                 continue
@@ -232,7 +219,7 @@ private final class ScrollPreviewSession {
             lock.lock()
             guard !cancelled,
                   !previewStopped,
-                  latestRequestedFrameCount == request.frameCount else {
+                  request.frameCount > (latestSnapshot?.frameCount ?? 0) else {
                 lock.unlock()
                 continue
             }
@@ -249,11 +236,13 @@ private final class ScrollPreviewSession {
         lock.lock()
         guard !cancelled,
               !previewStopped,
-              latestRequestedFrameCount == snapshot.frameCount else {
+              snapshot.frameCount > latestPublishedFrameCount else {
             lock.unlock()
             return
         }
-        pendingPublication = (snapshot, completion)
+        if pendingPublication.map({ snapshot.frameCount > $0.0.frameCount }) ?? true {
+            pendingPublication = (snapshot, completion)
+        }
         let shouldSchedule = !publicationScheduled
         publicationScheduled = true
         lock.unlock()
@@ -274,10 +263,13 @@ private final class ScrollPreviewSession {
         }
         pendingPublication = nil
         publicationScheduled = false
-        let isCurrent = latestRequestedFrameCount == publication.0.frameCount
+        let isNewer = publication.0.frameCount > latestPublishedFrameCount
+        if isNewer {
+            latestPublishedFrameCount = publication.0.frameCount
+        }
         lock.unlock()
 
-        guard isCurrent, !shouldStopPreview(frameCount: publication.0.frameCount) else { return }
+        guard isNewer, !shouldStopPreview() else { return }
         publication.1(publication.0)
     }
 
@@ -287,10 +279,10 @@ private final class ScrollPreviewSession {
         return cancelled
     }
 
-    private func shouldStopPreview(frameCount: Int) -> Bool {
+    private func shouldStopPreview() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return cancelled || previewStopped || latestRequestedFrameCount != frameCount
+        return cancelled || previewStopped
     }
 }
 
@@ -1552,7 +1544,7 @@ class ScrollCaptureModule: NSObject, Module {
                     return testPreviewEncoder(image)
                 }
 #endif
-                self?.encodePreviewBase64(image, backingScaleFactor: backingScaleFactor)
+                return self?.encodePreviewBase64(image, backingScaleFactor: backingScaleFactor)
             },
             completion: completion
         )
@@ -1743,7 +1735,7 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     func testWaitForPreviewAlignment() {
-        previewSession?.resolvedOverlaps()
+        _ = previewSession?.resolvedOverlaps()
     }
 
     func testWaitForPreviewWork() {
