@@ -157,6 +157,15 @@ pub(crate) fn parity_active_overlay(cx: &mut App) -> Option<AnyWindowHandle> {
     session(cx).handles.first().map(|overlay| overlay.handle)
 }
 
+#[cfg(any(all(test, windows), feature = "parity"))]
+pub(crate) fn parity_active_overlays(cx: &mut App) -> Vec<AnyWindowHandle> {
+    session(cx)
+        .handles
+        .iter()
+        .map(|overlay| overlay.handle)
+        .collect()
+}
+
 #[cfg(all(windows, any(test, feature = "parity")))]
 pub(crate) fn active_intents_for_test(cx: &mut App) -> Vec<crate::capture::intent::CaptureIntent> {
     session(cx)
@@ -908,6 +917,118 @@ fn begin_recording(
     );
 }
 
+fn begin_recording_after_icon_restore(
+    cx: &mut Context<AreaOverlay>,
+    all_in_one: bool,
+    target: crate::video::recorder::RecordingTarget,
+    rect: ScreenRect,
+    display_id: Option<u32>,
+    window_id: Option<i64>,
+    target_name: Option<String>,
+    preference_scope: crate::windows::recording_control::PreferenceScope,
+    after_open: impl FnOnce(&mut App) + 'static,
+) {
+    if !all_in_one {
+        begin_recording(
+            cx,
+            target,
+            rect,
+            display_id,
+            window_id,
+            target_name,
+            preference_scope,
+        );
+        after_open(cx);
+        return;
+    }
+    let owner = revision(cx);
+    let selected_overlay = cx.entity().downgrade();
+    let restore_area = matches!(&target, crate::video::recorder::RecordingTarget::Area);
+    App::defer(cx, move |cx| {
+        if revision(cx) != owner || crate::capture::desktop_icons::is_shutting_down() {
+            return;
+        }
+        for tracked in session(cx).handles.clone() {
+            let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
+                continue;
+            };
+            let _ = handle.update(cx, |overlay, _, cx| {
+                if overlay.intent != crate::capture::intent::CaptureIntent::Recording
+                    || overlay.all_in_one.is_none()
+                {
+                    return;
+                }
+                overlay.all_in_one = None;
+                overlay.handed_off = true;
+                overlay.interaction = None;
+                overlay.pointer = None;
+                cx.notify();
+            });
+        }
+        let Some(hide) = take_capture_hide(cx) else {
+            begin_recording(
+                cx,
+                target,
+                rect,
+                display_id,
+                window_id,
+                target_name,
+                preference_scope,
+            );
+            after_open(cx);
+            if restore_area {
+                let _ = selected_overlay.update(cx, |overlay, cx| {
+                    overlay.handed_off = false;
+                    cx.notify();
+                });
+            }
+            return;
+        };
+        let transition = crate::capture::desktop_icons::track_transition();
+        cx.spawn(async move |cx| {
+            let restored = cx
+                .background_executor()
+                .spawn(async move {
+                    let restored = crate::capture::desktop_icons::restore_after_capture_hide(hide);
+                    drop(transition);
+                    restored
+                })
+                .await;
+            cx.update(|cx| {
+                if revision(cx) != owner || crate::capture::desktop_icons::is_shutting_down() {
+                    return;
+                }
+                if !restored {
+                    close_all(cx);
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Recording failed",
+                        "Could not restore desktop icons",
+                    );
+                    return;
+                }
+                begin_recording(
+                    cx,
+                    target,
+                    rect,
+                    display_id,
+                    window_id,
+                    target_name,
+                    preference_scope,
+                );
+                after_open(cx);
+                if restore_area {
+                    let _ = selected_overlay.update(cx, |overlay, cx| {
+                        overlay.handed_off = false;
+                        cx.notify();
+                    });
+                }
+            });
+        })
+        .detach();
+    });
+}
+
 pub struct AreaOverlay {
     pub focus_handle: gpui::FocusHandle,
     display_id: Option<u32>,
@@ -1114,6 +1235,7 @@ impl AreaOverlay {
             return;
         };
         if self.intent == crate::capture::intent::CaptureIntent::Recording {
+            let all_in_one = self.all_in_one.is_some();
             let rect = ScreenRect {
                 x: picked.bounds.x as i32,
                 y: picked.bounds.y as i32,
@@ -1130,18 +1252,6 @@ impl AreaOverlay {
                 );
                 return;
             }
-            begin_recording(
-                cx,
-                crate::video::recorder::RecordingTarget::Window,
-                rect,
-                self.display_id,
-                Some(window_id),
-                Some(label),
-                self.recording_preference_scope,
-            );
-            if !show_window_recording_outline(window_id, cx) {
-                eprintln!("[recording-overlay] failed to outline window {window_id}");
-            }
             self.all_in_one = None;
             self.picking_windows = false;
             self.hovered_window = None;
@@ -1150,6 +1260,30 @@ impl AreaOverlay {
             self.handed_off = true;
             conceal_recording_selector(window);
             sync_window_recording_handoff(cx);
+            begin_recording_after_icon_restore(
+                cx,
+                all_in_one,
+                crate::video::recorder::RecordingTarget::Window,
+                rect,
+                self.display_id,
+                Some(window_id),
+                Some(label),
+                self.recording_preference_scope,
+                move |cx| {
+                    for window_handle in cx.windows() {
+                        let Some(handle) = window_handle
+                            .downcast::<crate::windows::recording_control::RecordingControl>(
+                        ) else {
+                            continue;
+                        };
+                        let _ = handle.update(cx, |_, window, _| window.activate_window());
+                        break;
+                    }
+                    if !show_window_recording_outline(window_id, cx) {
+                        eprintln!("[recording-overlay] failed to outline window {window_id}");
+                    }
+                },
+            );
             cx.notify();
             return;
         }
@@ -1167,10 +1301,18 @@ impl AreaOverlay {
             .screenshot
             .freeze_screen
             .then(|| self.service.reserve_cached_capture());
+        let hide = take_capture_hide(cx);
         let release_after = conceal_for_capture(window, cx);
         let coordinator = crate::state::coordinator(cx);
         coordinator.update(cx, |coordinator, cx| {
-            coordinator.capture_window(picked.window_id, capture, reservation, release_after, cx);
+            coordinator.capture_window(
+                picked.window_id,
+                capture,
+                reservation,
+                release_after,
+                hide,
+                cx,
+            );
         });
     }
 
@@ -1580,10 +1722,14 @@ impl AreaOverlay {
         let intent = self.intent;
         let scale = self.scale;
         if intent == crate::capture::intent::CaptureIntent::Recording {
-            self.all_in_one = None;
-            sync_recording_handoff(cx);
-            begin_recording(
+            let all_in_one = self.all_in_one.is_some();
+            if all_in_one {
+                self.all_in_one = None;
+                self.handed_off = true;
+            }
+            begin_recording_after_icon_restore(
                 cx,
+                all_in_one,
                 crate::video::recorder::RecordingTarget::Area,
                 ScreenRect {
                     x,
@@ -1595,6 +1741,7 @@ impl AreaOverlay {
                 None,
                 None,
                 self.recording_preference_scope,
+                |_| {},
             );
             cx.notify();
             return;
@@ -1858,18 +2005,6 @@ fn sync_color_picker(active: bool, cx: &mut Context<AreaOverlay>) {
         }
         overlay.picking_color = false;
         overlay.color_frame = None;
-        cx.notify();
-    });
-}
-
-fn sync_recording_handoff(cx: &mut Context<AreaOverlay>) {
-    for_each_area_overlay(cx, move |overlay, cx| {
-        if overlay.intent != crate::capture::intent::CaptureIntent::Recording
-            || overlay.all_in_one.is_none()
-        {
-            return;
-        }
-        overlay.all_in_one = None;
         cx.notify();
     });
 }
@@ -2253,6 +2388,9 @@ impl AreaOverlay {
     /// `startDrag`: a press on a handle resizes, inside the box moves, and
     /// anywhere else starts a new box.
     fn on_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handed_off {
+            return;
+        }
         if self.picking_color {
             if self.pick_color(event.position, cx) {
                 dismiss(window, cx);
@@ -2300,6 +2438,10 @@ impl AreaOverlay {
         let rect = capture.rect;
         let intent = self.intent;
         if intent == crate::capture::intent::CaptureIntent::Recording {
+            let all_in_one = self.all_in_one.is_some();
+            if all_in_one {
+                self.handed_off = true;
+            }
             if self.screen_picker {
                 conceal_screen_recording_pick(window, cx);
             } else {
@@ -2309,17 +2451,17 @@ impl AreaOverlay {
                     width: self.viewport().width,
                     height: self.viewport().height,
                 });
-                self.all_in_one = None;
-                sync_recording_handoff(cx);
             }
-            begin_recording(
+            begin_recording_after_icon_restore(
                 cx,
+                all_in_one,
                 crate::video::recorder::RecordingTarget::Screen,
                 rect,
                 self.display_id,
                 None,
                 None,
                 self.recording_preference_scope,
+                |_| {},
             );
             cx.notify();
             return;
@@ -2404,6 +2546,9 @@ impl AreaOverlay {
     /// `endDrag`: a freshly drawn box is committed (or discarded when it is too
     /// small); an adjusted one stays put.
     fn on_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handed_off {
+            return;
+        }
         if self.is_picking_windows() {
             return;
         }

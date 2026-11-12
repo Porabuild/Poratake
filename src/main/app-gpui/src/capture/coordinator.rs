@@ -425,10 +425,14 @@ impl Coordinator {
         capture: DisplayCapture,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
+        hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
         let service = self.service.clone();
         let path = service.generate_screenshot_path();
+        let transition = hide
+            .as_ref()
+            .map(|_| crate::capture::desktop_icons::track_transition());
         let task = cx.background_executor().spawn(async move {
             let result = (|| -> anyhow::Result<_> {
                 let temporary = prepare_screenshot(&path)?;
@@ -444,6 +448,8 @@ impl Coordinator {
             if let Some(generation) = release_after {
                 service.release_screen(generation);
             }
+            drop(hide);
+            drop(transition);
             result
         });
 

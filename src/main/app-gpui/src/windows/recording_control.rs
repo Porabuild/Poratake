@@ -109,6 +109,11 @@ pub struct RecordingControl {
 }
 
 impl RecordingControl {
+    #[cfg(any(test, feature = "parity"))]
+    pub(crate) fn parity_rect(&self) -> ScreenRect {
+        self.rect
+    }
+
     pub(crate) fn open(
         cx: &mut App,
         target: RecordingTarget,

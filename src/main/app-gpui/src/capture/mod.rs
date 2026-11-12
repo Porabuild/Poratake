@@ -429,6 +429,12 @@ fn each_display(
         return false;
     }
     displays.sort_by_key(|display| Some(display.id()) != primary);
+    #[cfg(all(windows, feature = "parity"))]
+    if DUPLICATE_DISPLAY_FOR_PARITY.load(std::sync::atomic::Ordering::SeqCst) {
+        if let Some(display) = displays.first().cloned() {
+            displays.push(display);
+        }
+    }
     let mut opened = false;
     for display in displays {
         let focus = !opened;
@@ -669,6 +675,7 @@ fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
 fn with_selection_icon_hide(
     cx: &mut gpui::App,
     release_first: Option<u64>,
+    failure_title: &'static str,
     open: impl FnOnce(&mut gpui::App) + 'static,
 ) {
     let service = crate::state::state(cx);
@@ -706,7 +713,7 @@ fn with_selection_icon_hide(
                     if let Some(generation) = release_first {
                         overlay::release_frozen_screen(generation, cx);
                     }
-                    crate::windows::toast::Toast::show(cx, "Capture Failed", error);
+                    crate::windows::toast::Toast::show(cx, failure_title, error);
                 }
             }
             None
@@ -746,7 +753,7 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
     }
     let release_first = overlay::replace_all(cx);
     if hides_icons_before_selection(intent) {
-        with_selection_icon_hide(cx, release_first, move |cx| {
+        with_selection_icon_hide(cx, release_first, "Capture Failed", move |cx| {
             open_area_selection(intent, release_first, cx);
         });
         return;
@@ -813,33 +820,40 @@ pub fn start_all_in_one(cx: &mut gpui::App) {
     }
     let choices = all_in_one::restore(&crate::state::state(cx).config);
     let release_first = overlay::replace_all(cx);
-    with_frozen_screen(
-        cx,
-        release_first,
-        true,
-        if choices.mode == all_in_one::Mode::Record {
-            "Recording failed"
-        } else {
-            "Capture Failed"
-        },
-        move |cx, deferred_show, generation| {
-            each_display(cx, |service, id, bounds, focus, cx| {
-                overlay::AreaOverlay::open_all_in_one(
-                    service,
-                    id,
-                    bounds,
-                    choices,
-                    overlay::OverlayLaunch {
-                        focus,
-                        deferred_show,
-                        generation,
-                    },
-                    cx,
-                )
-                .is_some()
-            })
-        },
-    );
+    let failure_title = if choices.mode == all_in_one::Mode::Record {
+        "Recording failed"
+    } else {
+        "Capture Failed"
+    };
+    with_selection_icon_hide(cx, release_first, failure_title, move |cx| {
+        with_frozen_screen(
+            cx,
+            release_first,
+            true,
+            if choices.mode == all_in_one::Mode::Record {
+                "Recording failed"
+            } else {
+                "Capture Failed"
+            },
+            move |cx, deferred_show, generation| {
+                each_display(cx, |service, id, bounds, focus, cx| {
+                    overlay::AreaOverlay::open_all_in_one(
+                        service,
+                        id,
+                        bounds,
+                        choices,
+                        overlay::OverlayLaunch {
+                            focus,
+                            deferred_show,
+                            generation,
+                        },
+                        cx,
+                    )
+                    .is_some()
+                })
+            },
+        );
+    });
 }
 
 fn capture_topology_supported(_cx: &mut gpui::App) -> bool {
@@ -1067,6 +1081,10 @@ struct ScreenTarget {
 pub(crate) static DUPLICATE_SCREEN_TARGET_FOR_PARITY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(all(windows, feature = "parity"))]
+pub(crate) static DUPLICATE_DISPLAY_FOR_PARITY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(any(target_os = "linux", test))]
 fn x11_screen_bounds(
     rect: poratake_daemon_common::geometry::CaptureRect,
@@ -1267,7 +1285,7 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
                 crate::system::capabilities::Feature::FreezeScreen,
             )
         {
-            with_selection_icon_hide(cx, release_first, show_picker);
+            with_selection_icon_hide(cx, release_first, "Capture Failed", show_picker);
         } else {
             show_picker(cx);
         }
@@ -2147,6 +2165,7 @@ mod tests {
         let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
         config.update(|settings| {
             settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
             settings.all_in_one.remember_choices = true;
         });
         let notifications = crate::system::notification::capture_for_test();

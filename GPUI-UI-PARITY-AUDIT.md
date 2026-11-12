@@ -679,8 +679,13 @@ Bugs fixed in this pass:
   both overflow axes, extreme coordinates and negative-origin crops. Physical
   multi-monitor capture remains unverified.
 - Cached Windows captures now reject disjoint frames before allocation and
-  report reservation failures instead of silently capturing live pixels. Tests
-  preserve off-screen padding, display gaps and the empty-cache fallback.
+  stream output in bands of at most 4 MiB instead of allocating the entire
+  composition. Dimension checks accept an eight 8K-display layout with padding
+  under the 512 Mi-pixel limit; larger cached requests fail before mask capture or file
+  creation. Tests preserve off-screen padding, display gaps, alpha masks and
+  the empty-cache fallback. A window alpha mask and encoder internals can still
+  use additional memory; large native captures and slower hardware remain
+  unprofiled.
 - Clicking an annotation or resize handle, or reapplying its current option,
   discarded Redo without changing the image. Moves, resizes and option changes
   now create a history entry only when the annotation differs; returning to the
@@ -768,6 +773,11 @@ Bugs fixed in this pass:
   before selection and retains the hide through capture or cancellation. A fake
   frozen-frame fixture checks saved and reopened pixels and cancellation; real
   desktop compositor timing still needs verification.
+- All-in-one now begins the configured icon hide before freezing. Screenshot
+  window selections retain that hide through capture, and recording selections
+  wait for restoration before opening the controls. New fake-daemon workflows
+  cover saved pixels, recording targets, failures, replacement and a second overlay;
+  they still need a hosted visual run and native desktop verification.
 - The frozen multi-display screenshot picker had the same ordering problem. It
   now hides icons before freezing and retains the hide until capture or
   cancellation. A fake-daemon workflow duplicates a display target and verifies
@@ -985,7 +995,12 @@ Bugs fixed in this pass:
   Electron editor workflow. An anchored wide-stroke preview patch matches the
   full composition in CPU tests, including clipping at 100%, 125% and 200%
   scale. Hairline, dashed and shadowed stroke paths retain the prior behavior.
-  The new light/dark GPU workflow, physical DPI and broader frame/inset
+  [Hosted CI at `e4e72a8a`](https://github.com/Porabuild/Poratake/actions/runs/43234554650)
+  passed 14 of 16 visual cases and 2,498 exact baselines. In both themes, the
+  unbalanced attachment preview and reopened PNG matched within one channel
+  level at 100%; the balanced case stopped at a test landmark on the frame
+  border before its preview comparison. The landmark was moved inside the
+  balance margin for the next run. Physical DPI and broader frame/inset
   combinations remain unverified.
 - An unframed single-image inset was omitted at zero padding when corners or a
   shadow were enabled, and otherwise occupied the outer padding. The inset now
@@ -1322,6 +1337,13 @@ Blur differed by up to five and four channel levels respectively; 487 and 602
 pixels differed by more than two levels. This checks the effect functions, not
 the complete Electron editor workflow.
 
+A separate 1× offscreen probe compared Electron's video blur operations with
+the GPUI blur function on a manually composed translucent checker and wallpaper.
+Across 1,088 interior pixels, the mean RGBA-channel difference was 0.480 and
+the maximum was three; across 64 pixels at a flat clip edge, the mean was 0.473
+and the maximum was two. Pixels just outside the annotation matched. This does
+not exercise rounded-edge antialiasing, playback or the full export pipeline.
+
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                                                                                                                                                           |
@@ -1335,7 +1357,7 @@ the complete Electron editor workflow.
 | P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance. |
 | P1       | Screenshot annotation order                              | Screenshot export and CPU preview patches now order redactions, vectors with a rounded blackout pass, and highlights like Electron export. Eight center samples match within two levels; one rounded corner differs by 22. Local light/dark checks cover selection, drafts and both blackout orders; verify complex compositions and physical DPI. Electron's live preview can differ from its export when a shape precedes blackout.                                                                                                                               |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                |
-| P1       | Frozen all-in-one desktop icons                          | A fake-daemon frozen-frame probe reproduced desktop icons in a saved all-in-one screenshot when hiding was enabled. The same frozen frame is shared across screenshot, recording and OCR modes; preserve mode-switch and recording handoffs while correcting it.                                                                                                                                                                                                                                                                                                    |
+| P1       | Frozen all-in-one desktop icons                          | Related capture and recording unit checks pass; new fake-daemon workflows for hide-before-freeze and recording restoration need a hosted run. Verify native icon timing, mode switches and recording handoffs on real displays.                                                                                                                                                                                                                                                                                                                                     |
 | P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                    |
 | P1       | Native screen-recording selector handoff                 | Mock-platform tests cover replacing an existing or pending selector, release failure and retry, and a newer request that supersedes recording. Verify real single-display recording handoffs and the corresponding multi-display picker behavior.                                                                                                                                                                                                                                                                                                                   |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, forced unsupported-hard-link fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                   |
@@ -1346,7 +1368,7 @@ the complete Electron editor workflow.
 | P1       | macOS scroll preview with variable overlap               | The preview uses the expected scroll step while final stitching measures each overlap. Compare previews and saved pixels when actual movement differs, without blocking the capture UI; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                             |
 | P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                             |
 | P1       | Native attachment compositor coverage                    | The frozen handoff fix passed a real pixel-exact native capture and save. Add automated native Windows coverage for hide/show transitions and verify freezing off, cancellation and repeated attachments.                                                                                                                                                                                                                                                                                                                                                           |
-| P1       | Cached Windows screenshot allocation                     | Cached composition rejects disjoint captures before allocation and reports reservation failures without falling back to live pixels. A large overlapping request can still reserve and touch several GiB; no large allocation was attempted. Bound resource use while retaining offscreen window padding and multi-monitor gaps.                                                                                                                                                                                                                                    |
+| P1       | Cached Windows screenshot resources                      | Cached composition streams with 4 MiB scratch bands and rejects requests over 512 Mi pixels. Tests retain offscreen padding, gaps, alpha and the empty-cache fallback. Window alpha-mask capture and WIC internals can allocate separately; profile large native captures, encoding latency and slower hardware.                                                                                                                                                                                                                                                    |
 | P2       | QR photo robustness and latency                          | The native decoder matches 65/65 original corpus cases and 493/520 brightness/contrast variants without losing a prior match. The attributed photo fixture is also tested at 10°, 25° and 45° rotations, with perspective distortion and a combined 15° rotation plus perspective warp. Verify additional real photographs and interactive app clipboard delivery; further reduce low-contrast 4K no-code latency and test slower hardware across both desktop versions.                                                                                            |
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                                                                                                                                                                                             |
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                                                                                                                                                           |
@@ -1504,4 +1526,8 @@ These are not evidence that unrelated features match.
 The local Windows GPUI suite passed serially with 948 tests and one ignored. One
 earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while
 three tests were unfinished. Those tests passed individually, and the video-
-export group passed with four test threads. The cause remains unverified.
+export group passed with four test threads. An earlier revision also recorded
+the cancellation-and-retry test failing alone with the same exception. The
+parallel run's unsymbolized crash dump contains stack-memory addresses from
+Media Foundation and NVIDIA's H.264 transform; this is a lead, not an unwound
+stack or a confirmed cause. The intermittent failure remains unverified.

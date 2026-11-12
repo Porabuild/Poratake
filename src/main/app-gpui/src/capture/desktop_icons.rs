@@ -110,6 +110,12 @@ pub(crate) fn release_for_capture(hide: Option<Arc<CaptureHide>>, cx: &mut gpui:
     }
 }
 
+pub(crate) fn restore_after_capture_hide(hide: Arc<CaptureHide>) -> bool {
+    let daemon = hide.daemon.clone();
+    drop(hide);
+    restore_if_unowned(&daemon)
+}
+
 pub fn are_hidden() -> bool {
     with_state(|state| state.hidden)
 }

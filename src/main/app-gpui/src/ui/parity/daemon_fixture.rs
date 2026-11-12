@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::{BufRead, Read, Write};
 use std::path::Path;
@@ -51,6 +52,7 @@ pub fn run() {
     let mut timer_visible = false;
     let mut scrolling = false;
     let mut desktop_show_held = false;
+    let mut desktop_show_hold_keys = HashSet::new();
     let mut desktop_hide_failed = false;
     let mut desktop_show_failed = false;
     let mut desktop_show_not_applied = false;
@@ -141,10 +143,20 @@ pub fn run() {
             }
             ("desktop-helper", "show") => {
                 let fixture = capture_fixture(&output);
+                let capture_show_held = fixture["desktopShowHeld"] == true
+                    && desktop_show_hold_keys.insert(
+                        fixture["desktopShowHoldKey"]
+                            .as_str()
+                            .unwrap_or("default")
+                            .to_owned(),
+                    );
                 if (fixture["scroll"] == "icons-show-held" && !desktop_show_held)
                     || fixture["scroll"] == "icons-show-held-replacement"
+                    || capture_show_held
                 {
-                    desktop_show_held = true;
+                    if !capture_show_held {
+                        desktop_show_held = true;
+                    }
                     wait_for_scroll_barrier(&fixture);
                 }
                 if fixture["desktopShowError"] == true {

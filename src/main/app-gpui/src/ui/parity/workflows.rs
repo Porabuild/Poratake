@@ -9,9 +9,46 @@ use crate::editor::window::EditorWindow;
 use crate::history_store::{HistoryItem, HistoryItemType};
 
 use super::{
-    capture, click_measured, event, hover, point, px, settle, size, HeadlessAppContext, Modifiers,
-    Path,
+    capture, click, click_measured, event, hover, point, px, settle, size, HeadlessAppContext,
+    Modifiers, Path,
 };
+
+#[cfg(windows)]
+struct DuplicateDisplayTarget;
+
+#[cfg(windows)]
+impl DuplicateDisplayTarget {
+    fn enable() -> Self {
+        crate::capture::DUPLICATE_DISPLAY_FOR_PARITY
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DuplicateDisplayTarget {
+    fn drop(&mut self) {
+        crate::capture::DUPLICATE_DISPLAY_FOR_PARITY
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(windows)]
+fn select_all_in_one_mode(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    mode: crate::capture::all_in_one::Mode,
+) {
+    let modes = super::measured("all-in-one-controls", 0);
+    let x = f32::from(modes.left())
+        + f32::from(modes.size.width)
+            * if mode == crate::capture::all_in_one::Mode::Record {
+                0.75
+            } else {
+                0.25
+            };
+    click(cx, window, x, f32::from(modes.center().y));
+}
 
 pub(super) const SELECTED_RECT: CaptureRect = CaptureRect {
     x: 80,
@@ -102,6 +139,9 @@ pub(super) fn select_area(cx: &mut HeadlessAppContext, picker: gpui::AnyWindowHa
 }
 
 pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output: &Path) {
+    #[cfg(windows)]
+    use std::io::{Read, Write};
+
     use crate::windows::registry::{self, WindowKind};
 
     std::fs::write(
@@ -110,11 +150,18 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
     )
     .unwrap();
     for target in ["area", "window", "screen"] {
+        #[cfg(windows)]
+        let before = super::daemon_fixture::calls(output).len();
         cx.update(|cx| {
             crate::state::state(cx).config.update(|config| {
                 config.recording.system_audio = false;
                 config.recording.mic_enabled = false;
                 config.recording.camera.enabled = false;
+                #[cfg(windows)]
+                {
+                    config.screenshot.freeze_screen = true;
+                    config.screenshot.hide_desktop_icons = true;
+                }
                 config.all_in_one.remember_choices = true;
                 config.all_in_one.last_mode = "record".into();
                 config.all_in_one.last_targets.record = target.into();
@@ -142,6 +189,20 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             );
         }
         cx.run_until_parked();
+        #[cfg(windows)]
+        {
+            let calls = super::daemon_fixture::calls(output);
+            let calls = &calls[before..];
+            let position = |module: &str, method: &str| {
+                calls
+                    .iter()
+                    .position(|call| call["module"] == module && call["method"] == method)
+                    .unwrap()
+            };
+            assert!(position("desktop-helper", "hide") < position("freeze-screen", "freeze"));
+            assert!(position("freeze-screen", "freeze") < position("desktop-helper", "show"));
+            assert!(!crate::capture::desktop_icons::are_hidden());
+        }
         let control = cx
             .update(|cx| registry::handle(WindowKind::RecordingControl, cx))
             .unwrap_or_else(|| panic!("{target} selection did not open recording controls"));
@@ -183,6 +244,24 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 event(cx, picker, input);
             }
             settle(cx, control);
+            let rect = cx.update(|cx| {
+                registry::handle(WindowKind::RecordingControl, cx)
+                    .unwrap()
+                    .downcast::<crate::windows::recording_control::RecordingControl>()
+                    .unwrap()
+                    .update(cx, |control, _, _| control.parity_rect())
+                    .unwrap()
+            });
+            assert_eq!(
+                rect,
+                CaptureRect {
+                    x: 100,
+                    y: 110,
+                    width: 640,
+                    height: 360,
+                },
+                "the selected area remains adjustable after the recording controls open"
+            );
             click_measured(cx, control, "recording-controls", audio);
             cx.update(|cx| {
                 let config = crate::state::state(cx).config.get();
@@ -195,6 +274,238 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             crate::capture::overlay::close_all(cx);
         });
         cx.run_until_parked();
+    }
+    #[cfg(windows)]
+    {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen",
+                "desktopShowHeld": true,
+                "desktopShowHoldKey": "aio-record-multidisplay",
+                "barrier": listener.local_addr().unwrap().to_string(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = super::daemon_fixture::calls(output).len();
+        let duplicate_display = DuplicateDisplayTarget::enable();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.freeze_screen = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "record".into();
+                config.all_in_one.last_targets.record = "area".into();
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        drop(duplicate_display);
+        let overlays = cx.update(crate::capture::overlay::parity_active_overlays);
+        assert_eq!(
+            overlays.len(),
+            2,
+            "the fixture must have two display overlays"
+        );
+        select_area(cx, overlays[0]);
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
+            "recording controls must wait for restoration on the selected display"
+        );
+        select_area(cx, overlays[1]);
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
+            "the sibling display must be locked while restoration is pending"
+        );
+        assert!(!super::daemon_fixture::calls(output)[before..]
+            .iter()
+            .any(|call| call["module"] == "screen-recorder" && call["method"] == "start"));
+        let show = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.read_exact(&mut [1]).unwrap();
+            stream.write_all(&[0]).unwrap();
+        });
+        show.join().unwrap();
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)),
+            "only the selected display should open recording controls after restoration"
+        );
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let show_index = calls
+            .iter()
+            .position(|call| call["module"] == "desktop-helper" && call["method"] == "show")
+            .unwrap();
+        let freeze_index = calls
+            .iter()
+            .position(|call| call["module"] == "freeze-screen" && call["method"] == "freeze")
+            .unwrap();
+        assert!(freeze_index < show_index);
+        assert!(!calls
+            .iter()
+            .any(|call| call["module"] == "screen-recorder" && call["method"] == "start"));
+        assert!(
+            cx.update(crate::windows::recording_control::RecordingControl::cancel_pre_recording)
+        );
+        cx.update(crate::capture::overlay::close_all);
+        cx.run_until_parked();
+    }
+    #[cfg(windows)]
+    {
+        super::take_notifications();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen", "desktopHideError": "not-applied",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = super::daemon_fixture::calls(output).len();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.freeze_screen = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "record".into();
+                config.all_in_one.last_targets.record = "area".into();
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        assert!(!cx.update(crate::capture::overlay::parity_is_active));
+        assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        assert_eq!(
+            super::take_notifications(),
+            [(
+                "Recording failed".into(),
+                "Could not hide desktop icons".into(),
+                false
+            )]
+        );
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let hide = calls
+            .iter()
+            .position(|call| call["module"] == "desktop-helper" && call["method"] == "hide")
+            .unwrap();
+        let show = calls
+            .iter()
+            .position(|call| call["module"] == "desktop-helper" && call["method"] == "show")
+            .unwrap();
+        assert!(hide < show);
+        assert!(!calls
+            .iter()
+            .any(|call| call["module"] == "freeze-screen" && call["method"] == "freeze"));
+        assert!(!crate::capture::desktop_icons::are_hidden());
+        cx.update(|cx| {
+            crate::state::state(cx)
+                .config
+                .update(|config| config.screenshot.hide_desktop_icons = false);
+        });
+
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen", "desktopShowError": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.freeze_screen = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "record".into();
+                config.all_in_one.last_targets.record = "area".into();
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        select_area(cx, picker);
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
+            "recording controls must stay closed when desktop icon restoration fails"
+        );
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({"freeze": "frozen"})).unwrap(),
+        )
+        .unwrap();
+        let daemon = cx.update(|cx| crate::state::state(cx).daemon.clone());
+        assert!(crate::capture::desktop_icons::restore_if_unowned(&daemon));
+        assert!(!crate::capture::desktop_icons::are_hidden());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen",
+                "desktopShowHeld": true,
+                "desktopShowHoldKey": "aio-record-replacement",
+                "barrier": listener.local_addr().unwrap().to_string(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.freeze_screen = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "record".into();
+                config.all_in_one.last_targets.record = "area".into();
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        select_area(cx, picker);
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
+            "recording controls must wait for desktop icon restoration"
+        );
+        select_area(cx, picker);
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
+            "a duplicate selection must not open controls before restoration"
+        );
+        cx.update(crate::capture::start_area_capture);
+        let show = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.read_exact(&mut [1]).unwrap();
+            stream.write_all(&[0]).unwrap();
+        });
+        show.join().unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(crate::capture::overlay::active_intents_for_test),
+            [crate::capture::intent::CaptureIntent::Screenshot],
+            "the replacement selection must survive completion of the stale recording handoff"
+        );
+        assert!(
+            cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx)),
+            "a replaced overlay must not open stale recording controls"
+        );
+        let replacement = area_picker(cx);
+        super::escape(cx, replacement);
+        cx.run_until_parked();
+        assert!(!crate::capture::desktop_icons::are_hidden());
+        cx.update(|cx| {
+            crate::state::state(cx)
+                .config
+                .update(|config| config.screenshot.hide_desktop_icons = false);
+        });
     }
 }
 
@@ -503,6 +814,290 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             );
             assert!(!crate::capture::desktop_icons::are_hidden());
         }
+    }
+    #[cfg(windows)]
+    {
+        let captures = scratch.join("all-in-one-desktop-icons");
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen", "rect": display, "windowId": null,
+                "frozenDesktopIcon": true, "expectDesktopHidden": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = super::daemon_fixture::calls(output).len();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                config.screenshot.freeze_screen = true;
+                config.screenshot.show_preview = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "screenshot".into();
+                config.all_in_one.last_targets.screenshot = "screen".into();
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        event(
+            cx,
+            picker,
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: point(px(240.), px(180.)),
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: Modifiers::none(),
+                first_mouse: false,
+            }),
+        );
+        cx.run_until_parked();
+        verify_saved_capture(
+            cx,
+            scratch,
+            &captures,
+            (display, [64, 112, 192, 255]),
+            "workflow-all-in-one-desktop-icons",
+        );
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let position = |module: &str, method: &str| {
+            calls
+                .iter()
+                .position(|call| call["module"] == module && call["method"] == method)
+                .unwrap()
+        };
+        assert!(position("desktop-helper", "hide") < position("freeze-screen", "freeze"));
+        assert!(position("freeze-screen", "freeze") < position("screenshot", "capture-area"));
+        assert!(position("screenshot", "capture-area") < position("desktop-helper", "show"));
+        assert!(!crate::capture::desktop_icons::are_hidden());
+    }
+    #[cfg(windows)]
+    {
+        let captures = scratch.join("all-in-one-switch-record");
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen",
+                "rect": SELECTED_RECT,
+                "windowId": null,
+                "frozenDesktopIcon": true,
+                "expectDesktopHidden": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = super::daemon_fixture::calls(output).len();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                config.screenshot.freeze_screen = true;
+                config.screenshot.show_preview = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "screenshot".into();
+                config.all_in_one.last_targets.screenshot = "area".into();
+                config.all_in_one.last_targets.record = "area".into();
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        select_all_in_one_mode(cx, picker, crate::capture::all_in_one::Mode::Record);
+        assert_eq!(
+            cx.update(crate::capture::overlay::active_intents_for_test),
+            [crate::capture::intent::CaptureIntent::Recording]
+        );
+        assert!(crate::capture::desktop_icons::are_hidden());
+        select_area(cx, picker);
+        cx.run_until_parked();
+        assert!(cx.update(|cx| crate::windows::registry::is_open(
+            crate::windows::registry::WindowKind::RecordingControl,
+            cx
+        )));
+        assert!(!crate::capture::desktop_icons::are_hidden());
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let position = |module: &str, method: &str| {
+            calls
+                .iter()
+                .position(|call| call["module"] == module && call["method"] == method)
+                .unwrap()
+        };
+        assert!(position("desktop-helper", "hide") < position("freeze-screen", "freeze"));
+        assert!(position("freeze-screen", "freeze") < position("desktop-helper", "show"));
+        assert!(!calls.iter().any(|call| call["module"] == "screenshot"));
+        assert!(!calls
+            .iter()
+            .any(|call| call["module"] == "screen-recorder" && call["method"] == "start"));
+        assert!(
+            cx.update(crate::windows::recording_control::RecordingControl::cancel_pre_recording)
+        );
+        cx.update(crate::capture::overlay::close_all);
+        cx.run_until_parked();
+    }
+    #[cfg(windows)]
+    {
+        let captures = scratch.join("all-in-one-switch-back-to-screenshot");
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "frozen",
+                "rect": SELECTED_RECT,
+                "windowId": null,
+                "frozenDesktopIcon": true,
+                "expectDesktopHidden": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = super::daemon_fixture::calls(output).len();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                config.screenshot.freeze_screen = true;
+                config.screenshot.show_preview = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "screenshot".into();
+                config.all_in_one.last_targets.screenshot = "area".into();
+                config.all_in_one.last_targets.record = "area".into();
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        select_all_in_one_mode(cx, picker, crate::capture::all_in_one::Mode::Record);
+        select_all_in_one_mode(cx, picker, crate::capture::all_in_one::Mode::Screenshot);
+        assert_eq!(
+            cx.update(crate::capture::overlay::active_intents_for_test),
+            [crate::capture::intent::CaptureIntent::Screenshot]
+        );
+        select_area(cx, picker);
+        cx.run_until_parked();
+        let files: Vec<_> = std::fs::read_dir(&captures)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1, "one screenshot should be saved");
+        let saved = image::open(&files[0]).unwrap().to_rgba8();
+        assert_eq!(
+            saved.dimensions(),
+            (SELECTED_RECT.width as u32, SELECTED_RECT.height as u32)
+        );
+        assert!(
+            saved.pixels().all(|pixel| pixel.0 == [64, 112, 192, 255]),
+            "the cached screenshot must retain icon-free pixels after switching modes"
+        );
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let position = |module: &str, method: &str| {
+            calls
+                .iter()
+                .position(|call| call["module"] == module && call["method"] == method)
+                .unwrap()
+        };
+        assert!(position("desktop-helper", "hide") < position("freeze-screen", "freeze"));
+        assert!(position("freeze-screen", "freeze") < position("screenshot", "capture-area"));
+        assert!(position("screenshot", "capture-area") < position("desktop-helper", "show"));
+        assert!(!crate::capture::desktop_icons::are_hidden());
+        cx.update(|cx| {
+            crate::windows::registry::close(
+                crate::windows::registry::WindowKind::CapturePreview,
+                cx,
+            );
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.freeze_screen = false;
+                config.screenshot.hide_desktop_icons = false;
+            });
+        });
+        cx.run_until_parked();
+    }
+    #[cfg(windows)]
+    for (name, freeze) in [("live", false), ("frozen", true)] {
+        let captures = scratch.join(format!("all-in-one-window-icons-{name}"));
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::write(
+            output.join("capture-fixture.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": if freeze { "frozen" } else { "live" },
+                "rect": SELECTED_RECT,
+                "windowId": 43,
+                "frozenDesktopIcon": true,
+                "expectDesktopHidden": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = super::daemon_fixture::calls(output).len();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                config.screenshot.freeze_screen = freeze;
+                config.screenshot.show_preview = true;
+                config.screenshot.hide_desktop_icons = true;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+                config.all_in_one.remember_choices = true;
+                config.all_in_one.last_mode = "screenshot".into();
+                config.all_in_one.last_targets.screenshot = "window".into();
+            });
+            crate::capture::start_all_in_one(cx);
+        });
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        event(
+            cx,
+            picker,
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: point(px(240.), px(180.)),
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: Modifiers::none(),
+                first_mouse: false,
+            }),
+        );
+        cx.run_until_parked();
+        verify_saved_capture(
+            cx,
+            scratch,
+            &captures,
+            (SELECTED_RECT, [64, 112, 192, 255]),
+            &format!("workflow-all-in-one-window-icons-{name}"),
+        );
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let position = |module: &str, method: &str| {
+            calls
+                .iter()
+                .position(|call| call["module"] == module && call["method"] == method)
+                .unwrap()
+        };
+        let capture_method = if freeze {
+            "capture-area"
+        } else {
+            "capture-window"
+        };
+        if freeze {
+            assert!(position("desktop-helper", "hide") < position("freeze-screen", "freeze"));
+        }
+        assert!(position("desktop-helper", "hide") < position("screenshot", capture_method));
+        assert!(
+            position("screenshot", capture_method) < position("desktop-helper", "show"),
+            "{name} window capture must retain the hide lease until pixels are read"
+        );
+        assert!(!crate::capture::desktop_icons::are_hidden());
     }
     #[cfg(windows)]
     cx.update(|cx| {
