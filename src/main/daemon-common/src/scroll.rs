@@ -216,7 +216,14 @@ impl FrameAccumulator {
         if let Some(overlap) = normal_overlap
             && overlap != expected_overlap
             && self.frames.last().is_some_and(|previous| {
-                find_overlap(previous, &pixels, width, height, expected_overlap).is_none()
+                find_overlap_after_footer_arbitration(
+                    previous,
+                    &pixels,
+                    width,
+                    height,
+                    expected_overlap,
+                )
+                .is_none()
             })
         {
             return CaptureOutcome::NoOverlap;
@@ -227,8 +234,13 @@ impl FrameAccumulator {
         } else if let Some(overlap) = normal_overlap {
             overlap
         } else if let Some(previous) = self.frames.last() {
-            let Some(overlap) = find_overlap(previous, &pixels, width, height, expected_overlap)
-            else {
+            let Some(overlap) = find_overlap_after_footer_arbitration(
+                previous,
+                &pixels,
+                width,
+                height,
+                expected_overlap,
+            ) else {
                 return CaptureOutcome::NoOverlap;
             };
             overlap
@@ -570,6 +582,27 @@ pub fn find_overlap(
     height: usize,
     expected: usize,
 ) -> Option<usize> {
+    find_overlap_impl(previous, current_pixels, width, height, expected, false)
+}
+
+pub(super) fn find_overlap_after_footer_arbitration(
+    previous: &CapturedFrame,
+    current_pixels: &[u8],
+    width: usize,
+    height: usize,
+    expected: usize,
+) -> Option<usize> {
+    find_overlap_impl(previous, current_pixels, width, height, expected, true)
+}
+
+fn find_overlap_impl(
+    previous: &CapturedFrame,
+    current_pixels: &[u8],
+    width: usize,
+    height: usize,
+    expected: usize,
+    reject_ambiguous_perfect_sample: bool,
+) -> Option<usize> {
     let strip_height = 8_usize.min(height / 2).min(expected.max(1));
     if strip_height == 0
         || width == 0
@@ -694,6 +727,29 @@ pub fn find_overlap(
         }
         if !acceptable || exact.abs_diff(expected) <= best_overlap.abs_diff(expected) {
             return Some(exact);
+        }
+    }
+    if reject_ambiguous_perfect_sample && best_score == 0 && exact_match.is_none() {
+        let row_bytes = width * 4;
+        let overlap_pixels = best_overlap.checked_mul(width)?;
+        let max_changed_pixels = overlap_pixels / 20;
+        let previous_overlap =
+            &previous.pixels[(height - best_overlap) * row_bytes..height * row_bytes];
+        let current_overlap = &current_pixels[..best_overlap * row_bytes];
+        let mut changed_pixels = 0;
+        for (previous, current) in previous_overlap
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(current_overlap.as_chunks::<4>().0)
+        {
+            if previous[..3] == current[..3] {
+                continue;
+            }
+            changed_pixels += 1;
+            if changed_pixels > max_changed_pixels {
+                return None;
+            }
         }
     }
     acceptable.then_some(best_overlap)
@@ -1148,8 +1204,230 @@ mod tests {
         let previous = make_frame(0);
         let current = make_frame(height - overlap);
         assert_eq!(
+            exact_overlap(&previous.pixels, &current.pixels, width, 8),
+            Some((overlap, 0))
+        );
+        assert_eq!(
             find_overlap(&previous, &current.pixels, width, height, expected),
             Some(overlap)
+        );
+        assert_eq!(
+            find_overlap_after_footer_arbitration(
+                &previous,
+                &current.pixels,
+                width,
+                height,
+                expected,
+            ),
+            Some(overlap)
+        );
+    }
+
+    #[test]
+    fn stops_on_a_sampled_perfect_fixed_footer_alias_and_keeps_prior_frames() {
+        let (width, height, footer, step) = (64, 160, 20, 8);
+        let expected_overlap = height - step;
+        let make_frame = |index: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                for x in 0..width {
+                    let mut pixel = if y >= height - footer {
+                        [62, (y - (height - footer)) as u8, x as u8, 255]
+                    } else if x == 0 {
+                        let value = (y + index * step) as u32;
+                        [
+                            value as u8,
+                            (value >> 8) as u8,
+                            value.wrapping_mul(37) as u8,
+                            255,
+                        ]
+                    } else {
+                        [235, 235, 235, 255]
+                    };
+                    if x == 1 && y == height - footer / 2 {
+                        pixel[0] ^= 51 * index as u8;
+                    }
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            pixels
+        };
+        let previous_pixels = make_frame(0);
+        let current_pixels = make_frame(1);
+        let previous = CapturedFrame {
+            width,
+            height,
+            pixels: previous_pixels.clone(),
+            overlap: 0,
+            trim_bottom: 0,
+        };
+
+        assert_eq!(
+            find_fixed_footer(
+                &previous,
+                &current_pixels,
+                width,
+                height,
+                expected_overlap,
+                0
+            ),
+            None
+        );
+        assert_eq!(
+            overlap_score(
+                &previous.pixels,
+                &current_pixels,
+                width,
+                height,
+                expected_overlap,
+                0,
+                width,
+                8,
+            ),
+            0
+        );
+        assert_eq!(
+            exact_overlap(&previous.pixels, &current_pixels, width, 8),
+            None
+        );
+        assert_eq!(
+            find_overlap(&previous, &current_pixels, width, height, expected_overlap),
+            Some(expected_overlap)
+        );
+        assert_eq!(
+            find_overlap_after_footer_arbitration(
+                &previous,
+                &current_pixels,
+                width,
+                height,
+                expected_overlap,
+            ),
+            None
+        );
+
+        let mut accumulator = FrameAccumulator::default();
+        assert_eq!(
+            accumulator.submit(previous_pixels.clone(), width, height, expected_overlap),
+            CaptureOutcome::Added
+        );
+        assert_eq!(
+            accumulator.submit(current_pixels, width, height, expected_overlap),
+            CaptureOutcome::NoOverlap
+        );
+        assert_eq!(accumulator.frames().len(), 1);
+        assert_eq!(accumulator.estimated_height(), height);
+        assert_eq!(accumulator.frames()[0].pixels, previous_pixels);
+    }
+
+    #[test]
+    fn accepts_a_small_localized_change_when_sampled_overlap_is_perfect() {
+        let (width, height, overlap) = (64, 160, 96);
+        let previous = frame(0, width, height);
+        let mut current = frame(height - overlap, width, height);
+        for y in 40..48 {
+            current.pixels[(y * width + 1) * 4] ^= 1;
+        }
+
+        assert_eq!(
+            overlap_score(
+                &previous.pixels,
+                &current.pixels,
+                width,
+                height,
+                overlap,
+                0,
+                width,
+                8,
+            ),
+            0
+        );
+        assert_eq!(
+            exact_overlap(&previous.pixels, &current.pixels, width, 8),
+            None
+        );
+        assert_eq!(
+            find_overlap(&previous, &current.pixels, width, height, overlap),
+            Some(overlap)
+        );
+        assert_eq!(
+            find_overlap_after_footer_arbitration(
+                &previous,
+                &current.pixels,
+                width,
+                height,
+                overlap,
+            ),
+            Some(overlap)
+        );
+
+        let mut accumulator = FrameAccumulator::default();
+        assert_eq!(
+            accumulator.submit(previous.pixels.clone(), width, height, overlap),
+            CaptureOutcome::Added
+        );
+        assert_eq!(
+            accumulator.submit(current.pixels, width, height, overlap),
+            CaptureOutcome::Added
+        );
+        assert_eq!(accumulator.frames().len(), 2);
+        assert_eq!(accumulator.frames()[1].overlap, overlap);
+        assert_eq!(accumulator.estimated_height(), height + height - overlap);
+    }
+
+    #[test]
+    fn accepts_exactly_five_percent_overlap_changes_and_rejects_more() {
+        let (width, height, overlap) = (100, 160, 80);
+        let previous = frame(0, width, height);
+        let make_current = |changed_pixels: usize| {
+            let mut current = frame(height - overlap, width, height);
+            for index in 0..changed_pixels {
+                let y = 40 + index % 8;
+                let x = 1 + index / 8;
+                current.pixels[(y * width + x) * 4] ^= 1;
+            }
+            current
+        };
+        let changed_at_limit = make_current(overlap * width / 20);
+        let changed_above_limit = make_current(overlap * width / 20 + 1);
+
+        for current in [&changed_at_limit, &changed_above_limit] {
+            assert_eq!(
+                overlap_score(
+                    &previous.pixels,
+                    &current.pixels,
+                    width,
+                    height,
+                    overlap,
+                    0,
+                    width,
+                    8,
+                ),
+                0
+            );
+            assert_eq!(
+                exact_overlap(&previous.pixels, &current.pixels, width, 8),
+                None
+            );
+        }
+        assert_eq!(
+            find_overlap_after_footer_arbitration(
+                &previous,
+                &changed_at_limit.pixels,
+                width,
+                height,
+                overlap,
+            ),
+            Some(overlap)
+        );
+        assert_eq!(
+            find_overlap_after_footer_arbitration(
+                &previous,
+                &changed_above_limit.pixels,
+                width,
+                height,
+                overlap,
+            ),
+            None
         );
     }
 
