@@ -1481,7 +1481,9 @@ mod tests {
                     frame
                         .buffer()
                         .as_raw()
-                        .chunks_exact(4)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
                         .all(|pixel| pixel[3] == 255),
                     "{fps} fps frame {index} contains transparent pixels"
                 );
@@ -1503,7 +1505,8 @@ mod tests {
                         .filter_map(|(index, pixel)| {
                             let x = index as u32 % composed.width();
                             let y = index as u32 / composed.width();
-                            (x < 12 || x >= 172 || y < 12 || y >= 102).then_some((index, pixel[3]))
+                            (!(12..172).contains(&x) || !(12..102).contains(&y))
+                                .then_some((index, pixel[3]))
                         })
                         .collect();
                     let transparent_pixel = padding_alpha
@@ -1522,7 +1525,7 @@ mod tests {
                         .expect("wallpaper padding should include translucent pixels");
                     let preview_image = preview::to_render_image_opaque(&composed).unwrap();
                     let mut expected = Vec::with_capacity(preview_image.as_bytes(0).unwrap().len());
-                    for pixel in preview_image.as_bytes(0).unwrap().chunks_exact(4) {
+                    for pixel in preview_image.as_bytes(0).unwrap().as_chunks::<4>().0 {
                         expected.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
                     }
                     let actual = frame.buffer().as_raw();
