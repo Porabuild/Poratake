@@ -1028,7 +1028,7 @@ mod tests {
                 visual.simulate_scale_factor_change(scale);
                 for width in [140.0, 148.0, 200.0, 240.0, 400.0] {
                     visual.simulate_resize(size(px(width), px(364.0)));
-                    for (index, id) in [(2, "third"), (1, "second")] {
+                    for (index, id) in [(0, "first"), (2, "third"), (1, "second")] {
                         visual.update(|_, cx| {
                             history.update(cx, |history, cx| {
                                 history.selected_index = index;
@@ -1037,6 +1037,14 @@ mod tests {
                             });
                         });
                         let actions = visual.expect(&format!("history-grid-actions-{id}"));
+                        let scroller_top = if id == "first" {
+                            let first = visual.expect("history-card-first");
+                            let scroller = visual.expect("history-scroll");
+                            assert!(first.top() >= scroller.top());
+                            f32::from(scroller.top())
+                        } else {
+                            0.0
+                        };
                         for offset in [12.0, 40.0] {
                             let action =
                                 gpui::point(actions.origin.x + px(offset), actions.center().y);
@@ -1074,12 +1082,85 @@ mod tests {
                                         && mask.bottom().0 >= bounds.bottom().0,
                                     "width {width}, item {id}: tooltip {bounds:?}, mask {mask:?}"
                                 );
+                                if id == "first" {
+                                    assert!(
+                                        bounds.top().0 < scroller_top * scale,
+                                        "width {width}: first grid tooltip must extend above the scroll viewport: {bounds:?}, scroller top={scroller_top}"
+                                    );
+                                }
                             });
                         }
                     }
                 }
             }
         }
+
+        visual.simulate_scale_factor_change(1.0);
+        visual.simulate_resize(size(px(140.0), px(364.0)));
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.layout = HistoryLayout::List;
+                history.selected_index = 0;
+                history.keyboard_navigation = true;
+                history.scroll.scroll_to_item(0);
+                cx.notify();
+            });
+        });
+        let scroller = visual.expect("history-scroll");
+        let first = visual.expect("history-row-first");
+        let thumb = visual.expect("history-row-thumb-first");
+        let actions = visual.expect("history-row-actions-first");
+        assert!(
+            first.top() >= scroller.top()
+                && first.top() <= scroller.top() + px(crate::ui::chrome::HISTORY_CONTENT_PAD)
+        );
+        assert!(actions.top() >= thumb.top() && actions.bottom() <= thumb.bottom());
+        for (offset, label) in [(12.0, "reveal"), (40.0, "delete")] {
+            let action = gpui::point(actions.left() + px(offset), actions.center().y);
+            visual.simulate_mouse_move(action, None, gpui::Modifiers::none());
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(800));
+            visual.settle();
+            visual.update(|window, _| {
+                let tips: Vec<_> = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        let bounds = quad.bounds;
+                        (31.0..=35.0).contains(&bounds.size.height.0)
+                            && bounds.size.width.0 > 30.0
+                            && bounds.bottom().0 <= f32::from(action.y)
+                            && bounds.bottom().0 >= f32::from(action.y) - 30.0
+                    })
+                    .collect();
+                assert_eq!(tips.len(), 1, "first list {label} tooltip: {tips:?}");
+                let tip = tips[0];
+                let bounds = tip.bounds;
+                let mask = tip.content_mask.bounds;
+                assert!(
+                    bounds.left().0 >= 0.0
+                        && bounds.right().0 <= 140.0
+                        && bounds.top().0 >= 0.0
+                        && bounds.bottom().0 <= 364.0
+                        && bounds.top().0 < f32::from(scroller.top())
+                        && bounds.top().0 < f32::from(thumb.top())
+                        && mask.left().0 <= bounds.left().0
+                        && mask.right().0 >= bounds.right().0
+                        && mask.top().0 <= bounds.top().0
+                        && mask.bottom().0 >= bounds.bottom().0,
+                    "first list {label} tooltip is clipped at its scroll/thumb edge: {bounds:?}, mask {mask:?}, scroller {scroller:?}, thumb {thumb:?}"
+                );
+            });
+        }
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.layout = HistoryLayout::Grid;
+                history.selected_index = 0;
+                history.scroll.scroll_to_item(0);
+                cx.notify();
+            });
+        });
 
         visual.simulate_resize(size(px(200.0), px(364.0)));
         visual.click("history-filter-video");
