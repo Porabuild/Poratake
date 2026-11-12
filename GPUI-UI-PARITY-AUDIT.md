@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `2d26dab5` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `c764851e` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -109,6 +109,10 @@ passed all required jobs, including 16 visual cases and 2,880 exact baselines,
 Windows native and accessibility tests, clipboard roundtrip and the project test
 suite. Its artifact contains 16 renderer profiles and 3,381 PNGs with no diffs;
 the artifact and Windows log are retained under `.scratch-parity/hosted-8f6b7169`.
+[Hosted CI at `2d26dab5`](https://github.com/Porabuild/Poratake/actions/runs/43148945257)
+also passed all required jobs, including all 16 visual cases and 2,880 exact
+baselines. Its artifact contains 3,393 PNGs with no diff files; the evidence is
+retained under `.scratch-parity/hosted-2d26dab5`, alongside the Windows log.
 The subsequent frame and aspect-ratio follow-up passed 191 exact baselines in
 each local light/dark 1280px/100% NVIDIA run, including the new workflow checks.
 The earlier scroll follow-up passed 191 exact baselines in each of the isolated
@@ -1188,8 +1192,8 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Native screen-recording selector handoff                 | Mock-platform tests cover replacing an existing or pending selector, release failure and retry, and a newer request that supersedes recording. Verify real single-display recording handoffs and the corresponding multi-display picker behavior.                                                                                                                                                                                                                                                                                                                   |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                                                |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                          |
-| P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. Sparse text and stationary animation are tested. Small animations and some simultaneous size/color changes stop early. Verify real surfaces, weak overlaps and fixed headers; macOS has a separate, unfixed stitcher.                                                                                                                                                                                                               |
-| P1       | Scroll stitching with repeated content                   | Windows/Linux stop and retain prior frames for tested conflicts between full-row alignment and an expected strip, including up to two moving sampled columns. Three moving sampled columns can still produce ambiguous accepted output, and isolated changes in one column can trigger an early stop. A 360-case translated-UI probe still accepted 12 incorrect outputs and stopped early 152 times. Investigate broader patterns, animations and real pages; macOS uses a separate stitcher.                                                                      |
+| P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. Sparse text and stationary animation are tested; a small animated footer block now stitches in the tested cases. Some animations and footer changes still stop early or produce incorrect output in synthetic multi-frame cases. Verify real surfaces, weak overlaps and fixed headers; macOS has a separate, unfixed stitcher.                                                                                                     |
+| P1       | Scroll stitching with repeated content                   | Windows/Linux stop and retain prior frames for tested conflicts between full-row alignment and an expected strip, including up to two moving sampled columns. Three moving sampled columns can still produce ambiguous accepted output, and isolated changes in one column can trigger an early stop. A 360-case translated-UI probe accepted no incorrect outputs and stopped early 164 times after the new conflict check. Investigate broader patterns, animations and real pages; macOS uses a separate stitcher.                                               |
 | P1       | Unresponsive scroll stitch                               | Finish now waits for the daemon response or exit, so a daemon that stays alive without responding also leaves cancellation pending. Add a daemon-owned stop-and-join operation and verify a stalled stitch can be canceled without affecting other daemon work or losing completed output.                                                                                                                                                                                                                                                                          |
 | P1       | macOS scroll preview with variable overlap               | The preview uses the expected scroll step while final stitching measures each overlap. Compare previews and saved pixels when actual movement differs, without blocking the capture UI; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                             |
 | P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                             |
@@ -1222,6 +1226,19 @@ frames produced the expected rows and 291 cases stopped early. Ambiguous or
 animated content can still require different evidence. macOS uses a separate
 duplicate check and stitcher.
 
+The footer matcher now tries exact stationary rows first, then allows sparse
+changes above an exact stationary suffix while retaining the full-row overlap and
+movement checks. A three-frame test stitches a footer with a 16×16 animation;
+the saved PNG reopens pixel-identically, and a sparse-content control retains the
+exact-match path. In 240 translated UI cases with small animated blocks, eight
+structurally incorrect outputs and 16 early stops became correct; the remaining
+accepted-output differences were confined to the animated blocks. In 2,460
+synthetic four-frame sparse-content cases, 1,479 completed correctly, 739 produced
+incorrect pixels or dimensions, and 242 stopped early; before the fallback these
+counts were 1,200, 1,080 and 180. No previously correct case regressed in this
+matrix. Animation pixels were excluded from the output comparison, and real pages
+remain unverified.
+
 In a synthetic two-frame scroll, period-8 main content shifted by 96px with an
 independently moving edge produces the same pixels as a complete 104px shift.
 Both have a unique 56px full-row match, although the first main-content overlap is
@@ -1249,16 +1266,20 @@ still be mistaken for animation, and a multi-row, multi-column animation may sto
 early. A 360-case probe translated four captured UI baselines
 with two footer settings, five shifts and nine expected-offset values. The guard
 changed 16 incorrect outputs into early stops: 196 correct, 12 incorrect and 152
-early stops, versus 196, 28 and 136 before. All 40 cases with the exact expected
-offset remained correct. A synthetic case with three
+early stops, versus 196, 28 and 136 before. Extending the conflict check to unique
+full-row matches changed the remaining 12 incorrect results into early stops:
+196 correct, zero incorrect and 164 stops. All 40 cases with the exact expected
+offset remained correct. A valid translation can stop if its expected step is
+wrong and the sampled strip is repetitive. A synthetic case with three
 independently moving sampled columns still appends an ambiguous frame.
 Injecting one changed pixel or a 16-pixel horizontal or vertical animation into
 each of those 40 exact-offset cases produced 24 correct outputs and 16 early stops,
 with no incorrect outputs. All 16 stops had a fixed footer and also occurred before
-this guard. An approximate fallback resumed those cases but changed 13 pixels in
+this guard; the newer anchored fallback does not change them. An earlier approximate
+fallback resumed those cases but changed 13 pixels in
 two vertical-animation outputs because its detected footer included static body
-rows. It was not adopted; the fixed-footer matcher still needs broader animation
-tolerance.
+rows. That fallback was not adopted; the fixed-footer matcher still needs broader
+animation tolerance.
 For a synthetic 4K repeated-row overlap with one animated pixel, ten local
 post-warmup samples had medians of 3.13 ms before and 4.12 ms after this guard;
 native capture and slower machines were not measured.

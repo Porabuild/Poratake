@@ -275,10 +275,40 @@ fn find_fixed_footer(
     if min_overlap == 0 {
         return None;
     }
-    for footer in [
+    let footers = [
         known_footer.max(detected_footer),
         known_footer.min(detected_footer),
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        std::iter::once_with(|| {
+            if detected_footer < min_overlap {
+                return [0, 0];
+            }
+            let tolerant_footer = previous
+                .pixels
+                .chunks_exact(row_bytes)
+                .rev()
+                .zip(current.chunks_exact(row_bytes).rev())
+                .take_while(|(top, bottom)| {
+                    top.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(bottom.as_chunks::<4>().0)
+                        .filter(|(old, new)| old != new)
+                        .take(width / 64 + 1)
+                        .count()
+                        <= width / 64
+                })
+                .count();
+            [
+                known_footer.max(tolerant_footer),
+                known_footer.min(tolerant_footer),
+            ]
+        })
+        .flatten(),
+    );
+    for footer in footers {
         if footer == 0 || footer >= height.saturating_sub(previous.overlap) {
             continue;
         }
@@ -487,8 +517,7 @@ pub fn find_overlap(
     }
 
     let exact_match = exact_overlap(&previous.pixels, current_pixels, width, min_overlap);
-    if let Some((exact, alternative)) = exact_match
-        && alternative >= min_overlap
+    if let Some((exact, _)) = exact_match
         && acceptable
         && best_score == 0
         && exact != best_overlap
@@ -997,6 +1026,52 @@ mod tests {
     }
 
     #[test]
+    fn stops_when_a_sampled_overlap_conflicts_with_unique_full_rows() {
+        let (width, height) = (64, 160);
+        let make_frame = |start: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in start..start + height {
+                for x in 0..width {
+                    let value = if x % 2 == 0 && (80..=88).contains(&y) {
+                        40
+                    } else {
+                        (y * 37) as u8
+                    };
+                    pixels.extend_from_slice(&[value, value, value, 255]);
+                }
+            }
+            pixels
+        };
+        let previous = make_frame(0);
+        let current = make_frame(80);
+        assert_eq!(exact_overlap(&previous, &current, width, 8), Some((80, 0)));
+
+        let mut ambiguous = FrameAccumulator::default();
+        assert_eq!(
+            ambiguous.submit(previous.clone(), width, height, 72),
+            CaptureOutcome::Added
+        );
+        assert_eq!(
+            ambiguous.submit(current.clone(), width, height, 72),
+            CaptureOutcome::NoOverlap
+        );
+        assert_eq!(ambiguous.frames().len(), 1);
+        assert_eq!(ambiguous.frames()[0].pixels, previous);
+        assert_eq!(ambiguous.estimated_height(), height);
+
+        let mut aligned = FrameAccumulator::default();
+        assert_eq!(
+            aligned.submit(ambiguous.frames()[0].pixels.clone(), width, height, 80),
+            CaptureOutcome::Added
+        );
+        assert_eq!(
+            aligned.submit(current, width, height, 80),
+            CaptureOutcome::Added
+        );
+        assert_eq!(aligned.frames()[1].overlap, 80);
+    }
+
+    #[test]
     fn stops_when_a_sampled_overlap_conflicts_with_repeated_full_rows() {
         let (width, height) = (64, 160);
         let make_frame = |start: usize| {
@@ -1390,6 +1465,98 @@ mod tests {
             find_overlap(&previous, &current.pixels, width, height, overlap),
             Some(overlap)
         );
+    }
+
+    #[test]
+    fn stitches_a_footer_with_a_small_animated_block() {
+        let (width, height, footer, step) = (1024, 160, 40, 16);
+        let row_bytes = width * 4;
+        let mut accumulator = FrameAccumulator::default();
+        let mut last_footer = Vec::new();
+        for index in 0..3 {
+            let mut pixels = frame(index * step, width, height).pixels;
+            for pixel in pixels[(height - footer) * row_bytes..]
+                .as_chunks_mut::<4>()
+                .0
+            {
+                pixel.copy_from_slice(&[64, 64, 64, 255]);
+            }
+            for y in height - 32..height - 16 {
+                for x in 1..17 {
+                    pixels[(y * width + x) * 4] ^= (index * 64) as u8;
+                }
+            }
+            last_footer = pixels[(height - footer) * row_bytes..].to_vec();
+            assert_eq!(
+                accumulator.submit(pixels, width, height, height - step),
+                CaptureOutcome::Added
+            );
+        }
+        assert_eq!(accumulator.frames()[0].trim_bottom, footer);
+        assert_eq!(accumulator.frames()[1].trim_bottom, footer);
+        assert_eq!(accumulator.frames()[1].overlap, height - footer - step);
+        assert_eq!(accumulator.frames()[2].overlap, height - footer - step);
+
+        let mut actual = Vec::new();
+        for (index, captured) in accumulator.frames().iter().enumerate() {
+            let start = if index == 0 { 0 } else { captured.overlap };
+            actual.extend_from_slice(
+                &captured.pixels[start * row_bytes..(height - captured.trim_bottom) * row_bytes],
+            );
+        }
+        let mut expected = frame(0, width, height + 2 * step).pixels;
+        let footer_start = expected.len() - last_footer.len();
+        expected[footer_start..].copy_from_slice(&last_footer);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn preserves_a_fixed_footer_with_sparse_scrolling_content() {
+        let (width, height, footer, step) = (64, 160, 20, 8);
+        let row_bytes = width * 4;
+        let make_frame = |start: usize, rows: usize| {
+            let mut pixels = Vec::with_capacity(width * rows * 4);
+            for y in 0..rows {
+                for x in 0..width {
+                    let pixel = if y >= rows - footer {
+                        [62, (y - (rows - footer)) as u8, x as u8, 255]
+                    } else if x == 0 {
+                        let value = start + y;
+                        [
+                            value as u8,
+                            (value >> 8) as u8,
+                            value.wrapping_mul(37) as u8,
+                            255,
+                        ]
+                    } else {
+                        [235, 235, 235, 255]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            pixels
+        };
+        let mut accumulator = FrameAccumulator::default();
+        for index in 0..4 {
+            assert_eq!(
+                accumulator.submit(
+                    make_frame(index * step, height),
+                    width,
+                    height,
+                    height - step
+                ),
+                CaptureOutcome::Added
+            );
+        }
+
+        let mut actual = Vec::new();
+        for (index, captured) in accumulator.frames().iter().enumerate() {
+            let start = if index == 0 { 0 } else { captured.overlap };
+            actual.extend_from_slice(
+                &captured.pixels[start * row_bytes..(height - captured.trim_bottom) * row_bytes],
+            );
+        }
+        assert_eq!(actual, make_frame(0, height + 3 * step));
     }
 
     #[test]
