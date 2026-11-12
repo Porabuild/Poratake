@@ -307,6 +307,10 @@ impl RecordingControl {
 
     #[cfg(any(windows, target_os = "macos"))]
     fn clear_native_tooltip(&mut self, _window: &Window) {
+        #[cfg(all(test, windows))]
+        if self.hovered_tooltip.is_some() {
+            crate::system::native_tooltip::record_test_hide("recording-control");
+        }
         self.hovered_tooltip = None;
         #[cfg(windows)]
         {
@@ -356,6 +360,11 @@ impl RecordingControl {
                     if this.tooltip_generation != generation {
                         return;
                     }
+                    #[cfg(all(test, windows))]
+                    crate::system::native_tooltip::record_test_show(
+                        "recording-control",
+                        tooltip.as_ref(),
+                    );
                     if this.native_tooltip.is_none() {
                         this.native_tooltip =
                             crate::system::native_tooltip::WindowsTooltip::new(window);
@@ -1919,6 +1928,107 @@ fn recording_shell(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn recording_tooltip_timer_requests_show_and_dismisses_on_leave_or_key(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                None,
+                None,
+                PreferenceScope::Global,
+            );
+        });
+        let control = cx
+            .update(|cx| registry::handle(RegistryKind::RecordingControl, cx))
+            .unwrap()
+            .downcast::<RecordingControl>()
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(control.into(), cx);
+        visual.settle();
+        let (width, height) = visual.update(|window, _| {
+            (
+                window.bounds().size.width.as_f32().ceil() as usize,
+                window.bounds().size.height.as_f32(),
+            )
+        });
+        let y = height / 2.0;
+        let mut microphone_point = None;
+        for x in (0..width).step_by(2) {
+            visual.simulate_mouse_move(
+                gpui::point(px(x as f32), px(y)),
+                None,
+                gpui::Modifiers::none(),
+            );
+            let is_microphone = control
+                .update(cx, |this, _, _| {
+                    this.hovered_tooltip
+                        .as_ref()
+                        .is_some_and(|(_, text)| text == "Select microphone")
+                })
+                .unwrap();
+            if is_microphone {
+                microphone_point = Some(gpui::point(px(x as f32), px(y)));
+                break;
+            }
+        }
+        let microphone_point = microphone_point.expect("microphone control must be hit-testable");
+
+        crate::system::native_tooltip::take_test_requests();
+        visual.simulate_mouse_move(microphone_point, None, gpui::Modifiers::none());
+        cx.executor().advance_clock(Duration::from_millis(149));
+        cx.run_until_parked();
+        assert!(crate::system::native_tooltip::take_test_requests().is_empty());
+
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        assert_eq!(
+            crate::system::native_tooltip::take_test_requests(),
+            [crate::system::native_tooltip::TooltipRequest::Show(
+                "recording-control",
+                "Select microphone".into(),
+            )]
+        );
+        cx.simulate_keystrokes(control.into(), "a");
+        cx.run_until_parked();
+        assert_eq!(
+            crate::system::native_tooltip::take_test_requests(),
+            [crate::system::native_tooltip::TooltipRequest::Hide(
+                "recording-control"
+            )]
+        );
+
+        visual.simulate_mouse_move(gpui::point(px(0.0), px(0.0)), None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(microphone_point, None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(gpui::point(px(0.0), px(0.0)), None, gpui::Modifiers::none());
+        visual.settle();
+        crate::system::native_tooltip::take_test_requests();
+        cx.executor().advance_clock(Duration::from_millis(150));
+        cx.run_until_parked();
+        assert!(crate::system::native_tooltip::take_test_requests().is_empty());
+    }
 
     #[herogpui::test]
     fn pre_recording_preferences_follow_the_entry_scope(cx: &mut gpui::TestAppContext) {

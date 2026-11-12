@@ -74,13 +74,17 @@ screenshot save, attachment, pin and editor-reopen workflows reach the baseline 
 passed the workflow and geometry assertions in all 16 Windows visual profiles,
 then failed on the expected changed state list. Its Microsoft Basic renderer
 images were compared across every profile and the changed tooltip, pressed and
-video-preview states were reviewed. The corresponding NVIDIA baselines still
-need a final capture and review, including the latest video-preview change. Windows
-native and accessibility checks passed; Linux Clippy found platform-specific
+video-preview states were reviewed. Final local NVIDIA captures also reached the
+state-list gate for all 16 profiles. Their changed states were reviewed, and all
+2,912 resulting baseline images matched the captures pixel-for-pixel. A strict
+rerun against those NVIDIA references passed all 16 profiles. Windows native
+and accessibility checks passed; Linux Clippy found platform-specific
 tooltip warnings that a follow-up gates. In the next run Linux passed and the
 macOS daemon built, but its native fixture hung during the existing scroll checks.
 The follow-up keeps those checks on the synchronous main thread and bounds their
-response wait; hosted verification of that change remains pending.
+response wait. The fixture compiled and passed in
+[hosted CI at `5359f58f`](https://github.com/Porabuild/Poratake/actions/runs/43307382869);
+the full run is still in progress.
 
 For translucent video wallpaper, the preview now uses the encoder's opaque
 pixel conversion. A Windows MP4 test compares the decoded export with the actual
@@ -228,18 +232,18 @@ overlay is transparent; this fixture artifact does not verify physical displays.
 Loaded-video windows respect their 1200×750 minimum: the 950px cases use 1200px
 for that surface. Recording controls use their measured content width.
 
-| Surface             | Exercised evidence                                                                                                                          | Limits                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                                    |
-| Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                             |
-| Color picker        | Center, four display corners and 400×300 narrow window; exact sampled loupe pixels and pointer clearance                                    | Physical pointer transitions and native clipboard delivery remain unverified                       |
-| All-in-one          | Screenshot/record area, window and display pickers; OCR area, window highlights, pointer leave and normal/narrow tooltips                   | Window ownership is simulated; physical pointer transitions remain unverified                      |
-| Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks       |
-| Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                              |
-| Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                  | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                       |
-| Pin window          | Default, hover, enlarged and narrow windows; image bounds and close control; annotated editor restoration with history enabled and disabled | Native movement and Alt+F4 restoration verified on Windows at 100%; mixed DPI remains unverified   |
-| Capture preview     | Single cards and four-card stacks; four corners, eviction, explicit editor handoff, auto-dismiss, hover ownership and a four-display menu   | Native capture handoff verified; current native tooltips and multi-monitor menus need verification |
-| Tray menu           | Window height equals the painted menu at every simulated scale; fitted-menu image baselines                                                 | Native prewarmed client height verified at 100%; physical mixed-DPI transitions remain unverified  |
+| Surface             | Exercised evidence                                                                                                                          | Limits                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Screenshot editor   | Default, representative hover/held press/keyboard focus, selected tools, thickness/color/tool panels and keyboard-operated nested menus     | Not every control's complete interaction matrix                                                   |
+| Area overlays       | Screenshot, OCR, QR, timer, scroll, recording and editor-attach default/drag-selection surfaces; standalone window/display picker states    | No OCR/QR service result or stitched-scroll output from these fixtures                            |
+| Color picker        | Center, four display corners and 400×300 narrow window; exact sampled loupe pixels and pointer clearance                                    | Physical pointer transitions and native clipboard delivery remain unverified                      |
+| All-in-one          | Screenshot/record area, window and display pickers; OCR area, window highlights, pointer leave and normal/narrow tooltips                   | Window ownership is simulated; physical pointer transitions remain unverified                     |
+| Recording controls  | Area/window defaults, hover/held press/keyboard focus, long device menus, countdown/cancel, active/paused/muted and locked camera choices   | Fixture RPCs assume granted media permission; hardware and real consent remain native checks      |
+| Video editor        | Empty editor states plus a loaded encoded project, drawing, wallpaper and all ten side panels                                               | Playback and every panel's control states are not yet image baselines                             |
+| Annotation workflow | Annotated preview, history reopen and flattened PNG reopen                                                                                  | Built-in fixture at 1280px/100%; custom comparison images skip this workflow                      |
+| Pin window          | Default, hover, enlarged and narrow windows; image bounds and close control; annotated editor restoration with history enabled and disabled | Native movement and Alt+F4 restoration verified on Windows at 100%; mixed DPI remains unverified  |
+| Capture preview     | Single cards and four-card stacks; four corners, eviction, explicit editor handoff, auto-dismiss, hover ownership and a four-display menu   | Native capture handoff verified; native hover delivery and multi-monitor menus need verification  |
+| Tray menu           | Window height equals the painted menu at every simulated scale; fitted-menu image baselines                                                 | Native prewarmed client height verified at 100%; physical mixed-DPI transitions remain unverified |
 
 Geometry assertions check 21 toolbar entries, 28/32px control sizes, spacing,
 nonoverlapping options, visible caption buttons and the ability to scroll overflow
@@ -1351,14 +1355,16 @@ Bugs fixed in this pass:
 - The recording bar and capture-preview controls now use native hover tooltips
   on Windows and macOS to let their labels extend beyond the small window.
   An isolated Windows tooltip painted readable text outside a 52px owner window;
-  the preview fixture checks hover ownership, stale leave events and keyboard
-  dismissal. A real GPUI hover and macOS tooltip still need native verification.
+  focused Windows headless tests exercise GPUI pointer hit-testing, the 150 ms
+  presenter request, leave cancellation and keyboard dismissal. They do not
+  prove a GPUI-owned native tooltip is displayed. Real Windows hover delivery
+  and macOS tooltip appearance still need native verification.
 - A keyboard-opened all-in-one target menu could leave its trigger pressed after
   focus moved. The shared keyboard release now runs in the capture phase; the
   vendored control test reproduces the focus transfer and stopped propagation.
 - The missing-thumbnail video placeholder now fades when its controls appear,
-  keeping the film icon out of the Copy and Edit controls. New idle and hover
-  pixel checks await the next visual run.
+  keeping the film icon out of the Copy and Edit controls. Idle and hover
+  pixel checks reached the visual baseline gate across both Windows renderers.
 - Windows change-driven capture wrote every frame with a fixed short duration,
   truncating static takes. Pending samples now receive their real duration before
   submission; finalization and pause accounting use the capture clock.
@@ -1418,7 +1424,9 @@ fractional annotation origins, both rectangle/blackout input orders and five
 coordinate scales. A separate Chrome 157 proxy matched the saved Electron corner
 sample at 1×, but 27 of 120 corner samples differed from GPUI by more than two channel
 levels, up to 27. This proxy does not establish parity with Poratake's pinned
-Electron version at the other positions and scales.
+Electron version at the other positions and scales. An offscreen fixture using
+the pinned Electron 43.4.0 reproduced the 1× corner sample and the tested export
+order; it does not exercise the complete editor workflow.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1461,7 +1469,8 @@ the selected area when there is no room beside it, and the daemon captures
 on-screen windows. The daemon's native boundary and control windows use
 `NSWindowSharingNone`, a legacy value that [Apple does not recommend relying on to omit captured content](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none).
 Verify saved pixels against a real selected area, including a full-width area,
-before claiming that the overlay is absent from capture output.
+before claiming that the overlay is absent from capture output. This is separate
+from the ScreenCaptureKit recording-window exclusions below.
 
 Windows tooltip capture protection falls back to `WDA_MONITOR` if full exclusion
 fails; that mode can leave a black rectangle in a recording. If both affinity
@@ -1470,8 +1479,9 @@ hover delivery, click-through, and recorded pixels on supported Windows displays
 
 The macOS recording path now requests exclusion of the recording control and
 registers camera and overlay windows with its ScreenCaptureKit filter. New
-synthetic fixtures cover filter updates and stop coordination; their hosted run
-still needs to pass. Verify a real recording, including whether
+synthetic fixtures cover filter updates and stop coordination and passed in
+[hosted CI at `5359f58f`](https://github.com/Porabuild/Poratake/actions/runs/43307382869).
+Verify a real recording, including whether
 staged transparent windows appear in `SCShareableContent` before they are shown.
 
 A full-frame comparison alone was rejected as a replacement for the sampled
@@ -1622,7 +1632,7 @@ These are not evidence that unrelated features match.
 | Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                                              |
 | Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                                                                  |
 | Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                                                           |
-| Blocked or unverified                 | CI on the current head, physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. The approved permission isolation and icon-only contrast refinements are implemented.                                                                                                                                  |
+| Blocked or unverified                 | Full CI on the current head is in progress; physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. The approved permission isolation and icon-only contrast refinements are implemented.                                                                                                              |
 
 The local Windows GPUI suite passed serially with 948 tests and one ignored. One
 earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while

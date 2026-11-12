@@ -2210,6 +2210,10 @@ impl preview::NativeTooltipHost for CapturePreviewWindow {
             self.preview_tooltip_cancel(key, window);
             return;
         }
+        #[cfg(all(test, windows))]
+        if self.native_tooltip_status.key.is_some() {
+            crate::system::native_tooltip::record_test_hide("capture-preview");
+        }
         let generation = self.native_tooltip_status.enter(key);
         #[cfg(windows)]
         if let Some(native) = &mut self.native_tooltip {
@@ -2229,6 +2233,8 @@ impl preview::NativeTooltipHost for CapturePreviewWindow {
                 }
                 #[cfg(windows)]
                 {
+                    #[cfg(test)]
+                    crate::system::native_tooltip::record_test_show("capture-preview", &tooltip);
                     if this.native_tooltip.is_none() {
                         this.native_tooltip =
                             crate::system::native_tooltip::WindowsTooltip::new(_window);
@@ -2252,6 +2258,11 @@ impl preview::NativeTooltipHost for CapturePreviewWindow {
             return;
         }
         #[cfg(windows)]
+        {
+            #[cfg(test)]
+            crate::system::native_tooltip::record_test_hide("capture-preview");
+        }
+        #[cfg(windows)]
         if let Some(native) = &mut self.native_tooltip {
             native.hide();
         }
@@ -2272,6 +2283,10 @@ impl CapturePreviewWindow {
     }
 
     fn clear_native_tooltip(&mut self, _window: &mut Window) {
+        #[cfg(all(test, windows))]
+        if self.native_tooltip_status.key.is_some() {
+            crate::system::native_tooltip::record_test_hide("capture-preview");
+        }
         self.native_tooltip_status.clear();
         #[cfg(windows)]
         if let Some(native) = &mut self.native_tooltip {
@@ -2311,6 +2326,104 @@ mod tests {
         let menu = status.enter(&menu_key);
         status.clear();
         assert!(!status.is_current(&menu_key, menu));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn preview_tooltip_timer_requests_show_only_while_hovered(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.preview.corner = "bottom-right".into();
+            settings.preview.auto_dismiss = false;
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+        });
+        cx.simulate_display_added(gpui::DisplayId::new(10), None);
+        cx.simulate_display_added(gpui::DisplayId::new(11), None);
+        cx.update(|cx| CapturePreviewWindow::open(cx, path));
+        let stack = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let (_wrapper, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview { preview });
+        visual.simulate_resize(size(px(208.), px(604.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+
+        crate::system::native_tooltip::take_test_requests();
+        visual.simulate_mouse_move(
+            gpui::point(px(184.), px(552.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(149));
+        visual.settle();
+        assert!(crate::system::native_tooltip::take_test_requests().is_empty());
+
+        visual.executor().advance_clock(Duration::from_millis(1));
+        visual.settle();
+        assert_eq!(
+            crate::system::native_tooltip::take_test_requests(),
+            [crate::system::native_tooltip::TooltipRequest::Show(
+                "capture-preview",
+                "Move previews to another display".into(),
+            )]
+        );
+
+        visual.press("escape");
+        assert_eq!(
+            crate::system::native_tooltip::take_test_requests(),
+            [crate::system::native_tooltip::TooltipRequest::Hide(
+                "capture-preview"
+            )]
+        );
+
+        visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(184.), px(552.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(150));
+        visual.settle();
+        crate::system::native_tooltip::take_test_requests();
+        visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, gpui::Modifiers::none());
+        visual.settle();
+        assert_eq!(
+            crate::system::native_tooltip::take_test_requests(),
+            [crate::system::native_tooltip::TooltipRequest::Hide(
+                "capture-preview"
+            )]
+        );
+
+        visual.simulate_mouse_move(
+            gpui::point(px(184.), px(552.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        crate::system::native_tooltip::take_test_requests();
+        visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, gpui::Modifiers::none());
+        visual.settle();
+        crate::system::native_tooltip::take_test_requests();
+        visual.executor().advance_clock(Duration::from_millis(150));
+        visual.settle();
+        assert!(crate::system::native_tooltip::take_test_requests().is_empty());
     }
 
     struct HoveredPreview {

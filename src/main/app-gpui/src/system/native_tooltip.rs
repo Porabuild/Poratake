@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::RefCell;
 use std::ffi::c_void;
 
 use gpui::Window;
@@ -25,6 +27,36 @@ const TOOL_ID: usize = 1;
 const CURSOR_OFFSET_X: i32 = 16;
 const CURSOR_OFFSET_Y: i32 = 24;
 const MONITOR_GAP: i32 = 8;
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TooltipRequest {
+    Show(&'static str, String),
+    Hide(&'static str),
+}
+
+#[cfg(test)]
+thread_local! {
+    static TOOLTIP_REQUESTS: RefCell<Vec<TooltipRequest>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn record_test_show(owner: &'static str, text: &str) {
+    TOOLTIP_REQUESTS.with(|requests| {
+        let mut requests = requests.borrow_mut();
+        requests.push(TooltipRequest::Show(owner, text.to_owned()));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn record_test_hide(owner: &'static str) {
+    TOOLTIP_REQUESTS.with(|requests| requests.borrow_mut().push(TooltipRequest::Hide(owner)));
+}
+
+#[cfg(test)]
+pub(crate) fn take_test_requests() -> Vec<TooltipRequest> {
+    TOOLTIP_REQUESTS.with(|requests| std::mem::take(&mut *requests.borrow_mut()))
+}
 
 pub struct WindowsTooltip {
     window: HWND,
