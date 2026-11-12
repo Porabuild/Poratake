@@ -528,6 +528,45 @@ mod tests {
         cancel_overlay(&mut cx);
         *STATE.lock() = None;
 
+        cx.simulate_display_added(gpui::DisplayId::new(10), None);
+        with_state(|state| {
+            state.reasons.insert(HideSource::Menu, 1);
+            state.hidden = true;
+        });
+        service
+            .freeze
+            .freeze_succeeds_for_test
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        cx.update(crate::capture::start_screen_capture);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(crate::capture::overlay::active_intents_for_test),
+            [
+                crate::capture::intent::CaptureIntent::Screenshot,
+                crate::capture::intent::CaptureIntent::Screenshot
+            ]
+        );
+        assert_eq!(capture_count(), Some(1));
+        cx.update(crate::capture::overlay::close_all);
+        cx.run_until_parked();
+        assert_eq!(capture_count(), None);
+        assert!(are_hidden());
+        service
+            .config
+            .update(|settings| settings.screenshot.freeze_screen = false);
+        let generation = service.freeze.state.lock().next_generation;
+        cx.update(crate::capture::start_screen_capture);
+        cx.run_until_parked();
+        assert_eq!(capture_count(), None);
+        assert_eq!(service.freeze.state.lock().next_generation, generation);
+        cx.update(crate::capture::overlay::close_all);
+        cx.run_until_parked();
+        service
+            .config
+            .update(|settings| settings.screenshot.freeze_screen = true);
+        cx.simulate_display_removed(gpui::DisplayId::new(10));
+        *STATE.lock() = None;
+
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let gate = std::thread::spawn(move || {

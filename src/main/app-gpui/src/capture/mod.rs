@@ -656,6 +656,53 @@ fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
     )
 }
 
+fn with_selection_icon_hide(
+    cx: &mut gpui::App,
+    release_first: Option<u64>,
+    open: impl FnOnce(&mut gpui::App) + 'static,
+) {
+    let service = crate::state::state(cx);
+    if !desktop_icons::should_hide_for_capture(&service.config) {
+        open(cx);
+        return;
+    }
+    let owner = overlay::revision(cx);
+    if let Some(generation) = release_first.filter(|generation| *generation != 0) {
+        overlay::set_pending_freeze(generation, cx);
+    }
+    let transition = desktop_icons::track_transition();
+    cx.spawn(async move |cx| {
+        let current =
+            cx.update(|cx| overlay::revision(cx) == owner && !desktop_icons::is_shutting_down());
+        if !current {
+            drop(transition);
+            return;
+        }
+        let hide = cx
+            .background_executor()
+            .spawn(async move { desktop_icons::hide_for_capture(&service.daemon, &service.config) })
+            .await;
+        let stale = cx.update(|cx| {
+            if overlay::revision(cx) != owner || desktop_icons::is_shutting_down() {
+                return Some((hide, transition));
+            }
+            drop(transition);
+            overlay::set_capture_hide(hide, cx);
+            open(cx);
+            None
+        });
+        if let Some((hide, transition)) = stale {
+            cx.background_executor()
+                .spawn(async move {
+                    drop(hide);
+                    drop(transition);
+                })
+                .detach();
+        }
+    })
+    .detach();
+}
+
 /// Opens the shared area overlay for one of the selection-driven flows.
 pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
     if desktop_icons::is_shutting_down() {
@@ -679,48 +726,10 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
     }
     let release_first = overlay::replace_all(cx);
     if hides_icons_before_selection(intent) {
-        let service = crate::state::state(cx);
-        if desktop_icons::should_hide_for_capture(&service.config) {
-            let owner = overlay::revision(cx);
-            if let Some(generation) = release_first.filter(|generation| *generation != 0) {
-                overlay::set_pending_freeze(generation, cx);
-            }
-            let transition = desktop_icons::track_transition();
-            cx.spawn(async move |cx| {
-                let current = cx.update(|cx| {
-                    overlay::revision(cx) == owner && !desktop_icons::is_shutting_down()
-                });
-                if !current {
-                    drop(transition);
-                    return;
-                }
-                let hide = cx
-                    .background_executor()
-                    .spawn(async move {
-                        desktop_icons::hide_for_capture(&service.daemon, &service.config)
-                    })
-                    .await;
-                let stale = cx.update(|cx| {
-                    if overlay::revision(cx) != owner || desktop_icons::is_shutting_down() {
-                        return Some((hide, transition));
-                    }
-                    drop(transition);
-                    overlay::set_capture_hide(hide, cx);
-                    open_area_selection(intent, release_first, cx);
-                    None
-                });
-                if let Some((hide, transition)) = stale {
-                    cx.background_executor()
-                        .spawn(async move {
-                            drop(hide);
-                            drop(transition);
-                        })
-                        .detach();
-                }
-            })
-            .detach();
-            return;
-        }
+        with_selection_icon_hide(cx, release_first, move |cx| {
+            open_area_selection(intent, release_first, cx);
+        });
+        return;
     }
     open_area_selection(intent, release_first, cx);
 }
@@ -1034,6 +1043,10 @@ struct ScreenTarget {
     primary: bool,
 }
 
+#[cfg(all(windows, feature = "parity"))]
+pub(crate) static DUPLICATE_SCREEN_TARGET_FOR_PARITY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(any(target_os = "linux", test))]
 fn x11_screen_bounds(
     rect: poratake_daemon_common::geometry::CaptureRect,
@@ -1093,6 +1106,14 @@ fn screen_targets(cx: &mut gpui::App) -> Result<Vec<ScreenTarget>> {
         });
     }
     targets.sort_by_key(|target| !target.primary);
+    #[cfg(all(windows, feature = "parity"))]
+    if let Some(target) = targets
+        .first()
+        .cloned()
+        .filter(|_| DUPLICATE_SCREEN_TARGET_FOR_PARITY.load(std::sync::atomic::Ordering::SeqCst))
+    {
+        targets.push(target);
+    }
     Ok(targets)
 }
 
@@ -1181,40 +1202,55 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
         )
     {
         let fallback = targets[0].clone();
-        with_frozen_screen(
-            cx,
-            release_first,
-            true,
-            "Capture Failed",
-            move |cx, deferred_show, generation| {
-                let service = crate::state::state(cx);
-                let target_count = targets.len();
-                let mut opened = 0;
-                for target in targets {
-                    if overlay::AreaOverlay::open_screen_picker(
-                        service.clone(),
-                        target.display_id,
-                        target.bounds,
-                        intent::CaptureIntent::Screenshot,
-                        overlay::OverlayLaunch {
-                            focus: opened == 0,
-                            deferred_show,
-                            generation,
-                        },
-                        cx,
-                    )
-                    .is_some()
-                    {
-                        opened += 1;
+        let show_picker = move |cx: &mut gpui::App| {
+            with_frozen_screen(
+                cx,
+                release_first,
+                true,
+                "Capture Failed",
+                move |cx, deferred_show, generation| {
+                    let service = crate::state::state(cx);
+                    let target_count = targets.len();
+                    let mut opened = 0;
+                    for target in targets {
+                        if overlay::AreaOverlay::open_screen_picker(
+                            service.clone(),
+                            target.display_id,
+                            target.bounds,
+                            intent::CaptureIntent::Screenshot,
+                            overlay::OverlayLaunch {
+                                focus: opened == 0,
+                                deferred_show,
+                                generation,
+                            },
+                            cx,
+                        )
+                        .is_some()
+                        {
+                            opened += 1;
+                        }
                     }
-                }
-                if all_screen_targets_opened(opened, target_count) {
-                    return true;
-                }
-                fallback_screen_target(fallback.clone(), opened > 0, cx);
-                false
-            },
-        );
+                    if all_screen_targets_opened(opened, target_count) {
+                        return true;
+                    }
+                    fallback_screen_target(fallback.clone(), opened > 0, cx);
+                    false
+                },
+            );
+        };
+        if crate::state::state(cx)
+            .config
+            .get()
+            .screenshot
+            .freeze_screen
+            && crate::system::capabilities::is_supported(
+                crate::system::capabilities::Feature::FreezeScreen,
+            )
+        {
+            with_selection_icon_hide(cx, release_first, show_picker);
+        } else {
+            show_picker(cx);
+        }
         return;
     }
 
