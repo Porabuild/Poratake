@@ -975,10 +975,10 @@ impl EditorWindow {
     /// The topmost annotation under `point`, which is the last one drawn.
     fn annotation_at(&self, point: Point) -> Option<String> {
         const TOLERANCE: f64 = 4.0;
-        self.history
-            .current()
-            .iter()
+        crate::render::annotations::screenshot_paints(self.history.current().iter())
+            .into_iter()
             .rev()
+            .map(|paint| paint.annotation())
             .find(|annotation| {
                 let (left, top, right, bottom) = annotation.bounds();
                 point.x as f64 >= left - TOLERANCE

@@ -15,9 +15,72 @@ use crate::render::canvas::{circle_path, rounded_rect_path, Canvas};
 use crate::render::freehand::{self, Vec2};
 use crate::render::{blur, color, text};
 
-pub fn draw_all_screenshot(canvas: &mut Canvas, annotations: &[Annotation], native_scale: f64) {
+#[derive(Clone, Copy, Debug)]
+pub enum ScreenshotPaint<'a> {
+    Annotation(&'a Annotation),
+    BlackoutOverlay(&'a Annotation),
+}
+
+impl<'a> ScreenshotPaint<'a> {
+    pub fn annotation(self) -> &'a Annotation {
+        match self {
+            Self::Annotation(annotation) | Self::BlackoutOverlay(annotation) => annotation,
+        }
+    }
+}
+
+pub fn screenshot_paints<'a>(
+    annotations: impl Iterator<Item = &'a Annotation> + Clone,
+) -> Vec<ScreenshotPaint<'a>> {
+    let mut paints = Vec::with_capacity(annotations.size_hint().1.unwrap_or(0));
+    for annotation in annotations.clone() {
+        if matches!(annotation, Annotation::Redact { .. }) {
+            paints.push(ScreenshotPaint::Annotation(annotation));
+        }
+    }
+    for annotation in annotations.clone() {
+        match annotation {
+            Annotation::Redact { style, .. } if style == "blackout" => {
+                paints.push(ScreenshotPaint::BlackoutOverlay(annotation));
+            }
+            Annotation::Redact { .. } | Annotation::Highlight { .. } => {}
+            _ => paints.push(ScreenshotPaint::Annotation(annotation)),
+        }
+    }
     for annotation in annotations {
-        draw_screenshot(canvas, annotation, native_scale);
+        if matches!(annotation, Annotation::Highlight { .. }) {
+            paints.push(ScreenshotPaint::Annotation(annotation));
+        }
+    }
+    paints
+}
+
+pub fn draw_all_screenshot(canvas: &mut Canvas, annotations: &[Annotation], native_scale: f64) {
+    for paint in screenshot_paints(annotations.iter()) {
+        draw_screenshot_paint(canvas, paint, native_scale);
+    }
+}
+
+pub fn draw_screenshot_paint(canvas: &mut Canvas, paint: ScreenshotPaint<'_>, native_scale: f64) {
+    match paint {
+        ScreenshotPaint::Annotation(annotation) => {
+            draw_screenshot(canvas, annotation, native_scale)
+        }
+        ScreenshotPaint::BlackoutOverlay(Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }) => {
+            let (x, y, width, height) = normalize_rect(*x, *y, *width, *height);
+            if let Some(path) =
+                rounded_rect_path(x as f32, y as f32, width as f32, height as f32, 2.)
+            {
+                canvas.fill_path(&path, Color::BLACK, FillRule::Winding);
+            }
+        }
+        ScreenshotPaint::BlackoutOverlay(_) => {}
     }
 }
 

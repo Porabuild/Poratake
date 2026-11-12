@@ -13,6 +13,7 @@ use crate::editor::annotations::{
     arrow_curve_control, arrow_head_size, number_size_config, Annotation,
 };
 use crate::render::annotations as renderer;
+use crate::render::annotations::ScreenshotPaint;
 use crate::render::canvas::Canvas;
 
 const MAX_PATCH_PIXELS: f64 = 8_388_608.0;
@@ -200,13 +201,14 @@ fn raster_bounds(
 
 pub fn overlaps_filtered_redaction(
     annotation: &Annotation,
-    beneath: &[&Annotation],
+    beneath: &[ScreenshotPaint<'_>],
     surface: &Surface,
 ) -> bool {
     let Some(bounds) = raster_bounds(annotation, surface, 1.) else {
         return false;
     };
     beneath.iter().any(|earlier| {
+        let earlier = earlier.annotation();
         if !matches!(earlier, Annotation::Redact { style, .. } if style == "blur" || style == "pixelate") {
             return false;
         }
@@ -227,17 +229,17 @@ fn fit_scale(width: f64, height: f64, scale: f64) -> f64 {
 }
 
 pub fn patch(
-    annotation: &Annotation,
-    beneath: &[&Annotation],
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
     surface: &Surface,
     scale: f64,
 ) -> Option<Patch> {
-    patch_padded(annotation, beneath, surface, scale, 0.)
+    patch_padded(paint, beneath, surface, scale, 0.)
 }
 
 fn patch_padded(
-    annotation: &Annotation,
-    beneath: &[&Annotation],
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
     surface: &Surface,
     scale: f64,
     padding: f64,
@@ -251,6 +253,7 @@ fn patch_padded(
     let minimum_scale = fit_scale(surface_width, surface_height, scale)
         .min((MAX_PATCH_DIMENSION - 1.0) / surface_width)
         .min((MAX_PATCH_DIMENSION - 1.0) / surface_height);
+    let annotation = paint.annotation();
     let bounds = raster_bounds(annotation, surface, minimum_scale)?;
     let target = if matches!(annotation, Annotation::Redact { .. }) {
         annotation.bounds()
@@ -267,6 +270,7 @@ fn patch_padded(
     loop {
         let previous = sample;
         for earlier in beneath {
+            let earlier = earlier.annotation();
             if !matches!(earlier, Annotation::Redact { .. }) {
                 continue;
             }
@@ -357,10 +361,10 @@ fn patch_padded(
     }
     if surface.pixels.is_some() {
         for earlier in beneath {
-            renderer::draw_screenshot(&mut canvas, earlier, surface.native_scale);
+            renderer::draw_screenshot_paint(&mut canvas, *earlier, surface.native_scale);
         }
     }
-    renderer::draw_screenshot(&mut canvas, annotation, surface.native_scale);
+    renderer::draw_screenshot_paint(&mut canvas, paint, surface.native_scale);
     if !surface.composite_backdrop {
         draw_matte(&mut canvas);
     }
@@ -461,12 +465,9 @@ pub struct FrameKeys {
     prefixes: Vec<u64>,
 }
 
-pub fn begin_frame(visible: &[&Annotation]) -> FrameKeys {
+pub fn begin_frame(visible: &[ScreenshotPaint<'_>]) -> FrameKeys {
     FRAME.with(|frame| frame.set(frame.get().wrapping_add(1)));
-    let hashes: Vec<u64> = visible
-        .iter()
-        .map(|annotation| hash_of(annotation))
-        .collect();
+    let hashes: Vec<u64> = visible.iter().map(|paint| hash_of(paint)).collect();
     let mut prefixes = Vec::with_capacity(hashes.len());
     let mut running = 0u64;
     for hash in &hashes {
@@ -498,12 +499,13 @@ pub fn end_frame(window: &mut gpui::Window) {
 pub fn image(
     keys: &FrameKeys,
     index: usize,
-    annotation: &Annotation,
-    beneath: &[&Annotation],
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
     surface: &Surface,
     scale: f64,
 ) -> Option<PatchImage> {
-    let scale = if matches!(annotation, Annotation::Redact { style, .. } if style == "pixelate") {
+    let scale = if matches!(paint.annotation(), Annotation::Redact { style, .. } if style == "pixelate")
+    {
         1.0
     } else {
         scale
@@ -520,7 +522,7 @@ pub fn image(
         return Some(cached);
     }
 
-    let patch = patch(annotation, beneath, surface, scale)?;
+    let patch = patch(paint, beneath, surface, scale)?;
     let value = PatchImage {
         image: render_image(&patch.pixmap),
         x: patch.x,
@@ -543,8 +545,8 @@ pub fn image(
 pub fn aligned_image(
     keys: &FrameKeys,
     index: usize,
-    annotation: &Annotation,
-    beneath: &[&Annotation],
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
     surface: &Surface,
     grid: SamplingGrid,
 ) -> Option<PatchImage> {
@@ -600,6 +602,7 @@ pub fn aligned_image(
     if scale_x <= 0. || scale_y <= 0. {
         return None;
     }
+    let annotation = paint.annotation();
     let bounds = raster_bounds(annotation, surface, 1.)?;
     let target = if matches!(annotation, Annotation::Redact { .. }) {
         annotation.bounds()
@@ -635,7 +638,7 @@ pub fn aligned_image(
         matte: None,
         ..*surface
     };
-    let patch = patch_padded(annotation, beneath, &raw_surface, 1., guard)?;
+    let patch = patch_padded(paint, beneath, &raw_surface, 1., guard)?;
     if f64::from(patch.pixmap.width()) != patch.width
         || f64::from(patch.pixmap.height()) != patch.height
     {
@@ -721,9 +724,9 @@ impl std::fmt::Write for Fingerprint {
     }
 }
 
-fn hash_of(annotation: &Annotation) -> u64 {
+fn hash_of(paint: &ScreenshotPaint<'_>) -> u64 {
     let mut hasher = Fingerprint(DefaultHasher::new());
-    let _ = write!(hasher, "{annotation:?}");
+    let _ = write!(hasher, "{paint:?}");
     hasher.0.finish()
 }
 
@@ -763,6 +766,67 @@ fn render_image(pixmap: &Pixmap) -> Arc<RenderImage> {
 mod tests {
     use super::*;
     use tiny_skia::{BlendMode, FilterQuality, PixmapPaint, Transform};
+
+    fn paints<'a>(annotations: &[&'a Annotation]) -> Vec<ScreenshotPaint<'a>> {
+        annotations
+            .iter()
+            .map(|annotation| ScreenshotPaint::Annotation(annotation))
+            .collect()
+    }
+
+    fn begin_frame(annotations: &[&Annotation]) -> FrameKeys {
+        super::begin_frame(&paints(annotations))
+    }
+
+    fn patch(
+        annotation: &Annotation,
+        beneath: &[&Annotation],
+        surface: &Surface,
+        scale: f64,
+    ) -> Option<Patch> {
+        super::patch(
+            ScreenshotPaint::Annotation(annotation),
+            &paints(beneath),
+            surface,
+            scale,
+        )
+    }
+
+    fn image(
+        keys: &FrameKeys,
+        index: usize,
+        annotation: &Annotation,
+        beneath: &[&Annotation],
+        surface: &Surface,
+        scale: f64,
+    ) -> Option<PatchImage> {
+        super::image(
+            keys,
+            index,
+            ScreenshotPaint::Annotation(annotation),
+            &paints(beneath),
+            surface,
+            scale,
+        )
+    }
+
+    fn aligned_image(
+        keys: &FrameKeys,
+        index: usize,
+        annotation: &Annotation,
+        beneath: &[&Annotation],
+        surface: &Surface,
+        grid: SamplingGrid,
+    ) -> Option<PatchImage> {
+        super::aligned_image(
+            keys,
+            index,
+            ScreenshotPaint::Annotation(annotation),
+            &paints(beneath),
+            surface,
+            grid,
+        )
+    }
 
     fn base_pixmap(width: u32, height: u32) -> Pixmap {
         let mut pixmap = Pixmap::new(width, height).expect("base");
@@ -1239,7 +1303,7 @@ mod tests {
             blend_mode: BlendMode::Source,
             quality: FilterQuality::Nearest,
         };
-        let refs: Vec<&Annotation> = annotations.iter().collect();
+        let paints = renderer::screenshot_paints(annotations.iter());
         for scale in [1., 1.25, 2.] {
             let mut exported = Canvas::new((180. * scale) as u32, (140. * scale) as u32).unwrap();
             exported.scale(scale as f32, scale as f32);
@@ -1248,8 +1312,8 @@ mod tests {
             exported.translate(surface.offset_x as f32, surface.offset_y as f32);
             renderer::draw_all_screenshot(&mut exported, &annotations, surface.native_scale);
             let exported = exported.into_pixmap();
-            for (index, annotation) in annotations.iter().enumerate() {
-                let patch = patch(annotation, &refs[..index], &surface, scale).unwrap();
+            for (index, operation) in paints.iter().enumerate() {
+                let patch = super::patch(*operation, &paints[..index], &surface, scale).unwrap();
                 preview.draw_pixmap(
                     ((patch.x + surface.offset_x) * scale).round() as i32,
                     ((patch.y + surface.offset_y) * scale).round() as i32,
@@ -1266,6 +1330,94 @@ mod tests {
                     actual.abs_diff(*expected) <= 1,
                     "channel {index} at {scale}x differs: {actual} vs {expected}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_redaction_and_highlight_patches_match_export() {
+        let base = base_pixmap(100, 80);
+        let source = render_image(&base);
+        let surface = Surface {
+            image_id: Some(source.id),
+            width: 100,
+            height: 80,
+            offset_x: 0.,
+            offset_y: 0.,
+            native_scale: 1.,
+            pixels: source.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let shape = Annotation::Rectangle {
+            id: "shape".into(),
+            x: 30.,
+            y: 20.,
+            width: 24.,
+            height: 24.,
+            stroke: "#ff00ff".into(),
+            stroke_width: 1.,
+            fill: Some("#ff00ff".into()),
+        };
+        let redact = |style: &str| Annotation::Redact {
+            id: style.into(),
+            x: 32.,
+            y: 22.,
+            width: 20.,
+            height: 20.,
+            style: style.into(),
+            intensity: 2.,
+        };
+        let highlight = Annotation::Highlight {
+            id: "highlight".into(),
+            points: vec![25., 30., 55., 30.],
+            fill: "#ffff00".into(),
+            opacity: 0.5,
+            stroke_width: 10.,
+        };
+        let paint = PixmapPaint {
+            opacity: 1.,
+            blend_mode: BlendMode::Source,
+            quality: FilterQuality::Nearest,
+        };
+        for annotations in [
+            vec![shape.clone(), redact("blur"), highlight.clone()],
+            vec![highlight.clone(), redact("pixelate"), shape.clone()],
+            vec![shape.clone(), redact("blackout"), highlight.clone()],
+            vec![highlight.clone(), redact("blackout"), shape.clone()],
+        ] {
+            for scale in [1., 1.25, 2.] {
+                let mut exported =
+                    Canvas::new((100. * scale) as u32, (80. * scale) as u32).unwrap();
+                exported.scale(scale as f32, scale as f32);
+                exported.draw_pixmap(base.as_ref(), 0., 0., 100., 80.);
+                let mut preview = exported.pixmap().clone();
+                renderer::draw_all_screenshot(&mut exported, &annotations, 1.);
+                let operations = renderer::screenshot_paints(annotations.iter());
+                for (index, operation) in operations.iter().enumerate() {
+                    let patch =
+                        super::patch(*operation, &operations[..index], &surface, scale).unwrap();
+                    preview.draw_pixmap(
+                        (patch.x * scale).round() as i32,
+                        (patch.y * scale).round() as i32,
+                        patch.pixmap.as_ref(),
+                        &paint,
+                        Transform::identity(),
+                        None,
+                    );
+                }
+                for (index, (actual, expected)) in preview
+                    .data()
+                    .iter()
+                    .zip(exported.pixmap().data())
+                    .enumerate()
+                {
+                    assert!(
+                        actual.abs_diff(*expected) <= 2,
+                        "{annotations:?}, {scale}x, channel {index}: {actual} vs {expected}"
+                    );
+                }
             }
         }
     }

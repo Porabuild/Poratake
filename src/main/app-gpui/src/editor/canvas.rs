@@ -523,12 +523,21 @@ fn paint_annotations(
         [single] => Some(single.as_str()),
         _ => None,
     };
-    let visible: Vec<&Annotation> = snapshot
-        .annotations
-        .iter()
-        .chain(snapshot.draft.iter())
+    let mut visible = crate::render::annotations::screenshot_paints(
+        snapshot
+            .annotations
+            .iter()
+            .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id())),
+    );
+    if let Some(draft) = snapshot
+        .draft
+        .as_ref()
         .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()))
-        .collect();
+    {
+        visible.push(crate::render::annotations::ScreenshotPaint::Annotation(
+            draft,
+        ));
+    }
     let (surface_image, offset_x, offset_y) = if snapshot.backdrop_composite {
         let (width, height) = crate::editor::wallpaper::balanced_size(
             f64::from(snapshot.image_width),
@@ -634,14 +643,19 @@ fn paint_annotations(
     let scale = f64::from(zoom) * f64::from(window.scale_factor());
 
     let keys = preview_raster::begin_frame(&visible);
-    for (index, annotation) in visible.iter().enumerate() {
-        if haloed == Some(annotation.id()) {
+    for (index, paint) in visible.iter().enumerate() {
+        let annotation = paint.annotation();
+        let blackout_overlay = matches!(
+            paint,
+            crate::render::annotations::ScreenshotPaint::BlackoutOverlay(_)
+        );
+        if haloed == Some(annotation.id()) && !blackout_overlay {
             draw_selection_halo(window, annotation, zoom, halo);
         }
         let is_draft = snapshot
             .draft
             .as_ref()
-            .is_some_and(|draft| std::ptr::eq(draft, *annotation));
+            .is_some_and(|draft| std::ptr::eq(draft, annotation));
         let committed_pixelation = matches!(
             annotation,
             Annotation::Redact { style, .. }
@@ -667,6 +681,7 @@ fn paint_annotations(
             && !committed_pixelation
             && !committed_blur
             && !aligned
+            && !blackout_overlay
         {
             if let Annotation::Redact { id, .. } = annotation {
                 if let Some(patch) = snapshot.redact_patches.get(id) {
@@ -686,6 +701,7 @@ fn paint_annotations(
             }
         }
         if preview_raster::is_rasterized(annotation)
+            || blackout_overlay
             || ((snapshot.backdrop_composite || redaction_surface.composite_backdrop)
                 && matches!(annotation, Annotation::Redact { .. })
                 && !draft_redaction)
@@ -738,7 +754,7 @@ fn paint_annotations(
                 preview_raster::aligned_image(
                     &keys,
                     index,
-                    annotation,
+                    *paint,
                     &visible[..index],
                     &aligned_surface,
                     preview_raster::SamplingGrid {
@@ -769,7 +785,7 @@ fn paint_annotations(
                 preview_raster::image(
                     &keys,
                     index,
-                    annotation,
+                    *paint,
                     &visible[..index],
                     surface,
                     if committed_blur { 1.0 } else { scale },

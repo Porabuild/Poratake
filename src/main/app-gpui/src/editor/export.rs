@@ -1722,6 +1722,100 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_annotations_follow_electron_export_order() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            100,
+            80,
+            image::Rgba([64, 128, 192, 255]),
+        ));
+        let shape = Annotation::Rectangle {
+            id: "shape".into(),
+            x: 30.,
+            y: 20.,
+            width: 24.,
+            height: 24.,
+            stroke: "#ff00ff".into(),
+            stroke_width: 1.,
+            fill: Some("#ff00ff".into()),
+        };
+        let blur = Annotation::Redact {
+            id: "blur".into(),
+            x: 20.,
+            y: 15.,
+            width: 40.,
+            height: 40.,
+            style: "blur".into(),
+            intensity: 2.,
+        };
+        let blackout = Annotation::Redact {
+            id: "blackout".into(),
+            x: 32.,
+            y: 22.,
+            width: 20.,
+            height: 20.,
+            style: "blackout".into(),
+            intensity: 2.,
+        };
+        let highlight = Annotation::Highlight {
+            id: "highlight".into(),
+            points: vec![25., 30., 55., 30.],
+            fill: "#ffff00".into(),
+            opacity: 0.5,
+            stroke_width: 10.,
+        };
+        for (annotations, expected, corner) in [
+            (vec![shape.clone(), blur.clone()], [255, 0, 255, 255], None),
+            (vec![blur, shape.clone()], [255, 0, 255, 255], None),
+            (
+                vec![shape.clone(), blackout.clone()],
+                [0, 0, 0, 255],
+                Some([169, 0, 169, 255]),
+            ),
+            (
+                vec![blackout.clone(), shape.clone()],
+                [255, 0, 255, 255],
+                Some([255, 0, 255, 255]),
+            ),
+            (
+                vec![highlight.clone(), shape.clone()],
+                [255, 0, 127, 255],
+                None,
+            ),
+            (vec![shape, highlight.clone()], [255, 0, 127, 255], None),
+            (
+                vec![highlight.clone(), blackout.clone()],
+                [0, 0, 0, 255],
+                None,
+            ),
+            (vec![blackout, highlight], [0, 0, 0, 255], None),
+        ] {
+            let output = compose(
+                Some(&base),
+                100,
+                80,
+                &annotations,
+                &WallpaperSettings::default(),
+                1.,
+            );
+            let actual = output.get_pixel(40, 30).0;
+            assert!(
+                actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                "{annotations:?}: {actual:?} vs {expected:?}"
+            );
+            if let Some(expected) = corner {
+                let actual = output.get_pixel(32, 22).0;
+                assert!(
+                    actual
+                        .iter()
+                        .zip(expected)
+                        .all(|(a, e)| a.abs_diff(e) <= 24),
+                    "{annotations:?}: corner {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn redactions_sample_the_composited_wallpaper_and_inset() {
         let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(100, 80, |x, y| {
             if (30..70).contains(&x) && (20..60).contains(&y) {

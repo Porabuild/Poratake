@@ -168,9 +168,11 @@ is now composed before redaction in the export and CPU patch tests. Twelve
 Electron samples, including a clipped blur, are within three channel levels; the
 visual workflow's annotation, draft transition, and fractional aspect-ratio
 checks need a fresh run. A CPU case confirms the sampled backdrop matches export
-at a rounded fractional origin. GPUI still draws annotations in list order, while
-Electron export applies redactions before vectors and highlights, with an extra
-ordered blackout shape. The live editor case remains unverified.
+at a rounded fractional origin. Screenshot export and CPU preview patches now
+apply redactions before vectors and highlights, with an ordered rounded blackout
+pass. Eight Electron center samples are within two levels; one rounded corner
+differs by 22. New preview and selection checks need a GPU run, and the live
+editor case remains unverified.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain

@@ -1271,12 +1271,48 @@ pub(super) fn simple_inset_preview(
             stroke_width: 1.,
             fill: Some("#ff00ff".into()),
         });
-        for (restored, draft_check, current) in [
-            (false, false, without_redactions),
-            (false, true, Vec::new()),
+        let shape = crate::editor::annotations::Annotation::Rectangle {
+            id: "ordered-shape".into(),
+            x: 30.,
+            y: 20.,
+            width: 24.,
+            height: 24.,
+            stroke: "#ff00ff".into(),
+            stroke_width: 1.,
+            fill: Some("#ff00ff".into()),
+        };
+        let blur = crate::editor::annotations::Annotation::Redact {
+            id: "ordered-blur".into(),
+            x: 20.,
+            y: 15.,
+            width: 40.,
+            height: 40.,
+            style: "blur".into(),
+            intensity: 2.,
+        };
+        let blackout = crate::editor::annotations::Annotation::Redact {
+            id: "ordered-blackout".into(),
+            x: 32.,
+            y: 22.,
+            width: 20.,
+            height: 20.,
+            style: "blackout".into(),
+            intensity: 2.,
+        };
+        let highlight = crate::editor::annotations::Annotation::Highlight {
+            id: "ordered-highlight".into(),
+            points: vec![25., 30., 55., 30.],
+            fill: "#ffff00".into(),
+            opacity: 0.5,
+            stroke_width: 10.,
+        };
+        for (restored, draft_check, selection, current) in [
+            (false, false, None, without_redactions),
+            (false, true, None, Vec::new()),
             (
                 false,
                 false,
+                None,
                 vec![crate::editor::annotations::Annotation::Redact {
                     id: "outside-image-blackout".into(),
                     x: -6.,
@@ -1287,7 +1323,31 @@ pub(super) fn simple_inset_preview(
                     intensity: 2.,
                 }],
             ),
-            (true, false, annotations),
+            (
+                false,
+                false,
+                Some("ordered-shape"),
+                vec![shape.clone(), blur],
+            ),
+            (
+                false,
+                false,
+                Some("ordered-blackout"),
+                vec![shape.clone(), blackout.clone()],
+            ),
+            (
+                false,
+                false,
+                Some("ordered-shape"),
+                vec![blackout, shape.clone()],
+            ),
+            (
+                false,
+                false,
+                Some("ordered-highlight"),
+                vec![highlight, shape],
+            ),
+            (true, false, None, annotations),
         ] {
             editor
                 .update(cx, |editor, _, cx| {
@@ -1323,6 +1383,94 @@ pub(super) fn simple_inset_preview(
                         "redaction transition {restored} at {x},{y}: {actual:?} vs {expected:?}"
                     );
                 }
+            }
+            if selection == Some("ordered-blackout") {
+                let flattened_path = scratch.join("ordered-blackout-flattened.png");
+                std::fs::write(&flattened_path, &current_png).unwrap();
+                let flattened = cx
+                    .open_window(size(px(1280.), px(738.)), |window, cx| {
+                        window.set_scale_factor(scale);
+                        cx.new(|cx| {
+                            EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx)
+                        })
+                    })
+                    .unwrap();
+                settle(cx, flattened.into());
+                for zoom in [0.73_f32, 1.5] {
+                    for window in [editor, flattened] {
+                        window
+                            .update(cx, |editor, _, cx| {
+                                editor.zoom = zoom;
+                                cx.notify();
+                            })
+                            .unwrap();
+                        settle(cx, window.into());
+                    }
+                    let (preview_bounds, flattened_bounds) = cx.update(|cx| {
+                        (
+                            editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                            flattened.read(cx).unwrap().bounds.borrow().unwrap(),
+                        )
+                    });
+                    let preview = cx.capture_screenshot(editor.into()).unwrap();
+                    let flattened_image = cx.capture_screenshot(flattened.into()).unwrap();
+                    let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
+                    let left = snap(f32::from(preview_bounds.left())) - snap(margin as f32 * zoom);
+                    let top = snap(f32::from(preview_bounds.top())) - snap(margin as f32 * zoom);
+                    let flat_left = snap(f32::from(flattened_bounds.left()));
+                    let flat_top = snap(f32::from(flattened_bounds.top()));
+                    for y in ((margin + 19) as f32 * zoom).ceil() as u32
+                        ..((margin + 45) as f32 * zoom).floor() as u32
+                    {
+                        for x in ((margin + 29) as f32 * zoom).ceil() as u32
+                            ..((margin + 55) as f32 * zoom).floor() as u32
+                        {
+                            let actual = preview.get_pixel(left + x, top + y).0;
+                            let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
+                            assert!(
+                                actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
+                                "ordered blackout at {zoom}x, {x},{y}: {actual:?} vs {expected:?}"
+                            );
+                        }
+                    }
+                }
+                cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+                editor
+                    .update(cx, |editor, _, cx| {
+                        editor.zoom = 1.;
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, editor.into());
+            }
+            if let Some(selection) = selection {
+                editor
+                    .update(cx, |editor, _, cx| {
+                        editor.tool = crate::ui::colors::Tool::Select;
+                        cx.notify();
+                    })
+                    .unwrap();
+                super::click(
+                    cx,
+                    editor.into(),
+                    f32::from(bounds.left()) + 40.,
+                    f32::from(bounds.top()) + 30.,
+                );
+                settle(cx, editor.into());
+                cx.update(|cx| {
+                    assert_eq!(
+                        editor.read(cx).unwrap().snapshot.borrow().selected,
+                        [selection]
+                    );
+                });
+                super::click(
+                    cx,
+                    editor.into(),
+                    f32::from(bounds.left()) + 90.,
+                    f32::from(bounds.top()) + 70.,
+                );
+                settle(cx, editor.into());
             }
             if draft_check {
                 for zoom in [1_f32, 1.5] {
