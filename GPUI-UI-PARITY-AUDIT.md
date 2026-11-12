@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `2d95c748` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `c7b0fab8` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -1243,12 +1243,22 @@ movement checks. A three-frame test stitches a footer with a 16×16 animation;
 the saved PNG reopens pixel-identically, and a sparse-content control retains the
 exact-match path. In 240 translated UI cases with small animated blocks, eight
 structurally incorrect outputs and 16 early stops became correct; the remaining
-accepted-output differences were confined to the animated blocks. In 2,460
-synthetic four-frame sparse-content cases, 1,479 completed correctly, 739 produced
-incorrect pixels or dimensions, and 242 stopped early; before the fallback these
-counts were 1,200, 1,080 and 180. No previously correct case regressed in this
-matrix. Animation pixels were excluded from the output comparison, and real pages
-remain unverified.
+accepted-output differences were confined to the animated blocks.
+
+The footer matcher now also finds an exact suffix around a localized animation in
+the scrolling content, after trying exact matches first. A three-frame test and a
+reopened PNG match every expected pixel. In 2,460 synthetic four-frame cases,
+1,886 completed correctly, 471 produced incorrect pixels or dimensions, and 103
+stopped early; before this fallback the counts were 1,479, 739 and 242. In 2,400
+translated UI variants, 532 earlier stops became correct; 160 incorrect results
+and 292 stops remain. A 5,412-case periodic-content matrix preserves all 2,084
+previously correct outputs, with 1,310 incorrect results and 1,485 early stops
+after the change. No previously correct case regressed in these matrices.
+Animation pixels were excluded from those comparisons, and real pages remain
+unverified. An exhaustive 1,172,808-case small-row check covers the matcher's
+shorter-input boundary. In two local 4K repeated-content probes, median submit
+times increased from 7.25 to 9.78 ms and from 9.45 to 11.01 ms; native capture
+and slower hardware remain unmeasured.
 
 In a synthetic two-frame scroll, period-8 main content shifted by 96px with an
 independently moving edge produces the same pixels as a complete 104px shift.
@@ -1286,8 +1296,9 @@ independently moving sampled columns still appends an ambiguous frame.
 Injecting one changed pixel or a 16-pixel horizontal or vertical animation into
 each of those 40 exact-offset cases produced 24 correct outputs and 16 early stops,
 with no incorrect outputs. All 16 stops had a fixed footer and also occurred before
-this guard; the newer anchored fallback does not change them. An earlier approximate
-fallback resumed those cases but changed 13 pixels in
+this guard. The newer localized fallback reduces the stops to four for a single
+pixel and eight for a vertical 16-pixel animation; all 16 horizontal cases still
+stop. An earlier approximate fallback resumed those cases but changed 13 pixels in
 two vertical-animation outputs because its detected footer included static body
 rows. That fallback was not adopted; the fixed-footer matcher still needs broader
 animation tolerance.
