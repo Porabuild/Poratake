@@ -3,6 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, Read, Write};
 use std::path::Path;
 
+use poratake_daemon_common::contract::SCREEN_RECORDER_ERROR_EVENT;
 use poratake_daemon_common::protocol::{self, Request};
 use serde_json::json;
 
@@ -19,6 +20,15 @@ pub(super) fn calls(output: &Path) -> Vec<serde_json::Value> {
 fn capture_fixture(output: &str) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(Path::new(output).join("capture-fixture.json")).unwrap())
         .unwrap()
+}
+
+fn optional_capture_fixture(output: &str) -> Option<serde_json::Value> {
+    let path = Path::new(output).join("capture-fixture.json");
+    match std::fs::read(path) {
+        Ok(content) => Some(serde_json::from_slice(&content).unwrap()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("failed to read capture fixture: {error}"),
+    }
 }
 
 fn wait_for_scroll_barrier(fixture: &serde_json::Value) {
@@ -83,6 +93,9 @@ pub fn run() {
     let mut desktop_show_failed = false;
     let mut desktop_show_not_applied = false;
     let mut scroll_retryable_finish_attempts = 0;
+    let mut recording_start_failed_after_error = false;
+    let mut recording_target_closed_during_start = false;
+    let mut recording_stop_failed_after_error = false;
     let desktop_icons_hidden = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
@@ -567,13 +580,67 @@ pub fn run() {
                 }
             }
             ("recording-control", "listIOSDevices") => json!({"devices": []}),
-            ("recording-overlay", "show" | "showWindow") => json!({"visible": true}),
+            ("recording-overlay", "show") => json!({"visible": true}),
+            ("recording-overlay", "showWindow") => json!({"visible": true}),
+            ("screen-recorder", "start") => {
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingStartFailsAfterQueuedError"] == true)
+                    && !recording_start_failed_after_error
+                {
+                    recording_start_failed_after_error = true;
+                    protocol::send_event(
+                        SCREEN_RECORDER_ERROR_EVENT,
+                        Some(json!({
+                            "code": "ENCODER_ERROR",
+                            "message": "Fixture encoder failure",
+                        })),
+                    );
+                    protocol::respond_error(
+                        &request.id,
+                        "START_FAILED",
+                        "Fixture recording start failure",
+                    );
+                    continue;
+                }
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingTargetClosedDuringStart"] == true)
+                    && recording_start_failed_after_error
+                    && !recording_target_closed_during_start
+                {
+                    recording_target_closed_during_start = true;
+                    protocol::send_event(
+                        SCREEN_RECORDER_ERROR_EVENT,
+                        Some(json!({
+                            "code": "TARGET_CLOSED",
+                            "message": "The recorded window was closed",
+                        })),
+                    );
+                }
+                json!({})
+            }
+            ("screen-recorder", "stop") => {
+                if optional_capture_fixture(&output).is_some_and(|fixture| {
+                    fixture["recordingStopFailsAfterQueuedTargetClosed"] == true
+                }) && !recording_stop_failed_after_error
+                {
+                    recording_stop_failed_after_error = true;
+                    protocol::send_event(
+                        SCREEN_RECORDER_ERROR_EVENT,
+                        Some(json!({
+                            "code": "TARGET_CLOSED",
+                            "message": "The recorded window was closed",
+                        })),
+                    );
+                    protocol::respond_error(&request.id, "STOP_FAILED", "Fixture stop failure");
+                    continue;
+                }
+                json!({})
+            }
             ("recording-overlay", "hide")
             | ("camera-preview", "show" | "hide" | "update" | "setContentProtection")
             | (
                 "screen-recorder",
-                "start" | "pause" | "resume" | "stop" | "setMicrophone" | "setSystemAudio"
-                | "setCamera",
+                "pause" | "resume" | "setMicrophone" | "setSystemAudio" | "setCamera",
             ) => json!({}),
             (module, method) => {
                 panic!("unexpected visual fixture call: {module} {method}");

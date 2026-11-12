@@ -106,6 +106,7 @@ pub struct RecordingControl {
     measured_width: Option<f32>,
     focus_handle: FocusHandle,
     recorder_error_subscription: Option<crate::daemon::EventSubscription>,
+    recording_error_generation: u64,
     #[cfg(any(windows, target_os = "macos"))]
     hovered_tooltip: Option<(&'static str, SharedString)>,
     #[cfg(windows)]
@@ -220,6 +221,7 @@ impl RecordingControl {
                         countdown_remaining: None,
                         focus_handle: cx.focus_handle(),
                         recorder_error_subscription: None,
+                        recording_error_generation: 0,
                         #[cfg(any(windows, target_os = "macos"))]
                         hovered_tooltip: None,
                         #[cfg(windows)]
@@ -592,8 +594,13 @@ impl RecordingControl {
             );
             return;
         }
+        self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
+        let error_generation = self.recording_error_generation;
+        self.watch_recorder_errors(window, cx, error_generation);
         if let Err(error) = recorder::start(&service.daemon, &config) {
             eprintln!("[recorder] {error}");
+            self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
+            self.recorder_error_subscription = None;
             let _ = std::fs::remove_dir_all(&project);
             #[cfg(target_os = "macos")]
             crate::capture::overlay::end_recording_handoff(cx);
@@ -612,7 +619,6 @@ impl RecordingControl {
                 }
             }
         }
-        self.watch_recorder_errors(window, cx);
         set_pre_recording_escape(false, cx);
         #[cfg(not(target_os = "macos"))]
         let _ = crate::capture::overlay::begin_recording_handoff(self.rect, cx);
@@ -1252,7 +1258,12 @@ impl RecordingControl {
 
     /// Port of the `screen-recorder:error` listener in `recorder.ts`: a closed
     /// target ends the take normally, any other daemon failure tears it down.
-    fn watch_recorder_errors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn watch_recorder_errors(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        generation: u64,
+    ) {
         let service = crate::state::state(cx);
         let (error_tx, error_rx) = smol::channel::bounded::<(String, String)>(1);
         self.recorder_error_subscription =
@@ -1274,22 +1285,33 @@ impl RecordingControl {
             })));
 
         let handle = window.window_handle();
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |_, cx| loop {
             let Ok((code, message)) = error_rx.recv().await else {
-                return;
+                break;
             };
-            cx.update(|cx| {
+            let continue_listening = cx.update(|cx| {
                 let Some(handle) = handle.downcast::<Self>() else {
-                    return;
+                    return false;
                 };
-                let _ = handle.update(cx, |this, window, cx| {
-                    if code == RECORDING_TARGET_CLOSED {
-                        this.finish(false, window, cx);
-                    } else {
-                        this.fail_recording(message, window, cx);
-                    }
-                });
+                handle
+                    .update(cx, |this, window, cx| {
+                        if this.recording_error_generation != generation
+                            || this.mode != Mode::Recording
+                        {
+                            return false;
+                        }
+                        if code == RECORDING_TARGET_CLOSED {
+                            !this.finish(false, window, cx)
+                        } else {
+                            this.fail_recording(message, window, cx);
+                            false
+                        }
+                    })
+                    .unwrap_or(false)
             });
+            if !continue_listening {
+                break;
+            }
         })
         .detach();
     }
@@ -1298,6 +1320,7 @@ impl RecordingControl {
     /// out, so the partial project is deleted, the UI torn down and the
     /// failure surfaced, with no stop call issued.
     fn fail_recording(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
         self.recorder_error_subscription = None;
         self.hide_camera_preview(cx);
         recorder::force_idle();
@@ -1315,9 +1338,12 @@ impl RecordingControl {
         crate::windows::toast::Toast::show(cx, "Recording failed", message);
     }
 
-    pub(crate) fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.recorder_error_subscription = None;
-        self.hide_camera_preview(cx);
+    pub(crate) fn finish(
+        &mut self,
+        discard: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let duration = self.recording_duration(cx).as_secs_f64();
         let service = crate::state::state(cx);
         let stopped = recorder::stop(&service.daemon);
@@ -1327,8 +1353,11 @@ impl RecordingControl {
                 "Recording not finalized",
                 "Stop failed. The recording controls remain available so you can retry.",
             );
-            return;
+            return false;
         }
+        self.hide_camera_preview(cx);
+        self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
+        self.recorder_error_subscription = None;
 
         let project = self.project.take();
         self.started_at = None;
@@ -1341,11 +1370,11 @@ impl RecordingControl {
         crate::intents::refresh_shell(cx);
 
         let Some(project) = project else {
-            return;
+            return true;
         };
         if discard {
             let _ = std::fs::remove_dir_all(&project);
-            return;
+            return true;
         }
 
         let (history_enabled, max_items, show_preview, recording) = {
@@ -1412,6 +1441,7 @@ impl RecordingControl {
                 crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
             });
         }
+        true
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1816,7 +1846,9 @@ impl Render for RecordingControl {
                 stop_name,
                 toolbar::button("recording-stop", stop_name)
                     .child(toolbar::filled_glyph(theme.destructive, false))
-                    .on_press(cx.listener(|this, _, window, cx| this.finish(false, window, cx))),
+                    .on_press(cx.listener(|this, _, window, cx| {
+                        this.finish(false, window, cx);
+                    })),
                 cx,
             ))
             .child(
@@ -1836,7 +1868,9 @@ impl Render for RecordingControl {
                 "trash-2",
                 "Discard recording",
                 false,
-                |this, window, cx| this.finish(true, window, cx),
+                |this, window, cx| {
+                    this.finish(true, window, cx);
+                },
                 cx,
             )),
             &self.menu,
@@ -2335,6 +2369,7 @@ mod tests {
                 measured_width: None,
                 focus_handle: cx.focus_handle(),
                 recorder_error_subscription: None,
+                recording_error_generation: 0,
                 #[cfg(any(windows, target_os = "macos"))]
                 hovered_tooltip: None,
                 #[cfg(windows)]
@@ -2480,6 +2515,7 @@ mod tests {
                 measured_width: None,
                 focus_handle: cx.focus_handle(),
                 recorder_error_subscription: None,
+                recording_error_generation: 0,
                 #[cfg(any(windows, target_os = "macos"))]
                 hovered_tooltip: None,
                 #[cfg(windows)]

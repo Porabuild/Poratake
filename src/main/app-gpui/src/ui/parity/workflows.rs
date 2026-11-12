@@ -196,7 +196,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 config.all_in_one.last_targets.record = target.into();
                 config.all_in_one.recording.system_audio = true;
                 config.all_in_one.recording.mic_enabled = false;
-                config.all_in_one.recording.camera_enabled = false;
+                config.all_in_one.recording.camera_enabled = target == "window";
             });
             crate::capture::start_all_in_one(cx);
         });
@@ -300,6 +300,162 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 assert!(config.all_in_one.recording.system_audio);
             });
         }
+        #[cfg(windows)]
+        if target == "window" {
+            let recordings = output.join("recording-target-close-handoff");
+            std::fs::create_dir_all(&recordings).unwrap();
+            let previous_settings = cx.update(|cx| {
+                let config = crate::state::state(cx).config.get();
+                (
+                    config.storage.recordings_path,
+                    config.recording.start_delay,
+                    config.recording.show_preview,
+                    config.history.enabled,
+                )
+            });
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "freeze": "live",
+                    "recordingStartFailsAfterQueuedError": true,
+                    "recordingTargetClosedDuringStart": true,
+                    "recordingStopFailsAfterQueuedTargetClosed": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                crate::state::state(cx).config.update(|config| {
+                    config.storage.recordings_path = recordings.to_string_lossy().into_owned();
+                    config.recording.start_delay = 0.0;
+                    config.recording.show_preview = false;
+                    config.history.enabled = true;
+                    config.all_in_one.remember_choices = true;
+                    config.all_in_one.last_mode = "record".into();
+                    config.all_in_one.last_targets.record = "window".into();
+                    config.all_in_one.recording.system_audio = false;
+                    config.all_in_one.recording.mic_enabled = false;
+                    config.all_in_one.recording.camera_enabled = true;
+                });
+            });
+            let before = super::daemon_fixture::calls(output).len();
+            click_measured(cx, control, "recording-controls", 2);
+            cx.run_until_parked();
+            let first_calls = super::daemon_fixture::calls(output);
+            let first_attempt = &first_calls[before..];
+            assert_eq!(
+                first_attempt
+                    .iter()
+                    .filter(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+                    .count(),
+                1
+            );
+            let failed_output = first_attempt
+                .iter()
+                .find(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+                .and_then(|call| call["params"]["outputPath"].as_str())
+                .map(Path::new)
+                .expect("failed start output path");
+            let failed_project = failed_output
+                .parent()
+                .expect("failed project path")
+                .to_path_buf();
+            assert!(
+                !failed_project.exists(),
+                "failed start project must be removed"
+            );
+            assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+            assert_eq!(
+                crate::video::recorder::state(),
+                crate::video::recorder::RecorderState::Idle
+            );
+            assert!(!first_attempt.iter().any(|call| {
+                call["module"] == "screen-recorder" && call["method"] == "stop"
+                    || call["module"] == "recording-overlay" && call["method"] == "hide"
+            }));
+
+            click_measured(cx, control, "recording-controls", 2);
+            let started = std::time::Instant::now();
+            loop {
+                cx.run_until_parked();
+                let calls = super::daemon_fixture::calls(output);
+                let calls = &calls[before..];
+                let stopped = calls
+                    .iter()
+                    .any(|call| call["module"] == "screen-recorder" && call["method"] == "stop");
+                let overlay_hidden = calls
+                    .iter()
+                    .any(|call| call["module"] == "recording-overlay" && call["method"] == "hide");
+                let finalized = crate::history_store::load_history().iter().any(|item| {
+                    item.r#type == HistoryItemType::Video
+                        && Path::new(&item.original_path).parent() == Some(recordings.as_path())
+                });
+                let controls_closed =
+                    cx.update(|cx| !registry::is_open(WindowKind::RecordingControl, cx));
+                let overlay_closed = !cx.update(crate::capture::overlay::parity_is_active);
+                if stopped && overlay_hidden && finalized && controls_closed && overlay_closed {
+                    break;
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(10),
+                    "target-close handoff did not finalize and clean up"
+                );
+                std::thread::yield_now();
+            }
+            let calls = super::daemon_fixture::calls(output);
+            let calls = &calls[before..];
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| call["module"] == "screen-recorder" && call["method"] == "stop")
+                    .count(),
+                2
+            );
+            assert!(calls.iter().any(|call| {
+                call["module"] == "recording-overlay" && call["method"] == "showWindow"
+            }));
+            let last_stop = calls
+                .iter()
+                .rposition(|call| call["module"] == "screen-recorder" && call["method"] == "stop")
+                .unwrap();
+            let preview_hide = calls
+                .iter()
+                .position(|call| call["module"] == "camera-preview" && call["method"] == "hide")
+                .unwrap();
+            assert!(
+                last_stop < preview_hide,
+                "the camera preview must survive a failed stop"
+            );
+            cx.update(|cx| registry::close(WindowKind::VideoEditor, cx));
+            cx.update(|cx| {
+                crate::state::state(cx).config.update(|config| {
+                    config.storage.recordings_path = previous_settings.0;
+                    config.recording.start_delay = previous_settings.1;
+                    config.recording.show_preview = previous_settings.2;
+                    config.history.enabled = previous_settings.3;
+                });
+            });
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({"freeze": "frozen"})).unwrap(),
+            )
+            .unwrap();
+        } else {
+            cx.update(|cx| {
+                assert!(
+                    crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx)
+                );
+                crate::capture::overlay::close_all(cx);
+            });
+        }
+        #[cfg(not(windows))]
         cx.update(|cx| {
             assert!(crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx));
             crate::capture::overlay::close_all(cx);

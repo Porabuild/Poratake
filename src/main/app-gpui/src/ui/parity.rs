@@ -128,6 +128,9 @@ fn assert_toolbar(width: f32, scale: f32) {
 
 fn frame(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
     cx.run_until_parked();
+    if !cx.update(|cx| cx.windows().contains(&window)) {
+        return;
+    }
     cx.update_window(window, |_, window, cx| {
         if window.viewport_size() != window.bounds().size {
             let scale = window.scale_factor();
@@ -667,6 +670,9 @@ fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
     }
     for _ in 0..40 {
         cx.advance_clock(Duration::from_millis(10));
+        if !cx.update(|cx| cx.windows().contains(&window)) {
+            return;
+        }
         cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx))
             .unwrap();
         frame(cx, window);
@@ -674,6 +680,9 @@ fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
 }
 
 fn event(cx: &mut HeadlessAppContext, window: AnyWindowHandle, event: PlatformInput) {
+    if !cx.update(|cx| cx.windows().contains(&window)) {
+        return;
+    }
     cx.update_window(window, |_, window, cx| window.dispatch_event(event, cx))
         .unwrap();
     if cx.update(|cx| cx.windows().contains(&window)) {
