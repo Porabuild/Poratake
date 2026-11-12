@@ -163,7 +163,7 @@ pub(crate) fn parity_selection(cx: &mut App) -> Option<selection::Rect> {
     handle.update(cx, |overlay, _, _| overlay.rect).ok()?
 }
 
-#[cfg(any(all(test, windows), feature = "parity"))]
+#[cfg(all(windows, feature = "parity"))]
 pub(crate) fn parity_active_overlays(cx: &mut App) -> Vec<AnyWindowHandle> {
     session(cx)
         .handles
