@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6, based on `58a15946` plus this change.
+Refreshed 2026-11-12 for Poratake 0.9.6, based on `642d16a7` plus this change.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -1112,7 +1112,7 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                                                |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                          |
 | P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. Sparse text and stationary animation are tested. Some simultaneous size/color changes stop early. Verify real surfaces, weak overlaps and fixed headers; macOS has a separate, unfixed stitcher.                                                                                                                                                                                                                                    |
-| P1       | Scroll stitching with repeated content                   | Windows/Linux stop and retain prior frames for tested conflicts between full-row alignment and an expected strip, including up to two moving sampled columns. Three moving sampled columns can still produce ambiguous accepted output, and isolated changes in one column can trigger an early stop. A 360-case translated-UI probe accepted 28 incorrect outputs and stopped early 136 times, unchanged by this guard. Investigate broader patterns, animations and real pages; macOS uses a separate stitcher.                                                   |
+| P1       | Scroll stitching with repeated content                   | Windows/Linux stop and retain prior frames for tested conflicts between full-row alignment and an expected strip, including up to two moving sampled columns. Three moving sampled columns can still produce ambiguous accepted output, and isolated changes in one column can trigger an early stop. A 360-case translated-UI probe still accepted 12 incorrect outputs and stopped early 152 times. Investigate broader patterns, animations and real pages; macOS uses a separate stitcher.                                                                      |
 | P1       | Unresponsive scroll stitch                               | Finish now waits for the daemon response or exit, so a daemon that stays alive without responding also leaves cancellation pending. Add a daemon-owned stop-and-join operation and verify a stalled stitch can be canceled without affecting other daemon work or losing completed output.                                                                                                                                                                                                                                                                          |
 | P1       | macOS scroll preview with variable overlap               | The preview uses the expected scroll step while final stitching measures each overlap. Compare previews and saved pixels when actual movement differs, without blocking the capture UI; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                             |
 | P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                             |
@@ -1163,10 +1163,25 @@ stops. A synthetic 4K exact-overlap probe had median times of 3.42 ms before and
 4.63 ms after over 30 samples on this machine for the earlier guard. A separate
 30-sample 4K probe measured 1.56 ms before and 1.74 ms after this extension for an
 exact overlap, and 1.43 ms versus 1.64 ms with a single animated pixel.
-A 360-case probe translated four captured UI baselines with two footer settings,
-five shifts and nine expected-offset values: both versions produced 196 correct
-outputs, 28 incorrect outputs and 136 early stops. A synthetic case with three
+A new guard stops when a perfect sampled match disagrees with repeated exact
+full-row matches and the selected rows differ in multiple rows and columns. A
+synthetic conflict now preserves the first frame, while the correctly aligned pair
+still stitches with a one-pixel or 16-pixel single-row or single-column animation;
+all saved PNGs reopen pixel-identical. A true conflict in one row or column can
+still be mistaken for animation, and a multi-row, multi-column animation may stop
+early. A 360-case probe translated four captured UI baselines
+with two footer settings, five shifts and nine expected-offset values. The guard
+changed 16 incorrect outputs into early stops: 196 correct, 12 incorrect and 152
+early stops, versus 196, 28 and 136 before. All 40 cases with the exact expected
+offset remained correct. A synthetic case with three
 independently moving sampled columns still appends an ambiguous frame.
+Injecting one changed pixel or a 16-pixel horizontal or vertical animation into
+each of those 40 exact-offset cases produced 24 correct outputs and 16 early stops,
+with no incorrect outputs. All 16 stops had a fixed footer and also occurred before
+this guard. The fixed-footer matcher still needs broader animation tolerance.
+For a synthetic 4K repeated-row overlap with one animated pixel, ten local
+post-warmup samples had medians of 3.13 ms before and 4.12 ms after this guard;
+native capture and slower machines were not measured.
 Isolated changes can also be indistinguishable from a different full-frame
 translation: changes in one column at both outer regions can stop early, while
 the prior overlap choice remains in effect for the tested changes in two regions.

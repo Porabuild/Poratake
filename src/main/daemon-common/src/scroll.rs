@@ -486,8 +486,38 @@ pub fn find_overlap(
         }
     }
 
-    if let Some((exact, alternative)) =
-        exact_overlap(&previous.pixels, current_pixels, width, min_overlap)
+    let exact_match = exact_overlap(&previous.pixels, current_pixels, width, min_overlap);
+    if let Some((exact, alternative)) = exact_match
+        && alternative >= min_overlap
+        && acceptable
+        && best_score == 0
+        && exact != best_overlap
+    {
+        let mut differences = previous.pixels[(height - best_overlap) * width * 4..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(
+                current_pixels[..best_overlap * width * 4]
+                    .as_chunks::<4>()
+                    .0
+                    .iter(),
+            )
+            .enumerate()
+            .filter_map(|(index, (previous, current))| (previous != current).then_some(index));
+        if let Some(first) = differences.next() {
+            let mut different_rows = false;
+            let mut different_columns = false;
+            for index in differences {
+                different_rows |= index / width != first / width;
+                different_columns |= index % width != first % width;
+                if different_rows && different_columns {
+                    return None;
+                }
+            }
+        }
+    }
+    if let Some((exact, alternative)) = exact_match
         && alternative < min_overlap
     {
         if exact != expected
@@ -964,6 +994,79 @@ mod tests {
             find_overlap(&previous, &current.pixels, width, height, expected),
             Some(overlap)
         );
+    }
+
+    #[test]
+    fn stops_when_a_sampled_overlap_conflicts_with_repeated_full_rows() {
+        let (width, height) = (64, 160);
+        let make_frame = |start: usize| {
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in start..start + height {
+                for x in 0..width {
+                    let value = if x % 2 == 0 {
+                        40
+                    } else if y < height {
+                        ((y % 8) * 30) as u8
+                    } else {
+                        ((y * 37) % 256) as u8
+                    };
+                    pixels.extend_from_slice(&[value, value, value, 255]);
+                }
+            }
+            pixels
+        };
+        let previous = make_frame(0);
+        let current = make_frame(80);
+        assert_eq!(exact_overlap(&previous, &current, width, 8), Some((80, 72)));
+
+        let mut ambiguous = FrameAccumulator::default();
+        assert_eq!(
+            ambiguous.submit(previous.clone(), width, height, 79),
+            CaptureOutcome::Added
+        );
+        assert_eq!(
+            ambiguous.submit(current.clone(), width, height, 79),
+            CaptureOutcome::NoOverlap
+        );
+        assert_eq!(ambiguous.frames().len(), 1);
+        assert_eq!(ambiguous.frames()[0].pixels, previous);
+        assert_eq!(ambiguous.estimated_height(), height);
+
+        let mut aligned = FrameAccumulator::default();
+        assert_eq!(
+            aligned.submit(previous.clone(), width, height, 80),
+            CaptureOutcome::Added
+        );
+        assert_eq!(
+            aligned.submit(current, width, height, 80),
+            CaptureOutcome::Added
+        );
+        assert_eq!(aligned.frames().len(), 2);
+        assert_eq!(aligned.frames()[1].overlap, 80);
+        assert_eq!(aligned.estimated_height(), 240);
+
+        for (vertical, count) in [(false, 1), (false, 16), (true, 16)] {
+            let mut animated = make_frame(80);
+            for index in 0..count {
+                let (x, y) = if vertical {
+                    (1, 40 + index)
+                } else {
+                    (1 + index * 2, 40)
+                };
+                let animated_pixel = (y * width + x) * 4;
+                animated[animated_pixel..animated_pixel + 4].copy_from_slice(&[255, 1, 200, 255]);
+            }
+            let mut animated_frames = FrameAccumulator::default();
+            assert_eq!(
+                animated_frames.submit(previous.clone(), width, height, 80),
+                CaptureOutcome::Added
+            );
+            assert_eq!(
+                animated_frames.submit(animated, width, height, 80),
+                CaptureOutcome::Added
+            );
+            assert_eq!(animated_frames.frames()[1].overlap, 80);
+        }
     }
 
     #[test]

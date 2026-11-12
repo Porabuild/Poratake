@@ -440,6 +440,70 @@ mod tests {
     }
 
     #[test]
+    fn repeated_row_conflict_saves_only_accepted_pixels() {
+        use poratake_daemon_common::scroll::{write_png, CaptureOutcome, FrameAccumulator};
+
+        let (width, height) = (64, 160);
+        let source = image::RgbaImage::from_fn(width, 240, |x, y| {
+            let value = if x % 2 == 0 {
+                40
+            } else if y < height {
+                ((y % 8) * 30) as u8
+            } else {
+                ((y * 37) % 256) as u8
+            };
+            image::Rgba([value, value, value, 255])
+        });
+        for (expected_overlap, animation) in [(79, 0), (80, 0), (80, 1), (80, 2), (80, 3)] {
+            let first = image::imageops::crop_imm(&source, 0, 0, width, height).to_image();
+            let mut second = image::imageops::crop_imm(&source, 0, 80, width, height).to_image();
+            let animation_pixels = match animation {
+                0 => 0,
+                3 => 1,
+                _ => 16,
+            };
+            for index in 0..animation_pixels {
+                let (x, y) = if animation == 2 {
+                    (1, 40 + index)
+                } else {
+                    (1 + index * 2, 40)
+                };
+                second.put_pixel(x, y, image::Rgba([255, 1, 200, 255]));
+            }
+            let mut accumulator = FrameAccumulator::default();
+            assert_eq!(
+                accumulator.submit(
+                    first.into_raw(),
+                    width as usize,
+                    height as usize,
+                    expected_overlap
+                ),
+                CaptureOutcome::Added
+            );
+            assert_eq!(
+                accumulator.submit(
+                    second.into_raw(),
+                    width as usize,
+                    height as usize,
+                    expected_overlap
+                ),
+                if expected_overlap == 79 {
+                    CaptureOutcome::NoOverlap
+                } else {
+                    CaptureOutcome::Added
+                }
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("repeated-rows.png");
+            write_png(&path, &accumulator.take_frames()).unwrap();
+            let expected_height = if expected_overlap == 79 { height } else { 240 };
+            let expected =
+                image::imageops::crop_imm(&source, 0, 0, width, expected_height).to_image();
+            assert_eq!(image::open(path).unwrap().to_rgba8(), expected);
+        }
+    }
+
+    #[test]
     fn stitched_scroll_frames_keep_one_fixed_footer() {
         use poratake_daemon_common::scroll::{write_png, CaptureOutcome, FrameAccumulator};
 
