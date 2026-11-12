@@ -154,6 +154,7 @@ struct ScrollCapturePreviewTest {
         precondition(moduleLifecycle.beginStop(newerScreenSession) == .screen)
         moduleLifecycle.finishStop(newerScreenSession)
 
+        FileHandle.standardError.write(Data("recording stop coordinator: start\n".utf8))
         let stopResult = RecordingResult(
             outputPath: "/tmp/recording-stop-test.poratake",
             cursorPath: nil,
@@ -213,7 +214,9 @@ struct ScrollCapturePreviewTest {
         precondition(failedStopReported)
         let retryAfterFailure = try await stopCoordinator.stop(sessionID: 203) { stopResult }
         precondition(retryAfterFailure.outputPath == stopResult.outputPath, "A failed stop must release coordinator ownership")
+        FileHandle.standardError.write(Data("recording stop coordinator: complete\n".utf8))
 
+        FileHandle.standardError.write(Data("capture filter startup: start\n".utf8))
         let startupRegistry = RecordingCaptureWindowRegistry()
         startupRegistry.beginCaptureStart()
         startupRegistry.register(windowID: 61)
@@ -230,7 +233,9 @@ struct ScrollCapturePreviewTest {
         await waitUntil("The startup refresh continuation did not resume") { !startupRefreshes.isEmpty }
         try await startupRefresh.value
         precondition(startupRefreshes == [[61]], "Startup must refresh registrations made after the initial snapshot")
+        FileHandle.standardError.write(Data("capture filter startup: complete\n".utf8))
 
+        FileHandle.standardError.write(Data("capture filter serial refresh: start\n".utf8))
         let serialRegistry = RecordingCaptureWindowRegistry()
         var refreshEvents: [[CGWindowID]] = []
         var firstRefreshStarted = false
@@ -269,7 +274,9 @@ struct ScrollCapturePreviewTest {
         precondition(refreshEvents == [[71], [72]], "A follower must request the newer revision before the original waiters resume")
         precondition(completionOrder.first == "follower-first", "A follower must observe cleared refresh state before the owner resumes")
         precondition(completionOrder.count >= 4)
+        FileHandle.standardError.write(Data("capture filter serial refresh: complete\n".utf8))
 
+        FileHandle.standardError.write(Data("capture filter coalescing: start\n".utf8))
         let coalescingRegistry = RecordingCaptureWindowRegistry()
         var coalescedEvents: [[CGWindowID]] = []
         var oldRefreshStarted = false
@@ -299,7 +306,9 @@ struct ScrollCapturePreviewTest {
         try await supersededRefresh.value
         try await latestRefresh.value
         precondition(coalescedEvents == [[81], [82]])
+        FileHandle.standardError.write(Data("capture filter coalescing: complete\n".utf8))
 
+        FileHandle.standardError.write(Data("capture filter restart: start\n".utf8))
         let restartedRegistry = RecordingCaptureWindowRegistry()
         var oldErrorRelease: CheckedContinuation<Void, Never>?
         var oldStreamStarted = false
@@ -337,7 +346,9 @@ struct ScrollCapturePreviewTest {
         oldErrorRelease?.resume()
         await waitUntil("The invalidated old stream refresh did not finish") { oldStreamUpdaterFinished }
         precondition(restartedEvents == [[92]], "An old stream error must not poison the new filter session")
+        FileHandle.standardError.write(Data("capture filter restart: complete\n".utf8))
 
+        FileHandle.standardError.write(Data("capture filter failure: start\n".utf8))
         let failingRegistry = RecordingCaptureWindowRegistry()
         failingRegistry.setFilterUpdater { _ in
             throw RecordingCaptureFilterError.unavailableWindows([81])
@@ -349,7 +360,10 @@ struct ScrollCapturePreviewTest {
             refreshFailureReported = true
         }
         precondition(refreshFailureReported, "Filter update errors must reach the window show operation")
+        FileHandle.standardError.write(Data("capture filter failure: complete\n".utf8))
+        FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
         runExistingScrollChecks()
+        FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
     }
 
     static func runExistingScrollChecks() {
