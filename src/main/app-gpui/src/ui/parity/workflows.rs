@@ -1152,7 +1152,14 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             cx,
             scratch,
             &captures,
-            (SELECTED_RECT, [64, 112, 192, 255]),
+            (
+                SELECTED_RECT,
+                if freeze {
+                    [64, 112, 192, 255]
+                } else {
+                    [240, 80, 64, 255]
+                },
+            ),
             &format!("workflow-all-in-one-window-icons-{name}"),
         );
         let calls = super::daemon_fixture::calls(output);

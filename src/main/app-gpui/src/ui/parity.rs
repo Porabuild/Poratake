@@ -271,8 +271,18 @@ fn prewarmed_tray_menu_reuses_measured_geometry(
     let window: AnyWindowHandle = handle.into();
     cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
         .unwrap();
-
     cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+    for _ in 0..8 {
+        cx.update_window(window, |_, window, cx| {
+            window.simulate_next_frame(cx);
+            window.bounds_changed(cx);
+            window.set_scale_factor(scale);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
     let first = assert_tray_menu_geometry(cx, window, scale);
     assert!(cx.update(|cx| TrayMenuWindow::is_shown_for_parity(handle, cx)));
     assert_eq!(
@@ -287,6 +297,17 @@ fn prewarmed_tray_menu_reuses_measured_geometry(
     assert!(!cx.update(|cx| TrayMenuWindow::is_shown_for_parity(handle, cx)));
 
     cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+    for _ in 0..8 {
+        cx.update_window(window, |_, window, cx| {
+            window.simulate_next_frame(cx);
+            window.bounds_changed(cx);
+            window.set_scale_factor(scale);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
     let reopened = assert_tray_menu_geometry(cx, window, scale);
     assert!(cx.update(|cx| TrayMenuWindow::is_shown_for_parity(handle, cx)));
     assert_eq!(

@@ -816,6 +816,103 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn prewarmed_tray_menu_reuses_measured_geometry_at_each_scale(cx: &mut gpui::TestAppContext) {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(scratch.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| config.appearance.mode = "dark".into());
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+
+        for scale in [1., 1.25, 1.5, 2.] {
+            cx.update(TrayMenuWindow::prewarm);
+            let handle = cx
+                .update(|cx| tray_menu_cache(cx).handle)
+                .expect("the tray menu must be prewarmed");
+            let window: gpui::AnyWindowHandle = handle.into();
+            handle
+                .update(cx, |_, window, _| window.set_scale_factor(scale))
+                .unwrap();
+
+            for reopen in 0..2 {
+                cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+                for _ in 0..8 {
+                    window
+                        .update(cx, |_, window, cx| {
+                            window.simulate_next_frame(cx);
+                            window.bounds_changed(cx);
+                            window.set_scale_factor(scale);
+                            window.refresh();
+                            window.draw(cx).clear(cx);
+                        })
+                        .unwrap();
+                    cx.run_until_parked();
+                }
+
+                window
+                    .update(cx, |_, window, _| {
+                        let viewport = window.viewport_size();
+                        let bounds = window.bounds();
+                        let quads = window.painted_quads();
+                        let panel = quads
+                            .iter()
+                            .filter(|quad| {
+                                (quad.bounds.size.width.0 / scale - MENU_WIDTH).abs() < 0.01
+                            })
+                            .max_by(|left, right| {
+                                left.bounds
+                                    .size
+                                    .height
+                                    .partial_cmp(&right.bounds.size.height)
+                                    .unwrap()
+                            })
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "prewarmed tray panel missing at scale {scale} on reopen {reopen}: viewport={viewport:?}, bounds={bounds:?}, painted quads={:?}",
+                                    quads.iter().map(|quad| quad.bounds).collect::<Vec<_>>()
+                                )
+                            });
+                        assert!(
+                            (f32::from(viewport.width) * scale - panel.bounds.size.width.0).abs()
+                                < 0.01
+                                && (f32::from(viewport.height) * scale
+                                    - panel.bounds.size.height.0)
+                                    .abs()
+                                    < 0.01,
+                            "prewarmed tray viewport differs from its painted menu at scale {scale} on reopen {reopen}: viewport={viewport:?}, panel={:?}",
+                            panel.bounds
+                        );
+                        assert!(
+                            (f32::from(bounds.size.width) * scale - panel.bounds.size.width.0)
+                                .abs()
+                                < 0.01
+                                && (f32::from(bounds.size.height) * scale
+                                    - panel.bounds.size.height.0)
+                                    .abs()
+                                    < 0.01,
+                            "prewarmed tray bounds differ from its painted menu at scale {scale} on reopen {reopen}: bounds={bounds:?}, panel={:?}",
+                            panel.bounds
+                        );
+                    })
+                    .unwrap();
+                assert!(handle
+                    .update(cx, |this, _, _| this.visibility.is_shown())
+                    .unwrap());
+                cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+                assert!(!handle
+                    .update(cx, |this, _, _| this.visibility.is_shown())
+                    .unwrap());
+            }
+
+            window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+            cx.run_until_parked();
+        }
+    }
+
     #[test]
     fn physical_tray_rect_scales_into_the_target_display() {
         let logical = physical_to_logical_rect(
