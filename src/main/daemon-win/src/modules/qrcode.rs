@@ -261,6 +261,41 @@ mod tests {
     }
 
     #[test]
+    fn detects_photographed_qr_after_arbitrary_rotation_and_perspective() {
+        let (pixels, width, height) = load_greyscale(&fixture_path("qr-region-original.png"))
+            .expect("load photographed QR code");
+        let expected =
+            "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com";
+
+        for degrees in [10.0, 25.0, 45.0] {
+            let (rotated, rotated_width, rotated_height) =
+                rotate_greyscale(&pixels, width, height, degrees);
+            assert_eq!(
+                detect_payload_from_greyscale(&rotated, rotated_width, rotated_height),
+                expected,
+                "rotation {degrees} degrees"
+            );
+        }
+
+        let (perspective, perspective_width, perspective_height) =
+            perspective_greyscale(&pixels, width, height);
+        assert_eq!(
+            detect_payload_from_greyscale(&perspective, perspective_width, perspective_height),
+            expected
+        );
+
+        let (rotated, rotated_width, rotated_height) =
+            rotate_greyscale(&pixels, width, height, 15.0);
+        let (combined, combined_width, combined_height) =
+            perspective_greyscale(&rotated, rotated_width, rotated_height);
+        assert_eq!(
+            detect_payload_from_greyscale(&combined, combined_width, combined_height),
+            expected,
+            "15-degree rotation with perspective"
+        );
+    }
+
+    #[test]
     fn detects_valid_qr_beside_another_candidate() {
         let clean = std::fs::read(fixture_path("qr-hello.gray")).expect("fixture grayscale");
         let (photo, photo_width, photo_height) =
@@ -365,6 +400,69 @@ mod tests {
                 "position {x},{y} on {background}"
             );
         }
+    }
+
+    fn rotate_greyscale(
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+        degrees: f64,
+    ) -> (Vec<u8>, usize, usize) {
+        let radians = degrees.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        let rotated_width = (width as f64 * cos.abs() + height as f64 * sin.abs()).ceil() as usize;
+        let rotated_height = (height as f64 * cos.abs() + width as f64 * sin.abs()).ceil() as usize;
+        let mut rotated = vec![255; rotated_width * rotated_height];
+        for y in 0..rotated_height {
+            for x in 0..rotated_width {
+                let dx = x as f64 + 0.5 - rotated_width as f64 / 2.0;
+                let dy = y as f64 + 0.5 - rotated_height as f64 / 2.0;
+                let source_x = cos * dx + sin * dy + width as f64 / 2.0 - 0.5;
+                let source_y = -sin * dx + cos * dy + height as f64 / 2.0 - 0.5;
+                rotated[y * rotated_width + x] =
+                    sample_greyscale(pixels, width, height, source_x, source_y);
+            }
+        }
+        (rotated, rotated_width, rotated_height)
+    }
+
+    fn perspective_greyscale(
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+    ) -> (Vec<u8>, usize, usize) {
+        let strength = 0.3;
+        let perspective_height = (height as f64 / (1.0 + strength)).round() as usize;
+        let mut perspective = vec![255; width * perspective_height];
+        for y in 0..perspective_height {
+            for x in 0..width {
+                let dest_y = y as f64 + 0.5;
+                let inverse = 1.0 - strength * dest_y / height as f64;
+                let source_y = dest_y / inverse - 0.5;
+                let source_x =
+                    width as f64 / 2.0 + (x as f64 + 0.5 - width as f64 / 2.0) / inverse - 0.5;
+                perspective[y * width + x] =
+                    sample_greyscale(pixels, width, height, source_x, source_y);
+            }
+        }
+        (perspective, width, perspective_height)
+    }
+
+    fn sample_greyscale(pixels: &[u8], width: usize, height: usize, x: f64, y: f64) -> u8 {
+        if x < 0.0 || y < 0.0 || x >= width as f64 - 1.0 || y >= height as f64 - 1.0 {
+            return 255;
+        }
+        let left = x.floor() as usize;
+        let top = y.floor() as usize;
+        let horizontal = x - left as f64;
+        let vertical = y - top as f64;
+        let top_left = f64::from(pixels[top * width + left]);
+        let top_right = f64::from(pixels[top * width + left + 1]);
+        let bottom_left = f64::from(pixels[(top + 1) * width + left]);
+        let bottom_right = f64::from(pixels[(top + 1) * width + left + 1]);
+        let upper = top_left + (top_right - top_left) * horizontal;
+        let lower = bottom_left + (bottom_right - bottom_left) * horizontal;
+        (upper + (lower - upper) * vertical).round() as u8
     }
 
     #[test]
