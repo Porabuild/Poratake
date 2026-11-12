@@ -109,7 +109,7 @@ pub struct RecordingControl {
 }
 
 impl RecordingControl {
-    #[cfg(any(test, feature = "parity"))]
+    #[cfg(feature = "parity")]
     pub(crate) fn parity_rect(&self) -> ScreenRect {
         self.rect
     }
