@@ -26,6 +26,14 @@ pub const CONTROL_GAP: f32 = 16.0;
 const PREVIEW_SCALE: u32 = 2;
 const PROMPT_TEXT: &str = "Move cursor here to continue";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FinishState {
+    Capturing,
+    Finishing,
+    Retry,
+    Cancelling,
+}
+
 pub struct ScrollCaptureUi {
     daemon: DaemonHandle,
     signal: smol::channel::Sender<ScrollSessionSignal>,
@@ -34,6 +42,7 @@ pub struct ScrollCaptureUi {
     preview_max_height: f32,
     cursor_outside: bool,
     auto_scrolling: bool,
+    finish_state: FinishState,
 }
 
 struct PreviewImage {
@@ -43,6 +52,9 @@ struct PreviewImage {
 
 impl ScrollCaptureUi {
     fn toggle_auto_scroll(&mut self, cx: &mut App) {
+        if self.finish_state != FinishState::Capturing {
+            return;
+        }
         let client = self.daemon.scroll_capture();
         let result = if self.auto_scrolling {
             client.stop_auto_scroll()
@@ -54,12 +66,42 @@ impl ScrollCaptureUi {
         }
     }
 
-    fn request_finish(&self) {
+    fn request_finish(&mut self) {
+        if !matches!(
+            self.finish_state,
+            FinishState::Capturing | FinishState::Retry
+        ) {
+            return;
+        }
+        self.finish_state = FinishState::Finishing;
         let _ = self.signal.try_send(ScrollSessionSignal::Finish);
     }
 
-    fn request_cancel(&self) {
+    fn request_cancel(&mut self) {
+        if self.finish_state == FinishState::Cancelling {
+            return;
+        }
+        self.finish_state = FinishState::Cancelling;
         let _ = self.signal.try_send(ScrollSessionSignal::Cancel);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn mark_finishing(&mut self) {
+        if self.finish_state == FinishState::Capturing {
+            self.finish_state = FinishState::Finishing;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn mark_cancelling(&mut self) {
+        self.finish_state = FinishState::Cancelling;
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn mark_retryable(&mut self) {
+        if self.finish_state == FinishState::Finishing {
+            self.finish_state = FinishState::Retry;
+        }
     }
 
     fn apply_frame(&mut self, image: Option<PreviewImage>) {
@@ -119,6 +161,7 @@ impl ScrollCaptureSession {
             preview_max_height,
             cursor_outside: false,
             auto_scrolling: false,
+            finish_state: FinishState::Capturing,
         });
 
         let preview_entity = ui.clone();
@@ -214,13 +257,40 @@ impl ScrollCaptureSession {
         Self::signal_from_bar(cx, ScrollCaptureUi::request_cancel);
     }
 
-    fn signal_from_bar(cx: &mut App, send: fn(&ScrollCaptureUi)) {
+    #[cfg(target_os = "macos")]
+    pub fn mark_finishing(ui: &Entity<ScrollCaptureUi>, cx: &mut App) {
+        ui.update(cx, |ui, cx| {
+            ui.mark_finishing();
+            cx.notify();
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn mark_cancelling(ui: &Entity<ScrollCaptureUi>, cx: &mut App) {
+        ui.update(cx, |ui, cx| {
+            ui.mark_cancelling();
+            cx.notify();
+        });
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    pub fn mark_retryable(ui: &Entity<ScrollCaptureUi>, cx: &mut App) {
+        ui.update(cx, |ui, cx| {
+            ui.mark_retryable();
+            cx.notify();
+        });
+    }
+
+    fn signal_from_bar(cx: &mut App, send: fn(&mut ScrollCaptureUi)) {
         for window_handle in cx.windows() {
             let Some(handle) = window_handle.downcast::<ScrollControlBar>() else {
                 continue;
             };
             let _ = handle.update(cx, |bar, _, cx| {
-                bar.ui.update(cx, |ui, _| send(ui));
+                bar.ui.update(cx, |ui, cx| {
+                    send(ui);
+                    cx.notify();
+                });
             });
             return;
         }
@@ -420,13 +490,14 @@ impl ScrollControlBar {
         id: &'static str,
         icon: &'static str,
         tooltip: impl Into<SharedString>,
+        disabled: bool,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tooltip: SharedString = tooltip.into();
         Self::native_tooltip_button(
             id,
-            toolbar::icon(id, icon, tooltip.clone()),
+            toolbar::icon(id, icon, tooltip.clone()).is_disabled(disabled),
             tooltip,
             on_click,
             cx,
@@ -437,13 +508,16 @@ impl ScrollControlBar {
         id: &'static str,
         glyph: AnyElement,
         tooltip: impl Into<SharedString>,
+        disabled: bool,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tooltip: SharedString = tooltip.into();
         Self::native_tooltip_button(
             id,
-            toolbar::button(id, tooltip.clone()).child(glyph),
+            toolbar::button(id, tooltip.clone())
+                .is_disabled(disabled)
+                .child(glyph),
             tooltip,
             on_click,
             cx,
@@ -457,7 +531,12 @@ impl Render for ScrollControlBar {
             window.resize(size(px(CONTROL_WIDTH), px(CONTROL_HEIGHT)));
         }
         let theme = active_theme(cx);
-        let auto_scrolling = self.ui.read(cx).auto_scrolling;
+        let state = self.ui.read(cx);
+        let auto_scrolling = state.auto_scrolling;
+        let finish_state = state.finish_state;
+        let finishing = finish_state == FinishState::Finishing;
+        let retryable = finish_state == FinishState::Retry;
+        let cancelling = finish_state == FinishState::Cancelling;
         let toggle_tooltip: SharedString = if auto_scrolling {
             "Stop auto-scroll".into()
         } else {
@@ -487,6 +566,7 @@ impl Render for ScrollControlBar {
                         "scroll-toggle-auto-scroll",
                         toggle_glyph,
                         toggle_tooltip,
+                        finishing || retryable || cancelling,
                         |this, _, cx| {
                             this.ui.update(cx, |ui, cx| ui.toggle_auto_scroll(cx));
                         },
@@ -495,7 +575,14 @@ impl Render for ScrollControlBar {
                     .child(Self::button(
                         "scroll-done",
                         "check",
-                        "Done (Enter)",
+                        if finishing {
+                            "Finishing…"
+                        } else if retryable {
+                            "Retry"
+                        } else {
+                            "Done (Enter)"
+                        },
+                        finishing || cancelling,
                         |this, _, cx| {
                             this.ui.update(cx, |ui, _| ui.request_finish());
                         },
@@ -504,7 +591,12 @@ impl Render for ScrollControlBar {
                     .child(Self::button(
                         "scroll-cancel",
                         "x",
-                        "Cancel (Esc)",
+                        if cancelling {
+                            "Canceling…"
+                        } else {
+                            "Cancel (Esc)"
+                        },
+                        cancelling,
                         |this, _, cx| {
                             this.ui.update(cx, |ui, _| ui.request_cancel());
                         },
@@ -879,6 +971,7 @@ mod tests {
                 preview_max_height: 360.0,
                 cursor_outside: false,
                 auto_scrolling: false,
+                finish_state: FinishState::Capturing,
             });
             ScrollPreviewPanel {
                 _subscription: observe_ui(cx, &ui),
@@ -983,11 +1076,18 @@ mod tests {
             assert!(state.preview.is_some());
             assert!(state.auto_scrolling && state.cursor_outside);
             ScrollCaptureSession::finish_requested(cx);
+            assert_eq!(ui.read(cx).finish_state, FinishState::Finishing);
+            ScrollCaptureSession::mark_retryable(&ui, cx);
+            assert_eq!(ui.read(cx).finish_state, FinishState::Retry);
+            ScrollCaptureSession::finish_requested(cx);
+            assert_eq!(ui.read(cx).finish_state, FinishState::Finishing);
             ScrollCaptureSession::cancel_requested(cx);
+            assert_eq!(ui.read(cx).finish_state, FinishState::Cancelling);
         });
         let bounds = visual.expect("scroll-preview-image");
         assert_eq!(window.top() + bounds.top(), px(720.0));
         assert_eq!(bounds.size.height, px(360.0));
+        assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Finish)));
         assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Finish)));
         assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Cancel)));
         cx.update(|cx| {

@@ -26,6 +26,46 @@ struct PendingEditorAttach {
     edge: crate::editor::layers::Edge,
 }
 
+enum ScrollFinishEvent {
+    Prepared(std::path::PathBuf),
+    RequestSent,
+    Completed(Result<std::path::PathBuf, anyhow::Error>),
+    Cancelled(Result<(), String>),
+}
+
+#[cfg(feature = "parity")]
+static SCROLL_RETRYABLE_FINISH_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(feature = "parity")]
+static FAIL_NEXT_SCROLL_CANCEL_THREAD_SPAWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "parity")]
+static FAIL_NEXT_SCROLL_FINISH_THREAD_SPAWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "parity")]
+pub(crate) fn scroll_retryable_finish_count() -> usize {
+    SCROLL_RETRYABLE_FINISH_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(feature = "parity")]
+pub(crate) fn fail_next_scroll_cancel_thread_spawn(enabled: bool) {
+    FAIL_NEXT_SCROLL_CANCEL_THREAD_SPAWN.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(feature = "parity")]
+pub(crate) fn fail_next_scroll_finish_thread_spawn(enabled: bool) {
+    FAIL_NEXT_SCROLL_FINISH_THREAD_SPAWN.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn is_retryable_scroll_finish_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<crate::daemon::DaemonRpcError>()
+        .is_some_and(|error| error.code == "STITCH_RETRYABLE")
+}
+
 impl Coordinator {
     pub fn new(service: CaptureService) -> Self {
         Self {
@@ -483,6 +523,7 @@ impl Coordinator {
         };
         let (tx, rx) = smol::channel::unbounded::<crate::capture::scroll::ScrollSessionSignal>();
         let (progress_tx, progress_rx) = smol::channel::bounded(16);
+        let (finish_tx, finish_rx) = smol::channel::unbounded::<ScrollFinishEvent>();
         let daemon = service.daemon.clone();
         let event_tx = tx.clone();
         let subscription = daemon.subscribe(std::sync::Arc::new(move |event: &str, payload| {
@@ -540,84 +581,314 @@ impl Coordinator {
                     tx.clone(),
                 )
             });
-            let finished = loop {
-                match Signal::receive(&rx, &progress_rx)
-                    .await
-                    .unwrap_or(Signal::Cancel)
+            let mut hide = hide;
+            let mut transition = hide
+                .as_ref()
+                .map(|_| crate::capture::desktop_icons::track_transition());
+            let mut finish_requested = false;
+            let mut finish_request_sent = false;
+            let mut finish_result = None;
+            let mut temporary = None;
+            let mut cancel_requested = false;
+            let mut cancel_required = false;
+            let mut cancel_started = false;
+            let mut cancel_result = None;
+
+            loop {
+                if finish_result.is_some() && !cancel_requested {
+                    while let Ok(signal) = rx.try_recv() {
+                        if matches!(signal, Signal::Cancel) {
+                            cancel_requested = true;
+                            #[cfg(target_os = "macos")]
+                            cx.update({
+                                let ui = ui.clone();
+                                move |cx| crate::windows::scroll_capture::ScrollCaptureSession::mark_cancelling(&ui, cx)
+                            });
+                        }
+                    }
+                }
+                if (cancel_requested || cancel_required)
+                    && !cancel_started
+                    && (!finish_requested || finish_request_sent || finish_result.is_some())
                 {
-                    Signal::Finish => break true,
-                    Signal::Cancel => break false,
-                    Signal::Stopped(message) => {
+                    cancel_started = true;
+                    #[cfg(feature = "parity")]
+                    let force_spawn_failure = FAIL_NEXT_SCROLL_CANCEL_THREAD_SPAWN
+                        .swap(false, std::sync::atomic::Ordering::SeqCst);
+                    #[cfg(not(feature = "parity"))]
+                    let force_spawn_failure = false;
+                    let spawned = if force_spawn_failure {
+                        Err(std::io::Error::other(
+                            "parity-injected scroll cancel thread creation failure",
+                        ))
+                    } else {
+                        let daemon = service.daemon.clone();
+                        let events = finish_tx.clone();
+                        std::thread::Builder::new()
+                            .name("scroll-capture-cancel".into())
+                            .spawn(move || {
+                                let result = crate::capture::scroll::cancel_in_flight(&daemon)
+                                    .map_err(|error| error.to_string());
+                                let _ = events.try_send(ScrollFinishEvent::Cancelled(result));
+                            })
+                    };
+                    if let Err(error) = spawned {
+                        eprintln!("[scroll-capture] failed to spawn cancel worker: {error}");
+                        let daemon = service.daemon.clone();
+                        let events = finish_tx.clone();
+                        cx.background_executor()
+                            .spawn(async move {
+                                let result = crate::capture::scroll::cancel_in_flight(&daemon)
+                                    .map_err(|error| error.to_string());
+                                let _ = events.try_send(ScrollFinishEvent::Cancelled(result));
+                            })
+                            .detach();
+                    }
+                }
+
+                if finish_result.is_some()
+                    && (!(cancel_requested || cancel_required) || cancel_result.is_some())
+                {
+                    break;
+                }
+                if cancel_result.is_some() && !finish_requested {
+                    break;
+                }
+
+                enum Event {
+                    Signal(Option<Signal>),
+                    Finish(Option<ScrollFinishEvent>),
+                }
+                let signal = async { Event::Signal(Signal::receive(&rx, &progress_rx).await) };
+                let finish = async { Event::Finish(finish_rx.recv().await.ok()) };
+                match smol::future::or(signal, finish).await {
+                    Event::Signal(Some(Signal::Finish)) if !finish_requested && !cancel_requested => {
+                        finish_requested = true;
+                        #[cfg(target_os = "macos")]
+                        cx.update({
+                            let ui = ui.clone();
+                            move |cx| crate::windows::scroll_capture::ScrollCaptureSession::mark_finishing(&ui, cx)
+                        });
+                        if let Some(hide) = hide.take() {
+                            let transition = transition.take();
+                            cx.background_executor()
+                                .spawn(async move {
+                                    drop(hide);
+                                    drop(transition);
+                                })
+                                .await;
+                        }
+                        let daemon = service.daemon.clone();
+                        let output = output.clone();
+                        let events = finish_tx.clone();
+                        let spawn_error_events = finish_tx.clone();
+                        #[cfg(feature = "parity")]
+                        let force_spawn_failure = FAIL_NEXT_SCROLL_FINISH_THREAD_SPAWN
+                            .swap(false, std::sync::atomic::Ordering::SeqCst);
+                        #[cfg(not(feature = "parity"))]
+                        let force_spawn_failure = false;
+                        let spawned = if force_spawn_failure {
+                            Err(std::io::Error::other(
+                                "parity-injected scroll finish thread creation failure",
+                            ))
+                        } else {
+                            std::thread::Builder::new()
+                                .name("scroll-capture-finish".into())
+                                .spawn(move || {
+                                    let temporary = match prepare_screenshot(&output) {
+                                        Ok(temporary) => temporary,
+                                        Err(error) => {
+                                            let _ = events.try_send(
+                                                ScrollFinishEvent::Completed(Err(error.into())),
+                                            );
+                                            return;
+                                        }
+                                    };
+                                    let _ = events.try_send(ScrollFinishEvent::Prepared(
+                                        temporary.clone(),
+                                    ));
+                                    let request_events = events.clone();
+                                    let result = crate::capture::scroll::finish_with_started(
+                                        &daemon,
+                                        &temporary,
+                                        move || {
+                                            let _ = request_events
+                                                .try_send(ScrollFinishEvent::RequestSent);
+                                        },
+                                    )
+                                    .and_then(|path| {
+                                        path.ok_or_else(|| {
+                                            anyhow::anyhow!(
+                                                "The scroll capture produced no image. Capture data may be available at {}",
+                                                temporary.display()
+                                            )
+                                        })
+                                    });
+                                    let _ = events
+                                        .try_send(ScrollFinishEvent::Completed(result));
+                                })
+                        };
+                        if let Err(error) = spawned {
+                            let _ = spawn_error_events.try_send(ScrollFinishEvent::Completed(
+                                Err(error.into()),
+                            ));
+                        }
+                    }
+                    Event::Signal(Some(Signal::Finish)) => {}
+                    Event::Signal(Some(Signal::Cancel)) => {
+                        cancel_requested = true;
+                        #[cfg(target_os = "macos")]
+                        cx.update({
+                            let ui = ui.clone();
+                            move |cx| crate::windows::scroll_capture::ScrollCaptureSession::mark_cancelling(&ui, cx)
+                        });
+                        if let Some(hide) = hide.take() {
+                            let transition = transition.take();
+                            cx.background_executor()
+                                .spawn(async move {
+                                    drop(hide);
+                                    drop(transition);
+                                })
+                                .await;
+                        }
+                    }
+                    Event::Signal(Some(Signal::Stopped(message))) => {
                         cx.update(|cx| crate::windows::toast::Toast::show(cx, "Scroll Capture Stopped", message));
                     }
                     #[cfg(target_os = "macos")]
-                    progress => {
+                    Event::Signal(Some(progress)) => {
                         let ui = ui.clone();
                         cx.update(|cx| {
                             crate::windows::scroll_capture::apply_progress(&ui, progress, cx);
                         });
                     }
+                    Event::Signal(None) => {
+                        cancel_requested = true;
+                        #[cfg(target_os = "macos")]
+                        cx.update({
+                            let ui = ui.clone();
+                            move |cx| crate::windows::scroll_capture::ScrollCaptureSession::mark_cancelling(&ui, cx)
+                        });
+                    }
                     #[cfg(all(not(target_os = "macos"), any(test, all(windows, feature = "parity"))))]
-                    _ => {}
+                    Event::Signal(Some(_)) => {}
+                    Event::Finish(Some(ScrollFinishEvent::Prepared(path))) => {
+                        temporary = Some(path);
+                    }
+                    Event::Finish(Some(ScrollFinishEvent::RequestSent)) => {
+                        finish_request_sent = true;
+                    }
+                    Event::Finish(Some(ScrollFinishEvent::Completed(result))) => {
+                        if !cancel_requested
+                            && result.as_ref().is_err_and(is_retryable_scroll_finish_error)
+                        {
+                            if let Some(temporary) = temporary.take() {
+                                let _ = cx
+                                    .background_executor()
+                                    .spawn(async move {
+                                        if std::fs::metadata(&temporary)
+                                            .is_ok_and(|metadata| metadata.len() == 0)
+                                        {
+                                            let _ = std::fs::remove_file(temporary);
+                                        }
+                                    })
+                                    .await;
+                            }
+                            finish_requested = false;
+                            finish_request_sent = false;
+                            #[cfg(target_os = "macos")]
+                            cx.update({
+                                let ui = ui.clone();
+                                move |cx| crate::windows::scroll_capture::ScrollCaptureSession::mark_retryable(&ui, cx)
+                            });
+                            #[cfg(feature = "parity")]
+                            SCROLL_RETRYABLE_FINISH_COUNT
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            continue;
+                        }
+                        if !finish_request_sent {
+                            cancel_required = true;
+                            #[cfg(target_os = "macos")]
+                            cx.update({
+                                let ui = ui.clone();
+                                move |cx| crate::windows::scroll_capture::ScrollCaptureSession::mark_cancelling(&ui, cx)
+                            });
+                        }
+                        finish_result = Some(result);
+                    }
+                    Event::Finish(Some(ScrollFinishEvent::Cancelled(result))) => {
+                        cancel_result = Some(result);
+                    }
+                    Event::Finish(None) => {
+                        cancel_required = true;
+                    }
                 }
-            };
-            drop(subscription);
-            let transition = hide
-                .as_ref()
-                .map(|_| crate::capture::desktop_icons::track_transition());
-            if !finished {
-                cx.background_executor()
-                    .spawn(async move {
-                        #[cfg(windows)]
-                        drop(hide);
-                        crate::capture::scroll::cancel(&service.daemon);
-                        #[cfg(not(windows))]
-                        drop(hide);
-                        drop(transition);
-                    })
-                    .await;
-                #[cfg(target_os = "macos")]
-                cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
-                return;
             }
+
+            drop(subscription);
+            crate::capture::scroll::finish_session();
             #[cfg(target_os = "macos")]
             cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
-            let daemon = service.daemon.clone();
-            let stitched = cx
+
+            if let Some(Err(error)) = cancel_result {
+                eprintln!("[scroll-capture] cancel failed: {error}");
+            }
+            let result = cx
                 .background_executor()
                 .spawn(async move {
-                    #[cfg(not(windows))]
-                    let _transition = transition;
-                    #[cfg(not(windows))]
-                    let _hide = hide;
-                    #[cfg(windows)]
-                    drop(hide);
-                    #[cfg(windows)]
-                    drop(transition);
-                    let temporary = match prepare_screenshot(&output) {
-                        Ok(temporary) => temporary,
+                    if cancel_requested {
+                        if let Some(temporary) = temporary {
+                            if let Err(error) = std::fs::remove_file(&temporary) {
+                                if error.kind() != std::io::ErrorKind::NotFound {
+                                    eprintln!("[scroll-capture] failed to discard temporary output: {error}");
+                                }
+                            }
+                        }
+                        return None;
+                    }
+
+                    let result = finish_result?;
+                    let path = match result {
+                        Ok(_) => match temporary.as_deref() {
+                            Some(temporary) => publish_screenshot(temporary, &output).with_context(|| {
+                                format!("Capture data is available at {}", temporary.display())
+                            }),
+                            None => Err(anyhow::anyhow!(
+                                "The scroll capture produced no temporary image"
+                            )),
+                        },
                         Err(error) => {
-                            crate::capture::scroll::cancel(&daemon);
-                            return Err(anyhow::Error::from(error));
+                            if let Some(temporary) = temporary {
+                                match std::fs::metadata(&temporary) {
+                                    Ok(metadata) if metadata.len() == 0 => {
+                                        let _ = std::fs::remove_file(&temporary);
+                                        Err(anyhow::anyhow!(
+                                            "The scroll capture produced no image"
+                                        ))
+                                    }
+                                    Ok(_) => Err(anyhow::anyhow!(
+                                        "{error}. Capture data is available at {}",
+                                        temporary.display()
+                                    )),
+                                    Err(_) => Err(anyhow::anyhow!(
+                                        "{error}. Capture data may be available at {}",
+                                        temporary.display()
+                                    )),
+                                }
+                            } else {
+                                Err(anyhow::anyhow!(error))
+                            }
                         }
                     };
-                    if crate::capture::scroll::finish(&daemon, &temporary).is_none() {
-                        if std::fs::metadata(&temporary).is_ok_and(|metadata| metadata.len() == 0) {
-                            let _ = std::fs::remove_file(&temporary);
-                            return Err(anyhow::anyhow!("The scroll capture produced no image"));
-                        }
-                        return Err(anyhow::anyhow!(
-                            "The scroll capture produced no image. Capture data may be available at {}",
-                            temporary.display()
-                        ));
-                    }
-                    publish_screenshot(&temporary, &output)
-                        .with_context(|| format!("Capture data is available at {}", temporary.display()))
+                    Some(path)
                 })
                 .await;
-            match stitched {
-                Ok(path) => finalize_capture(path, true, cx).await,
-                Err(error) => show_capture_error(cx, "Scroll Capture Failed", &error.to_string()),
+            match result {
+                Some(Ok(path)) => finalize_capture(path, true, cx).await,
+                Some(Err(error)) => {
+                    show_capture_error(cx, "Scroll Capture Failed", &error.to_string())
+                }
+                None => {}
             }
         })
         .detach();
@@ -816,6 +1087,23 @@ impl gpui::Global for CoordinatorHandle {}
 
 #[cfg(all(test, windows))]
 mod tests {
+    #[test]
+    fn only_structured_retryable_finish_errors_keep_scroll_session_open() {
+        let retryable = anyhow::Error::new(crate::daemon::DaemonRpcError {
+            code: "STITCH_RETRYABLE".into(),
+            message: "temporary worker start failure".into(),
+        });
+        let terminal = anyhow::Error::new(crate::daemon::DaemonRpcError {
+            code: "STITCH_ERROR".into(),
+            message: "image encoding failed".into(),
+        });
+        let unstructured = anyhow::anyhow!("STITCH_RETRYABLE: text is not a protocol code");
+
+        assert!(super::is_retryable_scroll_finish_error(&retryable));
+        assert!(!super::is_retryable_scroll_finish_error(&terminal));
+        assert!(!super::is_retryable_scroll_finish_error(&unstructured));
+    }
+
     #[test]
     fn scroll_start_queued_before_shutdown_does_not_start_daemon() {
         if std::env::var_os("PORATAKE_TEST_SCROLL_SHUTDOWN").is_none() {

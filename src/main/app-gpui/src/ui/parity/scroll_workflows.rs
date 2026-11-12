@@ -6,6 +6,15 @@ use super::daemon_fixture::calls;
 use super::workflows::{area_picker, select_area, verify_saved_capture, SELECTED_RECT};
 use super::{escape, take_notifications, HeadlessAppContext, Path};
 
+struct ScrollThreadSpawnFailureGuard;
+
+impl Drop for ScrollThreadSpawnFailureGuard {
+    fn drop(&mut self) {
+        crate::capture::coordinator::fail_next_scroll_cancel_thread_spawn(false);
+        crate::capture::coordinator::fail_next_scroll_finish_thread_spawn(false);
+    }
+}
+
 #[cfg(windows)]
 pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
     use base64::Engine;
@@ -70,13 +79,19 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         "selection-cancelled",
         "early-finish",
         "early-cancel",
+        "cancel-spawn-failed",
+        "finish-spawn-failed",
         "start-failed",
         "finish-failed",
+        "finish-partial-failed",
         "empty",
         "finish-held",
+        "cancel-finishing-held",
+        "retry",
+        "retryable-success",
+        "retryable-cancel",
         "finish-long-held",
         "cancel-held",
-        "retry",
         "collision",
         "interrupted",
         "burst-finish",
@@ -91,6 +106,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap().to_string();
             let (tx, rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream.read_exact(&mut [0]).unwrap();
@@ -99,10 +115,51 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 }
                 let active = crate::capture::scroll::is_active();
                 let icons_hidden = crate::capture::desktop_icons::are_hidden();
-                stream.write_all(&[1]).unwrap();
                 tx.send((active, icons_hidden)).unwrap();
+                if name == "cancel-finishing-held" {
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                }
+                stream.write_all(&[1]).unwrap();
             });
-            Some((address, rx))
+            Some((address, rx, release_tx))
+        } else {
+            None
+        };
+        let cancel_barrier = if name == "cancel-finishing-held" {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let (received_tx, received_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.read_exact(&mut [0]).unwrap();
+                received_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                stream.write_all(&[1]).unwrap();
+            });
+            Some((address, received_rx, release_tx))
+        } else {
+            None
+        };
+        let retry_barrier = if matches!(name, "retryable-success" | "retryable-cancel") {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let (action_tx, action_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.read_exact(&mut [0]).unwrap();
+                ready_tx.send(()).unwrap();
+                let action = action_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                stream.write_all(&[action]).unwrap();
+            });
+            Some((address, ready_rx, action_tx))
         } else {
             None
         };
@@ -116,18 +173,32 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             output.join("capture-fixture.json"),
             serde_json::to_vec(&serde_json::json!({
                 "freeze": "frozen", "rect": SELECTED_RECT, "windowId": null, "scroll": name,
-                "barrier": barrier.as_ref().map(|(address, _)| address),
+                "barrier": barrier.as_ref().map(|(address, _, _)| address),
+                "cancelBarrier": cancel_barrier.as_ref().map(|(address, _, _)| address),
+                "retryBarrier": retry_barrier.as_ref().map(|(address, _, _)| address),
             }))
             .unwrap(),
         )
         .unwrap();
         let before = calls(output).len();
+        let retryable_count = crate::capture::coordinator::scroll_retryable_finish_count();
         let history: Vec<_> = crate::history_store::load_history()
             .into_iter()
             .map(|item| item.original_path)
             .collect();
         let sentinel = format!("clipboard before scroll {name}");
         take_notifications();
+        let _thread_spawn_failure = match name {
+            "cancel-spawn-failed" => {
+                crate::capture::coordinator::fail_next_scroll_cancel_thread_spawn(true);
+                Some(ScrollThreadSpawnFailureGuard)
+            }
+            "finish-spawn-failed" => {
+                crate::capture::coordinator::fail_next_scroll_finish_thread_spawn(true);
+                Some(ScrollThreadSpawnFailureGuard)
+            }
+            _ => None,
+        };
         let pattern = cx.update(|cx| {
             let state = crate::state::state(cx);
             let pattern = state.config.get().storage.naming_pattern;
@@ -155,7 +226,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             select_area(cx, picker);
         }
         cx.run_until_parked();
-        if let Some((_, rx)) = barrier {
+        if let Some((_, rx, release)) = barrier {
             let (active, icons_hidden) = rx
                 .recv_timeout(std::time::Duration::from_secs(
                     if name == "finish-long-held" { 40 } else { 10 },
@@ -171,7 +242,109 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                     "desktop icons must be restored before {name} completes"
                 );
             }
+            if name == "cancel-finishing-held" {
+                let (_, received, release_cancel) = cancel_barrier.as_ref().unwrap();
+                received
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                release_cancel.send(()).unwrap();
+                cx.run_until_parked();
+                assert!(crate::capture::scroll::is_active());
+                let methods: Vec<_> = calls(output)
+                    .into_iter()
+                    .skip(before)
+                    .filter(|call| call["module"] == "scroll-capture")
+                    .map(|call| call["method"].as_str().unwrap().to_owned())
+                    .collect();
+                assert_eq!(
+                    methods,
+                    vec!["start".to_owned(), "finish".to_owned(), "cancel".to_owned()]
+                );
+                assert!(
+                    !crate::capture::scroll::begin(),
+                    "a retry must remain gated while the finish writer is held"
+                );
+                release.send(()).unwrap();
+            }
             cx.run_until_parked();
+        }
+        if let Some((_, ready, action)) = retry_barrier {
+            ready
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            let started = std::time::Instant::now();
+            while crate::capture::coordinator::scroll_retryable_finish_count() == retryable_count {
+                cx.run_until_parked();
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(10),
+                    "{name}: coordinator did not observe the retryable Finish response"
+                );
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                crate::capture::coordinator::scroll_retryable_finish_count(),
+                retryable_count + 1,
+                "{name}: exactly one retryable Finish response must be observed"
+            );
+            assert!(
+                crate::capture::scroll::is_active(),
+                "{name}: retryable Finish must keep the capture session active"
+            );
+            action
+                .send(if name == "retryable-success" { 1 } else { 2 })
+                .unwrap();
+            let started = std::time::Instant::now();
+            loop {
+                cx.run_until_parked();
+                let methods = calls(output)
+                    .into_iter()
+                    .skip(before)
+                    .filter(|call| call["module"] == "scroll-capture")
+                    .map(|call| call["method"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>();
+                let finish_paths = calls(output)
+                    .into_iter()
+                    .skip(before)
+                    .filter(|call| call["module"] == "scroll-capture" && call["method"] == "finish")
+                    .map(|call| {
+                        Path::new(call["params"]["outputPath"].as_str().unwrap()).to_path_buf()
+                    })
+                    .collect::<Vec<_>>();
+                let output_settled = if name == "retryable-success" {
+                    methods.iter().filter(|method| *method == "finish").count() == 2
+                        && std::fs::read_dir(&captures).unwrap().count() == 1
+                } else {
+                    methods.iter().any(|method| method == "cancel")
+                        && std::fs::read_dir(&captures).unwrap().count() == 0
+                };
+                let temporary_settled = finish_paths.iter().all(|path| !path.exists());
+                if !crate::capture::scroll::is_active() && output_settled && temporary_settled {
+                    break;
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(10),
+                    "{name}: retry session/output did not settle"
+                );
+                std::thread::yield_now();
+            }
+        }
+        if matches!(name, "cancel-spawn-failed" | "finish-spawn-failed") {
+            let started = std::time::Instant::now();
+            loop {
+                cx.run_until_parked();
+                let cancel_sent = calls(output)
+                    .into_iter()
+                    .skip(before)
+                    .any(|call| call["module"] == "scroll-capture" && call["method"] == "cancel");
+                if cancel_sent && !crate::capture::scroll::is_active() {
+                    break;
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(10),
+                    "{name}: cancellation did not settle after thread creation failure"
+                );
+                std::thread::yield_now();
+            }
         }
         assert!(
             !crate::capture::scroll::is_active(),
@@ -191,6 +364,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 | "finish-held"
                 | "finish-long-held"
                 | "retry"
+                | "retryable-success"
                 | "collision"
                 | "interrupted"
                 | "burst-finish"
@@ -226,7 +400,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 &format!("workflow-scroll-{name}"),
             );
         } else {
-            assert_eq!(std::fs::read_dir(&captures).unwrap().count(), 0);
+            assert_eq!(
+                std::fs::read_dir(&captures).unwrap().count(),
+                usize::from(name == "finish-partial-failed")
+            );
             assert_eq!(
                 crate::history_store::load_history()
                     .into_iter()
@@ -239,9 +416,30 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         let body = match name {
             "start-failed" => Some("The scroll capture could not be started"),
             "finish-failed" | "empty" => Some("The scroll capture produced no image"),
+            "finish-spawn-failed" => Some("parity-injected scroll finish thread creation failure"),
             _ => None,
         };
-        let expected = if matches!(name, "burst-finish" | "burst-cancel") {
+        let expected = if name == "finish-partial-failed" {
+            let output_path = calls(output)
+                .into_iter()
+                .rev()
+                .find(|call| call["module"] == "scroll-capture" && call["method"] == "finish")
+                .unwrap()["params"]["outputPath"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert_eq!(
+                std::fs::read(&output_path).unwrap(),
+                b"partial scroll image"
+            );
+            vec![(
+                "Scroll Capture Failed".to_owned(),
+                format!(
+                    "Fixture scroll finish failure. Capture data is available at {output_path}"
+                ),
+                false,
+            )]
+        } else if matches!(name, "burst-finish" | "burst-cancel") {
             vec![
                 (
                     "Scroll Capture Stopped".to_string(),
@@ -271,6 +469,17 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 .collect::<Vec<_>>()
         };
         assert_eq!(notifications, expected);
+        if name == "finish-partial-failed" {
+            let output_path = calls(output)
+                .into_iter()
+                .rev()
+                .find(|call| call["module"] == "scroll-capture" && call["method"] == "finish")
+                .unwrap()["params"]["outputPath"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            std::fs::remove_file(output_path).unwrap();
+        }
         let calls: Vec<_> = calls(output).into_iter().skip(before).collect();
         if cfg!(windows) && matches!(name, "finish-held" | "cancel-held") {
             let position = |module: &str, method: &str| {
@@ -301,24 +510,37 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             ("start", usize::from(name != "selection-cancelled")),
             (
                 "finish",
-                usize::from(matches!(
-                    name,
-                    "early-finish"
-                        | "finish-failed"
-                        | "empty"
-                        | "finish-held"
-                        | "finish-long-held"
-                        | "retry"
-                        | "collision"
-                        | "interrupted"
-                        | "burst-finish"
-                )),
+                if name == "retryable-success" {
+                    2
+                } else {
+                    usize::from(matches!(
+                        name,
+                        "early-finish"
+                            | "finish-failed"
+                            | "finish-partial-failed"
+                            | "empty"
+                            | "finish-held"
+                            | "cancel-finishing-held"
+                            | "finish-long-held"
+                            | "retry"
+                            | "retryable-cancel"
+                            | "collision"
+                            | "interrupted"
+                            | "burst-finish"
+                    ))
+                },
             ),
             (
                 "cancel",
                 usize::from(matches!(
                     name,
-                    "early-cancel" | "cancel-held" | "burst-cancel"
+                    "early-cancel"
+                        | "cancel-spawn-failed"
+                        | "finish-spawn-failed"
+                        | "cancel-held"
+                        | "cancel-finishing-held"
+                        | "retryable-cancel"
+                        | "burst-cancel"
                 )),
             ),
         ] {
@@ -330,6 +552,29 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 count,
                 "{name}: {method} requests"
             );
+        }
+        if matches!(name, "retryable-success" | "retryable-cancel") {
+            for call in calls
+                .iter()
+                .filter(|call| call["module"] == "scroll-capture" && call["method"] == "finish")
+            {
+                let output_path = call["params"]["outputPath"].as_str().unwrap();
+                assert!(
+                    !Path::new(output_path).exists(),
+                    "{name}: finish attempt temp should be removed or promoted"
+                );
+            }
+        }
+        if name == "cancel-finishing-held" {
+            let finish = calls
+                .iter()
+                .position(|call| call["module"] == "scroll-capture" && call["method"] == "finish")
+                .unwrap();
+            let cancel = calls
+                .iter()
+                .position(|call| call["module"] == "scroll-capture" && call["method"] == "cancel")
+                .unwrap();
+            assert!(finish < cancel, "Finish must be enqueued before Cancel");
         }
         if name == "collision" {
             cx.update(|cx| {

@@ -39,6 +39,32 @@ fn wait_for_scroll_barrier(fixture: &serde_json::Value) {
     stream.read_exact(&mut [0]).unwrap();
 }
 
+fn wait_for_scroll_cancel_barrier(fixture: &serde_json::Value) {
+    let Some(address) = fixture["cancelBarrier"].as_str() else {
+        return;
+    };
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(&[1]).unwrap();
+    stream.read_exact(&mut [0]).unwrap();
+}
+
+fn wait_for_scroll_retry_barrier(fixture: &serde_json::Value) -> u8 {
+    let Some(address) = fixture["retryBarrier"].as_str() else {
+        return 0;
+    };
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(&[1]).unwrap();
+    let mut action = [0];
+    stream.read_exact(&mut action).unwrap();
+    action[0]
+}
+
 pub fn run() {
     let output = std::env::var("PORATAKE_PARITY_OUTPUT").unwrap();
     let mut log = OpenOptions::new()
@@ -56,6 +82,7 @@ pub fn run() {
     let mut desktop_hide_failed = false;
     let mut desktop_show_failed = false;
     let mut desktop_show_not_applied = false;
+    let mut scroll_retryable_finish_attempts = 0;
     let desktop_icons_hidden = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
@@ -231,6 +258,12 @@ pub fn run() {
                     "a previous scroll session must be cleared before retry"
                 );
                 let fixture = capture_fixture(&output);
+                if matches!(
+                    fixture["scroll"].as_str(),
+                    Some("retryable-success" | "retryable-cancel")
+                ) {
+                    scroll_retryable_finish_attempts = 0;
+                }
                 let params = request.params.as_ref().unwrap();
                 for key in ["x", "y", "width", "height"] {
                     assert_eq!(params[key], fixture["rect"][key]);
@@ -278,7 +311,7 @@ pub fn run() {
                 }
                 if matches!(
                     fixture["scroll"].as_str(),
-                    Some("early-cancel" | "cancel-held" | "burst-cancel")
+                    Some("early-cancel" | "cancel-spawn-failed" | "cancel-held" | "burst-cancel")
                 ) {
                     scrolling = false;
                     protocol::send_event(
@@ -298,8 +331,76 @@ pub fn run() {
                 assert!(scrolling);
                 scrolling = false;
                 let fixture = capture_fixture(&output);
+                if matches!(
+                    fixture["scroll"].as_str(),
+                    Some("retryable-success" | "retryable-cancel")
+                ) && scroll_retryable_finish_attempts == 0
+                {
+                    scroll_retryable_finish_attempts += 1;
+                    scrolling = true;
+                    protocol::respond_error(
+                        &request.id,
+                        "STITCH_RETRYABLE",
+                        "could not start the scroll stitch worker",
+                    );
+                    let action = wait_for_scroll_retry_barrier(&fixture);
+                    match action {
+                        1 => protocol::send_event(
+                            poratake_daemon_common::contract::SCROLL_CAPTURE_DONE_EVENT,
+                            None,
+                        ),
+                        2 => {
+                            scrolling = false;
+                            protocol::send_event(
+                                poratake_daemon_common::contract::SCROLL_CAPTURE_CANCELLED_EVENT,
+                                None,
+                            );
+                        }
+                        _ => panic!("unexpected scroll retry barrier action: {action}"),
+                    }
+                    continue;
+                }
+                if fixture["scroll"] == "retryable-success" {
+                    scroll_retryable_finish_attempts += 1;
+                }
+                if fixture["scroll"] == "cancel-finishing-held" {
+                    let params = request.params.as_ref().unwrap();
+                    let response_path =
+                        Path::new(params["outputPath"].as_str().unwrap()).to_path_buf();
+                    let request_id = request.id.clone();
+                    protocol::send_event(
+                        poratake_daemon_common::contract::SCROLL_CAPTURE_CANCELLED_EVENT,
+                        None,
+                    );
+                    std::thread::spawn(move || {
+                        wait_for_scroll_barrier(&fixture);
+                        protocol::respond_success(
+                            &request_id,
+                            json!({
+                                "success": false,
+                                "outputPath": response_path,
+                                "width": 640,
+                                "height": 900,
+                                "frameCount": 3
+                            }),
+                        );
+                    });
+                    continue;
+                }
                 if fixture["scroll"] != "start-held" {
                     wait_for_scroll_barrier(&fixture);
+                }
+                if fixture["scroll"] == "finish-partial-failed" {
+                    let path = request.params.as_ref().unwrap()["outputPath"]
+                        .as_str()
+                        .unwrap();
+                    std::fs::write(path, b"partial scroll image").unwrap();
+                    protocol::respond_error(
+                        &request.id,
+                        "STITCH_ERROR",
+                        "Fixture scroll finish failure",
+                    );
+                    continue;
                 }
                 if fixture["scroll"] == "finish-failed" {
                     protocol::respond_error(
@@ -321,7 +422,12 @@ pub fn run() {
             }
             ("scroll-capture", "cancel") => {
                 scrolling = false;
-                wait_for_scroll_barrier(&capture_fixture(&output));
+                let fixture = capture_fixture(&output);
+                if fixture["scroll"] == "cancel-finishing-held" {
+                    wait_for_scroll_cancel_barrier(&fixture);
+                } else {
+                    wait_for_scroll_barrier(&fixture);
+                }
                 json!({})
             }
             ("screenshot", method @ ("capture-area" | "capture-window")) => {

@@ -48,8 +48,22 @@ const RESTART_BACKOFF_BASE_MS: u64 = 1_000;
 pub type EventHandler = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 
 struct Pending {
-    sender: SyncSender<std::result::Result<Value, String>>,
+    sender: SyncSender<std::result::Result<Value, DaemonRpcError>>,
 }
+
+#[derive(Debug)]
+pub struct DaemonRpcError {
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for DaemonRpcError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DaemonRpcError {}
 
 #[derive(Clone)]
 pub struct DaemonHandle {
@@ -418,7 +432,7 @@ impl DaemonHandle {
 
         match rx.recv_timeout(timeout) {
             Ok(Ok(result)) => Ok(result),
-            Ok(Err(message)) => Err(anyhow!("{message}")),
+            Ok(Err(error)) => Err(anyhow::Error::new(error)),
             Err(RecvTimeoutError::Timeout) => {
                 self.inner.pending.lock().remove(&id);
                 Err(anyhow!("Request timeout: {module}.{method}"))
@@ -429,6 +443,7 @@ impl DaemonHandle {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn call_without_timeout(
         &self,
         module: &str,
@@ -438,7 +453,7 @@ impl DaemonHandle {
         let (_, rx) = self.begin_call(module, method, params)?;
         match rx.recv() {
             Ok(Ok(result)) => Ok(result),
-            Ok(Err(message)) => Err(anyhow!("{message}")),
+            Ok(Err(error)) => Err(anyhow::Error::new(error)),
             Err(_) => Err(anyhow!("Request dropped: {module}.{method}")),
         }
     }
@@ -448,7 +463,7 @@ impl DaemonHandle {
         module: &str,
         method: &str,
         params: Option<Value>,
-    ) -> Result<(String, Receiver<std::result::Result<Value, String>>)> {
+    ) -> Result<(String, Receiver<std::result::Result<Value, DaemonRpcError>>)> {
         let id = format!("req-{}", self.inner.next_id.fetch_add(1, Ordering::SeqCst));
         let request = json!({
             "id": id,
@@ -457,7 +472,8 @@ impl DaemonHandle {
             "params": params.unwrap_or(Value::Null),
         });
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<Value, String>>(1);
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<std::result::Result<Value, DaemonRpcError>>(1);
         self.inner
             .pending
             .lock()
@@ -795,30 +811,39 @@ impl ScrollCaptureClient<'_> {
             .map(|_| ())
     }
 
-    pub fn finish(
+    pub fn finish_with_started(
         &self,
         request: &ScrollCaptureFinishRequest,
+        started: impl FnOnce(),
     ) -> Result<ScrollCaptureFinishResult> {
         self.daemon.ensure_running()?;
-        let response = self.daemon.call_without_timeout(
+        let (_, response) = self.daemon.begin_call(
             SCROLL_CAPTURE_MODULE,
             ScrollCaptureMethod::Finish.id(),
             Some(serde_json::to_value(request)?),
         )?;
+        started();
+        let response = response
+            .recv()
+            .map_err(|_| anyhow!("Request dropped: {SCROLL_CAPTURE_MODULE}.finish"))?
+            .map_err(anyhow::Error::new)?;
         serde_json::from_value(response).map_err(Into::into)
     }
 
-    pub fn cancel(&self) -> Result<()> {
+    pub fn cancel_without_timeout(&self) -> Result<()> {
         if !self.daemon.is_running() {
             return Ok(());
         }
-        self.daemon
-            .call(
-                SCROLL_CAPTURE_MODULE,
-                ScrollCaptureMethod::Cancel.id(),
-                None,
-            )
-            .map(|_| ())
+        let (_, response) = self.daemon.begin_call(
+            SCROLL_CAPTURE_MODULE,
+            ScrollCaptureMethod::Cancel.id(),
+            None,
+        )?;
+        response
+            .recv()
+            .map_err(|_| anyhow!("Request dropped: {SCROLL_CAPTURE_MODULE}.cancel"))?
+            .map_err(|message| anyhow!("{message}"))?;
+        Ok(())
     }
 
     #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
@@ -1069,7 +1094,15 @@ impl DaemonInner {
                     .and_then(Value::as_str)
                     .unwrap_or("Unknown error")
                     .to_string();
-                Err(message_text)
+                let code = error
+                    .and_then(|error| error.get("code"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("UNKNOWN")
+                    .to_string();
+                Err(DaemonRpcError {
+                    code,
+                    message: message_text,
+                })
             };
             // Ignore send failures when the caller already timed out.
             match pending.sender.try_send(outcome) {
@@ -1126,7 +1159,10 @@ impl DaemonInner {
     fn reject_all_pending(&self, message: &str) {
         let mut pending = self.pending.lock();
         for (_, entry) in pending.drain() {
-            let _ = entry.sender.try_send(Err(message.to_string()));
+            let _ = entry.sender.try_send(Err(DaemonRpcError {
+                code: "DAEMON_UNAVAILABLE".into(),
+                message: message.to_string(),
+            }));
         }
     }
 }
@@ -1189,5 +1225,24 @@ mod tests {
         let _ = DaemonHandle::recording_overlay;
         let _ = RecordingOverlayClient::show_window;
         let _ = RecordingOverlayClient::hide;
+    }
+
+    #[test]
+    fn rpc_error_code_survives_transport_for_typed_recovery() {
+        let daemon = DaemonHandle::with_binary(PathBuf::from("unused"));
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        daemon
+            .inner
+            .pending
+            .lock()
+            .insert("retryable-finish".into(), Pending { sender: tx });
+
+        daemon.inner.handle_line(
+            r#"{"id":"retryable-finish","success":false,"error":{"code":"STITCH_RETRYABLE","message":"could not start worker"}}"#,
+        );
+
+        let error = rx.recv().unwrap().unwrap_err();
+        assert_eq!(error.code, "STITCH_RETRYABLE");
+        assert_eq!(error.message, "could not start worker");
     }
 }

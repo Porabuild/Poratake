@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::contract::ScrollSpeed;
 
@@ -47,6 +48,12 @@ pub struct CapturedFrame {
     pub pixels: Vec<u8>,
     pub overlap: usize,
     pub trim_bottom: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PngWriteError {
+    Cancelled,
+    Failed(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -937,23 +944,54 @@ pub fn stitched_dimensions(frames: &[CapturedFrame]) -> Result<(usize, usize), S
 }
 
 pub fn write_png(path: &Path, frames: &[CapturedFrame]) -> Result<(usize, usize), String> {
-    let (width, height) = stitched_dimensions(frames)?;
-    let width_u32 = u32::try_from(width).map_err(|_| "Image width is too large".to_string())?;
-    let height_u32 = u32::try_from(height).map_err(|_| "Image height is too large".to_string())?;
-    let file = File::create(path).map_err(|error| error.to_string())?;
+    let mut never_cancelled = || false;
+    write_png_with_cancel_check(path, frames, &mut never_cancelled).map_err(|error| match error {
+        PngWriteError::Cancelled => "PNG write was cancelled unexpectedly".to_string(),
+        PngWriteError::Failed(message) => message,
+    })
+}
+
+pub fn write_png_cancellable(
+    path: &Path,
+    frames: &[CapturedFrame],
+    cancelled: &AtomicBool,
+) -> Result<(usize, usize), PngWriteError> {
+    let mut is_cancelled = || cancelled.load(Ordering::Acquire);
+    write_png_with_cancel_check(path, frames, &mut is_cancelled)
+}
+
+fn write_png_with_cancel_check(
+    path: &Path,
+    frames: &[CapturedFrame],
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> Result<(usize, usize), PngWriteError> {
+    let (width, height) = stitched_dimensions(frames).map_err(PngWriteError::Failed)?;
+    let width_u32 = u32::try_from(width)
+        .map_err(|_| PngWriteError::Failed("Image width is too large".to_string()))?;
+    let height_u32 = u32::try_from(height)
+        .map_err(|_| PngWriteError::Failed("Image height is too large".to_string()))?;
+    if is_cancelled() {
+        return Err(PngWriteError::Cancelled);
+    }
+    let file = File::create(path).map_err(|error| PngWriteError::Failed(error.to_string()))?;
     let mut writer = BufWriter::new(file);
     writer
         .write_all(&[137, 80, 78, 71, 13, 10, 26, 10])
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| PngWriteError::Failed(error.to_string()))?;
 
     let mut header = Vec::with_capacity(13);
     header.extend_from_slice(&width_u32.to_be_bytes());
     header.extend_from_slice(&height_u32.to_be_bytes());
     header.extend_from_slice(&[8, 6, 0, 0, 0]);
-    write_png_chunk(&mut writer, b"IHDR", &header)?;
-    write_png_pixels(&mut writer, width, height, frames)?;
-    write_png_chunk(&mut writer, b"IEND", &[])?;
-    writer.flush().map_err(|error| error.to_string())?;
+    write_png_chunk(&mut writer, b"IHDR", &header).map_err(PngWriteError::Failed)?;
+    write_png_pixels(&mut writer, width, height, frames, is_cancelled)?;
+    if is_cancelled() {
+        return Err(PngWriteError::Cancelled);
+    }
+    write_png_chunk(&mut writer, b"IEND", &[]).map_err(PngWriteError::Failed)?;
+    writer
+        .flush()
+        .map_err(|error| PngWriteError::Failed(error.to_string()))?;
     Ok((width, height))
 }
 
@@ -982,32 +1020,33 @@ fn write_png_pixels(
     width: usize,
     height: usize,
     frames: &[CapturedFrame],
-) -> Result<(), String> {
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> Result<(), PngWriteError> {
     let row_bytes = width
         .checked_mul(4)
-        .ok_or_else(|| "PNG row is too large".to_string())?;
+        .ok_or_else(|| PngWriteError::Failed("PNG row is too large".to_string()))?;
     let filtered_row_bytes = row_bytes + 1;
     let blocks_per_row = filtered_row_bytes.div_ceil(u16::MAX as usize);
     let raw_length = filtered_row_bytes
         .checked_mul(height)
-        .ok_or_else(|| "PNG data is too large".to_string())?;
+        .ok_or_else(|| PngWriteError::Failed("PNG data is too large".to_string()))?;
     let block_count = blocks_per_row
         .checked_mul(height)
-        .ok_or_else(|| "PNG data is too large".to_string())?;
+        .ok_or_else(|| PngWriteError::Failed("PNG data is too large".to_string()))?;
     let payload_length = raw_length
         .checked_add(block_count * 5)
         .and_then(|length| length.checked_add(6))
-        .ok_or_else(|| "PNG data is too large".to_string())?;
-    let payload_length =
-        u32::try_from(payload_length).map_err(|_| "PNG data is too large".to_string())?;
+        .ok_or_else(|| PngWriteError::Failed("PNG data is too large".to_string()))?;
+    let payload_length = u32::try_from(payload_length)
+        .map_err(|_| PngWriteError::Failed("PNG data is too large".to_string()))?;
 
     writer
         .write_all(&payload_length.to_be_bytes())
         .and_then(|_| writer.write_all(b"IDAT"))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| PngWriteError::Failed(error.to_string()))?;
 
     let mut crc = crc32_update(crc32_start(), b"IDAT");
-    write_crc_bytes(writer, &mut crc, &[0x78, 0x01])?;
+    write_crc_bytes(writer, &mut crc, &[0x78, 0x01]).map_err(PngWriteError::Failed)?;
     let mut adler_a = 1_u32;
     let mut adler_b = 0_u32;
 
@@ -1023,6 +1062,9 @@ fn write_png_pixels(
 
     let mut filtered = Vec::with_capacity(filtered_row_bytes);
     for (row, pixels) in rows.enumerate() {
+        if is_cancelled() {
+            return Err(PngWriteError::Cancelled);
+        }
         filtered.clear();
         filtered.push(0);
         filtered.extend_from_slice(pixels);
@@ -1040,17 +1082,21 @@ fn write_png_pixels(
                 !length as u8,
                 (!length >> 8) as u8,
             ];
-            write_crc_bytes(writer, &mut crc, &header)?;
-            write_crc_bytes(writer, &mut crc, &filtered[offset..offset + block_length])?;
+            write_crc_bytes(writer, &mut crc, &header).map_err(PngWriteError::Failed)?;
+            write_crc_bytes(writer, &mut crc, &filtered[offset..offset + block_length])
+                .map_err(PngWriteError::Failed)?;
             offset += block_length;
         }
     }
 
+    if is_cancelled() {
+        return Err(PngWriteError::Cancelled);
+    }
     let adler = (adler_b << 16) | adler_a;
-    write_crc_bytes(writer, &mut crc, &adler.to_be_bytes())?;
+    write_crc_bytes(writer, &mut crc, &adler.to_be_bytes()).map_err(PngWriteError::Failed)?;
     writer
         .write_all(&crc32_finish(crc).to_be_bytes())
-        .map_err(|error| error.to_string())
+        .map_err(|error| PngWriteError::Failed(error.to_string()))
 }
 
 fn write_crc_bytes(writer: &mut impl Write, crc: &mut u32, bytes: &[u8]) -> Result<(), String> {
@@ -2482,6 +2528,55 @@ mod tests {
         let bytes = std::fs::read(&path).expect("stitched png");
         std::fs::remove_file(path).expect("remove stitched png");
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn cancelled_png_write_leaves_an_existing_output_untouched() {
+        let path = std::env::temp_dir().join(format!(
+            "poratake-scroll-cancelled-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"existing capture").expect("existing output");
+        let cancelled = AtomicBool::new(true);
+
+        assert_eq!(
+            write_png_cancellable(&path, &[frame(0, 4, 4)], &cancelled),
+            Err(PngWriteError::Cancelled)
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("existing output remains"),
+            b"existing capture"
+        );
+        std::fs::remove_file(path).expect("remove existing output");
+    }
+
+    #[test]
+    fn cancellation_during_png_rows_leaves_the_caller_path_for_cleanup() {
+        let path = std::env::temp_dir().join(format!(
+            "poratake-scroll-partial-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"caller-owned output").expect("existing output");
+        let mut checks = 0;
+        let mut is_cancelled = || {
+            checks += 1;
+            checks >= 3
+        };
+
+        assert_eq!(
+            write_png_with_cancel_check(&path, &[frame(0, 4, 4)], &mut is_cancelled),
+            Err(PngWriteError::Cancelled)
+        );
+        assert!(path.is_file());
+        std::fs::remove_file(path).expect("caller can clean the partial output");
     }
 
     #[test]

@@ -124,28 +124,45 @@ pub fn start_reserved(daemon: &DaemonHandle, request: &ScrollCaptureStartRequest
     true
 }
 
-/// Stitches and writes the capture, returning the file the daemon produced.
-pub fn finish(daemon: &DaemonHandle, output_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    let response = daemon.scroll_capture().finish(&ScrollCaptureFinishRequest {
-        output_path: output_path.to_path_buf(),
-    });
-    ACTIVE.store(false, Ordering::SeqCst);
-    let response = response
-        .map_err(|error| eprintln!("[scroll-capture] finish failed: {error}"))
-        .ok()?;
+pub fn finish_with_started(
+    daemon: &DaemonHandle,
+    output_path: &std::path::Path,
+    started: impl FnOnce(),
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let response = daemon.scroll_capture().finish_with_started(
+        &ScrollCaptureFinishRequest {
+            output_path: output_path.to_path_buf(),
+        },
+        started,
+    );
+    finish_response(response)
+}
+
+fn finish_response(
+    response: anyhow::Result<poratake_daemon_common::contract::ScrollCaptureFinishResult>,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let response = response?;
 
     if !response.success {
-        return None;
+        return Ok(None);
     }
-    Some(response.output_path)
+    Ok(Some(response.output_path))
+}
+
+pub fn finish_session() {
+    ACTIVE.store(false, Ordering::SeqCst);
+}
+
+pub fn cancel_in_flight(daemon: &DaemonHandle) -> anyhow::Result<()> {
+    daemon.scroll_capture().cancel_without_timeout()
 }
 
 pub fn cancel(daemon: &DaemonHandle) {
     if !is_active() {
         return;
     }
-    let result = daemon.scroll_capture().cancel();
-    ACTIVE.store(false, Ordering::SeqCst);
+    let result = cancel_in_flight(daemon);
+    finish_session();
     if let Err(error) = result {
         eprintln!("[scroll-capture] cancel failed: {error}");
     }

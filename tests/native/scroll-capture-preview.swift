@@ -66,6 +66,67 @@ struct ScrollCapturePreviewTest {
         precondition(count == 1, "The first frame must be captured even when its hash is zero")
         precondition(restarted == 0, "A new session must not reuse the previous frame hash")
         precondition(cleared, "Cleanup must clear the previous frame hash")
+
+        let cancelWins = ScrollCaptureModule().testFinishRace(cancelBeforeCompletion: true)
+        precondition(cancelWins.0 && cancelWins.1 && cancelWins.2 && cancelWins.3)
+        let cancelledResult = ScrollCaptureModule().testCancelledFinishResult(
+            outputPath: "/tmp/scroll-cancelled.png",
+            frameCount: 3
+        )
+        precondition((cancelledResult["success"] as? Bool) == false)
+        precondition((cancelledResult["outputPath"] as? String) == "/tmp/scroll-cancelled.png")
+        precondition((cancelledResult["width"] as? Int) == 0 && (cancelledResult["height"] as? Int) == 0)
+        precondition((cancelledResult["frameCount"] as? Int) == 3)
+        let completionWins = ScrollCaptureModule().testFinishRace(cancelBeforeCompletion: false)
+        precondition(!completionWins.0 && !completionWins.1 && completionWins.2 && completionWins.3)
+        let doneCancelHandoff = ScrollCaptureModule().testDoneCancelHandoff()
+        precondition(doneCancelHandoff.0 && doneCancelHandoff.1 && doneCancelHandoff.2 && doneCancelHandoff.3)
+        let cancelledOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-cancel-" + UUID().uuidString + ".tmp")
+        defer { try? FileManager.default.removeItem(at: cancelledOutput) }
+        precondition(ScrollCaptureModule().testCancelledStitchPreservesOutputPath(cancelledOutput.path))
+
+        let finishModule = ScrollCaptureModule()
+        let finishFrame = frame(start: 0, width: width, height: height)
+        finishModule.testPrepareCaptureForFinish(frames: [finishFrame], step: step)
+        let workerStarted = DispatchSemaphore(value: 0)
+        let releaseWorker = DispatchSemaphore(value: 0)
+        finishModule.testHoldFinishWorker(started: workerStarted, release: releaseWorker)
+        var responses: [(id: String, result: [String: Any])] = []
+        finishModule.testSetFinishResponder { id, result in
+            responses.append((id, result))
+        }
+        finishModule.testSetCancelResponder { id, cancelled in
+            responses.append((id, ["cancelled": cancelled]))
+        }
+        let finishOutput = NSTemporaryDirectory() + "/scroll-finish-race-" + UUID().uuidString + ".png"
+        defer { try? FileManager.default.removeItem(atPath: finishOutput) }
+        finishModule.handle(
+            method: DaemonContract.ScrollCapture.Method.finish.rawValue,
+            params: ["outputPath": AnyCodable(finishOutput)],
+            requestId: "held-finish"
+        )
+        precondition(workerStarted.wait(timeout: .now() + 5) == .success, "Finish worker did not start")
+        finishModule.handle(
+            method: DaemonContract.ScrollCapture.Method.cancel.rawValue,
+            params: nil,
+            requestId: "held-cancel"
+        )
+        precondition(responses.isEmpty, "Cancel must wait until the finish worker exits")
+        releaseWorker.signal()
+        let responseDeadline = Date(timeIntervalSinceNow: 5)
+        while responses.count < 2 && RunLoop.current.run(mode: .default, before: responseDeadline) {
+        }
+        precondition(responses.count == 2, "Finish and Cancel must respond after the worker exits")
+        precondition(responses.map(\.id) == ["held-finish", "held-cancel"])
+        let heldFinish = responses[0].result
+        precondition((heldFinish["success"] as? Bool) == false)
+        precondition((heldFinish["outputPath"] as? String) == finishOutput)
+        precondition((heldFinish["width"] as? Int) == 0 && (heldFinish["height"] as? Int) == 0)
+        precondition((heldFinish["frameCount"] as? Int) == 1)
+        precondition((responses[1].result["cancelled"] as? Bool) == true)
+        precondition(finishModule.testStartCaptureAfterFinish(), "A capture must be retryable after finish and cancel settle")
+
         let allFrames = [0, step, step * 2].map { frame(start: $0, width: width, height: height) }
         for count in [1, 2, 3] {
             let output = URL(fileURLWithPath: NSTemporaryDirectory())
