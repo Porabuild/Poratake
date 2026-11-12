@@ -121,6 +121,10 @@ Windows log are retained under `.scratch-parity/hosted-1e5d547c`.
 passed all required jobs, including 16 visual cases and 2,880 exact baselines.
 Its preserved artifact contains 3,397 PNGs and 16 renderer profiles with no
 diff files; the artifact and log are retained under `.scratch-parity/hosted-b2d00217`.
+[Hosted CI at `6eb45d57`](https://github.com/Porabuild/Poratake/actions/runs/43182302140)
+passed all required jobs, including 16 visual cases and 2,880 exact baselines.
+Its preserved artifact contains 3,409 PNGs and 16 renderer profiles with no diff
+files. It predates the selected-outline follow-ups below.
 The desktop-icon transition follow-up passed 191 exact baselines in each local
 light/dark 1280px/100% NVIDIA run. Its fake-daemon checks cover failed and delayed
 icon transitions, stale direct capture errors and attachment recovery; the dark
@@ -1257,8 +1261,15 @@ annotations, so later marks cannot cover them. This selection order deliberately
 differs from Electron; saved pixels and highlight blending remain unchanged.
 Light and dark fixtures check all four sides of blackout, blur and pixelate
 outlines, an overlapping highlight, and plain and inset-attached images at
-simulated 125% DPI. Verify selection outlines for other overlapping annotation
-types and on physical displays.
+simulated 125% DPI. Rectangles now use an outside-only outline above later marks
+so their stroke and fill remain visible. Light and dark fixtures check overlapping
+thin and thick rectangles, all four sides, sampled stroke and fill pixels, export,
+and plain and inset-attached images at simulated 125% DPI. Verify selection
+outlines for other overlapping annotation types and on physical displays.
+
+Electron's all-in-one screenshot code also starts the frozen selection before it
+hides desktop icons. That suggests the same frozen-frame mismatch, but it has not
+been reproduced in a native Electron session.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

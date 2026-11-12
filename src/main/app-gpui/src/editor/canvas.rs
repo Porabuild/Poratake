@@ -682,7 +682,9 @@ fn paint_annotations(
         let selected_overlay = haloed == Some(annotation.id())
             && matches!(
                 annotation,
-                Annotation::Highlight { .. } | Annotation::Redact { .. }
+                Annotation::Highlight { .. }
+                    | Annotation::Redact { .. }
+                    | Annotation::Rectangle { .. }
             );
         if haloed == Some(annotation.id()) && !blackout_overlay && !selected_overlay {
             draw_selection_halo(window, annotation, zoom, halo);
@@ -712,7 +714,10 @@ fn paint_annotations(
             && snapshot.backdrop_composite
             && snapshot.wallpaper.layer_inset(!snapshot.layers.is_empty()) > 0.0
             && preview_raster::is_rasterized(annotation)
-            && !matches!(annotation, Annotation::Highlight { .. });
+            && !matches!(
+                annotation,
+                Annotation::Highlight { .. } | Annotation::Rectangle { .. }
+            );
         let aligned = (scale - 1.).abs() > 0.0001
             && !draft_redaction
             && !selected_inset
@@ -872,10 +877,40 @@ fn paint_annotations(
         haloed == Some(paint.annotation().id())
             && matches!(
                 paint.annotation(),
-                Annotation::Highlight { .. } | Annotation::Redact { .. }
+                Annotation::Highlight { .. }
+                    | Annotation::Redact { .. }
+                    | Annotation::Rectangle { .. }
             )
     }) {
-        draw_selection_halo(window, paint.annotation(), zoom, halo);
+        if let Annotation::Rectangle {
+            x,
+            y,
+            width,
+            height,
+            stroke_width,
+            ..
+        } = paint.annotation()
+        {
+            let (x, y, width, height) = normalize_rect(*x, *y, *width, *height);
+            let offset = *stroke_width as f32 / 2. + HALO_STROKE / 2.;
+            let region = gpui::Bounds {
+                origin: gpui::point(
+                    origin.x + px((x as f32 - offset) * zoom),
+                    origin.y + px((y as f32 - offset) * zoom),
+                ),
+                size: gpui::size(
+                    px((width as f32 + 2. * offset) * zoom),
+                    px((height as f32 + 2. * offset) * zoom),
+                ),
+            };
+            window.paint_quad(
+                gpui::outline(region, halo, gpui::BorderStyle::Solid)
+                    .border_widths(px(HALO_STROKE / 2. * zoom))
+                    .corner_radii(px((1. + offset) * zoom)),
+            );
+        } else {
+            draw_selection_halo(window, paint.annotation(), zoom, halo);
+        }
     }
     preview_raster::end_frame(window);
 }

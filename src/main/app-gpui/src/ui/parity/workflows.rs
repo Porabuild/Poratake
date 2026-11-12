@@ -5110,6 +5110,16 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                             fill: Some("#ff00ff".into()),
                         },
                         crate::editor::annotations::Annotation::Rectangle {
+                            id: "inset-thick-rectangle".into(),
+                            x: 40.,
+                            y: 160.,
+                            width: 100.,
+                            height: 60.,
+                            stroke: "#00ff00".into(),
+                            stroke_width: 12.,
+                            fill: Some("#ff00ff".into()),
+                        },
+                        crate::editor::annotations::Annotation::Rectangle {
                             id: "inset-layer-edge-annotation".into(),
                             x: 630.,
                             y: 200.,
@@ -5118,6 +5128,20 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                             stroke: "#ff00ff".into(),
                             stroke_width: 1.,
                             fill: Some("#ff00ff".into()),
+                        },
+                        crate::editor::annotations::Annotation::Highlight {
+                            id: "inset-rectangle-overlap".into(),
+                            points: vec![295., 158., 315., 158.],
+                            fill: "#00ffff".into(),
+                            opacity: 1.,
+                            stroke_width: 8.,
+                        },
+                        crate::editor::annotations::Annotation::Highlight {
+                            id: "inset-thick-rectangle-overlap".into(),
+                            points: vec![65., 152., 85., 152.],
+                            fill: "#00ffff".into(),
+                            opacity: 1.,
+                            stroke_width: 8.,
                         },
                         crate::editor::annotations::Annotation::Highlight {
                             id: "inset-layer-highlight".into(),
@@ -5340,6 +5364,9 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                     );
                 });
                 let selected = cx.capture_screenshot(window).unwrap();
+                selected
+                    .save(scratch.join("selected-overlapped-rectangle.png"))
+                    .unwrap();
                 let x = (f32::from(bounds.left()) * scale + 305. * 0.73).round() as u32;
                 let y = (f32::from(bounds.top()) * scale + 158. * 0.73).round() as u32;
                 let difference = before
@@ -5370,6 +5397,111 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 super::click(
                     cx,
                     window,
+                    f32::from(bounds.left()) + 90. * 0.73 / scale,
+                    f32::from(bounds.top()) + 190. * 0.73 / scale,
+                );
+                cx.update(|cx| {
+                    assert_eq!(
+                        editor.read(cx).unwrap().snapshot.borrow().selected,
+                        ["inset-thick-rectangle"]
+                    );
+                    let selected_export =
+                        image::load_from_memory(&editor.read(cx).unwrap().export_png().unwrap())
+                            .unwrap()
+                            .to_rgba8();
+                    assert!(
+                        selected_export == saved,
+                        "selection must not change export pixels"
+                    );
+                });
+                let selected = cx.capture_screenshot(window).unwrap();
+                selected
+                    .save(scratch.join("selected-thick-rectangle.png"))
+                    .unwrap();
+                for (x, y) in [(110., 160.), (90., 190.), (75., 149.), (75., 155.)] {
+                    let x = (f32::from(bounds.left()) * scale + x * 0.73).round() as u32;
+                    let y = (f32::from(bounds.top()) * scale + y * 0.73).round() as u32;
+                    assert!(before
+                        .get_pixel(x, y)
+                        .0
+                        .iter()
+                        .zip(selected.get_pixel(x, y).0)
+                        .all(|(before, selected)| before.abs_diff(selected) <= 2));
+                }
+                let left = (f32::from(bounds.left()) * scale + 60. * 0.73).round() as u32;
+                let right = (f32::from(bounds.left()) * scale + 120. * 0.73).round() as u32;
+                let top = (f32::from(bounds.top()) * scale + 160. * 0.73).round() as u32;
+                let bottom = (f32::from(bounds.top()) * scale + 220. * 0.73).round() as u32;
+                let content_difference = {
+                    let before = &before;
+                    let selected = &selected;
+                    (top..=bottom)
+                        .flat_map(|y| {
+                            (left..=right).flat_map(move |x| {
+                                before
+                                    .get_pixel(x, y)
+                                    .0
+                                    .into_iter()
+                                    .zip(selected.get_pixel(x, y).0)
+                                    .map(|(before, selected)| before.abs_diff(selected))
+                            })
+                        })
+                        .max()
+                        .unwrap()
+                };
+                assert!(
+                    content_difference <= 2,
+                    "selecting the thick rectangle changed its stroke or fill"
+                );
+                let x = (f32::from(bounds.left()) * scale + 75. * 0.73).round() as u32;
+                let y = (f32::from(bounds.top()) * scale + 152. * 0.73).round() as u32;
+                let difference = before
+                    .get_pixel(x, y)
+                    .0
+                    .iter()
+                    .zip(selected.get_pixel(x, y).0)
+                    .map(|(before, selected)| before.abs_diff(selected))
+                    .max()
+                    .unwrap();
+                assert!(difference > 10, "selected thick rectangle halo is hidden");
+                for (side, x, y, horizontal) in [
+                    ("top", 100., 151., true),
+                    ("bottom", 100., 226., true),
+                    ("left", 31., 190., false),
+                    ("right", 146., 190., false),
+                ] {
+                    let difference = (0..=3)
+                        .flat_map(|step| {
+                            let x = (f32::from(bounds.left()) * scale
+                                + (x + if horizontal { 0. } else { step as f32 }) * 0.73)
+                                .round() as u32;
+                            let y = (f32::from(bounds.top()) * scale
+                                + (y + if horizontal { step as f32 } else { 0. }) * 0.73)
+                                .round() as u32;
+                            before
+                                .get_pixel(x, y)
+                                .0
+                                .into_iter()
+                                .zip(selected.get_pixel(x, y).0)
+                                .map(|(before, selected)| before.abs_diff(selected))
+                        })
+                        .max()
+                        .unwrap();
+                    assert!(
+                        difference > 10,
+                        "selected thick rectangle {side} halo is hidden"
+                    );
+                }
+                super::click(
+                    cx,
+                    window,
+                    f32::from(bounds.left()) + 500. * 0.73 / scale,
+                    f32::from(bounds.top()) + 300. * 0.73 / scale,
+                );
+                let before = cx.capture_screenshot(window).unwrap();
+                super::click(
+                    cx,
+                    window,
                     f32::from(bounds.left()) + 635. * 0.73 / scale,
                     f32::from(bounds.top()) + 215. * 0.73 / scale,
                 );
@@ -5381,13 +5513,20 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 });
                 let selected = cx.capture_screenshot(window).unwrap();
                 let x = (f32::from(bounds.left()) * scale + 660. * 0.73).round() as u32;
-                let y = (f32::from(bounds.top()) * scale + 198. * 0.73).round() as u32;
-                let difference = before
-                    .get_pixel(x, y)
-                    .0
-                    .iter()
-                    .zip(selected.get_pixel(x, y).0)
-                    .map(|(before, selected)| before.abs_diff(selected))
+                selected
+                    .save(scratch.join("selected-attached-rectangle.png"))
+                    .unwrap();
+                let top = (f32::from(bounds.top()) * scale + 196. * 0.73).round() as u32;
+                let bottom = (f32::from(bounds.top()) * scale + 198. * 0.73).round() as u32;
+                let difference = (top..=bottom)
+                    .flat_map(|y| {
+                        before
+                            .get_pixel(x, y)
+                            .0
+                            .into_iter()
+                            .zip(selected.get_pixel(x, y).0)
+                            .map(|(before, selected)| before.abs_diff(selected))
+                    })
                     .max()
                     .unwrap();
                 assert!(difference > 10, "attached inset annotation halo is hidden");
@@ -5548,6 +5687,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 for (id, click_x, click_y, sample_x, sample_top) in [
                     ("inset-redact-blackout", 90., 70., 65., 38.),
                     ("inset-layer-highlight", 130., 280., 100., 268.),
+                    ("inset-layer-annotation", 330., 190., 305., 156.),
                 ] {
                     let before = cx.capture_screenshot(window).unwrap();
                     super::click(
