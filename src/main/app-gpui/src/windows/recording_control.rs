@@ -2138,8 +2138,9 @@ mod tests {
                     .into_iter()
                     .filter(|quad| {
                         quad.background == background
-                            && (31.0..=35.0).contains(&(quad.bounds.size.height.as_f32()))
-                            && quad.bounds.size.width.as_f32() > 35.0
+                            && (31.0..=35.0)
+                                .contains(&(quad.bounds.size.height.as_f32() / scale))
+                            && quad.bounds.size.width.as_f32() / scale > 35.0
                     })
                     .collect::<Vec<_>>();
                 let tooltip = tooltips.first().unwrap_or_else(|| {
