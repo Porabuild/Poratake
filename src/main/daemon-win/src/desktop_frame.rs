@@ -205,21 +205,41 @@ pub fn clear_frozen() {
     }
 }
 
-pub fn frozen_rect(bounds: RECT) -> Option<DesktopFrame> {
-    let frozen = frozen_frames().lock().ok()?;
-    composite_frames(&frozen, bounds)
+pub fn frozen_rect(bounds: RECT) -> Result<Option<DesktopFrame>, String> {
+    let frozen = frozen_frames()
+        .lock()
+        .map_err(|_| "Frozen frame cache is unavailable".to_string())?;
+    if frozen.is_empty() {
+        return Ok(None);
+    }
+    composite_frames(&frozen, bounds).map(Some)
 }
 
-fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Option<DesktopFrame> {
+fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Result<DesktopFrame, String> {
+    if !frames
+        .iter()
+        .any(|frame| intersect_rects(frame.bounds, bounds).is_some())
+    {
+        return Err("The capture area does not intersect the frozen displays".to_string());
+    }
+
     let width = rect_width(&bounds);
     let height = rect_height(&bounds);
     if width <= 0 || height <= 0 {
-        return None;
+        return Err("The frozen capture area has invalid dimensions".to_string());
     }
 
-    let pixel_count = (width as usize).checked_mul(height as usize)?;
-    let buffer_size = pixel_count.checked_mul(BYTES_PER_PIXEL)?;
-    let mut pixels = vec![0; buffer_size];
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| "The frozen capture area is too large".to_string())?;
+    let buffer_size = pixel_count
+        .checked_mul(BYTES_PER_PIXEL)
+        .ok_or_else(|| "The frozen capture area is too large".to_string())?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(buffer_size)
+        .map_err(|error| format!("Failed to allocate frozen capture buffer: {error}"))?;
+    pixels.resize(buffer_size, 0);
     let mut copied = false;
 
     for frame in frames {
@@ -251,7 +271,11 @@ fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Option<DesktopFram
         copied = true;
     }
 
-    copied.then_some(DesktopFrame {
+    if !copied {
+        return Err("The frozen displays do not cover the capture area".to_string());
+    }
+
+    Ok(DesktopFrame {
         bounds,
         width: width as u32,
         height: height as u32,
@@ -267,7 +291,8 @@ fn intersect_rects(left: RECT, right: RECT) -> Option<RECT> {
         bottom: left.bottom.min(right.bottom),
     };
 
-    (rect_width(&intersection) > 0 && rect_height(&intersection) > 0).then_some(intersection)
+    (intersection.left < intersection.right && intersection.top < intersection.bottom)
+        .then_some(intersection)
 }
 
 pub fn to_hbitmap(frame: &DesktopFrame) -> Option<HBITMAP> {
@@ -1434,6 +1459,118 @@ mod tests {
             assert!(row[..2 * BYTES_PER_PIXEL].iter().all(|value| *value == 10));
             assert!(row[2 * BYTES_PER_PIXEL..].iter().all(|value| *value == 20));
         }
+    }
+
+    #[test]
+    fn preserves_offscreen_padding_and_gaps_between_displays() {
+        let mut left = frame(1, 1, 10);
+        left.bounds = RECT {
+            left: -1,
+            top: 0,
+            right: 0,
+            bottom: 1,
+        };
+        let mut right = frame(1, 1, 20);
+        right.bounds = RECT {
+            left: 2,
+            top: 0,
+            right: 3,
+            bottom: 1,
+        };
+
+        let composed = composite_frames(
+            &[left, right],
+            RECT {
+                left: -2,
+                top: 0,
+                right: 4,
+                bottom: 1,
+            },
+        )
+        .expect("composite with padding and a desktop gap");
+
+        assert_eq!(composed.width, 6);
+        assert_eq!(
+            composed.pixels,
+            [[0; 4], [10; 4], [0; 4], [0; 4], [20; 4], [0; 4],].concat()
+        );
+    }
+
+    #[test]
+    fn rejects_a_large_cached_request_before_allocating_when_no_display_intersects() {
+        let source = frame(1, 1, 7);
+        let error = match composite_frames(
+            &[source],
+            RECT {
+                left: i32::MIN,
+                top: i32::MIN,
+                right: -1,
+                bottom: -1,
+            },
+        ) {
+            Ok(_) => panic!("no intersection must be rejected before allocation"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error,
+            "The capture area does not intersect the frozen displays"
+        );
+    }
+
+    #[test]
+    fn rejects_extreme_no_overlap_on_each_axis_without_overflow() {
+        let mut source = frame(1, 1, 7);
+        source.bounds = RECT {
+            left: 100,
+            top: 100,
+            right: 101,
+            bottom: 101,
+        };
+
+        for bounds in [
+            RECT {
+                left: i32::MIN,
+                top: 100,
+                right: i32::MIN + 10,
+                bottom: 101,
+            },
+            RECT {
+                left: 100,
+                top: i32::MIN,
+                right: 101,
+                bottom: i32::MIN + 10,
+            },
+        ] {
+            let error = match composite_frames(std::slice::from_ref(&source), bounds) {
+                Ok(_) => panic!("disjoint extreme bounds must be rejected"),
+                Err(error) => error,
+            };
+
+            assert_eq!(
+                error,
+                "The capture area does not intersect the frozen displays"
+            );
+        }
+    }
+
+    #[test]
+    fn reports_fallible_reservation_for_capacity_overflow() {
+        let source = frame(1, 1, 7);
+        let error = match composite_frames(
+            &[source],
+            RECT {
+                left: 0,
+                top: 0,
+                right: i32::MAX,
+                bottom: i32::MAX,
+            },
+        ) {
+            Ok(_) => panic!("reservation beyond isize capacity must fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.starts_with("Failed to allocate frozen capture buffer:"));
     }
 
     #[test]

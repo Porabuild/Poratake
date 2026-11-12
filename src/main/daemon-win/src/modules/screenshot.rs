@@ -50,14 +50,20 @@ fn capture_area(request: &Request) -> Reply {
 
     spawn_capture(request_id, path, move || {
         crate::trace::trace("capture() entered");
-        let frame = if cached { frozen_rect(bounds) } else { None };
+        let (mut frame, from_frozen) = capture_cached_or_live(
+            cached,
+            || frozen_rect(bounds),
+            || {
+                crate::trace::trace("calling DwmFlush");
+                unsafe { DwmFlush() }.map_err(|error| error.to_string())?;
+                crate::trace::trace("calling capture_rect");
+                capture_rect(bounds)
+            },
+        )?;
         crate::trace::trace("frame resolved");
-        let Some(mut frame) = frame else {
-            crate::trace::trace("calling DwmFlush");
-            unsafe { DwmFlush() }.map_err(|error| error.to_string())?;
-            crate::trace::trace("calling capture_rect");
-            return capture_rect(bounds);
-        };
+        if !from_frozen {
+            return Ok(frame);
+        }
         let Some(window_id) = window_id else {
             return Ok(frame);
         };
@@ -69,6 +75,17 @@ fn capture_area(request: &Request) -> Reply {
         apply_alpha_mask(&mut frame, &mask);
         Ok(frame)
     })
+}
+
+fn capture_cached_or_live(
+    cached: bool,
+    frozen: impl FnOnce() -> Result<Option<DesktopFrame>, String>,
+    live: impl FnOnce() -> Result<DesktopFrame, String>,
+) -> Result<(DesktopFrame, bool), String> {
+    if cached && let Some(frame) = frozen()? {
+        return Ok((frame, true));
+    }
+    live().map(|frame| (frame, false))
 }
 
 fn capture_target_window(request: &Request) -> Reply {
@@ -164,6 +181,20 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    fn frame() -> DesktopFrame {
+        DesktopFrame {
+            bounds: RECT {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+            width: 1,
+            height: 1,
+            pixels: vec![0, 0, 0, 255],
+        }
+    }
+
     #[test]
     fn area_bounds_rejects_coordinate_overflow() {
         assert!(
@@ -228,5 +259,59 @@ mod tests {
                 "Capture area must have positive dimensions and non-overflowing bounds"
             );
         }
+    }
+
+    #[test]
+    fn failed_frozen_composition_does_not_fall_back_to_live_capture() {
+        let mut live_called = false;
+        let result = capture_cached_or_live(
+            true,
+            || Err("frozen allocation failed".into()),
+            || {
+                live_called = true;
+                Ok(frame())
+            },
+        );
+
+        match result {
+            Ok(_) => panic!("frozen failure must be returned"),
+            Err(error) => assert_eq!(error, "frozen allocation failed"),
+        }
+        assert!(!live_called);
+    }
+
+    #[test]
+    fn missing_frozen_cache_uses_live_capture() {
+        let (captured, from_frozen) =
+            capture_cached_or_live(true, || Ok(None), || Ok(frame())).expect("live fallback");
+
+        assert!(!from_frozen);
+        assert_eq!(captured.pixels, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn disabled_freeze_uses_live_capture_without_checking_cache() {
+        let (captured, from_frozen) = capture_cached_or_live(
+            false,
+            || panic!("disabled freeze must not inspect the cache"),
+            || Ok(frame()),
+        )
+        .expect("live capture");
+
+        assert!(!from_frozen);
+        assert_eq!(captured.pixels, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn frozen_composition_uses_cached_pixels() {
+        let (captured, from_frozen) = capture_cached_or_live(
+            true,
+            || Ok(Some(frame())),
+            || panic!("cached pixels must not fall back to live capture"),
+        )
+        .expect("frozen capture");
+
+        assert!(from_frozen);
+        assert_eq!(captured.pixels, [0, 0, 0, 255]);
     }
 }
