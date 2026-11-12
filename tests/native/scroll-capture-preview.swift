@@ -54,8 +54,23 @@ struct ScrollCapturePreviewTest {
         }
     }
 
+    static func main() {
+        FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
+        runExistingScrollChecks()
+        FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
+        Task { @MainActor in
+            do {
+                try await runRecordingCoordinationChecks()
+                exit(EXIT_SUCCESS)
+            } catch {
+                fatalError("Recording coordination checks failed: \(error)")
+            }
+        }
+        dispatchMain()
+    }
+
     @MainActor
-    static func main() async throws {
+    static func runRecordingCoordinationChecks() async throws {
         let screenExclusions = recordingExclusionWindowIDs(
             requested: [31, 41, 31, -1, Int64.max],
             registered: [CGWindowID(41), CGWindowID(52)],
@@ -361,9 +376,6 @@ struct ScrollCapturePreviewTest {
         }
         precondition(refreshFailureReported, "Filter update errors must reach the window show operation")
         FileHandle.standardError.write(Data("capture filter failure: complete\n".utf8))
-        FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
-        runExistingScrollChecks()
-        FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
     }
 
     static func runExistingScrollChecks() {
@@ -436,7 +448,8 @@ struct ScrollCapturePreviewTest {
         precondition(responses.isEmpty, "Cancel must wait until the finish worker exits")
         releaseWorker.signal()
         let responseDeadline = Date(timeIntervalSinceNow: 5)
-        while responses.count < 2 && RunLoop.current.run(mode: .default, before: responseDeadline) {
+        while responses.count < 2 && Date() < responseDeadline {
+            _ = RunLoop.current.run(mode: .default, before: responseDeadline)
         }
         precondition(responses.count == 2, "Finish and Cancel must respond after the worker exits")
         precondition(responses.map(\.id) == ["held-finish", "held-cancel"])

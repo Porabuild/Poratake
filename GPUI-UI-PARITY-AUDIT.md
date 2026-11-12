@@ -75,9 +75,12 @@ passed the workflow and geometry assertions in all 16 Windows visual profiles,
 then failed on the expected changed state list. Its Microsoft Basic renderer
 images were compared across every profile and the changed tooltip, pressed and
 video-preview states were reviewed. The corresponding NVIDIA baselines still
-need a final capture and review, including the latest video-preview change. Windows native and
-accessibility checks passed; Linux Clippy found platform-specific tooltip warnings
-that a follow-up gates, and the macOS job was cancelled before obtaining a runner.
+need a final capture and review, including the latest video-preview change. Windows
+native and accessibility checks passed; Linux Clippy found platform-specific
+tooltip warnings that a follow-up gates. In the next run Linux passed and the
+macOS daemon built, but its native fixture hung during the existing scroll checks.
+The follow-up keeps those checks on the synchronous main thread and bounds their
+response wait; hosted verification of that change remains pending.
 
 For translucent video wallpaper, the preview now uses the encoder's opaque
 pixel conversion. A Windows MP4 test compares the decoded export with the actual
@@ -1467,8 +1470,8 @@ hover delivery, click-through, and recorded pixels on supported Windows displays
 
 The macOS recording path now requests exclusion of the recording control and
 registers camera and overlay windows with its ScreenCaptureKit filter. New
-synthetic fixtures cover filter updates and stop coordination; they still need
-the hosted macOS compile and test run. Verify a real recording, including whether
+synthetic fixtures cover filter updates and stop coordination; their hosted run
+still needs to pass. Verify a real recording, including whether
 staged transparent windows appear in `SCShareableContent` before they are shown.
 
 A full-frame comparison alone was rejected as a replacement for the sampled
