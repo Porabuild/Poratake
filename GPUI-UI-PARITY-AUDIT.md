@@ -669,6 +669,16 @@ color transitions, including edge patterns. Evidence is in
 
 Bugs fixed in this pass:
 
+- Clicking an annotation or resize handle, or reapplying its current option,
+  discarded Redo without changing the image. Moves, resizes and option changes
+  now create a history entry only when the annotation differs; returning to the
+  starting point restores the original. Tests cover all four rectangle handles,
+  a clamped circle, unchanged and mixed-selection options, real moves and
+  resizes, and queued pointer updates before Undo or an option change. A GPUI
+  workflow also selects a circle and exercises Redo and Undo through the window.
+  Electron's source commits a drag only after an update was staged, but does not
+  compare the final state with the starting state; native Electron behavior for
+  these cases remains unverified.
 - Area move/resize completion ignored the release coordinate in both shells.
 - A window click used the last hovered candidate rather than hit-testing the
   click position. Empty-space clicks now leave selection open; a direct target

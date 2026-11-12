@@ -96,6 +96,7 @@ struct ResizeState {
     handle: ResizeHandle,
     start: Point,
     last: Point,
+    original: Option<Vec<Annotation>>,
     anchor: Option<(f64, f64)>,
     initial_drag: Option<(f64, f64)>,
     initial_font_size: Option<f64>,
@@ -408,10 +409,9 @@ pub struct EditorWindow {
     drop_edge: Option<crate::editor::layers::Edge>,
     /// The margin the balance option trims, recomputed when it is turned on.
     balance_crop: Option<(f32, f32, f32, f32)>,
-    /// The annotation the select tool has picked, and the point a move drag
-    /// started from. One history entry is pushed when the drag ends.
     selected_annotations: Vec<String>,
     move_origin: Option<Point>,
+    move_original: Option<(Point, Vec<Annotation>)>,
     resize_state: Option<ResizeState>,
     marquee: Option<(Point, Point)>,
     /// Annotations on the editor's own clipboard, from copy or cut.
@@ -496,6 +496,7 @@ impl EditorWindow {
             balance_crop: None,
             selected_annotations: Vec::new(),
             move_origin: None,
+            move_original: None,
             resize_state: None,
             marquee: None,
             annotation_clipboard: Vec::new(),
@@ -1142,8 +1143,6 @@ impl EditorWindow {
         }
     }
 
-    /// Moves the selected annotations without touching history; the gesture is
-    /// committed when the pointer is released.
     fn move_selected(&mut self, point: Point) {
         let Some(origin) = self.move_origin else {
             return;
@@ -1165,9 +1164,12 @@ impl EditorWindow {
                 annotation.translate(dx, dy);
             }
         }
-        // The move replaces the current revision rather than stacking one entry
-        // per pointer sample; `finish_stroke` records the final position.
-        self.history.replace_current(annotations);
+        if annotations != self.history.current() {
+            if self.move_original.is_none() {
+                self.move_original = Some((origin, self.history.current().to_vec()));
+            }
+            self.history.replace_current(annotations);
+        }
         self.move_origin = Some(point);
     }
 
@@ -1201,6 +1203,7 @@ impl EditorWindow {
             handle,
             start: point,
             last: point,
+            original: None,
             anchor: None,
             initial_drag: None,
             initial_font_size: None,
@@ -1287,13 +1290,9 @@ impl EditorWindow {
                 return;
             }
         }
-        let annotations = self.history.current().to_vec();
-        self.history.push(annotations);
         self.resize_state = Some(state);
     }
 
-    /// Applies the active resize to the selection without touching history;
-    /// the gesture is committed when the pointer is released.
     fn resize_selected(&mut self, point: Point) {
         let Some(mut state) = self.resize_state.take() else {
             return;
@@ -1302,6 +1301,10 @@ impl EditorWindow {
         let dy = f64::from(point.y) - f64::from(state.last.y);
         let total_dx = f64::from(point.x) - f64::from(state.start.x);
         let total_dy = f64::from(point.y) - f64::from(state.start.y);
+        if dx == 0.0 && dy == 0.0 {
+            self.resize_state = Some(state);
+            return;
+        }
         if let [id] = self.selected_annotations.as_slice() {
             let mut annotations = self.history.current().to_vec();
             if let Some(annotation) = annotations
@@ -1310,13 +1313,19 @@ impl EditorWindow {
             {
                 apply_resize(annotation, &state, dx, dy, total_dx, total_dy, point);
             }
-            self.history.replace_current(annotations);
+            if annotations != self.history.current() {
+                if state.original.is_none() {
+                    state.original = Some(self.history.current().to_vec());
+                }
+                self.history.replace_current(annotations);
+            }
         }
         state.last = point;
         self.resize_state = Some(state);
     }
 
     pub fn delete_selected_annotation(&mut self, cx: &mut Context<Self>) {
+        self.finish_active_transform();
         if self.selected_annotations.is_empty() {
             return;
         }
@@ -1338,6 +1347,7 @@ impl EditorWindow {
     /// `handleCopyAnnotations` — returns false when nothing was selected, so
     /// the caller can fall back to copying the image.
     pub fn copy_selected_annotation(&mut self) -> bool {
+        self.finish_active_transform();
         if self.selected_annotations.is_empty() {
             return false;
         }
@@ -1368,6 +1378,7 @@ impl EditorWindow {
     }
 
     pub fn select_all_annotations(&mut self, cx: &mut Context<Self>) {
+        self.finish_active_transform();
         if self.text_editor.is_some() {
             return;
         }
@@ -1384,6 +1395,7 @@ impl EditorWindow {
     /// `handlePasteAnnotations` — a pasted copy is offset so it does not hide
     /// the original.
     pub fn paste_annotations(&mut self, cx: &mut Context<Self>) {
+        self.finish_active_transform();
         if self.annotation_clipboard.is_empty() {
             return;
         }
@@ -1422,6 +1434,7 @@ impl EditorWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.finish_active_transform();
         let tool = self.tool;
         if tool != Tool::Crop {
             if let Some(handle) = self.selected_handle_at(point) {
@@ -1572,10 +1585,7 @@ impl EditorWindow {
                         self.selected_annotations = vec![id];
                     }
                     self.move_origin = Some(point);
-                    // A move is one undo step, so the pre-move revision is kept
-                    // by pushing a copy the drag then edits in place.
-                    let annotations = self.history.current().to_vec();
-                    self.history.push(annotations);
+                    self.move_original = None;
                 } else {
                     self.marquee = Some((point, point));
                 }
@@ -1742,6 +1752,7 @@ impl EditorWindow {
     /// Port of `applyCrop`: crops the base image and shifts every annotation
     /// into the new coordinate space.
     pub fn apply_crop(&mut self, cx: &mut Context<Self>) {
+        self.finish_active_transform();
         let Some((x, y, width, height)) = self.crop.take() else {
             return;
         };
@@ -1840,6 +1851,7 @@ impl EditorWindow {
     /// A draft that matches a committed annotation is a re-edit: the text is
     /// replaced, or the annotation deleted when emptied.
     pub fn commit_text(&mut self, cx: &mut Context<Self>) {
+        self.finish_active_transform();
         let Some((_, _)) = self.text_editor.take() else {
             return;
         };
@@ -1975,17 +1987,43 @@ impl EditorWindow {
         self.number_start_value + placed as f64
     }
 
+    fn finish_annotation_edit(&mut self, original: Option<Vec<Annotation>>, returned: bool) {
+        let Some(original) = original else {
+            return;
+        };
+        if returned {
+            self.history.replace_current(original);
+            return;
+        }
+        let updated = self.history.current().to_vec();
+        self.history.replace_current(original);
+        if updated != self.history.current() {
+            self.history.push(updated);
+        }
+    }
+
+    fn finish_active_transform(&mut self) {
+        if self.move_origin.is_some() || self.resize_state.is_some() {
+            self.apply_pending_pointer_update();
+            self.finish_stroke();
+        }
+    }
+
     fn finish_stroke(&mut self) {
         if self.crop_drag.take().is_some() {
             self.sync_snapshot();
             return;
         }
-        if self.move_origin.take().is_some() {
+        if let Some(origin) = self.move_origin.take() {
+            let original = self.move_original.take();
+            let returned = original.as_ref().is_some_and(|(start, _)| *start == origin);
+            self.finish_annotation_edit(original.map(|(_, annotations)| annotations), returned);
             self.refresh_raster_patches();
             self.sync_snapshot();
             return;
         }
-        if self.resize_state.take().is_some() {
+        if let Some(state) = self.resize_state.take() {
+            self.finish_annotation_edit(state.original, state.last == state.start);
             self.refresh_raster_patches();
             self.sync_snapshot();
             return;
@@ -2567,8 +2605,10 @@ impl Render for EditorWindow {
                     this.sync_snapshot();
                     cx.notify();
                 } else {
+                    this.finish_active_transform();
                     this.selected_annotations.clear();
                     this.move_origin = None;
+                    this.move_original = None;
                     this.resize_state = None;
                     this.sync_snapshot();
                     cx.notify();
@@ -3539,6 +3579,7 @@ impl EditorWindow {
     }
 
     fn apply_option_to_selection(&mut self, option: &EditorOption) {
+        self.finish_active_transform();
         if self.selected_annotations.is_empty() {
             return;
         }
@@ -3553,7 +3594,7 @@ impl EditorWindow {
                 changed |= annotation.apply_option(option);
             }
         }
-        if !changed {
+        if !changed || annotations == self.history.current() {
             return;
         }
         self.push_annotations(annotations);
@@ -3617,6 +3658,7 @@ impl EditorWindow {
     }
 
     fn undo(&mut self) {
+        self.finish_active_transform();
         if let Some(pre) = self.pre_crop.take() {
             self.image_width = pre.width;
             self.image_height = pre.height;
@@ -3636,6 +3678,7 @@ impl EditorWindow {
     }
 
     fn redo(&mut self) {
+        self.finish_active_transform();
         self.history.redo();
         self.refresh_raster_patches();
         self.sync_snapshot();
@@ -3663,6 +3706,7 @@ impl EditorWindow {
     /// Port of the auto-renumber effect: style/start changes resequence
     /// badges in place, without pushing an undo step.
     fn renumber_current_without_history(&mut self) {
+        self.finish_active_transform();
         let mut annotations = self.history.current().to_vec();
         let before = annotations.clone();
         self.renumber_annotations(&mut annotations);
@@ -3675,6 +3719,7 @@ impl EditorWindow {
     /// Pushes an annotation revision from an add/delete path, dropping the
     /// pre-crop state the way Electron clears `lastCropStateRef` there.
     fn push_annotations(&mut self, annotations: Vec<Annotation>) {
+        self.finish_active_transform();
         self.pre_crop = None;
         self.history.push(annotations);
     }
@@ -4061,6 +4106,235 @@ mod tests {
         }));
     }
 
+    #[herogpui::test]
+    fn selection_and_resize_keep_redo_until_an_annotation_changes(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::new(320, 240).save(&source).unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(source.to_str().unwrap(), window, cx);
+            editor.file_path.clear();
+            editor.tool = Tool::Select;
+            editor
+        });
+        let original = Annotation::Rectangle {
+            id: "rectangle".into(),
+            x: 20.,
+            y: 20.,
+            width: 80.,
+            height: 80.,
+            stroke: "#ff00ff".into(),
+            stroke_width: 2.,
+            fill: Some("#ff00ff".into()),
+        };
+        let mut later = original.clone();
+        later.translate(5., 0.);
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                let mut results = Vec::new();
+                for resize in [false, true] {
+                    editor.history = annotations::AnnotationHistory::new(vec![original.clone()]);
+                    editor.history.push(vec![later.clone()]);
+                    assert!(editor.history.undo());
+                    editor.selected_annotations = if resize {
+                        vec!["rectangle".into()]
+                    } else {
+                        Vec::new()
+                    };
+                    let point = if resize { point(100., 100.) } else { point(60., 60.) };
+                    editor.start_stroke(point, false, window, cx);
+                    assert_eq!(editor.selected_annotations, ["rectangle"]);
+                    if resize {
+                        assert!(editor.resize_state.is_some() && editor.move_origin.is_none());
+                        editor.resize_selected(point);
+                    } else {
+                        assert!(editor.move_origin.is_some() && editor.resize_state.is_none());
+                        editor.move_selected(point);
+                    }
+                    editor.finish_stroke();
+                    results.push((
+                        editor.history.can_redo(),
+                        editor.history.len(),
+                        editor.history.current() == [original.clone()],
+                    ));
+                    if editor.history.can_redo() {
+                        assert!(editor.history.redo());
+                        assert_eq!(editor.history.current(), std::slice::from_ref(&later));
+                        assert!(editor.history.undo());
+                    }
+                }
+                assert_eq!(results, [(true, 2, true), (true, 2, true)]);
+
+                for option in [
+                    EditorOption::Color("#ff00ff".into()),
+                    EditorOption::StrokeWidth(2.),
+                    EditorOption::ShapeFillMode("filled".into()),
+                ] {
+                    editor.history = annotations::AnnotationHistory::new(vec![original.clone()]);
+                    editor.history.push(vec![later.clone()]);
+                    assert!(editor.history.undo());
+                    editor.selected_annotations = vec!["rectangle".into()];
+                    editor.apply_option_to_selection(&option);
+                    assert!(editor.history.can_redo());
+                    assert_eq!(editor.history.current(), std::slice::from_ref(&original));
+                    assert!(editor.history.redo());
+                    assert_eq!(editor.history.current(), std::slice::from_ref(&later));
+                }
+                let mut other = original.clone();
+                if let Annotation::Rectangle { id, x, stroke, fill, .. } = &mut other {
+                    *id = "other".into();
+                    *x = 120.;
+                    *stroke = "#00ff00".into();
+                    *fill = Some("#00ff00".into());
+                }
+                editor.history =
+                    annotations::AnnotationHistory::new(vec![original.clone(), other.clone()]);
+                editor.history.push(vec![later.clone(), other.clone()]);
+                assert!(editor.history.undo());
+                editor.selected_annotations = vec!["rectangle".into(), "other".into()];
+                editor.apply_option_to_selection(&EditorOption::Color("#ff00ff".into()));
+                let mut recolored_other = other.clone();
+                recolored_other.apply_option(&EditorOption::Color("#ff00ff".into()));
+                assert_eq!(editor.history.current(), [original.clone(), recolored_other]);
+                assert!(!editor.history.can_redo());
+                assert!(editor.history.undo());
+                assert_eq!(editor.history.current(), [original.clone(), other]);
+
+                results.clear();
+                for (resize, start, away) in [
+                    (false, point(60., 60.), point(70., 70.)),
+                    (true, point(20., 20.), point(30., 30.)),
+                    (true, point(100., 20.), point(110., 30.)),
+                    (true, point(20., 100.), point(30., 110.)),
+                    (true, point(100., 100.), point(110., 110.)),
+                ] {
+                    editor.history = annotations::AnnotationHistory::new(vec![original.clone()]);
+                    editor.history.push(vec![later.clone()]);
+                    assert!(editor.history.undo());
+                    editor.selected_annotations = if resize {
+                        vec!["rectangle".into()]
+                    } else {
+                        Vec::new()
+                    };
+                    editor.start_stroke(start, false, window, cx);
+                    assert_eq!(editor.selected_annotations, ["rectangle"]);
+                    if resize {
+                        assert!(editor.resize_state.is_some() && editor.move_origin.is_none());
+                        editor.resize_selected(away);
+                        editor.resize_selected(start);
+                    } else {
+                        assert!(editor.move_origin.is_some() && editor.resize_state.is_none());
+                        editor.move_selected(away);
+                        editor.move_selected(start);
+                    }
+                    editor.finish_stroke();
+                    results.push((
+                        editor.history.can_redo(),
+                        editor.history.len(),
+                        editor.history.current() == [original.clone()],
+                    ));
+                    if editor.history.can_redo() {
+                        assert!(editor.history.redo());
+                        assert_eq!(editor.history.current(), std::slice::from_ref(&later));
+                        assert!(editor.history.undo());
+                    }
+                }
+                assert_eq!(results, [(true, 2, true); 5]);
+
+                let limited = Annotation::Circle {
+                    id: "small-circle".into(),
+                    x: 100.,
+                    y: 100.,
+                    radius: 5.,
+                    stroke: "#ff00ff".into(),
+                    stroke_width: 2.,
+                    fill: None,
+                };
+                let mut larger = limited.clone();
+                if let Annotation::Circle { radius, .. } = &mut larger {
+                    *radius = 10.;
+                }
+                editor.history = annotations::AnnotationHistory::new(vec![limited.clone()]);
+                editor.history.push(vec![larger.clone()]);
+                assert!(editor.history.undo());
+                editor.selected_annotations = vec!["small-circle".into()];
+                editor.begin_resize(ResizeHandle::BottomRight, point(104., 104.));
+                assert!(editor.resize_state.is_some());
+                editor.resize_selected(point(103., 103.));
+                editor.finish_stroke();
+                assert!(editor.history.can_redo());
+                assert_eq!(editor.history.current(), std::slice::from_ref(&limited));
+                editor.begin_resize(ResizeHandle::BottomRight, point(104., 104.));
+                editor.resize_selected(point(103., 103.));
+                editor.resize_selected(point(104., 104.));
+                editor.finish_stroke();
+                assert!(editor.history.can_redo());
+                assert_eq!(editor.history.current(), [limited]);
+                assert!(editor.history.redo());
+                assert_eq!(editor.history.current(), [larger]);
+
+                editor.history = annotations::AnnotationHistory::new(vec![original.clone()]);
+                editor.history.push(vec![later.clone()]);
+                assert!(editor.history.undo());
+                editor.selected_annotations = vec!["rectangle".into()];
+                editor.start_stroke(point(60., 60.), false, window, cx);
+                editor.move_selected(point(70., 65.));
+                editor.move_selected(point(72., 70.));
+                editor.finish_stroke();
+                let mut moved = original.clone();
+                moved.translate(12., 10.);
+                assert_eq!(editor.history.current(), [moved.clone()]);
+                assert!(!editor.history.can_redo());
+                assert!(editor.history.undo());
+                assert_eq!(editor.history.current(), std::slice::from_ref(&original));
+                assert!(editor.history.redo());
+                assert_eq!(editor.history.current(), [moved.clone()]);
+
+                editor.start_stroke(point(72., 70.), false, window, cx);
+                editor.queue_pointer_update(point(77., 75.), false, window, cx);
+                editor.undo();
+                assert!(editor.move_origin.is_none());
+                assert!(!editor.pointer_update_scheduled);
+                assert_eq!(editor.history.current(), [moved.clone()]);
+                let mut moved_again = moved.clone();
+                moved_again.translate(5., 5.);
+                editor.redo();
+                assert_eq!(editor.history.current(), [moved_again]);
+                editor.undo();
+                assert_eq!(editor.history.current(), [moved.clone()]);
+
+                editor.start_stroke(point(112., 110.), false, window, cx);
+                editor.resize_selected(point(122., 120.));
+                editor.finish_stroke();
+                assert!(matches!(editor.history.current(), [Annotation::Rectangle { width, height, .. }] if *width == 90. && *height == 90.));
+                assert!(editor.history.undo());
+                assert_eq!(editor.history.current(), [moved.clone()]);
+                assert!(editor.history.redo());
+                assert!(matches!(editor.history.current(), [Annotation::Rectangle { width, height, .. }] if *width == 90. && *height == 90.));
+
+                editor.history = annotations::AnnotationHistory::new(vec![original.clone()]);
+                editor.selected_annotations.clear();
+                editor.start_stroke(point(60., 60.), false, window, cx);
+                editor.queue_pointer_update(point(66., 63.), false, window, cx);
+                editor.apply_option_to_selection(&EditorOption::Color("#00ff00".into()));
+                let mut moved_for_option = original.clone();
+                moved_for_option.translate(6., 3.);
+                let mut recolored = moved_for_option.clone();
+                recolored.apply_option(&EditorOption::Color("#00ff00".into()));
+                assert_eq!(editor.history.current(), [recolored]);
+                assert!(editor.history.undo());
+                assert_eq!(editor.history.current(), [moved_for_option]);
+                assert!(editor.history.undo());
+                assert_eq!(editor.history.current(), std::slice::from_ref(&original));
+            });
+        });
+    }
+
     fn point(x: f32, y: f32) -> Point {
         Point { x, y }
     }
@@ -4070,6 +4344,7 @@ mod tests {
             handle,
             start: point(0.0, 0.0),
             last: point(0.0, 0.0),
+            original: None,
             anchor: None,
             initial_drag: None,
             initial_font_size: None,

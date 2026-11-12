@@ -3822,6 +3822,12 @@ fn check_circle_selection(
                         stroke_width: 40.,
                     },
                 ]);
+                let mut later = editor.history.current().to_vec();
+                if let crate::editor::annotations::Annotation::Circle { x, .. } = &mut later[0] {
+                    *x += 20.;
+                }
+                editor.history.push(later);
+                assert!(editor.history.undo());
                 cx.notify();
             })
             .unwrap();
@@ -3839,6 +3845,7 @@ fn check_circle_selection(
             let editor = editor.read(cx).unwrap();
             assert_eq!(editor.snapshot.borrow().selected, ["overlapped-circle"]);
             assert_eq!(editor.export_png().unwrap(), saved);
+            assert!(editor.history.can_redo());
         });
         let selected = cx.capture_screenshot(window).unwrap();
         before
@@ -3913,6 +3920,26 @@ fn check_circle_selection(
                 "{label} {weight} circle {side} halo is hidden"
             );
         }
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::editor::actions::Redo), cx);
+        })
+        .unwrap();
+        cx.update(|cx| {
+            assert!(matches!(
+                &editor.read(cx).unwrap().history.current()[0],
+                crate::editor::annotations::Annotation::Circle { x, .. } if *x == 320.
+            ));
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::editor::actions::Undo), cx);
+        })
+        .unwrap();
+        cx.update(|cx| {
+            assert!(matches!(
+                &editor.read(cx).unwrap().history.current()[0],
+                crate::editor::annotations::Annotation::Circle { x, .. } if *x == 300.
+            ));
+        });
         super::click(
             cx,
             window,
