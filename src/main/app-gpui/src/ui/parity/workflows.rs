@@ -4972,11 +4972,23 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         .save(path)
         .unwrap();
     }
+    let inset_side = scratch.join("wallpaper-layer-inset-side.png");
+    image::RgbaImage::from_fn(120, 360, |x, y| {
+        if y == 0 || (x == 0 && (30..60).contains(&y)) {
+            image::Rgba([240, 20, 40, 0])
+        } else {
+            image::Rgba([40, 190, 80, 255])
+        }
+    })
+    .save(&inset_side)
+    .unwrap();
     for (name, scale, shadow, corners, spacing, background, aspect) in [
         ("plain125", 1.25_f32, 0., 0., 0., "none", "auto"),
         ("plain200", 2., 0., 0., 0., "none", "auto"),
         ("zero125", 1.25_f32, 50., 24., 0., "none", "auto"),
         ("zero200", 2., 50., 24., 0., "none", "auto"),
+        ("inset125", 1.25_f32, 0., 0., 0., "none", "auto"),
+        ("inset200", 2., 0., 0., 0., "none", "auto"),
         ("right", 1.25_f32, 50., 24., 10., "solid", "auto"),
         ("left", 2., 50., 24., 0., "solid", "auto"),
         ("top", 1.25, 0., 24., 0., "none", "auto"),
@@ -4986,7 +4998,8 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         ("stacked", 1.25, 50., 24., 0., "alpha", "auto"),
     ] {
         let edges = match name {
-            "plain125" | "plain200" | "zero125" | "zero200" | "right" | "wide" | "tall" => {
+            "plain125" | "plain200" | "zero125" | "zero200" | "inset125" | "inset200" | "right"
+            | "wide" | "tall" => {
                 vec![crate::editor::layers::Edge::Right]
             }
             "left" => vec![crate::editor::layers::Edge::Left],
@@ -5043,22 +5056,62 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                         }));
                 }
                 editor.wallpaper.window_frame.style = "none".into();
-                editor.wallpaper.padding = if name.starts_with("zero") || name.starts_with("plain")
+                editor.wallpaper.padding = if name.starts_with("zero")
+                    || name.starts_with("plain")
+                    || name.starts_with("inset")
                 {
                     0.
                 } else {
                     20.
                 };
+                editor.wallpaper.inset = if name.starts_with("inset") { 6. } else { 0. };
                 editor.wallpaper.spacing = spacing;
                 editor.wallpaper.corners = corners;
                 editor.wallpaper.shadow = shadow;
                 editor.wallpaper.aspect_ratio = aspect.into();
                 editor.wallpaper.background_blur = if background == "alpha" { 30. } else { 0. };
+                if name.starts_with("inset") {
+                    editor.history.push(vec![
+                        crate::editor::annotations::Annotation::Rectangle {
+                            id: "inset-layer-annotation".into(),
+                            x: 280.,
+                            y: 160.,
+                            width: 100.,
+                            height: 60.,
+                            stroke: "#ff00ff".into(),
+                            stroke_width: 1.,
+                            fill: Some("#ff00ff".into()),
+                        },
+                        crate::editor::annotations::Annotation::Rectangle {
+                            id: "inset-layer-edge-annotation".into(),
+                            x: 630.,
+                            y: 200.,
+                            width: 100.,
+                            height: 30.,
+                            stroke: "#ff00ff".into(),
+                            stroke_width: 1.,
+                            fill: Some("#ff00ff".into()),
+                        },
+                        crate::editor::annotations::Annotation::Highlight {
+                            id: "inset-layer-highlight".into(),
+                            points: vec![60., 280., 180., 280.],
+                            fill: "#ffff00".into(),
+                            opacity: 0.5,
+                            stroke_width: 20.,
+                        },
+                    ]);
+                }
                 for edge in edges {
                     let (path, width, height) = match edge {
-                        crate::editor::layers::Edge::Left | crate::editor::layers::Edge::Right => {
-                            (&side, 120., 360.)
-                        }
+                        crate::editor::layers::Edge::Left | crate::editor::layers::Edge::Right => (
+                            if name.starts_with("inset") {
+                                &inset_side
+                            } else {
+                                &side
+                            },
+                            120.,
+                            360.,
+                        ),
                         _ => (&vertical, 640., 90.),
                     };
                     editor.push_image_layer(
@@ -5095,11 +5148,13 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         let (bounds, saved, offset_x, offset_y, matte, rectangles) = cx.update(|cx| {
             let editor = editor.read(cx).unwrap();
             let wallpaper = editor.wallpaper.for_scale(f64::from(scale));
-            let group = crate::editor::layers::compute(
+            let layer_inset = wallpaper.layer_inset(true);
+            let group = crate::editor::layers::compute_with_inset(
                 640.,
                 360.,
                 &editor.snapshot.borrow().layers,
                 wallpaper.spacing,
+                layer_inset,
             );
             let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
                 &wallpaper,
@@ -5125,12 +5180,27 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                 image::load_from_memory(&editor.export_png().unwrap())
                     .unwrap()
                     .to_rgba8(),
-                (x.round() + group.primary.x).round() as u32,
-                (y.round() + group.primary.y).round() as u32,
+                (x.round() + group.primary.x + layer_inset).round() as u32,
+                (y.round() + group.primary.y + layer_inset).round() as u32,
                 matte,
                 rectangles,
             )
         });
+        match name {
+            "inset125" => {
+                assert_eq!(saved.dimensions(), (792, 376));
+                assert_eq!(saved.get_pixel(303, 183).0, [255, 0, 255, 255]);
+                assert_eq!(saved.get_pixel(670, 223).0, [255, 0, 255, 255]);
+                assert_eq!(saved.get_pixel(665, 8).0, [40, 190, 80, 255]);
+            }
+            "inset200" => {
+                assert_eq!(saved.dimensions(), (808, 384));
+                assert_eq!(saved.get_pixel(307, 187).0, [255, 0, 255, 255]);
+                assert_eq!(saved.get_pixel(682, 227).0, [255, 0, 255, 255]);
+                assert_eq!(saved.get_pixel(677, 12).0, [40, 190, 80, 255]);
+            }
+            _ => {}
+        }
         let screenshot = cx.capture_screenshot(window).unwrap();
         let left = (f32::from(bounds.left()) * scale).round() as u32 - offset_x;
         let top = (f32::from(bounds.top()) * scale).round() as u32 - offset_y;
@@ -5198,6 +5268,151 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             overlap_rounding <= 16,
             "{name} has {overlap_rounding} four-level overlap differences"
         );
+        if name.starts_with("inset") {
+            let path = scratch.join(format!("layered-{name}.png"));
+            saved.save(&path).unwrap();
+            check_inset_reopen(
+                cx,
+                editor,
+                scale,
+                &path,
+                (offset_x, offset_y),
+                scratch,
+                name,
+                &[0.73, 1.0],
+            );
+            if name == "inset125" {
+                editor
+                    .update(cx, |editor, _, cx| {
+                        editor.tool = crate::ui::colors::Tool::Select;
+                        editor.zoom = 0.73 / scale;
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, window);
+                let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+                let before = cx.capture_screenshot(window).unwrap();
+                super::click(
+                    cx,
+                    window,
+                    f32::from(bounds.left()) + 330. * 0.73 / scale,
+                    f32::from(bounds.top()) + 190. * 0.73 / scale,
+                );
+                settle(cx, window);
+                cx.update(|cx| {
+                    assert_eq!(
+                        editor.read(cx).unwrap().snapshot.borrow().selected,
+                        ["inset-layer-annotation"]
+                    );
+                });
+                let selected = cx.capture_screenshot(window).unwrap();
+                let x = (f32::from(bounds.left()) * scale + 305. * 0.73).round() as u32;
+                let y = (f32::from(bounds.top()) * scale + 158. * 0.73).round() as u32;
+                let difference = before
+                    .get_pixel(x, y)
+                    .0
+                    .iter()
+                    .zip(selected.get_pixel(x, y).0)
+                    .map(|(before, selected)| before.abs_diff(selected))
+                    .max()
+                    .unwrap();
+                assert!(difference > 10, "selected inset annotation halo is hidden");
+                super::click(
+                    cx,
+                    window,
+                    f32::from(bounds.left()) + 500. * 0.73 / scale,
+                    f32::from(bounds.top()) + 300. * 0.73 / scale,
+                );
+                cx.update(|cx| {
+                    assert!(editor
+                        .read(cx)
+                        .unwrap()
+                        .snapshot
+                        .borrow()
+                        .selected
+                        .is_empty());
+                });
+                let before = cx.capture_screenshot(window).unwrap();
+                super::click(
+                    cx,
+                    window,
+                    f32::from(bounds.left()) + 635. * 0.73 / scale,
+                    f32::from(bounds.top()) + 215. * 0.73 / scale,
+                );
+                cx.update(|cx| {
+                    assert_eq!(
+                        editor.read(cx).unwrap().snapshot.borrow().selected,
+                        ["inset-layer-edge-annotation"]
+                    );
+                });
+                let selected = cx.capture_screenshot(window).unwrap();
+                let x = (f32::from(bounds.left()) * scale + 660. * 0.73).round() as u32;
+                let y = (f32::from(bounds.top()) * scale + 198. * 0.73).round() as u32;
+                let difference = before
+                    .get_pixel(x, y)
+                    .0
+                    .iter()
+                    .zip(selected.get_pixel(x, y).0)
+                    .map(|(before, selected)| before.abs_diff(selected))
+                    .max()
+                    .unwrap();
+                assert!(difference > 10, "attached inset annotation halo is hidden");
+                super::click(
+                    cx,
+                    window,
+                    f32::from(bounds.left()) + 500. * 0.73 / scale,
+                    f32::from(bounds.top()) + 300. * 0.73 / scale,
+                );
+                let before = cx.capture_screenshot(window).unwrap();
+                let x = (f32::from(bounds.left()) * scale + 100. * 0.73).round() as u32;
+                let y = (f32::from(bounds.top()) * scale + 282. * 0.73).round() as u32;
+                let expected_highlight = saved.get_pixel(offset_x + 100, offset_y + 282).0;
+                assert_eq!(expected_highlight, [64, 112, 96, 255]);
+                assert!(before
+                    .get_pixel(x, y)
+                    .0
+                    .iter()
+                    .zip(expected_highlight)
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2));
+                super::click(
+                    cx,
+                    window,
+                    f32::from(bounds.left()) + 130. * 0.73 / scale,
+                    f32::from(bounds.top()) + 280. * 0.73 / scale,
+                );
+                cx.update(|cx| {
+                    assert_eq!(
+                        editor.read(cx).unwrap().snapshot.borrow().selected,
+                        ["inset-layer-highlight"]
+                    );
+                });
+                let selected = cx.capture_screenshot(window).unwrap();
+                assert!(
+                    before
+                        .get_pixel(x, y)
+                        .0
+                        .iter()
+                        .zip(selected.get_pixel(x, y).0)
+                        .all(|(before, selected)| before.abs_diff(selected) <= 2),
+                    "selecting an inset highlight must preserve its blended color"
+                );
+                super::click(
+                    cx,
+                    window,
+                    f32::from(bounds.left()) + 500. * 0.73 / scale,
+                    f32::from(bounds.top()) + 300. * 0.73 / scale,
+                );
+                cx.update(|cx| {
+                    assert!(editor
+                        .read(cx)
+                        .unwrap()
+                        .snapshot
+                        .borrow()
+                        .selected
+                        .is_empty());
+                });
+            }
+        }
         if name.starts_with("plain") {
             editor
                 .update(cx, |editor, _, cx| {

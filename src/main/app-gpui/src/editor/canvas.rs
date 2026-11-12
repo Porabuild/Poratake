@@ -264,7 +264,14 @@ impl RenderOnce for EditorCanvas {
             self.snapshot.borrow().balance_crop,
             !layers.is_empty() && !wallpaper.supports_edge_preview(true),
         );
-        let group = crate::editor::layers::compute(layout_width, layout_height, &layers, spacing);
+        let layer_inset = wallpaper.layer_inset(!layers.is_empty());
+        let group = crate::editor::layers::compute_with_inset(
+            layout_width,
+            layout_height,
+            &layers,
+            spacing,
+            layer_inset,
+        );
         let framed = wallpaper.is_active_with_layers(!layers.is_empty());
         let snapped_composition = composited_primary
             || layered_composite
@@ -314,7 +321,10 @@ impl RenderOnce for EditorCanvas {
                 (canvas_width, canvas_height, offset_x, offset_y)
             };
             // The capture sits wherever the group's layout put it.
-            let (offset_x, offset_y) = (offset_x + group.primary.x, offset_y + group.primary.y);
+            let (offset_x, offset_y) = (
+                offset_x + group.primary.x + layer_inset,
+                offset_y + group.primary.y + layer_inset,
+            );
             let measured_stage = stage_bounds.clone();
             let mut backdrop = div()
                 .relative()
@@ -552,11 +562,13 @@ fn paint_annotations(
             snapshot.balance_crop,
             false,
         );
-        let layout = crate::editor::layers::compute(
+        let layer_inset = snapshot.wallpaper.layer_inset(!snapshot.layers.is_empty());
+        let layout = crate::editor::layers::compute_with_inset(
             width,
             height,
             &snapshot.layers,
             snapshot.spacing.max(0.0),
+            layer_inset,
         );
         let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
             &snapshot.wallpaper,
@@ -572,8 +584,8 @@ fn paint_annotations(
         );
         (
             snapshot.backdrop.as_ref(),
-            x.round() + layout.primary.x - f64::from(crop_left),
-            y.round() + layout.primary.y + title_bar - f64::from(crop_top),
+            x.round() + layout.primary.x + layer_inset - f64::from(crop_left),
+            y.round() + layout.primary.y + layer_inset + title_bar - f64::from(crop_top),
         )
     } else {
         (snapshot.image.as_ref(), 0.0, 0.0)
@@ -601,11 +613,13 @@ fn paint_annotations(
             snapshot.balance_crop,
             !snapshot.layers.is_empty() && !snapshot.wallpaper.supports_edge_preview(true),
         );
-        let group = crate::editor::layers::compute(
+        let layer_inset = snapshot.wallpaper.layer_inset(!snapshot.layers.is_empty());
+        let group = crate::editor::layers::compute_with_inset(
             width,
             height,
             &snapshot.layers,
             snapshot.spacing.max(0.0),
+            layer_inset,
         );
         let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
             &snapshot.wallpaper,
@@ -635,8 +649,8 @@ fn paint_annotations(
         snapshot.backdrop.as_deref().map(|image| {
             (
                 image,
-                x + group.primary.x - f64::from(crop_left),
-                y + group.primary.y + title_bar - f64::from(crop_top),
+                x + group.primary.x + layer_inset - f64::from(crop_left),
+                y + group.primary.y + layer_inset + title_bar - f64::from(crop_top),
             )
         })
     } else {
@@ -688,11 +702,22 @@ fn paint_annotations(
                 if style == "blackout" && !is_draft
         );
         let draft_redaction = matches!(annotation, Annotation::Redact { .. }) && is_draft;
+        let selected_inset = haloed == Some(annotation.id())
+            && !blackout_overlay
+            && snapshot.backdrop_composite
+            && snapshot.wallpaper.layer_inset(!snapshot.layers.is_empty()) > 0.0
+            && preview_raster::is_rasterized(annotation)
+            && !matches!(annotation, Annotation::Highlight { .. });
         let aligned = (scale - 1.).abs() > 0.0001
             && !draft_redaction
+            && !selected_inset
             && (committed_blur
                 || committed_pixelation
                 || committed_blackout
+                || (!is_draft
+                    && snapshot.backdrop_composite
+                    && snapshot.wallpaper.layer_inset(!snapshot.layers.is_empty()) > 0.0
+                    && preview_raster::is_rasterized(annotation))
                 || preview_raster::overlaps_redaction(annotation, &visible[..index], &surface));
         if !snapshot.backdrop_composite
             && !redaction_surface.composite_backdrop
@@ -737,6 +762,18 @@ fn paint_annotations(
                 &redaction_surface
             } else {
                 &surface
+            };
+            let transparent_selection = preview_raster::Surface {
+                pixels: None,
+                matte: None,
+                matte_image: None,
+                composite_backdrop: false,
+                ..*surface
+            };
+            let surface = if selected_inset {
+                &transparent_selection
+            } else {
+                surface
             };
             let patch = if aligned {
                 let (stage_size, offset) = if let Some((image, x, y)) = matte_image {

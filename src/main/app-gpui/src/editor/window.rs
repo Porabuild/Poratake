@@ -760,11 +760,12 @@ impl EditorWindow {
             self.balance_crop,
             !self.layers.is_empty() && !wallpaper.supports_edge_preview(true),
         );
-        let group = crate::editor::layers::compute(
+        let group = crate::editor::layers::compute_with_inset(
             image_width,
             image_height,
             &self.layers,
             wallpaper.spacing.max(0.0),
+            wallpaper.layer_inset(!self.layers.is_empty()),
         );
         let ((width, height), _) = crate::editor::wallpaper::layout(
             &wallpaper,
@@ -2297,11 +2298,12 @@ impl EditorWindow {
             self.balance_crop,
             !self.layers.is_empty() && !wallpaper.supports_edge_preview(true),
         );
-        let group = crate::editor::layers::compute(
+        let group = crate::editor::layers::compute_with_inset(
             image_width,
             image_height,
             &self.layers,
             wallpaper.spacing.max(0.0),
+            wallpaper.layer_inset(!self.layers.is_empty()),
         );
         if wallpaper.is_active_with_layers(!self.layers.is_empty()) {
             let ((width, height), _) = crate::editor::wallpaper::layout(

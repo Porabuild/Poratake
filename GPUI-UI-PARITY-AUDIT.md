@@ -908,8 +908,22 @@ Bugs fixed in this pass:
   501–516 ms with five, retaining 38.69 MiB and 76.41 MiB of backdrop textures
   respectively, before GPU upload. The previous tiled preview retained 45.59 MiB
   and 118.35 MiB in the same probe.
-  Physical DPI, interactive performance and framed/inset/balanced combinations
+  Physical DPI, interactive performance and framed or balanced combinations
   remain unverified.
+- Unframed attachments ignored the inset when there was no outer padding. Each
+  image now has its own inset and edge color, and annotations use the inset
+  origin after the attached images are drawn. A 144×72 Electron canvas fixture
+  independently confirms the layout and colors for two 60×60 images with a
+  6px inset. CPU checks cover all four attachment edges and transparent source
+  pixels. Light and dark GPU fixtures check zero-padding right attachments at
+  simulated 125% and 200%, including transparent edge pixels, an annotation
+  crossing the attachment, and a PNG reopened at 73% and 100% zoom. At 125%,
+  selection halos are checked both inside the primary and across the attachment;
+  a selected highlight retains its independently checked blended color. Tied
+  edge colors now use the first sampled color, matching Electron and avoiding
+  random preview/export differences. The two local NVIDIA runs each passed 191
+  exact baselines without updates. Frames, balance, other inset effects, physical
+  DPI and native interaction remain unverified.
 - GPUI drew annotations into the primary image before attached images and their
   shadows, so a bright mark could be obscured at an edge. In the tested
   unframed, non-inset, non-balanced path, preview and export now draw annotations
@@ -927,8 +941,8 @@ Bugs fixed in this pass:
   attached images. Light/dark previews match saved pixels at simulated 125% and
   200%; Polish copy matches the editor for zero-padding corners. Transparent
   previews now use the active theme background, and a same-window theme change
-  replaces and retires the old backdrop. Balanced effects and attached insets
-  still need coordinated preview/export geometry.
+  replaces and retires the old backdrop. Balanced effects and framed attached
+  insets still need coordinated preview/export geometry.
 - An unframed single-image inset was omitted at zero padding when corners or a
   shadow were enabled, and otherwise occupied the outer padding. The inset now
   surrounds the image and the preview uses the exported composition. Light and
@@ -1232,10 +1246,15 @@ tool documents set-value for text fields, not numeric range controls. The
 Windows adapter maps a range-value request to the numeric action handled by the
 slider; delivery through the operating system remains unverified.
 
-Unframed layered annotations now render after attachments in the tested path.
-Verify annotation and redaction ordering with frames, inset and balance, and
-compare directly with Electron. The 4K attachment preparation cost reported
-above also needs interactive and slower-hardware measurement.
+Unframed layered annotations now render after attachments in the tested path,
+including the tested inset rectangle. Verify redaction ordering with insets and
+annotation ordering with frames and balance, and compare directly with Electron.
+The 4K attachment preparation cost above also needs interactive and
+slower-hardware measurement.
+
+The selected-highlight and committed-redaction paths paint opaque patches after
+their halos. Reproduce those selection states and preserve the halo without
+changing highlight blending or redacted pixels.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1244,7 +1263,7 @@ above also needs interactive and slower-hardware measurement.
 | P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions and restarts, and cross-shell IDs on macOS/Linux.                                                                                                                                                                                                       |
 | P1       | Complex framed screenshot preview versus export          | Single unbalanced frames with inset match the PNG in the tested light/dark cases at simulated 125% and 200%; one solid-background case also matches a reopened PNG at 73%, 100% and 150%. A 9:16 frame without inset, with or without shadow, matches a reopened PNG at 73%, 100% and 150% zoom in the local light/dark probes. At simulated 125%, pointer selection and dragging with a framed inset and an edge handle are checked. Verify more styles and zooms, transparent reopen, balance, attached layers and physical DPI transitions.                      |
 | P1       | Complex rounded screenshot preview versus export         | Single unframed captures with and without inset or shadow match the PNG in the tested light/dark cases at simulated 125% and 200%, including transparency and annotations. Verify frames, balance, attachments, more zoom levels and physical DPI.                                                                                                                                                                                                                                                                                                                  |
-| P1       | Zero-padding wallpaper effects                           | Frame-only, corner/shadow-only and single unbalanced framed or unframed inset effects activate at zero padding. Light/dark GPU checks cover the tested frame and inset combinations; attached insets and balanced effects still need verification.                                                                                                                                                                                                                                                                                                                  |
+| P1       | Zero-padding wallpaper effects                           | Frame-only, corner/shadow-only and single unbalanced framed or unframed inset effects activate at zero padding. Unframed attached insets are checked on all edges by CPU and on the right edge by GPU. Verify balanced effects, framed attachments and more inset combinations.                                                                                                                                                                                                                                                                                     |
 | P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. After a pixel-conversion optimization, a local 4K shadow composite took a median 109–113 ms versus 142–148 ms with the preceding conversion; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, rounded inset tiles, plain or framed shadows and unshadowed frames have CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                |
 | P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                        |
 | P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance. |

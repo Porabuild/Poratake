@@ -248,6 +248,49 @@ fn draw_unframed_image(
     canvas.restore();
 }
 
+fn draw_inset_layer(
+    canvas: &mut Canvas,
+    image: tiny_skia::PixmapRef<'_>,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    shadow: Option<Shadow>,
+    inset: f32,
+) {
+    if inset <= 0.0 {
+        draw_unframed_image(canvas, image, rect, radius, shadow);
+        return;
+    }
+    let (x, y, width, height) = rect;
+    let Some(path) = rounded_rect_path(x, y, width, height, radius) else {
+        return;
+    };
+    let fill = crate::render::color_detection::dominant_inset_color(
+        image,
+        crate::render::color_detection::ContentBounds::default(),
+    )
+    .map(|value| color::parse_or(&value, Color::WHITE))
+    .or_else(|| shadow.map(|_| Color::WHITE));
+    canvas.save();
+    if let Some(fill) = fill {
+        if shadow
+            .is_none_or(|shadow| paint_rounded_shadow(canvas, rect, radius, shadow, fill).is_none())
+        {
+            canvas.set_shadow(shadow);
+            canvas.fill_path(&path, fill, FillRule::Winding);
+            canvas.set_shadow(None);
+        }
+    }
+    canvas.clip_path(&path, FillRule::Winding);
+    canvas.draw_pixmap(
+        image,
+        x + inset,
+        y + inset,
+        (width - inset * 2.0).max(0.0),
+        (height - inset * 2.0).max(0.0),
+    );
+    canvas.restore();
+}
+
 fn compose_layered_wallpaper(
     primary: &Pixmap,
     wallpaper: &WallpaperSettings,
@@ -256,11 +299,13 @@ fn compose_layered_wallpaper(
     frame_scale: f64,
     crop_offset: (f32, f32),
 ) -> Option<Pixmap> {
-    let layout = crate::editor::layers::compute(
+    let inset = wallpaper.layer_inset(true);
+    let layout = crate::editor::layers::compute_with_inset(
         f64::from(primary.width()),
         f64::from(primary.height()),
         layers,
         wallpaper.spacing.max(0.0),
+        inset,
     );
     let ((width, height), (offset_x, offset_y, _, _)) =
         crate::editor::wallpaper::layout(wallpaper, layout.width, layout.height, frame_scale, true);
@@ -281,7 +326,14 @@ fn compose_layered_wallpaper(
         )
     };
     let primary_rect = rect(layout.primary);
-    draw_unframed_image(&mut canvas, primary.as_ref(), primary_rect, radius, shadow);
+    draw_inset_layer(
+        &mut canvas,
+        primary.as_ref(),
+        primary_rect,
+        radius,
+        shadow,
+        inset as f32,
+    );
     for (id, layer_rect) in layout.layers {
         let Some(source) = layers
             .iter()
@@ -290,17 +342,18 @@ fn compose_layered_wallpaper(
         else {
             continue;
         };
-        draw_unframed_image(
+        draw_inset_layer(
             &mut canvas,
             source.as_ref(),
             rect(layer_rect),
             radius,
             shadow,
+            inset as f32,
         );
     }
     canvas.translate(
-        primary_rect.0 - crop_offset.0,
-        primary_rect.1 - crop_offset.1,
+        primary_rect.0 + inset as f32 - crop_offset.0,
+        primary_rect.1 + inset as f32 - crop_offset.1,
     );
     annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     Some(canvas.into_pixmap())
@@ -1560,6 +1613,95 @@ mod tests {
         assert_eq!(composed.dimensions(), (200, 100));
         assert_eq!(composed.get_pixel(50, 50).0, [255, 0, 0, 255]);
         assert_eq!(composed.get_pixel(150, 50).0, [0, 0, 255, 255]);
+        let _ = std::fs::remove_file(&attached);
+    }
+
+    #[test]
+    fn attached_images_each_keep_their_own_inset_without_padding() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let attached = crate::util::test_paths::unique_temp("poratake-inset-layer.png");
+        let mut side = RgbaImage::from_pixel(60, 60, image::Rgba([20, 40, 200, 255]));
+        side.put_pixel(30, 30, image::Rgba([240, 220, 20, 255]));
+        side.put_pixel(0, 40, image::Rgba([240, 20, 40, 0]));
+        side.save(&attached).unwrap();
+        let mut base = RgbaImage::from_pixel(60, 60, image::Rgba([20, 180, 40, 255]));
+        base.put_pixel(30, 30, image::Rgba([240, 20, 40, 255]));
+        let base = image::DynamicImage::ImageRgba8(base);
+        let settings = WallpaperSettings {
+            inset: 6.0,
+            ..WallpaperSettings::default()
+        };
+        let annotations = [
+            Annotation::Rectangle {
+                id: "inset-annotation".into(),
+                x: 5.0,
+                y: 5.0,
+                width: 10.0,
+                height: 10.0,
+                stroke: "#ff00ff".into(),
+                stroke_width: 1.0,
+                fill: Some("#ff00ff".into()),
+            },
+            Annotation::Rectangle {
+                id: "inset-edge-annotation".into(),
+                x: 55.0,
+                y: 20.0,
+                width: 25.0,
+                height: 10.0,
+                stroke: "#ff00ff".into(),
+                stroke_width: 1.0,
+                fill: Some("#ff00ff".into()),
+            },
+        ];
+        let output = compose_with_layers(
+            Some(&base),
+            60,
+            60,
+            &annotations,
+            &settings,
+            &[ImageLayer {
+                id: "right".into(),
+                image_url: attached.to_string_lossy().into_owned(),
+                natural_width: 60.0,
+                natural_height: 60.0,
+                edge: Edge::Right,
+            }],
+            1.0,
+        );
+        assert_eq!(output.dimensions(), (144, 72));
+        assert_eq!(output.get_pixel(2, 36).0, [20, 180, 40, 255]);
+        assert_eq!(output.get_pixel(74, 50).0, [20, 40, 200, 255]);
+        assert_eq!(output.get_pixel(36, 36).0, [240, 20, 40, 255]);
+        assert_eq!(output.get_pixel(108, 36).0, [240, 220, 20, 255]);
+        assert_eq!(output.get_pixel(78, 46).0, [20, 40, 200, 255]);
+        assert_eq!(output.get_pixel(16, 16).0, [255, 0, 255, 255]);
+        assert_eq!(output.get_pixel(8, 8).0, [20, 180, 40, 255]);
+        assert_eq!(output.get_pixel(80, 31).0, [255, 0, 255, 255]);
+        for (edge, dimensions, primary, layer) in [
+            (Edge::Left, (144, 72), (74, 36), (2, 36)),
+            (Edge::Top, (72, 144), (36, 74), (36, 2)),
+            (Edge::Bottom, (72, 144), (36, 2), (36, 74)),
+        ] {
+            let output = compose_with_layers(
+                Some(&base),
+                60,
+                60,
+                &[],
+                &settings,
+                &[ImageLayer {
+                    id: "edge".into(),
+                    image_url: attached.to_string_lossy().into_owned(),
+                    natural_width: 60.0,
+                    natural_height: 60.0,
+                    edge,
+                }],
+                1.0,
+            );
+            assert_eq!(output.dimensions(), dimensions);
+            assert_eq!(output.get_pixel(primary.0, primary.1).0, [20, 180, 40, 255]);
+            assert_eq!(output.get_pixel(layer.0, layer.1).0, [20, 40, 200, 255]);
+        }
         let _ = std::fs::remove_file(&attached);
     }
 

@@ -90,12 +90,22 @@ pub fn compute(
     layers: &[ImageLayer],
     spacing: f64,
 ) -> Layout {
+    compute_with_inset(primary_width, primary_height, layers, spacing, 0.0)
+}
+
+pub fn compute_with_inset(
+    primary_width: f64,
+    primary_height: f64,
+    layers: &[ImageLayer],
+    spacing: f64,
+    inset: f64,
+) -> Layout {
     let mut rects: Vec<(String, LayerRect)> = Vec::new();
     let primary = LayerRect {
         x: 0.0,
         y: 0.0,
-        width: primary_width,
-        height: primary_height,
+        width: primary_width + inset * 2.0,
+        height: primary_height + inset * 2.0,
     };
 
     // Each edge stacks outwards, so a second layer on the same edge sits
@@ -118,8 +128,8 @@ pub fn compute(
         let (width, height) = scale_to_edge(
             primary.width,
             primary.height,
-            layer.natural_width,
-            layer.natural_height,
+            layer.natural_width + inset * 2.0,
+            layer.natural_height + inset * 2.0,
             layer.edge,
         );
         if width <= 0.0 || height <= 0.0 {
