@@ -38,7 +38,9 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private let audioWriterQueue = DispatchQueue(label: "com.porabuild.poratake.screen-recorder.audio-writer")
 
     private(set) var state: RecorderState = .idle
+    private var lifecycle = RecorderLifecycleGuard()
     private var config: RecordingConfig?
+    private var activeSessionID: RecorderSessionID?
     private var recordingDuration: Double = 0
     private var videoWidth: Int = 1920
     private var videoHeight: Int = 1080
@@ -64,20 +66,18 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var cameraRangeOpenStart: Double?
     
     var onFirstFrame: (() -> Void)?
-    var onError: ((Error) -> Void)?
+    var onError: (@MainActor (RecorderSessionID, Error) -> Void)?
 
-    func configure(_ config: RecordingConfig) {
+    @MainActor
+    func start(_ config: RecordingConfig, sessionID: RecorderSessionID) async throws {
+        guard lifecycle.beginStart(state: state) else {
+            throw RecorderError.invalidState(
+                "Cannot start: recorder is \(state.rawValue) or a lifecycle transition is in progress"
+            )
+        }
         self.config = config
-    }
-
-    func start() async throws {
-        guard state == .idle else {
-            throw RecorderError.invalidState("Cannot start: recorder is \(state.rawValue)")
-        }
-
-        guard let config = config else {
-            throw RecorderError.configuration("Recording config not set")
-        }
+        activeSessionID = sessionID
+        defer { lifecycle.finishStart() }
 
         do {
             try await startCapture(config)
@@ -97,7 +97,9 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         return content.displays.first { $0.frame.contains(center) }?.displayID
     }
 
+    @MainActor
     private func startCapture(_ config: RecordingConfig) async throws {
+        RecordingCaptureWindowRegistry.shared.beginCaptureStart()
 
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: config.outputPath) {
@@ -126,8 +128,20 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         // A window filter follows the window itself, so the recording keeps
         // going when the window is moved to another place or another display.
-        let filter = capturedWindow.map { SCContentFilter(desktopIndependentWindow: $0) }
-            ?? SCContentFilter(display: display, excludingWindows: [])
+        let filter: SCContentFilter
+        let registeredWindowIDs = RecordingCaptureWindowRegistry.shared.currentWindowIDs()
+        let excludedWindowIDs = try resolvedRecordingExclusionWindowIDs(
+            requested: config.excludedWindowIDs,
+            registered: registeredWindowIDs,
+            selectedWindowID: capturedWindow?.windowID,
+            availableWindowIDs: Set(content.windows.map(\.windowID))
+        )
+        if let capturedWindow {
+            filter = SCContentFilter(desktopIndependentWindow: capturedWindow)
+        } else {
+            let excludedWindows = content.windows.filter { excludedWindowIDs.contains($0.windowID) }
+            filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
+        }
 
         var scaleFactor: CGFloat = 2.0
         var targetScreen: NSScreen?
@@ -371,6 +385,22 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         stream = SCStream(filter: filter, configuration: streamConfig, delegate: self)
 
+        if capturedWindow == nil {
+            guard let captureStream = stream else {
+                throw RecorderError.capture("Failed to initialize ScreenCaptureKit stream")
+            }
+            let requestedWindowIDs = config.excludedWindowIDs
+            let captureDisplayID = display.displayID
+            RecordingCaptureWindowRegistry.shared.setFilterUpdater { windowIDs in
+                try await Self.updateCaptureFilter(
+                    on: captureStream,
+                    displayID: captureDisplayID,
+                    requestedWindowIDs: requestedWindowIDs,
+                    excluding: windowIDs
+                )
+            }
+        }
+
         try stream?.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
 
         if #available(macOS 13.0, *) {
@@ -390,14 +420,45 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         firstMicTime = nil
 
         try await stream?.startCapture()
+        RecordingCaptureWindowRegistry.shared.finishCaptureStart()
+        try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
         state = .recording
     }
 
+    @MainActor
+    private static func updateCaptureFilter(
+        on stream: SCStream,
+        displayID captureDisplayID: CGDirectDisplayID,
+        requestedWindowIDs: [Int64],
+        excluding windowIDs: [CGWindowID]
+    ) async throws {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        )
+        guard let display = content.displays.first(where: { $0.displayID == captureDisplayID }) else {
+            throw RecordingCaptureFilterError.unavailableDisplay(captureDisplayID)
+        }
+        let excludedIDs = try resolvedRecordingExclusionWindowIDs(
+            requested: requestedWindowIDs,
+            registered: windowIDs,
+            selectedWindowID: nil,
+            availableWindowIDs: Set(content.windows.map(\.windowID))
+        )
+        let excludedWindows = content.windows.filter { excludedIDs.contains($0.windowID) }
+        try await stream.updateContentFilter(
+            SCContentFilter(display: display, excludingWindows: excludedWindows)
+        )
+    }
+
+    @MainActor
     private func rollbackFailedStart() async {
         state = .idle
 
+        RecordingCaptureWindowRegistry.shared.finishCaptureStart()
         try? await stream?.stopCapture()
         stream = nil
+        RecordingCaptureWindowRegistry.shared.setFilterUpdater(nil)
         stopMicrophoneCapture()
         cameraRecorder.abort()
         _ = cursorTracker.stop()
@@ -884,13 +945,19 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
     }
 
+    @MainActor
     func stop() async throws -> RecordingResult {
-        guard state == .recording || state == .paused else {
-            throw RecorderError.invalidState("Cannot stop: recorder is \(state.rawValue)")
+        guard lifecycle.beginStop(state: state) else {
+            throw RecorderError.invalidState(
+                "Cannot stop: recorder is \(state.rawValue) or a lifecycle transition is in progress"
+            )
         }
 
         state = .idle
-        defer { resetRecordingState() }
+        defer {
+            resetRecordingState()
+            lifecycle.finishStop()
+        }
 
         let cursorFilePath = cursorTracker.stop()
 
@@ -916,6 +983,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             // Ignore stop errors
         }
         stream = nil
+        RecordingCaptureWindowRegistry.shared.setFilterUpdater(nil)
 
         waitForPendingSamples()
 
@@ -982,13 +1050,19 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor [weak self] in
-            guard let self, self.state == .recording || self.state == .paused else { return }
-            _ = try? await self.stop()
-            self.onError?(error)
+            guard let self,
+                  self.stream === stream,
+                  self.state == .recording || self.state == .paused,
+                  let sessionID = self.activeSessionID
+            else { return }
+            self.onError?(sessionID, error)
         }
     }
 
+    @MainActor
     private func resetRecordingState() {
+        RecordingCaptureWindowRegistry.shared.finishCaptureStart()
+        RecordingCaptureWindowRegistry.shared.setFilterUpdater(nil)
         assetWriter = nil
         videoInput = nil
         pixelBufferAdaptor = nil
@@ -1013,6 +1087,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         pauseStartTime = nil
         totalPauseDuration = .zero
         recordingDuration = 0
+        activeSessionID = nil
     }
 }
 

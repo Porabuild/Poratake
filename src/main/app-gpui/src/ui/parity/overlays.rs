@@ -164,7 +164,58 @@ fn exercise_all_in_one_target_menu(
             })
             .expect("all-in-one overlay remains open")
     };
-    click(cx, window, f32::from(center.x), f32::from(center.y));
+    hover(cx, window, f32::from(center.x), f32::from(center.y));
+    let hovered = cx.capture_screenshot(window).unwrap();
+    event(
+        cx,
+        window,
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: center,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    settle(cx, window);
+    let pressed = cx.capture_screenshot(window).unwrap();
+    let scale = cx
+        .update_window(window, |_, window, _| window.scale_factor())
+        .unwrap();
+    let left = (f32::from(trigger.left()) * scale).round() as u32;
+    let top = (f32::from(trigger.top()) * scale).round() as u32;
+    let right = (f32::from(trigger.right()) * scale).round() as u32;
+    let bottom = (f32::from(trigger.bottom()) * scale).round() as u32;
+    let mut changed = 0;
+    for y in top..bottom {
+        for x in left..right {
+            if hovered
+                .get_pixel(x, y)
+                .0
+                .iter()
+                .zip(pressed.get_pixel(x, y).0)
+                .any(|(hovered, pressed)| hovered.abs_diff(pressed) > 2)
+            {
+                changed += 1;
+            }
+        }
+    }
+    assert!(
+        changed as f32 >= 4. * scale * scale,
+        "the all-in-one target trigger must paint its pressed state"
+    );
+    capture(cx, window, output, "overlay-all-in-one-target-pressed");
+    event(
+        cx,
+        window,
+        PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: center,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+        }),
+    );
+    settle(cx, window);
     assert!(state(cx).1, "target menu must open");
     capture(cx, window, output, "overlay-all-in-one-target-menu-open");
     let (row_x, first_row_y) = cx

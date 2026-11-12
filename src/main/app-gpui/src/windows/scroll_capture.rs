@@ -608,7 +608,7 @@ impl Render for ScrollControlBar {
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
-fn set_native_tooltip(window: &Window, tooltip: Option<&str>) {
+pub(crate) fn set_native_tooltip(window: &Window, tooltip: Option<&str>) {
     use cocoa::base::nil;
     use cocoa::foundation::NSString;
     use objc::{msg_send, sel, sel_impl};
@@ -638,7 +638,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn set_native_tooltip(_window: &Window, tooltip: Option<&str>) {
+pub(crate) fn set_native_tooltip(_window: &Window, tooltip: Option<&str>) {
     TEST_NATIVE_TOOLTIP.with_borrow_mut(|value| *value = tooltip.map(str::to_owned));
 }
 

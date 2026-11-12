@@ -1672,7 +1672,7 @@ where
                 cx.stop_propagation();
             }
         })
-        .on_key_up(|event, window, cx| {
+        .capture_key_up(|event, window, cx| {
             if !matches!(event.keystroke.key.as_str(), "enter" | "space")
                 || cx.try_global::<ActiveKeyboardPresses>().is_none()
             {

@@ -150,6 +150,7 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                         .foreground(ComponentColor::Literal(vars.foreground.opacity(0.85)))
                         .hover_foreground(ComponentColor::Foreground)
                         .hover_bg(ComponentColor::Literal(vars.foreground.opacity(0.15)))
+                        .pressed_bg(ComponentColor::Literal(vars.foreground.opacity(0.25)))
                         .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS))
                         .style(|el| {
                             use gpui::Styled;

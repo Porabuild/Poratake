@@ -199,6 +199,8 @@ pub struct ScreenRecorderStartRequest {
     pub display_id: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_window_ids: Vec<i64>,
     #[serde(default = "default_true")]
     pub include_audio: bool,
     #[serde(default)]
@@ -640,6 +642,7 @@ mod tests {
             height: Some(600),
             display_id: Some(73),
             window_id: None,
+            excluded_window_ids: vec![91, 92],
             include_audio: true,
             mic_enabled: false,
             mic_device_id: None,
@@ -661,6 +664,7 @@ mod tests {
                 "width": 800,
                 "height": 600,
                 "displayId": 73,
+                "excludedWindowIds": [91, 92],
                 "includeAudio": true,
                 "micEnabled": false,
                 "cameraEnabled": true,

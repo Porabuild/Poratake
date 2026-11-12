@@ -66,12 +66,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    point, prelude::*, px, Font, FontFeatures, FontStyle, FontWeight, KeyDownEvent, KeyUpEvent,
-    Keystroke, Modifiers, MouseButton, TestAppContext, VisualTestContext,
+    point, prelude::*, px, Context, Font, FontFeatures, FontStyle, FontWeight, KeyDownEvent,
+    KeyUpEvent, Keystroke, Modifiers, MouseButton, Render, TestAppContext, VisualTestContext,
 };
 use herogpui_components::{
-    Alert, Button, ButtonGroup, Chip, ChipLabel, CloseButton, InteractiveState, Link, Orientation,
-    SelectionMode, ToggleButton, ToggleButtonGroup,
+    extend, Alert, Button, ButtonGroup, Chip, ChipLabel, CloseButton, InteractiveState, Link,
+    Orientation, SelectionMode, ToggleButton, ToggleButtonGroup,
 };
 
 use harness::{click, events, open_host, press};
@@ -1373,6 +1373,77 @@ fn button_content_render_prop_sees_keyboard_press(cx: &mut TestAppContext) {
         !*seen.borrow(),
         "the frame after Space up must report the keyboard press lifted"
     );
+}
+
+#[gpui::test]
+fn button_keyboard_press_releases_when_activation_moves_focus_out_of_root(
+    cx: &mut TestAppContext,
+) {
+    let pressed = Rc::new(RefCell::new(false));
+    cx.update(herogpui_theme::ThemeProvider::init);
+    let observed_pressed = pressed.clone();
+    let (view, cx) = cx.add_window_view(move |_, cx| FocusTransferHost {
+        target: cx.focus_handle(),
+        pressed: observed_pressed.clone(),
+    });
+    cx.simulate_mouse_move(
+        point(px(-100.), px(-100.)),
+        None::<MouseButton>,
+        Modifiers::none(),
+    );
+
+    press(cx, "tab");
+    cx.simulate_keystrokes("enter");
+    flush_frame(cx);
+    assert!(
+        *pressed.borrow(),
+        "Enter down must report the held keyboard press before focus transfer"
+    );
+    cx.simulate_event(KeyUpEvent {
+        keystroke: Keystroke::parse("enter").unwrap(),
+    });
+    flush_frame(cx);
+    assert!(
+        cx.update(|window, cx| view.read(cx).target.is_focused(window)),
+        "button activation must move focus to the external focus handle"
+    );
+    assert!(
+        !*pressed.borrow(),
+        "Enter up must release the keyboard press after focus leaves the app root"
+    );
+}
+
+struct FocusTransferHost {
+    target: gpui::FocusHandle,
+    pressed: Rc<RefCell<bool>>,
+}
+
+impl Render for FocusTransferHost {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let target = self.target.clone();
+        let pressed = self.pressed.clone();
+        extend::app_focus_root(
+            gpui::div().child(
+                Button::new("btn-focus-transfer")
+                    .content(move |state: InteractiveState| {
+                        *pressed.borrow_mut() = state.is_pressed;
+                        gpui::div()
+                            .child("transfer focus".to_owned())
+                            .into_any_element()
+                    })
+                    .on_press(move |_, window, cx| {
+                        window.focus(&target, cx);
+                        cx.stop_propagation();
+                    }),
+            ),
+            window,
+            cx,
+        )
+    }
 }
 
 #[gpui::test]

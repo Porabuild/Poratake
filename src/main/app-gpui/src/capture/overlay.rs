@@ -643,8 +643,8 @@ fn set_overlay_topmost(window: &Window) {
     let _ = window;
 }
 
-#[cfg(all(windows, not(test)))]
-fn windows_build() -> u32 {
+#[cfg(windows)]
+pub(crate) fn windows_build() -> u32 {
     use std::sync::OnceLock;
 
     use windows::Wdk::System::SystemServices::RtlGetVersion;

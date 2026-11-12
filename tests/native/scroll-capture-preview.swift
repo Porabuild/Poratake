@@ -45,7 +45,314 @@ struct ScrollCapturePreviewTest {
         return Data(bytes: context.data!, count: image.width * image.height * 4)
     }
 
-    static func main() {
+    @MainActor
+    static func waitUntil(_ message: String, _ condition: @MainActor () -> Bool) async {
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while !condition() {
+            precondition(Date() < deadline, message)
+            await Task.yield()
+        }
+    }
+
+    @MainActor
+    static func main() async throws {
+        let screenExclusions = recordingExclusionWindowIDs(
+            requested: [31, 41, 31, -1, Int64.max],
+            registered: [CGWindowID(41), CGWindowID(52)],
+            selectedWindowID: nil
+        )
+        precondition(screenExclusions == [31, 41, 52], "Display recording should deduplicate valid exact window IDs")
+        let selectedWindowExclusions = recordingExclusionWindowIDs(
+            requested: [31, 41],
+            registered: [CGWindowID(52)],
+            selectedWindowID: CGWindowID(31)
+        )
+        precondition(selectedWindowExclusions.isEmpty, "Window recording must keep the selected Poratake window capturable")
+        let resolvedExclusions = try resolvedRecordingExclusionWindowIDs(
+            requested: [31],
+            registered: [CGWindowID(52)],
+            selectedWindowID: nil,
+            availableWindowIDs: [CGWindowID(31), CGWindowID(52)]
+        )
+        precondition(resolvedExclusions == [31, 52])
+        let selectedResolvedWindowExclusions = try resolvedRecordingExclusionWindowIDs(
+            requested: [31],
+            registered: [CGWindowID(52)],
+            selectedWindowID: CGWindowID(31),
+            availableWindowIDs: []
+        )
+        precondition(selectedResolvedWindowExclusions.isEmpty, "Selected-window capture must not apply display exclusions")
+        var missingWindowFailedClosed = false
+        do {
+            _ = try resolvedRecordingExclusionWindowIDs(
+                requested: [31],
+                registered: [],
+                selectedWindowID: nil,
+                availableWindowIDs: []
+            )
+        } catch is RecordingCaptureFilterError {
+            missingWindowFailedClosed = true
+        }
+        precondition(missingWindowFailedClosed, "An unresolvable recording control must fail closed")
+
+        var presentation = WindowPresentationGeneration()
+        let cancelledPresentation = presentation.begin()
+        presentation.cancel()
+        precondition(!presentation.isCurrent(cancelledPresentation), "Hide must invalidate a pending show")
+        let replacementPresentation = presentation.begin()
+        precondition(!presentation.isCurrent(cancelledPresentation))
+        precondition(presentation.isCurrent(replacementPresentation))
+
+        var recorderLifecycle = RecorderLifecycleGuard()
+        var configuredTake = "existing take"
+        precondition(recorderLifecycle.beginStart(state: .idle))
+        configuredTake = "active take"
+        let duplicateStartAccepted = recorderLifecycle.beginStart(state: .idle)
+        if duplicateStartAccepted {
+            configuredTake = "rejected take"
+        }
+        precondition(!duplicateStartAccepted, "Concurrent starts must be rejected")
+        precondition(configuredTake == "active take", "A rejected start must preserve the active take configuration")
+        recorderLifecycle.finishStart()
+        precondition(recorderLifecycle.beginStop(state: .recording))
+        let earlyRetryAccepted = recorderLifecycle.beginStart(state: .idle)
+        if earlyRetryAccepted {
+            configuredTake = "early retry"
+        }
+        precondition(!earlyRetryAccepted, "Restart must wait for stop finalization")
+        precondition(configuredTake == "active take")
+        recorderLifecycle.finishStop()
+        let retryAccepted = recorderLifecycle.beginStart(state: .idle)
+        if retryAccepted {
+            configuredTake = "retry take"
+        }
+        precondition(retryAccepted, "A failed stop must release the lifecycle guard")
+        precondition(configuredTake == "retry take")
+        recorderLifecycle.finishStart()
+
+        var moduleLifecycle = RecorderModuleLifecycle()
+        let failedScreenSession = moduleLifecycle.beginStart(.screen)!
+        precondition(moduleLifecycle.beginStart(.ios) == nil, "An iOS start must not overlap a screen start")
+        precondition(moduleLifecycle.finishStart(failedScreenSession, success: false))
+        precondition(moduleLifecycle.phase == .idle, "A failed start must release the module reservation")
+        let iosSession = moduleLifecycle.beginStart(.ios)!
+        precondition(moduleLifecycle.finishStart(iosSession, success: true))
+        precondition(moduleLifecycle.currentBackend == .ios)
+        precondition(moduleLifecycle.beginStop(iosSession) == .ios)
+        precondition(moduleLifecycle.beginStop(iosSession) == nil, "A second stop must join the existing teardown")
+        precondition(moduleLifecycle.beginStart(.screen) == nil, "A screen start must wait for iOS stop finalization")
+        moduleLifecycle.finishStop(iosSession)
+        let screenSession = moduleLifecycle.beginStart(.screen)!
+        precondition(moduleLifecycle.finishStart(screenSession, success: true))
+        precondition(!moduleLifecycle.isCurrent(iosSession), "A delayed error must not affect a newer backend")
+        precondition(moduleLifecycle.beginStop(screenSession) == .screen)
+        moduleLifecycle.finishStop(screenSession)
+        let newerScreenSession = moduleLifecycle.beginStart(.screen)!
+        precondition(moduleLifecycle.finishStart(newerScreenSession, success: true))
+        precondition(!moduleLifecycle.isCurrent(screenSession), "A delayed same-backend error must not affect a newer session")
+        precondition(moduleLifecycle.currentBackend == .screen)
+        precondition(moduleLifecycle.beginStop(newerScreenSession) == .screen)
+        moduleLifecycle.finishStop(newerScreenSession)
+
+        let stopResult = RecordingResult(
+            outputPath: "/tmp/recording-stop-test.poratake",
+            cursorPath: nil,
+            cameraPath: nil,
+            keysPath: nil,
+            systemAudioPath: nil,
+            micAudioPath: nil,
+            duration: 1
+        )
+        let stopCoordinator = RecorderStopCoordinator()
+        var stopOperationStarted = false
+        var stopOperationCount = 0
+        var releaseStopOperation: CheckedContinuation<RecordingResult, Error>?
+        let ownerStop = Task { @MainActor in
+            try await stopCoordinator.stop(sessionID: 201) {
+                stopOperationCount += 1
+                stopOperationStarted = true
+                return try await withCheckedThrowingContinuation {
+                    releaseStopOperation = $0
+                }
+            }
+        }
+        await waitUntil("The shared stop operation did not start") { stopOperationStarted }
+        let joinedStop = Task { @MainActor in
+            try await stopCoordinator.stop(sessionID: 201) {
+                stopOperationCount += 1
+                return stopResult
+            }
+        }
+        await waitUntil("A duplicate stop did not join the active teardown") {
+            stopCoordinator.testWaiterCount == 1
+        }
+        var differentSessionRejected = false
+        do {
+            _ = try await stopCoordinator.stop(sessionID: 202) { stopResult }
+        } catch is RecorderStopCoordinatorError {
+            differentSessionRejected = true
+        }
+        precondition(differentSessionRejected)
+        releaseStopOperation?.resume(returning: stopResult)
+        let ownerResult = try await ownerStop.value
+        let joinedResult = try await joinedStop.value
+        precondition(stopOperationCount == 1, "Concurrent callers must share one backend stop")
+        precondition(ownerResult.outputPath == stopResult.outputPath)
+        precondition(joinedResult.outputPath == stopResult.outputPath)
+        let retryResult = try await stopCoordinator.stop(sessionID: 202) { stopResult }
+        precondition(retryResult.outputPath == stopResult.outputPath, "A completed stop must release coordinator ownership")
+
+        var failedStopReported = false
+        do {
+            _ = try await stopCoordinator.stop(sessionID: 203) {
+                throw RecordingCaptureFilterError.unavailableWindows([203])
+            }
+        } catch is RecordingCaptureFilterError {
+            failedStopReported = true
+        }
+        precondition(failedStopReported)
+        let retryAfterFailure = try await stopCoordinator.stop(sessionID: 203) { stopResult }
+        precondition(retryAfterFailure.outputPath == stopResult.outputPath, "A failed stop must release coordinator ownership")
+
+        let startupRegistry = RecordingCaptureWindowRegistry()
+        startupRegistry.beginCaptureStart()
+        startupRegistry.register(windowID: 61)
+        var startupRefreshes: [[CGWindowID]] = []
+        startupRegistry.setFilterUpdater { ids in startupRefreshes.append(ids) }
+        let startupRefresh = Task { @MainActor in
+            try await startupRegistry.updateFilterIfNeeded()
+        }
+        await waitUntil("The startup filter request did not reach its barrier") {
+            startupRegistry.testPendingCaptureStartWaiterCount == 1
+        }
+        precondition(startupRefreshes.isEmpty, "A newly shown panel must wait until capture startup settles")
+        startupRegistry.finishCaptureStart()
+        await waitUntil("The startup refresh continuation did not resume") { !startupRefreshes.isEmpty }
+        try await startupRefresh.value
+        precondition(startupRefreshes == [[61]], "Startup must refresh registrations made after the initial snapshot")
+
+        let serialRegistry = RecordingCaptureWindowRegistry()
+        var refreshEvents: [[CGWindowID]] = []
+        var firstRefreshStarted = false
+        var releaseFirstRefresh: CheckedContinuation<Void, Never>?
+        serialRegistry.setFilterUpdater { ids in
+            refreshEvents.append(ids)
+            if ids == [71] {
+                firstRefreshStarted = true
+                await withCheckedContinuation { releaseFirstRefresh = $0 }
+            }
+        }
+        serialRegistry.register(windowID: 71)
+        var completionOrder: [String] = []
+        serialRegistry.testOnRefreshCleared = {
+            try? await serialRegistry.updateFilterIfNeeded()
+            completionOrder.append("follower-first")
+        }
+        let firstRefresh = Task { @MainActor in
+            try await serialRegistry.updateFilterIfNeeded()
+            completionOrder.append("owner")
+        }
+        await waitUntil("The owner refresh did not start") { firstRefreshStarted }
+        let followerRefresh = Task { @MainActor in
+            try await serialRegistry.updateFilterIfNeeded()
+            completionOrder.append("follower")
+        }
+        await waitUntil("The follower did not join the held refresh") {
+            serialRegistry.testPendingRefreshWaiterCount == 2
+        }
+        serialRegistry.unregister(windowID: 71)
+        serialRegistry.register(windowID: 72)
+        releaseFirstRefresh?.resume()
+        await waitUntil("The refresh waiters did not resume") { completionOrder.count >= 4 }
+        try await firstRefresh.value
+        try await followerRefresh.value
+        precondition(refreshEvents == [[71], [72]], "A follower must request the newer revision before the original waiters resume")
+        precondition(completionOrder.first == "follower-first", "A follower must observe cleared refresh state before the owner resumes")
+        precondition(completionOrder.count >= 4)
+
+        let coalescingRegistry = RecordingCaptureWindowRegistry()
+        var coalescedEvents: [[CGWindowID]] = []
+        var oldRefreshStarted = false
+        var releaseOldRefresh: CheckedContinuation<Void, Never>?
+        coalescingRegistry.setFilterUpdater { ids in
+            coalescedEvents.append(ids)
+            if ids == [81] {
+                oldRefreshStarted = true
+                await withCheckedContinuation { releaseOldRefresh = $0 }
+            }
+        }
+        coalescingRegistry.register(windowID: 81)
+        let supersededRefresh = Task { @MainActor in
+            try await coalescingRegistry.updateFilterIfNeeded()
+        }
+        await waitUntil("The old snapshot refresh did not start") { oldRefreshStarted }
+        coalescingRegistry.unregister(windowID: 81)
+        coalescingRegistry.register(windowID: 82)
+        let latestRefresh = Task { @MainActor in
+            try await coalescingRegistry.updateFilterIfNeeded()
+        }
+        await waitUntil("The latest window snapshot was not queued") {
+            coalescingRegistry.testPendingRefreshWaiterCount == 2
+        }
+        releaseOldRefresh?.resume()
+        await waitUntil("The updated filter snapshot was not applied") { coalescedEvents.count == 2 }
+        try await supersededRefresh.value
+        try await latestRefresh.value
+        precondition(coalescedEvents == [[81], [82]])
+
+        let restartedRegistry = RecordingCaptureWindowRegistry()
+        var oldErrorRelease: CheckedContinuation<Void, Never>?
+        var oldStreamStarted = false
+        var oldStreamUpdaterFinished = false
+        var restartedEvents: [[CGWindowID]] = []
+        restartedRegistry.setFilterUpdater { ids in
+            if ids == [91] {
+                oldStreamStarted = true
+                await withCheckedContinuation { oldErrorRelease = $0 }
+                oldStreamUpdaterFinished = true
+                throw RecordingCaptureFilterError.unavailableWindows([91])
+            }
+            restartedEvents.append(ids)
+        }
+        restartedRegistry.register(windowID: 91)
+        let oldStreamRefresh = Task { @MainActor in
+            try await restartedRegistry.updateFilterIfNeeded()
+        }
+        await waitUntil("The old stream refresh did not start") { oldStreamStarted }
+        restartedRegistry.unregister(windowID: 91)
+        restartedRegistry.setFilterUpdater(nil)
+        try await oldStreamRefresh.value
+        restartedRegistry.beginCaptureStart()
+        restartedRegistry.register(windowID: 92)
+        restartedRegistry.setFilterUpdater { ids in restartedEvents.append(ids) }
+        let newStreamRefresh = Task { @MainActor in
+            try await restartedRegistry.updateFilterIfNeeded()
+        }
+        await waitUntil("The new stream filter did not wait for its start barrier") {
+            restartedRegistry.testPendingCaptureStartWaiterCount == 1
+        }
+        restartedRegistry.finishCaptureStart()
+        await waitUntil("The restarted stream filter was not applied") { restartedEvents == [[92]] }
+        try await newStreamRefresh.value
+        oldErrorRelease?.resume()
+        await waitUntil("The invalidated old stream refresh did not finish") { oldStreamUpdaterFinished }
+        precondition(restartedEvents == [[92]], "An old stream error must not poison the new filter session")
+
+        let failingRegistry = RecordingCaptureWindowRegistry()
+        failingRegistry.setFilterUpdater { _ in
+            throw RecordingCaptureFilterError.unavailableWindows([81])
+        }
+        var refreshFailureReported = false
+        do {
+            try await failingRegistry.updateFilterIfNeeded()
+        } catch is RecordingCaptureFilterError {
+            refreshFailureReported = true
+        }
+        precondition(refreshFailureReported, "Filter update errors must reach the window show operation")
+        runExistingScrollChecks()
+    }
+
+    static func runExistingScrollChecks() {
         let width = 80
         let height = 160
         let step = 112

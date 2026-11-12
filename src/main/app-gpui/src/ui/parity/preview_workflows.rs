@@ -41,6 +41,7 @@ impl Render for MultiDisplayPreview {
 }
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, scale: f32) {
+    let native_tooltips = cfg!(any(windows, target_os = "macos"));
     let config = cx.update(|cx| crate::state::state(cx).config.get().preview);
     let wallpaper = cx.update(|cx| crate::state::state(cx).config.get().wallpaper);
     let history: Vec<_> = crate::history_store::load_history()
@@ -103,7 +104,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             let hovered = cx
                 .open_window(size(px(208.), px(604.)), |window, cx| {
                     window.set_scale_factor(scale);
-                    cx.new(|_| HoveredPreview { preview: view })
+                    cx.new(|_| HoveredPreview {
+                        preview: view.clone(),
+                    })
                 })
                 .unwrap()
                 .into();
@@ -128,35 +131,50 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                         cx,
                         hovered,
                         output,
-                        &format!("preview-{corner}-tooltip-{name}"),
+                        &format!("preview-{corner}-hover-{name}"),
                     );
                 }
-                cx.update_window(hovered, |_, window, _| {
-                    let tips: Vec<_> = window
-                        .painted_quads()
-                        .into_iter()
-                        .filter(|quad| {
+                if native_tooltips {
+                    assert!(view.update(cx, |view, _| view.native_tooltip_active()));
+                    cx.update_window(hovered, |_, window, _| {
+                        assert!(window.painted_quads().into_iter().all(|quad| {
                             let height = quad.bounds.size.height.0 / scale;
-                            (31. ..=35.).contains(&height) && quad.bounds.size.width.0 / scale > 30.
-                        })
-                        .collect();
-                    assert_eq!(
-                        tips.len(),
-                        1,
-                        "{corner}/{name}: exactly one tooltip must paint"
-                    );
-                    for tip in tips {
-                        let bounds = tip.bounds;
-                        assert!(
-                            bounds.left().0 >= f32::from(single.left()) * scale - 0.5
-                                && bounds.right().0 <= f32::from(single.right()) * scale + 0.5
-                                && bounds.top().0 >= f32::from(single.top()) * scale - 0.5
-                                && bounds.bottom().0 <= f32::from(single.bottom()) * scale + 0.5,
-                            "{corner}/{name}: tooltip {bounds:?} must fit its preview {single:?}"
-                        );
+                            !(31. ..=35.).contains(&height) || quad.bounds.size.width.0 / scale <= 30.
+                        }), "{corner}/{name}: native tooltip must not be clipped into preview paint");
+                    }).unwrap();
+                    if name == "upload" {
+                        key(cx, hovered, "tab");
+                        hover(cx, hovered, 24., f32::from(single.top()) + 20.);
+                        hover(cx, hovered, 184., f32::from(single.top()) + 120.);
+                        cx.advance_clock(Duration::from_millis(200));
+                        settle(cx, hovered);
+                        assert!(view.update(cx, |view, _| view.native_tooltip_active()));
+                        key(cx, hovered, "tab");
+                        assert!(!view.update(cx, |view, _| view.native_tooltip_active()));
                     }
-                })
-                .unwrap();
+                } else {
+                    cx.update_window(hovered, |_, window, _| {
+                        let tips: Vec<_> = window
+                            .painted_quads()
+                            .into_iter()
+                            .filter(|quad| {
+                                let height = quad.bounds.size.height.0 / scale;
+                                (31. ..=35.).contains(&height) && quad.bounds.size.width.0 / scale > 30.
+                            })
+                            .collect();
+                        assert_eq!(tips.len(), 1, "{corner}/{name}: exactly one tooltip must paint");
+                        for tip in tips {
+                            let bounds = tip.bounds;
+                            assert!(
+                                bounds.left().0 >= f32::from(single.left()) * scale - 0.5
+                                    && bounds.right().0 <= f32::from(single.right()) * scale + 0.5
+                                    && bounds.top().0 >= f32::from(single.top()) * scale - 0.5
+                                    && bounds.bottom().0 <= f32::from(single.bottom()) * scale + 0.5,
+                                "{corner}/{name}: tooltip {bounds:?} must fit its preview {single:?}"
+                            );
+                        }
+                    }).unwrap();
+                }
             }
             hover(cx, hovered, -5., -5.);
             cx.advance_clock(Duration::from_millis(600));
@@ -166,6 +184,14 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 f32::from(single.center().x),
                 f32::from(single.center().y),
             );
+            if native_tooltips {
+                cx.advance_clock(Duration::from_millis(200));
+                settle(cx, hovered);
+                assert!(
+                    !view.update(cx, |view, _| view.native_tooltip_active()),
+                    "Edit must not schedule a native tooltip"
+                );
+            }
             cx.update_window(hovered, |_, window, _| {
                 assert!(
                     window.painted_quads().into_iter().all(|quad| {
@@ -464,7 +490,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         let hovered = cx
             .open_window(size(px(208.), px(604.)), |window, cx| {
                 window.set_scale_factor(scale);
-                cx.new(|_| HoveredPreview { preview: view })
+                cx.new(|_| HoveredPreview {
+                    preview: view.clone(),
+                })
             })
             .unwrap()
             .into();
@@ -475,28 +503,32 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             f32::from(single.center().x),
             f32::from(single.top()) + 56.,
         );
-        capture(cx, hovered, output, &format!("preview-polish-{case}"));
-        let tip = cx
-            .update_window(hovered, |_, window, _| {
-                window.painted_quads().into_iter().find(|quad| {
-                    let height = quad.bounds.size.height.0 / scale;
-                    let top = quad.bounds.top().0 / scale;
-                    (31. ..=70.).contains(&height)
-                        && quad.bounds.size.width.0 / scale > 90.
-                        && (f32::from(single.top()) + 68. ..=f32::from(single.top()) + 80.)
-                            .contains(&top)
+        capture(cx, hovered, output, &format!("preview-polish-hover-{case}"));
+        if native_tooltips {
+            assert!(view.update(cx, |view, _| view.native_tooltip_active()));
+        } else {
+            let tip = cx
+                .update_window(hovered, |_, window, _| {
+                    window.painted_quads().into_iter().find(|quad| {
+                        let height = quad.bounds.size.height.0 / scale;
+                        let top = quad.bounds.top().0 / scale;
+                        (31. ..=70.).contains(&height)
+                            && quad.bounds.size.width.0 / scale > 90.
+                            && (f32::from(single.top()) + 68. ..=f32::from(single.top()) + 80.)
+                                .contains(&top)
+                    })
                 })
-            })
-            .unwrap()
-            .expect("Polish tooltip must paint");
-        let bounds = tip.bounds;
-        assert!(
-            bounds.left().0 >= f32::from(single.left()) * scale - 0.5
-                && bounds.right().0 <= f32::from(single.right()) * scale + 0.5
-                && bounds.top().0 >= f32::from(single.top()) * scale - 0.5
-                && bounds.bottom().0 <= f32::from(single.bottom()) * scale + 0.5,
-            "{case}: Polish tooltip {bounds:?} must fit its preview {single:?}"
-        );
+                .unwrap()
+                .expect("Polish tooltip must paint");
+            let bounds = tip.bounds;
+            assert!(
+                bounds.left().0 >= f32::from(single.left()) * scale - 0.5
+                    && bounds.right().0 <= f32::from(single.right()) * scale + 0.5
+                    && bounds.top().0 >= f32::from(single.top()) * scale - 0.5
+                    && bounds.bottom().0 <= f32::from(single.bottom()) * scale + 0.5,
+                "{case}: Polish tooltip {bounds:?} must fit its preview {single:?}"
+            );
+        }
         {
             let before = cx.update(|cx| cx.windows());
             let position = point(single.center().x, single.top() + px(84.));
@@ -563,10 +595,38 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             view.downcast::<CapturePreviewWindow>().unwrap()
         })
         .unwrap();
+    capture(cx, preview, output, "preview-video-idle");
+    let idle = cx.capture_screenshot(preview).unwrap();
+    let center = single.center();
+    let background = idle.get_pixel(
+        (f32::from(single.left() + px(20.)) * scale).round() as u32,
+        (f32::from(center.y) * scale).round() as u32,
+    );
+    let visible_pixels = (-24..=24)
+        .flat_map(|x| (-24..=24).map(move |y| (x, y)))
+        .filter(|(x, y)| {
+            let pixel = idle.get_pixel(
+                (f32::from(center.x) * scale + *x as f32 * scale).round() as u32,
+                (f32::from(center.y) * scale + *y as f32 * scale).round() as u32,
+            );
+            pixel.0[..3]
+                .iter()
+                .zip(background.0[..3].iter())
+                .map(|(actual, expected)| actual.abs_diff(*expected) as u32)
+                .sum::<u32>()
+                > 80
+        })
+        .count();
+    assert!(
+        visible_pixels >= 20,
+        "idle video fallback film icon must remain visible, found {visible_pixels} contrasting pixels"
+    );
     let hovered = cx
         .open_window(size(px(208.), px(604.)), |window, cx| {
             window.set_scale_factor(scale);
-            cx.new(|_| HoveredPreview { preview: view })
+            cx.new(|_| HoveredPreview {
+                preview: view.clone(),
+            })
         })
         .unwrap()
         .into();
@@ -580,13 +640,35 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         );
         cx.advance_clock(Duration::from_millis(600));
         settle(cx, hovered);
+        if name == "copy" {
+            let image = cx.capture_screenshot(hovered).unwrap();
+            let center = single.center();
+            let reference = image.get_pixel(
+                (f32::from(single.left() + px(20.)) * scale).round() as u32,
+                (f32::from(center.y) * scale).round() as u32,
+            );
+            for x in -24..=24 {
+                let pixel = image.get_pixel(
+                    (f32::from(center.x) * scale + x as f32 * scale).round() as u32,
+                    (f32::from(center.y) * scale).round() as u32,
+                );
+                let difference: u32 = pixel.0[..3]
+                    .iter()
+                    .zip(reference.0[..3].iter())
+                    .map(|(actual, expected)| actual.abs_diff(*expected) as u32)
+                    .sum();
+                assert!(
+                    difference <= 24,
+                    "video fallback film icon bleeds through the Copy/Edit gap at x offset {x}: {pixel:?}, reference={reference:?}"
+                );
+            }
+        }
         hover(cx, hovered, x, f32::from(single.top()) + y);
-        capture(
-            cx,
-            hovered,
-            output,
-            &format!("preview-video-tooltip-{name}"),
-        );
+        capture(cx, hovered, output, &format!("preview-video-hover-{name}"));
+        if native_tooltips {
+            assert!(view.update(cx, |view, _| view.native_tooltip_active()));
+            continue;
+        }
         let tips = cx
             .update_window(hovered, |_, window, _| {
                 window

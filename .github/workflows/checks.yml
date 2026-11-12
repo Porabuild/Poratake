@@ -135,6 +135,7 @@ jobs:
             src/main/daemon/Core/Protocol.swift \
             src/main/daemon/Core/ModuleProtocol.swift \
             src/main/daemon/Core/DaemonContract.generated.swift \
+            src/main/daemon/ScreenRecorder/Types/RecorderTypes.swift \
             src/main/daemon/Modules/ScrollCaptureModule.swift \
             tests/native/scroll-capture-preview.swift
           "$RUNNER_TEMP/scroll-capture-preview-test"

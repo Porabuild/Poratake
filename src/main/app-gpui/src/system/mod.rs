@@ -10,6 +10,8 @@ pub mod hotkeys;
 #[cfg(target_os = "linux")]
 pub mod linux_session;
 pub mod native;
+#[cfg(windows)]
+pub mod native_tooltip;
 pub mod notification;
 pub mod permissions;
 pub mod reduced_transparency;

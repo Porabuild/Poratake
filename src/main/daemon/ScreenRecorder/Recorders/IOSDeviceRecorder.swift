@@ -50,15 +50,18 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var firstFrameContinuation: CheckedContinuation<Void, Error>?
     private var firstFrameTimeoutTask: Task<Void, Never>?
     private var firstFrameError: Error?
+    private var activeSessionID: RecorderSessionID?
     
     var onFirstFrame: (() -> Void)?
-    var onError: ((Error) -> Void)?
+    var onError: (@MainActor (RecorderSessionID, Error) -> Void)?
     
+    @MainActor
     func configure(_ config: RecordingConfig) {
         self.config = config
     }
     
-    func start(waitForFirstFrame: Bool = false) async throws {
+    @MainActor
+    func start(waitForFirstFrame: Bool = false, sessionID: RecorderSessionID) async throws {
         guard state == .idle else {
             throw RecorderError.invalidState("Cannot start: recorder is \(state.rawValue)")
         }
@@ -70,12 +73,14 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         guard let deviceId = config.iosDeviceId else {
             throw RecorderError.configuration("iOS device ID not set")
         }
+        activeSessionID = sessionID
         
         do {
             try await startCapture(
                 config,
                 deviceId: deviceId,
-                waitForFirstFrame: waitForFirstFrame
+                waitForFirstFrame: waitForFirstFrame,
+                sessionID: sessionID
             )
         } catch {
             rollbackFailedStart()
@@ -83,10 +88,12 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
 
+    @MainActor
     private func startCapture(
         _ config: RecordingConfig,
         deviceId: String,
-        waitForFirstFrame shouldWaitForFirstFrame: Bool
+        waitForFirstFrame shouldWaitForFirstFrame: Bool,
+        sessionID: RecorderSessionID
     ) async throws {
         enableScreenCaptureDevices()
         
@@ -101,7 +108,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         
         let session = AVCaptureSession()
         captureSession = session
-        observeRuntimeErrors(for: session)
+        observeRuntimeErrors(for: session, sessionID: sessionID)
         
         let deviceInput = try AVCaptureDeviceInput(device: device)
         
@@ -214,7 +221,8 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         continuation.resume(with: result)
     }
 
-    private func observeRuntimeErrors(for session: AVCaptureSession) {
+    @MainActor
+    private func observeRuntimeErrors(for session: AVCaptureSession, sessionID: RecorderSessionID) {
         removeRuntimeErrorObserver()
         runtimeErrorObserver = NotificationCenter.default.addObserver(
             forName: AVCaptureSession.runtimeErrorNotification,
@@ -224,19 +232,25 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             let error = notification.userInfo?[AVCaptureSessionErrorKey] as? Error
                 ?? RecorderError.capture("iOS device capture failed")
             Task { @MainActor [weak self] in
-                guard let self, self.state == .recording || self.state == .paused else { return }
-                _ = try? await self.stop()
-                self.onError?(error)
+                guard let self,
+                      self.captureSession === session,
+                      self.activeSessionID == sessionID,
+                      self.state == .recording || self.state == .paused
+                else { return }
+                self.resolveFirstFrameWaiter(.failure(error))
+                self.onError?(sessionID, error)
             }
         }
     }
 
+    @MainActor
     private func removeRuntimeErrorObserver() {
         guard let runtimeErrorObserver else { return }
         NotificationCenter.default.removeObserver(runtimeErrorObserver)
         self.runtimeErrorObserver = nil
     }
 
+    @MainActor
     private func rollbackFailedStart() {
         state = .idle
         removeRuntimeErrorObserver()
@@ -685,6 +699,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
     
+    @MainActor
     func pause() throws {
         guard state == .recording else {
             throw RecorderError.invalidState("Cannot pause: recorder is \(state.rawValue)")
@@ -698,6 +713,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
     
+    @MainActor
     func resume() throws {
         guard state == .paused else {
             throw RecorderError.invalidState("Cannot resume: recorder is \(state.rawValue)")
@@ -717,6 +733,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
     
+    @MainActor
     func stop() async throws -> RecordingResult {
         guard state != .idle else {
             throw RecorderError.invalidState("Cannot stop: recorder is idle")
@@ -818,6 +835,7 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         writerQueue.sync {}
     }
     
+    @MainActor
     private func resetState() {
         removeRuntimeErrorObserver()
         state = .idle
@@ -850,8 +868,10 @@ class IOSDeviceRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         systemAudioInput = nil
         systemAudioOutputPath = nil
         config = nil
+        activeSessionID = nil
     }
     
+    @MainActor
     func getStatus() -> (state: RecorderState, duration: Double) {
         return (state: state, duration: recordingDuration)
     }

@@ -118,6 +118,18 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             );
             let mic = measured("recording-controls", 3).center();
             hover(cx, window, f32::from(mic.x), f32::from(mic.y));
+            #[cfg(any(windows, target_os = "macos"))]
+            {
+                let control = window.downcast::<RecordingControl>().unwrap();
+                let tooltip = |cx: &mut HeadlessAppContext| {
+                    cx.update(|cx| {
+                        control
+                            .update(cx, |control, _, _| control.parity_hovered_tooltip())
+                            .unwrap()
+                    })
+                };
+                assert_eq!(tooltip(cx).as_deref(), Some("Select microphone"));
+            }
             capture(cx, window, output, "record-control-microphone-hover");
             event(
                 cx,
@@ -131,6 +143,16 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 }),
             );
             settle(cx, window);
+            #[cfg(any(windows, target_os = "macos"))]
+            assert!(cx.update(|cx| {
+                window
+                    .downcast::<RecordingControl>()
+                    .unwrap()
+                    .update(cx, |control, _, _| {
+                        control.parity_hovered_tooltip().is_none()
+                    })
+                    .unwrap()
+            }));
             capture(cx, window, output, "record-control-microphone-pressed");
             let hovered = image::open(output.join("gpui-record-control-microphone-hover.png"))
                 .unwrap()
@@ -174,17 +196,114 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             );
             capture(cx, window, output, "record-control-microphone-open");
             escape(cx, window);
+            #[cfg(any(windows, target_os = "macos"))]
+            {
+                let control = window.downcast::<RecordingControl>().unwrap();
+                let tooltip = |cx: &mut HeadlessAppContext| {
+                    cx.update(|cx| {
+                        control
+                            .update(cx, |control, _, _| control.parity_hovered_tooltip())
+                            .unwrap()
+                    })
+                };
+                let audio = measured("recording-controls", 4).center();
+                hover(cx, window, f32::from(audio.x), f32::from(audio.y));
+                assert_eq!(tooltip(cx).as_deref(), Some("Turn system sounds off"));
+                hover(cx, window, 1., 1.);
+                assert!(tooltip(cx).is_none());
+                hover(cx, window, f32::from(mic.x), f32::from(mic.y));
+                assert_eq!(tooltip(cx).as_deref(), Some("Select microphone"));
+            }
+            #[cfg(any(windows, target_os = "macos"))]
+            let focus_tips = |cx: &mut HeadlessAppContext| {
+                cx.update_window(window, |_, window, cx| {
+                    let background =
+                        gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                    window
+                        .painted_quads()
+                        .into_iter()
+                        .filter(|quad| {
+                            let bounds = quad.bounds;
+                            quad.background == background
+                                && (31. ..=35.).contains(&(bounds.size.height.0 / scale))
+                                && bounds.size.width.0 / scale > 35.
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+            };
+            #[cfg(any(windows, target_os = "macos"))]
+            {
+                assert!(!cx.update(|cx| herogpui::extend::focus_visible(cx)));
+                assert!(
+                    focus_tips(cx).is_empty(),
+                    "mouse hover must not open a keyboard tooltip"
+                );
+            }
             key(cx, window, "tab");
             assert!(cx
                 .update_window(window, |_, window, cx| window.focused(cx).is_some()
                     && herogpui::extend::focus_visible(cx))
                 .unwrap());
+            #[cfg(any(windows, target_os = "macos"))]
+            let assert_focus_tooltip = |cx: &mut HeadlessAppContext, index: usize, right: bool| {
+                let control = measured("recording-controls", index);
+                let tips = focus_tips(cx);
+                assert_eq!(
+                    tips.len(),
+                    1,
+                    "one keyboard tooltip must be painted: {tips:?}"
+                );
+                let bounds = tips[0].bounds;
+                let mask = tips[0].content_mask.bounds;
+                cx.update_window(window, |_, window, _| {
+                    if right {
+                        assert!(bounds.left().0 >= f32::from(control.right()) * scale - 1.);
+                    } else {
+                        assert!(bounds.right().0 <= f32::from(control.left()) * scale + 1.);
+                    }
+                    assert!(
+                        bounds.left().0 >= 0.
+                            && bounds.top().0 >= 0.
+                            && bounds.right().0 <= f32::from(window.viewport_size().width) * scale
+                            && bounds.bottom().0
+                                <= f32::from(window.viewport_size().height) * scale
+                            && mask.left().0 <= bounds.left().0
+                            && mask.top().0 <= bounds.top().0
+                            && mask.right().0 >= bounds.right().0
+                            && mask.bottom().0 >= bounds.bottom().0,
+                        "keyboard tooltip is clipped: {bounds:?}, mask {mask:?}"
+                    );
+                })
+                .unwrap();
+            };
+            #[cfg(any(windows, target_os = "macos"))]
+            assert_focus_tooltip(cx, 0, true);
             capture(cx, window, output, "record-control-keyboard-focused");
+            #[cfg(any(windows, target_os = "macos"))]
+            for (index, right) in [(2, true), (3, false), (4, false), (6, false)] {
+                key(cx, window, "tab");
+                assert_focus_tooltip(cx, index, right);
+            }
             click_measured(cx, window, "recording-controls", 0);
             capture(cx, window, output, "record-control-cancel-countdown");
             escape(cx, window);
             assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
             continue;
+        }
+        #[cfg(any(windows, target_os = "macos"))]
+        {
+            let target = measured("recording-controls", 0).center();
+            hover(cx, window, f32::from(target.x), f32::from(target.y));
+            assert_eq!(
+                cx.update(|cx| window
+                    .downcast::<RecordingControl>()
+                    .unwrap()
+                    .update(cx, |control, _, _| control.parity_hovered_tooltip())
+                    .unwrap())
+                    .as_deref(),
+                Some("Fixture capture window with a long name")
+            );
         }
         for (index, name) in [(4, "camera"), (5, "microphone")] {
             click_measured(cx, window, "recording-controls", index);
