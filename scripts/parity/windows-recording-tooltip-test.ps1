@@ -126,6 +126,7 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int capacity);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll", EntryPoint="ClientToScreen")] public static extern bool ClientToScreen(IntPtr hwnd, ref Point point);
     [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr hwnd, ref Point point);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
@@ -1263,18 +1264,33 @@ try {
     $previewDpi = [PoratakeTooltipProbe]::GetDpiForWindow($previewOwnerHandle)
     if ($previewDpi -lt 96) { throw "The capture-preview window returned an invalid DPI: $previewDpi" }
     $previewScale = [double]$previewDpi / 96.0
-    $previewOwnerWidth = $previewOwnerBounds.Right - $previewOwnerBounds.Left
-    $previewOwnerHeight = $previewOwnerBounds.Bottom - $previewOwnerBounds.Top
-    if ([Math]::Abs($previewOwnerWidth - 208 * $previewScale) -gt 4 -or [Math]::Abs($previewOwnerHeight - 604 * $previewScale) -gt 5) {
-        throw "Capture-preview owner geometry does not match its expected DPI-scaled stack: ${previewOwnerWidth}x${previewOwnerHeight}, dpi=$previewDpi."
+    $previewClientRect = New-Object PoratakeTooltipProbe+Rect
+    $previewClientOrigin = New-Object PoratakeTooltipProbe+Point
+    if (-not [PoratakeTooltipProbe]::GetClientRect($previewOwnerHandle, [ref]$previewClientRect) -or -not [PoratakeTooltipProbe]::ClientToScreen($previewOwnerHandle, [ref]$previewClientOrigin)) {
+        throw 'Could not measure the capture-preview client area in screen coordinates.'
+    }
+    $previewClientBounds = New-Object PoratakeTooltipProbe+Rect
+    $previewClientBounds.Left = $previewClientOrigin.X + $previewClientRect.Left
+    $previewClientBounds.Top = $previewClientOrigin.Y + $previewClientRect.Top
+    $previewClientBounds.Right = $previewClientOrigin.X + $previewClientRect.Right
+    $previewClientBounds.Bottom = $previewClientOrigin.Y + $previewClientRect.Bottom
+    $previewClientWidth = $previewClientRect.Right - $previewClientRect.Left
+    $previewClientHeight = $previewClientRect.Bottom - $previewClientRect.Top
+    $expectedPreviewClientWidth = [int][Math]::Round(208 * $previewScale)
+    $expectedPreviewClientHeight = [int][Math]::Round(604 * $previewScale)
+    if ([Math]::Abs($previewClientWidth - $expectedPreviewClientWidth) -gt 4 -or [Math]::Abs($previewClientHeight - $expectedPreviewClientHeight) -gt 5) {
+        throw "Capture-preview client geometry does not match its expected DPI-scaled stack: ${previewClientWidth}x${previewClientHeight}, expected ${expectedPreviewClientWidth}x${expectedPreviewClientHeight}, dpi=$previewDpi; outer HWND bounds are $($previewOwnerBounds.Right - $previewOwnerBounds.Left)x$($previewOwnerBounds.Bottom - $previewOwnerBounds.Top)."
+    }
+    if ($previewClientBounds.Left -lt $previewOwnerBounds.Left -or $previewClientBounds.Top -lt $previewOwnerBounds.Top -or $previewClientBounds.Right -gt $previewOwnerBounds.Right -or $previewClientBounds.Bottom -gt $previewOwnerBounds.Bottom) {
+        throw 'The capture-preview client bounds fall outside its outer HWND bounds.'
     }
     $previewCard = New-Object PoratakeTooltipProbe+Rect
-    $previewCard.Left = $previewOwnerBounds.Left + [int][Math]::Round(4 * $previewScale)
-    $previewCard.Top = $previewOwnerBounds.Top + [int][Math]::Round(460 * $previewScale)
+    $previewCard.Left = $previewClientBounds.Left + [int][Math]::Round(4 * $previewScale)
+    $previewCard.Top = $previewClientBounds.Top + [int][Math]::Round(460 * $previewScale)
     $previewCard.Right = $previewCard.Left + [int][Math]::Round(200 * $previewScale)
     $previewCard.Bottom = $previewCard.Top + [int][Math]::Round(140 * $previewScale)
-    if ($previewCard.Left -lt $previewOwnerBounds.Left -or $previewCard.Top -lt $previewOwnerBounds.Top -or $previewCard.Right -gt $previewOwnerBounds.Right -or $previewCard.Bottom -gt $previewOwnerBounds.Bottom) {
-        throw 'The test-owned preview card geometry falls outside its preview owner window.'
+    if ($previewCard.Left -lt $previewClientBounds.Left -or $previewCard.Top -lt $previewClientBounds.Top -or $previewCard.Right -gt $previewClientBounds.Right -or $previewCard.Bottom -gt $previewClientBounds.Bottom) {
+        throw 'The test-owned preview card geometry falls outside its preview client area.'
     }
     $previewMonitor = New-Object PoratakeTooltipProbe+MonitorInfo
     $previewMonitor.Size = [PoratakeTooltipProbe]::MonitorInfoSize()
